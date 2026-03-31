@@ -1,4 +1,6 @@
 # Datum Workload Operator
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fdatum-cloud%2Fworkload-operator.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fdatum-cloud%2Fworkload-operator?ref=badge_shield)
+
 
 The workload operator defines APIs and core controllers for interacting
 with compute infrastructure related entities such as Workloads and Instances.
@@ -94,3 +96,7 @@ make undeploy
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
 More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fdatum-cloud%2Fworkload-operator.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fdatum-cloud%2Fworkload-operator?ref=badge_large)
