@@ -231,13 +231,46 @@ That invisible reliability is the actual product.
 - Do we expose customer-published templates in v1, or hold them for v2?
 - How do we surface template versioning and deprecation to consumers
   who may have thousands of live claims at any moment?
-- **Upstream API alignment.** Datum's user-facing API deliberately mirrors
-  the [kubernetes-sigs agent-sandbox][upstream] vocabulary where semantics
-  align, and Datum will ship an optional compatibility layer that accepts
-  upstream resources and translates them to Datum-native ones. We are not
-  adopting the upstream schema as our v1 contract while it remains pre-1.0,
-  and we will revisit that decision when upstream cuts a stable release or
-  introduces a non-Pod-shaped runtime abstraction.
+- Whether the upstream compatibility layer (see below) ships in phase 1
+  or follows the MVP.
+
+## Upstream compatibility
+
+The Kubernetes community is standardizing this shape of compute through the
+[kubernetes-sigs agent-sandbox][upstream] project. We want Datum to be a
+visible, credible participant in that ecosystem — both because it accelerates
+adoption (any tool, SDK, or framework built against the upstream API works
+on Datum on day one) and because it signals that Datum competes on runtime
+quality, not on owning the schema.
+
+Our approach has three parts:
+
+- **Mirror the vocabulary.** Datum's native API uses the same resource
+  names, field names, status phases, and lifecycle verbs as upstream
+  wherever the semantics line up. A developer who has read the upstream
+  docs already knows most of Datum's API on first contact.
+- **Ship a compatibility layer.** A thin, optional component that accepts
+  upstream `agents.x-k8s.io` resources and translates them into Datum-native
+  ones. Customers who want portability between Datum, GKE, and self-hosted
+  clusters can write a single set of manifests and run them anywhere.
+- **Contribute upstream.** Bring the patterns Datum's runtime unlocks
+  (snapshot-based warm pools, sub-second allocation, non-Pod-shaped
+  isolation backends) back to the SIG so the standard evolves toward
+  something Datum can eventually adopt natively.
+
+We are intentionally **not** adopting the upstream schema as Datum's v1
+contract while it remains a pre-1.0 API. Doing so would tie Datum's
+stability promises to upstream's churn and would force the unikernel
+runtime through a Pod-shaped abstraction that doesn't fit it. We will
+revisit that decision when upstream cuts a stable release or introduces a
+runtime abstraction that isn't Linux-Pod-shaped.
+
+**Phase 1 scope.** The compatibility layer is likely to land *after* the
+MVP rather than alongside it. Phase 1 prioritizes shipping the Datum-native
+API, the curated catalog, and the warm-pool fast path — the things that
+make the product worth adopting in the first place. Upstream compatibility
+is an adoption accelerator, not a prerequisite for the headline experience,
+and we'd rather ship the differentiator first and the bridge second.
 
 ## What's *not* in scope
 
