@@ -231,6 +231,13 @@ That invisible reliability is the actual product.
 - Do we expose customer-published templates in v1, or hold them for v2?
 - How do we surface template versioning and deprecation to consumers
   who may have thousands of live claims at any moment?
+- **Upstream API alignment.** Datum's user-facing API deliberately mirrors
+  the [kubernetes-sigs agent-sandbox][upstream] vocabulary where semantics
+  align, and Datum will ship an optional compatibility layer that accepts
+  upstream resources and translates them to Datum-native ones. We are not
+  adopting the upstream schema as our v1 contract while it remains pre-1.0,
+  and we will revisit that decision when upstream cuts a stable release or
+  introduces a non-Pod-shaped runtime abstraction.
 
 ## What's *not* in scope
 
