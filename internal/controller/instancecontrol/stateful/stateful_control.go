@@ -11,8 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"go.datum.net/workload-operator/api/v1alpha"
-	"go.datum.net/workload-operator/internal/controller/instancecontrol"
+	"go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
 // Behavior inspired by https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/statefulset

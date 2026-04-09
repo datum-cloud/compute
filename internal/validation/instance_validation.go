@@ -13,8 +13,8 @@ import (
 	apimachineryutilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
 )
 
 func validateInstanceTemplate(

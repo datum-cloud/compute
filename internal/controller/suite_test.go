@@ -19,7 +19,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 	// +kubebuilder:scaffold:imports
 )
 

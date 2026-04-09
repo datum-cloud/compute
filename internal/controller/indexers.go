@@ -9,7 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 const (

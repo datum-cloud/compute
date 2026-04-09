@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 // Great reference:

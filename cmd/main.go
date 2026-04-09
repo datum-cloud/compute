@@ -29,12 +29,12 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/config"
+	"go.datum.net/compute/internal/controller"
+	computewebhook "go.datum.net/compute/internal/webhook"
+	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
-	"go.datum.net/workload-operator/internal/config"
-	"go.datum.net/workload-operator/internal/controller"
-	computewebhook "go.datum.net/workload-operator/internal/webhook"
-	computev1alphawebhooks "go.datum.net/workload-operator/internal/webhook/v1alpha"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	// +kubebuilder:scaffold:imports
@@ -87,7 +87,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	setupLog.Info("starting workload-operator",
+	setupLog.Info("starting compute",
 		"version", version,
 		"gitCommit", gitCommit,
 		"gitTreeState", gitTreeState,
@@ -136,12 +136,17 @@ func main() {
 
 	metricsServerOptions := serverConfig.MetricsServer.Options(ctx, deploymentClusterClient)
 
-	webhookServer := webhook.NewServer(
-		serverConfig.WebhookServer.Options(ctx, deploymentClusterClient),
-	)
+	var webhookServer webhook.Server
+	if serverConfig.WebhookServer != nil {
+		webhookServer = webhook.NewServer(
+			serverConfig.WebhookServer.Options(ctx, deploymentClusterClient),
+		)
 
-	if serverConfig.Discovery.Mode != multiclusterproviders.ProviderSingle {
-		webhookServer = computewebhook.NewClusterAwareWebhookServer(webhookServer)
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderSingle {
+			webhookServer = computewebhook.NewClusterAwareWebhookServer(webhookServer)
+		}
+	} else {
+		setupLog.Info("webhookServer not configured; admission webhook server disabled")
 	}
 
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
@@ -186,9 +191,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
-		os.Exit(1)
+	if serverConfig.WebhookServer != nil {
+		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
+			os.Exit(1)
+		}
 	}
 
 	// +kubebuilder:scaffold:builder

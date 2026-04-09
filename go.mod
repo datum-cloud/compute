@@ -1,4 +1,4 @@
-module go.datum.net/workload-operator
+module go.datum.net/compute
 
 go 1.24.0
 

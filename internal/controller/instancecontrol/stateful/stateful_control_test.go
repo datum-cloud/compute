@@ -13,8 +13,8 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/utils/ptr"
 
-	"go.datum.net/workload-operator/api/v1alpha"
-	"go.datum.net/workload-operator/internal/controller/instancecontrol"
+	"go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
 var (

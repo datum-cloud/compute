@@ -7,7 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"go.datum.net/workload-operator/api/v1alpha"
+	"go.datum.net/compute/api/v1alpha"
 )
 
 type Strategy interface {

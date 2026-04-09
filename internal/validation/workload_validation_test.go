@@ -19,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
 )
 
 func TestValidateWorkloads(t *testing.T) {
