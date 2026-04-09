@@ -30,6 +30,10 @@ spec:
           - --server-config=/config/config.yaml
         image: ghcr.io/datum-cloud/compute:latest
         name: manager
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -57,9 +61,20 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /config
+        - name: webhook-cert
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
       serviceAccountName: compute
       terminationGracePeriodSeconds: 10
       volumes:
       - name: config
         configMap:
           name: compute-config
+      # Optional so the manager can run without admission webhooks: when
+      # `webhookServer:` is omitted from the server config, the binary
+      # skips the webhook server entirely and the missing Secret is fine.
+      - name: webhook-cert
+        secret:
+          secretName: compute-webhook-cert
+          defaultMode: 420
+          optional: true

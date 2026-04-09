@@ -7,6 +7,11 @@ resources:
 # can use static `compute-*` references.
 - manifests.yaml
 
+# Teach kustomize about the webhook clientConfig.service.{name,namespace}
+# field paths so the namespace transform handles them automatically.
+configurations:
+- kustomizeconfig.yaml
+
 patches:
 - patch: |-
     - op: replace
