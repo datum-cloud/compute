@@ -1,2 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
 resources:
 - manifests.yaml
+
+# controller-gen hardcodes the metadata names and the clientConfig.service.name;
+# rewrite them here so the rest of the bundle uses static `compute-*` references.
+patches:
+- patch: |-
+    - op: replace
+      path: /metadata/name
+      value: compute-mutating
+    - op: replace
+      path: /webhooks/0/clientConfig/service/name
+      value: compute-webhook
+  target:
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+- patch: |-
+    - op: replace
+      path: /metadata/name
+      value: compute-validating
+    - op: replace
+      path: /webhooks/0/clientConfig/service/name
+      value: compute-webhook
+  target:
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration

@@ -1,18 +1,15 @@
-namespace: kube-system
-namePrefix: workload-operator-
-
 resources:
   - ../crd
   - ../webhook
   - ../certmanager
 
 replacements:
-  - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs
+  - source:
       kind: Certificate
       group: cert-manager.io
       version: v1
-      name: serving-cert # this name should match the one in certificate.yaml
-      fieldPath: .metadata.namespace # namespace of the certificate CR
+      name: compute-serving-cert
+      fieldPath: .metadata.namespace
     targets:
       - select:
           kind: ValidatingWebhookConfiguration
@@ -34,7 +31,7 @@ replacements:
       kind: Certificate
       group: cert-manager.io
       version: v1
-      name: serving-cert # this name should match the one in certificate.yaml
+      name: compute-serving-cert
       fieldPath: .metadata.name
     targets:
       - select:

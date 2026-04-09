@@ -1,14 +1,15 @@
----
+# permissions for end users to edit workloads.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  labels:
+    app.kubernetes.io/name: compute
+    app.kubernetes.io/managed-by: kustomize
+  name: workload-editor-role
 rules:
 - apiGroups:
   - compute.datumapis.com
   resources:
-  - instances
-  - workloaddeployments
   - workloads
   verbs:
   - create
@@ -21,18 +22,6 @@ rules:
 - apiGroups:
   - compute.datumapis.com
   resources:
-  - instances/finalizers
-  - workloaddeployments/finalizers
-  - workloads/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - compute.datumapis.com
-  resources:
-  - instances/status
-  - workloaddeployments/status
   - workloads/status
   verbs:
   - get
-  - patch
-  - update

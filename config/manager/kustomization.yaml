@@ -9,6 +9,6 @@ resources:
 configMapGenerator:
 - files:
   - config.yaml
-  name: config
+  name: compute-config
   options:
     disableNameSuffixHash: true

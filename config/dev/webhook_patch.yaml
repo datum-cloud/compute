@@ -9,12 +9,12 @@ patch: |-
     value: ["host.docker.internal"]
   - op: replace
     path: /spec/secretName
-    value: workload-operator-webhook-server-cert
+    value: compute-webhook-cert
 target:
   kind: Certificate
   group: cert-manager.io
   version: v1
-  name: serving-cert
+  name: compute-serving-cert
 ---
 apiVersion: builtin
 kind: PatchTransformer
