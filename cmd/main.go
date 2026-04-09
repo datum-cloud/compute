@@ -44,6 +44,12 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 	codecs   = serializer.NewCodecFactory(scheme, serializer.EnableStrict)
+
+	// Build metadata, set via -ldflags at build time. See Dockerfile.
+	version      = "dev"
+	gitCommit    = "unknown"
+	gitTreeState = "unknown"
+	buildDate    = "unknown"
 )
 
 func init() {
@@ -80,6 +86,13 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	setupLog.Info("starting workload-operator",
+		"version", version,
+		"gitCommit", gitCommit,
+		"gitTreeState", gitTreeState,
+		"buildDate", buildDate,
+	)
 
 	var serverConfig config.WorkloadOperator
 	var configData []byte
