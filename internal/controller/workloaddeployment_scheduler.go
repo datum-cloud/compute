@@ -19,8 +19,8 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
 )
 
 // WorkloadDeploymentScheduler schedules a WorkloadDeployment

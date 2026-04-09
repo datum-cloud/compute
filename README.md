@@ -1,14 +1,15 @@
-# Datum Workload Operator
+# Datum Compute
 
-The workload operator defines APIs and core controllers for interacting
-with compute infrastructure related entities such as Workloads and Instances.
+Compute defines the APIs and core controllers for the
+`compute.datumapis.com` API group, including Workloads, WorkloadDeployments,
+and Instances.
 
 Workload and Instance API types include references to types defined in the
 [network-services-operator][network-services-operator] project, such as Networks
 and Network Policies, in order to attach to networks or influence instance
 network connectivity.
 
-The operator itself is not responsible for provisioning of resources, but
+Compute itself is not responsible for provisioning of resources, but
 instead relies on infrastructure providers such as the
 [GCP Infrastructure Provider][infra-provider-gcp] to interact with vendor or
 platform specific APIs in order to satisfy the intents defined in custom resources

@@ -6,5 +6,5 @@ metricsServer:
 webhookServer:
   tls:
     secretRef:
-      name: workload-operator-webhook-server-cert
+      name: compute-webhook-cert
       namespace: kube-system

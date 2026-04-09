@@ -10,7 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 func TestReconcileInstanceReadyCondition(t *testing.T) {

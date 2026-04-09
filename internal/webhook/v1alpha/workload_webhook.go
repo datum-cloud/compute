@@ -13,10 +13,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/validation"
+	computewebhook "go.datum.net/compute/internal/webhook"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
-	"go.datum.net/workload-operator/internal/validation"
-	computewebhook "go.datum.net/workload-operator/internal/webhook"
 )
 
 // SetupWorkloadWebhookWithManager will setup the manager to manage workload

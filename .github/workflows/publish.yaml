@@ -13,7 +13,7 @@ jobs:
       packages: write
     uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.13.1
     with:
-      image-name: workload-operator
+      image-name: compute
       platforms: linux/amd64,linux/arm64
     secrets: inherit
 
@@ -24,6 +24,6 @@ jobs:
       packages: write
     uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.5.1
     with:
-      bundle-name: ghcr.io/datum-cloud/workload-operator-kustomize
+      bundle-name: ghcr.io/datum-cloud/compute-kustomize
       bundle-path: config
     secrets: inherit

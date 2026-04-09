@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"go.datum.net/workload-operator/api/v1alpha"
-	"go.datum.net/workload-operator/internal/controller/instancecontrol"
+	"go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
 func needsUpdate(instance *v1alpha.Instance, instanceTemplateHash string) bool {
