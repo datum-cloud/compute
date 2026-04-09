@@ -20,7 +20,9 @@ func RegisterDefaults(scheme *runtime.Scheme) error {
 func SetObjectDefaults_WorkloadOperator(in *WorkloadOperator) {
 	SetDefaults_MetricsServerConfig(&in.MetricsServer)
 	SetDefaults_TLSConfig(&in.MetricsServer.TLS)
-	SetDefaults_WebhookServerConfig(&in.WebhookServer)
-	SetDefaults_TLSConfig(&in.WebhookServer.TLS)
+	if in.WebhookServer != nil {
+		SetDefaults_WebhookServerConfig(in.WebhookServer)
+		SetDefaults_TLSConfig(&in.WebhookServer.TLS)
+	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 }

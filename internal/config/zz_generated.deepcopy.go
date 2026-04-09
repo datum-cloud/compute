@@ -88,7 +88,11 @@ func (in *WorkloadOperator) DeepCopyInto(out *WorkloadOperator) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.MetricsServer.DeepCopyInto(&out.MetricsServer)
-	in.WebhookServer.DeepCopyInto(&out.WebhookServer)
+	if in.WebhookServer != nil {
+		in, out := &in.WebhookServer, &out.WebhookServer
+		*out = new(WebhookServerConfig)
+		(*in).DeepCopyInto(*out)
+	}
 	out.Discovery = in.Discovery
 }
 

@@ -30,7 +30,10 @@ type WorkloadOperator struct {
 
 	MetricsServer MetricsServerConfig `json:"metricsServer"`
 
-	WebhookServer WebhookServerConfig `json:"webhookServer"`
+	// WebhookServer configures the admission webhook server. When unset, the
+	// manager runs without an admission webhook server and no serving cert
+	// is required.
+	WebhookServer *WebhookServerConfig `json:"webhookServer,omitempty"`
 
 	Discovery DiscoveryConfig `json:"discovery"`
 }
