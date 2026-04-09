@@ -1,7 +1,11 @@
 # Build the manager binary
-FROM golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG GIT_TREE_STATE=unknown
+ARG BUILD_DATE=unknown
 
 WORKDIR /workspace
 # Copy the Go Modules manifests
@@ -26,7 +30,13 @@ ENV GOCACHE=/root/.cache/go-build
 ENV GOTMPDIR=/root/.cache/go-build
 RUN --mount=type=cache,target=/go/pkg/mod/ \
   --mount=type=cache,target="/root/.cache/go-build" \
-  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w \
+      -X main.version=${VERSION} \
+      -X main.gitCommit=${GIT_COMMIT} \
+      -X main.gitTreeState=${GIT_TREE_STATE} \
+      -X main.buildDate=${BUILD_DATE}" \
+    -o manager cmd/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
