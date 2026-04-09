@@ -1,0 +1,23 @@
+# Teach kustomize that webhook clientConfig.service.namespace and .name
+# point at a Service, so the namespace transform and name reference handling
+# rewrite them automatically when an overlay sets `namespace:`.
+namespace:
+- path: webhooks/clientConfig/service/namespace
+  kind: ValidatingWebhookConfiguration
+  group: admissionregistration.k8s.io
+  create: false
+- path: webhooks/clientConfig/service/namespace
+  kind: MutatingWebhookConfiguration
+  group: admissionregistration.k8s.io
+  create: false
+
+nameReference:
+- kind: Service
+  version: v1
+  fieldSpecs:
+  - kind: ValidatingWebhookConfiguration
+    group: admissionregistration.k8s.io
+    path: webhooks/clientConfig/service/name
+  - kind: MutatingWebhookConfiguration
+    group: admissionregistration.k8s.io
+    path: webhooks/clientConfig/service/name

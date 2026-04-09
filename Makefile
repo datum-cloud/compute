@@ -45,7 +45,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=compute crd:generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/controller_rbac
+	$(CONTROLLER_GEN) rbac:roleName=compute crd:generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/base/crd/bases output:rbac:artifacts:config=config/components/controller_rbac output:webhook:artifacts:config=config/base/webhook
 
 .PHONY: generate
 generate: controller-gen defaulter-gen
@@ -97,7 +97,7 @@ build: manifests generate fmt vet ## Build manager binary.
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go -health-probe-bind-address 0 --server-config ./config/dev/config.yaml
+	go run ./cmd/main.go -health-probe-bind-address 0 --server-config ./config/overlays/dev/config.yaml
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -130,8 +130,8 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
+	cd config/base/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/overlays/single-cluster > dist/install.yaml
 
 ##@ Deployment
 
@@ -141,20 +141,20 @@ endif
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/dev | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/overlays/dev | $(KUBECTL) apply -f -
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build config/base/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+	cd config/base/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/overlays/single-cluster | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build config/overlays/single-cluster | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 
@@ -232,7 +232,7 @@ api-docs: crdoc kustomize
 	@{ \
 	set -e ;\
 	TMP_MANIFEST_DIR=$$(mktemp -d) ; \
-	cp -r config/crd/* $$TMP_MANIFEST_DIR; \
+	cp -r config/base/crd/* $$TMP_MANIFEST_DIR; \
 	$(MAKE) CRD_OPTIONS=$(CRD_OPTIONS),maxDescLen=1200 MANIFEST_DIR=$$TMP_MANIFEST_DIR/bases manifests ;\
 	TMP_DIR=$$(mktemp -d) ; \
 	$(KUSTOMIZE) build $$TMP_MANIFEST_DIR -o $$TMP_DIR ;\

@@ -1,15 +1,14 @@
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   labels:
     app.kubernetes.io/name: compute
     app.kubernetes.io/managed-by: kustomize
-  name: compute-leader-election
+  name: compute
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: compute-leader-election
+  kind: ClusterRole
+  name: compute
 subjects:
 - kind: ServiceAccount
   name: compute
-  namespace: system

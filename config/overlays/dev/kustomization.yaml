@@ -1,20 +1,7 @@
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
 resources:
-  - ../crd
-  - ../manager
-  - ../webhook
-  - ../certmanager
-components:
-  - ../leader_election
-  - ../controller_rbac
-
-patches:
-- path: manager_metrics_patch.yaml
-  target:
-    kind: Deployment
-- path: manager_webhook_patch.yaml
-- path: webhookcainjection_patch.yaml
+  - ../../base/crd
+  - ../../base/webhook
+  - ../../base/certmanager
 
 replacements:
   - source:
@@ -63,3 +50,6 @@ replacements:
           delimiter: '/'
           index: 1
           create: true
+
+transformers:
+  - webhook_patch.yaml
