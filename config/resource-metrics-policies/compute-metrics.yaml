@@ -1,0 +1,289 @@
+apiVersion: resourcemetrics.miloapis.com/v1alpha1
+kind: ResourceMetricsPolicy
+metadata:
+  name: compute-metrics
+spec:
+  generators:
+    # -------------------------------------------------------------------------
+    # Workload metrics
+    # -------------------------------------------------------------------------
+    - name: workload-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_info
+          help: "Information about workload"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+
+    - name: workload-status-condition
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_status_condition
+          help: "The current status conditions of the workload"
+          type: gauge
+          metrics:
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Available') ?
+                  (object.status.conditions.filter(c, c.type == 'Available')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Available'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Available') ?
+                      object.status.conditions.filter(c, c.type == 'Available')[0].reason :
+                      ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Available') ?
+                      object.status.conditions.filter(c, c.type == 'Available')[0].status :
+                      ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Progressing') ?
+                  (object.status.conditions.filter(c, c.type == 'Progressing')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Progressing'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Progressing') ?
+                      object.status.conditions.filter(c, c.type == 'Progressing')[0].reason :
+                      ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Progressing') ?
+                      object.status.conditions.filter(c, c.type == 'Progressing')[0].status :
+                      ''
+
+    # -------------------------------------------------------------------------
+    # WorkloadDeployment metrics
+    # -------------------------------------------------------------------------
+    - name: workload-deployment-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloaddeployments
+      families:
+        - name: datum_cloud_compute_workload_deployment_info
+          help: "Information about workload deployment"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+                - name: compute_datumapis_com_workload_uid
+                  value: |
+                    has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
+                      object.metadata.labels['compute_datumapis_com_workload_uid'] :
+                      ''
+
+    - name: workload-deployment-status-condition
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloaddeployments
+      families:
+        - name: datum_cloud_compute_workload_deployment_status_condition
+          help: "The current status conditions of the workload deployment"
+          type: gauge
+          metrics:
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Available') ?
+                  (object.status.conditions.filter(c, c.type == 'Available')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Available'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Available') ?
+                      object.status.conditions.filter(c, c.type == 'Available')[0].reason :
+                      ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Available') ?
+                      object.status.conditions.filter(c, c.type == 'Available')[0].status :
+                      ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Progressing') ?
+                  (object.status.conditions.filter(c, c.type == 'Progressing')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Progressing'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Progressing') ?
+                      object.status.conditions.filter(c, c.type == 'Progressing')[0].reason :
+                      ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Progressing') ?
+                      object.status.conditions.filter(c, c.type == 'Progressing')[0].status :
+                      ''
+
+    # -------------------------------------------------------------------------
+    # Instance metrics
+    # -------------------------------------------------------------------------
+    - name: instance-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: instances
+      families:
+        - name: datum_cloud_compute_instance_info
+          help: "Information about instance"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+                - name: compute_datumapis_com_workload_deployment_uid
+                  value: |
+                    has(object.metadata.labels) && 'compute_datumapis_com_workload_deployment_uid' in object.metadata.labels ?
+                      object.metadata.labels['compute_datumapis_com_workload_deployment_uid'] :
+                      ''
+                - name: compute_datumapis_com_workload_uid
+                  value: |
+                    has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
+                      object.metadata.labels['compute_datumapis_com_workload_uid'] :
+                      ''
+
+    - name: instance-status-condition
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: instances
+      families:
+        - name: datum_cloud_compute_instance_status_condition
+          help: "The current status conditions of the instance"
+          type: gauge
+          metrics:
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Programmed') ?
+                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Programmed'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason :
+                      ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status :
+                      ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Running') ?
+                  (object.status.conditions.filter(c, c.type == 'Running')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Running'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Running') ?
+                      object.status.conditions.filter(c, c.type == 'Running')[0].reason :
+                      ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Running') ?
+                      object.status.conditions.filter(c, c.type == 'Running')[0].status :
+                      ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Ready') ?
+                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Ready'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Ready') ?
+                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason :
+                      ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Ready') ?
+                      object.status.conditions.filter(c, c.type == 'Ready')[0].status :
+                      ''
+
+    - name: instance-network-interface-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: instances
+      families:
+        - name: datum_cloud_compute_instance_network_interface_info
+          help: "Information about instance network interfaces"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: network_ip
+                  value: |
+                    has(object.status.networkInterfaces) && object.status.networkInterfaces.size() > 0 && has(object.status.networkInterfaces[0].assignments) ?
+                      object.status.networkInterfaces[0].assignments.networkIP :
+                      ''
+                - name: external_ip
+                  value: |
+                    has(object.status.networkInterfaces) && object.status.networkInterfaces.size() > 0 && has(object.status.networkInterfaces[0].assignments) ?
+                      object.status.networkInterfaces[0].assignments.externalIP :
+                      ''
