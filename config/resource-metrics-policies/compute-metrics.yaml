@@ -35,48 +35,19 @@ spec:
           help: "The current status conditions of the workload"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Available') ?
-                  (object.status.conditions.filter(c, c.type == 'Available')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "object.status.conditions"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Available'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Available') ?
-                      object.status.conditions.filter(c, c.type == 'Available')[0].reason :
-                      ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Available') ?
-                      object.status.conditions.filter(c, c.type == 'Available')[0].status :
-                      ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Progressing') ?
-                  (object.status.conditions.filter(c, c.type == 'Progressing')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Progressing'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Progressing') ?
-                      object.status.conditions.filter(c, c.type == 'Progressing')[0].reason :
-                      ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Progressing') ?
-                      object.status.conditions.filter(c, c.type == 'Progressing')[0].status :
-                      ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # WorkloadDeployment metrics
@@ -114,48 +85,19 @@ spec:
           help: "The current status conditions of the workload deployment"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Available') ?
-                  (object.status.conditions.filter(c, c.type == 'Available')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "object.status.conditions"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Available'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Available') ?
-                      object.status.conditions.filter(c, c.type == 'Available')[0].reason :
-                      ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Available') ?
-                      object.status.conditions.filter(c, c.type == 'Available')[0].status :
-                      ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Progressing') ?
-                  (object.status.conditions.filter(c, c.type == 'Progressing')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Progressing'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Progressing') ?
-                      object.status.conditions.filter(c, c.type == 'Progressing')[0].reason :
-                      ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Progressing') ?
-                      object.status.conditions.filter(c, c.type == 'Progressing')[0].status :
-                      ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # Instance metrics
@@ -198,69 +140,19 @@ spec:
           help: "The current status conditions of the instance"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Programmed') ?
-                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "object.status.conditions"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Programmed'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason :
-                      ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status :
-                      ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Running') ?
-                  (object.status.conditions.filter(c, c.type == 'Running')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Running'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Running') ?
-                      object.status.conditions.filter(c, c.type == 'Running')[0].reason :
-                      ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Running') ?
-                      object.status.conditions.filter(c, c.type == 'Running')[0].status :
-                      ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Ready') ?
-                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Ready'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason :
-                      ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].status :
-                      ''
+                  value: "item.status"
 
     - name: instance-network-interface-info
       resource:
@@ -272,18 +164,13 @@ spec:
           help: "Information about instance network interfaces"
           type: gauge
           metrics:
-            - labels:
+            - forEach: "object.status.networkInterfaces"
+              labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: network_ip
-                  value: |
-                    has(object.status.networkInterfaces) && object.status.networkInterfaces.size() > 0 && has(object.status.networkInterfaces[0].assignments) ?
-                      object.status.networkInterfaces[0].assignments.networkIP :
-                      ''
+                  value: "has(item.assignments) ? item.assignments.networkIP : ''"
                 - name: external_ip
-                  value: |
-                    has(object.status.networkInterfaces) && object.status.networkInterfaces.size() > 0 && has(object.status.networkInterfaces[0].assignments) ?
-                      object.status.networkInterfaces[0].assignments.externalIP :
-                      ''
+                  value: "has(item.assignments) && has(item.assignments.externalIP) ? item.assignments.externalIP : ''"
