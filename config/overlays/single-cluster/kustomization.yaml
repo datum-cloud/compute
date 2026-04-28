@@ -10,10 +10,10 @@ resources:
   - ../../base/manager
   - ../../base/webhook
   - ../../base/certmanager
-  - ../../components/resource-metrics
 components:
   - ../../components/leader_election
   - ../../components/controller_rbac
+  - ../../components/resource-metrics
 
 patches:
 - path: webhookcainjection_patch.yaml
