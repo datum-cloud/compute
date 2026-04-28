@@ -10,6 +10,7 @@ resources:
   - ../../base/manager
   - ../../base/webhook
   - ../../base/certmanager
+  - ../../resource-metrics-policies
 components:
   - ../../components/leader_election
   - ../../components/controller_rbac
