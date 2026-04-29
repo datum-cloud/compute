@@ -1,0 +1,176 @@
+apiVersion: resourcemetrics.miloapis.com/v1alpha1
+kind: ResourceMetricsPolicy
+metadata:
+  name: compute-metrics
+spec:
+  generators:
+    # -------------------------------------------------------------------------
+    # Workload metrics
+    # -------------------------------------------------------------------------
+    - name: workload-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_info
+          help: "Information about workload"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+
+    - name: workload-status-condition
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_status_condition
+          help: "The current status conditions of the workload"
+          type: gauge
+          metrics:
+            - forEach: "object.status.conditions"
+              value: "item.status == 'True' ? 1.0 : 0.0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
+    # -------------------------------------------------------------------------
+    # WorkloadDeployment metrics
+    # -------------------------------------------------------------------------
+    - name: workload-deployment-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloaddeployments
+      families:
+        - name: datum_cloud_compute_workload_deployment_info
+          help: "Information about workload deployment"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+                - name: compute_datumapis_com_workload_uid
+                  value: |
+                    has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
+                      object.metadata.labels['compute_datumapis_com_workload_uid'] :
+                      ''
+
+    - name: workload-deployment-status-condition
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloaddeployments
+      families:
+        - name: datum_cloud_compute_workload_deployment_status_condition
+          help: "The current status conditions of the workload deployment"
+          type: gauge
+          metrics:
+            - forEach: "object.status.conditions"
+              value: "item.status == 'True' ? 1.0 : 0.0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
+    # -------------------------------------------------------------------------
+    # Instance metrics
+    # -------------------------------------------------------------------------
+    - name: instance-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: instances
+      families:
+        - name: datum_cloud_compute_instance_info
+          help: "Information about instance"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+                - name: compute_datumapis_com_workload_deployment_uid
+                  value: |
+                    has(object.metadata.labels) && 'compute_datumapis_com_workload_deployment_uid' in object.metadata.labels ?
+                      object.metadata.labels['compute_datumapis_com_workload_deployment_uid'] :
+                      ''
+                - name: compute_datumapis_com_workload_uid
+                  value: |
+                    has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
+                      object.metadata.labels['compute_datumapis_com_workload_uid'] :
+                      ''
+
+    - name: instance-status-condition
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: instances
+      families:
+        - name: datum_cloud_compute_instance_status_condition
+          help: "The current status conditions of the instance"
+          type: gauge
+          metrics:
+            - forEach: "object.status.conditions"
+              value: "item.status == 'True' ? 1.0 : 0.0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
+    - name: instance-network-interface-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: instances
+      families:
+        - name: datum_cloud_compute_instance_network_interface_info
+          help: "Information about instance network interfaces"
+          type: gauge
+          metrics:
+            - forEach: "object.status.networkInterfaces"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: network_ip
+                  value: "has(item.assignments) ? item.assignments.networkIP : ''"
+                - name: external_ip
+                  value: "has(item.assignments) && has(item.assignments.externalIP) ? item.assignments.externalIP : ''"
