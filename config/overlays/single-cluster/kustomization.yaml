@@ -14,6 +14,7 @@ components:
   - ../../components/leader_election
   - ../../components/controller_rbac
   - ../../components/resource-metrics
+  - ../../components/high-availability
 
 patches:
 - path: webhookcainjection_patch.yaml
