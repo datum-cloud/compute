@@ -5,7 +5,7 @@ metadata:
   labels:
     app.kubernetes.io/name: compute
     app.kubernetes.io/managed-by: kustomize
-  name: workloaddeployment-editor-role
+  name: compute-workloaddeployment-editor-role
 rules:
 - apiGroups:
   - compute.datumapis.com
