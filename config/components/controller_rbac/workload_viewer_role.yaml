@@ -5,7 +5,7 @@ metadata:
   labels:
     app.kubernetes.io/name: compute
     app.kubernetes.io/managed-by: kustomize
-  name: workload-viewer-role
+  name: compute-workload-viewer-role
 rules:
 - apiGroups:
   - compute.datumapis.com

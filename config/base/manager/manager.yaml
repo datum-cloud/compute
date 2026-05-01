@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: compute
+  name: compute-manager
   labels:
     control-plane: compute
     app.kubernetes.io/name: compute
@@ -21,6 +21,10 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - command:
         - /manager
@@ -36,6 +40,7 @@ spec:
           protocol: TCP
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop:
             - "ALL"
