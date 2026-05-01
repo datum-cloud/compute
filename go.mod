@@ -13,7 +13,7 @@ require (
 	go.miloapis.com/milo v0.1.0
 	golang.org/x/crypto v0.39.0
 	golang.org/x/sync v0.15.0
-	google.golang.org/protobuf v1.36.6
+	google.golang.org/protobuf v1.36.11
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.2
 	k8s.io/client-go v0.33.1
