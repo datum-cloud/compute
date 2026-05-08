@@ -4,7 +4,7 @@ metadata:
   name: compute
 spec:
   description: |
-    Unikraft-based compute instances offering low-latency virtual machine workloads. Provides CPU and memory resources billed by consumption.
+    Low-latency virtual machine workloads with CPU and memory resources billed by consumption.
   displayName: Compute
   owner:
     producerProjectRef:
