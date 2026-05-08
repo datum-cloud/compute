@@ -1,0 +1,13 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: compute
+spec:
+  description: |
+    Unikraft-based compute instances offering low-latency virtual machine workloads. Provides CPU and memory resources billed by consumption.
+  displayName: Compute
+  owner:
+    producerProjectRef:
+      name: datum-cloud
+  phase: Published
+  serviceName: compute.datumapis.com
