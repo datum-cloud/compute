@@ -1,0 +1,76 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute
+spec:
+  meters:
+  - billing:
+      consumedUnit: s
+      pricingUnit: h
+    description: CPU seconds consumed by a running instance.
+    displayName: Compute Instance CPU Seconds
+    measurement:
+      aggregation: Sum
+      unit: s
+    monitoredResourceTypes:
+    - compute.datumapis.com/Instance
+    name: compute.datumapis.com/instance/cpu-seconds
+  - billing:
+      consumedUnit: By.s
+      pricingUnit: GiBy.h
+    description: Memory byte-seconds consumed by a running instance.
+    displayName: Compute Instance Memory Seconds
+    measurement:
+      aggregation: Sum
+      unit: By.s
+    monitoredResourceTypes:
+    - compute.datumapis.com/Instance
+    name: compute.datumapis.com/instance/memory-seconds
+  - billing:
+      consumedUnit: '{cpu}'
+      pricingUnit: '{cpu}'
+    description: Number of vCPUs allocated to an instance.
+    displayName: Compute Instance CPU Allocated
+    measurement:
+      aggregation: Latest
+      unit: '{cpu}'
+    monitoredResourceTypes:
+    - compute.datumapis.com/Instance
+    name: compute.datumapis.com/instance/cpu-allocated
+  - billing:
+      consumedUnit: By
+      pricingUnit: GiBy
+    description: Bytes of memory allocated to an instance.
+    displayName: Compute Instance Memory Allocated
+    measurement:
+      aggregation: Latest
+      unit: By
+    monitoredResourceTypes:
+    - compute.datumapis.com/Instance
+    name: compute.datumapis.com/instance/memory-allocated
+  - billing:
+      consumedUnit: s
+      pricingUnit: h
+    description: Seconds the instance has been in a running state.
+    displayName: Compute Instance Uptime
+    measurement:
+      aggregation: Sum
+      unit: s
+    monitoredResourceTypes:
+    - compute.datumapis.com/Instance
+    name: compute.datumapis.com/instance/uptime-seconds
+  monitoredResourceTypes:
+  - description: A Unikraft virtual machine instance.
+    displayName: Compute Instance
+    gvk:
+      group: compute.datumapis.com
+      kind: Instance
+    labels:
+    - description: The region where the instance is running.
+      name: region
+    - description: The service tier of the instance.
+      name: tier
+    type: compute.datumapis.com/Instance
+  phase: Published
+  serviceRef:
+    name: compute
