@@ -133,43 +133,14 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	// their gates removed.
 
 	replicas := len(instances.Items)
-	currentReplicas := 0
 	desiredReplicas := deployment.Spec.ScaleSettings.MinReplicas
 	if dt := deployment.DeletionTimestamp; !dt.IsZero() {
 		desiredReplicas = 0
 	}
 
-	readyReplicas := 0
-	quotaBlockedReplicas := 0
-	for _, instance := range instances.Items {
-		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
-			quotaBlockedReplicas++
-		}
-
-		if networkReady && len(instance.Spec.Controller.SchedulingGates) > 0 {
-			newGates := slices.DeleteFunc(instance.Spec.Controller.SchedulingGates, func(gate computev1alpha.SchedulingGate) bool {
-				return gate.Name == instancecontrol.NetworkSchedulingGate.String()
-			})
-
-			if len(newGates) != len(instance.Spec.Controller.SchedulingGates) {
-				if _, err := controllerutil.CreateOrPatch(ctx, cl.GetClient(), &instance, func() error {
-					instance.Spec.Controller.SchedulingGates = newGates
-					return nil
-				}); err != nil {
-					return ctrl.Result{}, fmt.Errorf("failed updating instance: %w", err)
-				}
-			}
-		}
-
-		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
-			if instance.Status.Controller.ObservedTemplateHash == instancecontrol.ComputeHash(deployment.Spec.Template) {
-				currentReplicas++
-			}
-		}
-
-		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceReady) {
-			readyReplicas++
-		}
+	currentReplicas, readyReplicas, quotaBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	patchResult, err := controllerutil.CreateOrPatch(ctx, cl.GetClient(), &deployment, func() error {
@@ -227,6 +198,46 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	logger.Info("deployment status processed", "operation_result", patchResult)
 
 	return ctrl.Result{}, nil
+}
+
+func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
+	ctx context.Context,
+	c client.Client,
+	deployment *computev1alpha.WorkloadDeployment,
+	instances []computev1alpha.Instance,
+	networkReady bool,
+) (currentReplicas, readyReplicas, quotaBlockedReplicas int, err error) {
+	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
+	for _, instance := range instances {
+		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
+			quotaBlockedReplicas++
+		}
+
+		if networkReady && len(instance.Spec.Controller.SchedulingGates) > 0 {
+			newGates := slices.DeleteFunc(instance.Spec.Controller.SchedulingGates, func(gate computev1alpha.SchedulingGate) bool {
+				return gate.Name == instancecontrol.NetworkSchedulingGate.String()
+			})
+			if len(newGates) != len(instance.Spec.Controller.SchedulingGates) {
+				if _, patchErr := controllerutil.CreateOrPatch(ctx, c, &instance, func() error {
+					instance.Spec.Controller.SchedulingGates = newGates
+					return nil
+				}); patchErr != nil {
+					return 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
+				}
+			}
+		}
+
+		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
+			if instance.Status.Controller.ObservedTemplateHash == templateHash {
+				currentReplicas++
+			}
+		}
+
+		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceReady) {
+			readyReplicas++
+		}
+	}
+	return currentReplicas, readyReplicas, quotaBlockedReplicas, nil
 }
 
 func (r *WorkloadDeploymentReconciler) reconcileNetworks(
