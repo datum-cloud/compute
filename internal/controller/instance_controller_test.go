@@ -66,7 +66,6 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-
 func TestReconcileInstanceReadyCondition(t *testing.T) {
 
 	tests := []struct {
