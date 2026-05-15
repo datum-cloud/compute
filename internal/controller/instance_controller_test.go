@@ -66,13 +66,6 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// reconcileRequest builds a multicluster reconcile.Request for a given instance.
-func reconcileRequest(name string) mcreconcile.Request {
-	return mcreconcile.Request{
-		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: name}},
-		ClusterName: "test-project",
-	}
-}
 
 func TestReconcileInstanceReadyCondition(t *testing.T) {
 
@@ -620,7 +613,7 @@ func TestReconcileQuota(t *testing.T) {
 		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim})
 
 		// First reconcile: sets QuotaGranted=True in status, returns early.
-		_, err := r.Reconcile(context.Background(), reconcileRequest(instanceName))
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
 		var updated computev1alpha.Instance
@@ -632,7 +625,7 @@ func TestReconcileQuota(t *testing.T) {
 		assert.Equal(t, computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable, quotaCond.Reason)
 
 		// Second reconcile: status is already set, so removes the scheduling gate.
-		_, err = r.Reconcile(context.Background(), reconcileRequest(instanceName))
+		_, err = r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
 		require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: instanceName}, &updated))
@@ -656,7 +649,7 @@ func TestReconcileQuota(t *testing.T) {
 
 		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim})
 
-		_, err := r.Reconcile(context.Background(), reconcileRequest(instanceName))
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
 		var updated computev1alpha.Instance
@@ -694,7 +687,7 @@ func TestReconcileQuota(t *testing.T) {
 		r, projectClient, mgmtClient := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim})
 
 		// First reconcile with denied claim.
-		_, err := r.Reconcile(context.Background(), reconcileRequest(instanceName))
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
 		var blocked computev1alpha.Instance
@@ -718,7 +711,7 @@ func TestReconcileQuota(t *testing.T) {
 		require.NoError(t, mgmtClient.Status().Update(context.Background(), &existingClaim))
 
 		// Second reconcile should see granted claim and update status.
-		_, err = r.Reconcile(context.Background(), reconcileRequest(instanceName))
+		_, err = r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
 		var recovered computev1alpha.Instance
@@ -728,7 +721,7 @@ func TestReconcileQuota(t *testing.T) {
 		assert.Equal(t, metav1.ConditionTrue, quotaCond.Status)
 
 		// Third reconcile removes the gate (status is already true, no more status write needed).
-		_, err = r.Reconcile(context.Background(), reconcileRequest(instanceName))
+		_, err = r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
 		require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: instanceName}, &recovered))
@@ -754,7 +747,7 @@ func TestReconcileQuota(t *testing.T) {
 
 		r, projectClient, mgmtClient := newReconciler(t, []client.Object{instance}, []client.Object{claim})
 
-		_, err := r.Reconcile(context.Background(), reconcileRequest(instanceName))
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
 		// Claim should have been deleted from the management cluster.
