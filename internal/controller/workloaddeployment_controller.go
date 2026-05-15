@@ -140,7 +140,12 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	readyReplicas := 0
+	quotaBlockedReplicas := 0
 	for _, instance := range instances.Items {
+		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
+			quotaBlockedReplicas++
+		}
+
 		if networkReady && len(instance.Spec.Controller.SchedulingGates) > 0 {
 			newGates := slices.DeleteFunc(instance.Spec.Controller.SchedulingGates, func(gate computev1alpha.SchedulingGate) bool {
 				return gate.Name == instancecontrol.NetworkSchedulingGate.String()
@@ -172,6 +177,22 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		deployment.Status.CurrentReplicas = int32(currentReplicas)
 		deployment.Status.DesiredReplicas = desiredReplicas
 		deployment.Status.ReadyReplicas = int32(readyReplicas)
+
+		if quotaBlockedReplicas > 0 {
+			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+				Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
+				Message: fmt.Sprintf("%d of %d desired replicas are pending quota", quotaBlockedReplicas, desiredReplicas),
+			})
+		} else {
+			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+				Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+				Status:  metav1.ConditionTrue,
+				Reason:  "ReplicasAvailable",
+				Message: fmt.Sprintf("%d/%d replicas available", readyReplicas, desiredReplicas),
+			})
+		}
 
 		if readyReplicas > 0 {
 			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{

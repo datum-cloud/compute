@@ -35,6 +35,7 @@ import (
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	// +kubebuilder:scaffold:imports
@@ -59,6 +60,7 @@ func init() {
 	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -186,7 +188,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentScheduler")
 		os.Exit(1)
 	}
-	if err = (&controller.InstanceReconciler{}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.InstanceReconciler{}).SetupWithManager(mgr, deploymentCluster); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Instance")
 		os.Exit(1)
 	}

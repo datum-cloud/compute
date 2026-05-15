@@ -1,0 +1,53 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: compute-instances
+spec:
+  resourceType: compute.datumapis.com/instances
+  type: Entity
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+  baseUnit: instance
+  displayUnit: instance
+  unitConversionFactor: 1
+  claimingResources:
+    - apiGroup: compute.datumapis.com
+      kind: Instance
+  description: Total running instances per project
+---
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: compute-vcpus
+spec:
+  resourceType: compute.datumapis.com/vcpus
+  type: Allocation
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+  baseUnit: millicore
+  displayUnit: vCPU
+  unitConversionFactor: 1000
+  claimingResources:
+    - apiGroup: compute.datumapis.com
+      kind: Instance
+  description: Total vCPU allocation across instances in millicores
+---
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: compute-memory
+spec:
+  resourceType: compute.datumapis.com/memory
+  type: Allocation
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+  baseUnit: MiB
+  displayUnit: MiB
+  unitConversionFactor: 1
+  claimingResources:
+    - apiGroup: compute.datumapis.com
+      kind: Instance
+  description: Total memory allocation across instances in MiB
