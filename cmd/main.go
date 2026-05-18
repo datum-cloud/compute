@@ -221,13 +221,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if enableCellControllers {
-		if err = (&controller.WorkloadDeploymentReconciler{}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
-			os.Exit(1)
-		}
-	}
-
 	// Build a single Karmada client shared across all controllers that need
 	// to read or write to the Karmada API server. Nil when federation is disabled.
 	var karmadaClient client.Client
@@ -235,6 +228,13 @@ func main() {
 		karmadaClient, err = client.New(karmadaRestConfig, client.Options{Scheme: scheme})
 		if err != nil {
 			setupLog.Error(err, "unable to create Karmada client")
+			os.Exit(1)
+		}
+	}
+
+	if enableCellControllers {
+		if err = (&controller.WorkloadDeploymentReconciler{KarmadaClient: karmadaClient}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 			os.Exit(1)
 		}
 	}
