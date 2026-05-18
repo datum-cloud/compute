@@ -32,6 +32,7 @@ import (
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
+	karmadaconfigv1alpha1 "github.com/karmada-io/api/config/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
@@ -72,6 +73,7 @@ func init() {
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaconfigv1alpha1.Install(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -233,7 +235,7 @@ func main() {
 	}
 
 	if enableCellControllers {
-		if err = (&controller.WorkloadDeploymentReconciler{KarmadaClient: karmadaClient}).SetupWithManager(mgr); err != nil {
+		if err = (&controller.WorkloadDeploymentReconciler{}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 			os.Exit(1)
 		}

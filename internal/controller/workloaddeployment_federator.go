@@ -22,6 +22,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	karmadaconfigv1alpha1 "github.com/karmada-io/api/config/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.miloapis.com/milo/pkg/downstreamclient"
@@ -364,10 +365,86 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 	if err := r.finalizers.Register(federatorFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register federator finalizer: %w", err)
 	}
+	if err := r.ensureInterpreterCustomization(context.Background()); err != nil {
+		return fmt.Errorf("failed to ensure WorkloadDeployment interpreter customization: %w", err)
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("workload-deployment-federator").
 		Complete(r)
+}
+
+// ensureInterpreterCustomization creates or updates the Karmada
+// ResourceInterpreterCustomization for WorkloadDeployment. This teaches Karmada
+// how to reflect status from member clusters and aggregate it back to the
+// Karmada-namespace resource, replacing the need for each cell operator to
+// manually push status to Karmada after every reconcile.
+func (r *WorkloadDeploymentFederator) ensureInterpreterCustomization(ctx context.Context) error {
+	ric := &karmadaconfigv1alpha1.ResourceInterpreterCustomization{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "workloaddeployment",
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.KarmadaClient, ric, func() error {
+		ric.Spec = karmadaconfigv1alpha1.ResourceInterpreterCustomizationSpec{
+			Target: karmadaconfigv1alpha1.CustomizationTarget{
+				APIVersion: computev1alpha.GroupVersion.String(),
+				Kind:       "WorkloadDeployment",
+			},
+			Customizations: karmadaconfigv1alpha1.CustomizationRules{
+				// ReflectStatus extracts the full status from the member-cluster
+				// WorkloadDeployment so Karmada can store it in the Work object.
+				StatusReflection: &karmadaconfigv1alpha1.StatusReflection{
+					LuaScript: `
+function ReflectStatus(observedObj)
+  if observedObj.status == nil then
+    return nil
+  end
+  return observedObj.status
+end`,
+				},
+				// AggregateStatus sums replica counts across all member clusters
+				// and takes conditions from the first cluster that reports them.
+				StatusAggregation: &karmadaconfigv1alpha1.StatusAggregation{
+					LuaScript: `
+function AggregateStatus(desiredObj, statusItems)
+  if statusItems == nil then
+    return desiredObj
+  end
+  local replicas = 0
+  local currentReplicas = 0
+  local desiredReplicas = 0
+  local readyReplicas = 0
+  local conditions = nil
+  for i = 1, #statusItems do
+    local item = statusItems[i]
+    if item.status ~= nil then
+      replicas = replicas + (item.status.replicas or 0)
+      currentReplicas = currentReplicas + (item.status.currentReplicas or 0)
+      desiredReplicas = desiredReplicas + (item.status.desiredReplicas or 0)
+      readyReplicas = readyReplicas + (item.status.readyReplicas or 0)
+      if conditions == nil and item.status.conditions ~= nil then
+        conditions = item.status.conditions
+      end
+    end
+  end
+  desiredObj.status = {
+    replicas = replicas,
+    currentReplicas = currentReplicas,
+    desiredReplicas = desiredReplicas,
+    readyReplicas = readyReplicas,
+  }
+  if conditions ~= nil then
+    desiredObj.status.conditions = conditions
+  end
+  return desiredObj
+end`,
+				},
+			},
+		}
+		return nil
+	})
+	return err
 }
 
 // propagationPolicyNameFor returns the PropagationPolicy name for a given city
