@@ -53,6 +53,7 @@ tasks:
       - task: e2e:tools
       - task: e2e:clusters:create
       - task: e2e:karmada:install
+      - task: e2e:karmada:configure
       - task: e2e:karmada:join-clusters
       - task: e2e:crds:install
       - cmd: |
@@ -252,6 +253,15 @@ tasks:
           echo "Karmada installed"
         fi
       - task: _e2e:karmada:build-kubeconfig
+
+  e2e:karmada:configure:
+    desc: "Apply federation component config to the Karmada API server (idempotent)"
+    cmds:
+      - |
+        echo "Applying federation component to Karmada..."
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
+          -k config/components/federation/
+        echo "Federation component applied"
 
   _e2e:karmada:build-kubeconfig:
     internal: true
