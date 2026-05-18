@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -29,11 +30,20 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
-const instanceQuotaFinalizer = "quota.compute.datumapis.com/claim-cleanup"
+const (
+	// instanceQuotaFinalizer ensures the quota ResourceClaim is deleted when
+	// an Instance is removed.
+	instanceQuotaFinalizer = "quota.compute.datumapis.com/claim-cleanup"
+
+	// instanceControllerFinalizer is registered with the finalizer framework and
+	// triggers Karmada write-back cleanup on deletion.
+	instanceControllerFinalizer = "compute.datumapis.com/instance-controller"
+)
 
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
 // Keeping it narrow allows unit tests to substitute a minimal fake.
@@ -45,6 +55,13 @@ type clusterGetter interface {
 type InstanceReconciler struct {
 	mgr               clusterGetter
 	managementCluster cluster.Cluster
+	// KarmadaClient is an optional client pointing at the Karmada control plane.
+	// When non-nil, the reconciler writes a copy of each Instance back to Karmada
+	// so that the InstanceProjector (running in the management cluster) can
+	// aggregate status across all POP cells. Set to nil to disable federation
+	// write-back (e.g. in non-federation deployments).
+	KarmadaClient client.Client
+	finalizers    finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -67,6 +84,19 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Run the finalizer framework first. This handles Karmada write-back cleanup
+	// via the Finalize method registered below.
+	finalizationResult, err := r.finalizers.Finalize(ctx, &instance)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
+	}
+	if finalizationResult.Updated {
+		if err = cl.GetClient().Update(ctx, &instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
+		}
+		return ctrl.Result{}, nil
 	}
 
 	logger.Info("reconciling instance")
@@ -151,6 +181,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err := r.writeBackToKarmada(ctx, req.ClusterName, &instance); err != nil {
+			return ctrl.Result{}, err
+		}
 		// Return after the status update so that the next reconcile sees the
 		// updated QuotaGranted condition before attempting spec changes.
 		return ctrl.Result{}, nil
@@ -180,6 +213,88 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// Finalize removes the Karmada write-back Instance when the local Instance is
+// deleted. It is a no-op when Karmada federation is disabled.
+func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
+	if r.KarmadaClient == nil {
+		return finalizer.Result{}, nil
+	}
+
+	instance := obj.(*computev1alpha.Instance)
+
+	karmadaInstance := &computev1alpha.Instance{}
+	err := r.KarmadaClient.Get(ctx, client.ObjectKeyFromObject(instance), karmadaInstance)
+	if apierrors.IsNotFound(err) {
+		// Already gone — nothing to do.
+		return finalizer.Result{}, nil
+	}
+	if err != nil {
+		return finalizer.Result{}, fmt.Errorf("failed getting Karmada instance for deletion: %w", err)
+	}
+
+	if err := r.KarmadaClient.Delete(ctx, karmadaInstance); client.IgnoreNotFound(err) != nil {
+		return finalizer.Result{}, fmt.Errorf("failed deleting Karmada write-back instance: %w", err)
+	}
+
+	return finalizer.Result{}, nil
+}
+
+// writeBackToKarmada copies the Instance spec and status to the Karmada control
+// plane so that the InstanceProjector can aggregate state from all POP cells.
+// It is a no-op when KarmadaClient is nil (federation disabled).
+func (r *InstanceReconciler) writeBackToKarmada(ctx context.Context, clusterName string, instance *computev1alpha.Instance) error {
+	if r.KarmadaClient == nil {
+		return nil
+	}
+
+	// Encode the POP-cell cluster name using the same convention as NSO's
+	// MappedNamespaceResourceStrategy: "cluster-<name>" with "/" → "_".
+	encodedClusterName := "cluster-" + strings.ReplaceAll(clusterName, "/", "_")
+
+	writeBack := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Name,
+			Namespace: instance.Namespace,
+			Labels: map[string]string{
+				downstreamclient.UpstreamOwnerClusterNameLabel: encodedClusterName,
+				downstreamclient.UpstreamOwnerNamespaceLabel:   instance.Namespace,
+			},
+		},
+		Spec: instance.Spec,
+	}
+
+	existing := &computev1alpha.Instance{}
+	err := r.KarmadaClient.Get(ctx, client.ObjectKeyFromObject(writeBack), existing)
+	if apierrors.IsNotFound(err) {
+		// Ensure the namespace exists in Karmada before creating the Instance.
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Namespace}}
+		if err := r.KarmadaClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed ensuring Karmada namespace: %w", err)
+		}
+		if err := r.KarmadaClient.Create(ctx, writeBack); err != nil {
+			return fmt.Errorf("failed creating Karmada write-back instance: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed getting Karmada instance: %w", err)
+	}
+
+	// Update spec + labels on the existing object, then push status separately.
+	existing.Spec = instance.Spec
+	existing.Labels = writeBack.Labels
+	if err := r.KarmadaClient.Update(ctx, existing); err != nil {
+		return fmt.Errorf("failed updating Karmada write-back instance: %w", err)
+	}
+
+	existing.Status = instance.Status
+	if err := r.KarmadaClient.Status().Update(ctx, existing); err != nil {
+		return fmt.Errorf("failed updating Karmada write-back instance status: %w", err)
+	}
+
+	return nil
 }
 
 func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (*metav1.Condition, error) {
@@ -440,6 +555,11 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, managementCluster cluster.Cluster) error {
 	r.mgr = mgr
 	r.managementCluster = managementCluster
+
+	r.finalizers = finalizer.NewFinalizers()
+	if err := r.finalizers.Register(instanceControllerFinalizer, r); err != nil {
+		return fmt.Errorf("failed to register finalizer: %w", err)
+	}
 
 	// Watch ResourceClaim objects on the management cluster directly, bypassing
 	// the multicluster clusterInjectingQueue which would overwrite ClusterName.

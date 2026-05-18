@@ -1,0 +1,79 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: deletion-cascade
+spec:
+  description: |
+    Verifies that deleting a WorkloadDeployment from the project namespace causes
+    the federator to remove the corresponding WorkloadDeployment from Karmada.
+
+    The WorkloadDeploymentFederator adds a finalizer
+    (compute.datumapis.com/federator) to every project WD it manages. When the
+    project WD is deleted:
+    1. The finalizer's Finalize method runs (blocking deletion until complete).
+    2. It deletes the Karmada-side WorkloadDeployment.
+    3. It removes the PropagationPolicy if no other WDs for the city remain.
+    4. It removes the finalizer, allowing the project WD to be garbage-collected.
+
+    This test validates: project WD deletion → Karmada WD deletion.
+
+  template: true
+
+  steps:
+  - name: create-wd
+    description: Create a WorkloadDeployment on the control-plane cluster.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: wait-for-federation
+    description: Wait for the WorkloadDeployment to appear in Karmada.
+    cluster: karmada
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: karmadaNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($karmadaNS)
+            name: test-cascade-wd
+
+  - name: delete-wd
+    description: Delete the WorkloadDeployment from the control-plane cluster.
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          namespace: ($namespace)
+          name: test-cascade-wd
+
+  - name: assert-karmada-wd-deleted
+    description: Confirm the Karmada copy is removed by the finalizer.
+    cluster: karmada
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: karmadaNS
+          value: ($stdout)
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: WorkloadDeployment
+        namespace: ($karmadaNS)
+        name: test-cascade-wd
+        timeout: 30s
+        for:
+          deletion: {}

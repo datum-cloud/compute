@@ -1,0 +1,17 @@
+# Kind cluster configuration for the compute-control-plane management cluster.
+#
+# extraPortMappings exposes port 32443 on the macOS host so that the Karmada
+# API server NodePort service (nodePort: 32443) is accessible at
+# https://localhost:32443 without any additional port-forwarding.
+#
+# This matches KARMADA_API_NODEPORT in Taskfile.yaml.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 32443   # Karmada API server NodePort
+        hostPort: 32443
+        protocol: TCP
+        listenAddress: "127.0.0.1"

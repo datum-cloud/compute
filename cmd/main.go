@@ -18,6 +18,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -29,6 +31,8 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
+	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
+	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
@@ -51,6 +55,11 @@ var (
 	gitCommit    = "unknown"
 	gitTreeState = "unknown"
 	buildDate    = "unknown"
+
+	// karmadaRestConfig holds the REST config for the Karmada control plane.
+	// It is populated from --karmada-kubeconfig when set, and is nil when the
+	// flag is omitted (e.g. in non-federation deployments).
+	karmadaRestConfig *rest.Config
 )
 
 func init() {
@@ -61,6 +70,8 @@ func init() {
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -71,12 +82,24 @@ func main() {
 	var leaderElectionNamespace string
 	var probeAddr string
 	var serverConfigFile string
+	var karmadaKubeconfig string
+	var karmadaContext string
+	var enableManagementControllers bool
+	var enableCellControllers bool
 
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	flag.StringVar(&karmadaKubeconfig, "karmada-kubeconfig", "", "Path to the kubeconfig file for the Karmada control plane. When omitted, Karmada federation features are disabled.")
+	flag.StringVar(&karmadaContext, "karmada-context", "", "Context to use from the Karmada kubeconfig. When omitted, the current context is used.")
+	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", true,
+		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector). "+
+			"Disable when running a cell-only operator instance.")
+	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", true,
+		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler). "+
+			"Disable when running a management-only operator instance.")
 
 	opts := zap.Options{
 		Development: true,
@@ -88,6 +111,23 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Load the Karmada REST config when --karmada-kubeconfig is provided.
+	// When the flag is omitted, karmadaRestConfig remains nil and federation
+	// features will be skipped at controller setup time.
+	if karmadaKubeconfig != "" {
+		loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			&clientcmd.ClientConfigLoadingRules{ExplicitPath: karmadaKubeconfig},
+			&clientcmd.ConfigOverrides{CurrentContext: karmadaContext},
+		)
+		var err error
+		karmadaRestConfig, err = loader.ClientConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to load Karmada kubeconfig", "path", karmadaKubeconfig)
+			os.Exit(1)
+		}
+		setupLog.Info("Karmada kubeconfig loaded", "path", karmadaKubeconfig)
+	}
 
 	setupLog.Info("starting compute",
 		"version", version,
@@ -180,17 +220,60 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Workload")
 		os.Exit(1)
 	}
-	if err = (&controller.WorkloadDeploymentReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
-		os.Exit(1)
+
+	if enableCellControllers {
+		if err = (&controller.WorkloadDeploymentReconciler{}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
+			os.Exit(1)
+		}
 	}
-	if err = (&controller.WorkloadDeploymentScheduler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentScheduler")
-		os.Exit(1)
+
+	// Build a single Karmada client shared across all controllers that need
+	// to read or write to the Karmada API server. Nil when federation is disabled.
+	var karmadaClient client.Client
+	if karmadaRestConfig != nil {
+		karmadaClient, err = client.New(karmadaRestConfig, client.Options{Scheme: scheme})
+		if err != nil {
+			setupLog.Error(err, "unable to create Karmada client")
+			os.Exit(1)
+		}
 	}
-	if err = (&controller.InstanceReconciler{}).SetupWithManager(mgr, deploymentCluster); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Instance")
-		os.Exit(1)
+
+	if enableCellControllers {
+		instanceReconciler := &controller.InstanceReconciler{KarmadaClient: karmadaClient}
+		if err = instanceReconciler.SetupWithManager(mgr, deploymentCluster); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Instance")
+			os.Exit(1)
+		}
+	}
+
+	// WorkloadDeploymentFederator and InstanceProjector are management-plane
+	// controllers that run on the control-plane cluster. They require Karmada
+	// federation to be enabled (--karmada-kubeconfig provided).
+	if enableManagementControllers && karmadaRestConfig != nil {
+		if err = (&controller.WorkloadDeploymentFederator{KarmadaClient: karmadaClient}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentFederator")
+			os.Exit(1)
+		}
+
+		// InstanceProjector: runs in the Control Plane Cell, watches Instances
+		// written back to Karmada by POP-cell operators, and projects them into
+		// the corresponding project namespaces via the multicluster manager.
+		karmadaMgr, err := manager.New(karmadaRestConfig, manager.Options{
+			Scheme: scheme,
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create Karmada manager for InstanceProjector")
+			os.Exit(1)
+		}
+		if err = (&controller.InstanceProjector{
+			KarmadaClient: karmadaClient,
+			MCManager:     mgr,
+		}).SetupWithManager(karmadaMgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InstanceProjector")
+			os.Exit(1)
+		}
+		runnables = append(runnables, karmadaMgr)
 	}
 
 	if serverConfig.WebhookServer != nil {

@@ -1,0 +1,84 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workload-deployment-federation
+spec:
+  description: |
+    Verifies that the WorkloadDeploymentFederator replicates a WorkloadDeployment
+    from the project namespace (control-plane cluster) to the Karmada API server
+    with the correct city-code label and PropagationPolicy.
+
+    The federator follows the ns-<namespace-uid> convention for Karmada namespaces,
+    matching the MappedNamespaceResourceStrategy used by NSO. The test derives
+    the expected Karmada namespace dynamically from the Chainsaw test namespace UID.
+
+    Verified:
+    - WorkloadDeployment exists in Karmada at ns-<project-ns-uid>
+    - Karmada copy carries label topology.datum.net/city-code: dfw
+    - PropagationPolicy city-dfw exists in the Karmada namespace,
+      selecting WDs by city-code and routing them to matching POP-cell clusters.
+
+  template: true
+
+  steps:
+  - name: derive-ns-and-create-wd
+    description: Derive Karmada namespace and create the WorkloadDeployment.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: assert-wd-in-karmada
+    description: Assert WorkloadDeployment federated to Karmada with city-code label.
+    cluster: karmada
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: karmadaNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($karmadaNS)
+            name: test-federation-wd
+            labels:
+              topology.datum.net/city-code: dfw
+
+  - name: assert-propagation-policy-in-karmada
+    description: Assert PropagationPolicy created for city-dfw.
+    cluster: karmada
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: karmadaNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($karmadaNS)
+            name: city-dfw
+          spec:
+            resourceSelectors:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              labelSelector:
+                matchLabels:
+                  topology.datum.net/city-code: dfw
+            placement:
+              clusterAffinity:
+                labelSelector:
+                  matchLabels:
+                    topology.datum.net/city-code: dfw

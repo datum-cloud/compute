@@ -1,0 +1,6 @@
+# Assert the WorkloadDeployment is federated to Karmada (and the Karmada namespace created).
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  namespace: ($karmadaNS)
+  name: test-projector-wd

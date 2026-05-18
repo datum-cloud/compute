@@ -86,10 +86,6 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	logger.Info("reconciling deployment")
 	defer logger.Info("reconcile complete")
 
-	if deployment.Status.Location == nil {
-		return ctrl.Result{}, nil
-	}
-
 	// Collect all instances for this deployment
 	listOpts := client.MatchingLabels{
 		computev1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
@@ -247,6 +243,30 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 ) (bool, error) {
 	logger := log.FromContext(ctx)
 
+	// Resolve the Location for this deployment's city code. With Karmada
+	// propagation the WorkloadDeployment lands in the cluster that serves the
+	// requested city, so the Location object for that city must exist locally.
+	var locationList networkingv1alpha.LocationList
+	if err := c.List(ctx, &locationList); err != nil {
+		return false, fmt.Errorf("failed to list locations: %w", err)
+	}
+
+	var locationRef *networkingv1alpha.LocationReference
+	for _, loc := range locationList.Items {
+		if cityCode, ok := loc.Spec.Topology["topology.datum.net/city-code"]; ok && cityCode == deployment.Spec.CityCode {
+			locationRef = &networkingv1alpha.LocationReference{
+				Name:      loc.Name,
+				Namespace: loc.Namespace,
+			}
+			break
+		}
+	}
+
+	if locationRef == nil {
+		logger.Info("no location found for city code, waiting", "cityCode", deployment.Spec.CityCode)
+		return false, nil
+	}
+
 	// First, ensure we have a NetworkBinding for each interface, and that the
 	// binding is ready before we move on to create SubnetClaims.
 
@@ -271,7 +291,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 				},
 				Spec: networkingv1alpha.NetworkBindingSpec{
 					Network:  networkInterface.Network,
-					Location: *deployment.Status.Location,
+					Location: *locationRef,
 				},
 			}
 
@@ -347,8 +367,8 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 			}
 
 			// If it's not the same location, don't consider the subnet claim.
-			if claim.Spec.Location.Namespace != deployment.Status.Location.Namespace ||
-				claim.Spec.Location.Name != deployment.Status.Location.Name {
+			if claim.Spec.Location.Namespace != locationRef.Namespace ||
+				claim.Spec.Location.Name != locationRef.Name {
 				continue
 			}
 
@@ -371,7 +391,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 					NetworkContext: networkingv1alpha.LocalNetworkContextRef{
 						Name: networkContext.Name,
 					},
-					Location: *deployment.Status.Location,
+					Location: *locationRef,
 				},
 			}
 
@@ -490,25 +510,34 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager) e
 func enqueueWorkloadDeploymentByLocation(ctx context.Context, mgr mcmanager.Manager, clusterName string, locationRef networkingv1alpha.LocationReference) []mcreconcile.Request {
 	logger := log.FromContext(ctx)
 
-	cluster, err := mgr.GetCluster(ctx, clusterName)
+	cl, err := mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		logger.Error(err, "failed to get cluster")
 		return nil
 	}
-	clusterClient := cluster.GetClient()
+	clusterClient := cl.GetClient()
 
-	locationName := (types.NamespacedName{
+	// Resolve the Location to find its city code, then look up WorkloadDeployments
+	// that target the same city via the deploymentCityCodeIndex.
+	var location networkingv1alpha.Location
+	if err := clusterClient.Get(ctx, types.NamespacedName{
 		Namespace: locationRef.Namespace,
 		Name:      locationRef.Name,
-	}).String()
-	listOpts := client.MatchingFields{
-		deploymentLocationIndex: locationName,
+	}, &location); err != nil {
+		logger.Error(err, "failed to get location for enqueue", "location", locationRef)
+		return nil
+	}
+
+	cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
+	if !ok {
+		return nil
 	}
 
 	var workloadDeployments computev1alpha.WorkloadDeploymentList
-
-	if err := clusterClient.List(ctx, &workloadDeployments, listOpts); err != nil {
-		logger.Error(err, "failed to list workloads")
+	if err := clusterClient.List(ctx, &workloadDeployments, client.MatchingFields{
+		deploymentCityCodeIndex: cityCode,
+	}); err != nil {
+		logger.Error(err, "failed to list workload deployments")
 		return nil
 	}
 

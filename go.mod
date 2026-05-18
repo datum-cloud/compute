@@ -1,22 +1,21 @@
 module go.datum.net/compute
 
-go 1.24.0
-
-toolchain go1.24.2
+go 1.24.6
 
 require (
 	github.com/google/go-cmp v0.7.0
+	github.com/karmada-io/api v1.15.0
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.37.0
 	github.com/stretchr/testify v1.11.1
 	go.datum.net/network-services-operator v0.1.0
-	go.miloapis.com/milo v0.24.11
+	go.miloapis.com/milo v0.25.2-0.20260518184803-e6ac7ea55253
 	golang.org/x/crypto v0.39.0
 	golang.org/x/sync v0.16.0
 	google.golang.org/protobuf v1.36.11
-	k8s.io/api v0.33.1
+	k8s.io/api v0.33.2
 	k8s.io/apimachinery v0.33.2
-	k8s.io/client-go v0.33.1
+	k8s.io/client-go v0.33.2
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	sigs.k8s.io/controller-runtime v0.21.0
 	sigs.k8s.io/gateway-api v1.2.1
@@ -95,9 +94,9 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/apiextensions-apiserver v0.33.1 // indirect
-	k8s.io/apiserver v0.33.1 // indirect
-	k8s.io/component-base v0.33.1 // indirect
+	k8s.io/apiextensions-apiserver v0.33.2 // indirect
+	k8s.io/apiserver v0.33.2 // indirect
+	k8s.io/component-base v0.33.2 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250610211856-8b98d1ed966a // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
