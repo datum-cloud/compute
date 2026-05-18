@@ -88,6 +88,7 @@ func projTestWorkloadDeployment() *computev1alpha.WorkloadDeployment {
 func projTestKarmadaInstance(labelOverrides map[string]string) *computev1alpha.Instance {
 	labels := map[string]string{
 		downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
+		downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
 		computev1alpha.WorkloadDeploymentUIDLabel:      string(projTestWDUID),
 	}
 	for k, v := range labelOverrides {
@@ -194,17 +195,12 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			wantProjection: false,
 		},
 		{
-			name:            "namespace UID not found in project cluster — requeue",
-			karmadaInstance: projTestKarmadaInstance(nil),
-			projectObjs: []client.Object{
-				// A namespace with a DIFFERENT UID — no match for projTestProjNSUID.
-				&corev1.Namespace{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: projTestProjNS,
-						UID:  types.UID("different-uid-0000"),
-					},
-				},
-			},
+			name: "missing upstream-namespace label — requeue",
+			karmadaInstance: projTestKarmadaInstance(map[string]string{
+				// Override: remove the upstream namespace label.
+				downstreamclient.UpstreamOwnerNamespaceLabel: "",
+			}),
+			projectObjs:    []client.Object{projTestProjectNS()},
 			wantProjection: false,
 			wantRequeue:    true,
 		},
@@ -324,19 +320,16 @@ func TestInstanceProjector_SpecCopied(t *testing.T) {
 	assert.Equal(t, "test-gate", projection.Spec.Controller.SchedulingGates[0].Name)
 }
 
-// TestInstanceProjector_NamespaceUIDResolution verifies that multiple namespaces
-// in the project cluster are scanned and the correct one (matching the UID
-// embedded in the Karmada namespace name) is selected.
-func TestInstanceProjector_NamespaceUIDResolution(t *testing.T) {
+// TestInstanceProjector_NamespaceResolution verifies that the projector resolves
+// the target project namespace directly from the UpstreamOwnerNamespaceLabel on
+// the Karmada Instance, landing the projection in the correct namespace.
+func TestInstanceProjector_NamespaceResolution(t *testing.T) {
 	t.Parallel()
 
 	karmadaInst := projTestKarmadaInstance(nil)
 	projectClient := fake.NewClientBuilder().
 		WithScheme(newProjectScheme()).
 		WithObjects(
-			// Decoy namespace with a different UID.
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "other-ns", UID: "other-uid"}},
-			// Correct namespace.
 			projTestProjectNS(),
 			projTestWorkloadDeployment(),
 		).
@@ -349,7 +342,7 @@ func TestInstanceProjector_NamespaceUIDResolution(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
-	// Projection must land in projTestProjNS, not "other-ns".
+	// Projection must land in the namespace named by the label.
 	var projection computev1alpha.Instance
 	require.NoError(t, projectClient.Get(context.Background(),
 		types.NamespacedName{Name: projTestInstanceName, Namespace: projTestProjNS},
