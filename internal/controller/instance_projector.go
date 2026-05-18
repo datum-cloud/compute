@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -83,27 +82,14 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	projectClient := projectCluster.GetClient()
 
-	// 4. Resolve the target project namespace by UID.
-	// Karmada namespace names follow the convention "ns-<uid>"; strip the prefix
-	// to obtain the UID, then scan the project cluster's namespace list for a match.
-	namespaceUID := strings.TrimPrefix(karmadaInstance.Namespace, "ns-")
-
-	var nsList corev1.NamespaceList
-	if err := projectClient.List(ctx, &nsList); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed listing namespaces in project cluster %q: %w", clusterName, err)
-	}
-
-	var targetNamespace string
-	for _, ns := range nsList.Items {
-		if string(ns.UID) == namespaceUID {
-			targetNamespace = ns.Name
-			break
-		}
-	}
+	// 4. Resolve the target project namespace from the Instance label.
+	// The InstanceReconciler stamps UpstreamOwnerNamespaceLabel with the project
+	// namespace name (read from the Karmada namespace label set by the federator),
+	// so we can resolve the target namespace directly without scanning.
+	targetNamespace := karmadaInstance.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 	if targetNamespace == "" {
-		// The namespace hasn't been propagated to the project cluster yet.
-		logger.Info("target namespace not found in project cluster, requeueing",
-			"namespaceUID", namespaceUID, "cluster", clusterName)
+		logger.Info("Instance missing upstream-namespace label, requeueing",
+			"namespace", karmadaInstance.Namespace, "name", karmadaInstance.Name)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 

@@ -113,19 +113,25 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 
 	// Determine the Karmada namespace for this project namespace using the
 	// ns-<namespace-uid> convention (MappedNamespaceResourceStrategy).
+	// Using strategy.GetClient() for writes ensures the Karmada namespace is
+	// created with UpstreamOwnerNamespaceLabel so the InstanceProjector can
+	// resolve the target project namespace without scanning all namespaces.
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.KarmadaClient)
 	karmadaNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to determine Karmada namespace: %w", err)
 	}
 
-	// Ensure the Karmada namespace exists before writing any resources into it.
-	if err := r.ensureKarmadaNamespace(ctx, karmadaNS); err != nil {
+	// Ensure the Karmada namespace exists and carries the upstream tracking labels
+	// so the InstanceProjector can resolve the project namespace by label lookup
+	// instead of scanning all namespaces.
+	if err := r.ensureKarmadaNamespace(ctx, karmadaNS, deployment.Namespace, req.ClusterName); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Upsert the WorkloadDeployment in Karmada.
-	if err := r.upsertKarmadaDeployment(ctx, &deployment, karmadaNS); err != nil {
+	// Upsert the WorkloadDeployment in Karmada via the strategy client so any
+	// future Create calls also go through ensureDownstreamNamespace automatically.
+	if err := r.upsertKarmadaDeployment(ctx, strategy.GetClient(), &deployment, karmadaNS); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -195,21 +201,32 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	return finalizer.Result{}, nil
 }
 
-// ensureKarmadaNamespace creates the namespace in the Karmada API server if it
-// does not already exist.
-func (r *WorkloadDeploymentFederator) ensureKarmadaNamespace(ctx context.Context, name string) error {
+// ensureKarmadaNamespace creates or updates the Karmada namespace, stamping it
+// with the upstream tracking labels that MappedNamespaceResourceStrategy uses.
+// This allows the InstanceProjector to resolve the project namespace name via a
+// direct label lookup rather than scanning all namespaces by UID.
+func (r *WorkloadDeploymentFederator) ensureKarmadaNamespace(ctx context.Context, name, upstreamNamespace, clusterName string) error {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	if err := r.KarmadaClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.KarmadaClient, ns, func() error {
+		if ns.Labels == nil {
+			ns.Labels = make(map[string]string)
+		}
+		ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(clusterName, "/", "_"))
+		ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = upstreamNamespace
+		return nil
+	})
+	if err != nil {
 		return fmt.Errorf("failed to ensure Karmada namespace %q: %w", name, err)
 	}
 	return nil
 }
 
 // upsertKarmadaDeployment creates or updates the WorkloadDeployment in the
-// Karmada namespace, ensuring it carries the city-code label required by the
-// PropagationPolicy selector.
+// Karmada namespace via the provided client (expected to be strategy.GetClient()
+// so the Karmada namespace is created with upstream tracking labels).
 func (r *WorkloadDeploymentFederator) upsertKarmadaDeployment(
 	ctx context.Context,
+	karmadaClient client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
 	karmadaNS string,
 ) error {
@@ -220,11 +237,12 @@ func (r *WorkloadDeploymentFederator) upsertKarmadaDeployment(
 		},
 	}
 
-	result, err := controllerutil.CreateOrPatch(ctx, r.KarmadaClient, kd, func() error {
+	result, err := controllerutil.CreateOrPatch(ctx, karmadaClient, kd, func() error {
 		if kd.Labels == nil {
 			kd.Labels = make(map[string]string)
 		}
 		kd.Labels[cityCodeLabel] = deployment.Spec.CityCode
+		kd.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = deployment.Namespace
 		kd.Spec = deployment.Spec
 		return nil
 	})

@@ -253,13 +253,25 @@ func (r *InstanceReconciler) writeBackToKarmada(ctx context.Context, clusterName
 	// MappedNamespaceResourceStrategy: "cluster-<name>" with "/" → "_".
 	encodedClusterName := "cluster-" + strings.ReplaceAll(clusterName, "/", "_")
 
+	// Read the upstream project namespace name from the Karmada namespace label
+	// stamped by the WorkloadDeploymentFederator. This lets the InstanceProjector
+	// resolve the target namespace via a direct label lookup on the Instance rather
+	// than scanning all project cluster namespaces by UID.
+	upstreamNamespace := instance.Namespace // fallback: cell namespace (ns-<uid>)
+	var karmadaNS corev1.Namespace
+	if err := r.KarmadaClient.Get(ctx, client.ObjectKey{Name: instance.Namespace}, &karmadaNS); err == nil {
+		if v := karmadaNS.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]; v != "" {
+			upstreamNamespace = v
+		}
+	}
+
 	writeBack := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      instance.Name,
 			Namespace: instance.Namespace,
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: encodedClusterName,
-				downstreamclient.UpstreamOwnerNamespaceLabel:   instance.Namespace,
+				downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamNamespace,
 			},
 		},
 		Spec: instance.Spec,
@@ -275,6 +287,10 @@ func (r *InstanceReconciler) writeBackToKarmada(ctx context.Context, clusterName
 		}
 		if err := r.KarmadaClient.Create(ctx, writeBack); err != nil {
 			return fmt.Errorf("failed creating Karmada write-back instance: %w", err)
+		}
+		writeBack.Status = instance.Status
+		if err := r.KarmadaClient.Status().Update(ctx, writeBack); err != nil {
+			return fmt.Errorf("failed updating Karmada write-back instance status after create: %w", err)
 		}
 		return nil
 	}
@@ -459,6 +475,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			return false, fmt.Errorf("failed checking for network creation failure: %w", err)
 		}
 
+		readyCondition.Status = metav1.ConditionFalse
 		if networkCreationFailure {
 			readyCondition.Reason = "NetworkFailedToCreate"
 			readyCondition.Message = networkCreationFailureMessage
@@ -475,6 +492,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	if programmedCondition == nil || programmedCondition.Status != metav1.ConditionTrue {
 		logger.Info("instance is not programmed", "instance", instance.Name)
 
+		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = computev1alpha.InstanceProgrammedReasonPendingProgramming
 		if programmedCondition != nil && programmedCondition.Reason != pendingReason {
 			readyCondition.Reason = programmedCondition.Reason
@@ -494,6 +512,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	if runningCondition == nil || runningCondition.Status != metav1.ConditionTrue {
 		logger.Info("instance is not running", "instance", instance.Name)
 
+		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = pendingReason
 		if runningCondition != nil && runningCondition.Reason != pendingReason {
 			readyCondition.Reason = runningCondition.Reason
