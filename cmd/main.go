@@ -92,8 +92,10 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
-	flag.StringVar(&karmadaKubeconfig, "karmada-kubeconfig", "", "Path to the kubeconfig file for the Karmada control plane. When omitted, Karmada federation features are disabled.")
-	flag.StringVar(&karmadaContext, "karmada-context", "", "Context to use from the Karmada kubeconfig. When omitted, the current context is used.")
+	flag.StringVar(&karmadaKubeconfig, "karmada-kubeconfig", "",
+		"Path to the kubeconfig file for the Karmada control plane. When omitted, Karmada federation features are disabled.")
+	flag.StringVar(&karmadaContext, "karmada-context", "",
+		"Context to use from the Karmada kubeconfig. When omitted, the current context is used.")
 	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", true,
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector). "+
 			"Disable when running a cell-only operator instance.")

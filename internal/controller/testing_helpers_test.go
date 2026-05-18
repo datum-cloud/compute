@@ -66,8 +66,8 @@ type fakeCluster struct {
 	cl              client.Client
 }
 
-func (f *fakeCluster) GetClient() client.Client   { return f.cl }
-func (f *fakeCluster) GetScheme() *runtime.Scheme { return f.cl.Scheme() }
+func (f *fakeCluster) GetClient() client.Client    { return f.cl }
+func (f *fakeCluster) GetScheme() *runtime.Scheme  { return f.cl.Scheme() }
 func (f *fakeCluster) GetAPIReader() client.Reader { return f.cl }
 
 // newFakeCluster wraps a fake client in a fakeCluster.

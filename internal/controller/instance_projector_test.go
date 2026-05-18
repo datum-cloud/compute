@@ -156,7 +156,7 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "happy path — instance projected with owner reference",
+			name:            "happy path — instance projected with owner reference",
 			karmadaInstance: projTestKarmadaInstance(nil),
 			projectObjs: []client.Object{
 				projTestProjectNS(),
@@ -194,7 +194,7 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			wantProjection: false,
 		},
 		{
-			name: "namespace UID not found in project cluster — requeue",
+			name:            "namespace UID not found in project cluster — requeue",
 			karmadaInstance: projTestKarmadaInstance(nil),
 			projectObjs: []client.Object{
 				// A namespace with a DIFFERENT UID — no match for projTestProjNSUID.
@@ -366,4 +366,3 @@ func isNotFound(err error) bool {
 	// Import apierrors to check — we already have it via the fake client package.
 	return client.IgnoreNotFound(err) == nil
 }
-
