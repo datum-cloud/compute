@@ -34,6 +34,7 @@ spec:
           - --health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
           - --server-config=$(SERVER_CONFIG)
           - --karmada-kubeconfig=$(KARMADA_KUBECONFIG)
+          - --milo-kubeconfig=$(MILO_KUBECONFIG)
         env:
           - name: LEADER_ELECT
             value: "true"
@@ -42,6 +43,8 @@ spec:
           - name: SERVER_CONFIG
             value: /config/config.yaml
           - name: KARMADA_KUBECONFIG
+            value: ""
+          - name: MILO_KUBECONFIG
             value: ""
         image: ghcr.io/datum-cloud/compute:latest
         ports:
@@ -79,6 +82,9 @@ spec:
         - name: webhook-cert
           mountPath: /tmp/k8s-webhook-server/serving-certs
           readOnly: true
+        - name: milo-kubeconfig
+          mountPath: /etc/kubernetes/milo/auth
+          readOnly: true
       serviceAccountName: compute
       terminationGracePeriodSeconds: 10
       volumes:
@@ -92,4 +98,8 @@ spec:
         secret:
           secretName: compute-webhook-cert
           defaultMode: 420
+          optional: true
+      - name: milo-kubeconfig
+        secret:
+          secretName: milo-configuration-kubeconfig
           optional: true

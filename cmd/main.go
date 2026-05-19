@@ -85,6 +85,7 @@ func main() {
 	var serverConfigFile string
 	var karmadaKubeconfig string
 	var karmadaContext string
+	var miloKubeconfig string
 	var enableManagementControllers bool
 	var enableCellControllers bool
 
@@ -97,6 +98,8 @@ func main() {
 		"Path to the kubeconfig file for the Karmada control plane. When omitted, Karmada federation features are disabled.")
 	flag.StringVar(&karmadaContext, "karmada-context", "",
 		"Context to use from the Karmada kubeconfig. When omitted, the current context is used.")
+	flag.StringVar(&miloKubeconfig, "milo-kubeconfig", "",
+		"Path to the kubeconfig for the Milo control plane. Required for quota integration.")
 	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", true,
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector). "+
 			"Disable when running a cell-only operator instance.")
@@ -173,6 +176,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// miloCluster connects to the Milo control plane so controllers that need
+	// Milo APIs (e.g. quota ResourceClaims) can watch and write resources there.
+	var miloCluster cluster.Cluster
+	if miloKubeconfig != "" {
+		miloCfg, err := clientcmd.BuildConfigFromFlags("", miloKubeconfig)
+		if err != nil {
+			setupLog.Error(err, "unable to load Milo kubeconfig", "path", miloKubeconfig)
+			os.Exit(1)
+		}
+		miloCluster, err = cluster.New(miloCfg, func(o *cluster.Options) {
+			o.Scheme = scheme
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create Milo cluster client")
+			os.Exit(1)
+		}
+		runnables = append(runnables, miloCluster)
+		setupLog.Info("Milo kubeconfig loaded", "path", miloKubeconfig)
+	}
+
 	setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
 
 	ctx := ctrl.SetupSignalHandler()
@@ -243,8 +266,14 @@ func main() {
 	}
 
 	if enableCellControllers {
+		// Use the Milo cluster for quota ResourceClaim access when configured;
+		// fall back to the local deployment cluster for environments without Milo.
+		instanceManagementCluster := deploymentCluster
+		if miloCluster != nil {
+			instanceManagementCluster = miloCluster
+		}
 		instanceReconciler := &controller.InstanceReconciler{KarmadaClient: karmadaClient}
-		if err = instanceReconciler.SetupWithManager(mgr, deploymentCluster); err != nil {
+		if err = instanceReconciler.SetupWithManager(mgr, instanceManagementCluster); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}
