@@ -389,6 +389,17 @@ const (
 
 	// InstanceProgrammed indicates that the instance has been programmed
 	InstanceProgrammed = "Programmed"
+
+	// InstanceQuotaGranted indicates whether quota has been allocated for the instance
+	InstanceQuotaGranted = "QuotaGranted"
+)
+
+const (
+	InstanceQuotaGrantedReasonPendingEvaluation = "PendingEvaluation"
+	InstanceQuotaGrantedReasonQuotaAvailable    = "QuotaAvailable"
+	InstanceQuotaGrantedReasonQuotaExceeded     = "QuotaExceeded"
+	InstanceQuotaGrantedReasonValidationFailed  = "ValidationFailed"
+	InstanceProgrammedReasonPendingQuota        = "PendingQuota"
 )
 
 const (
@@ -451,7 +462,7 @@ type Instance struct {
 
 	// Status defines the current state of an Instance.
 	//
-	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Running",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Running",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"QuotaGranted",status:"Unknown",reason:"PendingEvaluation",message:"Waiting for quota evaluation",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
 	Status InstanceStatus `json:"status,omitempty"`
 }
 

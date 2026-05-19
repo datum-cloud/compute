@@ -74,9 +74,8 @@ func (c *statefulControl) GetActions(
 			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
 				TemplateHash: instanceTemplateHash,
 				SchedulingGates: []v1alpha.SchedulingGate{
-					{
-						Name: instancecontrol.NetworkSchedulingGate.String(),
-					},
+					{Name: instancecontrol.NetworkSchedulingGate.String()},
+					{Name: instancecontrol.QuotaSchedulingGate.String()},
 				},
 			}
 
