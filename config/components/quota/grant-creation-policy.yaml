@@ -10,7 +10,7 @@ spec:
   target:
     resourceGrantTemplate:
       metadata:
-        generateName: compute-quota-
+        name: "{{trigger.metadata.name}}-compute-quota"
         namespace: "{{trigger.metadata.namespace}}"
       spec:
         consumerRef:
