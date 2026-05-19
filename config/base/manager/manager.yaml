@@ -34,6 +34,7 @@ spec:
           - --health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
           - --server-config=$(SERVER_CONFIG)
           - --karmada-kubeconfig=$(KARMADA_KUBECONFIG)
+          - --enable-cell-controllers=$(ENABLE_CELL_CONTROLLERS)
         env:
           - name: LEADER_ELECT
             value: "true"
@@ -43,6 +44,8 @@ spec:
             value: /config/config.yaml
           - name: KARMADA_KUBECONFIG
             value: ""
+          - name: ENABLE_CELL_CONTROLLERS
+            value: "true"
         image: ghcr.io/datum-cloud/compute:latest
         ports:
         - containerPort: 9443
