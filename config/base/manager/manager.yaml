@@ -26,14 +26,24 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-      - command:
+      - name: manager
+        command:
         - /manager
         args:
-          - --leader-elect
-          - --health-probe-bind-address=:8081
-          - --server-config=/config/config.yaml
+          - --leader-elect=$(LEADER_ELECT)
+          - --health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
+          - --server-config=$(SERVER_CONFIG)
+          - --karmada-kubeconfig=$(KARMADA_KUBECONFIG)
+        env:
+          - name: LEADER_ELECT
+            value: "true"
+          - name: HEALTH_PROBE_BIND_ADDRESS
+            value: ":8081"
+          - name: SERVER_CONFIG
+            value: /config/config.yaml
+          - name: KARMADA_KUBECONFIG
+            value: ""
         image: ghcr.io/datum-cloud/compute:latest
-        name: manager
         ports:
         - containerPort: 9443
           name: webhook-server

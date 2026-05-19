@@ -87,21 +87,19 @@ func main() {
 	var enableManagementControllers bool
 	var enableCellControllers bool
 
-	flag.StringVar(&probeAddr, "health-probe-bind-address", envOrDefault("HEALTH_PROBE_BIND_ADDRESS", ":8081"), "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", os.Getenv("LEADER_ELECT") == "true",
+	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", os.Getenv("LEADER_ELECT_NAMESPACE"), "The namespace to use for leader election.")
-	flag.StringVar(&karmadaKubeconfig, "karmada-kubeconfig", os.Getenv("KARMADA_KUBECONFIG"),
+	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	flag.StringVar(&karmadaKubeconfig, "karmada-kubeconfig", "",
 		"Path to the kubeconfig file for the Karmada control plane. When omitted, Karmada federation features are disabled.")
-	flag.StringVar(&karmadaContext, "karmada-context", os.Getenv("KARMADA_CONTEXT"),
+	flag.StringVar(&karmadaContext, "karmada-context", "",
 		"Context to use from the Karmada kubeconfig. When omitted, the current context is used.")
-	flag.BoolVar(&enableManagementControllers, "enable-management-controllers",
-		os.Getenv("ENABLE_MANAGEMENT_CONTROLLERS") != "false",
+	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", true,
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector). "+
 			"Disable when running a cell-only operator instance.")
-	flag.BoolVar(&enableCellControllers, "enable-cell-controllers",
-		os.Getenv("ENABLE_CELL_CONTROLLERS") != "false",
+	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", true,
 		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler). "+
 			"Disable when running a management-only operator instance.")
 
@@ -109,7 +107,7 @@ func main() {
 		Development: true,
 	}
 
-	flag.StringVar(&serverConfigFile, "server-config", os.Getenv("SERVER_CONFIG"), "path to the server config file")
+	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -422,9 +420,3 @@ func ignoreCanceled(err error) error {
 	return err
 }
 
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
