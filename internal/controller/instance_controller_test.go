@@ -2,8 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,9 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -26,36 +21,6 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 )
-
-// fakeCluster implements cluster.Cluster for testing using a fake client.
-type fakeCluster struct {
-	client client.Client
-	scheme *runtime.Scheme
-}
-
-func (f *fakeCluster) GetHTTPClient() *http.Client                     { return nil }
-func (f *fakeCluster) GetConfig() *rest.Config                         { return nil }
-func (f *fakeCluster) GetCache() cache.Cache                           { return nil }
-func (f *fakeCluster) GetScheme() *runtime.Scheme                      { return f.scheme }
-func (f *fakeCluster) GetClient() client.Client                        { return f.client }
-func (f *fakeCluster) GetFieldIndexer() client.FieldIndexer            { return nil }
-func (f *fakeCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
-func (f *fakeCluster) GetRESTMapper() apimeta.RESTMapper               { return nil }
-func (f *fakeCluster) GetAPIReader() client.Reader                     { return f.client }
-func (f *fakeCluster) Start(context.Context) error                     { return nil }
-
-// fakeMCManager is a minimal multicluster manager that returns a single cluster.
-type fakeMCManager struct {
-	clusters map[string]cluster.Cluster
-}
-
-func (m *fakeMCManager) GetCluster(ctx context.Context, clusterName string) (cluster.Cluster, error) {
-	cl, ok := m.clusters[clusterName]
-	if !ok {
-		return nil, fmt.Errorf("cluster %q not found", clusterName)
-	}
-	return cl, nil
-}
 
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
 func newTestScheme(t *testing.T) *runtime.Scheme {
@@ -590,13 +555,13 @@ func TestReconcileQuota(t *testing.T) {
 
 		mgr := &fakeMCManager{
 			clusters: map[string]cluster.Cluster{
-				clusterName: &fakeCluster{client: projectClient, scheme: s},
+				clusterName: newFakeCluster(projectClient),
 			},
 		}
 
 		r := &InstanceReconciler{
 			mgr:               mgr,
-			managementCluster: &fakeCluster{client: mgmtClient, scheme: s},
+			managementCluster: newFakeCluster(mgmtClient),
 		}
 		return r, projectClient, mgmtClient
 	}
