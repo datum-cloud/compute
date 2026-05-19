@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -473,12 +474,15 @@ func TestReconcileQuota(t *testing.T) {
 
 	// makeInstance creates a test Instance with an owner reference to the
 	// deployment so that checkForNetworkCreationFailure can look it up.
+	// Both finalizers are pre-populated so that the finalizer framework does
+	// not need to add instanceControllerFinalizer on the first reconcile,
+	// which would cause an early return before quota logic runs.
 	makeInstance := func(_ *runtime.Scheme, gates ...computev1alpha.SchedulingGate) *computev1alpha.Instance {
 		return &computev1alpha.Instance{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       instanceName,
 				Namespace:  namespace,
-				Finalizers: []string{instanceQuotaFinalizer},
+				Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 				OwnerReferences: []metav1.OwnerReference{
 					{
 						APIVersion: "compute.datumapis.com/v1alpha",
@@ -563,6 +567,13 @@ func TestReconcileQuota(t *testing.T) {
 			mgr:               mgr,
 			managementCluster: newFakeCluster(mgmtClient),
 		}
+
+		// Initialize the finalizer registry so that r.finalizers.Finalize is not
+		// a nil-pointer dereference. SetupWithManager does this in production; in
+		// tests we replicate the same steps manually.
+		r.finalizers = finalizer.NewFinalizers()
+		require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
 		return r, projectClient, mgmtClient
 	}
 
@@ -702,10 +713,28 @@ func TestReconcileQuota(t *testing.T) {
 		s := newTestScheme(t)
 
 		now := metav1.Now()
-		instance := makeInstance(s,
-			computev1alpha.SchedulingGate{Name: instancecontrol.QuotaSchedulingGate.String()},
-		)
-		instance.DeletionTimestamp = &now
+		// Build the instance directly without instanceControllerFinalizer to
+		// represent the state after the Karmada finalizer has already been
+		// cleaned up; only the quota finalizer remains to be processed.
+		instance := &computev1alpha.Instance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              instanceName,
+				Namespace:         namespace,
+				DeletionTimestamp: &now,
+				Finalizers:        []string{instanceQuotaFinalizer},
+			},
+			Spec: computev1alpha.InstanceSpec{
+				Controller: &computev1alpha.InstanceController{
+					SchedulingGates: []computev1alpha.SchedulingGate{
+						{Name: instancecontrol.QuotaSchedulingGate.String()},
+					},
+				},
+				Runtime: computev1alpha.InstanceRuntimeSpec{
+					Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				},
+				NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+			},
+		}
 
 		claim := makeClaim(s, metav1.ConditionFalse, quotav1alpha1.ResourceClaimPendingReason)
 

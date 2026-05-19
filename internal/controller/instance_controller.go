@@ -103,25 +103,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	defer logger.Info("reconcile complete")
 
 	if !instance.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
-			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
-			var claim quotav1alpha1.ResourceClaim
-			if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
-				if !apierrors.IsNotFound(err) {
-					return ctrl.Result{}, fmt.Errorf("failed getting resource claim for deletion: %w", err)
-				}
-			} else {
-				if err := r.managementCluster.GetClient().Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
-					return ctrl.Result{}, fmt.Errorf("failed deleting resource claim: %w", err)
-				}
-			}
-
-			controllerutil.RemoveFinalizer(&instance, instanceQuotaFinalizer)
-			if err := cl.GetClient().Update(ctx, &instance); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed removing quota finalizer: %w", err)
-			}
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeletion(ctx, cl.GetClient(), &instance)
 	}
 
 	if !controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
@@ -132,44 +114,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
-	grantedCondition, err := r.reconcileQuotaClaim(ctx, req.ClusterName, &instance)
+	statusChanged, err := r.reconcileQuotaCondition(ctx, req.ClusterName, &instance)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed reconciling quota claim: %w", err)
-	}
-
-	statusChanged := false
-
-	switch {
-	case grantedCondition == nil || (grantedCondition.Status == metav1.ConditionFalse && grantedCondition.Reason == quotav1alpha1.ResourceClaimPendingReason):
-		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceQuotaGranted,
-			Status:             metav1.ConditionUnknown,
-			Reason:             computev1alpha.InstanceQuotaGrantedReasonPendingEvaluation,
-			Message:            "Waiting for quota evaluation",
-			ObservedGeneration: instance.Generation,
-		})
-
-	case grantedCondition.Status == metav1.ConditionTrue:
-		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceQuotaGranted,
-			Status:             metav1.ConditionTrue,
-			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
-			Message:            grantedCondition.Message,
-			ObservedGeneration: instance.Generation,
-		})
-
-	case grantedCondition.Status == metav1.ConditionFalse:
-		reason := computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded
-		if grantedCondition.Reason == quotav1alpha1.ResourceClaimValidationFailedReason {
-			reason = computev1alpha.InstanceQuotaGrantedReasonValidationFailed
-		}
-		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceQuotaGranted,
-			Status:             metav1.ConditionFalse,
-			Reason:             reason,
-			Message:            grantedCondition.Message,
-			ObservedGeneration: instance.Generation,
-		})
+		return ctrl.Result{}, err
 	}
 
 	readyChanged, err := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
@@ -189,30 +136,112 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// Remove the quota scheduling gate once QuotaGranted=True is persisted.
-	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
-	if quotaGrantedCond != nil && quotaGrantedCond.Status == metav1.ConditionTrue {
-		if instance.Spec.Controller != nil {
-			newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
-			gateRemoved := false
-			for _, gate := range instance.Spec.Controller.SchedulingGates {
-				if gate.Name == instancecontrol.QuotaSchedulingGate.String() {
-					gateRemoved = true
-					continue
-				}
-				newGates = append(newGates, gate)
-			}
-			if gateRemoved {
-				patch := client.MergeFrom(instance.DeepCopy())
-				instance.Spec.Controller.SchedulingGates = newGates
-				if err := cl.GetClient().Patch(ctx, &instance, patch); err != nil {
-					return ctrl.Result{}, fmt.Errorf("failed patching quota scheduling gate: %w", err)
-				}
-			}
-		}
+	if err := r.removeQuotaSchedulingGate(ctx, cl.GetClient(), &instance); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileDeletion handles quota-claim cleanup when an Instance is being
+// deleted. It removes the quota finalizer once the ResourceClaim is gone.
+func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(instance, instanceQuotaFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+	var claim quotav1alpha1.ResourceClaim
+	if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("failed getting resource claim for deletion: %w", err)
+		}
+	} else {
+		if err := r.managementCluster.GetClient().Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("failed deleting resource claim: %w", err)
+		}
+	}
+
+	controllerutil.RemoveFinalizer(instance, instanceQuotaFinalizer)
+	if err := cl.Update(ctx, instance); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed removing quota finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileQuotaCondition reconciles the ResourceClaim and updates the
+// InstanceQuotaGranted status condition. It returns true when the condition
+// changed and a status update is required.
+func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (bool, error) {
+	grantedCondition, err := r.reconcileQuotaClaim(ctx, clusterName, instance)
+	if err != nil {
+		return false, fmt.Errorf("failed reconciling quota claim: %w", err)
+	}
+
+	switch {
+	case grantedCondition == nil || (grantedCondition.Status == metav1.ConditionFalse && grantedCondition.Reason == quotav1alpha1.ResourceClaimPendingReason):
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionUnknown,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonPendingEvaluation,
+			Message:            "Waiting for quota evaluation",
+			ObservedGeneration: instance.Generation,
+		}), nil
+
+	case grantedCondition.Status == metav1.ConditionTrue:
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
+			Message:            grantedCondition.Message,
+			ObservedGeneration: instance.Generation,
+		}), nil
+
+	default: // grantedCondition.Status == metav1.ConditionFalse
+		reason := computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded
+		if grantedCondition.Reason == quotav1alpha1.ResourceClaimValidationFailedReason {
+			reason = computev1alpha.InstanceQuotaGrantedReasonValidationFailed
+		}
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            grantedCondition.Message,
+			ObservedGeneration: instance.Generation,
+		}), nil
+	}
+}
+
+// removeQuotaSchedulingGate removes the quota scheduling gate from the
+// Instance spec once QuotaGranted=True has been persisted to status.
+func (r *InstanceReconciler) removeQuotaSchedulingGate(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
+	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	if quotaGrantedCond == nil || quotaGrantedCond.Status != metav1.ConditionTrue {
+		return nil
+	}
+	if instance.Spec.Controller == nil {
+		return nil
+	}
+
+	newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
+	gateRemoved := false
+	for _, gate := range instance.Spec.Controller.SchedulingGates {
+		if gate.Name == instancecontrol.QuotaSchedulingGate.String() {
+			gateRemoved = true
+			continue
+		}
+		newGates = append(newGates, gate)
+	}
+	if !gateRemoved {
+		return nil
+	}
+
+	patch := client.MergeFrom(instance.DeepCopy())
+	instance.Spec.Controller.SchedulingGates = newGates
+	if err := cl.Patch(ctx, instance, patch); err != nil {
+		return fmt.Errorf("failed patching quota scheduling gate: %w", err)
+	}
+	return nil
 }
 
 // Finalize removes the Karmada write-back Instance when the local Instance is
