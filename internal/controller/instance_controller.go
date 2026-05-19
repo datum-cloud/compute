@@ -103,7 +103,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	defer logger.Info("reconcile complete")
 
 	if !instance.DeletionTimestamp.IsZero() {
-		return r.reconcileDeletion(ctx, cl.GetClient(), &instance)
+		return ctrl.Result{}, r.reconcileDeletion(ctx, cl.GetClient(), &instance)
 	}
 
 	if !controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
@@ -145,28 +145,28 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
 // deleted. It removes the quota finalizer once the ResourceClaim is gone.
-func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) (ctrl.Result, error) {
+func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
 	if !controllerutil.ContainsFinalizer(instance, instanceQuotaFinalizer) {
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
 	var claim quotav1alpha1.ResourceClaim
 	if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("failed getting resource claim for deletion: %w", err)
+			return fmt.Errorf("failed getting resource claim for deletion: %w", err)
 		}
 	} else {
 		if err := r.managementCluster.GetClient().Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
-			return ctrl.Result{}, fmt.Errorf("failed deleting resource claim: %w", err)
+			return fmt.Errorf("failed deleting resource claim: %w", err)
 		}
 	}
 
 	controllerutil.RemoveFinalizer(instance, instanceQuotaFinalizer)
 	if err := cl.Update(ctx, instance); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed removing quota finalizer: %w", err)
+		return fmt.Errorf("failed removing quota finalizer: %w", err)
 	}
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // reconcileQuotaCondition reconciles the ResourceClaim and updates the
