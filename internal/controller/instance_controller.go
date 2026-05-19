@@ -7,12 +7,20 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrlsource "sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -20,16 +28,29 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+
+	"go.datum.net/compute/internal/controller/instancecontrol"
 )
+
+const instanceQuotaFinalizer = "quota.compute.datumapis.com/claim-cleanup"
+
+// clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
+// Keeping it narrow allows unit tests to substitute a minimal fake.
+type clusterGetter interface {
+	GetCluster(ctx context.Context, clusterName string) (cluster.Cluster, error)
+}
 
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
-	mgr mcmanager.Manager
+	mgr               clusterGetter
+	managementCluster cluster.Cluster
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/finalizers,verbs=update
+// +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceclaims,verbs=get;list;watch;create;delete
 
 func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
 	logger := log.FromContext(ctx)
@@ -51,13 +72,212 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	logger.Info("reconciling instance")
 	defer logger.Info("reconcile complete")
 
-	if changed, err := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure); err != nil {
+	if !instance.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
+			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+			var claim quotav1alpha1.ResourceClaim
+			if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, fmt.Errorf("failed getting resource claim for deletion: %w", err)
+				}
+			} else {
+				if err := r.managementCluster.GetClient().Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
+					return ctrl.Result{}, fmt.Errorf("failed deleting resource claim: %w", err)
+				}
+			}
+
+			controllerutil.RemoveFinalizer(&instance, instanceQuotaFinalizer)
+			if err := cl.GetClient().Update(ctx, &instance); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed removing quota finalizer: %w", err)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
+		controllerutil.AddFinalizer(&instance, instanceQuotaFinalizer)
+		if err := cl.GetClient().Update(ctx, &instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed adding quota finalizer: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	grantedCondition, err := r.reconcileQuotaClaim(ctx, req.ClusterName, &instance)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed reconciling quota claim: %w", err)
+	}
+
+	statusChanged := false
+
+	switch {
+	case grantedCondition == nil || (grantedCondition.Status == metav1.ConditionFalse && grantedCondition.Reason == quotav1alpha1.ResourceClaimPendingReason):
+		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionUnknown,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonPendingEvaluation,
+			Message:            "Waiting for quota evaluation",
+			ObservedGeneration: instance.Generation,
+		})
+
+	case grantedCondition.Status == metav1.ConditionTrue:
+		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
+			Message:            grantedCondition.Message,
+			ObservedGeneration: instance.Generation,
+		})
+
+	case grantedCondition.Status == metav1.ConditionFalse:
+		reason := computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded
+		if grantedCondition.Reason == quotav1alpha1.ResourceClaimValidationFailedReason {
+			reason = computev1alpha.InstanceQuotaGrantedReasonValidationFailed
+		}
+		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            grantedCondition.Message,
+			ObservedGeneration: instance.Generation,
+		})
+	}
+
+	readyChanged, err := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
+	if err != nil {
 		return ctrl.Result{}, err
-	} else if changed {
-		return ctrl.Result{}, cl.GetClient().Status().Update(ctx, &instance)
+	}
+
+	if statusChanged || readyChanged {
+		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Return after the status update so that the next reconcile sees the
+		// updated QuotaGranted condition before attempting spec changes.
+		return ctrl.Result{}, nil
+	}
+
+	// Remove the quota scheduling gate once QuotaGranted=True is persisted.
+	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	if quotaGrantedCond != nil && quotaGrantedCond.Status == metav1.ConditionTrue {
+		if instance.Spec.Controller != nil {
+			newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
+			gateRemoved := false
+			for _, gate := range instance.Spec.Controller.SchedulingGates {
+				if gate.Name == instancecontrol.QuotaSchedulingGate.String() {
+					gateRemoved = true
+					continue
+				}
+				newGates = append(newGates, gate)
+			}
+			if gateRemoved {
+				patch := client.MergeFrom(instance.DeepCopy())
+				instance.Spec.Controller.SchedulingGates = newGates
+				if err := cl.GetClient().Patch(ctx, &instance, patch); err != nil {
+					return ctrl.Result{}, fmt.Errorf("failed patching quota scheduling gate: %w", err)
+				}
+			}
+		}
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (*metav1.Condition, error) {
+	logger := log.FromContext(ctx)
+
+	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+
+	requests := []quotav1alpha1.ResourceRequest{
+		{
+			ResourceType: "compute.datumapis.com/instances",
+			Amount:       1,
+		},
+	}
+
+	cpuMillicores, memMiB, resolved := resolveInstanceResources(instance)
+	if !resolved {
+		logger.Info("unable to resolve resource amounts from instance spec, claiming instance count only")
+	} else {
+		requests = append(requests,
+			quotav1alpha1.ResourceRequest{
+				ResourceType: "compute.datumapis.com/vcpus",
+				Amount:       cpuMillicores,
+			},
+			quotav1alpha1.ResourceRequest{
+				ResourceType: "compute.datumapis.com/memory",
+				Amount:       memMiB,
+			},
+		)
+	}
+
+	desired := &quotav1alpha1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      claimName,
+			Namespace: instance.Namespace,
+		},
+		Spec: quotav1alpha1.ResourceClaimSpec{
+			ConsumerRef: quotav1alpha1.ConsumerRef{
+				APIGroup: "resourcemanager.miloapis.com",
+				Kind:     "Project",
+				Name:     clusterName,
+			},
+			ResourceRef: quotav1alpha1.UnversionedObjectReference{
+				APIGroup:  "compute.datumapis.com",
+				Kind:      "Instance",
+				Name:      instance.Name,
+				Namespace: instance.Namespace,
+			},
+			Requests: requests,
+		},
+	}
+
+	var existing quotav1alpha1.ResourceClaim
+	if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed getting resource claim: %w", err)
+		}
+		if err := r.managementCluster.GetClient().Create(ctx, desired); err != nil {
+			return nil, fmt.Errorf("failed creating resource claim: %w", err)
+		}
+		return nil, nil
+	}
+
+	grantedCondition := apimeta.FindStatusCondition(existing.Status.Conditions, quotav1alpha1.ResourceClaimGranted)
+	return grantedCondition, nil
+}
+
+func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores int64, memMiB int64, resolved bool) {
+	rt := instance.Spec.Runtime
+	if rt.Sandbox != nil {
+		var totalCPU resource.Quantity
+		var totalMem resource.Quantity
+		allSet := true
+		for _, c := range rt.Sandbox.Containers {
+			if c.Resources == nil || c.Resources.Limits == nil {
+				allSet = false
+				break
+			}
+			cpu, hasCPU := c.Resources.Limits[corev1.ResourceCPU]
+			mem, hasMem := c.Resources.Limits[corev1.ResourceMemory]
+			if !hasCPU || !hasMem {
+				allSet = false
+				break
+			}
+			totalCPU.Add(cpu)
+			totalMem.Add(mem)
+		}
+		if !allSet || len(rt.Sandbox.Containers) == 0 {
+			return 0, 0, false
+		}
+		return totalCPU.MilliValue(), totalMem.Value() / (1024 * 1024), true
+	}
+
+	cpu, hasCPU := rt.Resources.Requests[corev1.ResourceCPU]
+	mem, hasMem := rt.Resources.Requests[corev1.ResourceMemory]
+	if !hasCPU || !hasMem {
+		return 0, 0, false
+	}
+	return cpu.MilliValue(), mem.Value() / (1024 * 1024), true
 }
 
 // networkFailureChecker is a function that checks if a network creation failure
@@ -73,6 +293,33 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 ) (changed bool, err error) {
 	logger := log.FromContext(ctx)
 
+	quotaGrantedCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	if quotaGrantedCondition != nil && quotaGrantedCondition.Status == metav1.ConditionFalse {
+		msg := quotaGrantedCondition.Message
+		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceProgrammed,
+			Status:             metav1.ConditionFalse,
+			Reason:             computev1alpha.InstanceProgrammedReasonPendingQuota,
+			Message:            msg,
+			ObservedGeneration: instance.Generation,
+		})
+		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceRunning,
+			Status:             metav1.ConditionFalse,
+			Reason:             computev1alpha.InstanceProgrammedReasonPendingQuota,
+			Message:            msg,
+			ObservedGeneration: instance.Generation,
+		}) || changed
+		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             computev1alpha.InstanceProgrammedReasonPendingQuota,
+			Message:            msg,
+			ObservedGeneration: instance.Generation,
+		}) || changed
+		return changed, nil
+	}
+
 	readyCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceReady)
 	if readyCondition == nil {
 		readyCondition = &metav1.Condition{
@@ -87,10 +334,6 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	}
 
 	if instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) > 0 {
-		// Update Ready condition to False, Reason to "SchedulingGatesPresent"
-		// and Message to "Scheduling gates present"
-
-		// Collect a list of scheduling gate names
 		var schedulingGateNames []string
 		for _, gate := range instance.Spec.Controller.SchedulingGates {
 			schedulingGateNames = append(schedulingGateNames, gate.Name)
@@ -164,7 +407,6 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 		return false, "", fmt.Errorf("instance is not owned by a workload deployment")
 	}
 
-	// Load the WorkloadDeployment for the instance
 	var workloadDeployment computev1alpha.WorkloadDeployment
 	workloadDeploymentObjectKey := client.ObjectKey{
 		Namespace: instance.Namespace,
@@ -195,9 +437,37 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, managementCluster cluster.Cluster) error {
 	r.mgr = mgr
+	r.managementCluster = managementCluster
+
+	// Watch ResourceClaim objects on the management cluster directly, bypassing
+	// the multicluster clusterInjectingQueue which would overwrite ClusterName.
+	// Using ctrlsource.TypedKind lets the handler produce mcreconcile.Request
+	// values with the correct ClusterName taken from claim.Spec.ConsumerRef.Name.
+	claimSource := ctrlsource.TypedKind(
+		managementCluster.GetCache(),
+		&quotav1alpha1.ResourceClaim{},
+		handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, claim *quotav1alpha1.ResourceClaim) []mcreconcile.Request {
+			if claim.Spec.ResourceRef.Kind != "Instance" || claim.Spec.ResourceRef.APIGroup != "compute.datumapis.com" {
+				return nil
+			}
+			return []mcreconcile.Request{
+				{
+					Request: reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      claim.Spec.ResourceRef.Name,
+							Namespace: claim.Spec.ResourceRef.Namespace,
+						},
+					},
+					ClusterName: claim.Spec.ConsumerRef.Name,
+				},
+			}
+		}),
+	)
+
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		WatchesRawSource(claimSource).
 		Complete(r)
 }

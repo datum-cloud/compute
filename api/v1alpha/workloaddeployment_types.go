@@ -63,6 +63,9 @@ const (
 	// WorkloadDeploymentAvailable indicates that at least one instance has come
 	// online.
 	WorkloadDeploymentAvailable = "Available"
+
+	// WorkloadDeploymentReplicasReady indicates whether all desired replicas are ready.
+	WorkloadDeploymentReplicasReady = "ReplicasReady"
 )
 
 // +kubebuilder:object:root=true
