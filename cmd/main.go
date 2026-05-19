@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -262,7 +263,8 @@ func main() {
 		// written back to Karmada by POP-cell operators, and projects them into
 		// the corresponding project namespaces via the multicluster manager.
 		karmadaMgr, err := manager.New(karmadaRestConfig, manager.Options{
-			Scheme: scheme,
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to create Karmada manager for InstanceProjector")
@@ -369,6 +371,7 @@ func initializeClusterDiscovery(
 		}
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
+			Metrics: metricsserver.Options{BindAddress: "0"},
 			Client: client.Options{
 				Cache: &client.CacheOptions{
 					Unstructured: true,
