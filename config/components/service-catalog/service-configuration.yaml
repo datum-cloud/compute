@@ -53,3 +53,39 @@ spec:
       - compute.datumapis.com/instance/cpu-allocated
       - compute.datumapis.com/instance/memory-allocated
       - compute.datumapis.com/instance/uptime-seconds
+    metricRules:
+    - selector:
+        apiGroup: compute.datumapis.com
+        kind: Workload
+      metricCosts:
+        compute.datumapis.com/workloads: 1
+  quota:
+    limits:
+    - name: compute-workloads
+      metric: compute.datumapis.com/workloads
+      consumerType:
+        apiGroup: resourcemanager.miloapis.com
+        kind: Project
+      unit: instance
+      defaultLimit: 1000
+    - name: compute-instances
+      metric: compute.datumapis.com/instances
+      consumerType:
+        apiGroup: resourcemanager.miloapis.com
+        kind: Project
+      unit: instance
+      defaultLimit: 10
+    - name: compute-vcpus
+      metric: compute.datumapis.com/vcpus
+      consumerType:
+        apiGroup: resourcemanager.miloapis.com
+        kind: Project
+      unit: millicore
+      defaultLimit: 40000
+    - name: compute-memory
+      metric: compute.datumapis.com/memory
+      consumerType:
+        apiGroup: resourcemanager.miloapis.com
+        kind: Project
+      unit: MiB
+      defaultLimit: 81920
