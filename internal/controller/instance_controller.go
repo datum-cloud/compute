@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -29,11 +30,20 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
-const instanceQuotaFinalizer = "quota.compute.datumapis.com/claim-cleanup"
+const (
+	// instanceQuotaFinalizer ensures the quota ResourceClaim is deleted when
+	// an Instance is removed.
+	instanceQuotaFinalizer = "quota.compute.datumapis.com/claim-cleanup"
+
+	// instanceControllerFinalizer is registered with the finalizer framework and
+	// triggers downstream write-back cleanup on deletion.
+	instanceControllerFinalizer = "compute.datumapis.com/instance-controller"
+)
 
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
 // Keeping it narrow allows unit tests to substitute a minimal fake.
@@ -45,6 +55,13 @@ type clusterGetter interface {
 type InstanceReconciler struct {
 	mgr               clusterGetter
 	managementCluster cluster.Cluster
+	// DownstreamClient is an optional client pointing at the downstream control plane.
+	// When non-nil, the reconciler writes a copy of each Instance back to the
+	// downstream control plane so that the InstanceProjector (running in the
+	// management cluster) can aggregate status across all POP cells. Set to nil to
+	// disable federation write-back (e.g. in non-federation deployments).
+	DownstreamClient client.Client
+	finalizers       finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -69,29 +86,24 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Run the finalizer framework first. This handles downstream write-back cleanup
+	// via the Finalize method registered below.
+	finalizationResult, err := r.finalizers.Finalize(ctx, &instance)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
+	}
+	if finalizationResult.Updated {
+		if err = cl.GetClient().Update(ctx, &instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
 	logger.Info("reconciling instance")
 	defer logger.Info("reconcile complete")
 
 	if !instance.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
-			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
-			var claim quotav1alpha1.ResourceClaim
-			if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
-				if !apierrors.IsNotFound(err) {
-					return ctrl.Result{}, fmt.Errorf("failed getting resource claim for deletion: %w", err)
-				}
-			} else {
-				if err := r.managementCluster.GetClient().Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
-					return ctrl.Result{}, fmt.Errorf("failed deleting resource claim: %w", err)
-				}
-			}
-
-			controllerutil.RemoveFinalizer(&instance, instanceQuotaFinalizer)
-			if err := cl.GetClient().Update(ctx, &instance); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed removing quota finalizer: %w", err)
-			}
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.reconcileDeletion(ctx, cl.GetClient(), &instance)
 	}
 
 	if !controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
@@ -102,44 +114,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
-	grantedCondition, err := r.reconcileQuotaClaim(ctx, req.ClusterName, &instance)
+	statusChanged, err := r.reconcileQuotaCondition(ctx, req.ClusterName, &instance)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed reconciling quota claim: %w", err)
-	}
-
-	statusChanged := false
-
-	switch {
-	case grantedCondition == nil || (grantedCondition.Status == metav1.ConditionFalse && grantedCondition.Reason == quotav1alpha1.ResourceClaimPendingReason):
-		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceQuotaGranted,
-			Status:             metav1.ConditionUnknown,
-			Reason:             computev1alpha.InstanceQuotaGrantedReasonPendingEvaluation,
-			Message:            "Waiting for quota evaluation",
-			ObservedGeneration: instance.Generation,
-		})
-
-	case grantedCondition.Status == metav1.ConditionTrue:
-		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceQuotaGranted,
-			Status:             metav1.ConditionTrue,
-			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
-			Message:            grantedCondition.Message,
-			ObservedGeneration: instance.Generation,
-		})
-
-	case grantedCondition.Status == metav1.ConditionFalse:
-		reason := computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded
-		if grantedCondition.Reason == quotav1alpha1.ResourceClaimValidationFailedReason {
-			reason = computev1alpha.InstanceQuotaGrantedReasonValidationFailed
-		}
-		statusChanged = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceQuotaGranted,
-			Status:             metav1.ConditionFalse,
-			Reason:             reason,
-			Message:            grantedCondition.Message,
-			ObservedGeneration: instance.Generation,
-		})
+		return ctrl.Result{}, err
 	}
 
 	readyChanged, err := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
@@ -151,35 +128,218 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err := r.writeBackToDownstream(ctx, req.ClusterName, &instance); err != nil {
+			return ctrl.Result{}, err
+		}
 		// Return after the status update so that the next reconcile sees the
 		// updated QuotaGranted condition before attempting spec changes.
 		return ctrl.Result{}, nil
 	}
 
-	// Remove the quota scheduling gate once QuotaGranted=True is persisted.
-	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
-	if quotaGrantedCond != nil && quotaGrantedCond.Status == metav1.ConditionTrue {
-		if instance.Spec.Controller != nil {
-			newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
-			gateRemoved := false
-			for _, gate := range instance.Spec.Controller.SchedulingGates {
-				if gate.Name == instancecontrol.QuotaSchedulingGate.String() {
-					gateRemoved = true
-					continue
-				}
-				newGates = append(newGates, gate)
-			}
-			if gateRemoved {
-				patch := client.MergeFrom(instance.DeepCopy())
-				instance.Spec.Controller.SchedulingGates = newGates
-				if err := cl.GetClient().Patch(ctx, &instance, patch); err != nil {
-					return ctrl.Result{}, fmt.Errorf("failed patching quota scheduling gate: %w", err)
-				}
-			}
-		}
+	if err := r.removeQuotaSchedulingGate(ctx, cl.GetClient(), &instance); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileDeletion handles quota-claim cleanup when an Instance is being
+// deleted. It removes the quota finalizer once the ResourceClaim is gone.
+func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
+	if !controllerutil.ContainsFinalizer(instance, instanceQuotaFinalizer) {
+		return nil
+	}
+
+	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+	var claim quotav1alpha1.ResourceClaim
+	if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed getting resource claim for deletion: %w", err)
+		}
+	} else {
+		if err := r.managementCluster.GetClient().Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed deleting resource claim: %w", err)
+		}
+	}
+
+	controllerutil.RemoveFinalizer(instance, instanceQuotaFinalizer)
+	if err := cl.Update(ctx, instance); err != nil {
+		return fmt.Errorf("failed removing quota finalizer: %w", err)
+	}
+	return nil
+}
+
+// reconcileQuotaCondition reconciles the ResourceClaim and updates the
+// InstanceQuotaGranted status condition. It returns true when the condition
+// changed and a status update is required.
+func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (bool, error) {
+	grantedCondition, err := r.reconcileQuotaClaim(ctx, clusterName, instance)
+	if err != nil {
+		return false, fmt.Errorf("failed reconciling quota claim: %w", err)
+	}
+
+	switch {
+	case grantedCondition == nil || (grantedCondition.Status == metav1.ConditionFalse && grantedCondition.Reason == quotav1alpha1.ResourceClaimPendingReason):
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionUnknown,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonPendingEvaluation,
+			Message:            "Waiting for quota evaluation",
+			ObservedGeneration: instance.Generation,
+		}), nil
+
+	case grantedCondition.Status == metav1.ConditionTrue:
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
+			Message:            grantedCondition.Message,
+			ObservedGeneration: instance.Generation,
+		}), nil
+
+	default: // grantedCondition.Status == metav1.ConditionFalse
+		reason := computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded
+		if grantedCondition.Reason == quotav1alpha1.ResourceClaimValidationFailedReason {
+			reason = computev1alpha.InstanceQuotaGrantedReasonValidationFailed
+		}
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            grantedCondition.Message,
+			ObservedGeneration: instance.Generation,
+		}), nil
+	}
+}
+
+// removeQuotaSchedulingGate removes the quota scheduling gate from the
+// Instance spec once QuotaGranted=True has been persisted to status.
+func (r *InstanceReconciler) removeQuotaSchedulingGate(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
+	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	if quotaGrantedCond == nil || quotaGrantedCond.Status != metav1.ConditionTrue {
+		return nil
+	}
+	if instance.Spec.Controller == nil {
+		return nil
+	}
+
+	newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
+	gateRemoved := false
+	for _, gate := range instance.Spec.Controller.SchedulingGates {
+		if gate.Name == instancecontrol.QuotaSchedulingGate.String() {
+			gateRemoved = true
+			continue
+		}
+		newGates = append(newGates, gate)
+	}
+	if !gateRemoved {
+		return nil
+	}
+
+	patch := client.MergeFrom(instance.DeepCopy())
+	instance.Spec.Controller.SchedulingGates = newGates
+	if err := cl.Patch(ctx, instance, patch); err != nil {
+		return fmt.Errorf("failed patching quota scheduling gate: %w", err)
+	}
+	return nil
+}
+
+// Finalize removes the downstream write-back Instance when the local Instance is
+// deleted. It is a no-op when downstream federation is disabled.
+func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
+	if r.DownstreamClient == nil {
+		return finalizer.Result{}, nil
+	}
+
+	instance := obj.(*computev1alpha.Instance)
+
+	downstreamInstance := &computev1alpha.Instance{}
+	err := r.DownstreamClient.Get(ctx, client.ObjectKeyFromObject(instance), downstreamInstance)
+	if apierrors.IsNotFound(err) {
+		// Already gone — nothing to do.
+		return finalizer.Result{}, nil
+	}
+	if err != nil {
+		return finalizer.Result{}, fmt.Errorf("failed getting downstream instance for deletion: %w", err)
+	}
+
+	if err := r.DownstreamClient.Delete(ctx, downstreamInstance); client.IgnoreNotFound(err) != nil {
+		return finalizer.Result{}, fmt.Errorf("failed deleting downstream write-back instance: %w", err)
+	}
+
+	return finalizer.Result{}, nil
+}
+
+// writeBackToDownstream copies the Instance spec and status to the downstream
+// control plane so that the InstanceProjector can aggregate state from all POP
+// cells. It is a no-op when DownstreamClient is nil (federation disabled).
+func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterName string, instance *computev1alpha.Instance) error {
+	if r.DownstreamClient == nil {
+		return nil
+	}
+
+	// Encode the POP-cell cluster name using the same convention as NSO's
+	// MappedNamespaceResourceStrategy: "cluster-<name>" with "/" → "_".
+	encodedClusterName := "cluster-" + strings.ReplaceAll(clusterName, "/", "_")
+
+	// Read the upstream project namespace name from the downstream namespace label
+	// stamped by the WorkloadDeploymentFederator. This lets the InstanceProjector
+	// resolve the target namespace via a direct label lookup on the Instance rather
+	// than scanning all project cluster namespaces by UID.
+	upstreamNamespace := instance.Namespace // fallback: cell namespace (ns-<uid>)
+	var downstreamNS corev1.Namespace
+	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Name: instance.Namespace}, &downstreamNS); err == nil {
+		if v := downstreamNS.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]; v != "" {
+			upstreamNamespace = v
+		}
+	}
+
+	writeBack := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Name,
+			Namespace: instance.Namespace,
+			Labels: map[string]string{
+				downstreamclient.UpstreamOwnerClusterNameLabel: encodedClusterName,
+				downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamNamespace,
+			},
+		},
+		Spec: instance.Spec,
+	}
+
+	existing := &computev1alpha.Instance{}
+	err := r.DownstreamClient.Get(ctx, client.ObjectKeyFromObject(writeBack), existing)
+	if apierrors.IsNotFound(err) {
+		// Ensure the namespace exists in the downstream control plane before creating the Instance.
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Namespace}}
+		if err := r.DownstreamClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed ensuring downstream namespace: %w", err)
+		}
+		if err := r.DownstreamClient.Create(ctx, writeBack); err != nil {
+			return fmt.Errorf("failed creating downstream write-back instance: %w", err)
+		}
+		writeBack.Status = instance.Status
+		if err := r.DownstreamClient.Status().Update(ctx, writeBack); err != nil {
+			return fmt.Errorf("failed updating downstream write-back instance status after create: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed getting downstream instance: %w", err)
+	}
+
+	// Update spec + labels on the existing object, then push status separately.
+	existing.Spec = instance.Spec
+	existing.Labels = writeBack.Labels
+	if err := r.DownstreamClient.Update(ctx, existing); err != nil {
+		return fmt.Errorf("failed updating downstream write-back instance: %w", err)
+	}
+
+	existing.Status = instance.Status
+	if err := r.DownstreamClient.Status().Update(ctx, existing); err != nil {
+		return fmt.Errorf("failed updating downstream write-back instance status: %w", err)
+	}
+
+	return nil
 }
 
 func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (*metav1.Condition, error) {
@@ -344,6 +504,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			return false, fmt.Errorf("failed checking for network creation failure: %w", err)
 		}
 
+		readyCondition.Status = metav1.ConditionFalse
 		if networkCreationFailure {
 			readyCondition.Reason = "NetworkFailedToCreate"
 			readyCondition.Message = networkCreationFailureMessage
@@ -360,6 +521,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	if programmedCondition == nil || programmedCondition.Status != metav1.ConditionTrue {
 		logger.Info("instance is not programmed", "instance", instance.Name)
 
+		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = computev1alpha.InstanceProgrammedReasonPendingProgramming
 		if programmedCondition != nil && programmedCondition.Reason != pendingReason {
 			readyCondition.Reason = programmedCondition.Reason
@@ -379,6 +541,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	if runningCondition == nil || runningCondition.Status != metav1.ConditionTrue {
 		logger.Info("instance is not running", "instance", instance.Name)
 
+		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = pendingReason
 		if runningCondition != nil && runningCondition.Reason != pendingReason {
 			readyCondition.Reason = runningCondition.Reason
@@ -440,6 +603,11 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, managementCluster cluster.Cluster) error {
 	r.mgr = mgr
 	r.managementCluster = managementCluster
+
+	r.finalizers = finalizer.NewFinalizers()
+	if err := r.finalizers.Register(instanceControllerFinalizer, r); err != nil {
+		return fmt.Errorf("failed to register finalizer: %w", err)
+	}
 
 	// Watch ResourceClaim objects on the management cluster directly, bypassing
 	// the multicluster clusterInjectingQueue which would overwrite ClusterName.

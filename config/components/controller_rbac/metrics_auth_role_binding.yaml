@@ -8,4 +8,4 @@ roleRef:
   name: compute-metrics-auth-role
 subjects:
 - kind: ServiceAccount
-  name: compute
+  name: compute-manager

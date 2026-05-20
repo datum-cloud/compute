@@ -2,8 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,12 +11,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -26,36 +22,6 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 )
-
-// fakeCluster implements cluster.Cluster for testing using a fake client.
-type fakeCluster struct {
-	client client.Client
-	scheme *runtime.Scheme
-}
-
-func (f *fakeCluster) GetHTTPClient() *http.Client                     { return nil }
-func (f *fakeCluster) GetConfig() *rest.Config                         { return nil }
-func (f *fakeCluster) GetCache() cache.Cache                           { return nil }
-func (f *fakeCluster) GetScheme() *runtime.Scheme                      { return f.scheme }
-func (f *fakeCluster) GetClient() client.Client                        { return f.client }
-func (f *fakeCluster) GetFieldIndexer() client.FieldIndexer            { return nil }
-func (f *fakeCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
-func (f *fakeCluster) GetRESTMapper() apimeta.RESTMapper               { return nil }
-func (f *fakeCluster) GetAPIReader() client.Reader                     { return f.client }
-func (f *fakeCluster) Start(context.Context) error                     { return nil }
-
-// fakeMCManager is a minimal multicluster manager that returns a single cluster.
-type fakeMCManager struct {
-	clusters map[string]cluster.Cluster
-}
-
-func (m *fakeMCManager) GetCluster(ctx context.Context, clusterName string) (cluster.Cluster, error) {
-	cl, ok := m.clusters[clusterName]
-	if !ok {
-		return nil, fmt.Errorf("cluster %q not found", clusterName)
-	}
-	return cl, nil
-}
 
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
 func newTestScheme(t *testing.T) *runtime.Scheme {
@@ -508,12 +474,15 @@ func TestReconcileQuota(t *testing.T) {
 
 	// makeInstance creates a test Instance with an owner reference to the
 	// deployment so that checkForNetworkCreationFailure can look it up.
+	// Both finalizers are pre-populated so that the finalizer framework does
+	// not need to add instanceControllerFinalizer on the first reconcile,
+	// which would cause an early return before quota logic runs.
 	makeInstance := func(_ *runtime.Scheme, gates ...computev1alpha.SchedulingGate) *computev1alpha.Instance {
 		return &computev1alpha.Instance{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       instanceName,
 				Namespace:  namespace,
-				Finalizers: []string{instanceQuotaFinalizer},
+				Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 				OwnerReferences: []metav1.OwnerReference{
 					{
 						APIVersion: "compute.datumapis.com/v1alpha",
@@ -590,14 +559,21 @@ func TestReconcileQuota(t *testing.T) {
 
 		mgr := &fakeMCManager{
 			clusters: map[string]cluster.Cluster{
-				clusterName: &fakeCluster{client: projectClient, scheme: s},
+				clusterName: newFakeCluster(projectClient),
 			},
 		}
 
 		r := &InstanceReconciler{
 			mgr:               mgr,
-			managementCluster: &fakeCluster{client: mgmtClient, scheme: s},
+			managementCluster: newFakeCluster(mgmtClient),
 		}
+
+		// Initialize the finalizer registry so that r.finalizers.Finalize is not
+		// a nil-pointer dereference. SetupWithManager does this in production; in
+		// tests we replicate the same steps manually.
+		r.finalizers = finalizer.NewFinalizers()
+		require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
 		return r, projectClient, mgmtClient
 	}
 
@@ -737,10 +713,28 @@ func TestReconcileQuota(t *testing.T) {
 		s := newTestScheme(t)
 
 		now := metav1.Now()
-		instance := makeInstance(s,
-			computev1alpha.SchedulingGate{Name: instancecontrol.QuotaSchedulingGate.String()},
-		)
-		instance.DeletionTimestamp = &now
+		// Build the instance directly without instanceControllerFinalizer to
+		// represent the state after the Karmada finalizer has already been
+		// cleaned up; only the quota finalizer remains to be processed.
+		instance := &computev1alpha.Instance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              instanceName,
+				Namespace:         namespace,
+				DeletionTimestamp: &now,
+				Finalizers:        []string{instanceQuotaFinalizer},
+			},
+			Spec: computev1alpha.InstanceSpec{
+				Controller: &computev1alpha.InstanceController{
+					SchedulingGates: []computev1alpha.SchedulingGate{
+						{Name: instancecontrol.QuotaSchedulingGate.String()},
+					},
+				},
+				Runtime: computev1alpha.InstanceRuntimeSpec{
+					Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				},
+				NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+			},
+		}
 
 		claim := makeClaim(s, metav1.ConditionFalse, quotav1alpha1.ResourceClaimPendingReason)
 

@@ -18,17 +18,22 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
+	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
+	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
@@ -51,6 +56,11 @@ var (
 	gitCommit    = "unknown"
 	gitTreeState = "unknown"
 	buildDate    = "unknown"
+
+	// downstreamRestConfig holds the REST config for the downstream control plane.
+	// It is populated from --downstream-kubeconfig when set, and is nil when the
+	// flag is omitted (e.g. in non-federation deployments).
+	downstreamRestConfig *rest.Config
 )
 
 func init() {
@@ -61,6 +71,8 @@ func init() {
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -71,12 +83,27 @@ func main() {
 	var leaderElectionNamespace string
 	var probeAddr string
 	var serverConfigFile string
+	var downstreamKubeconfig string
+	var downstreamContext string
+	var enableManagementControllers bool
+	var enableCellControllers bool
 
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	flag.StringVar(&downstreamKubeconfig, "downstream-kubeconfig", "",
+		"Path to the kubeconfig file for the downstream control plane. "+
+			"When omitted, downstream federation features are disabled.")
+	flag.StringVar(&downstreamContext, "downstream-context", "",
+		"Context to use from the downstream kubeconfig. When omitted, the current context is used.")
+	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", true,
+		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector). "+
+			"Disable when running a cell-only operator instance.")
+	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", true,
+		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler). "+
+			"Disable when running a management-only operator instance.")
 
 	opts := zap.Options{
 		Development: true,
@@ -88,6 +115,23 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Load the downstream REST config when --downstream-kubeconfig is provided.
+	// When the flag is omitted, downstreamRestConfig remains nil and federation
+	// features will be skipped at controller setup time.
+	if downstreamKubeconfig != "" {
+		loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			&clientcmd.ClientConfigLoadingRules{ExplicitPath: downstreamKubeconfig},
+			&clientcmd.ConfigOverrides{CurrentContext: downstreamContext},
+		)
+		var err error
+		downstreamRestConfig, err = loader.ClientConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to load downstream kubeconfig", "path", downstreamKubeconfig)
+			os.Exit(1)
+		}
+		setupLog.Info("downstream kubeconfig loaded", "path", downstreamKubeconfig)
+	}
 
 	setupLog.Info("starting compute",
 		"version", version,
@@ -180,17 +224,63 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Workload")
 		os.Exit(1)
 	}
-	if err = (&controller.WorkloadDeploymentReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
-		os.Exit(1)
+
+	// Build a single downstream client shared across all controllers that need
+	// to read or write to the downstream control plane. Nil when federation is disabled.
+	var downstreamClient client.Client
+	if downstreamRestConfig != nil {
+		downstreamClient, err = client.New(downstreamRestConfig, client.Options{Scheme: scheme})
+		if err != nil {
+			setupLog.Error(err, "unable to create downstream client")
+			os.Exit(1)
+		}
 	}
-	if err = (&controller.WorkloadDeploymentScheduler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentScheduler")
-		os.Exit(1)
+
+	if enableCellControllers {
+		if err = (&controller.WorkloadDeploymentReconciler{}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
+			os.Exit(1)
+		}
 	}
-	if err = (&controller.InstanceReconciler{}).SetupWithManager(mgr, deploymentCluster); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Instance")
-		os.Exit(1)
+
+	if enableCellControllers {
+		instanceReconciler := &controller.InstanceReconciler{DownstreamClient: downstreamClient}
+		if err = instanceReconciler.SetupWithManager(mgr, deploymentCluster); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Instance")
+			os.Exit(1)
+		}
+	}
+
+	// WorkloadDeploymentFederator and InstanceProjector are management-plane
+	// controllers that run on the control-plane cluster. They require a downstream
+	// control plane to be configured (--downstream-kubeconfig provided).
+	if enableManagementControllers && downstreamRestConfig != nil {
+		federator := &controller.WorkloadDeploymentFederator{DownstreamClient: downstreamClient}
+		if err = federator.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentFederator")
+			os.Exit(1)
+		}
+
+		// InstanceProjector: runs in the Control Plane Cell, watches Instances
+		// written back to the downstream control plane by POP-cell operators, and
+		// projects them into the corresponding project namespaces via the
+		// multicluster manager.
+		downstreamMgr, err := manager.New(downstreamRestConfig, manager.Options{
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create downstream manager for InstanceProjector")
+			os.Exit(1)
+		}
+		if err = (&controller.InstanceProjector{
+			DownstreamClient: downstreamClient,
+			MCManager:        mgr,
+		}).SetupWithManager(downstreamMgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InstanceProjector")
+			os.Exit(1)
+		}
+		runnables = append(runnables, downstreamMgr)
 	}
 
 	if serverConfig.WebhookServer != nil {
@@ -284,6 +374,7 @@ func initializeClusterDiscovery(
 		}
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
+			Metrics: metricsserver.Options{BindAddress: "0"},
 			Client: client.Options{
 				Cache: &client.CacheOptions{
 					Unstructured: true,

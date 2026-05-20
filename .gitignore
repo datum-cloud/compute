@@ -25,3 +25,6 @@ go.work.sum
 .env
 
 bin/
+
+# Local e2e environment artefacts (Kind kubeconfigs, etc.)
+tmp/

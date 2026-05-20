@@ -11,4 +11,4 @@ roleRef:
   name: compute
 subjects:
 - kind: ServiceAccount
-  name: compute
+  name: compute-manager

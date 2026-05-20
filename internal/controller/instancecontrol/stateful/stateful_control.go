@@ -68,8 +68,6 @@ func (c *statefulControl) GetActions(
 				},
 				Spec: deployment.Spec.Template.Spec,
 			}
-			desiredInstances[i].Spec.Location = deployment.Status.Location
-
 			// TODO(jreese) consider adding scheduling gates via mutating webhooks
 			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
 				TemplateHash: instanceTemplateHash,
