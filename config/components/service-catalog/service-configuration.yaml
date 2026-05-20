@@ -3,74 +3,53 @@ kind: ServiceConfiguration
 metadata:
   name: compute
 spec:
-  meters:
-  - billing:
-      consumedUnit: s
-      pricingUnit: h
-    description: CPU seconds consumed by a running instance.
-    displayName: Compute Instance CPU Seconds
-    measurement:
-      aggregation: Sum
-      unit: s
-    monitoredResourceTypes:
-    - compute.datumapis.com/Instance
-    name: compute.datumapis.com/instance/cpu-seconds
-  - billing:
-      consumedUnit: By.s
-      pricingUnit: GiBy.h
-    description: Memory byte-seconds consumed by a running instance.
-    displayName: Compute Instance Memory Seconds
-    measurement:
-      aggregation: Sum
-      unit: By.s
-    monitoredResourceTypes:
-    - compute.datumapis.com/Instance
-    name: compute.datumapis.com/instance/memory-seconds
-  - billing:
-      consumedUnit: '{cpu}'
-      pricingUnit: '{cpu}'
-    description: Number of vCPUs allocated to an instance.
-    displayName: Compute Instance CPU Allocated
-    measurement:
-      aggregation: Latest
-      unit: '{cpu}'
-    monitoredResourceTypes:
-    - compute.datumapis.com/Instance
-    name: compute.datumapis.com/instance/cpu-allocated
-  - billing:
-      consumedUnit: By
-      pricingUnit: GiBy
-    description: Bytes of memory allocated to an instance.
-    displayName: Compute Instance Memory Allocated
-    measurement:
-      aggregation: Latest
-      unit: By
-    monitoredResourceTypes:
-    - compute.datumapis.com/Instance
-    name: compute.datumapis.com/instance/memory-allocated
-  - billing:
-      consumedUnit: s
-      pricingUnit: h
-    description: Seconds the instance has been in a running state.
-    displayName: Compute Instance Uptime
-    measurement:
-      aggregation: Sum
-      unit: s
-    monitoredResourceTypes:
-    - compute.datumapis.com/Instance
-    name: compute.datumapis.com/instance/uptime-seconds
+  serviceRef:
+    name: compute
+  phase: Published
   monitoredResourceTypes:
-  - description: A Unikraft virtual machine instance.
+  - type: compute.datumapis.com/Instance
     displayName: Compute Instance
+    description: A Unikraft virtual machine instance.
     gvk:
       group: compute.datumapis.com
       kind: Instance
     labels:
-    - description: The region where the instance is running.
-      name: region
-    - description: The service tier of the instance.
-      name: tier
-    type: compute.datumapis.com/Instance
-  phase: Published
-  serviceRef:
-    name: compute
+    - name: region
+      description: The region where the instance is running.
+    - name: tier
+      description: The service tier of the instance.
+  metrics:
+  - name: compute.datumapis.com/instance/cpu-seconds
+    displayName: Compute Instance CPU Seconds
+    description: CPU seconds consumed by a running instance.
+    kind: Cumulative
+    unit: s
+  - name: compute.datumapis.com/instance/memory-seconds
+    displayName: Compute Instance Memory Seconds
+    description: Memory byte-seconds consumed by a running instance.
+    kind: Cumulative
+    unit: By.s
+  - name: compute.datumapis.com/instance/cpu-allocated
+    displayName: Compute Instance CPU Allocated
+    description: Number of vCPUs allocated to an instance.
+    kind: Gauge
+    unit: '{cpu}'
+  - name: compute.datumapis.com/instance/memory-allocated
+    displayName: Compute Instance Memory Allocated
+    description: Bytes of memory allocated to an instance.
+    kind: Gauge
+    unit: By
+  - name: compute.datumapis.com/instance/uptime-seconds
+    displayName: Compute Instance Uptime
+    description: Seconds the instance has been in a running state.
+    kind: Cumulative
+    unit: s
+  billing:
+    consumerDestinations:
+    - monitoredResourceType: compute.datumapis.com/Instance
+      metrics:
+      - compute.datumapis.com/instance/cpu-seconds
+      - compute.datumapis.com/instance/memory-seconds
+      - compute.datumapis.com/instance/cpu-allocated
+      - compute.datumapis.com/instance/memory-allocated
+      - compute.datumapis.com/instance/uptime-seconds
