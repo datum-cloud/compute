@@ -49,6 +49,8 @@ Use the describe subcommand for full details on a single instance.`,
 	cmd.Flags().StringVar(&opts.workload, "workload", "", "Filter instances to a specific workload")
 	cmd.Flags().StringVar(&opts.city, "city", "", "Filter instances to a specific city")
 
+	_ = cmd.RegisterFlagCompletionFunc("workload", util.CompleteWorkloadNames)
+
 	cmd.AddCommand(describeCommand())
 
 	return cmd

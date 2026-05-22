@@ -40,6 +40,7 @@ Pressing Ctrl-C detaches from the watch without canceling the rollout.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWatch(cmd, args)
 		},
+		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
 	cmd.AddCommand(historyCommand(), undoCommand())
@@ -91,9 +92,10 @@ func runWatch(cmd *cobra.Command, args []string) error {
 
 func historyCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "history <workload-name>",
-		Short: "Show the rollout history for a workload",
-		Args:  cobra.ExactArgs(1),
+		Use:               "history <workload-name>",
+		Short:             "Show the rollout history for a workload",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: util.CompleteWorkloadNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runHistory(cmd, args)
 		},
@@ -164,7 +166,8 @@ func undoCommand() *cobra.Command {
 		Short: "Roll back a workload to a previous revision",
 		Long: `Creates a new revision that is a copy of the target revision.
 Rollbacks do not rewrite history.`,
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: util.CompleteWorkloadNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUndo(cmd, args, toRevision)
 		},

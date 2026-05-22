@@ -23,6 +23,7 @@ func Command() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScale(cmd, args, min)
 		},
+		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
 	cmd.Flags().Int32Var(&min, "min", 0, "Minimum number of instances per city")
