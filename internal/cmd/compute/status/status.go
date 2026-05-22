@@ -45,7 +45,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Fetch workload.
 	var workload computev1alpha.Workload
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "workload %q not found in project %s\n", workloadName, project)
 			return fmt.Errorf("workload not found")
@@ -56,7 +56,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// List deployments for this workload.
 	selector := labels.SelectorFromSet(labels.Set{computev1alpha.WorkloadUIDLabel: string(workload.UID)})
 	var deployList computev1alpha.WorkloadDeploymentList
-	if err := c.List(ctx, &deployList, client.InNamespace(project), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := c.List(ctx, &deployList, client.InNamespace(util.ResourceNamespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return fmt.Errorf("listing deployments: %w", err)
 	}
 
@@ -74,7 +74,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	revision := "—"
 	var cm corev1.ConfigMap
 	cmName := "compute.datumapis.com-revision-history." + workloadName
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: cmName}, &cm); err == nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: cmName}, &cm); err == nil {
 		if v, ok := cm.Annotations["compute.datumapis.com/current-revision"]; ok {
 			revision = v
 		}
@@ -175,7 +175,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		depUID := string(de.deployment.UID)
 		depSelector := labels.SelectorFromSet(labels.Set{computev1alpha.WorkloadDeploymentUIDLabel: depUID})
 		var instList computev1alpha.InstanceList
-		if err := c.List(ctx, &instList, client.InNamespace(project), client.MatchingLabelsSelector{Selector: depSelector}); err != nil {
+		if err := c.List(ctx, &instList, client.InNamespace(util.ResourceNamespace), client.MatchingLabelsSelector{Selector: depSelector}); err != nil {
 			// Skip detail on error.
 			continue
 		}

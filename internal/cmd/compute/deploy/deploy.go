@@ -62,7 +62,7 @@ Use -f to apply a workload manifest file instead of flags.`,
 	}
 
 	cmd.Flags().StringVar(&opts.image, "image", "", "Container image to deploy (e.g. ghcr.io/acme/api:1.4.2)")
-	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "d1-standard-2", "Instance type (e.g. d1-standard-2)")
+	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud/d1-standard-2", "Instance type (e.g. datumcloud/d1-standard-2)")
 	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "One or more city codes to deploy to (e.g. DFW,IAD)")
 	cmd.Flags().Int32Var(&opts.min, "min", 1, "Minimum number of instances per city")
 	cmd.Flags().Int32Var(&opts.port, "port", 0, "Port to expose on the workload (optional)")
@@ -99,7 +99,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	}
 	instanceType := opts.instanceType
 	if instanceType == "" {
-		instanceType = "d1-standard-2"
+		instanceType = "datumcloud/d1-standard-2"
 	}
 
 	c, err := util.NewClient(project)
@@ -114,12 +114,12 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 
 	var workload computev1alpha.Workload
 	creating := false
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			creating = true
 			workload = computev1alpha.Workload{
 				ObjectMeta: metav1.ObjectMeta{
-					Namespace: project,
+					Namespace: util.ResourceNamespace,
 					Name:      workloadName,
 				},
 			}
@@ -198,7 +198,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	}
 
 	if creating {
-		workload.Namespace = project
+		workload.Namespace = util.ResourceNamespace
 		if err := c.Create(ctx, &workload); err != nil {
 			return fmt.Errorf("creating workload: %w", err)
 		}
@@ -211,7 +211,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	}
 
 	// Write revision entry.
-	rev := revision.CurrentRevision(ctx, c, project, workloadName) + 1
+	rev := revision.CurrentRevision(ctx, c, util.ResourceNamespace, workloadName) + 1
 	specJSON, _ := json.Marshal(workload.Spec)
 	entry := revision.Entry{
 		Rev:       rev,
@@ -220,7 +220,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		Changes:   changes,
 		SpecJSON:  string(specJSON),
 	}
-	if err := revision.WriteEntry(ctx, c, project, workloadName, entry); err != nil {
+	if err := revision.WriteEntry(ctx, c, util.ResourceNamespace, workloadName, entry); err != nil {
 		// Non-fatal — log but continue.
 		fmt.Fprintf(out, "  warning: could not write revision history: %v\n", err)
 	}
@@ -257,7 +257,7 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 		return fmt.Errorf("decoding manifest: %w", err)
 	}
 
-	workload.Namespace = project
+	workload.Namespace = util.ResourceNamespace
 
 	c, err := util.NewClient(project)
 	if err != nil {
@@ -269,7 +269,7 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 
 	var existing computev1alpha.Workload
 	creating := false
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workload.Name}, &existing); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workload.Name}, &existing); err != nil {
 		if k8serrors.IsNotFound(err) {
 			creating = true
 		} else {
@@ -327,7 +327,7 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 		fmt.Fprintf(out, "  workload/%s updated\n", workload.Name)
 	}
 
-	rev := revision.CurrentRevision(ctx, c, project, workload.Name) + 1
+	rev := revision.CurrentRevision(ctx, c, util.ResourceNamespace, workload.Name) + 1
 	specJSON, _ := json.Marshal(workload.Spec)
 	entry := revision.Entry{
 		Rev:       rev,
@@ -336,7 +336,7 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 		Changes:   changes,
 		SpecJSON:  string(specJSON),
 	}
-	if err := revision.WriteEntry(ctx, c, project, workload.Name, entry); err != nil {
+	if err := revision.WriteEntry(ctx, c, util.ResourceNamespace, workload.Name, entry); err != nil {
 		fmt.Fprintf(out, "  warning: could not write revision history: %v\n", err)
 	}
 

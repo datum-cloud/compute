@@ -78,7 +78,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	var workloadUID string
 	if opts.workload != "" {
 		var wl computev1alpha.Workload
-		if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: opts.workload}, &wl); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: opts.workload}, &wl); err != nil {
 			if k8serrors.IsNotFound(err) {
 				return fmt.Errorf("workload %q not found", opts.workload)
 			}
@@ -89,7 +89,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 
 	// List instances.
 	var instList computev1alpha.InstanceList
-	listOpts := []client.ListOption{client.InNamespace(project)}
+	listOpts := []client.ListOption{client.InNamespace(util.ResourceNamespace)}
 	if workloadUID != "" {
 		selector := labels.SelectorFromSet(labels.Set{computev1alpha.WorkloadUIDLabel: workloadUID})
 		listOpts = append(listOpts, client.MatchingLabelsSelector{Selector: selector})
@@ -100,7 +100,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 
 	// List deployments — build map deploymentUID → *WorkloadDeployment.
 	var deployList computev1alpha.WorkloadDeploymentList
-	if err := c.List(ctx, &deployList, client.InNamespace(project)); err != nil {
+	if err := c.List(ctx, &deployList, client.InNamespace(util.ResourceNamespace)); err != nil {
 		return fmt.Errorf("listing deployments: %w", err)
 	}
 	deploymentMap := make(map[string]*computev1alpha.WorkloadDeployment, len(deployList.Items))
@@ -111,7 +111,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 
 	// List workloads — build map workloadUID → name.
 	var wlList computev1alpha.WorkloadList
-	if err := c.List(ctx, &wlList, client.InNamespace(project)); err != nil {
+	if err := c.List(ctx, &wlList, client.InNamespace(util.ResourceNamespace)); err != nil {
 		return fmt.Errorf("listing workloads: %w", err)
 	}
 	workloadMap := make(map[string]string, len(wlList.Items))
@@ -228,7 +228,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	instanceName := args[0]
 
 	var inst computev1alpha.Instance
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: instanceName}, &inst); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: instanceName}, &inst); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return fmt.Errorf("instance %q not found in project %s", instanceName, project)
 		}
@@ -244,7 +244,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	if deploymentUID != "" {
 		depSelector := labels.SelectorFromSet(labels.Set{computev1alpha.WorkloadDeploymentUIDLabel: deploymentUID})
 		var depList computev1alpha.WorkloadDeploymentList
-		if err := c.List(ctx, &depList, client.InNamespace(project), client.MatchingLabelsSelector{Selector: depSelector}); err == nil && len(depList.Items) > 0 {
+		if err := c.List(ctx, &depList, client.InNamespace(util.ResourceNamespace), client.MatchingLabelsSelector{Selector: depSelector}); err == nil && len(depList.Items) > 0 {
 			dep := depList.Items[0]
 			city = dep.Spec.CityCode
 			placementName = dep.Spec.PlacementName

@@ -59,14 +59,14 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	workloadName := args[0]
 
 	var workload computev1alpha.Workload
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return fmt.Errorf("workload %q not found in project %s", workloadName, project)
 		}
 		return fmt.Errorf("getting workload: %w", err)
 	}
 
-	entries, currentRev, err := revision.ReadEntries(ctx, c, project, workloadName)
+	entries, currentRev, err := revision.ReadEntries(ctx, c, util.ResourceNamespace, workloadName)
 	if err != nil {
 		return fmt.Errorf("reading revision history: %w", err)
 	}
@@ -112,14 +112,14 @@ func runHistory(cmd *cobra.Command, args []string) error {
 	workloadName := args[0]
 
 	var workload computev1alpha.Workload
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return fmt.Errorf("workload %q not found in project %s", workloadName, project)
 		}
 		return fmt.Errorf("getting workload: %w", err)
 	}
 
-	entries, currentRev, err := revision.ReadEntries(ctx, c, project, workloadName)
+	entries, currentRev, err := revision.ReadEntries(ctx, c, util.ResourceNamespace, workloadName)
 	if err != nil {
 		return fmt.Errorf("reading revision history: %w", err)
 	}
@@ -187,14 +187,14 @@ func runUndo(cmd *cobra.Command, args []string, toRevision int32) error {
 	workloadName := args[0]
 
 	var workload computev1alpha.Workload
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return fmt.Errorf("workload %q not found in project %s", workloadName, project)
 		}
 		return fmt.Errorf("getting workload: %w", err)
 	}
 
-	entries, currentRev, err := revision.ReadEntries(ctx, c, project, workloadName)
+	entries, currentRev, err := revision.ReadEntries(ctx, c, util.ResourceNamespace, workloadName)
 	if err != nil {
 		return fmt.Errorf("reading revision history: %w", err)
 	}
@@ -263,7 +263,7 @@ func runUndo(cmd *cobra.Command, args []string, toRevision int32) error {
 		Actor:    actor,
 		SpecJSON: string(newSpecJSON),
 	}
-	if err := revision.WriteEntry(ctx, c, project, workloadName, entry); err != nil {
+	if err := revision.WriteEntry(ctx, c, util.ResourceNamespace, workloadName, entry); err != nil {
 		fmt.Fprintf(out, "  warning: could not write revision history: %v\n", err)
 	}
 

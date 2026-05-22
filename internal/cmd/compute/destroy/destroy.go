@@ -47,7 +47,7 @@ func runDestroy(cmd *cobra.Command, args []string, yes bool) error {
 	workloadName := args[0]
 
 	var workload computev1alpha.Workload
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return fmt.Errorf("workload %q not found in project %s", workloadName, project)
 		}
@@ -91,7 +91,7 @@ func runDestroy(cmd *cobra.Command, args []string, yes bool) error {
 	// Best-effort deletion of the revision ConfigMap.
 	var cm corev1.ConfigMap
 	cmName := revision.ConfigMapName(workloadName)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: cmName}, &cm); err == nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: cmName}, &cm); err == nil {
 		_ = c.Delete(ctx, &cm)
 	}
 
