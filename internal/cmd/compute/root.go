@@ -1,9 +1,8 @@
 package compute
 
 import (
-	"os"
-
 	"github.com/spf13/cobra"
+	"go.datum.net/datumctl/plugin"
 
 	"go.datum.net/compute/internal/cmd/compute/deploy"
 	"go.datum.net/compute/internal/cmd/compute/destroy"
@@ -16,17 +15,7 @@ import (
 )
 
 func Command() *cobra.Command {
-	root := &cobra.Command{
-		Use:   "compute",
-		Short: "Deploy and manage containerized workloads on Datum Cloud",
-	}
-
-	root.PersistentFlags().String("org", os.Getenv("DATUM_ORG"),
-		"Datum Cloud organization (defaults to DATUM_ORG injected by datumctl)")
-	root.PersistentFlags().String("project", os.Getenv("DATUM_PROJECT"),
-		"Datum Cloud project (defaults to DATUM_PROJECT injected by datumctl)")
-	root.PersistentFlags().StringP("output", "o", "table",
-		"Output format. One of: table|json|yaml")
+	root := plugin.NewRootCmd("compute", "Deploy and manage containerized workloads on Datum Cloud")
 
 	root.AddCommand(
 		deploy.Command(),
