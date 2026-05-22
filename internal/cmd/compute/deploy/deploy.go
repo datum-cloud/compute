@@ -229,7 +229,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	if err := saveWorkloadYAML(workloadName, &workload); err != nil {
 		fmt.Fprintf(out, "  warning: could not save workload.yaml: %v\n", err)
 	} else {
-		fmt.Fprintln(out, "Saved workload.yaml")
+		_, _ = fmt.Fprintln(out, "Saved workload.yaml")
 	}
 
 	fmt.Fprintf(out, "Waiting for rollout. Ctrl-C to detach (rollout continues in background).\n\n")
@@ -281,10 +281,10 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 	if !creating {
 		diffLines = manifestDiff(existing, workload)
 		for _, l := range diffLines {
-			fmt.Fprintln(out, l)
+			_, _ = fmt.Fprintln(out, l)
 		}
 		if len(diffLines) == 0 {
-			fmt.Fprintln(out, "No changes detected.")
+			_, _ = fmt.Fprintln(out, "No changes detected.")
 		}
 	}
 

@@ -111,7 +111,7 @@ func validateScaleSettings(placement computev1alpha.HorizontalScaleSettings, fie
 }
 
 func validateScaleSettingMetrics(metrics []computev1alpha.MetricSpec, fieldPath *field.Path) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, len(metrics))
 
 	for i, m := range metrics {
 		metricField := fieldPath.Index(i)

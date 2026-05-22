@@ -11,9 +11,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	corev1 "k8s.io/api/core/v1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/cmd/compute/util"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func Command() *cobra.Command {
@@ -47,7 +47,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	var workload computev1alpha.Workload
 	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
-			fmt.Fprintf(cmd.ErrOrStderr(), "workload %q not found in project %s\n", workloadName, project)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "workload %q not found in project %s\n", workloadName, project)
 			return fmt.Errorf("workload not found")
 		}
 		return fmt.Errorf("getting workload: %w", err)
@@ -93,8 +93,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
 	// Header block — two-column layout.
-	fmt.Fprintf(out, "%-12s %-31s project: %s\n", "Workload", workloadName, project)
-	fmt.Fprintf(out, "%-12s %s\n", "Image", image)
+	_, _ = fmt.Fprintf(out, "%-12s %-31s project: %s\n", "Workload", workloadName, project)
+	_, _ = fmt.Fprintf(out, "%-12s %s\n", "Image", image)
 	fmt.Fprintf(out, "%-12s %-31s Revision #%s\n", "Updated", age, revision)
 	fmt.Fprintf(out, "\n")
 	fmt.Fprintf(out, "%-12s %s\n", "Health", health)
@@ -162,11 +162,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// For each degraded deployment, find the first unhealthy instance and get its detail.
 	type degradedDetail struct {
-		city         string
-		count        int32
-		statusLine   string
-		detailMsg    string
-		quotaExceed  bool
+		city        string
+		count       int32
+		statusLine  string
+		detailMsg   string
+		quotaExceed bool
 	}
 	var details []degradedDetail
 	anyQuotaExceeded := false
