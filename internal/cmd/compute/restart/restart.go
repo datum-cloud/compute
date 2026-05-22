@@ -25,6 +25,7 @@ func Command() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRestart(cmd, args, city)
 		},
+		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
 	cmd.Flags().StringVar(&city, "city", "", "Restart only instances in a specific city")

@@ -28,6 +28,7 @@ func Command() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDestroy(cmd, args, yes)
 		},
+		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")

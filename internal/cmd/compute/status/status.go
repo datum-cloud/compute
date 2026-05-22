@@ -27,6 +27,7 @@ counts and plain-English explanations of any degraded conditions.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd, args)
 		},
+		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
 	return cmd
