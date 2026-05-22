@@ -2,9 +2,11 @@ package util
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
-	"go.datum.net/datumctl/plugin"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -33,12 +35,12 @@ func NewClient(project string) (client.Client, error) {
 		return nil, fmt.Errorf("no project set — pass --project or run 'datumctl config set project <name>'")
 	}
 
-	pluginCtx := plugin.Context()
-	if pluginCtx.APIHost == "" {
+	apiHost := os.Getenv("DATUM_API_HOST")
+	if apiHost == "" {
 		return nil, fmt.Errorf("DATUM_API_HOST is not set; is this plugin running via datumctl?")
 	}
 
-	token, err := plugin.Token()
+	token, err := pluginToken()
 	if err != nil {
 		return nil, fmt.Errorf("getting credentials: %w", err)
 	}
@@ -49,11 +51,25 @@ func NewClient(project string) (client.Client, error) {
 	}
 
 	cfg := &rest.Config{
-		Host:        ProjectControlPlaneURL(pluginCtx.APIHost, project),
+		Host:        ProjectControlPlaneURL(apiHost, project),
 		BearerToken: token,
 	}
 
 	return client.New(cfg, client.Options{Scheme: scheme})
+}
+
+// pluginToken retrieves a bearer token by calling the datumctl credentials
+// helper injected via DATUM_CREDENTIALS_HELPER.
+func pluginToken() (string, error) {
+	helper := os.Getenv("DATUM_CREDENTIALS_HELPER")
+	if helper == "" {
+		return "", fmt.Errorf("DATUM_CREDENTIALS_HELPER is not set; is this plugin running via datumctl?")
+	}
+	out, err := exec.Command(helper, "auth", "get-token").Output()
+	if err != nil {
+		return "", fmt.Errorf("credentials helper: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ProjectFromCmd reads the --project persistent flag from the command's root.
