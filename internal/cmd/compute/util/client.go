@@ -1,0 +1,58 @@
+package util
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+	"go.datum.net/datumctl/plugin"
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	resourceManagerGroup   = "resourcemanager.miloapis.com"
+	resourceManagerVersion = "v1alpha1"
+)
+
+// ProjectControlPlaneURL returns the virtual control-plane URL for a project.
+func ProjectControlPlaneURL(apiHost, projectID string) string {
+	return fmt.Sprintf("https://%s/apis/%s/%s/projects/%s/control-plane",
+		apiHost, resourceManagerGroup, resourceManagerVersion, projectID)
+}
+
+// NewClient builds a Kubernetes client targeting the project's virtual control plane.
+func NewClient(project string) (client.Client, error) {
+	if project == "" {
+		return nil, fmt.Errorf("no project set — pass --project or run 'datumctl config set project <name>'")
+	}
+
+	pluginCtx := plugin.Context()
+	if pluginCtx.APIHost == "" {
+		return nil, fmt.Errorf("DATUM_API_HOST is not set; is this plugin running via datumctl?")
+	}
+
+	token, err := plugin.Token()
+	if err != nil {
+		return nil, fmt.Errorf("getting credentials: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	if err := computev1alpha.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering compute scheme: %w", err)
+	}
+
+	cfg := &rest.Config{
+		Host:        ProjectControlPlaneURL(pluginCtx.APIHost, project),
+		BearerToken: token,
+	}
+
+	return client.New(cfg, client.Options{Scheme: scheme})
+}
+
+// ProjectFromCmd reads the --project persistent flag from the command's root.
+func ProjectFromCmd(cmd *cobra.Command) string {
+	project, _ := cmd.Root().PersistentFlags().GetString("project")
+	return project
+}
