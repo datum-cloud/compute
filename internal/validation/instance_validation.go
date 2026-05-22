@@ -35,7 +35,7 @@ func validateInstanceTemplate(
 	fieldPath *field.Path,
 	opts WorkloadValidationOptions,
 ) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, 2)
 
 	allErrs = append(allErrs, validateInstanceTemplateMetadata(template, fieldPath)...)
 	allErrs = append(allErrs, validateInstanceSpec(template.Spec, fieldPath.Child("spec"), opts)...)
@@ -79,7 +79,7 @@ func validateInstanceSpec(
 	fieldPath *field.Path,
 	opts WorkloadValidationOptions,
 ) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, 3)
 
 	volumes, volumeErrs := validateVolumes(spec, fieldPath)
 	allErrs = append(allErrs, volumeErrs...)
@@ -591,7 +591,7 @@ func validateVolumeAttachments(
 	volumes map[string]computev1alpha.VolumeSource,
 	fieldPath *field.Path,
 ) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, len(attachments))
 
 	allMounthPaths := sets.Set[string]{}
 

@@ -81,6 +81,15 @@ const (
 	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
 )
 
+const (
+	instanceAPIGroup = "compute.datumapis.com"
+	instanceKind     = "Instance"
+
+	instanceNotProgrammedMessage = "Instance has not been programmed"
+	instanceNetworkFailedReason  = "NetworkFailedToCreate"
+	instanceReadyMessage         = "Instance is ready"
+)
+
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
 // Keeping it narrow allows unit tests to substitute a minimal fake.
 type clusterGetter interface {
@@ -891,7 +900,7 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 		}
 
 		condition := apimeta.FindStatusCondition(networkBinding.Status.Conditions, networkingv1alpha.NetworkBindingReady)
-		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == "NetworkFailedToCreate" {
+		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == instanceNetworkFailedReason {
 			return true, condition.Message, nil
 		}
 	}

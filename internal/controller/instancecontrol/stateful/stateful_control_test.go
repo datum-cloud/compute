@@ -53,7 +53,7 @@ func TestUpdateWithAllReadyInstances(t *testing.T) {
 
 	deployment := getWorkloadDeployment("test-deploy", 2)
 
-	var currentInstances []v1alpha.Instance
+	currentInstances := make([]v1alpha.Instance, 0, 2)
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 1))
 
@@ -79,7 +79,7 @@ func TestScaleUpWithNotReadyInstance(t *testing.T) {
 
 	deployment := getWorkloadDeployment("test-deploy", 3)
 
-	var currentInstances []v1alpha.Instance
+	currentInstances := make([]v1alpha.Instance, 0, 2)
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 
 	notReadyInstance := getInstanceForDeployment(deployment, 1)
@@ -109,7 +109,7 @@ func TestScaleUpWithDeletingReadyInstance(t *testing.T) {
 
 	deployment := getWorkloadDeployment("test-deploy", 3)
 
-	var currentInstances []v1alpha.Instance
+	currentInstances := make([]v1alpha.Instance, 0, 2)
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 
 	deletingInstance := getInstanceForDeployment(deployment, 1)

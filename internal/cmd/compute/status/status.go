@@ -152,7 +152,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	if len(degraded) == 0 {
 		return nil

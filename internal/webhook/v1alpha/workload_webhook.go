@@ -2,7 +2,6 @@ package webhook
 
 import (
 	"context"
-
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -61,57 +60,6 @@ func (r *workloadWebhook) Default(_ context.Context, _ *computev1alpha.Workload)
 	// 		}
 	// 	}
 	// }
-
-	// TODO(user): fill in your defaulting logic.
-	return nil
-}
-
-// +kubebuilder:webhook:path=/validate-compute-datumapis-com-v1alpha-workload,mutating=false,failurePolicy=fail,sideEffects=None,groups=compute.datumapis.com,resources=workloads,verbs=create;update,versions=v1alpha,name=vworkload.kb.io,admissionReviewVersions=v1
-
-func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev1alpha.Workload) (admission.Warnings, error) {
-	clusterName := computewebhook.ClusterNameFromContext(ctx)
-
-	cluster, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(clusterName))
-	if err != nil {
-		return nil, err
-	}
-	clusterClient := cluster.GetClient()
-
-	logger := logf.FromContext(ctx).WithValues("cluster", clusterName)
-	logger.Info("Validating Workload Create", "name", workload.GetName(), "cluster", clusterName)
-
-	req, err := admission.RequestFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// TODO(jreese) validate caller access to individual locations, consider what
-	// that means for the scheduling phase, since there would not currently be
-	// sufficient context to know who created the workload and what locations
-	// are valid candidates based on that. Maybe an annotation, or spec field?
-	var locations networkingv1alpha.LocationBindingList
-	if err := clusterClient.List(ctx, &locations); err != nil {
-		return nil, fmt.Errorf("failed to list location bindings: %w", err)
-	}
-
-	validCityCodes := sets.Set[string]{}
-	for _, location := range locations.Items {
-		cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
-		if ok {
-			validCityCodes.Insert(cityCode)
-		}
-	}
-
-	opts := validation.WorkloadValidationOptions{
-		Context:          ctx,
-		Client:           clusterClient,
-		AdmissionRequest: req,
-		Workload:         workload,
-		ValidCityCodes:   sets.List(validCityCodes),
-	}
-
-	if errs := validation.ValidateWorkloadCreate(workload, opts); len(errs) > 0 {
-		return nil, errors.NewInvalid(workload.GroupVersionKind().GroupKind(), workload.Name, errs)
 	}
 
 	return nil, nil

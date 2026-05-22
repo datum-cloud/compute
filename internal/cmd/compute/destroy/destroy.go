@@ -72,14 +72,14 @@ func runDestroy(cmd *cobra.Command, args []string, yes bool) error {
 
 	// Prompt unless --yes or non-interactive.
 	if !yes && term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Fprint(out, "This will delete workload and all its instances. Continue? (y/N): ")
+		_, _ = fmt.Fprint(out, "This will delete workload and all its instances. Continue? (y/N): ")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("reading confirmation: %w", err)
 		}
 		line = strings.TrimSpace(line)
 		if line != "y" && line != "Y" {
-			fmt.Fprintln(out, "Aborted.")
+			_, _ = fmt.Fprintln(out, "Aborted.")
 			return nil
 		}
 	}

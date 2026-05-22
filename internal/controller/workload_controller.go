@@ -38,6 +38,9 @@ const (
 	workloadConditionTypeAvailable = "Available"
 )
 
+// conditionAvailable is the condition type used to indicate resource availability.
+const conditionAvailable = "Available"
+
 // WorkloadReconciler reconciles a Workload object
 type WorkloadReconciler struct {
 	mgr        mcmanager.Manager
@@ -242,7 +245,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		}
 
 		placementAvailableCondition := metav1.Condition{
-			Type:    "Available",
+			Type:    conditionAvailable,
 			Status:  metav1.ConditionFalse,
 			Reason:  "NoAvailableDeployments",
 			Message: "No available deployments were found for the placement",
@@ -260,7 +263,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 			desiredReplicas += deployment.Status.DesiredReplicas
 			readyReplicas += deployment.Status.ReadyReplicas
 
-			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, "Available") {
+			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, conditionAvailable) {
 				foundAvailableDeployment = true
 			}
 		}
@@ -287,7 +290,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	}
 
 	availableCondition := metav1.Condition{
-		Type:    "Available",
+		Type:    conditionAvailable,
 		Status:  metav1.ConditionFalse,
 		Reason:  "NoAvailablePlacements",
 		Message: "No available placements were found for the workload",
