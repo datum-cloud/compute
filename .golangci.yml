@@ -35,6 +35,9 @@ linters:
           - dupl
           - lll
         path: internal/*
+      - linters:
+          - errcheck
+        path: internal/cmd/.*
     paths:
       - third_party$
       - builtin$

@@ -21,8 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
@@ -47,17 +47,17 @@ type fakeCluster struct {
 	scheme *runtime.Scheme
 }
 
-func (f *fakeCluster) GetHTTPClient() *http.Client                      { return nil }
-func (f *fakeCluster) GetConfig() *rest.Config                          { return nil }
-func (f *fakeCluster) GetCache() cache.Cache                            { return nil }
-func (f *fakeCluster) GetScheme() *runtime.Scheme                       { return f.scheme }
-func (f *fakeCluster) GetClient() client.Client                         { return f.client }
-func (f *fakeCluster) GetFieldIndexer() client.FieldIndexer             { return nil }
-func (f *fakeCluster) GetEventRecorderFor(string) record.EventRecorder  { return nil }
-func (f *fakeCluster) GetEventRecorder(string) events.EventRecorder     { return nil }
-func (f *fakeCluster) GetRESTMapper() apimeta.RESTMapper                { return nil }
-func (f *fakeCluster) GetAPIReader() client.Reader                      { return f.client }
-func (f *fakeCluster) Start(context.Context) error                      { return nil }
+func (f *fakeCluster) GetHTTPClient() *http.Client                     { return nil }
+func (f *fakeCluster) GetConfig() *rest.Config                         { return nil }
+func (f *fakeCluster) GetCache() cache.Cache                           { return nil }
+func (f *fakeCluster) GetScheme() *runtime.Scheme                      { return f.scheme }
+func (f *fakeCluster) GetClient() client.Client                        { return f.client }
+func (f *fakeCluster) GetFieldIndexer() client.FieldIndexer            { return nil }
+func (f *fakeCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
+func (f *fakeCluster) GetEventRecorder(string) events.EventRecorder    { return nil }
+func (f *fakeCluster) GetRESTMapper() apimeta.RESTMapper               { return nil }
+func (f *fakeCluster) GetAPIReader() client.Reader                     { return f.client }
+func (f *fakeCluster) Start(context.Context) error                     { return nil }
 
 // fakeMCManager is a minimal multicluster manager that returns a single cluster.
 type fakeMCManager struct {
