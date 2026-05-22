@@ -463,7 +463,7 @@ func validateInstanceRuntimeSpec(spec computev1alpha.InstanceRuntimeSpec, volume
 }
 
 func validateSandboxRuntime(sandbox *computev1alpha.SandboxRuntime, volumes map[string]computev1alpha.VolumeSource, fieldPath *field.Path) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, 4)
 
 	allErrs = append(allErrs, validateSandboxContainers(sandbox.Containers, volumes, fieldPath.Child("containers"))...)
 	allErrs = append(allErrs, validateImagePullSecrets(sandbox.ImagePullSecrets, fieldPath.Child("imagePullSecrets"))...)

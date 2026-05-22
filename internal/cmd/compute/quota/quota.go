@@ -159,10 +159,10 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 		keys = filtered
 	}
 
-	fmt.Fprintf(out, "Quota usage for project %s\n\n", project)
+	_, _ = fmt.Fprintf(out, "Quota usage for project %s\n\n", project)
 
 	tw := util.NewTabWriter(out)
-	fmt.Fprintf(tw, "CITY\tTYPE\tIN USE\tLIMIT\tAVAILABLE\n")
+	_, _ = fmt.Fprintf(tw, "CITY\tTYPE\tIN USE\tLIMIT\tAVAILABLE\n")
 
 	for _, k := range keys {
 		gd := groups[k]
@@ -182,7 +182,7 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 			cityLabel += " [at limit]"
 		}
 
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", cityLabel, k.instanceType, gd.count, limit, available)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", cityLabel, k.instanceType, gd.count, limit, available)
 	}
 	_ = tw.Flush()
 
