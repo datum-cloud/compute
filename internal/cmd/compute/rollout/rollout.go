@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"go.datum.net/datumctl/plugin"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -248,11 +247,7 @@ func runUndo(cmd *cobra.Command, args []string, toRevision int32) error {
 		return fmt.Errorf("updating workload: %w", err)
 	}
 
-	// Determine actor from plugin context.
-	actor := ""
-	if pluginCtx := plugin.Context(); pluginCtx.Org != "" {
-		actor = pluginCtx.Org
-	}
+	actor := os.Getenv("DATUM_ORG")
 
 	newSpecJSON, _ := json.Marshal(workload.Spec)
 	entry := revision.Entry{
