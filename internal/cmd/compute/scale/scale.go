@@ -47,7 +47,7 @@ func runScale(cmd *cobra.Command, args []string, min int32) error {
 	workloadName := args[0]
 
 	var workload computev1alpha.Workload
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return fmt.Errorf("workload %q not found in project %s", workloadName, project)
 		}

@@ -44,7 +44,7 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 	workloadName := args[0]
 
 	var workload computev1alpha.Workload
-	if err := c.Get(ctx, types.NamespacedName{Namespace: project, Name: workloadName}, &workload); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workloadName}, &workload); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return fmt.Errorf("workload %q not found in project %s", workloadName, project)
 		}
@@ -78,7 +78,7 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 	})
 	var deployList computev1alpha.WorkloadDeploymentList
 	if err := c.List(ctx, &deployList,
-		client.InNamespace(project),
+		client.InNamespace(util.ResourceNamespace),
 		client.MatchingLabelsSelector{Selector: selector},
 	); err != nil {
 		return fmt.Errorf("listing deployments: %w", err)

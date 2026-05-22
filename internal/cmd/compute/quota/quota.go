@@ -55,13 +55,13 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 
 	// List all instances in the project.
 	var instList computev1alpha.InstanceList
-	if err := c.List(ctx, &instList, client.InNamespace(project)); err != nil {
+	if err := c.List(ctx, &instList, client.InNamespace(util.ResourceNamespace)); err != nil {
 		return fmt.Errorf("listing instances: %w", err)
 	}
 
 	// List all deployments to build a UID → city/instanceType lookup.
 	var deployList computev1alpha.WorkloadDeploymentList
-	if err := c.List(ctx, &deployList, client.InNamespace(project)); err != nil {
+	if err := c.List(ctx, &deployList, client.InNamespace(util.ResourceNamespace)); err != nil {
 		return fmt.Errorf("listing deployments: %w", err)
 	}
 

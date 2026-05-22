@@ -14,6 +14,11 @@ import (
 const (
 	resourceManagerGroup   = "resourcemanager.miloapis.com"
 	resourceManagerVersion = "v1alpha1"
+
+	// ResourceNamespace is the namespace used for all resource operations within
+	// a project's virtual control plane. The project slug routes to the right
+	// control plane; within it, everything lives in "default".
+	ResourceNamespace = "default"
 )
 
 // ProjectControlPlaneURL returns the virtual control-plane URL for a project.

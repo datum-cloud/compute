@@ -62,7 +62,7 @@ func Rollout(ctx context.Context, c client.Client, out io.Writer, project string
 		case <-ticker.C:
 			var deployList computev1alpha.WorkloadDeploymentList
 			if err := c.List(ctx, &deployList,
-				client.InNamespace(project),
+				client.InNamespace(util.ResourceNamespace),
 				client.MatchingLabelsSelector{Selector: selector},
 			); err != nil {
 				if ctx.Err() != nil {
@@ -185,7 +185,7 @@ func printBlockedDetail(ctx context.Context, c client.Client, out io.Writer, pro
 		computev1alpha.WorkloadDeploymentUIDLabel: string(d.UID),
 	})
 	var instList computev1alpha.InstanceList
-	if err := c.List(ctx, &instList, client.InNamespace(project), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := c.List(ctx, &instList, client.InNamespace(util.ResourceNamespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return
 	}
 	for _, inst := range instList.Items {
