@@ -136,7 +136,7 @@ func TestScaleDownWithAllReadyInstances(t *testing.T) {
 
 	deployment := getWorkloadDeployment("test-deploy", 1)
 
-	var currentInstances []v1alpha.Instance
+	currentInstances := make([]v1alpha.Instance, 0, 2)
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 1))
 

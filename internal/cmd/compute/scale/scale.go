@@ -55,7 +55,7 @@ func runScale(cmd *cobra.Command, args []string, min int32) error {
 	}
 
 	if len(workload.Spec.Placements) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "workload has no placements; nothing to scale")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "workload has no placements; nothing to scale")
 		return nil
 	}
 

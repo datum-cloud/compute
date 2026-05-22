@@ -18,7 +18,7 @@ import (
 //   https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/validation/validation.go
 
 func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, 4)
 
 	// allErrs = append(allErrs, validateWorkloadMetadata(w)...)
 	allErrs = append(allErrs, validateWorkloadSpec(w.Spec, opts)...)
@@ -35,7 +35,7 @@ type WorkloadValidationOptions struct {
 }
 
 func validateWorkloadSpec(spec computev1alpha.WorkloadSpec, opts WorkloadValidationOptions) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, 4)
 
 	specPath := field.NewPath("spec")
 

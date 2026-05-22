@@ -177,14 +177,14 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 
 	// Prompt unless --yes or non-interactive.
 	if !opts.yes && term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Fprint(out, "Apply? (Y/n): ")
+		_, _ = fmt.Fprint(out, "Apply? (Y/n): ")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("reading confirmation: %w", err)
 		}
 		line = strings.TrimSpace(line)
 		if line == "n" || line == "N" {
-			fmt.Fprintln(out, "Aborted.")
+			_, _ = fmt.Fprintln(out, "Aborted.")
 			return nil
 		}
 	}
@@ -290,14 +290,14 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 
 	// Prompt unless --yes or non-interactive.
 	if !opts.yes && term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Fprint(out, "Apply? (Y/n): ")
+		_, _ = fmt.Fprint(out, "Apply? (Y/n): ")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("reading confirmation: %w", err)
 		}
 		line = strings.TrimSpace(line)
 		if line == "n" || line == "N" {
-			fmt.Fprintln(out, "Aborted.")
+			_, _ = fmt.Fprintln(out, "Aborted.")
 			return nil
 		}
 	}

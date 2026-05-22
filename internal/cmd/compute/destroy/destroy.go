@@ -8,14 +8,14 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"golang.org/x/term"
 
-	corev1 "k8s.io/api/core/v1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/cmd/compute/revision"
 	"go.datum.net/compute/internal/cmd/compute/util"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func Command() *cobra.Command {

@@ -28,7 +28,7 @@ func Command() *cobra.Command {
 revert to a previous revision.
 
 Pressing Ctrl-C detaches from the watch without canceling the rollout.`,
-		Args:    cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		Example: `  # Watch live rollout progress
   datumctl compute rollout api
 
@@ -132,7 +132,7 @@ func runHistory(cmd *cobra.Command, args []string) error {
 	}
 
 	tw := util.NewTabWriter(out)
-	fmt.Fprintln(tw, "REV\tWHEN\tIMAGE\tCHANGES\tBY\tSTATUS")
+	_, _ = fmt.Fprintln(tw, "REV\tWHEN\tIMAGE\tCHANGES\tBY\tSTATUS")
 
 	for _, e := range entries {
 		when := "—"
@@ -152,7 +152,7 @@ func runHistory(cmd *cobra.Command, args []string) error {
 			e.Rev, when, e.Image, e.Changes, e.Actor, status)
 	}
 
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -252,12 +252,12 @@ func runUndo(cmd *cobra.Command, args []string, toRevision int32) error {
 
 	newSpecJSON, _ := json.Marshal(workload.Spec)
 	entry := revision.Entry{
-		Rev:      newRev,
+		Rev:       newRev,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Image:    targetEntry.Image,
-		Changes:  fmt.Sprintf("rollback to rev #%d", target),
-		Actor:    actor,
-		SpecJSON: string(newSpecJSON),
+		Image:     targetEntry.Image,
+		Changes:   fmt.Sprintf("rollback to rev #%d", target),
+		Actor:     actor,
+		SpecJSON:  string(newSpecJSON),
 	}
 	if err := revision.WriteEntry(ctx, c, util.ResourceNamespace, workloadName, entry); err != nil {
 		fmt.Fprintf(out, "  warning: could not write revision history: %v\n", err)
