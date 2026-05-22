@@ -2,11 +2,9 @@ package webhook
 
 import (
 	"context"
-
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -29,8 +27,8 @@ func SetupWorkloadWebhookWithManager(mgr mcmanager.Manager) error {
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &computev1alpha.Workload{}).
-		WithCustomDefaulter(webhook).
-		WithCustomValidator(webhook).
+		WithDefaulter(webhook).
+		WithValidator(webhook).
 		Complete()
 }
 
@@ -40,47 +38,18 @@ type workloadWebhook struct {
 	mgr mcmanager.Manager
 }
 
-var _ admission.CustomDefaulter = &workloadWebhook{}
-var _ admission.CustomValidator = &workloadWebhook{}
+var _ admission.Defaulter[*computev1alpha.Workload] = &workloadWebhook{}
+var _ admission.Validator[*computev1alpha.Workload] = &workloadWebhook{}
 
-// Default implements webhook.Defaulter so a webhook will be registered for the type
-func (r *workloadWebhook) Default(ctx context.Context, obj runtime.Object) error {
-	workload, ok := obj.(*computev1alpha.Workload)
-	if !ok {
-		return fmt.Errorf("unexpected type %T", obj)
-	}
-	_ = workload
-
-	// // TODO(jreese) review and test gateway defaulting / logic
-	// if gw := workload.Spec.Gateway; gw != nil {
-	// 	for i, tcpRoute := range gw.TCPRoutes {
-	// 		for j := range tcpRoute.ParentRefs {
-	// 			workload.Spec.Gateway.TCPRoutes[i].ParentRefs[j].Name = "workload-gateway"
-	// 		}
-
-	// 		for j := range tcpRoute.Rules {
-	// 			for k := range tcpRoute.Rules[j].BackendRefs {
-	// 				// TODO(jreese) think about this Kind more
-	// 				kind := gatewayv1.Kind("NamedPort")
-	// 				workload.Spec.Gateway.TCPRoutes[i].Rules[j].
-	// 					BackendRefs[k].Kind = &kind
-	// 			}
-	// 		}
-	// 	}
-	// }
-
+// Default implements admission.Defaulter so a webhook will be registered for the type.
+func (r *workloadWebhook) Default(_ context.Context, _ *computev1alpha.Workload) error {
 	// TODO(user): fill in your defaulting logic.
 	return nil
 }
 
 // +kubebuilder:webhook:path=/validate-compute-datumapis-com-v1alpha-workload,mutating=false,failurePolicy=fail,sideEffects=None,groups=compute.datumapis.com,resources=workloads,verbs=create;update,versions=v1alpha,name=vworkload.kb.io,admissionReviewVersions=v1
 
-func (r *workloadWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	workload, ok := obj.(*computev1alpha.Workload)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
-
+func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev1alpha.Workload) (admission.Warnings, error) {
 	clusterName := computewebhook.ClusterNameFromContext(ctx)
 
 	cluster, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(clusterName))
@@ -123,38 +92,18 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, obj runtime.Object
 	}
 
 	if errs := validation.ValidateWorkloadCreate(workload, opts); len(errs) > 0 {
-		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), workload.Name, errs)
+		return nil, errors.NewInvalid(workload.GetObjectKind().GroupVersionKind().GroupKind(), workload.Name, errs)
 	}
 
 	return nil, nil
 }
 
-func (r *workloadWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldworkload, ok := oldObj.(*computev1alpha.Workload)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", oldObj)
-	}
-
-	_ = oldworkload
-
-	newworkload, ok := newObj.(*computev1alpha.Workload)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", newObj)
-	}
-
-	_ = newworkload
-
+func (r *workloadWebhook) ValidateUpdate(_ context.Context, _, _ *computev1alpha.Workload) (admission.Warnings, error) {
 	// TODO(user): fill in your validation logic upon object update.
 	return nil, nil
 }
 
-func (r *workloadWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	workload, ok := obj.(*computev1alpha.Workload)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
-	_ = workload
-
+func (r *workloadWebhook) ValidateDelete(_ context.Context, _ *computev1alpha.Workload) (admission.Warnings, error) {
 	// TODO(user): fill in your validation logic upon object deletion.
 	return nil, nil
 }

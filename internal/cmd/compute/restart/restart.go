@@ -56,10 +56,10 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 
 	if city == "" {
 		// Restart all placements by annotating the workload template.
-		if workload.Spec.Template.ObjectMeta.Annotations == nil {
-			workload.Spec.Template.ObjectMeta.Annotations = make(map[string]string)
+		if workload.Spec.Template.Annotations == nil {
+			workload.Spec.Template.Annotations = make(map[string]string)
 		}
-		workload.Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
+		workload.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
 
 		if err := c.Update(ctx, &workload); err != nil {
 			return fmt.Errorf("updating workload: %w", err)
@@ -96,10 +96,10 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 	}
 
 	for i := range matched {
-		if matched[i].Spec.Template.ObjectMeta.Annotations == nil {
-			matched[i].Spec.Template.ObjectMeta.Annotations = make(map[string]string)
+		if matched[i].Spec.Template.Annotations == nil {
+			matched[i].Spec.Template.Annotations = make(map[string]string)
 		}
-		matched[i].Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
+		matched[i].Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
 
 		if err := c.Update(ctx, &matched[i]); err != nil {
 			return fmt.Errorf("updating deployment in %s: %w", city, err)

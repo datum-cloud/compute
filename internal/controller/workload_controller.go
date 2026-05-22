@@ -35,6 +35,9 @@ import (
 
 const workloadControllerFinalizer = "compute.datumapis.com/workload-controller"
 
+// conditionAvailable is the condition type used to indicate resource availability.
+const conditionAvailable = "Available"
+
 // WorkloadReconciler reconciles a Workload object
 type WorkloadReconciler struct {
 	mgr        mcmanager.Manager
@@ -119,7 +122,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	if len(notFoundNetworks) > 0 {
 		missingNetworks := strings.Join(notFoundNetworks.UnsortedList(), ", ")
 		changed := apimeta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-			Type:    "Available",
+			Type:    conditionAvailable,
 			Status:  metav1.ConditionFalse,
 			Reason:  "NetworkNotFound",
 			Message: fmt.Sprintf("Unable to find networks: %s", missingNetworks),
@@ -239,7 +242,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		}
 
 		placementAvailableCondition := metav1.Condition{
-			Type:    "Available",
+			Type:    conditionAvailable,
 			Status:  metav1.ConditionFalse,
 			Reason:  "NoAvailableDeployments",
 			Message: "No available deployments were found for the placement",
@@ -257,7 +260,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 			desiredReplicas += deployment.Status.DesiredReplicas
 			readyReplicas += deployment.Status.ReadyReplicas
 
-			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, "Available") {
+			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, conditionAvailable) {
 				foundAvailableDeployment = true
 			}
 		}
@@ -284,7 +287,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	}
 
 	availableCondition := metav1.Condition{
-		Type:    "Available",
+		Type:    conditionAvailable,
 		Status:  metav1.ConditionFalse,
 		Reason:  "NoAvailablePlacements",
 		Message: "No available placements were found for the workload",

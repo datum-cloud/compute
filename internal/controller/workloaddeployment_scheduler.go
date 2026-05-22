@@ -69,7 +69,7 @@ func (r *WorkloadDeploymentScheduler) Reconcile(ctx context.Context, req mcrecon
 		// prior to location registration.
 
 		changed := apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               conditionAvailable,
 			Status:             metav1.ConditionFalse,
 			Reason:             "NoLocations",
 			ObservedGeneration: deployment.Generation,
@@ -100,7 +100,7 @@ func (r *WorkloadDeploymentScheduler) Reconcile(ctx context.Context, req mcrecon
 
 	if selectedLocation == nil {
 		changed := apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               conditionAvailable,
 			Status:             metav1.ConditionFalse,
 			Reason:             "NoCandidateLocations",
 			ObservedGeneration: deployment.Generation,
@@ -121,7 +121,7 @@ func (r *WorkloadDeploymentScheduler) Reconcile(ctx context.Context, req mcrecon
 		// of the spec then status here. Just can't remember if it's an issue.
 
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               conditionAvailable,
 			Status:             metav1.ConditionFalse,
 			Reason:             "LocationAssigned",
 			ObservedGeneration: deployment.Generation,

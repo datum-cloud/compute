@@ -184,12 +184,12 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 
 	out := cmd.OutOrStdout()
 	tw := util.NewTabWriter(out)
-	fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tEXTERNAL IP\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
+	_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tEXTERNAL IP\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			r.name, r.workload, r.city, r.externalIP, r.internalIP, r.instType, r.age, r.status)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	running := 0
 	for _, r := range rows {
@@ -198,7 +198,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 		}
 	}
 	pending := len(rows) - running
-	fmt.Fprintf(out, "\n%d instances — %d Running, %d Pending, 0 Failed\n", len(rows), running, pending)
+	_, _ = fmt.Fprintf(out, "\n%d instances — %d Running, %d Pending, 0 Failed\n", len(rows), running, pending)
 
 	return nil
 }

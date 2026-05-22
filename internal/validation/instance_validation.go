@@ -17,12 +17,18 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+const (
+	supportedDiskType     = "pd-standard"
+	supportedImageName    = "datumcloud/ubuntu-2204-lts"
+	supportedInstanceType = "datumcloud/d1-standard-2"
+)
+
 func validateInstanceTemplate(
 	template computev1alpha.InstanceTemplateSpec,
 	fieldPath *field.Path,
 	opts WorkloadValidationOptions,
 ) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, 2)
 
 	allErrs = append(allErrs, validateInstanceTemplateMetadata(template, fieldPath)...)
 	allErrs = append(allErrs, validateInstanceSpec(template.Spec, fieldPath.Child("spec"), opts)...)
@@ -66,7 +72,7 @@ func validateInstanceSpec(
 	fieldPath *field.Path,
 	opts WorkloadValidationOptions,
 ) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, 3)
 
 	volumes, volumeErrs := validateVolumes(spec, fieldPath)
 	allErrs = append(allErrs, volumeErrs...)
@@ -258,8 +264,8 @@ func validateDiskVolumeSource(diskSource *computev1alpha.DiskTemplateVolumeSourc
 	diskTemplateSpecField := diskTemplateField.Child("spec")
 
 	// TODO(jrese) look up valid disk types
-	if diskTemplate.Spec.Type != "pd-standard" {
-		allErrs = append(allErrs, field.NotSupported(diskTemplateSpecField.Child("type"), diskTemplate.Spec.Type, []string{"pd-standard"}))
+	if diskTemplate.Spec.Type != supportedDiskType {
+		allErrs = append(allErrs, field.NotSupported(diskTemplateSpecField.Child("type"), diskTemplate.Spec.Type, []string{supportedDiskType}))
 	}
 
 	populatorResourceRequests, errs := validateDiskPopulator(diskTemplate.Spec.Populator, diskTemplateField.Child("populator"))
@@ -400,8 +406,8 @@ func validateDiskPopulator(populator *computev1alpha.DiskPopulator, fieldPath *f
 
 			// TODO(jreese) look up image
 			imagePopulator := populator.Image
-			if imagePopulator.Name != "datumcloud/ubuntu-2204-lts" {
-				allErrs = append(allErrs, field.NotSupported(imageField.Child("name"), imagePopulator.Name, []string{"datumcloud/ubuntu-2204-lts"}))
+			if imagePopulator.Name != supportedImageName {
+				allErrs = append(allErrs, field.NotSupported(imageField.Child("name"), imagePopulator.Name, []string{supportedImageName}))
 			}
 		}
 	}
@@ -572,7 +578,7 @@ func validateVolumeAttachments(
 	volumes map[string]computev1alpha.VolumeSource,
 	fieldPath *field.Path,
 ) field.ErrorList {
-	allErrs := field.ErrorList{}
+	allErrs := make(field.ErrorList, 0, len(attachments))
 
 	allMounthPaths := sets.Set[string]{}
 
@@ -657,8 +663,8 @@ func validateInstanceRuntimeResources(resources computev1alpha.InstanceRuntimeRe
 	allErrs := field.ErrorList{}
 
 	// TODO(jreese) look up available instance types
-	if resources.InstanceType != "datumcloud/d1-standard-2" {
-		allErrs = append(allErrs, field.NotSupported(fieldPath, resources.InstanceType, []string{"datumcloud/d1-standard-2"}))
+	if resources.InstanceType != supportedInstanceType {
+		allErrs = append(allErrs, field.NotSupported(fieldPath, resources.InstanceType, []string{supportedInstanceType}))
 	}
 
 	if resources.Requests != nil {

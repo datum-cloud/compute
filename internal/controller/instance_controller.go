@@ -36,6 +36,15 @@ import (
 
 const instanceQuotaFinalizer = "quota.compute.datumapis.com/claim-cleanup"
 
+const (
+	instanceAPIGroup = "compute.datumapis.com"
+	instanceKind     = "Instance"
+
+	instanceNotProgrammedMessage = "Instance has not been programmed"
+	instanceNetworkFailedReason  = "NetworkFailedToCreate"
+	instanceReadyMessage         = "Instance is ready"
+)
+
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
 // Keeping it narrow allows unit tests to substitute a minimal fake.
 type clusterGetter interface {
@@ -223,8 +232,8 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 				Name:     clusterName,
 			},
 			ResourceRef: quotav1alpha1.UnversionedObjectReference{
-				APIGroup:  "compute.datumapis.com",
-				Kind:      "Instance",
+				APIGroup:  instanceAPIGroup,
+				Kind:      instanceKind,
 				Name:      instance.Name,
 				Namespace: instance.Namespace,
 			},
@@ -328,7 +337,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			Status:             metav1.ConditionFalse,
 			Reason:             computev1alpha.InstanceProgrammedReasonPendingProgramming,
 			ObservedGeneration: instance.Generation,
-			Message:            "Instance has not been programmed",
+			Message:            instanceNotProgrammedMessage,
 		}
 	} else {
 		readyCondition = readyCondition.DeepCopy()
@@ -346,7 +355,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 		}
 
 		if networkCreationFailure {
-			readyCondition.Reason = "NetworkFailedToCreate"
+			readyCondition.Reason = instanceNetworkFailedReason
 			readyCondition.Message = networkCreationFailureMessage
 		} else {
 			readyCondition.Reason = computev1alpha.InstanceReadyReasonSchedulingGatesPresent
@@ -366,7 +375,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			readyCondition.Reason = programmedCondition.Reason
 		}
 
-		readyCondition.Message = "Instance has not been programmed"
+		readyCondition.Message = instanceNotProgrammedMessage
 		if programmedCondition != nil && programmedCondition.Status != metav1.ConditionUnknown {
 			readyCondition.Message = programmedCondition.Message
 		}
@@ -395,7 +404,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 
 	readyCondition.Status = metav1.ConditionTrue
 	readyCondition.Reason = computev1alpha.InstanceReadyReasonRunning
-	readyCondition.Message = "Instance is ready"
+	readyCondition.Message = instanceReadyMessage
 
 	return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 }
@@ -429,7 +438,7 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 		}
 
 		condition := apimeta.FindStatusCondition(networkBinding.Status.Conditions, networkingv1alpha.NetworkBindingReady)
-		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == "NetworkFailedToCreate" {
+		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == instanceNetworkFailedReason {
 			return true, condition.Message, nil
 		}
 	}
@@ -450,7 +459,7 @@ func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, managementC
 		managementCluster.GetCache(),
 		&quotav1alpha1.ResourceClaim{},
 		handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, claim *quotav1alpha1.ResourceClaim) []mcreconcile.Request {
-			if claim.Spec.ResourceRef.Kind != "Instance" || claim.Spec.ResourceRef.APIGroup != "compute.datumapis.com" {
+			if claim.Spec.ResourceRef.Kind != instanceKind || claim.Spec.ResourceRef.APIGroup != instanceAPIGroup {
 				return nil
 			}
 			return []mcreconcile.Request{

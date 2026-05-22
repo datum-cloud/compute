@@ -12,19 +12,19 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
-	"golang.org/x/term"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/cmd/compute/revision"
 	"go.datum.net/compute/internal/cmd/compute/util"
 	"go.datum.net/compute/internal/cmd/compute/watch"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 type options struct {
@@ -47,7 +47,7 @@ func Command() *cobra.Command {
 
 If no arguments are given, an interactive prompt guides you through the deployment.
 Use -f to apply a workload manifest file instead of flags.`,
-		Args:    cobra.MaximumNArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD --min=2 --port=8080
 
@@ -349,7 +349,7 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 
 // saveWorkloadYAML marshals the workload and writes it to workload.yaml in the
 // current directory.
-func saveWorkloadYAML(workloadName string, workload *computev1alpha.Workload) error {
+func saveWorkloadYAML(_ string, workload *computev1alpha.Workload) error {
 	workload.TypeMeta = metav1.TypeMeta{
 		APIVersion: "compute.datumapis.com/v1alpha",
 		Kind:       "Workload",
@@ -376,7 +376,7 @@ func imageFromWorkload(w computev1alpha.Workload) string {
 }
 
 // computeDiff produces a human-readable one-line diff description for flag-driven updates.
-func computeDiff(existing computev1alpha.WorkloadSpec, newImage string, cities []string, min int32) string {
+func computeDiff(existing computev1alpha.WorkloadSpec, newImage string, _ []string, min int32) string {
 	var parts []string
 
 	oldImage := ""
@@ -439,4 +439,3 @@ func manifestDiff(existing, desired computev1alpha.Workload) []string {
 
 	return lines
 }
-

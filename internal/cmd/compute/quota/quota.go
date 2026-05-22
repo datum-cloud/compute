@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
-	"k8s.io/apimachinery/pkg/labels"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -69,13 +68,6 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 	deployByUID := make(map[string]computev1alpha.WorkloadDeployment, len(deployList.Items))
 	for _, d := range deployList.Items {
 		deployByUID[string(d.UID)] = d
-	}
-
-	// Also list workloads to resolve instance type when we can't get it from an instance directly.
-	// Instance type comes from the deployment's template spec.
-	deployInstType := make(map[string]string, len(deployList.Items))
-	for _, d := range deployList.Items {
-		deployInstType[string(d.UID)] = d.Spec.Template.Spec.Runtime.Resources.InstanceType
 	}
 
 	type groupData struct {
@@ -148,7 +140,7 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 
 	// Before filtering by constrained, check if there are any instances at all.
 	if len(instList.Items) == 0 {
-		fmt.Fprint(out, "No instances running. No quota consumption to display.\n")
+		_, _ = fmt.Fprint(out, "No instances running. No quota consumption to display.\n")
 		return nil
 	}
 
@@ -161,7 +153,7 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 			}
 		}
 		if len(filtered) == 0 {
-			fmt.Fprint(out, "No constrained resources found.\n")
+			_, _ = fmt.Fprint(out, "No constrained resources found.\n")
 			return nil
 		}
 		keys = filtered
@@ -192,38 +184,12 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", cityLabel, k.instanceType, gd.count, limit, available)
 	}
-	tw.Flush()
-
-	// Also show deployments with zero instances (quota exhausted before first instance).
-	// Walk deployments not represented in any group and show them with count=0, atLimit.
-	var zeroKeys []groupKey
-	depGroupSeen := make(map[groupKey]bool)
-	for _, k := range keys {
-		depGroupSeen[k] = true
-	}
-	for _, dep := range deployList.Items {
-		// Build the same label selector to check for instances.
-		depSelector := labels.SelectorFromSet(labels.Set{
-			computev1alpha.WorkloadDeploymentUIDLabel: string(dep.UID),
-		})
-		_ = depSelector // just need city+type combo
-		k := groupKey{
-			city:         dep.Spec.CityCode,
-			instanceType: dep.Spec.Template.Spec.Runtime.Resources.InstanceType,
-		}
-		if k.instanceType == "" {
-			k.instanceType = "unknown"
-		}
-		if !depGroupSeen[k] {
-			zeroKeys = append(zeroKeys, k)
-			depGroupSeen[k] = true
-		}
-	}
+	_ = tw.Flush()
 
 	// Sort and print zero-instance groups (no quota consumed, nothing to show for "constrained").
 	// Per spec these are not interesting for the quota view, so we skip them.
 
-	fmt.Fprint(out, "\nNote: limit information is derived from quota conditions on instances.\nRun 'datumctl quota' for full project quota management.\n")
+	_, _ = fmt.Fprint(out, "\nNote: limit information is derived from quota conditions on instances.\nRun 'datumctl quota' for full project quota management.\n")
 
 	return nil
 }
