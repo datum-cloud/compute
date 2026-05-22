@@ -3,11 +3,13 @@ module go.datum.net/compute
 go 1.25.8
 
 require (
+	github.com/go-logr/logr v1.4.3
 	github.com/google/go-cmp v0.7.0
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	go.datum.net/datumctl v0.14.1-0.20260522214722-79d2d1680f08
 	go.datum.net/network-services-operator v0.1.0
 	go.miloapis.com/milo v0.24.11
 	golang.org/x/crypto v0.49.0
@@ -18,9 +20,9 @@ require (
 	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.3
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
-	sigs.k8s.io/controller-runtime v0.21.0
+	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/gateway-api v1.2.1
-	sigs.k8s.io/multicluster-runtime v0.21.0-alpha.8
+	sigs.k8s.io/multicluster-runtime v0.23.3
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -38,7 +40,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.22.4 // indirect

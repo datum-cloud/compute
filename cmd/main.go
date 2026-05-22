@@ -37,7 +37,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
-	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
+	milomulticluster "go.datum.net/compute/internal/provider/milo"
 	// +kubebuilder:scaffold:imports
 )
 

@@ -24,6 +24,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -38,7 +39,7 @@ const instanceQuotaFinalizer = "quota.compute.datumapis.com/claim-cleanup"
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
 // Keeping it narrow allows unit tests to substitute a minimal fake.
 type clusterGetter interface {
-	GetCluster(ctx context.Context, clusterName string) (cluster.Cluster, error)
+	GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error)
 }
 
 // InstanceReconciler reconciles an Instance object
@@ -102,7 +103,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
-	grantedCondition, err := r.reconcileQuotaClaim(ctx, req.ClusterName, &instance)
+	grantedCondition, err := r.reconcileQuotaClaim(ctx, req.ClusterName.String(), &instance)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed reconciling quota claim: %w", err)
 	}
@@ -460,7 +461,7 @@ func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, managementC
 							Namespace: claim.Spec.ResourceRef.Namespace,
 						},
 					},
-					ClusterName: claim.Spec.ConsumerRef.Name,
+					ClusterName: multicluster.ClusterName(claim.Spec.ConsumerRef.Name),
 				},
 			}
 		}),
