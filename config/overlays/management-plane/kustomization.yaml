@@ -19,3 +19,4 @@ components:
 patches:
 - path: downstream_kubeconfig_patch.yaml
 - path: discovery_mode_patch.yaml
+- path: webhook_cert_issuer_patch.yaml
