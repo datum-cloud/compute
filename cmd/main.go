@@ -220,9 +220,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.WorkloadReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Workload")
-		os.Exit(1)
+	if enableManagementControllers {
+		if err = (&controller.WorkloadReconciler{}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Workload")
+			os.Exit(1)
+		}
 	}
 
 	// Build a single downstream client shared across all controllers that need
