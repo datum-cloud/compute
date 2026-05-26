@@ -59,7 +59,7 @@ Use -f to apply a workload manifest file instead of flags.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDeploy(cmd, args, opts)
 		},
-		ValidArgsFunction: util.CompleteWorkloadNames,
+		ValidArgsFunction: util.CompleteWorkloadNamesAndFlags,
 	}
 
 	cmd.Flags().StringVar(&opts.image, "image", "", "Container image to deploy (e.g. ghcr.io/acme/api:1.4.2)")
