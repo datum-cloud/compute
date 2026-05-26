@@ -30,22 +30,3 @@ patches:
                     csi.cert-manager.io/issuer-kind: ClusterIssuer
                     csi.cert-manager.io/issuer-name: datum-control-plane
                     csi.cert-manager.io/dns-names: compute-webhook.compute-system.svc,compute-webhook.compute-system.svc.cluster.local
-  # Inject the CA bundle into webhook configurations from the ClusterIssuer's CA secret.
-  - target:
-      kind: MutatingWebhookConfiguration
-    patch: |-
-      apiVersion: admissionregistration.k8s.io/v1
-      kind: MutatingWebhookConfiguration
-      metadata:
-        name: ignored
-        annotations:
-          cert-manager.io/inject-ca-from-secret: cert-manager/datum-control-plane-ca
-  - target:
-      kind: ValidatingWebhookConfiguration
-    patch: |-
-      apiVersion: admissionregistration.k8s.io/v1
-      kind: ValidatingWebhookConfiguration
-      metadata:
-        name: ignored
-        annotations:
-          cert-manager.io/inject-ca-from-secret: cert-manager/datum-control-plane-ca
