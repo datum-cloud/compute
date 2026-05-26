@@ -17,6 +17,3 @@ components:
   - ../../components/csi-webhook-cert
   - ../../components/management-controllers
   - ../../components/cell-controllers
-
-patches:
-- path: webhook_cert_issuer_patch.yaml
