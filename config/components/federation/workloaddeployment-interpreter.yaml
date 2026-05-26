@@ -18,34 +18,11 @@ spec:
     statusAggregation:
       luaScript: |
         function AggregateStatus(desiredObj, statusItems)
-          if statusItems == nil then
+          if statusItems == nil or #statusItems == 0 then
             return desiredObj
           end
-          local replicas = 0
-          local currentReplicas = 0
-          local desiredReplicas = 0
-          local readyReplicas = 0
-          local conditions = nil
-          for i = 1, #statusItems do
-            local item = statusItems[i]
-            if item.status ~= nil then
-              replicas = replicas + (item.status.replicas or 0)
-              currentReplicas = currentReplicas + (item.status.currentReplicas or 0)
-              desiredReplicas = desiredReplicas + (item.status.desiredReplicas or 0)
-              readyReplicas = readyReplicas + (item.status.readyReplicas or 0)
-              if conditions == nil and item.status.conditions ~= nil then
-                conditions = item.status.conditions
-              end
-            end
-          end
-          desiredObj.status = {
-            replicas = replicas,
-            currentReplicas = currentReplicas,
-            desiredReplicas = desiredReplicas,
-            readyReplicas = readyReplicas,
-          }
-          if conditions ~= nil then
-            desiredObj.status.conditions = conditions
+          if statusItems[1].status ~= nil then
+            desiredObj.status = statusItems[1].status
           end
           return desiredObj
         end
