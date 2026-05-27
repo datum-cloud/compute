@@ -19,7 +19,7 @@ const (
 )
 
 // PrintJSON serialises obj to JSON and writes it to w.
-func PrintJSON(w io.Writer, obj interface{}) error {
+func PrintJSON(w io.Writer, obj any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(obj); err != nil {
@@ -29,7 +29,7 @@ func PrintJSON(w io.Writer, obj interface{}) error {
 }
 
 // PrintYAML serialises obj to YAML and writes it to w.
-func PrintYAML(w io.Writer, obj interface{}) error {
+func PrintYAML(w io.Writer, obj any) error {
 	b, err := yaml.Marshal(obj)
 	if err != nil {
 		return fmt.Errorf("encoding YAML: %w", err)
