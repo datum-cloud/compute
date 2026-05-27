@@ -356,13 +356,6 @@ func initializeClusterDiscovery(
 		}
 
 	case multiclusterproviders.ProviderMilo:
-		if serverConfig.Discovery.ClusterName == "" {
-			return nil, nil, nil, "", fmt.Errorf(
-				"discovery.clusterName must be set when mode is %q",
-				multiclusterproviders.ProviderMilo,
-			)
-		}
-
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
 		if err != nil {
 			return nil, nil, nil, "", fmt.Errorf("unable to get discovery rest config: %w", err)
