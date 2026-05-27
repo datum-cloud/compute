@@ -98,12 +98,10 @@ func main() {
 			"When omitted, downstream federation features are disabled.")
 	flag.StringVar(&downstreamContext, "downstream-context", "",
 		"Context to use from the downstream kubeconfig. When omitted, the current context is used.")
-	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", true,
-		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector). "+
-			"Disable when running a cell-only operator instance.")
-	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", true,
-		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler). "+
-			"Disable when running a management-only operator instance.")
+	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", false,
+		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector).")
+	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", false,
+		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler).")
 
 	opts := zap.Options{
 		Development: true,
