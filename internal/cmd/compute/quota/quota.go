@@ -33,8 +33,23 @@ func Command() *cobra.Command {
 
 	cmd.Flags().StringVar(&city, "city", "", "Narrow output to a specific city")
 	cmd.Flags().BoolVar(&constrained, "constrained", false, "Show only constrained resources")
+	cmd.Flags().StringP("output", "o", "table", "Output format: table, json, yaml")
+
+	_ = cmd.RegisterFlagCompletionFunc("city", util.CompleteCityCodes)
+	_ = cmd.RegisterFlagCompletionFunc("output", util.CompleteOutputFormats("table", "json", "yaml"))
 
 	return cmd
+}
+
+// quotaRow is a structured representation of a single quota row, used for
+// JSON/YAML serialisation.
+type quotaRow struct {
+	City         string `json:"city"`
+	InstanceType string `json:"instanceType"`
+	InUse        int    `json:"inUse"`
+	Limit        string `json:"limit"`
+	Available    string `json:"available"`
+	AtLimit      bool   `json:"atLimit"`
 }
 
 type groupKey struct {
@@ -44,6 +59,7 @@ type groupKey struct {
 
 func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 	project := util.ProjectFromCmd(cmd)
+	outputFlag, _ := cmd.Flags().GetString("output")
 
 	c, err := util.NewClient(project)
 	if err != nil {
@@ -123,10 +139,6 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 		return keys[i].instanceType < keys[j].instanceType
 	})
 
-	// Also list workload deployments to pick up zero-instance cities (not needed per spec, skip).
-
-	out := cmd.OutOrStdout()
-
 	// Filter by city.
 	if filterCity != "" {
 		var filtered []groupKey
@@ -137,6 +149,8 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 		}
 		keys = filtered
 	}
+
+	out := cmd.OutOrStdout()
 
 	// Before filtering by constrained, check if there are any instances at all.
 	if len(instList.Items) == 0 {
@@ -159,14 +173,10 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 		keys = filtered
 	}
 
-	_, _ = fmt.Fprintf(out, "Quota usage for project %s\n\n", project)
-
-	tw := util.NewTabWriter(out)
-	_, _ = fmt.Fprintf(tw, "CITY\tTYPE\tIN USE\tLIMIT\tAVAILABLE\n")
-
+	// Build structured rows for serialisation or table rendering.
+	var rows []quotaRow
 	for _, k := range keys {
 		gd := groups[k]
-
 		limit := "—"
 		available := "—"
 		if gd.limitMsg != "" {
@@ -176,18 +186,38 @@ func runQuota(cmd *cobra.Command, filterCity string, constrained bool) error {
 				limit = strconv.Itoa(gd.count + avail)
 			}
 		}
+		rows = append(rows, quotaRow{
+			City:         k.city,
+			InstanceType: k.instanceType,
+			InUse:        gd.count,
+			Limit:        limit,
+			Available:    available,
+			AtLimit:      gd.atLimit,
+		})
+	}
 
-		cityLabel := k.city
-		if gd.atLimit {
+	// JSON/YAML output.
+	switch util.OutputFormat(outputFlag) {
+	case util.OutputJSON:
+		return util.PrintJSON(out, rows)
+	case util.OutputYAML:
+		return util.PrintYAML(out, rows)
+	}
+
+	// Table output.
+	_, _ = fmt.Fprintf(out, "Quota usage for project %s\n\n", project)
+
+	tw := util.NewTabWriter(out)
+	_, _ = fmt.Fprintf(tw, "CITY\tTYPE\tIN USE\tLIMIT\tAVAILABLE\n")
+
+	for _, r := range rows {
+		cityLabel := r.City
+		if r.AtLimit {
 			cityLabel += " [at limit]"
 		}
-
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", cityLabel, k.instanceType, gd.count, limit, available)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", cityLabel, r.InstanceType, r.InUse, r.Limit, r.Available)
 	}
 	_ = tw.Flush()
-
-	// Sort and print zero-instance groups (no quota consumed, nothing to show for "constrained").
-	// Per spec these are not interesting for the quota view, so we skip them.
 
 	_, _ = fmt.Fprint(out, "\nNote: limit information is derived from quota conditions on instances.\nRun 'datumctl quota' for full project quota management.\n")
 

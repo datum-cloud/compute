@@ -39,6 +39,9 @@ Use the describe subcommand for full details on a single instance.`,
   # Filter by city
   datumctl compute instances --city=DFW
 
+  # Machine-readable output
+  datumctl compute instances -o json
+
   # Describe a single instance
   datumctl compute instances describe api-dfw-0`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -48,8 +51,12 @@ Use the describe subcommand for full details on a single instance.`,
 
 	cmd.Flags().StringVar(&opts.workload, "workload", "", "Filter instances to a specific workload")
 	cmd.Flags().StringVar(&opts.city, "city", "", "Filter instances to a specific city")
+	cmd.Flags().StringP("output", "o", "table", "Output format: table, wide, json, yaml")
+	cmd.Flags().Bool("no-headers", false, "Omit the table header row (table and wide only)")
 
 	_ = cmd.RegisterFlagCompletionFunc("workload", util.CompleteWorkloadNames)
+	_ = cmd.RegisterFlagCompletionFunc("city", util.CompleteCityCodes)
+	_ = cmd.RegisterFlagCompletionFunc("output", util.CompleteOutputFormats("table", "wide", "json", "yaml"))
 
 	cmd.AddCommand(describeCommand())
 
@@ -70,6 +77,8 @@ type instanceRow struct {
 func runList(cmd *cobra.Command, opts *listOptions) error {
 	ctx := context.Background()
 	project := util.ProjectFromCmd(cmd)
+	outputFlag, _ := cmd.Flags().GetString("output")
+	noHeaders, _ := cmd.Flags().GetBool("no-headers")
 
 	c, err := util.NewClient(project)
 	if err != nil {
@@ -98,6 +107,14 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	}
 	if err := c.List(ctx, &instList, listOpts...); err != nil {
 		return fmt.Errorf("listing instances: %w", err)
+	}
+
+	// JSON/YAML: emit raw API resource and return early (before city filter).
+	switch util.OutputFormat(outputFlag) {
+	case util.OutputJSON:
+		return util.PrintJSON(cmd.OutOrStdout(), &instList)
+	case util.OutputYAML:
+		return util.PrintYAML(cmd.OutOrStdout(), &instList)
 	}
 
 	// List deployments — build map deploymentUID → *WorkloadDeployment.
@@ -185,11 +202,23 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	}
 
 	out := cmd.OutOrStdout()
+	wide := util.OutputFormat(outputFlag) == util.OutputWide
 	tw := util.NewTabWriter(out)
-	_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tEXTERNAL IP\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
+	if !noHeaders {
+		if wide {
+			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tEXTERNAL IP\tINTERNAL IP\tTYPE\tAGE\tSTATUS\tINSTANCE TYPE\n")
+		} else {
+			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tEXTERNAL IP\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
+		}
+	}
 	for _, r := range rows {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.name, r.workload, r.city, r.externalIP, r.internalIP, r.instType, r.age, r.status)
+		if wide {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.instType, r.age, r.status, r.instType)
+		} else {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.instType, r.age, r.status)
+		}
 	}
 	_ = tw.Flush()
 
@@ -215,6 +244,7 @@ instance, including plain-English explanations of any failure states.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDescribe(cmd, args)
 		},
+		ValidArgsFunction: util.CompleteInstanceNames,
 	}
 }
 
