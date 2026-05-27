@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -125,14 +125,9 @@ func runList(cmd *cobra.Command, _ []string) error {
 		instType    string // wide only
 	}
 
+	wide := util.OutputFormat(outputFlag) == util.OutputWide
+
 	var rows []workloadRow
-	healthCounts := map[string]int{
-		"Available":   0,
-		"Degraded":    0,
-		"Progressing": 0,
-		"Unknown":     0,
-		"Unavailable": 0,
-	}
 
 	for _, wl := range wlList.Items {
 		wUID := string(wl.UID)
@@ -151,18 +146,6 @@ func runList(cmd *cobra.Command, _ []string) error {
 
 		health := util.WorkloadHealth(wl.Status.Conditions, totalReady, totalDesired)
 		healthShort := strings.SplitN(health, " ", 2)[0] // e.g. "Available", "Degraded"
-
-		// Tally health counts (use short word).
-		switch healthShort {
-		case "Available":
-			healthCounts["Available"]++
-		case "Degraded":
-			healthCounts["Degraded"]++
-		case "Unavailable":
-			healthCounts["Unavailable"]++
-		default:
-			healthCounts["Unknown"]++
-		}
 
 		// Health filter.
 		if healthFilter != "" && !strings.EqualFold(healthShort, healthFilter) {
@@ -187,16 +170,17 @@ func runList(cmd *cobra.Command, _ []string) error {
 		}
 
 		readyStr := fmt.Sprintf("%d/%d", totalReady, totalDesired)
-
 		instType := wl.Spec.Template.Spec.Runtime.Resources.InstanceType
 
-		// Revision — best-effort from ConfigMap annotation.
+		// Revision — only fetched for -o wide to avoid N round-trips in table mode.
 		revision := "—"
-		var cm corev1.ConfigMap
-		cmName := "compute.datumapis.com-revision-history." + wl.Name
-		if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: cmName}, &cm); err == nil {
-			if v, ok := cm.Annotations["compute.datumapis.com/current-revision"]; ok {
-				revision = v
+		if wide {
+			var cm corev1.ConfigMap
+			cmName := "compute.datumapis.com-revision-history." + wl.Name
+			if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: cmName}, &cm); err == nil {
+				if v, ok := cm.Annotations["compute.datumapis.com/current-revision"]; ok {
+					revision = v
+				}
 			}
 		}
 
@@ -211,6 +195,26 @@ func runList(cmd *cobra.Command, _ []string) error {
 			revision:    revision,
 			instType:    instType,
 		})
+	}
+
+	// Tally health counts from the filtered rows (W9: count after filtering).
+	healthCounts := map[string]int{
+		"Available":   0,
+		"Degraded":    0,
+		"Unavailable": 0,
+		"Unknown":     0,
+	}
+	for _, r := range rows {
+		switch r.healthShort {
+		case "Available":
+			healthCounts["Available"]++
+		case "Degraded":
+			healthCounts["Degraded"]++
+		case "Unavailable":
+			healthCounts["Unavailable"]++
+		default:
+			healthCounts["Unknown"]++
+		}
 	}
 
 	out := cmd.OutOrStdout()
@@ -229,7 +233,6 @@ func runList(cmd *cobra.Command, _ []string) error {
 	}
 
 	tw := util.NewTabWriter(out)
-	wide := util.OutputFormat(outputFlag) == util.OutputWide
 	if !noHeaders {
 		if wide {
 			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tPLACEMENTS\tIMAGE\tAGE\tREVISION\tINSTANCE TYPE\n")

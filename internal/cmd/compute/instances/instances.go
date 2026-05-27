@@ -64,14 +64,15 @@ Use the describe subcommand for full details on a single instance.`,
 }
 
 type instanceRow struct {
-	name       string
-	workload   string
-	city       string
-	externalIP string
-	internalIP string
-	instType   string
-	age        string
-	status     string
+	name        string
+	workload    string
+	city        string
+	externalIP  string
+	internalIP  string
+	runtimeKind string // "sandbox" or "vm"
+	instType    string
+	age         string
+	status      string
 }
 
 func runList(cmd *cobra.Command, opts *listOptions) error {
@@ -173,15 +174,21 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 			}
 		}
 
+		runtimeKind := "vm"
+		if inst.Spec.Runtime.Sandbox != nil {
+			runtimeKind = "sandbox"
+		}
+
 		rows = append(rows, instanceRow{
-			name:       inst.Name,
-			workload:   wlName,
-			city:       city,
-			externalIP: extIP,
-			internalIP: intIP,
-			instType:   inst.Spec.Runtime.Resources.InstanceType,
-			age:        util.RelativeAge(inst.CreationTimestamp),
-			status:     util.InstanceStatus(inst.Status.Conditions),
+			name:        inst.Name,
+			workload:    wlName,
+			city:        city,
+			externalIP:  extIP,
+			internalIP:  intIP,
+			runtimeKind: runtimeKind,
+			instType:    inst.Spec.Runtime.Resources.InstanceType,
+			age:         util.RelativeAge(inst.CreationTimestamp),
+			status:      util.InstanceStatus(inst.Status.Conditions),
 		})
 	}
 
@@ -214,22 +221,26 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	for _, r := range rows {
 		if wide {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.instType, r.age, r.status, r.instType)
+				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.runtimeKind, r.age, r.status, r.instType)
 		} else {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.instType, r.age, r.status)
+				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.runtimeKind, r.age, r.status)
 		}
 	}
 	_ = tw.Flush()
 
-	running := 0
+	var running, pending, failed int
 	for _, r := range rows {
-		if r.status == "Running" {
+		switch {
+		case r.status == "Running":
 			running++
+		case strings.HasPrefix(r.status, "Failed"):
+			failed++
+		default:
+			pending++
 		}
 	}
-	pending := len(rows) - running
-	_, _ = fmt.Fprintf(out, "\n%d instances — %d Running, %d Pending, 0 Failed\n", len(rows), running, pending)
+	_, _ = fmt.Fprintf(out, "\n%d instances — %d Running, %d Pending, %d Failed\n", len(rows), running, pending, failed)
 
 	return nil
 }
