@@ -11,7 +11,7 @@ import (
 	"go.datum.net/compute/internal/cmd/compute/restart"
 	"go.datum.net/compute/internal/cmd/compute/rollout"
 	"go.datum.net/compute/internal/cmd/compute/scale"
-	"go.datum.net/compute/internal/cmd/compute/status"
+	"go.datum.net/compute/internal/cmd/compute/workloads"
 )
 
 func Command() *cobra.Command {
@@ -25,7 +25,7 @@ func Command() *cobra.Command {
 		restart.Command(),
 		rollout.Command(),
 		scale.Command(),
-		status.Command(),
+		workloads.Command(),
 	)
 
 	return root
