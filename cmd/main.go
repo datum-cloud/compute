@@ -140,19 +140,9 @@ func main() {
 		"buildDate", buildDate,
 	)
 
-	var serverConfig config.WorkloadOperator
-	var configData []byte
-	if len(serverConfigFile) > 0 {
-		var err error
-		configData, err = os.ReadFile(serverConfigFile)
-		if err != nil {
-			setupLog.Error(fmt.Errorf("unable to read server config from %q", serverConfigFile), "")
-			os.Exit(1)
-		}
-	}
-
-	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
-		setupLog.Error(err, "unable to decode server config")
+	serverConfig, err := loadServerConfig(serverConfigFile)
+	if err != nil {
+		setupLog.Error(err, "unable to load server config")
 		os.Exit(1)
 	}
 
@@ -419,6 +409,22 @@ func initializeClusterDiscovery(
 	}
 
 	return runnables, provider, nil
+}
+
+func loadServerConfig(path string) (config.WorkloadOperator, error) {
+	var serverConfig config.WorkloadOperator
+	var configData []byte
+	if len(path) > 0 {
+		var err error
+		configData, err = os.ReadFile(path)
+		if err != nil {
+			return serverConfig, fmt.Errorf("unable to read server config from %q: %w", path, err)
+		}
+	}
+	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
+		return serverConfig, fmt.Errorf("unable to decode server config: %w", err)
+	}
+	return serverConfig, nil
 }
 
 func ignoreCanceled(err error) error {
