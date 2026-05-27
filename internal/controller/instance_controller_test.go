@@ -20,6 +20,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	"go.datum.net/compute/internal/quota"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 )
 
@@ -541,7 +542,7 @@ func TestReconcileQuota(t *testing.T) {
 		}
 	}
 
-	newReconciler := func(t *testing.T, projectObjs []client.Object, mgmtObjs []client.Object) (*InstanceReconciler, client.Client, client.Client) {
+	newReconciler := func(t *testing.T, projectObjs []client.Object, quotaObjs []client.Object) (*InstanceReconciler, client.Client, client.Client) {
 		t.Helper()
 		s := newTestScheme(t)
 
@@ -551,9 +552,9 @@ func TestReconcileQuota(t *testing.T) {
 			WithStatusSubresource(&computev1alpha.Instance{}).
 			Build()
 
-		mgmtClient := fake.NewClientBuilder().
+		quotaClient := fake.NewClientBuilder().
 			WithScheme(s).
-			WithObjects(mgmtObjs...).
+			WithObjects(quotaObjs...).
 			WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
 			Build()
 
@@ -563,9 +564,14 @@ func TestReconcileQuota(t *testing.T) {
 			},
 		}
 
+		qm := quota.New(nil)
+		qm.StoreClient(clusterName, quotaClient)
+
 		r := &InstanceReconciler{
-			mgr:               mgr,
-			managementCluster: newFakeCluster(mgmtClient),
+			mgr:                mgr,
+			scheme:             s,
+			quotaClientManager: qm,
+			edgeClusterName:    "test-edge",
 		}
 
 		// Initialize the finalizer registry so that r.finalizers.Finalize is not
@@ -574,7 +580,7 @@ func TestReconcileQuota(t *testing.T) {
 		r.finalizers = finalizer.NewFinalizers()
 		require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
 
-		return r, projectClient, mgmtClient
+		return r, projectClient, quotaClient
 	}
 
 	t.Run("quota granted flow: claim granted removes gate and sets QuotaGranted=True", func(t *testing.T) {

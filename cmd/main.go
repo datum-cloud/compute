@@ -158,7 +158,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
+	runnables, provider, projectRestConfig, edgeClusterName, err := initializeClusterDiscovery(
+		serverConfig, deploymentCluster, scheme,
+	)
 	if err != nil {
 		setupLog.Error(err, "unable to initialize cluster discovery")
 		os.Exit(1)
@@ -237,7 +239,7 @@ func main() {
 
 	if enableCellControllers {
 		instanceReconciler := &controller.InstanceReconciler{DownstreamClient: downstreamClient}
-		if err = instanceReconciler.SetupWithManager(mgr, deploymentCluster); err != nil {
+		if err = instanceReconciler.SetupWithManager(mgr, projectRestConfig, edgeClusterName); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}
@@ -345,7 +347,8 @@ func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider runnableProvider, err error) {
+) (runnables []manager.Runnable, provider runnableProvider,
+	projectRestConfig *rest.Config, edgeClusterName string, err error) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
@@ -355,14 +358,21 @@ func initializeClusterDiscovery(
 		}
 
 	case multiclusterproviders.ProviderMilo:
-		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+		if serverConfig.Discovery.ClusterName == "" {
+			return nil, nil, nil, "", fmt.Errorf(
+				"discovery.clusterName must be set when mode is %q",
+				multiclusterproviders.ProviderMilo,
+			)
 		}
 
-		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
+		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
 		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
+			return nil, nil, nil, "", fmt.Errorf("unable to get discovery rest config: %w", err)
+		}
+
+		projectRestConfig, err = serverConfig.Discovery.ProjectRestConfig()
+		if err != nil {
+			return nil, nil, nil, "", fmt.Errorf("unable to get project rest config: %w", err)
 		}
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
@@ -374,7 +384,7 @@ func initializeClusterDiscovery(
 			},
 		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
+			return nil, nil, nil, "", fmt.Errorf("unable to set up overall controller manager: %w", err)
 		}
 
 		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
@@ -387,10 +397,11 @@ func initializeClusterDiscovery(
 			ProjectRestConfig:        projectRestConfig,
 		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
+			return nil, nil, nil, "", fmt.Errorf("unable to create datum project provider: %w", err)
 		}
 
 		runnables = append(runnables, discoveryManager)
+		edgeClusterName = serverConfig.Discovery.ClusterName
 
 	// case providers.ProviderKind:
 	// 	provider = mckind.New(mckind.Options{
@@ -402,13 +413,13 @@ func initializeClusterDiscovery(
 	// 	})
 
 	default:
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, "", fmt.Errorf(
 			"unsupported cluster discovery mode %s",
 			serverConfig.Discovery.Mode,
 		)
 	}
 
-	return runnables, provider, nil
+	return runnables, provider, projectRestConfig, edgeClusterName, nil
 }
 
 func loadServerConfig(path string) (config.WorkloadOperator, error) {

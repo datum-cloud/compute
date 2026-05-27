@@ -12,7 +12,9 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -20,8 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	ctrlsource "sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -33,6 +35,7 @@ import (
 	"go.miloapis.com/milo/pkg/downstreamclient"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	"go.datum.net/compute/internal/quota"
 )
 
 const (
@@ -43,6 +46,12 @@ const (
 	// instanceControllerFinalizer is registered with the finalizer framework and
 	// triggers downstream write-back cleanup on deletion.
 	instanceControllerFinalizer = "compute.datumapis.com/instance-controller"
+
+	// instanceQuotaClaimSourceLabel is stamped on ResourceClaim objects with the
+	// name of the edge cluster that created them. The claim watch predicate uses
+	// this label to filter out claims written by other edge controllers targeting
+	// the same project control planes.
+	instanceQuotaClaimSourceLabel = "compute.datumapis.com/source-cluster"
 )
 
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
@@ -53,8 +62,10 @@ type clusterGetter interface {
 
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
-	mgr               clusterGetter
-	managementCluster cluster.Cluster
+	mgr                clusterGetter
+	scheme             *runtime.Scheme
+	quotaClientManager *quota.ProjectQuotaClientManager
+	edgeClusterName    string
 	// DownstreamClient is an optional client pointing at the downstream control plane.
 	// When non-nil, the reconciler writes a copy of each Instance back to the
 	// downstream control plane so that the InstanceProjector (running in the
@@ -103,7 +114,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	defer logger.Info("reconcile complete")
 
 	if !instance.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.reconcileDeletion(ctx, cl.GetClient(), &instance)
+		return ctrl.Result{}, r.reconcileDeletion(ctx, cl.GetClient(), req.ClusterName, &instance)
 	}
 
 	if !controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
@@ -145,20 +156,27 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
 // deleted. It removes the quota finalizer once the ResourceClaim is gone.
-func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
+func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, clusterName string, instance *computev1alpha.Instance) error {
 	if !controllerutil.ContainsFinalizer(instance, instanceQuotaFinalizer) {
 		return nil
 	}
 
-	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
-	var claim quotav1alpha1.ResourceClaim
-	if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed getting resource claim for deletion: %w", err)
+	if r.quotaClientManager != nil {
+		projectClient, err := r.quotaClientManager.ClientForProject(ctx, clusterName, r.scheme)
+		if err != nil {
+			return fmt.Errorf("failed getting quota client for deletion: %w", err)
 		}
-	} else {
-		if err := r.managementCluster.GetClient().Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("failed deleting resource claim: %w", err)
+
+		claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+		var claim quotav1alpha1.ResourceClaim
+		if err := projectClient.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed getting resource claim for deletion: %w", err)
+			}
+		} else {
+			if err := projectClient.Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
+				return fmt.Errorf("failed deleting resource claim: %w", err)
+			}
 		}
 	}
 
@@ -343,7 +361,16 @@ func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterN
 }
 
 func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (*metav1.Condition, error) {
+	if r.quotaClientManager == nil {
+		return nil, nil
+	}
+
 	logger := log.FromContext(ctx)
+
+	projectClient, err := r.quotaClientManager.ClientForProject(ctx, clusterName, r.scheme)
+	if err != nil {
+		return nil, fmt.Errorf("failed getting quota client for project %q: %w", clusterName, err)
+	}
 
 	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
 
@@ -374,6 +401,9 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      claimName,
 			Namespace: instance.Namespace,
+			Labels: map[string]string{
+				instanceQuotaClaimSourceLabel: r.edgeClusterName,
+			},
 		},
 		Spec: quotav1alpha1.ResourceClaimSpec{
 			ConsumerRef: quotav1alpha1.ConsumerRef{
@@ -392,11 +422,11 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 	}
 
 	var existing quotav1alpha1.ResourceClaim
-	if err := r.managementCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing); err != nil {
+	if err := projectClient.Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("failed getting resource claim: %w", err)
 		}
-		if err := r.managementCluster.GetClient().Create(ctx, desired); err != nil {
+		if err := projectClient.Create(ctx, desired); err != nil {
 			return nil, fmt.Errorf("failed creating resource claim: %w", err)
 		}
 		return nil, nil
@@ -600,42 +630,46 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, managementCluster cluster.Cluster) error {
+func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, projectRestConfig *rest.Config, edgeClusterName string) error {
 	r.mgr = mgr
-	r.managementCluster = managementCluster
+	r.scheme = mgr.GetLocalManager().GetScheme()
+	r.edgeClusterName = edgeClusterName
+	if projectRestConfig != nil {
+		r.quotaClientManager = quota.New(projectRestConfig)
+	}
 
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(instanceControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)
 	}
 
-	// Watch ResourceClaim objects on the management cluster directly, bypassing
-	// the multicluster clusterInjectingQueue which would overwrite ClusterName.
-	// Using ctrlsource.TypedKind lets the handler produce mcreconcile.Request
-	// values with the correct ClusterName taken from claim.Spec.ConsumerRef.Name.
-	claimSource := ctrlsource.TypedKind(
-		managementCluster.GetCache(),
-		&quotav1alpha1.ResourceClaim{},
-		handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, claim *quotav1alpha1.ResourceClaim) []mcreconcile.Request {
-			if claim.Spec.ResourceRef.Kind != "Instance" || claim.Spec.ResourceRef.APIGroup != "compute.datumapis.com" {
-				return nil
-			}
-			return []mcreconcile.Request{
-				{
-					Request: reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      claim.Spec.ResourceRef.Name,
-							Namespace: claim.Spec.ResourceRef.Namespace,
-						},
-					},
-					ClusterName: claim.Spec.ConsumerRef.Name,
-				},
-			}
-		}),
-	)
+	edgeClusterNameVal := r.edgeClusterName
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		WatchesRawSource(claimSource).
+		Watches(
+			&quotav1alpha1.ResourceClaim{},
+			func(_ string, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(
+					func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+						claim := obj.(*quotav1alpha1.ResourceClaim)
+						return []mcreconcile.Request{
+							{
+								Request: reconcile.Request{
+									NamespacedName: types.NamespacedName{
+										Namespace: claim.Spec.ResourceRef.Namespace,
+										Name:      claim.Spec.ResourceRef.Name,
+									},
+								},
+								ClusterName: claim.Spec.ConsumerRef.Name,
+							},
+						}
+					},
+				)
+			},
+			mcbuilder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				return obj.GetLabels()[instanceQuotaClaimSourceLabel] == edgeClusterNameVal
+			})),
+		).
 		Complete(r)
 }

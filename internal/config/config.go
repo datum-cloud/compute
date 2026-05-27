@@ -229,6 +229,14 @@ type DiscoveryConfig struct {
 	// template when connecting to project control planes. When not provided,
 	// the operator will use the in-cluster config.
 	ProjectKubeconfigPath string `json:"projectKubeconfigPath"`
+
+	// ClusterName is the stable, unique name for this edge cluster. It is
+	// stamped onto ResourceClaim objects so that each edge controller can
+	// distinguish its own claims from those created by other edge controllers
+	// in the same project control planes.
+	//
+	// Required when Mode is "milo".
+	ClusterName string `json:"clusterName"`
 }
 
 func SetDefaults_DiscoveryConfig(obj *DiscoveryConfig) {
