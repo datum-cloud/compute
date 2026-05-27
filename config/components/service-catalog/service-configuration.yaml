@@ -53,13 +53,13 @@ spec:
       - compute.datumapis.com/instance/cpu-allocated
       - compute.datumapis.com/instance/memory-allocated
       - compute.datumapis.com/instance/uptime-seconds
+  quota:
     metricRules:
     - selector:
         apiGroup: compute.datumapis.com
         kind: Workload
       metricCosts:
         compute.datumapis.com/workloads: 1
-  quota:
     limits:
     - name: compute-workloads
       metric: compute.datumapis.com/workloads
