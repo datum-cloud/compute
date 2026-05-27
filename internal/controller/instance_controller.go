@@ -631,6 +631,9 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, projectRestConfig *rest.Config, edgeClusterName string) error {
+	if edgeClusterName == "" {
+		return fmt.Errorf("discovery.clusterName must be set when cell controllers are enabled")
+	}
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
 	r.edgeClusterName = edgeClusterName

@@ -235,7 +235,7 @@ type DiscoveryConfig struct {
 	// distinguish its own claims from those created by other edge controllers
 	// in the same project control planes.
 	//
-	// Required when Mode is "milo".
+	// Required when cell controllers are enabled.
 	ClusterName string `json:"clusterName"`
 }
 

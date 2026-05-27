@@ -15,3 +15,5 @@ components:
   - ../../components/resource-metrics
   - ../../components/high-availability
   - ../../components/csi-webhook-cert
+  - ../../components/management-controllers
+  - ../../components/cell-controllers

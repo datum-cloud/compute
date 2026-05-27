@@ -766,3 +766,12 @@ func TestReconcileQuota(t *testing.T) {
 		}
 	})
 }
+
+func TestInstanceReconcilerSetupWithManager(t *testing.T) {
+	t.Run("returns error when edgeClusterName is empty", func(t *testing.T) {
+		r := &InstanceReconciler{}
+		err := r.SetupWithManager(nil, nil, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "discovery.clusterName must be set")
+	})
+}
