@@ -280,11 +280,38 @@ func main() {
 			projectID = strings.ReplaceAll(projectID, "_", "/")
 			return projectID
 		}
+		// projectNamespaceForInstance reads the upstream-namespace label from the
+		// edge namespace (e.g. "ns-efdf8ca1-...") to find the in-project namespace
+		// (e.g. "default") where ResourceClaims must be created in the project
+		// control plane. The edge namespace name itself does not exist there.
+		projectNamespaceForInstance := func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+			cl, err := mgr.GetCluster(ctx, clusterName)
+			if err != nil {
+				setupLog.Error(err, "projectNamespaceForInstance: failed getting cluster",
+					"clusterName", clusterName)
+				return ""
+			}
+			var ns corev1.Namespace
+			getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if err := cl.GetAPIReader().Get(getCtx, client.ObjectKey{Name: instance.Namespace}, &ns); err != nil {
+				setupLog.Error(err, "projectNamespaceForInstance: failed reading namespace",
+					"namespace", instance.Namespace)
+				return ""
+			}
+			projectNS := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+			if projectNS == "" {
+				setupLog.Info("projectNamespaceForInstance: upstream-namespace label missing or empty",
+					"namespace", instance.Namespace)
+				return ""
+			}
+			return projectNS
+		}
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
 		instanceReconciler := &controller.InstanceReconciler{UpstreamClient: downstreamClient}
-		if err = instanceReconciler.SetupWithManager(mgr, quotaRestConfig, projectIDForInstance, edgeClusterName, clusterNameForProject); err != nil {
+		if err = instanceReconciler.SetupWithManager(mgr, quotaRestConfig, projectIDForInstance, projectNamespaceForInstance, edgeClusterName, clusterNameForProject); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}

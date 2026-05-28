@@ -519,11 +519,14 @@ func TestReconcileQuota(t *testing.T) {
 					Kind:     "Project",
 					Name:     clusterName,
 				},
+				// ResourceRef points at the Project resource (cluster-scoped), not the
+				// Instance. The quota admission plugin validates against the
+				// ResourceRegistration's claimingResources, which only allows
+				// resourcemanager.miloapis.com/Project.
 				ResourceRef: quotav1alpha1.UnversionedObjectReference{
-					APIGroup:  "compute.datumapis.com",
-					Kind:      "Instance",
-					Name:      instanceName,
-					Namespace: namespace,
+					APIGroup: "resourcemanager.miloapis.com",
+					Kind:     "Project",
+					Name:     clusterName,
 				},
 				Requests: []quotav1alpha1.ResourceRequest{
 					{ResourceType: "compute.datumapis.com/instances", Amount: 1},
@@ -573,10 +576,12 @@ func TestReconcileQuota(t *testing.T) {
 			scheme:          s,
 			quotaClientManager: qm,
 			edgeClusterName: "test-edge",
-			// Milo mode: project ID == ClusterName.
+			// Milo mode: project ID == ClusterName; claim namespace == instance.Namespace.
 			projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) string {
 				return string(cn)
 			},
+			// nil → falls back to instance.Namespace, which is correct for Milo mode.
+			projectNamespaceForInstance: nil,
 		}
 
 		// Initialize the finalizer registry so that r.finalizers.Finalize is not
@@ -772,23 +777,31 @@ func TestReconcileQuota(t *testing.T) {
 	})
 }
 
-// TestReconcileQuotaSingleMode verifies that in single-cell mode the project ID
-// is taken from instance.Namespace rather than the (always-"single") ClusterName.
+// TestReconcileQuotaSingleMode verifies that in single-cell mode:
+//   - the project ID is decoded from the upstream-cluster-name label on the edge
+//     namespace (not taken from the always-"single" ClusterName)
+//   - the ResourceClaim is created in the in-project namespace (upstream-namespace
+//     label, e.g. "default"), not in the edge namespace (ns-abc123)
+//   - the ResourceRef points at resourcemanager.miloapis.com/Project, not Instance
 func TestReconcileQuotaSingleMode(t *testing.T) {
 	const (
-		instanceName  = "my-instance"
-		projectNS     = "ns-abc123" // the Milo project namespace propagated by Karmada
+		instanceName   = "my-instance"
+		edgeNS         = "ns-abc123"           // edge namespace (ns-{uid}) — does NOT exist in project CP
+		projectID      = "datum-cloud"         // decoded from "cluster-datum-cloud"
+		projectNS      = "default"             // upstream-namespace label value — where claims live
 		deploymentName = "my-deployment"
 	)
 
-	claimName := projectNS + "--" + instanceName
+	// Claim name uses the edge namespace prefix (stable identifier for the claim)
+	// but the claim object itself lives in projectNS.
+	claimName := edgeNS + "--" + instanceName
 
 	s := newTestScheme(t)
 
 	instance := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       instanceName,
-			Namespace:  projectNS,
+			Namespace:  edgeNS,
 			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 			OwnerReferences: []metav1.OwnerReference{
 				{
@@ -814,24 +827,24 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 	}
 
 	deployment := &computev1alpha.WorkloadDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: deploymentName, Namespace: projectNS, UID: "test-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: deploymentName, Namespace: edgeNS, UID: "test-uid"},
 	}
 
-	// ResourceClaim keyed under the project namespace (the quota-side project ID
-	// in single mode).
+	// ResourceClaim lives in projectNS ("default"), not edgeNS ("ns-abc123").
+	// ResourceRef points at the Project resource, matching the ResourceRegistration's
+	// claimingResources (resourcemanager.miloapis.com/Project only).
 	claim := &quotav1alpha1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: projectNS},
 		Spec: quotav1alpha1.ResourceClaimSpec{
 			ConsumerRef: quotav1alpha1.ConsumerRef{
 				APIGroup: "resourcemanager.miloapis.com",
 				Kind:     "Project",
-				Name:     projectNS,
+				Name:     projectID,
 			},
 			ResourceRef: quotav1alpha1.UnversionedObjectReference{
-				APIGroup:  "compute.datumapis.com",
-				Kind:      "Instance",
-				Name:      instanceName,
-				Namespace: projectNS,
+				APIGroup: "resourcemanager.miloapis.com",
+				Kind:     "Project",
+				Name:     projectID,
 			},
 			Requests: []quotav1alpha1.ResourceRequest{
 				{ResourceType: "compute.datumapis.com/instances", Amount: 1},
@@ -856,7 +869,8 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
-	// The quota client is keyed by the project namespace, not "single".
+	// The quota client is keyed by projectID ("datum-cloud"), matching what
+	// projectIDForInstance returns after decoding "cluster-datum-cloud".
 	quotaClient := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(claim).
@@ -864,7 +878,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		Build()
 
 	qm := quota.New(nil)
-	qm.StoreClient(projectNS, quotaClient)
+	qm.StoreClient(projectID, quotaClient)
 
 	mgr := &fakeMCManager{
 		clusters: map[string]cluster.Cluster{
@@ -876,12 +890,16 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		mgr:             mgr,
 		scheme:          s,
 		quotaClientManager: qm,
-		// "single" matches what initializeClusterDiscovery sets in ProviderSingle
-		// mode (defaults to "single" when ClusterName is not configured).
 		edgeClusterName: "single",
-		// Single-cell mode: project ID comes from instance.Namespace.
-		projectIDForInstance: func(_ context.Context, _ multicluster.ClusterName, inst *computev1alpha.Instance) string {
-			return inst.Namespace
+		// Single-cell mode: project ID decoded from upstream-cluster-name label.
+		// Simulates what cmd/main.go does for "cluster-datum-cloud" → "datum-cloud".
+		projectIDForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) string {
+			return projectID
+		},
+		// Single-cell mode: claim namespace comes from upstream-namespace label.
+		// Simulates what cmd/main.go does by reading the edge namespace labels.
+		projectNamespaceForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) string {
+			return projectNS
 		},
 		// Single-cell mode: watch map func must always return "single".
 		clusterNameForProject: func(_ string) multicluster.ClusterName {
@@ -893,7 +911,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 	require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
 
 	req := mcreconcile.Request{
-		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: projectNS, Name: instanceName}},
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: edgeNS, Name: instanceName}},
 		ClusterName: "single",
 	}
 
@@ -901,7 +919,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 	require.NoError(t, err)
 
 	var updated computev1alpha.Instance
-	require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: projectNS, Name: instanceName}, &updated))
+	require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: edgeNS, Name: instanceName}, &updated))
 
 	quotaCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceQuotaGranted)
 	require.NotNil(t, quotaCond, "QuotaGranted condition must be set")
@@ -910,6 +928,10 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 
 	// Verify clusterNameForProject always returns "single" so the watch map func
 	// never enqueues an unknown cluster name.
-	assert.Equal(t, multicluster.ClusterName("single"), r.resolveClusterNameForProject(projectNS))
+	assert.Equal(t, multicluster.ClusterName("single"), r.resolveClusterNameForProject(projectID))
 	assert.Equal(t, multicluster.ClusterName("single"), r.resolveClusterNameForProject("any-other-project"))
+
+	// Verify resolveProjectNamespace returns the in-project namespace, not the edge namespace.
+	resolvedNS := r.resolveProjectNamespace(context.Background(), "single", instance)
+	assert.Equal(t, projectNS, resolvedNS, "claim namespace must be the in-project namespace, not the edge namespace")
 }

@@ -70,9 +70,16 @@ type InstanceReconciler struct {
 	edgeClusterName    string
 	// projectIDForInstance derives the Milo project ID used for quota
 	// ResourceClaim management. In Milo mode it returns string(clusterName); in
-	// single-cell mode it reads the upstream-namespace label from the local
-	// cluster namespace to map ns-{uid} → project name.
+	// single-cell mode it reads the upstream-cluster-name label from the edge
+	// namespace and decodes "cluster-<name>" → "<name>".
 	projectIDForInstance func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
+	// projectNamespaceForInstance derives the in-project namespace where
+	// ResourceClaims must be created. In Milo mode the ResourceClaim lives in
+	// instance.Namespace (the project-level namespace); in single-cell mode the
+	// edge namespace is ns-{uid} which does not exist in the project control
+	// plane — the real namespace is the upstream-namespace label value (e.g.
+	// "default"). When nil, falls back to instance.Namespace.
+	projectNamespaceForInstance func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
 	// clusterNameForProject maps a Milo project ID back to the multicluster
 	// ClusterName that owns that project's workloads. In Milo mode the
 	// ClusterName equals the project ID. In single-cell mode the only registered
@@ -195,9 +202,10 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 				return fmt.Errorf("failed getting quota client for deletion: %w", err)
 			}
 
+			claimNamespace := r.resolveProjectNamespace(ctx, clusterName, instance)
 			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
 			var claim quotav1alpha1.ResourceClaim
-			if err := projectClient.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
+			if err := projectClient.Get(ctx, client.ObjectKey{Namespace: claimNamespace, Name: claimName}, &claim); err != nil {
 				if !apierrors.IsNotFound(err) {
 					return fmt.Errorf("failed getting resource claim for deletion: %w", err)
 				}
@@ -447,10 +455,12 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		)
 	}
 
+	claimNamespace := r.resolveProjectNamespace(ctx, clusterName, instance)
+
 	desired := &quotav1alpha1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      claimName,
-			Namespace: instance.Namespace,
+			Namespace: claimNamespace,
 			Labels: map[string]string{
 				instanceQuotaClaimSourceLabel: r.edgeClusterName,
 			},
@@ -462,10 +472,9 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 				Name:     projectID,
 			},
 			ResourceRef: quotav1alpha1.UnversionedObjectReference{
-				APIGroup:  "compute.datumapis.com",
-				Kind:      "Instance",
-				Name:      instance.Name,
-				Namespace: instance.Namespace,
+				APIGroup: "resourcemanager.miloapis.com",
+				Kind:     "Project",
+				Name:     projectID,
 			},
 			Requests: requests,
 		},
@@ -690,6 +699,18 @@ func (r *InstanceReconciler) resolveProjectID(ctx context.Context, clusterName m
 	return string(clusterName)
 }
 
+// resolveProjectNamespace returns the namespace within the Milo project control
+// plane where ResourceClaims for this instance should be created. When
+// projectNamespaceForInstance is set it delegates to that function; otherwise it
+// falls back to instance.Namespace, which is correct for Milo-mode deployments
+// where the project-side namespace already matches the instance namespace.
+func (r *InstanceReconciler) resolveProjectNamespace(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+	if r.projectNamespaceForInstance != nil {
+		return r.projectNamespaceForInstance(ctx, clusterName, instance)
+	}
+	return instance.Namespace
+}
+
 // resolveClusterNameForProject returns the multicluster ClusterName for the
 // given project ID. When clusterNameForProject is set it delegates to that
 // function; otherwise it falls back to multicluster.ClusterName(projectID),
@@ -718,6 +739,7 @@ func (r *InstanceReconciler) SetupWithManager(
 	mgr mcmanager.Manager,
 	quotaRestConfig *rest.Config,
 	projectIDForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) string,
+	projectNamespaceForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) string,
 	edgeClusterName string,
 	clusterNameForProject func(projectID string) multicluster.ClusterName,
 ) error {
@@ -725,6 +747,7 @@ func (r *InstanceReconciler) SetupWithManager(
 	r.scheme = mgr.GetLocalManager().GetScheme()
 	r.edgeClusterName = edgeClusterName
 	r.projectIDForInstance = projectIDForInstance
+	r.projectNamespaceForInstance = projectNamespaceForInstance
 	r.clusterNameForProject = clusterNameForProject
 	if quotaRestConfig != nil {
 		if edgeClusterName == "" {
