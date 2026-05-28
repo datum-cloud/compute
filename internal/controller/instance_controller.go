@@ -163,6 +163,10 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
+	if err := r.writeBackToDownstream(ctx, req.ClusterName, &instance); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -375,7 +379,11 @@ func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterN
 
 func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (*metav1.Condition, error) {
 	if r.quotaClientManager == nil {
-		return nil, nil
+		return &metav1.Condition{
+			Status:  metav1.ConditionTrue,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
+			Message: "Quota enforcement disabled",
+		}, nil
 	}
 
 	logger := log.FromContext(ctx)
