@@ -11,6 +11,7 @@ components:
   - ../../components/leader_election
   - ../../components/controller_rbac
   - ../../components/cell-controllers
+  - ../../components/quota-credentials
 
 patches:
 - path: disable_webhook_patch.yaml

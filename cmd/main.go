@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
+	corev1 "k8s.io/api/core/v1"
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -41,6 +42,7 @@ import (
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	// +kubebuilder:scaffold:imports
@@ -150,6 +152,17 @@ func main() {
 
 	setupLog.Info("server config", "config", serverConfig)
 
+	quotaRestConfig, err := serverConfig.Discovery.QuotaRestConfig()
+	if err != nil {
+		setupLog.Error(err, "unable to load quota REST config")
+		os.Exit(1)
+	}
+	if quotaRestConfig != nil {
+		setupLog.Info("quota REST config loaded", "path", serverConfig.Discovery.QuotaKubeconfigPath)
+	} else {
+		setupLog.Info("quota REST config not configured; quota enforcement disabled")
+	}
+
 	cfg := ctrl.GetConfigOrDie()
 
 	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
@@ -240,14 +253,31 @@ func main() {
 	}
 
 	if enableCellControllers {
-		projectIDForInstance := func(_ multicluster.ClusterName, instance *computev1alpha.Instance) string {
-			return instance.Namespace
+		projectIDForInstance := func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+			cl, err := mgr.GetCluster(ctx, clusterName)
+			if err != nil {
+				setupLog.Error(err, "projectIDForInstance: failed getting cluster",
+					"clusterName", clusterName)
+				return ""
+			}
+			var ns corev1.Namespace
+			if err := cl.GetClient().Get(ctx, client.ObjectKey{Name: instance.Namespace}, &ns); err != nil {
+				setupLog.Error(err, "projectIDForInstance: failed reading namespace",
+					"namespace", instance.Namespace)
+				return ""
+			}
+			projectID := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+			if projectID == "" {
+				setupLog.Info("projectIDForInstance: upstream-namespace label missing or empty",
+					"namespace", instance.Namespace)
+			}
+			return projectID
 		}
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
 		instanceReconciler := &controller.InstanceReconciler{UpstreamClient: downstreamClient}
-		if err = instanceReconciler.SetupWithManager(mgr, nil, projectIDForInstance, edgeClusterName, clusterNameForProject); err != nil {
+		if err = instanceReconciler.SetupWithManager(mgr, quotaRestConfig, projectIDForInstance, edgeClusterName, clusterNameForProject); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}

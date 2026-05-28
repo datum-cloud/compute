@@ -574,7 +574,7 @@ func TestReconcileQuota(t *testing.T) {
 			quotaClientManager: qm,
 			edgeClusterName: "test-edge",
 			// Milo mode: project ID == ClusterName.
-			projectIDForInstance: func(cn multicluster.ClusterName, _ *computev1alpha.Instance) string {
+			projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) string {
 				return string(cn)
 			},
 		}
@@ -880,7 +880,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		// mode (defaults to "single" when ClusterName is not configured).
 		edgeClusterName: "single",
 		// Single-cell mode: project ID comes from instance.Namespace.
-		projectIDForInstance: func(_ multicluster.ClusterName, inst *computev1alpha.Instance) string {
+		projectIDForInstance: func(_ context.Context, _ multicluster.ClusterName, inst *computev1alpha.Instance) string {
 			return inst.Namespace
 		},
 		// Single-cell mode: watch map func must always return "single".

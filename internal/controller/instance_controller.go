@@ -70,9 +70,9 @@ type InstanceReconciler struct {
 	edgeClusterName    string
 	// projectIDForInstance derives the Milo project ID used for quota
 	// ResourceClaim management. In Milo mode it returns string(clusterName); in
-	// single-cell mode it returns instance.Namespace because the cluster name is
-	// always "single" and the namespace is the per-project identifier.
-	projectIDForInstance func(clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
+	// single-cell mode it reads the upstream-namespace label from the local
+	// cluster namespace to map ns-{uid} → project name.
+	projectIDForInstance func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
 	// clusterNameForProject maps a Milo project ID back to the multicluster
 	// ClusterName that owns that project's workloads. In Milo mode the
 	// ClusterName equals the project ID. In single-cell mode the only registered
@@ -179,21 +179,31 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 	}
 
 	if r.quotaClientManager != nil {
-		projectID := r.resolveProjectID(clusterName, instance)
-		projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
-		if err != nil {
-			return fmt.Errorf("failed getting quota client for deletion: %w", err)
-		}
-
-		claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
-		var claim quotav1alpha1.ResourceClaim
-		if err := projectClient.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
-			if !apierrors.IsNotFound(err) {
-				return fmt.Errorf("failed getting resource claim for deletion: %w", err)
-			}
+		projectID := r.resolveProjectID(ctx, clusterName, instance)
+		if projectID == "" {
+			// Cannot locate the claim without a project ID. Log and fall through
+			// to finalizer removal so the Instance is not permanently stuck in
+			// Terminating. The claim, if any, will be cleaned up by the quota
+			// system's own TTL/GC or by the project owner.
+			log.FromContext(ctx).Info("projectID unresolvable during deletion; skipping claim cleanup",
+				"instance", instance.Name, "namespace", instance.Namespace,
+				"label", downstreamclient.UpstreamOwnerNamespaceLabel)
 		} else {
-			if err := projectClient.Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
-				return fmt.Errorf("failed deleting resource claim: %w", err)
+			projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
+			if err != nil {
+				return fmt.Errorf("failed getting quota client for deletion: %w", err)
+			}
+
+			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+			var claim quotav1alpha1.ResourceClaim
+			if err := projectClient.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return fmt.Errorf("failed getting resource claim for deletion: %w", err)
+				}
+			} else {
+				if err := projectClient.Delete(ctx, &claim); client.IgnoreNotFound(err) != nil {
+					return fmt.Errorf("failed deleting resource claim: %w", err)
+				}
 			}
 		}
 	}
@@ -316,17 +326,21 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 
 	// Encode the POP-cell cluster name using the same convention as NSO's
 	// MappedNamespaceResourceStrategy: "cluster-<name>" with "/" → "_".
+	// This is the fallback; the namespace label takes precedence when present.
 	encodedClusterName := "cluster-" + strings.ReplaceAll(string(clusterName), "/", "_")
 
-	// Read the upstream project namespace name from the downstream namespace label
-	// stamped by the WorkloadDeploymentFederator. This lets the InstanceProjector
-	// resolve the target namespace via a direct label lookup on the Instance rather
-	// than scanning all project cluster namespaces by UID.
+	// Read the upstream project namespace name and cluster name from the namespace
+	// labels stamped by NSO's MappedNamespaceResourceStrategy. These carry the true
+	// project cluster name (e.g. "cluster-datum-cloud") and upstream namespace (e.g.
+	// "default"), which the InstanceProjector needs to find the right project cluster.
 	upstreamNamespace := instance.Namespace // fallback: cell namespace (ns-<uid>)
 	var downstreamNS corev1.Namespace
 	if err := r.UpstreamClient.Get(ctx, client.ObjectKey{Name: instance.Namespace}, &downstreamNS); err == nil {
 		if v := downstreamNS.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]; v != "" {
 			upstreamNamespace = v
+		}
+		if v := downstreamNS.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]; v != "" {
+			encodedClusterName = v
 		}
 	}
 
@@ -395,7 +409,13 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 
 	logger := log.FromContext(ctx)
 
-	projectID := r.resolveProjectID(clusterName, instance)
+	projectID := r.resolveProjectID(ctx, clusterName, instance)
+	if projectID == "" {
+		return nil, fmt.Errorf("projectID is empty for instance %s/%s; "+
+			"namespace label %q missing or not yet propagated",
+			instance.Namespace, instance.Name,
+			downstreamclient.UpstreamOwnerNamespaceLabel)
+	}
 	projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting quota client for project %q: %w", projectID, err)
@@ -662,9 +682,9 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 // projectIDForInstance is set it delegates to that function; otherwise it falls
 // back to string(clusterName), which is correct for Milo-mode deployments where
 // the cluster name IS the project name.
-func (r *InstanceReconciler) resolveProjectID(clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+func (r *InstanceReconciler) resolveProjectID(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
 	if r.projectIDForInstance != nil {
-		return r.projectIDForInstance(clusterName, instance)
+		return r.projectIDForInstance(ctx, clusterName, instance)
 	}
 	return string(clusterName)
 }
@@ -696,7 +716,7 @@ func (r *InstanceReconciler) resolveClusterNameForProject(projectID string) mult
 func (r *InstanceReconciler) SetupWithManager(
 	mgr mcmanager.Manager,
 	quotaRestConfig *rest.Config,
-	projectIDForInstance func(multicluster.ClusterName, *computev1alpha.Instance) string,
+	projectIDForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) string,
 	edgeClusterName string,
 	clusterNameForProject func(projectID string) multicluster.ClusterName,
 ) error {
@@ -706,6 +726,9 @@ func (r *InstanceReconciler) SetupWithManager(
 	r.projectIDForInstance = projectIDForInstance
 	r.clusterNameForProject = clusterNameForProject
 	if quotaRestConfig != nil {
+		if edgeClusterName == "" {
+			return fmt.Errorf("edgeClusterName must be set when quota enforcement is enabled; set discovery.clusterName in the server config")
+		}
 		r.quotaClientManager = quota.New(quotaRestConfig)
 	}
 

@@ -8,3 +8,5 @@ data:
     kind: WorkloadOperator
     metricsServer:
       bindAddress: "0"
+    discovery:
+      quotaKubeconfigPath: /etc/quota-credentials/kubeconfig
