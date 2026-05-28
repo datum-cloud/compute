@@ -246,7 +246,7 @@ func main() {
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
-		instanceReconciler := &controller.InstanceReconciler{DownstreamClient: downstreamClient}
+		instanceReconciler := &controller.InstanceReconciler{UpstreamClient: downstreamClient}
 		if err = instanceReconciler.SetupWithManager(mgr, nil, projectIDForInstance, edgeClusterName, clusterNameForProject); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
@@ -257,7 +257,7 @@ func main() {
 	// controllers that run on the control-plane cluster. They require a downstream
 	// control plane to be configured (--downstream-kubeconfig provided).
 	if enableManagementControllers && upstreamRestConfig != nil {
-		federator := &controller.WorkloadDeploymentFederator{DownstreamClient: downstreamClient}
+		federator := &controller.WorkloadDeploymentFederator{UpstreamClient: downstreamClient}
 		if err = federator.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentFederator")
 			os.Exit(1)
@@ -276,7 +276,7 @@ func main() {
 			os.Exit(1)
 		}
 		if err = (&controller.InstanceProjector{
-			DownstreamClient: downstreamClient,
+			UpstreamClient: downstreamClient,
 			MCManager:        mgr,
 		}).SetupWithManager(downstreamMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "InstanceProjector")

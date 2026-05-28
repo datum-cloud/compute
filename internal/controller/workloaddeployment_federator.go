@@ -62,10 +62,10 @@ const (
 //     unused PropagationPolicies.
 type WorkloadDeploymentFederator struct {
 	mgr mcmanager.Manager
-	// DownstreamClient is a client pointed at the downstream control plane. The
+	// UpstreamClient is a client pointed at the downstream control plane. The
 	// caller (cmd/main.go) is responsible for constructing it from
 	// --downstream-kubeconfig.
-	DownstreamClient client.Client
+	UpstreamClient client.Client
 	finalizers       finalizer.Finalizers
 }
 
@@ -75,7 +75,7 @@ type WorkloadDeploymentFederator struct {
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list
 
 func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	if r.DownstreamClient == nil {
+	if r.UpstreamClient == nil {
 		return ctrl.Result{}, nil
 	}
 
@@ -117,7 +117,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	// Using strategy.GetClient() for writes ensures the downstream namespace is
 	// created with UpstreamOwnerNamespaceLabel so the InstanceProjector can
 	// resolve the target project namespace without scanning all namespaces.
-	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamClient)
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.UpstreamClient)
 	downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to determine downstream namespace: %w", err)
@@ -157,7 +157,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 // deployments with the same city code remain in the downstream namespace, deletes
 // the PropagationPolicy as well.
 func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	if r.DownstreamClient == nil {
+	if r.UpstreamClient == nil {
 		return finalizer.Result{}, nil
 	}
 
@@ -177,7 +177,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 		return finalizer.Result{}, err
 	}
 
-	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.DownstreamClient)
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.UpstreamClient)
 	downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 	if err != nil {
 		return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)
@@ -190,7 +190,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 			Namespace: downstreamNS,
 		},
 	}
-	if err := r.DownstreamClient.Delete(ctx, kd); client.IgnoreNotFound(err) != nil {
+	if err := r.UpstreamClient.Delete(ctx, kd); client.IgnoreNotFound(err) != nil {
 		return finalizer.Result{}, fmt.Errorf("failed to delete downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
 	}
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
@@ -210,7 +210,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 // direct label lookup rather than scanning all namespaces by UID.
 func (r *WorkloadDeploymentFederator) ensureDownstreamNamespace(ctx context.Context, name, upstreamNamespace, clusterName string) error {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.DownstreamClient, ns, func() error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.UpstreamClient, ns, func() error {
 		if ns.Labels == nil {
 			ns.Labels = make(map[string]string)
 		}
@@ -272,7 +272,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 		},
 	}
 
-	result, err := controllerutil.CreateOrPatch(ctx, r.DownstreamClient, pp, func() error {
+	result, err := controllerutil.CreateOrPatch(ctx, r.UpstreamClient, pp, func() error {
 		pp.Spec = karmadapolicyv1alpha1.PropagationSpec{
 			// Select all WorkloadDeployments in this namespace that carry the
 			// city-code label. Using a label selector (rather than individual
@@ -322,7 +322,7 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	downstreamNS string,
 ) error {
 	var kd computev1alpha.WorkloadDeployment
-	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{
+	if err := r.UpstreamClient.Get(ctx, types.NamespacedName{
 		Name:      deployment.Name,
 		Namespace: downstreamNS,
 	}, &kd); err != nil {
@@ -352,7 +352,7 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 	cityCode string,
 ) error {
 	var remaining computev1alpha.WorkloadDeploymentList
-	if err := r.DownstreamClient.List(ctx, &remaining,
+	if err := r.UpstreamClient.List(ctx, &remaining,
 		client.InNamespace(downstreamNS),
 		client.MatchingLabels{cityCodeLabel: cityCode},
 	); err != nil {
@@ -370,7 +370,7 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 			Namespace: downstreamNS,
 		},
 	}
-	if err := r.DownstreamClient.Delete(ctx, pp); client.IgnoreNotFound(err) != nil {
+	if err := r.UpstreamClient.Delete(ctx, pp); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("failed to delete PropagationPolicy for city %q in %s: %w", cityCode, downstreamNS, err)
 	}
 
@@ -379,7 +379,7 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 }
 
 // SetupWithManager registers the controller with the multicluster manager.
-// It must only be called when DownstreamClient is non-nil.
+// It must only be called when UpstreamClient is non-nil.
 func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	r.finalizers = finalizer.NewFinalizers()

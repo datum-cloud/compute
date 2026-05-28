@@ -112,7 +112,7 @@ func newTestProjector(karmadaClient client.Client, projectClient client.Client) 
 	projectCluster := newFakeCluster(projectClient)
 	mgr := newFakeMCManager(projTestCluster, projectCluster)
 	return &InstanceProjector{
-		DownstreamClient: karmadaClient,
+		UpstreamClient: karmadaClient,
 		MCManager:        mgr,
 	}
 }

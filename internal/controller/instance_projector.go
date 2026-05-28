@@ -38,9 +38,9 @@ import (
 // downstream control plane — NOT the multicluster-runtime manager — so informer
 // watches are scoped to the downstream control plane.
 type InstanceProjector struct {
-	// DownstreamClient reads Instance objects from the downstream control plane.
+	// UpstreamClient reads Instance objects from the downstream control plane.
 	// Must be set before SetupWithManager is called.
-	DownstreamClient client.Client
+	UpstreamClient client.Client
 
 	// MCManager provides access to project cluster clients via GetCluster.
 	MCManager mcmanager.Manager
@@ -54,7 +54,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// 1. Fetch the Instance from the downstream control plane.
 	var downstreamInstance computev1alpha.Instance
-	if err := r.DownstreamClient.Get(ctx, req.NamespacedName, &downstreamInstance); err != nil {
+	if err := r.UpstreamClient.Get(ctx, req.NamespacedName, &downstreamInstance); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Instance was deleted from the downstream control plane. Projections
 			// are owned by the project WorkloadDeployment, so cascading deletion
@@ -156,7 +156,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 // SetupWithManager registers the InstanceProjector with downstreamMgr, a standard
 // manager.Manager configured against the downstream control plane REST config.
-// DownstreamClient and MCManager must be set before calling this method.
+// UpstreamClient and MCManager must be set before calling this method.
 func (r *InstanceProjector) SetupWithManager(downstreamMgr manager.Manager) error {
 	return ctrl.NewControllerManagedBy(downstreamMgr).
 		For(&computev1alpha.Instance{}).

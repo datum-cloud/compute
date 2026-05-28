@@ -92,7 +92,7 @@ func newTestFederator(projectClient client.Client, karmadaClient client.Client) 
 
 	r := &WorkloadDeploymentFederator{
 		mgr:              mgr,
-		DownstreamClient: karmadaClient,
+		UpstreamClient: karmadaClient,
 	}
 
 	feds := finalizer.NewFinalizers()
@@ -141,14 +141,14 @@ func TestPropagationPolicyNameFor(t *testing.T) {
 	}
 }
 
-// TestWorkloadDeploymentFederator_NoDownstreamClient verifies that the reconciler
-// is a no-op when DownstreamClient is nil.
-func TestWorkloadDeploymentFederator_NoDownstreamClient(t *testing.T) {
+// TestWorkloadDeploymentFederator_NoUpstreamClient verifies that the reconciler
+// is a no-op when UpstreamClient is nil.
+func TestWorkloadDeploymentFederator_NoUpstreamClient(t *testing.T) {
 	t.Parallel()
 
 	projectClient := newProjectFakeClient(testProjectNamespace(), testWorkloadDeployment())
 	r := newTestFederator(projectClient, nil)
-	r.DownstreamClient = nil // explicitly nil
+	r.UpstreamClient = nil // explicitly nil
 
 	result, err := r.Reconcile(context.Background(), reconcileRequest())
 	require.NoError(t, err)
