@@ -25,6 +25,7 @@ import (
 	"go.datum.net/compute/internal/cmd/compute/util"
 	"go.datum.net/compute/internal/cmd/compute/watch"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type options struct {
@@ -110,6 +111,10 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 
 	ctx := context.Background()
 	out := cmd.OutOrStdout()
+
+	if err := ensureNetwork(ctx, cmd, c, "default", project, opts); err != nil {
+		return err
+	}
 
 	fmt.Fprintf(out, "Resolving workload %q in project %s...\n", workloadName, project)
 
@@ -268,6 +273,12 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 	ctx := context.Background()
 	out := cmd.OutOrStdout()
 
+	for _, iface := range workload.Spec.Template.Spec.NetworkInterfaces {
+		if err := ensureNetwork(ctx, cmd, c, iface.Network.Name, project, opts); err != nil {
+			return err
+		}
+	}
+
 	var existing computev1alpha.Workload
 	creating := false
 	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: workload.Name}, &existing); err != nil {
@@ -399,6 +410,54 @@ func computeDiff(existing computev1alpha.WorkloadSpec, newImage string, _ []stri
 		return "no changes"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// ensureNetwork checks if the named network exists and, if not, offers to create it.
+// It creates a minimal auto-IPAM IPv4 network on behalf of the user.
+func ensureNetwork(ctx context.Context, cmd *cobra.Command, c client.Client, networkName, project string, opts *options) error {
+	var network networkingv1alpha.Network
+	err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: networkName}, &network)
+	if err == nil {
+		return nil
+	}
+	if !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("checking network %q: %w", networkName, err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "  Network %q does not exist in project %s.\n", networkName, project)
+
+	if !opts.yes && term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintf(out, "  Create it now? (Y/n): ")
+		line, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
+		if readErr != nil {
+			return fmt.Errorf("reading confirmation: %w", readErr)
+		}
+		line = strings.TrimSpace(line)
+		if line == "n" || line == "N" {
+			return fmt.Errorf("network %q is required — create it with: datumctl apply -f network.yaml --project %s", networkName, project)
+		}
+	} else if !opts.yes {
+		return fmt.Errorf("network %q not found in project %s — use --yes to auto-create or create it first", networkName, project)
+	}
+
+	ipv4Mode := networkingv1alpha.NetworkIPAMModeAuto
+	newNetwork := networkingv1alpha.Network{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: util.ResourceNamespace,
+			Name:      networkName,
+		},
+		Spec: networkingv1alpha.NetworkSpec{
+			IPAM: networkingv1alpha.NetworkIPAM{
+				Mode: ipv4Mode,
+			},
+		},
+	}
+	if err := c.Create(ctx, &newNetwork); err != nil {
+		return fmt.Errorf("creating network %q: %w", networkName, err)
+	}
+	fmt.Fprintf(out, "  network/%s created\n", networkName)
+	return nil
 }
 
 // manifestDiff computes diff lines between an existing and desired workload.
