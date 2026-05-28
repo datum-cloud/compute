@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -261,7 +262,9 @@ func main() {
 				return ""
 			}
 			var ns corev1.Namespace
-			if err := cl.GetClient().Get(ctx, client.ObjectKey{Name: instance.Namespace}, &ns); err != nil {
+			getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if err := cl.GetAPIReader().Get(getCtx, client.ObjectKey{Name: instance.Namespace}, &ns); err != nil {
 				setupLog.Error(err, "projectIDForInstance: failed reading namespace",
 					"namespace", instance.Namespace)
 				return ""

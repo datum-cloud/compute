@@ -37,14 +37,6 @@ spec:
     - jsonPath: .status.currentReplicas
       name: Up-to-date
       type: string
-    - jsonPath: .status.location.namespace
-      name: Location Namespace
-      priority: 1
-      type: string
-    - jsonPath: .status.location.name
-      name: Location Name
-      priority: 1
-      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:
@@ -385,8 +377,9 @@ spec:
                                           variable present in a Container.
                                         properties:
                                           name:
-                                            description: Name of the environment variable.
-                                              Must be a C_IDENTIFIER.
+                                            description: |-
+                                              Name of the environment variable.
+                                              May consist of any printable ASCII characters except '='.
                                             type: string
                                           value:
                                             description: |-
@@ -446,6 +439,43 @@ spec:
                                                     type: string
                                                 required:
                                                 - fieldPath
+                                                type: object
+                                                x-kubernetes-map-type: atomic
+                                              fileKeyRef:
+                                                description: |-
+                                                  FileKeyRef selects a key of the env file.
+                                                  Requires the EnvFiles feature gate to be enabled.
+                                                properties:
+                                                  key:
+                                                    description: |-
+                                                      The key within the env file. An invalid key will prevent the pod from starting.
+                                                      The keys defined within a source may consist of any printable ASCII characters except '='.
+                                                      During Alpha stage of the EnvFiles feature gate, the key size is limited to 128 characters.
+                                                    type: string
+                                                  optional:
+                                                    default: false
+                                                    description: |-
+                                                      Specify whether the file or its key must be defined. If the file or key
+                                                      does not exist, then the env var is not published.
+                                                      If optional is set to true and the specified key does not exist,
+                                                      the environment variable will not be set in the Pod's containers.
+
+                                                      If optional is set to false and the specified key does not exist,
+                                                      an error will be returned during Pod creation.
+                                                    type: boolean
+                                                  path:
+                                                    description: |-
+                                                      The path within the volume from which to select the file.
+                                                      Must be relative and may not contain the '..' path or start with '..'.
+                                                    type: string
+                                                  volumeName:
+                                                    description: The name of the volume
+                                                      mount containing the env file.
+                                                    type: string
+                                                required:
+                                                - key
+                                                - path
+                                                - volumeName
                                                 type: object
                                                 x-kubernetes-map-type: atomic
                                               resourceFieldRef:
@@ -1035,20 +1065,6 @@ spec:
                 description: The desired number of instances
                 format: int32
                 type: integer
-              location:
-                description: The location which the deployment has been scheduled
-                  to
-                properties:
-                  name:
-                    description: Name of a datum location
-                    type: string
-                  namespace:
-                    description: Namespace for the datum location
-                    type: string
-                required:
-                - name
-                - namespace
-                type: object
               readyReplicas:
                 description: The number of instances which are ready.
                 format: int32

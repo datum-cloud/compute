@@ -5,6 +5,13 @@ metadata:
   name: compute
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+- apiGroups:
   - compute.datumapis.com
   resources:
   - instances
