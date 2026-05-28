@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -362,16 +363,22 @@ func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterN
 		return fmt.Errorf("failed getting downstream instance: %w", err)
 	}
 
-	// Update spec + labels on the existing object, then push status separately.
-	existing.Spec = instance.Spec
-	existing.Labels = writeBack.Labels
-	if err := r.DownstreamClient.Update(ctx, existing); err != nil {
-		return fmt.Errorf("failed updating downstream write-back instance: %w", err)
+	// Update spec + labels only if they differ.
+	if !apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
+		!apiequality.Semantic.DeepEqual(existing.Labels, writeBack.Labels) {
+		existing.Spec = instance.Spec
+		existing.Labels = writeBack.Labels
+		if err := r.DownstreamClient.Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed updating downstream write-back instance: %w", err)
+		}
 	}
 
-	existing.Status = instance.Status
-	if err := r.DownstreamClient.Status().Update(ctx, existing); err != nil {
-		return fmt.Errorf("failed updating downstream write-back instance status: %w", err)
+	// Update status only if it differs.
+	if !apiequality.Semantic.DeepEqual(existing.Status, instance.Status) {
+		existing.Status = instance.Status
+		if err := r.DownstreamClient.Status().Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed updating downstream write-back instance status: %w", err)
+		}
 	}
 
 	return nil
