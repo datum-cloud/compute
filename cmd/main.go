@@ -379,9 +379,6 @@ func initializeClusterDiscovery(
 
 		runnables = append(runnables, discoveryManager)
 		edgeClusterName = serverConfig.Discovery.ClusterName
-		if edgeClusterName == "" {
-			return nil, nil, "", fmt.Errorf("discovery.clusterName is required when mode is %q", multiclusterproviders.ProviderMilo)
-		}
 
 	// case providers.ProviderKind:
 	// 	provider = mckind.New(mckind.Options{
