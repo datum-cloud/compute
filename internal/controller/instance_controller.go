@@ -152,7 +152,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.writeBackToDownstream(ctx, req.ClusterName, &instance); err != nil {
+		if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
 		// Return after the status update so that the next reconcile sees the
@@ -164,7 +164,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	if err := r.writeBackToDownstream(ctx, req.ClusterName, &instance); err != nil {
+	if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -306,10 +306,10 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 	return finalizer.Result{}, nil
 }
 
-// writeBackToDownstream copies the Instance spec and status to the downstream
-// control plane so that the InstanceProjector can aggregate state from all POP
-// cells. It is a no-op when DownstreamClient is nil (federation disabled).
-func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) error {
+// writeBackToUpstream copies the Instance spec and status to the upstream
+// Karmada control plane so that the InstanceProjector can aggregate state from
+// all POP cells. It is a no-op when DownstreamClient is nil (federation disabled).
+func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) error {
 	if r.DownstreamClient == nil {
 		return nil
 	}
