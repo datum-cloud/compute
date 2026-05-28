@@ -709,6 +709,9 @@ func (r *InstanceReconciler) SetupWithManager(
 				return handler.TypedEnqueueRequestsFromMapFunc(
 					func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 						claim := obj.(*quotav1alpha1.ResourceClaim)
+						if claim.Spec.ResourceRef.Name == "" {
+							return nil
+						}
 						return []mcreconcile.Request{
 							{
 								Request: reconcile.Request{

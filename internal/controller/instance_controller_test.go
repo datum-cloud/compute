@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
@@ -518,7 +519,7 @@ func TestReconcileQuota(t *testing.T) {
 					Kind:     "Project",
 					Name:     clusterName,
 				},
-				ResourceRef: &quotav1alpha1.UnversionedObjectReference{
+				ResourceRef: quotav1alpha1.UnversionedObjectReference{
 					APIGroup:  "compute.datumapis.com",
 					Kind:      "Instance",
 					Name:      instanceName,
@@ -568,10 +569,14 @@ func TestReconcileQuota(t *testing.T) {
 		qm.StoreClient(clusterName, quotaClient)
 
 		r := &InstanceReconciler{
-			mgr:                mgr,
-			scheme:             s,
+			mgr:             mgr,
+			scheme:          s,
 			quotaClientManager: qm,
-			edgeClusterName:    "test-edge",
+			edgeClusterName: "test-edge",
+			// Milo mode: project ID == ClusterName.
+			projectIDForInstance: func(cn multicluster.ClusterName, _ *computev1alpha.Instance) string {
+				return string(cn)
+			},
 		}
 
 		// Initialize the finalizer registry so that r.finalizers.Finalize is not
@@ -765,4 +770,146 @@ func TestReconcileQuota(t *testing.T) {
 			assert.NotContains(t, updated.Finalizers, instanceQuotaFinalizer)
 		}
 	})
+}
+
+// TestReconcileQuotaSingleMode verifies that in single-cell mode the project ID
+// is taken from instance.Namespace rather than the (always-"single") ClusterName.
+func TestReconcileQuotaSingleMode(t *testing.T) {
+	const (
+		instanceName  = "my-instance"
+		projectNS     = "ns-abc123" // the Milo project namespace propagated by Karmada
+		deploymentName = "my-deployment"
+	)
+
+	claimName := projectNS + "--" + instanceName
+
+	s := newTestScheme(t)
+
+	instance := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       instanceName,
+			Namespace:  projectNS,
+			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "compute.datumapis.com/v1alpha",
+					Kind:       "WorkloadDeployment",
+					Name:       deploymentName,
+					UID:        "test-uid",
+					Controller: func() *bool { b := true; return &b }(),
+				},
+			},
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.QuotaSchedulingGate.String()},
+				},
+			},
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+			},
+			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+		},
+	}
+
+	deployment := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: deploymentName, Namespace: projectNS, UID: "test-uid"},
+	}
+
+	// ResourceClaim keyed under the project namespace (the quota-side project ID
+	// in single mode).
+	claim := &quotav1alpha1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: projectNS},
+		Spec: quotav1alpha1.ResourceClaimSpec{
+			ConsumerRef: quotav1alpha1.ConsumerRef{
+				APIGroup: "resourcemanager.miloapis.com",
+				Kind:     "Project",
+				Name:     projectNS,
+			},
+			ResourceRef: quotav1alpha1.UnversionedObjectReference{
+				APIGroup:  "compute.datumapis.com",
+				Kind:      "Instance",
+				Name:      instanceName,
+				Namespace: projectNS,
+			},
+			Requests: []quotav1alpha1.ResourceRequest{
+				{ResourceType: "compute.datumapis.com/instances", Amount: 1},
+			},
+		},
+		Status: quotav1alpha1.ResourceClaimStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               quotav1alpha1.ResourceClaimGranted,
+					Status:             metav1.ConditionTrue,
+					Reason:             quotav1alpha1.ResourceClaimGrantedReason,
+					Message:            "quota granted",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	projectClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(instance, deployment).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		Build()
+
+	// The quota client is keyed by the project namespace, not "single".
+	quotaClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(claim).
+		WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
+		Build()
+
+	qm := quota.New(nil)
+	qm.StoreClient(projectNS, quotaClient)
+
+	mgr := &fakeMCManager{
+		clusters: map[string]cluster.Cluster{
+			"single": newFakeCluster(projectClient),
+		},
+	}
+
+	r := &InstanceReconciler{
+		mgr:             mgr,
+		scheme:          s,
+		quotaClientManager: qm,
+		// "single" matches what initializeClusterDiscovery sets in ProviderSingle
+		// mode (defaults to "single" when ClusterName is not configured).
+		edgeClusterName: "single",
+		// Single-cell mode: project ID comes from instance.Namespace.
+		projectIDForInstance: func(_ multicluster.ClusterName, inst *computev1alpha.Instance) string {
+			return inst.Namespace
+		},
+		// Single-cell mode: watch map func must always return "single".
+		clusterNameForProject: func(_ string) multicluster.ClusterName {
+			return "single"
+		},
+	}
+
+	r.finalizers = finalizer.NewFinalizers()
+	require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
+	req := mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: projectNS, Name: instanceName}},
+		ClusterName: "single",
+	}
+
+	_, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: projectNS, Name: instanceName}, &updated))
+
+	quotaCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	require.NotNil(t, quotaCond, "QuotaGranted condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, quotaCond.Status, "quota should be granted in single mode")
+	assert.Equal(t, computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable, quotaCond.Reason)
+
+	// Verify clusterNameForProject always returns "single" so the watch map func
+	// never enqueues an unknown cluster name.
+	assert.Equal(t, multicluster.ClusterName("single"), r.resolveClusterNameForProject(projectNS))
+	assert.Equal(t, multicluster.ClusterName("single"), r.resolveClusterNameForProject("any-other-project"))
 }

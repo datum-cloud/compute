@@ -235,8 +235,17 @@ type DiscoveryConfig struct {
 	// distinguish its own claims from those created by other edge controllers
 	// in the same project control planes.
 	//
-	// Required when Mode is "milo".
+	// Required when Mode is "milo". Optional in single mode; defaults to "single".
 	ClusterName string `json:"clusterName"`
+
+	// QuotaKubeconfigPath is the path to the kubeconfig file used when creating
+	// ResourceClaim objects against Milo project control planes. When set it
+	// takes precedence over ProjectKubeconfigPath for quota calls. When both are
+	// unset, quota accounting is disabled.
+	//
+	// Use this field in deployments (mode: single or mode: milo) that need to
+	// talk to api.datum.net for quota enforcement.
+	QuotaKubeconfigPath string `json:"quotaKubeconfigPath"`
 }
 
 func SetDefaults_DiscoveryConfig(obj *DiscoveryConfig) {
@@ -259,6 +268,21 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 	}
 
 	return clientcmd.BuildConfigFromFlags("", c.ProjectKubeconfigPath)
+}
+
+// QuotaRestConfig returns the REST config for quota ResourceClaim management
+// against Milo project control planes. QuotaKubeconfigPath is preferred; if
+// unset, ProjectKubeconfigPath is used as a fallback. Returns (nil, nil) when
+// neither is configured — quota accounting is disabled in that case.
+func (c *DiscoveryConfig) QuotaRestConfig() (*rest.Config, error) {
+	path := c.QuotaKubeconfigPath
+	if path == "" {
+		path = c.ProjectKubeconfigPath
+	}
+	if path == "" {
+		return nil, nil
+	}
+	return clientcmd.BuildConfigFromFlags("", path)
 }
 
 func init() {
