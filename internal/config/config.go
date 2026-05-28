@@ -273,13 +273,17 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 // QuotaRestConfig returns the REST config for quota ResourceClaim management
 // against Milo project control planes. QuotaKubeconfigPath is preferred; if
 // unset, ProjectKubeconfigPath is used as a fallback. Returns (nil, nil) when
-// neither is configured — quota accounting is disabled in that case.
+// neither is configured or the file does not exist — quota accounting is
+// disabled in that case.
 func (c *DiscoveryConfig) QuotaRestConfig() (*rest.Config, error) {
 	path := c.QuotaKubeconfigPath
 	if path == "" {
 		path = c.ProjectKubeconfigPath
 	}
 	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, nil
 	}
 	return clientcmd.BuildConfigFromFlags("", path)
