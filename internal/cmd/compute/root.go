@@ -11,11 +11,17 @@ import (
 	"go.datum.net/compute/internal/cmd/compute/restart"
 	"go.datum.net/compute/internal/cmd/compute/rollout"
 	"go.datum.net/compute/internal/cmd/compute/scale"
+	"go.datum.net/compute/internal/cmd/compute/util"
 	"go.datum.net/compute/internal/cmd/compute/workloads"
 )
 
 func Command() *cobra.Command {
 	root := plugin.NewRootCmd("compute", "Deploy and manage containerized workloads on Datum Cloud")
+	root.SilenceUsage = true
+
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		return util.EnsureComputeEntitlement(cmd.Context(), util.ProjectFromCmd(cmd), cmd.InOrStdin(), cmd.ErrOrStderr())
+	}
 
 	root.AddCommand(
 		deploy.Command(),

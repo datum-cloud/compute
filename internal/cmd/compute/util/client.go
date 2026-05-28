@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/datumctl/plugin"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,9 +48,38 @@ func NewClient(project string) (client.Client, error) {
 	if err := computev1alpha.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering compute scheme: %w", err)
 	}
+	if err := quotav1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering quota scheme: %w", err)
+	}
 
 	cfg := &rest.Config{
 		Host:        ProjectControlPlaneURL(ctx.APIHost, project),
+		BearerToken: token,
+	}
+
+	return client.New(cfg, client.Options{Scheme: scheme})
+}
+
+// NewPlatformClient builds a Kubernetes client targeting the platform API server
+// (not a project-scoped virtual control plane).
+func NewPlatformClient() (client.Client, error) {
+	ctx := plugin.Context()
+	if ctx.APIHost == "" {
+		return nil, fmt.Errorf("DATUM_API_HOST is not set; is this plugin running via datumctl?")
+	}
+
+	token, err := plugin.Token()
+	if err != nil {
+		return nil, fmt.Errorf("getting credentials: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	if err := quotav1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering quota scheme: %w", err)
+	}
+
+	cfg := &rest.Config{
+		Host:        "https://" + ctx.APIHost,
 		BearerToken: token,
 	}
 
