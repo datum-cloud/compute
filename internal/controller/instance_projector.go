@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.miloapis.com/milo/pkg/downstreamclient"
@@ -77,7 +78,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	clusterName = strings.ReplaceAll(clusterName, "_", "/")
 
 	// 3. Obtain the project cluster client.
-	projectCluster, err := r.MCManager.GetCluster(ctx, clusterName)
+	projectCluster, err := r.MCManager.GetCluster(ctx, multicluster.ClusterName(clusterName))
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed getting project cluster %q: %w", clusterName, err)
 	}

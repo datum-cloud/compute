@@ -518,7 +518,7 @@ func TestReconcileQuota(t *testing.T) {
 					Kind:     "Project",
 					Name:     clusterName,
 				},
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 					APIGroup:  "compute.datumapis.com",
 					Kind:      "Instance",
 					Name:      instanceName,

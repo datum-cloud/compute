@@ -26,6 +26,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -383,9 +384,9 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		existingDeployments.Insert(deployment.Name)
 	}
 
-	var locations networkingv1alpha.LocationList
+	var locations networkingv1alpha.LocationBindingList
 	if err := upstreamClient.List(ctx, &locations); err != nil {
-		return nil, nil, fmt.Errorf("failed to list locations: %w", err)
+		return nil, nil, fmt.Errorf("failed to list location bindings: %w", err)
 	}
 
 	if len(locations.Items) == 0 {
@@ -463,7 +464,7 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Workload{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Watches(&networkingv1alpha.Network{}, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		Watches(&networkingv1alpha.Network{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, network client.Object) []mcreconcile.Request {
 				logger := log.FromContext(ctx)
 

@@ -305,11 +305,6 @@ func main() {
 		})
 	}
 
-	setupLog.Info("starting cluster discovery provider")
-	g.Go(func() error {
-		return ignoreCanceled(provider.Run(ctx, mgr))
-	})
-
 	setupLog.Info("starting multicluster manager")
 	g.Go(func() error {
 		return ignoreCanceled(mgr.Start(ctx))
@@ -321,39 +316,17 @@ func main() {
 	}
 }
 
-type runnableProvider interface {
-	multicluster.Provider
-	Run(context.Context, mcmanager.Manager) error
-}
-
-// Needed until we contribute the patch in the following PR again (need to sign CLA):
-//
-//	See: https://github.com/kubernetes-sigs/multicluster-runtime/pull/18
-type wrappedSingleClusterProvider struct {
-	multicluster.Provider
-	cluster cluster.Cluster
-}
-
-func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
-		return err
-	}
-	return p.Provider.(runnableProvider).Run(ctx, mgr)
-}
 
 func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider runnableProvider,
+) (runnables []manager.Runnable, provider multicluster.Provider,
 	projectRestConfig *rest.Config, edgeClusterName string, err error) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
-		provider = &wrappedSingleClusterProvider{
-			Provider: mcsingle.New("single", deploymentCluster),
-			cluster:  deploymentCluster,
-		}
+		provider = mcsingle.New(multicluster.ClusterName("single"), deploymentCluster)
 
 	case multiclusterproviders.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()

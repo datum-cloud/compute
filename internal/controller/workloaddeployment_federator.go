@@ -117,7 +117,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	// Using strategy.GetClient() for writes ensures the downstream namespace is
 	// created with UpstreamOwnerNamespaceLabel so the InstanceProjector can
 	// resolve the target project namespace without scanning all namespaces.
-	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.DownstreamClient)
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamClient)
 	downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to determine downstream namespace: %w", err)
@@ -126,7 +126,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	// Ensure the downstream namespace exists and carries the upstream tracking
 	// labels so the InstanceProjector can resolve the project namespace by label
 	// lookup instead of scanning all namespaces.
-	if err := r.ensureDownstreamNamespace(ctx, downstreamNS, deployment.Namespace, req.ClusterName); err != nil {
+	if err := r.ensureDownstreamNamespace(ctx, downstreamNS, deployment.Namespace, string(req.ClusterName)); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -177,7 +177,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 		return finalizer.Result{}, err
 	}
 
-	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(clusterName, cl.GetClient(), r.DownstreamClient)
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.DownstreamClient)
 	downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 	if err != nil {
 		return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)

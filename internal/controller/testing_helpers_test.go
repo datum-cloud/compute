@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -85,8 +86,8 @@ type fakeMCManager struct {
 	clusters          map[string]cluster.Cluster
 }
 
-func (m *fakeMCManager) GetCluster(_ context.Context, name string) (cluster.Cluster, error) {
-	if c, ok := m.clusters[name]; ok {
+func (m *fakeMCManager) GetCluster(_ context.Context, name multicluster.ClusterName) (cluster.Cluster, error) {
+	if c, ok := m.clusters[string(name)]; ok {
 		return c, nil
 	}
 	return nil, fmt.Errorf("cluster %q not found in fake manager", name)

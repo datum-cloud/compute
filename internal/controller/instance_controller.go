@@ -27,6 +27,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -57,7 +58,7 @@ const (
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
 // Keeping it narrow allows unit tests to substitute a minimal fake.
 type clusterGetter interface {
-	GetCluster(ctx context.Context, clusterName string) (cluster.Cluster, error)
+	GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error)
 }
 
 // InstanceReconciler reconciles an Instance object
@@ -156,13 +157,13 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
 // deleted. It removes the quota finalizer once the ResourceClaim is gone.
-func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, clusterName string, instance *computev1alpha.Instance) error {
+func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) error {
 	if !controllerutil.ContainsFinalizer(instance, instanceQuotaFinalizer) {
 		return nil
 	}
 
 	if r.quotaClientManager != nil {
-		projectClient, err := r.quotaClientManager.ClientForProject(ctx, clusterName, r.scheme)
+		projectClient, err := r.quotaClientManager.ClientForProject(ctx, string(clusterName), r.scheme)
 		if err != nil {
 			return fmt.Errorf("failed getting quota client for deletion: %w", err)
 		}
@@ -190,7 +191,7 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 // reconcileQuotaCondition reconciles the ResourceClaim and updates the
 // InstanceQuotaGranted status condition. It returns true when the condition
 // changed and a status update is required.
-func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (bool, error) {
+func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (bool, error) {
 	grantedCondition, err := r.reconcileQuotaClaim(ctx, clusterName, instance)
 	if err != nil {
 		return false, fmt.Errorf("failed reconciling quota claim: %w", err)
@@ -291,14 +292,14 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 // writeBackToDownstream copies the Instance spec and status to the downstream
 // control plane so that the InstanceProjector can aggregate state from all POP
 // cells. It is a no-op when DownstreamClient is nil (federation disabled).
-func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterName string, instance *computev1alpha.Instance) error {
+func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) error {
 	if r.DownstreamClient == nil {
 		return nil
 	}
 
 	// Encode the POP-cell cluster name using the same convention as NSO's
 	// MappedNamespaceResourceStrategy: "cluster-<name>" with "/" → "_".
-	encodedClusterName := "cluster-" + strings.ReplaceAll(clusterName, "/", "_")
+	encodedClusterName := "cluster-" + strings.ReplaceAll(string(clusterName), "/", "_")
 
 	// Read the upstream project namespace name from the downstream namespace label
 	// stamped by the WorkloadDeploymentFederator. This lets the InstanceProjector
@@ -360,14 +361,14 @@ func (r *InstanceReconciler) writeBackToDownstream(ctx context.Context, clusterN
 	return nil
 }
 
-func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName string, instance *computev1alpha.Instance) (*metav1.Condition, error) {
+func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (*metav1.Condition, error) {
 	if r.quotaClientManager == nil {
 		return nil, nil
 	}
 
 	logger := log.FromContext(ctx)
 
-	projectClient, err := r.quotaClientManager.ClientForProject(ctx, clusterName, r.scheme)
+	projectClient, err := r.quotaClientManager.ClientForProject(ctx, string(clusterName), r.scheme)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting quota client for project %q: %w", clusterName, err)
 	}
@@ -409,9 +410,9 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 			ConsumerRef: quotav1alpha1.ConsumerRef{
 				APIGroup: "resourcemanager.miloapis.com",
 				Kind:     "Project",
-				Name:     clusterName,
+				Name:     string(clusterName),
 			},
-			ResourceRef: quotav1alpha1.UnversionedObjectReference{
+			ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 				APIGroup:  "compute.datumapis.com",
 				Kind:      "Instance",
 				Name:      instance.Name,
@@ -649,7 +650,7 @@ func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, projectRest
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Watches(
 			&quotav1alpha1.ResourceClaim{},
-			func(_ string, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			func(_ multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(
 					func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 						claim := obj.(*quotav1alpha1.ResourceClaim)
@@ -661,7 +662,7 @@ func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, projectRest
 										Name:      claim.Spec.ResourceRef.Name,
 									},
 								},
-								ClusterName: claim.Spec.ConsumerRef.Name,
+								ClusterName: multicluster.ClusterName(claim.Spec.ConsumerRef.Name),
 							},
 						}
 					},

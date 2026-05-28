@@ -12,6 +12,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/validation"
@@ -27,10 +28,9 @@ func SetupWorkloadWebhookWithManager(mgr mcmanager.Manager) error {
 		mgr: mgr,
 	}
 
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).
-		For(&computev1alpha.Workload{}).
-		WithDefaulter(webhook).
-		WithValidator(webhook).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &computev1alpha.Workload{}).
+		WithCustomDefaulter(webhook).
+		WithCustomValidator(webhook).
 		Complete()
 }
 
@@ -83,7 +83,7 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, obj runtime.Object
 
 	clusterName := computewebhook.ClusterNameFromContext(ctx)
 
-	cluster, err := r.mgr.GetCluster(ctx, clusterName)
+	cluster, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(clusterName))
 	if err != nil {
 		return nil, err
 	}
@@ -101,9 +101,9 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, obj runtime.Object
 	// that means for the scheduling phase, since there would not currently be
 	// sufficient context to know who created the workload and what locations
 	// are valid candidates based on that. Maybe an annotation, or spec field?
-	var locations networkingv1alpha.LocationList
+	var locations networkingv1alpha.LocationBindingList
 	if err := clusterClient.List(ctx, &locations); err != nil {
-		return nil, fmt.Errorf("failed to list locations: %w", err)
+		return nil, fmt.Errorf("failed to list location bindings: %w", err)
 	}
 
 	validCityCodes := sets.Set[string]{}
