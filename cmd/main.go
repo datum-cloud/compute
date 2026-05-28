@@ -46,6 +46,10 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
+// singleClusterName is the fixed cluster name that mcsingle.New registers.
+// All single-mode wiring that references this cluster must use this constant.
+const singleClusterName = "single"
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -236,25 +240,14 @@ func main() {
 	}
 
 	if enableCellControllers {
-		quotaRestConfig, err := serverConfig.Discovery.QuotaRestConfig()
-		if err != nil {
-			setupLog.Error(err, "unable to get quota rest config")
-			os.Exit(1)
+		projectIDForInstance := func(_ multicluster.ClusterName, instance *computev1alpha.Instance) string {
+			return instance.Namespace
 		}
-
-		// In single-cell mode the multicluster ClusterName is always "single"
-		// (hardcoded by mcsingle.New), so the project ID must come from the
-		// instance namespace instead. In Milo mode the ClusterName IS the
-		// project name, so pass nil to use the default fallback.
-		var projectIDForInstance func(multicluster.ClusterName, *computev1alpha.Instance) string
-		if serverConfig.Discovery.Mode == multiclusterproviders.ProviderSingle {
-			projectIDForInstance = func(_ multicluster.ClusterName, instance *computev1alpha.Instance) string {
-				return instance.Namespace
-			}
+		clusterNameForProject := func(_ string) multicluster.ClusterName {
+			return multicluster.ClusterName(singleClusterName)
 		}
-
 		instanceReconciler := &controller.InstanceReconciler{DownstreamClient: downstreamClient}
-		if err = instanceReconciler.SetupWithManager(mgr, quotaRestConfig, projectIDForInstance, edgeClusterName); err != nil {
+		if err = instanceReconciler.SetupWithManager(mgr, nil, projectIDForInstance, edgeClusterName, clusterNameForProject); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}
@@ -342,7 +335,11 @@ func initializeClusterDiscovery(
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
-		provider = mcsingle.New(multicluster.ClusterName("single"), deploymentCluster)
+		provider = mcsingle.New(multicluster.ClusterName(singleClusterName), deploymentCluster)
+		edgeClusterName = serverConfig.Discovery.ClusterName
+		if edgeClusterName == "" {
+			edgeClusterName = singleClusterName
+		}
 
 	case multiclusterproviders.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
@@ -382,6 +379,9 @@ func initializeClusterDiscovery(
 
 		runnables = append(runnables, discoveryManager)
 		edgeClusterName = serverConfig.Discovery.ClusterName
+		if edgeClusterName == "" {
+			return nil, nil, "", fmt.Errorf("discovery.clusterName is required when mode is %q", multiclusterproviders.ProviderMilo)
+		}
 
 	// case providers.ProviderKind:
 	// 	provider = mckind.New(mckind.Options{
