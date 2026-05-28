@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -269,11 +270,14 @@ func main() {
 					"namespace", instance.Namespace)
 				return ""
 			}
-			projectID := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
-			if projectID == "" {
-				setupLog.Info("projectIDForInstance: upstream-namespace label missing or empty",
+			encoded := ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+			if encoded == "" {
+				setupLog.Info("projectIDForInstance: upstream-cluster-name label missing or empty",
 					"namespace", instance.Namespace)
+				return ""
 			}
+			projectID := strings.TrimPrefix(encoded, "cluster-")
+			projectID = strings.ReplaceAll(projectID, "_", "/")
 			return projectID
 		}
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
