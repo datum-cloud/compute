@@ -3,6 +3,9 @@ kind: ClusterRole
 metadata:
   name: compute-manager
 rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["compute.datumapis.com"]
     resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
