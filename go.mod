@@ -9,7 +9,7 @@ require (
 	github.com/onsi/gomega v1.38.2
 	github.com/stretchr/testify v1.11.1
 	go.datum.net/network-services-operator v0.21.10-0.20260528021428-b0f2347f5359
-	go.miloapis.com/milo v0.26.1-0.20260528112432-87257dc6bc28
+	go.miloapis.com/milo v0.25.2-0.20260528192736-e4258524ad42
 	golang.org/x/crypto v0.45.0
 	golang.org/x/sync v0.18.0
 	google.golang.org/protobuf v1.36.11

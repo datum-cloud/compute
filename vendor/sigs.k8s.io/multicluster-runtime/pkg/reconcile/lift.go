@@ -1,0 +1,49 @@
+/*
+Copyright 2025 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package reconcile
+
+import (
+	"fmt"
+
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+)
+
+// WithCluster extends a request with a cluster name.
+type WithCluster[request comparable] struct {
+	Request request
+
+	ClusterName multicluster.ClusterName
+}
+
+// String returns the string representation.
+func (r WithCluster[request]) String() string {
+	if r.ClusterName == "" {
+		return fmt.Sprint(r.Request)
+	}
+	return "cluster://" + r.ClusterName.String() + "/" + fmt.Sprint(r.Request)
+}
+
+// Cluster returns the name of the cluster that the request belongs to.
+func (r WithCluster[request]) Cluster() multicluster.ClusterName {
+	return r.ClusterName
+}
+
+// WithCluster sets the name of the cluster that the request belongs to.
+func (r WithCluster[request]) WithCluster(name multicluster.ClusterName) WithCluster[request] {
+	r.ClusterName = name
+	return r
+}

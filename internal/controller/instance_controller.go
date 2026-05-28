@@ -67,6 +67,17 @@ type InstanceReconciler struct {
 	scheme             *runtime.Scheme
 	quotaClientManager *quota.ProjectQuotaClientManager
 	edgeClusterName    string
+	// projectIDForInstance derives the Milo project ID used for quota
+	// ResourceClaim management. In Milo mode it returns string(clusterName); in
+	// single-cell mode it returns instance.Namespace because the cluster name is
+	// always "single" and the namespace is the per-project identifier.
+	projectIDForInstance func(clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
+	// clusterNameForProject maps a Milo project ID back to the multicluster
+	// ClusterName that owns that project's workloads. In Milo mode the
+	// ClusterName equals the project ID. In single-cell mode the only registered
+	// cluster is "single" regardless of project ID. When nil, falls back to
+	// multicluster.ClusterName(projectID), which is correct for Milo mode.
+	clusterNameForProject func(projectID string) multicluster.ClusterName
 	// DownstreamClient is an optional client pointing at the downstream control plane.
 	// When non-nil, the reconciler writes a copy of each Instance back to the
 	// downstream control plane so that the InstanceProjector (running in the
@@ -163,7 +174,8 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 	}
 
 	if r.quotaClientManager != nil {
-		projectClient, err := r.quotaClientManager.ClientForProject(ctx, string(clusterName), r.scheme)
+		projectID := r.resolveProjectID(clusterName, instance)
+		projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 		if err != nil {
 			return fmt.Errorf("failed getting quota client for deletion: %w", err)
 		}
@@ -368,9 +380,10 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 
 	logger := log.FromContext(ctx)
 
-	projectClient, err := r.quotaClientManager.ClientForProject(ctx, string(clusterName), r.scheme)
+	projectID := r.resolveProjectID(clusterName, instance)
+	projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 	if err != nil {
-		return nil, fmt.Errorf("failed getting quota client for project %q: %w", clusterName, err)
+		return nil, fmt.Errorf("failed getting quota client for project %q: %w", projectID, err)
 	}
 
 	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
@@ -410,9 +423,9 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 			ConsumerRef: quotav1alpha1.ConsumerRef{
 				APIGroup: "resourcemanager.miloapis.com",
 				Kind:     "Project",
-				Name:     string(clusterName),
+				Name:     projectID,
 			},
-			ResourceRef: &quotav1alpha1.UnversionedObjectReference{
+			ResourceRef: quotav1alpha1.UnversionedObjectReference{
 				APIGroup:  "compute.datumapis.com",
 				Kind:      "Instance",
 				Name:      instance.Name,
@@ -630,13 +643,55 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 	return false, "", nil
 }
 
+// resolveProjectID returns the Milo project ID to use for quota calls. When
+// projectIDForInstance is set it delegates to that function; otherwise it falls
+// back to string(clusterName), which is correct for Milo-mode deployments where
+// the cluster name IS the project name.
+func (r *InstanceReconciler) resolveProjectID(clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+	if r.projectIDForInstance != nil {
+		return r.projectIDForInstance(clusterName, instance)
+	}
+	return string(clusterName)
+}
+
+// resolveClusterNameForProject returns the multicluster ClusterName for the
+// given project ID. When clusterNameForProject is set it delegates to that
+// function; otherwise it falls back to multicluster.ClusterName(projectID),
+// which is correct for Milo-mode deployments where the cluster name IS the
+// project name.
+func (r *InstanceReconciler) resolveClusterNameForProject(projectID string) multicluster.ClusterName {
+	if r.clusterNameForProject != nil {
+		return r.clusterNameForProject(projectID)
+	}
+	return multicluster.ClusterName(projectID)
+}
+
 // SetupWithManager sets up the controller with the Manager.
-func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, projectRestConfig *rest.Config, edgeClusterName string) error {
+//
+// quotaRestConfig is the REST config used to reach Milo project control planes
+// for ResourceClaim management. Pass nil to disable quota accounting.
+//
+// projectIDForInstance derives the Milo project ID for each reconcile request.
+// In Milo mode pass nil (falls back to using ClusterName). In single-cell mode
+// pass a function that returns instance.Namespace.
+//
+// clusterNameForProject maps a project ID back to the multicluster ClusterName.
+// In Milo mode pass nil (falls back to ClusterName(projectID)). In single-cell
+// mode pass a function that always returns "single".
+func (r *InstanceReconciler) SetupWithManager(
+	mgr mcmanager.Manager,
+	quotaRestConfig *rest.Config,
+	projectIDForInstance func(multicluster.ClusterName, *computev1alpha.Instance) string,
+	edgeClusterName string,
+	clusterNameForProject func(projectID string) multicluster.ClusterName,
+) error {
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
 	r.edgeClusterName = edgeClusterName
-	if projectRestConfig != nil {
-		r.quotaClientManager = quota.New(projectRestConfig)
+	r.projectIDForInstance = projectIDForInstance
+	r.clusterNameForProject = clusterNameForProject
+	if quotaRestConfig != nil {
+		r.quotaClientManager = quota.New(quotaRestConfig)
 	}
 
 	r.finalizers = finalizer.NewFinalizers()
@@ -662,7 +717,7 @@ func (r *InstanceReconciler) SetupWithManager(mgr mcmanager.Manager, projectRest
 										Name:      claim.Spec.ResourceRef.Name,
 									},
 								},
-								ClusterName: multicluster.ClusterName(claim.Spec.ConsumerRef.Name),
+								ClusterName: r.resolveClusterNameForProject(claim.Spec.ConsumerRef.Name),
 							},
 						}
 					},
