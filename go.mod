@@ -11,7 +11,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	go.datum.net/datumctl v0.14.1-0.20260523153711-b44de1c715c1
 	go.datum.net/network-services-operator v0.1.0
-	go.miloapis.com/milo v0.24.11
+	go.miloapis.com/milo v0.26.1-0.20260527023322-a78982bd81f2
 	golang.org/x/crypto v0.49.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/term v0.43.0
@@ -130,6 +130,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
 	go.miloapis.com/activity v0.7.0 // indirect
+	go.miloapis.com/service-catalog v0.0.0-20260527221104-f8aeca153879 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
 	go.opentelemetry.io/otel v1.40.0 // indirect

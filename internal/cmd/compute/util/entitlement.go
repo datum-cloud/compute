@@ -2,35 +2,25 @@ package util
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"go.datum.net/datumctl/plugin"
 	"golang.org/x/term"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const computeServiceName = "compute"
-
-type entitlementList struct {
-	Items []entitlementItem `json:"items"`
-}
-
-type entitlementItem struct {
-	Spec struct {
-		ServiceRef struct {
-			Name string `json:"name"`
-		} `json:"serviceRef"`
-	} `json:"spec"`
-	Status struct {
-		Phase string `json:"phase"`
-	} `json:"status"`
-}
 
 // EnsureComputeEntitlement checks that the selected project has an active
 // ServiceEntitlement for the compute service. If none exists, it prompts the
@@ -38,40 +28,38 @@ type entitlementItem struct {
 // prompt does not pollute structured output.
 func EnsureComputeEntitlement(ctx context.Context, project string, in io.Reader, out io.Writer) error {
 	if project == "" {
-		// NewClient will surface the missing-project error.
 		return nil
 	}
 
-	pluginCtx := plugin.Context()
-	if pluginCtx.APIHost == "" {
-		return fmt.Errorf("DATUM_API_HOST is not set; is this plugin running via datumctl?")
-	}
-
-	token, err := plugin.Token()
-	if err != nil {
-		return fmt.Errorf("getting credentials: %w", err)
-	}
-
-	baseURL := ProjectControlPlaneURL(pluginCtx.APIHost, project)
-	list, err := listEntitlements(ctx, baseURL, token)
+	wc, err := newEntitlementClient(project)
 	if err != nil {
 		return err
 	}
 
-	for _, item := range list.Items {
+	var list servicesv1alpha1.ServiceEntitlementList
+	if err := wc.List(ctx, &list); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			// API not installed in this project's VCP — treat as no entitlement.
+			return promptAndRequestAccess(ctx, project, wc, in, out)
+		}
+		return fmt.Errorf("checking service entitlement: %w", err)
+	}
+
+	for i := range list.Items {
+		item := &list.Items[i]
 		if item.Spec.ServiceRef.Name != computeServiceName {
 			continue
 		}
 		switch item.Status.Phase {
-		case "Active":
+		case servicesv1alpha1.EntitlementPhaseActive:
 			return nil
-		case "PendingApproval":
+		case servicesv1alpha1.EntitlementPhasePendingApproval:
 			return fmt.Errorf(
 				"compute service entitlement for project %q is pending approval\n\n"+
 					"Check status with: datumctl services list",
 				project,
 			)
-		case "Rejected":
+		case servicesv1alpha1.EntitlementPhaseRejected:
 			return fmt.Errorf(
 				"compute service entitlement for project %q was rejected\n\n"+
 					"Re-enable with: datumctl services enable %s",
@@ -80,46 +68,10 @@ func EnsureComputeEntitlement(ctx context.Context, project string, in io.Reader,
 		}
 	}
 
-	// No entitlement found — prompt the user.
-	return promptAndRequestAccess(ctx, project, baseURL, token, in, out)
+	return promptAndRequestAccess(ctx, project, wc, in, out)
 }
 
-func listEntitlements(ctx context.Context, baseURL, token string) (*entitlementList, error) {
-	url := baseURL + "/apis/services.miloapis.com/v1alpha1/serviceentitlements"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("building entitlement request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("checking service entitlement: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 404 means the service-catalog API isn't installed in this project's VCP,
-	// which is equivalent to having no entitlement — fall through to the prompt.
-	if resp.StatusCode == http.StatusNotFound {
-		return &entitlementList{}, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"checking service entitlement: unexpected status %d",
-			resp.StatusCode,
-		)
-	}
-
-	var list entitlementList
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return nil, fmt.Errorf("decoding service entitlements: %w", err)
-	}
-	return &list, nil
-}
-
-func promptAndRequestAccess(ctx context.Context, project, baseURL, token string, in io.Reader, out io.Writer) error {
+func promptAndRequestAccess(ctx context.Context, project string, wc client.WithWatch, in io.Reader, out io.Writer) error {
 	if !isTTY(in) {
 		return fmt.Errorf(
 			"compute service is not enabled for project %q\n\n"+
@@ -145,72 +97,88 @@ func promptAndRequestAccess(ctx context.Context, project, baseURL, token string,
 	}
 
 	fmt.Fprintf(out, "Requesting access to compute for project %q...\n", project)
-	if err := createEntitlement(ctx, baseURL, token); err != nil {
-		return err
-	}
 
-	// Re-fetch to determine the resulting phase.
-	list, err := listEntitlements(ctx, baseURL, token)
-	if err != nil {
-		return err
-	}
-	for _, item := range list.Items {
-		if item.Spec.ServiceRef.Name != computeServiceName {
-			continue
-		}
-		switch item.Status.Phase {
-		case "Active":
-			fmt.Fprintf(out, "Compute enabled for project %q.\n", project)
-			return nil
-		case "PendingApproval":
-			fmt.Fprintf(out, "\nYour request to enable compute for project %q has been submitted,\n", project)
-			fmt.Fprintf(out, "but it requires approval before you can use the service.\n")
-			fmt.Fprintf(out, "You will be notified when access is granted.\n\n")
-			fmt.Fprintf(out, "Check status with: datumctl services list\n")
-			return fmt.Errorf("compute access is pending approval")
-		}
-	}
-
-	return fmt.Errorf("entitlement created but status is not yet available — check: datumctl services list")
-}
-
-func createEntitlement(ctx context.Context, baseURL, token string) error {
-	body := map[string]any{
-		"apiVersion": "services.miloapis.com/v1alpha1",
-		"kind":       "ServiceEntitlement",
-		"metadata": map[string]any{
-			"name": computeServiceName,
-		},
-		"spec": map[string]any{
-			"serviceRef": map[string]any{
-				"name": computeServiceName,
-			},
+	entitlement := &servicesv1alpha1.ServiceEntitlement{
+		ObjectMeta: metav1.ObjectMeta{Name: computeServiceName},
+		Spec: servicesv1alpha1.ServiceEntitlementSpec{
+			ServiceRef: servicesv1alpha1.ServiceRef{Name: computeServiceName},
 		},
 	}
-
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encoding entitlement request: %w", err)
-	}
-
-	url := baseURL + "/apis/services.miloapis.com/v1alpha1/serviceentitlements"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("building create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+	if err := wc.Create(ctx, entitlement); err != nil {
 		return fmt.Errorf("requesting compute access: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("requesting compute access: unexpected status %d", resp.StatusCode)
+	// Watch for the Ready condition to appear (set by the reconciler asynchronously).
+	watchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	watcher, err := wc.Watch(watchCtx, &servicesv1alpha1.ServiceEntitlementList{})
+	if err != nil {
+		return fmt.Errorf("watching entitlement status: %w", err)
 	}
-	return nil
+	defer watcher.Stop()
+
+	for {
+		select {
+		case <-watchCtx.Done():
+			fmt.Fprintf(out, "\nAccess to compute for project %q has been requested.\n", project)
+			fmt.Fprintf(out, "Run your command again once it becomes active.\n\n")
+			fmt.Fprintf(out, "Check status with: datumctl services list\n")
+			return fmt.Errorf("compute access is not yet active — try again in a moment")
+
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return fmt.Errorf("watch channel closed unexpectedly")
+			}
+			if event.Type != watch.Modified && event.Type != watch.Added {
+				continue
+			}
+			item, ok := event.Object.(*servicesv1alpha1.ServiceEntitlement)
+			if !ok || item.Spec.ServiceRef.Name != computeServiceName {
+				continue
+			}
+			if apimeta.FindStatusCondition(item.Status.Conditions, "Ready") == nil {
+				continue
+			}
+			switch item.Status.Phase {
+			case servicesv1alpha1.EntitlementPhaseActive:
+				fmt.Fprintf(out, "Compute enabled for project %q.\n\n", project)
+				return nil
+			case servicesv1alpha1.EntitlementPhasePendingApproval:
+				fmt.Fprintf(out, "\nYour request to enable compute for project %q has been submitted,\n", project)
+				fmt.Fprintf(out, "but it requires approval before you can use the service.\n")
+				fmt.Fprintf(out, "You will be notified when access is granted.\n\n")
+				fmt.Fprintf(out, "Check status with: datumctl services list\n")
+				return fmt.Errorf("compute access is pending approval")
+			default:
+				return fmt.Errorf("compute entitlement for project %q entered unexpected phase %q", project, item.Status.Phase)
+			}
+		}
+	}
+}
+
+func newEntitlementClient(project string) (client.WithWatch, error) {
+	pluginCtx := plugin.Context()
+	if pluginCtx.APIHost == "" {
+		return nil, fmt.Errorf("DATUM_API_HOST is not set; is this plugin running via datumctl?")
+	}
+
+	token, err := plugin.Token()
+	if err != nil {
+		return nil, fmt.Errorf("getting credentials: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering services scheme: %w", err)
+	}
+
+	cfg := &rest.Config{
+		Host:        ProjectControlPlaneURL(pluginCtx.APIHost, project),
+		BearerToken: token,
+	}
+
+	return client.NewWithWatch(cfg, client.Options{Scheme: scheme})
 }
 
 func isTTY(r io.Reader) bool {

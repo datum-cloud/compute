@@ -3,6 +3,7 @@ package quota
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -45,6 +46,21 @@ func Command() *cobra.Command {
 	_ = cmd.RegisterFlagCompletionFunc("output", util.CompleteOutputFormats("table", "json", "yaml"))
 
 	return cmd
+}
+
+const barWidth = 20
+
+func quotaBar(used, limit int64) string {
+	if limit <= 0 {
+		return "[" + strings.Repeat("-", barWidth) + "]   N/A"
+	}
+	pct := float64(used) / float64(limit)
+	if pct > 1 {
+		pct = 1
+	}
+	filled := int(pct * barWidth)
+	bar := strings.Repeat("#", filled) + strings.Repeat("-", barWidth-filled)
+	return fmt.Sprintf("[%s] %3.0f%%", bar, pct*100)
 }
 
 func runQuota(cmd *cobra.Command, constrained bool) error {
@@ -99,14 +115,10 @@ func runQuota(cmd *cobra.Command, constrained bool) error {
 	_, _ = fmt.Fprintf(out, "Quota for project %s\n\n", project)
 
 	tw := util.NewTabWriter(out)
-	_, _ = fmt.Fprintf(tw, "RESOURCE\tUNIT\tLIMIT\tUSED\tAVAILABLE\n")
+	_, _ = fmt.Fprintf(tw, "RESOURCE\tUNIT\tLIMIT\tUSED\tAVAILABLE\tUSAGE\n")
 	for _, r := range rows {
-		atLimit := ""
-		if r.Available == 0 {
-			atLimit = " [at limit]"
-		}
-		_, _ = fmt.Fprintf(tw, "%s%s\t%s\t%d\t%d\t%d\n",
-			r.DisplayName, atLimit, r.Unit, r.Limit, r.Used, r.Available)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%s\n",
+			r.DisplayName, r.Unit, r.Limit, r.Used, r.Available, quotaBar(r.Used, r.Limit))
 	}
 	_ = tw.Flush()
 
