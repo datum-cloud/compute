@@ -57,10 +57,10 @@ var (
 	gitTreeState = "unknown"
 	buildDate    = "unknown"
 
-	// downstreamRestConfig holds the REST config for the downstream control plane.
-	// It is populated from --downstream-kubeconfig when set, and is nil when the
-	// flag is omitted (e.g. in non-federation deployments).
-	downstreamRestConfig *rest.Config
+	// upstreamRestConfig holds the REST config for the upstream federation control
+	// plane (Karmada). It is populated from --upstream-kubeconfig when set, and
+	// is nil when the flag is omitted.
+	upstreamRestConfig *rest.Config
 )
 
 func init() {
@@ -83,8 +83,8 @@ func main() {
 	var leaderElectionNamespace string
 	var probeAddr string
 	var serverConfigFile string
-	var downstreamKubeconfig string
-	var downstreamContext string
+	var upstreamKubeconfig string
+	var upstreamContext string
 	var enableManagementControllers bool
 	var enableCellControllers bool
 
@@ -93,11 +93,11 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
-	flag.StringVar(&downstreamKubeconfig, "downstream-kubeconfig", "",
-		"Path to the kubeconfig file for the downstream control plane. "+
-			"When omitted, downstream federation features are disabled.")
-	flag.StringVar(&downstreamContext, "downstream-context", "",
-		"Context to use from the downstream kubeconfig. When omitted, the current context is used.")
+	flag.StringVar(&upstreamKubeconfig, "upstream-kubeconfig", "",
+		"Path to the kubeconfig file for the upstream federation control plane (Karmada). "+
+			"When omitted, federation features are disabled.")
+	flag.StringVar(&upstreamContext, "upstream-context", "",
+		"Context to use from the upstream kubeconfig. When omitted, the current context is used.")
 	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", false,
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector).")
 	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", false,
@@ -115,20 +115,20 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	// Load the downstream REST config when --downstream-kubeconfig is provided.
-	// When the flag is omitted, downstreamRestConfig remains nil and federation
+	// When the flag is omitted, upstreamRestConfig remains nil and federation
 	// features will be skipped at controller setup time.
-	if downstreamKubeconfig != "" {
+	if upstreamKubeconfig != "" {
 		loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-			&clientcmd.ClientConfigLoadingRules{ExplicitPath: downstreamKubeconfig},
-			&clientcmd.ConfigOverrides{CurrentContext: downstreamContext},
+			&clientcmd.ClientConfigLoadingRules{ExplicitPath: upstreamKubeconfig},
+			&clientcmd.ConfigOverrides{CurrentContext: upstreamContext},
 		)
 		var err error
-		downstreamRestConfig, err = loader.ClientConfig()
+		upstreamRestConfig, err = loader.ClientConfig()
 		if err != nil {
-			setupLog.Error(err, "unable to load downstream kubeconfig", "path", downstreamKubeconfig)
+			setupLog.Error(err, "unable to load upstream kubeconfig", "path", upstreamKubeconfig)
 			os.Exit(1)
 		}
-		setupLog.Info("downstream kubeconfig loaded", "path", downstreamKubeconfig)
+		setupLog.Info("upstream kubeconfig loaded", "path", upstreamKubeconfig)
 	}
 
 	setupLog.Info("starting compute",
@@ -156,7 +156,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	runnables, provider, projectRestConfig, edgeClusterName, err := initializeClusterDiscovery(
+	runnables, provider, edgeClusterName, err := initializeClusterDiscovery(
 		serverConfig, deploymentCluster, scheme,
 	)
 	if err != nil {
@@ -220,8 +220,8 @@ func main() {
 	// Build a single downstream client shared across all controllers that need
 	// to read or write to the downstream control plane. Nil when federation is disabled.
 	var downstreamClient client.Client
-	if downstreamRestConfig != nil {
-		downstreamClient, err = client.New(downstreamRestConfig, client.Options{Scheme: scheme})
+	if upstreamRestConfig != nil {
+		downstreamClient, err = client.New(upstreamRestConfig, client.Options{Scheme: scheme})
 		if err != nil {
 			setupLog.Error(err, "unable to create downstream client")
 			os.Exit(1)
@@ -236,8 +236,25 @@ func main() {
 	}
 
 	if enableCellControllers {
+		quotaRestConfig, err := serverConfig.Discovery.QuotaRestConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to get quota rest config")
+			os.Exit(1)
+		}
+
+		// In single-cell mode the multicluster ClusterName is always "single"
+		// (hardcoded by mcsingle.New), so the project ID must come from the
+		// instance namespace instead. In Milo mode the ClusterName IS the
+		// project name, so pass nil to use the default fallback.
+		var projectIDForInstance func(multicluster.ClusterName, *computev1alpha.Instance) string
+		if serverConfig.Discovery.Mode == multiclusterproviders.ProviderSingle {
+			projectIDForInstance = func(_ multicluster.ClusterName, instance *computev1alpha.Instance) string {
+				return instance.Namespace
+			}
+		}
+
 		instanceReconciler := &controller.InstanceReconciler{DownstreamClient: downstreamClient}
-		if err = instanceReconciler.SetupWithManager(mgr, projectRestConfig, edgeClusterName); err != nil {
+		if err = instanceReconciler.SetupWithManager(mgr, quotaRestConfig, projectIDForInstance, edgeClusterName); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}
@@ -246,7 +263,7 @@ func main() {
 	// WorkloadDeploymentFederator and InstanceProjector are management-plane
 	// controllers that run on the control-plane cluster. They require a downstream
 	// control plane to be configured (--downstream-kubeconfig provided).
-	if enableManagementControllers && downstreamRestConfig != nil {
+	if enableManagementControllers && upstreamRestConfig != nil {
 		federator := &controller.WorkloadDeploymentFederator{DownstreamClient: downstreamClient}
 		if err = federator.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentFederator")
@@ -257,7 +274,7 @@ func main() {
 		// written back to the downstream control plane by POP-cell operators, and
 		// projects them into the corresponding project namespaces via the
 		// multicluster manager.
-		downstreamMgr, err := manager.New(downstreamRestConfig, manager.Options{
+		downstreamMgr, err := manager.New(upstreamRestConfig, manager.Options{
 			Scheme:  scheme,
 			Metrics: metricsserver.Options{BindAddress: "0"},
 		})
@@ -321,8 +338,7 @@ func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider multicluster.Provider,
-	projectRestConfig *rest.Config, edgeClusterName string, err error) {
+) (runnables []manager.Runnable, provider multicluster.Provider, edgeClusterName string, err error) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
@@ -331,12 +347,12 @@ func initializeClusterDiscovery(
 	case multiclusterproviders.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
 		if err != nil {
-			return nil, nil, nil, "", fmt.Errorf("unable to get discovery rest config: %w", err)
+			return nil, nil, "", fmt.Errorf("unable to get discovery rest config: %w", err)
 		}
 
-		projectRestConfig, err = serverConfig.Discovery.ProjectRestConfig()
+		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
 		if err != nil {
-			return nil, nil, nil, "", fmt.Errorf("unable to get project rest config: %w", err)
+			return nil, nil, "", fmt.Errorf("unable to get project rest config: %w", err)
 		}
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
@@ -348,7 +364,7 @@ func initializeClusterDiscovery(
 			},
 		})
 		if err != nil {
-			return nil, nil, nil, "", fmt.Errorf("unable to set up overall controller manager: %w", err)
+			return nil, nil, "", fmt.Errorf("unable to set up overall controller manager: %w", err)
 		}
 
 		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
@@ -361,7 +377,7 @@ func initializeClusterDiscovery(
 			ProjectRestConfig:        projectRestConfig,
 		})
 		if err != nil {
-			return nil, nil, nil, "", fmt.Errorf("unable to create datum project provider: %w", err)
+			return nil, nil, "", fmt.Errorf("unable to create datum project provider: %w", err)
 		}
 
 		runnables = append(runnables, discoveryManager)
@@ -377,13 +393,13 @@ func initializeClusterDiscovery(
 	// 	})
 
 	default:
-		return nil, nil, nil, "", fmt.Errorf(
+		return nil, nil, "", fmt.Errorf(
 			"unsupported cluster discovery mode %s",
 			serverConfig.Discovery.Mode,
 		)
 	}
 
-	return runnables, provider, projectRestConfig, edgeClusterName, nil
+	return runnables, provider, edgeClusterName, nil
 }
 
 func loadServerConfig(path string) (config.WorkloadOperator, error) {
