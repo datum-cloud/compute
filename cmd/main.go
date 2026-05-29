@@ -66,10 +66,10 @@ var (
 	gitTreeState = "unknown"
 	buildDate    = "unknown"
 
-	// upstreamRestConfig holds the REST config for the upstream federation control
-	// plane (Karmada). It is populated from --upstream-kubeconfig when set, and
-	// is nil when the flag is omitted.
-	upstreamRestConfig *rest.Config
+	// federationRestConfig holds the REST config for the Karmada federation control
+	// plane. It is populated from --federation-kubeconfig when set, and is nil
+	// when the flag is omitted.
+	federationRestConfig *rest.Config
 )
 
 func init() {
@@ -86,14 +86,15 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+//nolint:gocyclo // main wires all controller paths; complexity is inherent to startup sequencing
 func main() {
 
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
 	var probeAddr string
 	var serverConfigFile string
-	var upstreamKubeconfig string
-	var upstreamContext string
+	var federationKubeconfig string
+	var federationContext string
 	var enableManagementControllers bool
 	var enableCellControllers bool
 
@@ -102,11 +103,12 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
-	flag.StringVar(&upstreamKubeconfig, "upstream-kubeconfig", "",
-		"Path to the kubeconfig file for the upstream federation control plane (Karmada). "+
+	flag.StringVar(&federationKubeconfig, "federation-kubeconfig", "",
+		"Path to the kubeconfig file for the Karmada federation control plane. "+
+			"Required when --enable-management-controllers is set. "+
 			"When omitted, federation features are disabled.")
-	flag.StringVar(&upstreamContext, "upstream-context", "",
-		"Context to use from the upstream kubeconfig. When omitted, the current context is used.")
+	flag.StringVar(&federationContext, "federation-context", "",
+		"Context to use from the federation kubeconfig. When omitted, the current context is used.")
 	flag.BoolVar(&enableManagementControllers, "enable-management-controllers", false,
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector).")
 	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", false,
@@ -123,21 +125,35 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// Load the downstream REST config when --downstream-kubeconfig is provided.
-	// When the flag is omitted, upstreamRestConfig remains nil and federation
-	// features will be skipped at controller setup time.
-	if upstreamKubeconfig != "" {
+	// Load the federation (Karmada) control plane REST config when
+	// --federation-kubeconfig is provided. When the flag is omitted,
+	// federationRestConfig remains nil; management controllers will refuse to
+	// start if --enable-management-controllers is also set.
+	if federationKubeconfig != "" {
 		loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-			&clientcmd.ClientConfigLoadingRules{ExplicitPath: upstreamKubeconfig},
-			&clientcmd.ConfigOverrides{CurrentContext: upstreamContext},
+			&clientcmd.ClientConfigLoadingRules{ExplicitPath: federationKubeconfig},
+			&clientcmd.ConfigOverrides{CurrentContext: federationContext},
 		)
 		var err error
-		upstreamRestConfig, err = loader.ClientConfig()
+		federationRestConfig, err = loader.ClientConfig()
 		if err != nil {
-			setupLog.Error(err, "unable to load upstream kubeconfig", "path", upstreamKubeconfig)
+			setupLog.Error(err, "unable to load federation kubeconfig", "path", federationKubeconfig)
 			os.Exit(1)
 		}
-		setupLog.Info("upstream kubeconfig loaded", "path", upstreamKubeconfig)
+		setupLog.Info("federation kubeconfig loaded", "path", federationKubeconfig)
+	}
+
+	// Fail loud: management controllers require a federation kubeconfig. Silently
+	// skipping them when --enable-management-controllers is set would leave
+	// federation and instance projection broken with no visible signal — the same
+	// class of failure as the quota P1 issue. An operator who explicitly enables
+	// management controllers but omits --federation-kubeconfig has a misconfiguration
+	// that must surface immediately rather than at runtime.
+	if enableManagementControllers && federationRestConfig == nil {
+		setupLog.Error(nil,
+			"management controllers enabled but no federation kubeconfig configured",
+			"hint", "set --federation-kubeconfig")
+		os.Exit(1)
 	}
 
 	setupLog.Info("starting compute",
@@ -240,13 +256,15 @@ func main() {
 		}
 	}
 
-	// Build a single downstream client shared across all controllers that need
-	// to read or write to the downstream control plane. Nil when federation is disabled.
-	var downstreamClient client.Client
-	if upstreamRestConfig != nil {
-		downstreamClient, err = client.New(upstreamRestConfig, client.Options{Scheme: scheme})
+	// Build a single federation client shared across all controllers that need to
+	// read or write to the Karmada federation control plane. This is the hub that
+	// the management controllers federate through and that edge cells write back to.
+	// Nil when --federation-kubeconfig is not set (i.e. federation is disabled).
+	var federationClient client.Client
+	if federationRestConfig != nil {
+		federationClient, err = client.New(federationRestConfig, client.Options{Scheme: scheme})
 		if err != nil {
-			setupLog.Error(err, "unable to create downstream client")
+			setupLog.Error(err, "unable to create federation client")
 			os.Exit(1)
 		}
 	}
@@ -262,7 +280,7 @@ func main() {
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
-		instanceReconciler := &controller.InstanceReconciler{UpstreamClient: downstreamClient}
+		instanceReconciler := &controller.InstanceReconciler{FederationClient: federationClient}
 		err = instanceReconciler.SetupWithManager(
 			mgr,
 			quotaRestConfig,
@@ -278,10 +296,11 @@ func main() {
 	}
 
 	// WorkloadDeploymentFederator and InstanceProjector are management-plane
-	// controllers that run on the control-plane cluster. They require a downstream
-	// control plane to be configured (--upstream-kubeconfig provided).
-	if enableManagementControllers && upstreamRestConfig != nil {
-		extra, err := setupManagementControllers(mgr, downstreamClient)
+	// controllers that run on the control-plane cluster. The fail-loud guard above
+	// ensures federationRestConfig is non-nil when enableManagementControllers is
+	// true; the nil check here is a defensive belt-and-suspenders guard.
+	if enableManagementControllers && federationRestConfig != nil {
+		extra, err := setupManagementControllers(mgr, federationClient)
 		if err != nil {
 			setupLog.Error(err, "unable to set up management controllers")
 			os.Exit(1)
@@ -427,33 +446,33 @@ func ignoreCanceled(err error) error {
 
 // setupManagementControllers wires the WorkloadDeploymentFederator and
 // InstanceProjector onto mgr. It returns any additional Runnable objects that
-// must be started alongside the main manager (the downstream manager used by
+// must be started alongside the main manager (the federation manager used by
 // InstanceProjector). Called only when management controllers are enabled and
-// an upstream REST config is available.
-func setupManagementControllers(mgr mcmanager.Manager, downstreamClient client.Client) ([]manager.Runnable, error) {
-	federator := &controller.WorkloadDeploymentFederator{UpstreamClient: downstreamClient}
+// a federation REST config is available.
+func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
+	federator := &controller.WorkloadDeploymentFederator{FederationClient: federationClient}
 	if err := federator.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
 	}
 
-	// InstanceProjector runs in the Control Plane Cell, watches Instances
-	// written back by POP-cell operators, and projects them into the
-	// corresponding project namespaces via the multicluster manager.
-	downstreamMgr, err := manager.New(upstreamRestConfig, manager.Options{
+	// InstanceProjector runs in the management plane, watches Instances written
+	// back by POP-cell operators to the Karmada federation control plane, and
+	// projects them into the corresponding project namespaces via the multicluster manager.
+	federationMgr, err := manager.New(federationRestConfig, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("downstream manager for InstanceProjector: %w", err)
+		return nil, fmt.Errorf("federation manager for InstanceProjector: %w", err)
 	}
 	if err = (&controller.InstanceProjector{
-		UpstreamClient: downstreamClient,
-		MCManager:      mgr,
-	}).SetupWithManager(downstreamMgr); err != nil {
+		FederationClient: federationClient,
+		MCManager:        mgr,
+	}).SetupWithManager(federationMgr); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
 	}
 
-	return []manager.Runnable{downstreamMgr}, nil
+	return []manager.Runnable{federationMgr}, nil
 }
 
 // singleModeProjectID returns an InstanceProjectIDFunc for single-cell mode.
