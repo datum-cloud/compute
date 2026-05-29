@@ -39,6 +39,9 @@ const (
 	// POP-cell clusters. Downstream Cluster objects are expected to carry this
 	// label with their city-code value.
 	cityCodeLabel = "topology.datum.net/city-code"
+
+	// kindWorkloadDeployment is the Kind string for WorkloadDeployment resources.
+	kindWorkloadDeployment = "WorkloadDeployment"
 )
 
 // WorkloadDeploymentFederator replicates WorkloadDeployments from project
@@ -281,7 +284,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 			ResourceSelectors: []karmadapolicyv1alpha1.ResourceSelector{
 				{
 					APIVersion: computev1alpha.GroupVersion.String(),
-					Kind:       "WorkloadDeployment",
+					Kind:       kindWorkloadDeployment,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							cityCodeLabel: cityCode,

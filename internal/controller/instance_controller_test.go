@@ -25,6 +25,18 @@ import (
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 )
 
+// Test constants for repeated string literals across controller package tests.
+const (
+	testInstanceName           = "test-instance"
+	testReasonString           = "TestReason"
+	testMessageString          = "Test message"
+	testUIDString              = "test-uid"
+	testInstanceType           = "d1-standard-2"
+	testDefaultPlacement       = "default"
+	testDefaultNamespace       = "default"
+	kindWorkloadDeploymentTest = "WorkloadDeployment" // mirrors kindWorkloadDeployment
+)
+
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -47,8 +59,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			name: "instance without ready condition should create default",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 			},
@@ -57,7 +69,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionFalse,
 				Reason:             computev1alpha.InstanceProgrammedReasonPendingProgramming,
-				Message:            "Instance has not been programmed",
+				Message:            msgNotProgrammed,
 				ObservedGeneration: 1,
 			},
 		},
@@ -65,8 +77,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			name: "instance with scheduling gates should set scheduling gates present",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Spec: computev1alpha.InstanceSpec{
@@ -82,7 +94,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Type:               computev1alpha.InstanceReady,
 							Status:             metav1.ConditionFalse,
 							Reason:             computev1alpha.InstanceProgrammedReasonPendingProgramming,
-							Message:            "Instance has not been programmed",
+							Message:            msgNotProgrammed,
 							ObservedGeneration: 1,
 							LastTransitionTime: metav1.Now(),
 						},
@@ -102,8 +114,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			name: "instance with scheduling gates and network failure should set network failed",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Spec: computev1alpha.InstanceSpec{
@@ -121,7 +133,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionFalse,
-				Reason:             "NetworkFailedToCreate",
+				Reason:             reasonNetworkFailedToCreate,
 				Message:            "Network creation failed: timeout",
 				ObservedGeneration: 1,
 			},
@@ -130,8 +142,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			name: "instance not programmed should set pending programming",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Status: computev1alpha.InstanceStatus{
@@ -139,8 +151,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 						{
 							Type:    computev1alpha.InstanceProgrammed,
 							Status:  metav1.ConditionFalse,
-							Reason:  "TestReason",
-							Message: "Test message",
+							Reason:  testReasonString,
+							Message: testMessageString,
 						},
 					},
 				},
@@ -149,8 +161,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionFalse,
-				Reason:             "TestReason",
-				Message:            "Test message",
+				Reason:             testReasonString,
+				Message:            testMessageString,
 				ObservedGeneration: 1,
 			},
 		},
@@ -158,8 +170,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			name: "instance programmed but not running should wait for running",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Status: computev1alpha.InstanceStatus{
@@ -168,13 +180,13 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Type:    computev1alpha.InstanceProgrammed,
 							Status:  metav1.ConditionTrue,
 							Reason:  computev1alpha.InstanceProgrammedReasonProgrammed,
-							Message: "Instance has been programmed",
+							Message: msgInstanceProgrammed,
 						},
 						{
 							Type:    computev1alpha.InstanceRunning,
 							Status:  metav1.ConditionFalse,
-							Reason:  "TestReason",
-							Message: "Test message",
+							Reason:  testReasonString,
+							Message: testMessageString,
 						},
 					},
 				},
@@ -183,8 +195,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionFalse,
-				Reason:             "TestReason",
-				Message:            "Test message",
+				Reason:             testReasonString,
+				Message:            testMessageString,
 				ObservedGeneration: 1,
 			},
 		},
@@ -192,8 +204,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			name: "instance fully ready should set ready condition",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Status: computev1alpha.InstanceStatus{
@@ -202,13 +214,13 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Type:    computev1alpha.InstanceProgrammed,
 							Status:  metav1.ConditionTrue,
 							Reason:  computev1alpha.InstanceProgrammedReasonProgrammed,
-							Message: "Instance has been programmed",
+							Message: msgInstanceProgrammed,
 						},
 						{
 							Type:    computev1alpha.InstanceRunning,
 							Status:  metav1.ConditionTrue,
 							Reason:  computev1alpha.InstanceRunningReasonRunning,
-							Message: "Instance is running",
+							Message: msgInstanceRunning,
 						},
 					},
 				},
@@ -218,7 +230,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionTrue,
 				Reason:             computev1alpha.InstanceReadyReasonRunning,
-				Message:            "Instance is ready",
+				Message:            msgInstanceReady,
 				ObservedGeneration: 1,
 			},
 		},
@@ -226,8 +238,8 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			name: "no change when condition already matches",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Status: computev1alpha.InstanceStatus{
@@ -236,7 +248,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Type:               computev1alpha.InstanceReady,
 							Status:             metav1.ConditionTrue,
 							Reason:             computev1alpha.InstanceReadyReasonRunning,
-							Message:            "Instance is ready",
+							Message:            msgInstanceReady,
 							ObservedGeneration: 1,
 							LastTransitionTime: metav1.Now(),
 						},
@@ -244,13 +256,13 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Type:    computev1alpha.InstanceProgrammed,
 							Status:  metav1.ConditionTrue,
 							Reason:  computev1alpha.InstanceProgrammedReasonProgrammed,
-							Message: "Instance has been programmed",
+							Message: msgInstanceProgrammed,
 						},
 						{
 							Type:    computev1alpha.InstanceRunning,
 							Status:  metav1.ConditionTrue,
 							Reason:  computev1alpha.InstanceRunningReasonRunning,
-							Message: "Instance is running",
+							Message: msgInstanceRunning,
 						},
 					},
 				},
@@ -260,7 +272,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionTrue,
 				Reason:             computev1alpha.InstanceReadyReasonRunning,
-				Message:            "Instance is ready",
+				Message:            msgInstanceReady,
 				ObservedGeneration: 1,
 			},
 		},
@@ -311,8 +323,8 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 			name: "quota denied blocks ready condition",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Status: computev1alpha.InstanceStatus{
@@ -328,14 +340,14 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							Type:               computev1alpha.InstanceProgrammed,
 							Status:             metav1.ConditionTrue,
 							Reason:             computev1alpha.InstanceProgrammedReasonProgrammed,
-							Message:            "Instance has been programmed",
+							Message:            msgInstanceProgrammed,
 							LastTransitionTime: metav1.Now(),
 						},
 						{
 							Type:               computev1alpha.InstanceRunning,
 							Status:             metav1.ConditionTrue,
 							Reason:             computev1alpha.InstanceRunningReasonRunning,
-							Message:            "Instance is running",
+							Message:            msgInstanceRunning,
 							LastTransitionTime: metav1.Now(),
 						},
 					},
@@ -353,8 +365,8 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 			name: "quota available does not block ready condition",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Status: computev1alpha.InstanceStatus{
@@ -370,14 +382,14 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							Type:               computev1alpha.InstanceProgrammed,
 							Status:             metav1.ConditionTrue,
 							Reason:             computev1alpha.InstanceProgrammedReasonProgrammed,
-							Message:            "Instance has been programmed",
+							Message:            msgInstanceProgrammed,
 							LastTransitionTime: metav1.Now(),
 						},
 						{
 							Type:               computev1alpha.InstanceRunning,
 							Status:             metav1.ConditionTrue,
 							Reason:             computev1alpha.InstanceRunningReasonRunning,
-							Message:            "Instance is running",
+							Message:            msgInstanceRunning,
 							LastTransitionTime: metav1.Now(),
 						},
 					},
@@ -388,15 +400,15 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 				Type:    computev1alpha.InstanceReady,
 				Status:  metav1.ConditionTrue,
 				Reason:  computev1alpha.InstanceReadyReasonRunning,
-				Message: "Instance is ready",
+				Message: msgInstanceReady,
 			},
 		},
 		{
 			name: "quota pending unknown does not block ready condition",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-instance",
-					Namespace:  "default",
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
 					Generation: 1,
 				},
 				Status: computev1alpha.InstanceStatus{
@@ -416,7 +428,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 				Type:    computev1alpha.InstanceReady,
 				Status:  metav1.ConditionFalse,
 				Reason:  computev1alpha.InstanceProgrammedReasonPendingProgramming,
-				Message: "Instance has not been programmed",
+				Message: msgNotProgrammed,
 			},
 		},
 	}
@@ -469,7 +481,7 @@ func TestReconcileQuota(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      deploymentName,
 				Namespace: namespace,
-				UID:       "test-uid",
+				UID:       testUIDString,
 			},
 		}
 	}
@@ -483,14 +495,14 @@ func TestReconcileQuota(t *testing.T) {
 		return &computev1alpha.Instance{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       instanceName,
-				Namespace:  namespace,
+				Namespace:  testDefaultNamespace,
 				Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 				OwnerReferences: []metav1.OwnerReference{
 					{
 						APIVersion: "compute.datumapis.com/v1alpha",
-						Kind:       "WorkloadDeployment",
+						Kind:       kindWorkloadDeploymentTest,
 						Name:       deploymentName,
-						UID:        "test-uid",
+						UID:        testUIDString,
 						Controller: func() *bool { b := true; return &b }(),
 					},
 				},
@@ -500,7 +512,7 @@ func TestReconcileQuota(t *testing.T) {
 					SchedulingGates: gates,
 				},
 				Runtime: computev1alpha.InstanceRuntimeSpec{
-					Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+					Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 				},
 				NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
 			},
@@ -515,8 +527,8 @@ func TestReconcileQuota(t *testing.T) {
 			},
 			Spec: quotav1alpha1.ResourceClaimSpec{
 				ConsumerRef: quotav1alpha1.ConsumerRef{
-					APIGroup: "resourcemanager.miloapis.com",
-					Kind:     "Project",
+					APIGroup: miloProjectAPIGroup,
+					Kind:     miloProjectKind,
 					Name:     clusterName,
 				},
 				// ResourceRef points at the Project resource (cluster-scoped), not the
@@ -524,12 +536,12 @@ func TestReconcileQuota(t *testing.T) {
 				// ResourceRegistration's claimingResources, which only allows
 				// resourcemanager.miloapis.com/Project.
 				ResourceRef: quotav1alpha1.UnversionedObjectReference{
-					APIGroup: "resourcemanager.miloapis.com",
-					Kind:     "Project",
+					APIGroup: miloProjectAPIGroup,
+					Kind:     miloProjectKind,
 					Name:     clusterName,
 				},
 				Requests: []quotav1alpha1.ResourceRequest{
-					{ResourceType: "compute.datumapis.com/instances", Amount: 1},
+					{ResourceType: quotaResourceTypeInstances, Amount: 1},
 				},
 			},
 			Status: quotav1alpha1.ResourceClaimStatus{
@@ -577,8 +589,8 @@ func TestReconcileQuota(t *testing.T) {
 			quotaClientManager: qm,
 			edgeClusterName:    "test-edge",
 			// Milo mode: project ID == ClusterName; claim namespace == instance.Namespace.
-			projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) string {
-				return string(cn)
+			projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+				return string(cn), nil
 			},
 			// nil → falls back to instance.Namespace, which is correct for Milo mode.
 			projectNamespaceForInstance: nil,
@@ -746,7 +758,7 @@ func TestReconcileQuota(t *testing.T) {
 					},
 				},
 				Runtime: computev1alpha.InstanceRuntimeSpec{
-					Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+					Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 				},
 				NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
 			},
@@ -806,9 +818,9 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: "compute.datumapis.com/v1alpha",
-					Kind:       "WorkloadDeployment",
+					Kind:       kindWorkloadDeploymentTest,
 					Name:       deploymentName,
-					UID:        "test-uid",
+					UID:        testUIDString,
 					Controller: func() *bool { b := true; return &b }(),
 				},
 			},
@@ -820,7 +832,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 				},
 			},
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
 		},
@@ -837,17 +849,17 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: projectNS},
 		Spec: quotav1alpha1.ResourceClaimSpec{
 			ConsumerRef: quotav1alpha1.ConsumerRef{
-				APIGroup: "resourcemanager.miloapis.com",
-				Kind:     "Project",
+				APIGroup: miloProjectAPIGroup,
+				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
 			ResourceRef: quotav1alpha1.UnversionedObjectReference{
-				APIGroup: "resourcemanager.miloapis.com",
-				Kind:     "Project",
+				APIGroup: miloProjectAPIGroup,
+				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
 			Requests: []quotav1alpha1.ResourceRequest{
-				{ResourceType: "compute.datumapis.com/instances", Amount: 1},
+				{ResourceType: quotaResourceTypeInstances, Amount: 1},
 			},
 		},
 		Status: quotav1alpha1.ResourceClaimStatus{
@@ -880,9 +892,11 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 	qm := quota.New(nil)
 	qm.StoreClient(projectID, quotaClient)
 
+	const singleCluster = "single"
+
 	mgr := &fakeMCManager{
 		clusters: map[string]cluster.Cluster{
-			"single": newFakeCluster(projectClient),
+			singleCluster: newFakeCluster(projectClient),
 		},
 	}
 
@@ -890,20 +904,20 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		mgr:                mgr,
 		scheme:             s,
 		quotaClientManager: qm,
-		edgeClusterName:    "single",
+		edgeClusterName:    singleCluster,
 		// Single-cell mode: project ID decoded from upstream-cluster-name label.
 		// Simulates what cmd/main.go does for "cluster-datum-cloud" → "datum-cloud".
-		projectIDForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) string {
-			return projectID
+		projectIDForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+			return projectID, nil
 		},
 		// Single-cell mode: claim namespace comes from upstream-namespace label.
 		// Simulates what cmd/main.go does by reading the edge namespace labels.
-		projectNamespaceForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) string {
-			return projectNS
+		projectNamespaceForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+			return projectNS, nil
 		},
 		// Single-cell mode: watch map func must always return "single".
 		clusterNameForProject: func(_ string) multicluster.ClusterName {
-			return "single"
+			return singleCluster
 		},
 	}
 
@@ -912,7 +926,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 
 	req := mcreconcile.Request{
 		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: edgeNS, Name: instanceName}},
-		ClusterName: "single",
+		ClusterName: singleCluster,
 	}
 
 	_, err := r.Reconcile(context.Background(), req)
@@ -928,10 +942,11 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 
 	// Verify clusterNameForProject always returns "single" so the watch map func
 	// never enqueues an unknown cluster name.
-	assert.Equal(t, multicluster.ClusterName("single"), r.resolveClusterNameForProject(projectID))
-	assert.Equal(t, multicluster.ClusterName("single"), r.resolveClusterNameForProject("any-other-project"))
+	assert.Equal(t, multicluster.ClusterName(singleCluster), r.resolveClusterNameForProject(projectID))
+	assert.Equal(t, multicluster.ClusterName(singleCluster), r.resolveClusterNameForProject("any-other-project"))
 
 	// Verify resolveProjectNamespace returns the in-project namespace, not the edge namespace.
-	resolvedNS := r.resolveProjectNamespace(context.Background(), "single", instance)
+	resolvedNS, resolveErr := r.resolveProjectNamespace(context.Background(), singleCluster, instance)
+	require.NoError(t, resolveErr)
 	assert.Equal(t, projectNS, resolvedNS, "claim namespace must be the in-project namespace, not the edge namespace")
 }

@@ -75,7 +75,7 @@ func projTestWorkloadDeployment() *computev1alpha.WorkloadDeployment {
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
 			CityCode:      "LAX",
-			PlacementName: "default",
+			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: "my-workload"},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 		},

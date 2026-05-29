@@ -457,20 +457,22 @@ func setupManagementControllers(mgr mcmanager.Manager, downstreamClient client.C
 // "cluster-datum-cloud") and decodes it to the project ID ("datum-cloud").
 // This is the inverse of the "cluster-<name>" encoding used by NSO's
 // MappedNamespaceResourceStrategy when stamping cluster-scoped namespace labels.
+// Returns ("", err) on transient API failures (triggers requeue with backoff).
+// Returns ("", nil) when the label is absent (not yet propagated; quota skipped).
 func singleModeProjectID(mgr mcmanager.Manager) controller.InstanceProjectIDFunc {
-	return func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
-		ns, ok := readEdgeNamespace(ctx, mgr, clusterName, instance.Namespace)
-		if !ok {
-			return ""
+	return func(ctx context.Context, cn multicluster.ClusterName, inst *computev1alpha.Instance) (string, error) {
+		ns, err := readEdgeNamespace(ctx, mgr, cn, inst.Namespace)
+		if err != nil {
+			return "", err
 		}
 		encoded := ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
 		if encoded == "" {
 			setupLog.Info("singleModeProjectID: upstream-cluster-name label missing",
-				"namespace", instance.Namespace)
-			return ""
+				"namespace", inst.Namespace)
+			return "", nil
 		}
 		projectID := strings.TrimPrefix(encoded, "cluster-")
-		return strings.ReplaceAll(projectID, "_", "/")
+		return strings.ReplaceAll(projectID, "_", "/"), nil
 	}
 }
 
@@ -478,42 +480,42 @@ func singleModeProjectID(mgr mcmanager.Manager) controller.InstanceProjectIDFunc
 // single-cell mode. It reads the upstream-namespace label on the edge namespace
 // (e.g. "ns-efdf8ca1-...") to find the in-project namespace ("default") where
 // ResourceClaims must be created in the project control plane.
+// Returns ("", err) on transient API failures (triggers requeue with backoff).
+// Returns ("", nil) when the label is absent (not yet propagated; quota skipped).
 func singleModeProjectNamespace(mgr mcmanager.Manager) controller.InstanceProjectNamespaceFunc {
-	return func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
-		ns, ok := readEdgeNamespace(ctx, mgr, clusterName, instance.Namespace)
-		if !ok {
-			return ""
+	return func(ctx context.Context, cn multicluster.ClusterName, inst *computev1alpha.Instance) (string, error) {
+		ns, err := readEdgeNamespace(ctx, mgr, cn, inst.Namespace)
+		if err != nil {
+			return "", err
 		}
 		projectNS := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 		if projectNS == "" {
 			setupLog.Info("singleModeProjectNamespace: upstream-namespace label missing",
-				"namespace", instance.Namespace)
-			return ""
+				"namespace", inst.Namespace)
+			return "", nil
 		}
-		return projectNS
+		return projectNS, nil
 	}
 }
 
 // readEdgeNamespace reads the edge namespace object via the uncached APIReader
-// (no informer started, no cache sync required) with a short deadline. Returns
-// the namespace and true on success, or corev1.Namespace{} and false on error.
+// (no informer started, no cache sync required) with a short deadline.
+// Returns a transient error on API failures so callers can requeue with backoff.
 func readEdgeNamespace(
 	ctx context.Context,
 	mgr mcmanager.Manager,
 	clusterName multicluster.ClusterName,
 	namespace string,
-) (corev1.Namespace, bool) {
+) (corev1.Namespace, error) {
 	cl, err := mgr.GetCluster(ctx, clusterName)
 	if err != nil {
-		setupLog.Error(err, "readEdgeNamespace: failed getting cluster", "clusterName", clusterName)
-		return corev1.Namespace{}, false
+		return corev1.Namespace{}, fmt.Errorf("readEdgeNamespace: getting cluster %q: %w", clusterName, err)
 	}
 	var ns corev1.Namespace
 	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := cl.GetAPIReader().Get(getCtx, client.ObjectKey{Name: namespace}, &ns); err != nil {
-		setupLog.Error(err, "readEdgeNamespace: failed reading namespace", "namespace", namespace)
-		return corev1.Namespace{}, false
+		return corev1.Namespace{}, fmt.Errorf("readEdgeNamespace: reading namespace %q: %w", namespace, err)
 	}
-	return ns, true
+	return ns, nil
 }

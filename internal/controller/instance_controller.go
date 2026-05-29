@@ -54,6 +54,30 @@ const (
 	// this label to filter out claims written by other edge controllers targeting
 	// the same project control planes.
 	instanceQuotaClaimSourceLabel = "compute.datumapis.com/source-cluster"
+
+	// quotaResourceTypeInstances is the quota resource type for Instance count.
+	quotaResourceTypeInstances = "compute.datumapis.com/instances"
+
+	// miloProjectAPIGroup is the API group for Milo resource-manager resources.
+	miloProjectAPIGroup = "resourcemanager.miloapis.com"
+
+	// miloProjectKind is the Kind used for Milo Project resources.
+	miloProjectKind = "Project"
+
+	// msgNotProgrammed is the human-readable message for the not-programmed state.
+	msgNotProgrammed = "Instance has not been programmed"
+
+	// msgInstanceReady is the human-readable message for the ready state.
+	msgInstanceReady = "Instance is ready"
+
+	// msgInstanceProgrammed is the human-readable message for the programmed state.
+	msgInstanceProgrammed = "Instance has been programmed"
+
+	// msgInstanceRunning is the human-readable message for the running state.
+	msgInstanceRunning = "Instance is running"
+
+	// reasonNetworkFailedToCreate is the reason code for network creation failure.
+	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
 )
 
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
@@ -65,21 +89,25 @@ type clusterGetter interface {
 // InstanceProjectIDFunc derives the Milo project ID for a given Instance.
 // In Milo mode the project ID equals the multicluster ClusterName. In
 // single-cell mode it is decoded from the upstream-cluster-name namespace label.
+// Returns ("", nil) when the instance has no project affiliation (skip quota).
+// Returns ("", err) for transient failures that should trigger a requeue.
 type InstanceProjectIDFunc func(
 	ctx context.Context,
 	clusterName multicluster.ClusterName,
 	instance *computev1alpha.Instance,
-) string
+) (string, error)
 
 // InstanceProjectNamespaceFunc derives the in-project namespace where
 // ResourceClaims for a given Instance should be created. In Milo mode this
 // equals instance.Namespace. In single-cell mode it comes from the
 // upstream-namespace namespace label.
+// Returns ("", nil) when the instance has no project affiliation (skip quota).
+// Returns ("", err) for transient failures that should trigger a requeue.
 type InstanceProjectNamespaceFunc func(
 	ctx context.Context,
 	clusterName multicluster.ClusterName,
 	instance *computev1alpha.Instance,
-) string
+) (string, error)
 
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
@@ -206,22 +234,27 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 	}
 
 	if r.quotaClientManager != nil {
-		projectID := r.resolveProjectID(ctx, clusterName, instance)
+		projectID, err := r.resolveProjectID(ctx, clusterName, instance)
+		if err != nil {
+			return fmt.Errorf("resolving project ID during deletion: %w", err)
+		}
 		if projectID == "" {
 			// Cannot locate the claim without a project ID. Log and fall through
 			// to finalizer removal so the Instance is not permanently stuck in
 			// Terminating. The claim, if any, will be cleaned up by the quota
 			// system's own TTL/GC or by the project owner.
 			log.FromContext(ctx).Info("projectID unresolvable during deletion; skipping claim cleanup",
-				"instance", instance.Name, "namespace", instance.Namespace,
-				"label", downstreamclient.UpstreamOwnerNamespaceLabel)
+				"instance", instance.Name, "namespace", instance.Namespace)
 		} else {
 			projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 			if err != nil {
 				return fmt.Errorf("failed getting quota client for deletion: %w", err)
 			}
 
-			claimNamespace := r.resolveProjectNamespace(ctx, clusterName, instance)
+			claimNamespace, err := r.resolveProjectNamespace(ctx, clusterName, instance)
+			if err != nil {
+				return fmt.Errorf("resolving project namespace during deletion: %w", err)
+			}
 			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
 			var claim quotav1alpha1.ResourceClaim
 			if err := projectClient.Get(ctx, client.ObjectKey{Namespace: claimNamespace, Name: claimName}, &claim); err != nil {
@@ -437,23 +470,34 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 
 	logger := log.FromContext(ctx)
 
-	projectID := r.resolveProjectID(ctx, clusterName, instance)
+	projectID, err := r.resolveProjectID(ctx, clusterName, instance)
+	if err != nil {
+		return nil, fmt.Errorf("resolving project ID for instance %s/%s: %w", instance.Namespace, instance.Name, err)
+	}
 	if projectID == "" {
-		return nil, fmt.Errorf("projectID is empty for instance %s/%s; "+
-			"namespace label %q missing or not yet propagated",
-			instance.Namespace, instance.Name,
-			downstreamclient.UpstreamOwnerNamespaceLabel)
+		// Instance has no project affiliation yet (label not yet propagated).
+		// Return nil condition — caller will leave QuotaGranted=Unknown and requeue.
+		return nil, nil
 	}
 	projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting quota client for project %q: %w", projectID, err)
 	}
 
+	claimNamespace, err := r.resolveProjectNamespace(ctx, clusterName, instance)
+	if err != nil {
+		return nil, fmt.Errorf("resolving project namespace for instance %s/%s: %w", instance.Namespace, instance.Name, err)
+	}
+	if claimNamespace == "" {
+		// Namespace label not yet propagated; same treatment as missing project ID.
+		return nil, nil
+	}
+
 	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
 
 	requests := []quotav1alpha1.ResourceRequest{
 		{
-			ResourceType: "compute.datumapis.com/instances",
+			ResourceType: quotaResourceTypeInstances,
 			Amount:       1,
 		},
 	}
@@ -474,8 +518,6 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		)
 	}
 
-	claimNamespace := r.resolveProjectNamespace(ctx, clusterName, instance)
-
 	desired := &quotav1alpha1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      claimName,
@@ -486,13 +528,13 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		},
 		Spec: quotav1alpha1.ResourceClaimSpec{
 			ConsumerRef: quotav1alpha1.ConsumerRef{
-				APIGroup: "resourcemanager.miloapis.com",
-				Kind:     "Project",
+				APIGroup: miloProjectAPIGroup,
+				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
 			ResourceRef: quotav1alpha1.UnversionedObjectReference{
-				APIGroup: "resourcemanager.miloapis.com",
-				Kind:     "Project",
+				APIGroup: miloProjectAPIGroup,
+				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
 			Requests: requests,
@@ -595,7 +637,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			Status:             metav1.ConditionFalse,
 			Reason:             computev1alpha.InstanceProgrammedReasonPendingProgramming,
 			ObservedGeneration: instance.Generation,
-			Message:            "Instance has not been programmed",
+			Message:            msgNotProgrammed,
 		}
 	} else {
 		readyCondition = readyCondition.DeepCopy()
@@ -614,7 +656,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 
 		readyCondition.Status = metav1.ConditionFalse
 		if networkCreationFailure {
-			readyCondition.Reason = "NetworkFailedToCreate"
+			readyCondition.Reason = reasonNetworkFailedToCreate
 			readyCondition.Message = networkCreationFailureMessage
 		} else {
 			readyCondition.Reason = computev1alpha.InstanceReadyReasonSchedulingGatesPresent
@@ -635,7 +677,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			readyCondition.Reason = programmedCondition.Reason
 		}
 
-		readyCondition.Message = "Instance has not been programmed"
+		readyCondition.Message = msgNotProgrammed
 		if programmedCondition != nil && programmedCondition.Status != metav1.ConditionUnknown {
 			readyCondition.Message = programmedCondition.Message
 		}
@@ -665,7 +707,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 
 	readyCondition.Status = metav1.ConditionTrue
 	readyCondition.Reason = computev1alpha.InstanceReadyReasonRunning
-	readyCondition.Message = "Instance is ready"
+	readyCondition.Message = msgInstanceReady
 
 	return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 }
@@ -707,27 +749,32 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 	return false, "", nil
 }
 
-// resolveProjectID returns the Milo project ID to use for quota calls. When
-// projectIDForInstance is set it delegates to that function; otherwise it falls
-// back to string(clusterName), which is correct for Milo-mode deployments where
-// the cluster name IS the project name.
-func (r *InstanceReconciler) resolveProjectID(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+// resolveProjectID returns the Milo project ID to use for quota calls.
+// When projectIDForInstance is set it delegates to that function; otherwise it
+// falls back to string(clusterName), which is correct for Milo-mode deployments
+// where the cluster name IS the project name.
+// Returns ("", nil) to signal "no project, skip quota". Returns ("", err) for
+// transient failures that should cause a reconcile requeue.
+func (r *InstanceReconciler) resolveProjectID(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (string, error) {
 	if r.projectIDForInstance != nil {
 		return r.projectIDForInstance(ctx, clusterName, instance)
 	}
-	return string(clusterName)
+	return string(clusterName), nil
 }
 
 // resolveProjectNamespace returns the namespace within the Milo project control
-// plane where ResourceClaims for this instance should be created. When
-// projectNamespaceForInstance is set it delegates to that function; otherwise it
-// falls back to instance.Namespace, which is correct for Milo-mode deployments
-// where the project-side namespace already matches the instance namespace.
-func (r *InstanceReconciler) resolveProjectNamespace(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+// plane where ResourceClaims for this instance should be created.
+// When projectNamespaceForInstance is set it delegates to that function;
+// otherwise it falls back to instance.Namespace, which is correct for
+// Milo-mode deployments where the project-side namespace already matches the
+// instance namespace.
+// Returns ("", nil) to signal "no project, skip quota". Returns ("", err) for
+// transient failures that should cause a reconcile requeue.
+func (r *InstanceReconciler) resolveProjectNamespace(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (string, error) {
 	if r.projectNamespaceForInstance != nil {
 		return r.projectNamespaceForInstance(ctx, clusterName, instance)
 	}
-	return instance.Namespace
+	return instance.Namespace, nil
 }
 
 // resolveClusterNameForProject returns the multicluster ClusterName for the
