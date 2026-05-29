@@ -107,6 +107,26 @@ type SandboxContainer struct {
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 
+	// Entrypoint array to run in the container image, overriding the image's
+	// ENTRYPOINT. Each element is a separate token, not a shell command — to run a
+	// shell command use: ["sh", "-c", "my command"].
+	//
+	// If not provided, the container image's own ENTRYPOINT is used.
+	//
+	// +kubebuilder:validation:Optional
+	Command []string `json:"command,omitempty"`
+
+	// Arguments to the entrypoint, overriding the image's CMD. Combined with
+	// Command: when Command is also set the resulting invocation is
+	// append(Command, Args...).  When only Args is set it overrides CMD while
+	// preserving the image's ENTRYPOINT.
+	//
+	// If neither Command nor Args is set, the image's own ENTRYPOINT and CMD
+	// are used unchanged.
+	//
+	// +kubebuilder:validation:Optional
+	Args []string `json:"args,omitempty"`
+
 	// List of environment variables to set in the container.
 	//
 	// +kubebuilder:validation:Optional
