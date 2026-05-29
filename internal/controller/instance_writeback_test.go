@@ -74,7 +74,7 @@ func wbTestCellInstance() *computev1alpha.Instance {
 		},
 		Spec: computev1alpha.InstanceSpec{
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 		},
 		Status: computev1alpha.InstanceStatus{
@@ -182,7 +182,7 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 		},
 		Spec: computev1alpha.InstanceSpec{
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 		},
 	}
@@ -240,7 +240,7 @@ func TestWriteBackToUpstream_LabelChangeTriggerUpdate(t *testing.T) {
 		},
 		Spec: computev1alpha.InstanceSpec{
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 		},
 	}
@@ -296,7 +296,7 @@ func TestWriteBackToUpstream_EmptyLinkingLabels_NonFatal(t *testing.T) {
 		},
 		Spec: computev1alpha.InstanceSpec{
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 		},
 	}
