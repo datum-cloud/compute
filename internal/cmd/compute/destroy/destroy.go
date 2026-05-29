@@ -13,9 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
-	"go.datum.net/compute/internal/cmd/compute/revision"
 	"go.datum.net/compute/internal/cmd/compute/util"
-	corev1 "k8s.io/api/core/v1"
 )
 
 func Command() *cobra.Command {
@@ -87,13 +85,6 @@ func runDestroy(cmd *cobra.Command, args []string, yes bool) error {
 
 	if err := c.Delete(ctx, &workload); err != nil {
 		return fmt.Errorf("deleting workload: %w", err)
-	}
-
-	// Best-effort deletion of the revision ConfigMap.
-	var cm corev1.ConfigMap
-	cmName := revision.ConfigMapName(workloadName)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: cmName}, &cm); err == nil {
-		_ = c.Delete(ctx, &cm)
 	}
 
 	fmt.Fprintf(out, "workload/%s deleted.\n", workloadName)

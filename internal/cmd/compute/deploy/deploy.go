@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -21,7 +19,6 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
-	"go.datum.net/compute/internal/cmd/compute/revision"
 	"go.datum.net/compute/internal/cmd/compute/util"
 	"go.datum.net/compute/internal/cmd/compute/watch"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -195,14 +192,6 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		}
 	}
 
-	// Compute diff description before applying.
-	var changes string
-	if creating {
-		changes = "initial deploy"
-	} else {
-		changes = computeDiff(workload.Spec, opts.image, opts.cities, opts.min)
-	}
-
 	if creating {
 		workload.Namespace = util.ResourceNamespace
 		if err := c.Create(ctx, &workload); err != nil {
@@ -214,21 +203,6 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 			return fmt.Errorf("updating workload: %w", err)
 		}
 		fmt.Fprintf(out, "  workload/%s updated\n", workloadName)
-	}
-
-	// Write revision entry.
-	rev := revision.CurrentRevision(ctx, c, util.ResourceNamespace, workloadName) + 1
-	specJSON, _ := json.Marshal(workload.Spec)
-	entry := revision.Entry{
-		Rev:       rev,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Image:     opts.image,
-		Changes:   changes,
-		SpecJSON:  string(specJSON),
-	}
-	if err := revision.WriteEntry(ctx, c, util.ResourceNamespace, workloadName, entry); err != nil {
-		// Non-fatal — log but continue.
-		fmt.Fprintf(out, "  warning: could not write revision history: %v\n", err)
 	}
 
 	// Save workload.yaml.
@@ -314,18 +288,6 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 		}
 	}
 
-	// Determine changes summary.
-	var changes string
-	if creating {
-		changes = "initial deploy"
-	} else if len(diffLines) > 0 {
-		changes = strings.Join(diffLines, "; ")
-	} else {
-		changes = "manifest apply"
-	}
-
-	image := imageFromWorkload(workload)
-
 	if creating {
 		if err := c.Create(ctx, &workload); err != nil {
 			return fmt.Errorf("creating workload: %w", err)
@@ -337,19 +299,6 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 			return fmt.Errorf("updating workload: %w", err)
 		}
 		fmt.Fprintf(out, "  workload/%s updated\n", workload.Name)
-	}
-
-	rev := revision.CurrentRevision(ctx, c, util.ResourceNamespace, workload.Name) + 1
-	specJSON, _ := json.Marshal(workload.Spec)
-	entry := revision.Entry{
-		Rev:       rev,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Image:     image,
-		Changes:   changes,
-		SpecJSON:  string(specJSON),
-	}
-	if err := revision.WriteEntry(ctx, c, util.ResourceNamespace, workload.Name, entry); err != nil {
-		fmt.Fprintf(out, "  warning: could not write revision history: %v\n", err)
 	}
 
 	fmt.Fprintf(out, "Waiting for rollout. Ctrl-C to detach (rollout continues in background).\n\n")
@@ -385,31 +334,6 @@ func imageFromWorkload(w computev1alpha.Workload) string {
 		return sb.Containers[0].Image
 	}
 	return ""
-}
-
-// computeDiff produces a human-readable one-line diff description for flag-driven updates.
-func computeDiff(existing computev1alpha.WorkloadSpec, newImage string, _ []string, min int32) string {
-	var parts []string
-
-	oldImage := ""
-	if existing.Template.Spec.Runtime.Sandbox != nil && len(existing.Template.Spec.Runtime.Sandbox.Containers) > 0 {
-		oldImage = existing.Template.Spec.Runtime.Sandbox.Containers[0].Image
-	}
-	if oldImage != newImage {
-		parts = append(parts, fmt.Sprintf("image: %s → %s", oldImage, newImage))
-	}
-
-	if len(existing.Placements) > 0 {
-		oldMin := existing.Placements[0].ScaleSettings.MinReplicas
-		if oldMin != min {
-			parts = append(parts, fmt.Sprintf("min replicas: %d → %d", oldMin, min))
-		}
-	}
-
-	if len(parts) == 0 {
-		return "no changes"
-	}
-	return strings.Join(parts, ", ")
 }
 
 // ensureNetwork checks if the named network exists and, if not, offers to create it.

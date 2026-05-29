@@ -121,7 +121,6 @@ func runList(cmd *cobra.Command, _ []string) error {
 		placements  string
 		image       string
 		age         string
-		revision    string // wide only
 		instType    string // wide only
 	}
 
@@ -172,18 +171,6 @@ func runList(cmd *cobra.Command, _ []string) error {
 		readyStr := fmt.Sprintf("%d/%d", totalReady, totalDesired)
 		instType := wl.Spec.Template.Spec.Runtime.Resources.InstanceType
 
-		// Revision — only fetched for -o wide to avoid N round-trips in table mode.
-		revision := "—"
-		if wide {
-			var cm corev1.ConfigMap
-			cmName := "compute.datumapis.com-revision-history." + wl.Name
-			if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: cmName}, &cm); err == nil {
-				if v, ok := cm.Annotations["compute.datumapis.com/current-revision"]; ok {
-					revision = v
-				}
-			}
-		}
-
 		rows = append(rows, workloadRow{
 			name:        wl.Name,
 			health:      health,
@@ -192,7 +179,6 @@ func runList(cmd *cobra.Command, _ []string) error {
 			placements:  placements,
 			image:       image,
 			age:         util.RelativeAge(wl.CreationTimestamp),
-			revision:    revision,
 			instType:    instType,
 		})
 	}
@@ -235,15 +221,15 @@ func runList(cmd *cobra.Command, _ []string) error {
 	tw := util.NewTabWriter(out)
 	if !noHeaders {
 		if wide {
-			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tPLACEMENTS\tIMAGE\tAGE\tREVISION\tINSTANCE TYPE\n")
+			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tPLACEMENTS\tIMAGE\tAGE\tINSTANCE TYPE\n")
 		} else {
 			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tPLACEMENTS\tIMAGE\tAGE\n")
 		}
 	}
 	for _, r := range rows {
 		if wide {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.healthShort, r.readyStr, r.placements, r.image, r.age, r.revision, r.instType)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.name, r.healthShort, r.readyStr, r.placements, r.image, r.age, r.instType)
 		} else {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				r.name, r.healthShort, r.readyStr, r.placements, r.image, r.age)
@@ -346,16 +332,6 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 
 	health := util.WorkloadHealth(wl.Status.Conditions, totalReady, totalDesired)
 
-	// Fetch revision.
-	revision := "—"
-	var cm corev1.ConfigMap
-	cmName := "compute.datumapis.com-revision-history." + workloadName
-	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: cmName}, &cm); err == nil {
-		if v, ok := cm.Annotations["compute.datumapis.com/current-revision"]; ok {
-			revision = v
-		}
-	}
-
 	// Determine type label.
 	typeLabel := "virtual-machine"
 	if wl.Spec.Template.Spec.Runtime.Sandbox != nil {
@@ -374,7 +350,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	// Header block.
 	fmt.Fprintf(out, "%-12s %-31s project: %s\n", "Workload", workloadName, project)
 	fmt.Fprintf(out, "%-12s %s\n", "Type", typeLabel)
-	fmt.Fprintf(out, "%-12s %-31s Revision #%s\n", "Updated", age, revision)
+	fmt.Fprintf(out, "%-12s %s\n", "Updated", age)
 	fmt.Fprintf(out, "\n")
 	fmt.Fprintf(out, "%-12s %s\n", "Health", health)
 	fmt.Fprintf(out, "\n")
