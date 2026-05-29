@@ -66,7 +66,7 @@ type WorkloadDeploymentFederator struct {
 	// caller (cmd/main.go) is responsible for constructing it from
 	// --downstream-kubeconfig.
 	UpstreamClient client.Client
-	finalizers       finalizer.Finalizers
+	finalizers     finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;update;patch

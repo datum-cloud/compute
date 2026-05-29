@@ -16,8 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
@@ -572,10 +572,10 @@ func TestReconcileQuota(t *testing.T) {
 		qm.StoreClient(clusterName, quotaClient)
 
 		r := &InstanceReconciler{
-			mgr:             mgr,
-			scheme:          s,
+			mgr:                mgr,
+			scheme:             s,
 			quotaClientManager: qm,
-			edgeClusterName: "test-edge",
+			edgeClusterName:    "test-edge",
 			// Milo mode: project ID == ClusterName; claim namespace == instance.Namespace.
 			projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) string {
 				return string(cn)
@@ -786,9 +786,9 @@ func TestReconcileQuota(t *testing.T) {
 func TestReconcileQuotaSingleMode(t *testing.T) {
 	const (
 		instanceName   = "my-instance"
-		edgeNS         = "ns-abc123"           // edge namespace (ns-{uid}) — does NOT exist in project CP
-		projectID      = "datum-cloud"         // decoded from "cluster-datum-cloud"
-		projectNS      = "default"             // upstream-namespace label value — where claims live
+		edgeNS         = "ns-abc123"   // edge namespace (ns-{uid}) — does NOT exist in project CP
+		projectID      = "datum-cloud" // decoded from "cluster-datum-cloud"
+		projectNS      = "default"     // upstream-namespace label value — where claims live
 		deploymentName = "my-deployment"
 	)
 
@@ -887,10 +887,10 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 	}
 
 	r := &InstanceReconciler{
-		mgr:             mgr,
-		scheme:          s,
+		mgr:                mgr,
+		scheme:             s,
 		quotaClientManager: qm,
-		edgeClusterName: "single",
+		edgeClusterName:    "single",
 		// Single-cell mode: project ID decoded from upstream-cluster-name label.
 		// Simulates what cmd/main.go does for "cluster-datum-cloud" → "datum-cloud".
 		projectIDForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) string {

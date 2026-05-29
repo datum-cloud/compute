@@ -91,7 +91,7 @@ func newTestFederator(projectClient client.Client, karmadaClient client.Client) 
 	mgr := newFakeMCManager(testCluster, projectCluster)
 
 	r := &WorkloadDeploymentFederator{
-		mgr:              mgr,
+		mgr:            mgr,
 		UpstreamClient: karmadaClient,
 	}
 

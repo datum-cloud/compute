@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
-	corev1 "k8s.io/api/core/v1"
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -47,6 +46,7 @@ import (
 	"go.miloapis.com/milo/pkg/downstreamclient"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
+	corev1 "k8s.io/api/core/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -255,63 +255,19 @@ func main() {
 	}
 
 	if enableCellControllers {
-		projectIDForInstance := func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
-			cl, err := mgr.GetCluster(ctx, clusterName)
-			if err != nil {
-				setupLog.Error(err, "projectIDForInstance: failed getting cluster",
-					"clusterName", clusterName)
-				return ""
-			}
-			var ns corev1.Namespace
-			getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			if err := cl.GetAPIReader().Get(getCtx, client.ObjectKey{Name: instance.Namespace}, &ns); err != nil {
-				setupLog.Error(err, "projectIDForInstance: failed reading namespace",
-					"namespace", instance.Namespace)
-				return ""
-			}
-			encoded := ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
-			if encoded == "" {
-				setupLog.Info("projectIDForInstance: upstream-cluster-name label missing or empty",
-					"namespace", instance.Namespace)
-				return ""
-			}
-			projectID := strings.TrimPrefix(encoded, "cluster-")
-			projectID = strings.ReplaceAll(projectID, "_", "/")
-			return projectID
-		}
-		// projectNamespaceForInstance reads the upstream-namespace label from the
-		// edge namespace (e.g. "ns-efdf8ca1-...") to find the in-project namespace
-		// (e.g. "default") where ResourceClaims must be created in the project
-		// control plane. The edge namespace name itself does not exist there.
-		projectNamespaceForInstance := func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
-			cl, err := mgr.GetCluster(ctx, clusterName)
-			if err != nil {
-				setupLog.Error(err, "projectNamespaceForInstance: failed getting cluster",
-					"clusterName", clusterName)
-				return ""
-			}
-			var ns corev1.Namespace
-			getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			if err := cl.GetAPIReader().Get(getCtx, client.ObjectKey{Name: instance.Namespace}, &ns); err != nil {
-				setupLog.Error(err, "projectNamespaceForInstance: failed reading namespace",
-					"namespace", instance.Namespace)
-				return ""
-			}
-			projectNS := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
-			if projectNS == "" {
-				setupLog.Info("projectNamespaceForInstance: upstream-namespace label missing or empty",
-					"namespace", instance.Namespace)
-				return ""
-			}
-			return projectNS
-		}
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
 		instanceReconciler := &controller.InstanceReconciler{UpstreamClient: downstreamClient}
-		if err = instanceReconciler.SetupWithManager(mgr, quotaRestConfig, projectIDForInstance, projectNamespaceForInstance, edgeClusterName, clusterNameForProject); err != nil {
+		err = instanceReconciler.SetupWithManager(
+			mgr,
+			quotaRestConfig,
+			singleModeProjectID(mgr),
+			singleModeProjectNamespace(mgr),
+			edgeClusterName,
+			clusterNameForProject,
+		)
+		if err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}
@@ -341,7 +297,7 @@ func main() {
 		}
 		if err = (&controller.InstanceProjector{
 			UpstreamClient: downstreamClient,
-			MCManager:        mgr,
+			MCManager:      mgr,
 		}).SetupWithManager(downstreamMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "InstanceProjector")
 			os.Exit(1)
@@ -389,7 +345,6 @@ func main() {
 		os.Exit(1)
 	}
 }
-
 
 func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
@@ -484,4 +439,70 @@ func ignoreCanceled(err error) error {
 		return nil
 	}
 	return err
+}
+
+// singleModeProjectID returns an InstanceProjectIDFunc for single-cell mode.
+// It reads the upstream-cluster-name label on the edge namespace (e.g.
+// "cluster-datum-cloud") and decodes it to the project ID ("datum-cloud").
+// This is the inverse of the "cluster-<name>" encoding used by NSO's
+// MappedNamespaceResourceStrategy when stamping cluster-scoped namespace labels.
+func singleModeProjectID(mgr mcmanager.Manager) controller.InstanceProjectIDFunc {
+	return func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+		ns, ok := readEdgeNamespace(ctx, mgr, clusterName, instance.Namespace)
+		if !ok {
+			return ""
+		}
+		encoded := ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+		if encoded == "" {
+			setupLog.Info("singleModeProjectID: upstream-cluster-name label missing",
+				"namespace", instance.Namespace)
+			return ""
+		}
+		projectID := strings.TrimPrefix(encoded, "cluster-")
+		return strings.ReplaceAll(projectID, "_", "/")
+	}
+}
+
+// singleModeProjectNamespace returns an InstanceProjectNamespaceFunc for
+// single-cell mode. It reads the upstream-namespace label on the edge namespace
+// (e.g. "ns-efdf8ca1-...") to find the in-project namespace ("default") where
+// ResourceClaims must be created in the project control plane.
+func singleModeProjectNamespace(mgr mcmanager.Manager) controller.InstanceProjectNamespaceFunc {
+	return func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+		ns, ok := readEdgeNamespace(ctx, mgr, clusterName, instance.Namespace)
+		if !ok {
+			return ""
+		}
+		projectNS := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		if projectNS == "" {
+			setupLog.Info("singleModeProjectNamespace: upstream-namespace label missing",
+				"namespace", instance.Namespace)
+			return ""
+		}
+		return projectNS
+	}
+}
+
+// readEdgeNamespace reads the edge namespace object via the uncached APIReader
+// (no informer started, no cache sync required) with a short deadline. Returns
+// the namespace and true on success, or corev1.Namespace{} and false on error.
+func readEdgeNamespace(
+	ctx context.Context,
+	mgr mcmanager.Manager,
+	clusterName multicluster.ClusterName,
+	namespace string,
+) (corev1.Namespace, bool) {
+	cl, err := mgr.GetCluster(ctx, clusterName)
+	if err != nil {
+		setupLog.Error(err, "readEdgeNamespace: failed getting cluster", "clusterName", clusterName)
+		return corev1.Namespace{}, false
+	}
+	var ns corev1.Namespace
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := cl.GetAPIReader().Get(getCtx, client.ObjectKey{Name: namespace}, &ns); err != nil {
+		setupLog.Error(err, "readEdgeNamespace: failed reading namespace", "namespace", namespace)
+		return corev1.Namespace{}, false
+	}
+	return ns, true
 }

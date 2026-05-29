@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,6 +62,25 @@ type clusterGetter interface {
 	GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error)
 }
 
+// InstanceProjectIDFunc derives the Milo project ID for a given Instance.
+// In Milo mode the project ID equals the multicluster ClusterName. In
+// single-cell mode it is decoded from the upstream-cluster-name namespace label.
+type InstanceProjectIDFunc func(
+	ctx context.Context,
+	clusterName multicluster.ClusterName,
+	instance *computev1alpha.Instance,
+) string
+
+// InstanceProjectNamespaceFunc derives the in-project namespace where
+// ResourceClaims for a given Instance should be created. In Milo mode this
+// equals instance.Namespace. In single-cell mode it comes from the
+// upstream-namespace namespace label.
+type InstanceProjectNamespaceFunc func(
+	ctx context.Context,
+	clusterName multicluster.ClusterName,
+	instance *computev1alpha.Instance,
+) string
+
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
 	mgr                clusterGetter
@@ -72,14 +91,14 @@ type InstanceReconciler struct {
 	// ResourceClaim management. In Milo mode it returns string(clusterName); in
 	// single-cell mode it reads the upstream-cluster-name label from the edge
 	// namespace and decodes "cluster-<name>" → "<name>".
-	projectIDForInstance func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
+	projectIDForInstance InstanceProjectIDFunc
 	// projectNamespaceForInstance derives the in-project namespace where
 	// ResourceClaims must be created. In Milo mode the ResourceClaim lives in
 	// instance.Namespace (the project-level namespace); in single-cell mode the
 	// edge namespace is ns-{uid} which does not exist in the project control
 	// plane — the real namespace is the upstream-namespace label value (e.g.
 	// "default"). When nil, falls back to instance.Namespace.
-	projectNamespaceForInstance func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
+	projectNamespaceForInstance InstanceProjectNamespaceFunc
 	// clusterNameForProject maps a Milo project ID back to the multicluster
 	// ClusterName that owns that project's workloads. In Milo mode the
 	// ClusterName equals the project ID. In single-cell mode the only registered
@@ -92,7 +111,7 @@ type InstanceReconciler struct {
 	// management cluster) can aggregate status across all POP cells. Set to nil to
 	// disable federation write-back (e.g. in non-federation deployments).
 	UpstreamClient client.Client
-	finalizers       finalizer.Finalizers
+	finalizers     finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -738,8 +757,8 @@ func (r *InstanceReconciler) resolveClusterNameForProject(projectID string) mult
 func (r *InstanceReconciler) SetupWithManager(
 	mgr mcmanager.Manager,
 	quotaRestConfig *rest.Config,
-	projectIDForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) string,
-	projectNamespaceForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) string,
+	projectIDForInstance InstanceProjectIDFunc,
+	projectNamespaceForInstance InstanceProjectNamespaceFunc,
 	edgeClusterName string,
 	clusterNameForProject func(projectID string) multicluster.ClusterName,
 ) error {
