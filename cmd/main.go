@@ -275,34 +275,14 @@ func main() {
 
 	// WorkloadDeploymentFederator and InstanceProjector are management-plane
 	// controllers that run on the control-plane cluster. They require a downstream
-	// control plane to be configured (--downstream-kubeconfig provided).
+	// control plane to be configured (--upstream-kubeconfig provided).
 	if enableManagementControllers && upstreamRestConfig != nil {
-		federator := &controller.WorkloadDeploymentFederator{UpstreamClient: downstreamClient}
-		if err = federator.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentFederator")
-			os.Exit(1)
-		}
-
-		// InstanceProjector: runs in the Control Plane Cell, watches Instances
-		// written back to the downstream control plane by POP-cell operators, and
-		// projects them into the corresponding project namespaces via the
-		// multicluster manager.
-		downstreamMgr, err := manager.New(upstreamRestConfig, manager.Options{
-			Scheme:  scheme,
-			Metrics: metricsserver.Options{BindAddress: "0"},
-		})
+		extra, err := setupManagementControllers(mgr, downstreamClient)
 		if err != nil {
-			setupLog.Error(err, "unable to create downstream manager for InstanceProjector")
+			setupLog.Error(err, "unable to set up management controllers")
 			os.Exit(1)
 		}
-		if err = (&controller.InstanceProjector{
-			UpstreamClient: downstreamClient,
-			MCManager:      mgr,
-		}).SetupWithManager(downstreamMgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "InstanceProjector")
-			os.Exit(1)
-		}
-		runnables = append(runnables, downstreamMgr)
+		runnables = append(runnables, extra...)
 	}
 
 	if serverConfig.WebhookServer != nil {
@@ -439,6 +419,37 @@ func ignoreCanceled(err error) error {
 		return nil
 	}
 	return err
+}
+
+// setupManagementControllers wires the WorkloadDeploymentFederator and
+// InstanceProjector onto mgr. It returns any additional Runnable objects that
+// must be started alongside the main manager (the downstream manager used by
+// InstanceProjector). Called only when management controllers are enabled and
+// an upstream REST config is available.
+func setupManagementControllers(mgr mcmanager.Manager, downstreamClient client.Client) ([]manager.Runnable, error) {
+	federator := &controller.WorkloadDeploymentFederator{UpstreamClient: downstreamClient}
+	if err := federator.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
+	}
+
+	// InstanceProjector runs in the Control Plane Cell, watches Instances
+	// written back by POP-cell operators, and projects them into the
+	// corresponding project namespaces via the multicluster manager.
+	downstreamMgr, err := manager.New(upstreamRestConfig, manager.Options{
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("downstream manager for InstanceProjector: %w", err)
+	}
+	if err = (&controller.InstanceProjector{
+		UpstreamClient: downstreamClient,
+		MCManager:      mgr,
+	}).SetupWithManager(downstreamMgr); err != nil {
+		return nil, fmt.Errorf("InstanceProjector: %w", err)
+	}
+
+	return []manager.Runnable{downstreamMgr}, nil
 }
 
 // singleModeProjectID returns an InstanceProjectIDFunc for single-cell mode.
