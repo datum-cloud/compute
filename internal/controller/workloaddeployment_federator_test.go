@@ -60,7 +60,7 @@ func testWorkloadDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *c
 			WorkloadRef: computev1alpha.WorkloadReference{
 				Name: "test-workload",
 			},
-			PlacementName: "default",
+			PlacementName: testDefaultPlacement,
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
 				MinReplicas: 1,
 			},
@@ -91,7 +91,7 @@ func newTestFederator(projectClient client.Client, karmadaClient client.Client) 
 	mgr := newFakeMCManager(testCluster, projectCluster)
 
 	r := &WorkloadDeploymentFederator{
-		mgr:              mgr,
+		mgr:            mgr,
 		UpstreamClient: karmadaClient,
 	}
 
@@ -298,7 +298,7 @@ func TestWorkloadDeploymentFederator_Finalization(t *testing.T) {
 				},
 				Spec: computev1alpha.WorkloadDeploymentSpec{
 					CityCode:      testCityCodeLAX,
-					PlacementName: "default",
+					PlacementName: testDefaultPlacement,
 					WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 				},

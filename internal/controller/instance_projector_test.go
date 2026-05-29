@@ -75,7 +75,7 @@ func projTestWorkloadDeployment() *computev1alpha.WorkloadDeployment {
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
 			CityCode:      "LAX",
-			PlacementName: "default",
+			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: "my-workload"},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 		},
@@ -113,7 +113,7 @@ func newTestProjector(karmadaClient client.Client, projectClient client.Client) 
 	mgr := newFakeMCManager(projTestCluster, projectCluster)
 	return &InstanceProjector{
 		UpstreamClient: karmadaClient,
-		MCManager:        mgr,
+		MCManager:      mgr,
 	}
 }
 

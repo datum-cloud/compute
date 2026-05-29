@@ -8,14 +8,15 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -37,7 +38,7 @@ import (
 	"go.miloapis.com/milo/pkg/downstreamclient"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
-	"go.datum.net/compute/internal/quota"
+	quotametrics "go.datum.net/compute/internal/quota"
 )
 
 const (
@@ -54,6 +55,30 @@ const (
 	// this label to filter out claims written by other edge controllers targeting
 	// the same project control planes.
 	instanceQuotaClaimSourceLabel = "compute.datumapis.com/source-cluster"
+
+	// quotaResourceTypeInstances is the quota resource type for Instance count.
+	quotaResourceTypeInstances = "compute.datumapis.com/instances"
+
+	// miloProjectAPIGroup is the API group for Milo resource-manager resources.
+	miloProjectAPIGroup = "resourcemanager.miloapis.com"
+
+	// miloProjectKind is the Kind used for Milo Project resources.
+	miloProjectKind = "Project"
+
+	// msgNotProgrammed is the human-readable message for the not-programmed state.
+	msgNotProgrammed = "Instance has not been programmed"
+
+	// msgInstanceReady is the human-readable message for the ready state.
+	msgInstanceReady = "Instance is ready"
+
+	// msgInstanceProgrammed is the human-readable message for the programmed state.
+	msgInstanceProgrammed = "Instance has been programmed"
+
+	// msgInstanceRunning is the human-readable message for the running state.
+	msgInstanceRunning = "Instance is running"
+
+	// reasonNetworkFailedToCreate is the reason code for network creation failure.
+	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
 )
 
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
@@ -62,17 +87,50 @@ type clusterGetter interface {
 	GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error)
 }
 
+// InstanceProjectIDFunc derives the Milo project ID for a given Instance.
+// In Milo mode the project ID equals the multicluster ClusterName. In
+// single-cell mode it is decoded from the upstream-cluster-name namespace label.
+// Returns ("", nil) when the instance has no project affiliation (skip quota).
+// Returns ("", err) for transient failures that should trigger a requeue.
+type InstanceProjectIDFunc func(
+	ctx context.Context,
+	clusterName multicluster.ClusterName,
+	instance *computev1alpha.Instance,
+) (string, error)
+
+// InstanceProjectNamespaceFunc derives the in-project namespace where
+// ResourceClaims for a given Instance should be created. In Milo mode this
+// equals instance.Namespace. In single-cell mode it comes from the
+// upstream-namespace namespace label.
+// Returns ("", nil) when the instance has no project affiliation (skip quota).
+// Returns ("", err) for transient failures that should trigger a requeue.
+type InstanceProjectNamespaceFunc func(
+	ctx context.Context,
+	clusterName multicluster.ClusterName,
+	instance *computev1alpha.Instance,
+) (string, error)
+
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
 	mgr                clusterGetter
 	scheme             *runtime.Scheme
-	quotaClientManager *quota.ProjectQuotaClientManager
+	quotaClientManager *quotametrics.ProjectQuotaClientManager
 	edgeClusterName    string
+	// recorder emits Kubernetes events on the Instance object for quota failure
+	// modes so operators can diagnose issues via `kubectl describe`.
+	recorder record.EventRecorder
 	// projectIDForInstance derives the Milo project ID used for quota
 	// ResourceClaim management. In Milo mode it returns string(clusterName); in
-	// single-cell mode it reads the upstream-namespace label from the local
-	// cluster namespace to map ns-{uid} → project name.
-	projectIDForInstance func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string
+	// single-cell mode it reads the upstream-cluster-name label from the edge
+	// namespace and decodes "cluster-<name>" → "<name>".
+	projectIDForInstance InstanceProjectIDFunc
+	// projectNamespaceForInstance derives the in-project namespace where
+	// ResourceClaims must be created. In Milo mode the ResourceClaim lives in
+	// instance.Namespace (the project-level namespace); in single-cell mode the
+	// edge namespace is ns-{uid} which does not exist in the project control
+	// plane — the real namespace is the upstream-namespace label value (e.g.
+	// "default"). When nil, falls back to instance.Namespace.
+	projectNamespaceForInstance InstanceProjectNamespaceFunc
 	// clusterNameForProject maps a Milo project ID back to the multicluster
 	// ClusterName that owns that project's workloads. In Milo mode the
 	// ClusterName equals the project ID. In single-cell mode the only registered
@@ -85,13 +143,14 @@ type InstanceReconciler struct {
 	// management cluster) can aggregate status across all POP cells. Set to nil to
 	// disable federation write-back (e.g. in non-federation deployments).
 	UpstreamClient client.Client
-	finalizers       finalizer.Finalizers
+	finalizers     finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/finalizers,verbs=update
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceclaims,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 
 func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
 	logger := log.FromContext(ctx)
@@ -138,11 +197,11 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
-	statusChanged, err := r.reconcileQuotaCondition(ctx, req.ClusterName, &instance)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	statusChanged, quotaErr := r.reconcileQuotaCondition(ctx, req.ClusterName, &instance)
 
+	// Even when reconcileQuotaCondition returns a transient error, persist any
+	// condition change first so the failure reason is visible on the Instance.
+	// We return the error afterwards so controller-runtime requeues with backoff.
 	readyChanged, err := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -155,9 +214,14 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
-		// Return after the status update so that the next reconcile sees the
-		// updated QuotaGranted condition before attempting spec changes.
-		return ctrl.Result{}, nil
+		// Return after the status update. If there was a quota error, return it
+		// so controller-runtime requeues with backoff for transient failures.
+		return ctrl.Result{}, quotaErr
+	}
+
+	if quotaErr != nil {
+		// No status change but quota evaluation failed — return error to requeue.
+		return ctrl.Result{}, quotaErr
 	}
 
 	if err := r.removeQuotaSchedulingGate(ctx, cl.GetClient(), &instance); err != nil {
@@ -179,24 +243,35 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 	}
 
 	if r.quotaClientManager != nil {
-		projectID := r.resolveProjectID(ctx, clusterName, instance)
+		projectID, err := r.resolveProjectID(ctx, clusterName, instance)
+		if err != nil {
+			return fmt.Errorf("resolving project ID during deletion: %w", err)
+		}
 		if projectID == "" {
-			// Cannot locate the claim without a project ID. Log and fall through
-			// to finalizer removal so the Instance is not permanently stuck in
-			// Terminating. The claim, if any, will be cleaned up by the quota
-			// system's own TTL/GC or by the project owner.
-			log.FromContext(ctx).Info("projectID unresolvable during deletion; skipping claim cleanup",
-				"instance", instance.Name, "namespace", instance.Namespace,
-				"label", downstreamclient.UpstreamOwnerNamespaceLabel)
+			// Cannot locate the claim without a project ID. Log at ERROR and emit an
+			// event so the operator is aware of the orphaned claim. Fall through to
+			// finalizer removal so the Instance is not permanently stuck in Terminating.
+			// The orphaned claim will count against project budget until Milo's TTL/GC
+			// removes it.
+			log.FromContext(ctx).Error(nil, "project ID unresolvable during deletion; ResourceClaim may be orphaned — budget leak possible",
+				"instance", instance.Name, "namespace", instance.Namespace)
+			r.recorder.Event(instance, corev1.EventTypeWarning,
+				"QuotaClaimOrphaned",
+				"Skipping ResourceClaim cleanup: project ID could not be resolved; claim may be orphaned in Milo project control plane")
+			quotametrics.ClaimOrphanedTotal.Inc()
 		} else {
 			projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 			if err != nil {
 				return fmt.Errorf("failed getting quota client for deletion: %w", err)
 			}
 
+			claimNamespace, err := r.resolveProjectNamespace(ctx, clusterName, instance)
+			if err != nil {
+				return fmt.Errorf("resolving project namespace during deletion: %w", err)
+			}
 			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
 			var claim quotav1alpha1.ResourceClaim
-			if err := projectClient.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: claimName}, &claim); err != nil {
+			if err := projectClient.Get(ctx, client.ObjectKey{Namespace: claimNamespace, Name: claimName}, &claim); err != nil {
 				if !apierrors.IsNotFound(err) {
 					return fmt.Errorf("failed getting resource claim for deletion: %w", err)
 				}
@@ -216,16 +291,18 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 }
 
 // reconcileQuotaCondition reconciles the ResourceClaim and updates the
-// InstanceQuotaGranted status condition. It returns true when the condition
-// changed and a status update is required.
+// InstanceQuotaGranted status condition. It returns (changed, err) where
+// changed=true means a status update is required, and err non-nil means the
+// reconciler should requeue (with backoff) in addition to writing the condition.
 func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (bool, error) {
-	grantedCondition, err := r.reconcileQuotaClaim(ctx, clusterName, instance)
-	if err != nil {
-		return false, fmt.Errorf("failed reconciling quota claim: %w", err)
-	}
+	grantedCondition, claimErr := r.reconcileQuotaClaim(ctx, clusterName, instance)
 
+	// reconcileQuotaClaim returns (condition, err). A non-nil error signals a
+	// transient infrastructure failure; a non-nil condition carries the reason to
+	// write. Both can be non-nil: write the condition AND requeue with backoff.
 	switch {
-	case grantedCondition == nil || (grantedCondition.Status == metav1.ConditionFalse && grantedCondition.Reason == quotav1alpha1.ResourceClaimPendingReason):
+	case grantedCondition == nil && claimErr == nil:
+		// No claim yet and no error: labels not yet propagated. Stay PendingEvaluation.
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 			Type:               computev1alpha.InstanceQuotaGranted,
 			Status:             metav1.ConditionUnknown,
@@ -234,16 +311,43 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 			ObservedGeneration: instance.Generation,
 		}), nil
 
-	case grantedCondition.Status == metav1.ConditionTrue:
+	case grantedCondition != nil && grantedCondition.Status == metav1.ConditionFalse &&
+		grantedCondition.Reason == quotav1alpha1.ResourceClaimPendingReason:
+		// Claim exists but pending — no AllowanceBucket. Distinct from "evaluating".
+		changed := apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionUnknown,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonNoBudget,
+			Message:            "ResourceClaim is pending: no AllowanceBucket configured for this project",
+			ObservedGeneration: instance.Generation,
+		})
+		r.recorder.Event(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonNoBudget,
+			"ResourceClaim pending: no AllowanceBucket configured for this project")
+		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonNoBudget).Inc()
+		return changed, claimErr
+
+	case grantedCondition != nil && grantedCondition.Type == computev1alpha.InstanceQuotaGranted:
+		// reconcileQuotaClaim populated a structured failure condition.
+		changed := apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             grantedCondition.Status,
+			Reason:             grantedCondition.Reason,
+			Message:            grantedCondition.Message,
+			ObservedGeneration: instance.Generation,
+		})
+		return changed, claimErr
+
+	case grantedCondition != nil && grantedCondition.Status == metav1.ConditionTrue:
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 			Type:               computev1alpha.InstanceQuotaGranted,
 			Status:             metav1.ConditionTrue,
 			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
 			Message:            grantedCondition.Message,
 			ObservedGeneration: instance.Generation,
-		}), nil
+		}), claimErr
 
-	default: // grantedCondition.Status == metav1.ConditionFalse
+	case grantedCondition != nil: // False, non-pending reason from ResourceClaim
 		reason := computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded
 		if grantedCondition.Reason == quotav1alpha1.ResourceClaimValidationFailedReason {
 			reason = computev1alpha.InstanceQuotaGrantedReasonValidationFailed
@@ -254,15 +358,27 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 			Reason:             reason,
 			Message:            grantedCondition.Message,
 			ObservedGeneration: instance.Generation,
-		}), nil
+		}), claimErr
+
+	default: // grantedCondition == nil && claimErr != nil — should not reach here
+		return false, claimErr
 	}
 }
 
 // removeQuotaSchedulingGate removes the quota scheduling gate from the
 // Instance spec once QuotaGranted=True has been persisted to status.
+// It guards on ObservedGeneration to prevent a stale True condition from
+// generation N unblocking a generation N+1 instance before quota for the
+// new spec has been evaluated.
 func (r *InstanceReconciler) removeQuotaSchedulingGate(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
 	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
 	if quotaGrantedCond == nil || quotaGrantedCond.Status != metav1.ConditionTrue {
+		return nil
+	}
+	// Stale condition guard: only remove the gate if the condition reflects the
+	// current spec generation. A condition from an older generation means quota
+	// has not yet been evaluated for the current spec.
+	if quotaGrantedCond.ObservedGeneration != instance.Generation {
 		return nil
 	}
 	if instance.Spec.Controller == nil {
@@ -398,34 +514,81 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 	return nil
 }
 
+// reconcileQuotaClaim attempts to create or observe a ResourceClaim for the
+// given instance. It returns:
+//   - (nil, nil)       — labels not yet propagated; caller sets PendingEvaluation
+//   - (condition, nil) — terminal condition (True/False/Unknown from claim or failure)
+//   - (condition, err) — condition to write + transient error to requeue with backoff
+//
+// The condition's Type field is always InstanceQuotaGranted when set by this function
+// to distinguish it from ResourceClaim conditions returned directly.
 func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (*metav1.Condition, error) {
 	if r.quotaClientManager == nil {
 		return &metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
 			Status:  metav1.ConditionTrue,
-			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
-			Message: "Quota enforcement disabled",
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaDisabled,
+			Message: "Quota enforcement disabled: no credential configured",
 		}, nil
 	}
 
 	logger := log.FromContext(ctx)
 
-	projectID := r.resolveProjectID(ctx, clusterName, instance)
-	if projectID == "" {
-		return nil, fmt.Errorf("projectID is empty for instance %s/%s; "+
-			"namespace label %q missing or not yet propagated",
-			instance.Namespace, instance.Name,
-			downstreamclient.UpstreamOwnerNamespaceLabel)
+	projectID, err := r.resolveProjectID(ctx, clusterName, instance)
+	if err != nil {
+		// Transient: namespace API unreachable. Return structured condition + error.
+		msg := fmt.Sprintf("Could not resolve project ID: %v", err)
+		r.recorder.Event(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable, msg)
+		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonProjectIDUnresolvable).Inc()
+		return &metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable,
+			Message: msg,
+		}, fmt.Errorf("resolving project ID for instance %s/%s: %w", instance.Namespace, instance.Name, err)
 	}
+	if projectID == "" {
+		// Labels not yet propagated — bootstrap transient, not an error.
+		return nil, nil
+	}
+
 	projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 	if err != nil {
-		return nil, fmt.Errorf("failed getting quota client for project %q: %w", projectID, err)
+		msg := fmt.Sprintf("Failed to build quota client for project %q: %v", projectID, err)
+		r.recorder.Event(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, msg)
+		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonBackendUnavailable).Inc()
+		return &metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable,
+			Message: msg,
+		}, fmt.Errorf("failed getting quota client for project %q: %w", projectID, err)
+	}
+
+	claimNamespace, err := r.resolveProjectNamespace(ctx, clusterName, instance)
+	if err != nil {
+		msg := fmt.Sprintf("Could not resolve project namespace: %v", err)
+		r.recorder.Event(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable, msg)
+		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonProjectIDUnresolvable).Inc()
+		return &metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable,
+			Message: msg,
+		}, fmt.Errorf("resolving project namespace for instance %s/%s: %w", instance.Namespace, instance.Name, err)
+	}
+	if claimNamespace == "" {
+		return nil, nil
 	}
 
 	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
 
 	requests := []quotav1alpha1.ResourceRequest{
 		{
-			ResourceType: "compute.datumapis.com/instances",
+			ResourceType: quotaResourceTypeInstances,
 			Amount:       1,
 		},
 	}
@@ -449,22 +612,21 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 	desired := &quotav1alpha1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      claimName,
-			Namespace: instance.Namespace,
+			Namespace: claimNamespace,
 			Labels: map[string]string{
 				instanceQuotaClaimSourceLabel: r.edgeClusterName,
 			},
 		},
 		Spec: quotav1alpha1.ResourceClaimSpec{
 			ConsumerRef: quotav1alpha1.ConsumerRef{
-				APIGroup: "resourcemanager.miloapis.com",
-				Kind:     "Project",
+				APIGroup: miloProjectAPIGroup,
+				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
 			ResourceRef: quotav1alpha1.UnversionedObjectReference{
-				APIGroup:  "compute.datumapis.com",
-				Kind:      "Instance",
-				Name:      instance.Name,
-				Namespace: instance.Namespace,
+				APIGroup: miloProjectAPIGroup,
+				Kind:     miloProjectKind,
+				Name:     projectID,
 			},
 			Requests: requests,
 		},
@@ -472,17 +634,75 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 
 	var existing quotav1alpha1.ResourceClaim
 	if err := projectClient.Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed getting resource claim: %w", err)
+		if apierrors.IsNotFound(err) {
+			// Claim doesn't exist yet — attempt to create it.
+			createErr := projectClient.Create(ctx, desired)
+			if createErr == nil {
+				return nil, nil
+			}
+			return r.classifyCreateError(instance, projectID, claimNamespace, createErr)
 		}
-		if err := projectClient.Create(ctx, desired); err != nil {
-			return nil, fmt.Errorf("failed creating resource claim: %w", err)
-		}
-		return nil, nil
+		// GET itself failed — treat as backend unavailable.
+		msg := fmt.Sprintf("Quota backend unreachable getting ResourceClaim: %v", err)
+		r.recorder.Event(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, msg)
+		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonBackendUnavailable).Inc()
+		return &metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable,
+			Message: msg,
+		}, fmt.Errorf("failed getting resource claim: %w", err)
 	}
 
 	grantedCondition := apimeta.FindStatusCondition(existing.Status.Conditions, quotav1alpha1.ResourceClaimGranted)
 	return grantedCondition, nil
+}
+
+// classifyCreateError maps a ResourceClaim creation error to a structured
+// QuotaGranted condition with a specific reason, emits a Kubernetes event, and
+// increments the appropriate metric counter.
+func (r *InstanceReconciler) classifyCreateError(
+	instance *computev1alpha.Instance,
+	projectID, claimNamespace string,
+	err error,
+) (*metav1.Condition, error) {
+	var reason, metricLabel, msg string
+
+	switch {
+	case apierrors.IsNotFound(err):
+		// 404 on Create: either the project control plane path doesn't exist
+		// (project deleted) or the namespace doesn't exist yet.
+		if claimNamespace != "" {
+			// Namespace-level 404.
+			reason = computev1alpha.InstanceQuotaGrantedReasonNamespaceNotFound
+			metricLabel = quotametrics.ReasonNamespaceNotFound
+			msg = fmt.Sprintf("Quota claim namespace %q not found on project %q control plane", claimNamespace, projectID)
+		} else {
+			reason = computev1alpha.InstanceQuotaGrantedReasonProjectNotFound
+			metricLabel = quotametrics.ReasonProjectNotFound
+			msg = fmt.Sprintf("Milo project %q not found", projectID)
+		}
+	case apierrors.IsForbidden(err) || apierrors.IsInvalid(err):
+		// 403/422: quota admission plugin rejected the claim.
+		reason = computev1alpha.InstanceQuotaGrantedReasonMisconfigured
+		metricLabel = quotametrics.ReasonMisconfigured
+		msg = fmt.Sprintf("Quota admission rejected ResourceClaim for project %q: %v", projectID, err)
+	default:
+		// Connectivity or server error — treat as backend unavailable.
+		reason = computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable
+		metricLabel = quotametrics.ReasonBackendUnavailable
+		msg = fmt.Sprintf("Quota backend unreachable creating ResourceClaim: %v", err)
+	}
+
+	r.recorder.Event(instance, corev1.EventTypeWarning, reason, msg)
+	quotametrics.EvalFailuresTotal.WithLabelValues(metricLabel).Inc()
+	return &metav1.Condition{
+		Type:    computev1alpha.InstanceQuotaGranted,
+		Status:  metav1.ConditionFalse,
+		Reason:  reason,
+		Message: msg,
+	}, fmt.Errorf("failed creating resource claim: %w", err)
 }
 
 func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores int64, memMiB int64, resolved bool) {
@@ -566,7 +786,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			Status:             metav1.ConditionFalse,
 			Reason:             computev1alpha.InstanceProgrammedReasonPendingProgramming,
 			ObservedGeneration: instance.Generation,
-			Message:            "Instance has not been programmed",
+			Message:            msgNotProgrammed,
 		}
 	} else {
 		readyCondition = readyCondition.DeepCopy()
@@ -585,7 +805,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 
 		readyCondition.Status = metav1.ConditionFalse
 		if networkCreationFailure {
-			readyCondition.Reason = "NetworkFailedToCreate"
+			readyCondition.Reason = reasonNetworkFailedToCreate
 			readyCondition.Message = networkCreationFailureMessage
 		} else {
 			readyCondition.Reason = computev1alpha.InstanceReadyReasonSchedulingGatesPresent
@@ -606,7 +826,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			readyCondition.Reason = programmedCondition.Reason
 		}
 
-		readyCondition.Message = "Instance has not been programmed"
+		readyCondition.Message = msgNotProgrammed
 		if programmedCondition != nil && programmedCondition.Status != metav1.ConditionUnknown {
 			readyCondition.Message = programmedCondition.Message
 		}
@@ -636,7 +856,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 
 	readyCondition.Status = metav1.ConditionTrue
 	readyCondition.Reason = computev1alpha.InstanceReadyReasonRunning
-	readyCondition.Message = "Instance is ready"
+	readyCondition.Message = msgInstanceReady
 
 	return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 }
@@ -678,15 +898,32 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 	return false, "", nil
 }
 
-// resolveProjectID returns the Milo project ID to use for quota calls. When
-// projectIDForInstance is set it delegates to that function; otherwise it falls
-// back to string(clusterName), which is correct for Milo-mode deployments where
-// the cluster name IS the project name.
-func (r *InstanceReconciler) resolveProjectID(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
+// resolveProjectID returns the Milo project ID to use for quota calls.
+// When projectIDForInstance is set it delegates to that function; otherwise it
+// falls back to string(clusterName), which is correct for Milo-mode deployments
+// where the cluster name IS the project name.
+// Returns ("", nil) to signal "no project, skip quota". Returns ("", err) for
+// transient failures that should cause a reconcile requeue.
+func (r *InstanceReconciler) resolveProjectID(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (string, error) {
 	if r.projectIDForInstance != nil {
 		return r.projectIDForInstance(ctx, clusterName, instance)
 	}
-	return string(clusterName)
+	return string(clusterName), nil
+}
+
+// resolveProjectNamespace returns the namespace within the Milo project control
+// plane where ResourceClaims for this instance should be created.
+// When projectNamespaceForInstance is set it delegates to that function;
+// otherwise it falls back to instance.Namespace, which is correct for
+// Milo-mode deployments where the project-side namespace already matches the
+// instance namespace.
+// Returns ("", nil) to signal "no project, skip quota". Returns ("", err) for
+// transient failures that should cause a reconcile requeue.
+func (r *InstanceReconciler) resolveProjectNamespace(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) (string, error) {
+	if r.projectNamespaceForInstance != nil {
+		return r.projectNamespaceForInstance(ctx, clusterName, instance)
+	}
+	return instance.Namespace, nil
 }
 
 // resolveClusterNameForProject returns the multicluster ClusterName for the
@@ -716,20 +953,26 @@ func (r *InstanceReconciler) resolveClusterNameForProject(projectID string) mult
 func (r *InstanceReconciler) SetupWithManager(
 	mgr mcmanager.Manager,
 	quotaRestConfig *rest.Config,
-	projectIDForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) string,
+	projectIDForInstance InstanceProjectIDFunc,
+	projectNamespaceForInstance InstanceProjectNamespaceFunc,
 	edgeClusterName string,
 	clusterNameForProject func(projectID string) multicluster.ClusterName,
 ) error {
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
+	//nolint:staticcheck // GetEventRecorder (new events API) has an incompatible Eventf
+	// signature (requires related object + action args) that would require migrating
+	// all emit sites. GetEventRecorderFor remains correct; migration is deferred.
+	r.recorder = mgr.GetLocalManager().GetEventRecorderFor("instance-controller")
 	r.edgeClusterName = edgeClusterName
 	r.projectIDForInstance = projectIDForInstance
+	r.projectNamespaceForInstance = projectNamespaceForInstance
 	r.clusterNameForProject = clusterNameForProject
 	if quotaRestConfig != nil {
 		if edgeClusterName == "" {
 			return fmt.Errorf("edgeClusterName must be set when quota enforcement is enabled; set discovery.clusterName in the server config")
 		}
-		r.quotaClientManager = quota.New(quotaRestConfig)
+		r.quotaClientManager = quotametrics.New(quotaRestConfig)
 	}
 
 	r.finalizers = finalizer.NewFinalizers()

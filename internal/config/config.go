@@ -272,19 +272,30 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 
 // QuotaRestConfig returns the REST config for quota ResourceClaim management
 // against Milo project control planes. QuotaKubeconfigPath is preferred; if
-// unset, ProjectKubeconfigPath is used as a fallback. Returns (nil, nil) when
-// neither is configured or the file does not exist — quota accounting is
-// disabled in that case.
+// unset, ProjectKubeconfigPath is used as a fallback.
+//
+// Returns (nil, nil) when no credential path is configured at all — this is
+// the intentional opt-out case and the caller should disable quota enforcement.
+//
+// Returns (nil, error) when a credential path IS configured but the file does
+// not exist on disk. This is a misconfiguration (Secret not mounted, wrong
+// path) that must not silently disable enforcement; callers should treat this
+// as a fatal startup error.
 func (c *DiscoveryConfig) QuotaRestConfig() (*rest.Config, error) {
 	path := c.QuotaKubeconfigPath
 	if path == "" {
 		path = c.ProjectKubeconfigPath
 	}
 	if path == "" {
+		// No credential path configured: intentional opt-out. Caller logs and
+		// disables enforcement.
 		return nil, nil
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, nil
+		// Path explicitly configured but file absent: operator intended enforcement
+		// but the credential is missing (unmounted Secret, wrong path). Fail loud.
+		return nil, fmt.Errorf("quota kubeconfig path %q is configured but file does not exist: "+
+			"ensure the quota credential Secret is mounted correctly", path)
 	}
 	return clientcmd.BuildConfigFromFlags("", path)
 }

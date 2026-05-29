@@ -33,7 +33,10 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-const workloadControllerFinalizer = "compute.datumapis.com/workload-controller"
+const (
+	workloadControllerFinalizer    = "compute.datumapis.com/workload-controller"
+	workloadConditionTypeAvailable = "Available"
+)
 
 // WorkloadReconciler reconciles a Workload object
 type WorkloadReconciler struct {
@@ -119,7 +122,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	if len(notFoundNetworks) > 0 {
 		missingNetworks := strings.Join(notFoundNetworks.UnsortedList(), ", ")
 		changed := apimeta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-			Type:    "Available",
+			Type:    workloadConditionTypeAvailable,
 			Status:  metav1.ConditionFalse,
 			Reason:  "NetworkNotFound",
 			Message: fmt.Sprintf("Unable to find networks: %s", missingNetworks),

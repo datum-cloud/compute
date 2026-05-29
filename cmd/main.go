@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -32,12 +34,12 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
-	corev1 "k8s.io/api/core/v1"
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
+	quotametrics "go.datum.net/compute/internal/quota"
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -45,6 +47,7 @@ import (
 	"go.miloapis.com/milo/pkg/downstreamclient"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
+	corev1 "k8s.io/api/core/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -159,8 +162,11 @@ func main() {
 	}
 	if quotaRestConfig != nil {
 		setupLog.Info("quota REST config loaded", "path", serverConfig.Discovery.QuotaKubeconfigPath)
+		quotametrics.EnforcementEnabled.Set(1)
 	} else {
-		setupLog.Info("quota REST config not configured; quota enforcement disabled")
+		setupLog.Error(nil, "quota enforcement is DISABLED — workloads will schedule without quota accounting; "+
+			"set quotaKubeconfigPath in server config to enable enforcement")
+		quotametrics.EnforcementEnabled.Set(0)
 	}
 
 	cfg := ctrl.GetConfigOrDie()
@@ -253,31 +259,19 @@ func main() {
 	}
 
 	if enableCellControllers {
-		projectIDForInstance := func(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) string {
-			cl, err := mgr.GetCluster(ctx, clusterName)
-			if err != nil {
-				setupLog.Error(err, "projectIDForInstance: failed getting cluster",
-					"clusterName", clusterName)
-				return ""
-			}
-			var ns corev1.Namespace
-			if err := cl.GetClient().Get(ctx, client.ObjectKey{Name: instance.Namespace}, &ns); err != nil {
-				setupLog.Error(err, "projectIDForInstance: failed reading namespace",
-					"namespace", instance.Namespace)
-				return ""
-			}
-			projectID := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
-			if projectID == "" {
-				setupLog.Info("projectIDForInstance: upstream-namespace label missing or empty",
-					"namespace", instance.Namespace)
-			}
-			return projectID
-		}
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
 		instanceReconciler := &controller.InstanceReconciler{UpstreamClient: downstreamClient}
-		if err = instanceReconciler.SetupWithManager(mgr, quotaRestConfig, projectIDForInstance, edgeClusterName, clusterNameForProject); err != nil {
+		err = instanceReconciler.SetupWithManager(
+			mgr,
+			quotaRestConfig,
+			singleModeProjectID(mgr),
+			singleModeProjectNamespace(mgr),
+			edgeClusterName,
+			clusterNameForProject,
+		)
+		if err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
 			os.Exit(1)
 		}
@@ -285,34 +279,14 @@ func main() {
 
 	// WorkloadDeploymentFederator and InstanceProjector are management-plane
 	// controllers that run on the control-plane cluster. They require a downstream
-	// control plane to be configured (--downstream-kubeconfig provided).
+	// control plane to be configured (--upstream-kubeconfig provided).
 	if enableManagementControllers && upstreamRestConfig != nil {
-		federator := &controller.WorkloadDeploymentFederator{UpstreamClient: downstreamClient}
-		if err = federator.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentFederator")
-			os.Exit(1)
-		}
-
-		// InstanceProjector: runs in the Control Plane Cell, watches Instances
-		// written back to the downstream control plane by POP-cell operators, and
-		// projects them into the corresponding project namespaces via the
-		// multicluster manager.
-		downstreamMgr, err := manager.New(upstreamRestConfig, manager.Options{
-			Scheme:  scheme,
-			Metrics: metricsserver.Options{BindAddress: "0"},
-		})
+		extra, err := setupManagementControllers(mgr, downstreamClient)
 		if err != nil {
-			setupLog.Error(err, "unable to create downstream manager for InstanceProjector")
+			setupLog.Error(err, "unable to set up management controllers")
 			os.Exit(1)
 		}
-		if err = (&controller.InstanceProjector{
-			UpstreamClient: downstreamClient,
-			MCManager:        mgr,
-		}).SetupWithManager(downstreamMgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "InstanceProjector")
-			os.Exit(1)
-		}
-		runnables = append(runnables, downstreamMgr)
+		runnables = append(runnables, extra...)
 	}
 
 	if serverConfig.WebhookServer != nil {
@@ -355,7 +329,6 @@ func main() {
 		os.Exit(1)
 	}
 }
-
 
 func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
@@ -450,4 +423,103 @@ func ignoreCanceled(err error) error {
 		return nil
 	}
 	return err
+}
+
+// setupManagementControllers wires the WorkloadDeploymentFederator and
+// InstanceProjector onto mgr. It returns any additional Runnable objects that
+// must be started alongside the main manager (the downstream manager used by
+// InstanceProjector). Called only when management controllers are enabled and
+// an upstream REST config is available.
+func setupManagementControllers(mgr mcmanager.Manager, downstreamClient client.Client) ([]manager.Runnable, error) {
+	federator := &controller.WorkloadDeploymentFederator{UpstreamClient: downstreamClient}
+	if err := federator.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
+	}
+
+	// InstanceProjector runs in the Control Plane Cell, watches Instances
+	// written back by POP-cell operators, and projects them into the
+	// corresponding project namespaces via the multicluster manager.
+	downstreamMgr, err := manager.New(upstreamRestConfig, manager.Options{
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("downstream manager for InstanceProjector: %w", err)
+	}
+	if err = (&controller.InstanceProjector{
+		UpstreamClient: downstreamClient,
+		MCManager:      mgr,
+	}).SetupWithManager(downstreamMgr); err != nil {
+		return nil, fmt.Errorf("InstanceProjector: %w", err)
+	}
+
+	return []manager.Runnable{downstreamMgr}, nil
+}
+
+// singleModeProjectID returns an InstanceProjectIDFunc for single-cell mode.
+// It reads the upstream-cluster-name label on the edge namespace (e.g.
+// "cluster-datum-cloud") and decodes it to the project ID ("datum-cloud").
+// This is the inverse of the "cluster-<name>" encoding used by NSO's
+// MappedNamespaceResourceStrategy when stamping cluster-scoped namespace labels.
+// Returns ("", err) on transient API failures (triggers requeue with backoff).
+// Returns ("", nil) when the label is absent (not yet propagated; quota skipped).
+func singleModeProjectID(mgr mcmanager.Manager) controller.InstanceProjectIDFunc {
+	return func(ctx context.Context, cn multicluster.ClusterName, inst *computev1alpha.Instance) (string, error) {
+		ns, err := readEdgeNamespace(ctx, mgr, cn, inst.Namespace)
+		if err != nil {
+			return "", err
+		}
+		encoded := ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+		if encoded == "" {
+			setupLog.Info("singleModeProjectID: upstream-cluster-name label missing",
+				"namespace", inst.Namespace)
+			return "", nil
+		}
+		projectID := strings.TrimPrefix(encoded, "cluster-")
+		return strings.ReplaceAll(projectID, "_", "/"), nil
+	}
+}
+
+// singleModeProjectNamespace returns an InstanceProjectNamespaceFunc for
+// single-cell mode. It reads the upstream-namespace label on the edge namespace
+// (e.g. "ns-efdf8ca1-...") to find the in-project namespace ("default") where
+// ResourceClaims must be created in the project control plane.
+// Returns ("", err) on transient API failures (triggers requeue with backoff).
+// Returns ("", nil) when the label is absent (not yet propagated; quota skipped).
+func singleModeProjectNamespace(mgr mcmanager.Manager) controller.InstanceProjectNamespaceFunc {
+	return func(ctx context.Context, cn multicluster.ClusterName, inst *computev1alpha.Instance) (string, error) {
+		ns, err := readEdgeNamespace(ctx, mgr, cn, inst.Namespace)
+		if err != nil {
+			return "", err
+		}
+		projectNS := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		if projectNS == "" {
+			setupLog.Info("singleModeProjectNamespace: upstream-namespace label missing",
+				"namespace", inst.Namespace)
+			return "", nil
+		}
+		return projectNS, nil
+	}
+}
+
+// readEdgeNamespace reads the edge namespace object via the uncached APIReader
+// (no informer started, no cache sync required) with a short deadline.
+// Returns a transient error on API failures so callers can requeue with backoff.
+func readEdgeNamespace(
+	ctx context.Context,
+	mgr mcmanager.Manager,
+	clusterName multicluster.ClusterName,
+	namespace string,
+) (corev1.Namespace, error) {
+	cl, err := mgr.GetCluster(ctx, clusterName)
+	if err != nil {
+		return corev1.Namespace{}, fmt.Errorf("readEdgeNamespace: getting cluster %q: %w", clusterName, err)
+	}
+	var ns corev1.Namespace
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := cl.GetAPIReader().Get(getCtx, client.ObjectKey{Name: namespace}, &ns); err != nil {
+		return corev1.Namespace{}, fmt.Errorf("readEdgeNamespace: reading namespace %q: %w", namespace, err)
+	}
+	return ns, nil
 }

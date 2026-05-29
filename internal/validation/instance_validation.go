@@ -17,6 +17,19 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+// Validation constants for well-known string literals used across multiple
+// validation functions.
+const (
+	// diskTypePDStandard is the only currently supported disk type.
+	diskTypePDStandard = "pd-standard"
+
+	// defaultImageName is the only currently supported container image.
+	defaultImageName = "datumcloud/ubuntu-2204-lts"
+
+	// defaultInstanceType is the only currently supported instance type.
+	defaultInstanceType = "datumcloud/d1-standard-2"
+)
+
 func validateInstanceTemplate(
 	template computev1alpha.InstanceTemplateSpec,
 	fieldPath *field.Path,
@@ -264,8 +277,8 @@ func validateDiskVolumeSource(diskSource *computev1alpha.DiskTemplateVolumeSourc
 	diskTemplateSpecField := diskTemplateField.Child("spec")
 
 	// TODO(jrese) look up valid disk types
-	if diskTemplate.Spec.Type != "pd-standard" {
-		allErrs = append(allErrs, field.NotSupported(diskTemplateSpecField.Child("type"), diskTemplate.Spec.Type, []string{"pd-standard"}))
+	if diskTemplate.Spec.Type != diskTypePDStandard {
+		allErrs = append(allErrs, field.NotSupported(diskTemplateSpecField.Child("type"), diskTemplate.Spec.Type, []string{diskTypePDStandard}))
 	}
 
 	populatorResourceRequests, errs := validateDiskPopulator(diskTemplate.Spec.Populator, diskTemplateField.Child("populator"))
@@ -406,8 +419,8 @@ func validateDiskPopulator(populator *computev1alpha.DiskPopulator, fieldPath *f
 
 			// TODO(jreese) look up image
 			imagePopulator := populator.Image
-			if imagePopulator.Name != "datumcloud/ubuntu-2204-lts" {
-				allErrs = append(allErrs, field.NotSupported(imageField.Child("name"), imagePopulator.Name, []string{"datumcloud/ubuntu-2204-lts"}))
+			if imagePopulator.Name != defaultImageName {
+				allErrs = append(allErrs, field.NotSupported(imageField.Child("name"), imagePopulator.Name, []string{defaultImageName}))
 			}
 		}
 	}
@@ -663,8 +676,8 @@ func validateInstanceRuntimeResources(resources computev1alpha.InstanceRuntimeRe
 	allErrs := field.ErrorList{}
 
 	// TODO(jreese) look up available instance types
-	if resources.InstanceType != "datumcloud/d1-standard-2" {
-		allErrs = append(allErrs, field.NotSupported(fieldPath, resources.InstanceType, []string{"datumcloud/d1-standard-2"}))
+	if resources.InstanceType != defaultInstanceType {
+		allErrs = append(allErrs, field.NotSupported(fieldPath, resources.InstanceType, []string{defaultInstanceType}))
 	}
 
 	if resources.Requests != nil {
