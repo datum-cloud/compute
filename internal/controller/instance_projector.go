@@ -22,11 +22,12 @@ import (
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
-// InstanceProjector watches Instance objects written back to the downstream
-// control plane by POP-cell InstanceReconcilers and creates read-only
-// projections in the corresponding project namespace within each project cluster.
+// InstanceProjector watches Instance objects written back to the upstream
+// Karmada/management control plane by POP-cell InstanceReconcilers and creates
+// read-only projections in the corresponding project namespace within each
+// project cluster.
 //
-// Namespace resolution: a downstream Instance lives in namespace
+// Namespace resolution: an upstream Instance lives in namespace
 // `ns-<project-namespace-uid>`. The UID portion is matched against the UID of
 // namespaces in the project cluster to find the target namespace.
 //
@@ -35,12 +36,13 @@ import (
 // removed from the project cluster.
 //
 // The controller is registered with a standard manager.Manager pointed at the
-// downstream control plane — NOT the multicluster-runtime manager — so informer
-// watches are scoped to the downstream control plane.
+// upstream Karmada control plane — NOT the multicluster-runtime manager — so
+// informer watches are scoped to the upstream control plane.
 type InstanceProjector struct {
-	// UpstreamClient reads Instance objects from the downstream control plane.
-	// Must be set before SetupWithManager is called.
-	UpstreamClient client.Client
+	// FederationClient reads Instance objects from the Karmada federation control
+	// plane (configured via --federation-kubeconfig). Must be set before
+	// SetupWithManager is called.
+	FederationClient client.Client
 
 	// MCManager provides access to project cluster clients via GetCluster.
 	MCManager mcmanager.Manager
@@ -52,16 +54,16 @@ type InstanceProjector struct {
 func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("instance", req.NamespacedName)
 
-	// 1. Fetch the Instance from the downstream control plane.
+	// 1. Fetch the Instance from the upstream Karmada control plane.
 	var downstreamInstance computev1alpha.Instance
-	if err := r.UpstreamClient.Get(ctx, req.NamespacedName, &downstreamInstance); err != nil {
+	if err := r.FederationClient.Get(ctx, req.NamespacedName, &downstreamInstance); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Instance was deleted from the downstream control plane. Projections
+			// Instance was deleted from the upstream control plane. Projections
 			// are owned by the project WorkloadDeployment, so cascading deletion
 			// handles cleanup.
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("failed getting downstream instance: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed getting upstream instance: %w", err)
 	}
 
 	// Only project Instances that carry the upstream tracking label; others were
@@ -86,7 +88,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// 4. Resolve the target project namespace from the Instance label.
 	// The InstanceReconciler stamps UpstreamOwnerNamespaceLabel with the project
-	// namespace name (read from the downstream namespace label set by the federator),
+	// namespace name (read from the upstream Karmada namespace label set by the federator),
 	// so we can resolve the target namespace directly without scanning.
 	targetNamespace := downstreamInstance.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 	if targetNamespace == "" {
@@ -154,11 +156,11 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager registers the InstanceProjector with downstreamMgr, a standard
-// manager.Manager configured against the downstream control plane REST config.
-// UpstreamClient and MCManager must be set before calling this method.
-func (r *InstanceProjector) SetupWithManager(downstreamMgr manager.Manager) error {
-	return ctrl.NewControllerManagedBy(downstreamMgr).
+// SetupWithManager registers the InstanceProjector with upstreamMgr, a standard
+// manager.Manager configured against the upstream Karmada/federation control plane
+// REST config. FederationClient and MCManager must be set before calling this method.
+func (r *InstanceProjector) SetupWithManager(upstreamMgr manager.Manager) error {
+	return ctrl.NewControllerManagedBy(upstreamMgr).
 		For(&computev1alpha.Instance{}).
 		Named("instance-projector").
 		Complete(r)

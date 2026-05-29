@@ -33,7 +33,7 @@ spec:
           - --leader-elect=$(LEADER_ELECT)
           - --health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
           - --server-config=$(SERVER_CONFIG)
-          - --upstream-kubeconfig=$(UPSTREAM_KUBECONFIG)
+          - --federation-kubeconfig=$(FEDERATION_KUBECONFIG)
           - --enable-management-controllers=$(ENABLE_MANAGEMENT_CONTROLLERS)
           - --enable-cell-controllers=$(ENABLE_CELL_CONTROLLERS)
         env:
@@ -43,7 +43,7 @@ spec:
             value: ":8081"
           - name: SERVER_CONFIG
             value: /config/config.yaml
-          - name: UPSTREAM_KUBECONFIG
+          - name: FEDERATION_KUBECONFIG
             value: ""
           - name: ENABLE_MANAGEMENT_CONTROLLERS
             value: "false"

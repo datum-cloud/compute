@@ -35,6 +35,10 @@ spec:
       name: Message
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="QuotaGranted")].reason
+      name: Quota
+      priority: 1
+      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:

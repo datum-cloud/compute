@@ -137,13 +137,14 @@ type InstanceReconciler struct {
 	// cluster is "single" regardless of project ID. When nil, falls back to
 	// multicluster.ClusterName(projectID), which is correct for Milo mode.
 	clusterNameForProject func(projectID string) multicluster.ClusterName
-	// UpstreamClient is an optional client pointing at the downstream control plane.
+	// FederationClient is an optional client pointing at the upstream
+	// Karmada/federation control plane (configured via --federation-kubeconfig).
 	// When non-nil, the reconciler writes a copy of each Instance back to the
-	// downstream control plane so that the InstanceProjector (running in the
+	// federation control plane so that the InstanceProjector (running in the
 	// management cluster) can aggregate status across all POP cells. Set to nil to
 	// disable federation write-back (e.g. in non-federation deployments).
-	UpstreamClient client.Client
-	finalizers     finalizer.Finalizers
+	FederationClient client.Client
+	finalizers       finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -409,14 +410,14 @@ func (r *InstanceReconciler) removeQuotaSchedulingGate(ctx context.Context, cl c
 // Finalize removes the downstream write-back Instance when the local Instance is
 // deleted. It is a no-op when downstream federation is disabled.
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	if r.UpstreamClient == nil {
+	if r.FederationClient == nil {
 		return finalizer.Result{}, nil
 	}
 
 	instance := obj.(*computev1alpha.Instance)
 
 	downstreamInstance := &computev1alpha.Instance{}
-	err := r.UpstreamClient.Get(ctx, client.ObjectKeyFromObject(instance), downstreamInstance)
+	err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(instance), downstreamInstance)
 	if apierrors.IsNotFound(err) {
 		// Already gone — nothing to do.
 		return finalizer.Result{}, nil
@@ -425,7 +426,7 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 		return finalizer.Result{}, fmt.Errorf("failed getting downstream instance for deletion: %w", err)
 	}
 
-	if err := r.UpstreamClient.Delete(ctx, downstreamInstance); client.IgnoreNotFound(err) != nil {
+	if err := r.FederationClient.Delete(ctx, downstreamInstance); client.IgnoreNotFound(err) != nil {
 		return finalizer.Result{}, fmt.Errorf("failed deleting downstream write-back instance: %w", err)
 	}
 
@@ -433,10 +434,10 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 }
 
 // writeBackToUpstream copies the Instance spec and status to the upstream
-// Karmada control plane so that the InstanceProjector can aggregate state from
-// all POP cells. It is a no-op when UpstreamClient is nil (federation disabled).
+// Karmada/federation control plane so that the InstanceProjector can aggregate
+// state from all POP cells. It is a no-op when FederationClient is nil (federation disabled).
 func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) error {
-	if r.UpstreamClient == nil {
+	if r.FederationClient == nil {
 		return nil
 	}
 
@@ -451,7 +452,7 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 	// "default"), which the InstanceProjector needs to find the right project cluster.
 	upstreamNamespace := instance.Namespace // fallback: cell namespace (ns-<uid>)
 	var downstreamNS corev1.Namespace
-	if err := r.UpstreamClient.Get(ctx, client.ObjectKey{Name: instance.Namespace}, &downstreamNS); err == nil {
+	if err := r.FederationClient.Get(ctx, client.ObjectKey{Name: instance.Namespace}, &downstreamNS); err == nil {
 		if v := downstreamNS.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]; v != "" {
 			upstreamNamespace = v
 		}
@@ -473,18 +474,18 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 	}
 
 	existing := &computev1alpha.Instance{}
-	err := r.UpstreamClient.Get(ctx, client.ObjectKeyFromObject(writeBack), existing)
+	err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(writeBack), existing)
 	if apierrors.IsNotFound(err) {
 		// Ensure the namespace exists in the downstream control plane before creating the Instance.
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Namespace}}
-		if err := r.UpstreamClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.FederationClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed ensuring downstream namespace: %w", err)
 		}
-		if err := r.UpstreamClient.Create(ctx, writeBack); err != nil {
+		if err := r.FederationClient.Create(ctx, writeBack); err != nil {
 			return fmt.Errorf("failed creating downstream write-back instance: %w", err)
 		}
 		writeBack.Status = instance.Status
-		if err := r.UpstreamClient.Status().Update(ctx, writeBack); err != nil {
+		if err := r.FederationClient.Status().Update(ctx, writeBack); err != nil {
 			return fmt.Errorf("failed updating downstream write-back instance status after create: %w", err)
 		}
 		return nil
@@ -498,7 +499,7 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 		!apiequality.Semantic.DeepEqual(existing.Labels, writeBack.Labels) {
 		existing.Spec = instance.Spec
 		existing.Labels = writeBack.Labels
-		if err := r.UpstreamClient.Update(ctx, existing); err != nil {
+		if err := r.FederationClient.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed updating downstream write-back instance: %w", err)
 		}
 	}
@@ -506,7 +507,7 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 	// Update status only if it differs.
 	if !apiequality.Semantic.DeepEqual(existing.Status, instance.Status) {
 		existing.Status = instance.Status
-		if err := r.UpstreamClient.Status().Update(ctx, existing); err != nil {
+		if err := r.FederationClient.Status().Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed updating downstream write-back instance status: %w", err)
 		}
 	}
