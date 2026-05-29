@@ -329,6 +329,215 @@ func TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent(t *testing.T) {
 		"action must be a Create, proving instance creation is not gated on Location")
 }
 
+// TestLabelBackfill_NotReadyMatchingHash verifies that a not-Ready instance
+// with an unchanged template hash receives a PatchLabels action when it is
+// missing controller-managed labels. The action must not be a rollout Update,
+// must not alter spec/template, and must not block subsequent instances.
+func TestLabelBackfill_NotReadyMatchingHash(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-backfill-notready", 2)
+
+	// Instance 0: not-Ready, correct template hash, but missing city-code/workload-name labels.
+	instance0 := getInstanceForDeployment(deployment, 0)
+	apimeta.SetStatusCondition(&instance0.Status.Conditions, metav1.Condition{
+		Type:               v1alpha.InstanceReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "NotReady",
+		Message:            "Instance is not ready",
+		LastTransitionTime: metav1.Now(),
+	})
+	// Simulate pre-existing instance that only has the index label (missing the newer labels).
+	instance0.Labels = map[string]string{
+		v1alpha.InstanceIndexLabel: "0",
+	}
+
+	// Instance 1: needs to be created (nil in desiredInstances), so we only provide instance0.
+	currentInstances := []v1alpha.Instance{*instance0}
+
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+
+	// Collect actions by type.
+	var waitActions, createActions, updateActions, patchActions []instancecontrol.Action
+	for _, a := range actions {
+		switch a.ActionType() {
+		case instancecontrol.ActionTypeWait:
+			waitActions = append(waitActions, a)
+		case instancecontrol.ActionTypeCreate:
+			createActions = append(createActions, a)
+		case instancecontrol.ActionTypeUpdate:
+			updateActions = append(updateActions, a)
+		case instancecontrol.ActionTypePatchLabels:
+			patchActions = append(patchActions, a)
+		}
+	}
+
+	// The not-Ready instance must still produce a Wait (rollout is gated).
+	assert.Len(t, waitActions, 1, "not-Ready instance must still produce a Wait action")
+	assert.Equal(t, "test-backfill-notready-0", waitActions[0].Object.GetName())
+
+	// The missing instance-1 create is skipped (ordered policy, Wait is first).
+	assert.Len(t, createActions, 1, "instance-1 create action must be present")
+	assert.True(t, createActions[0].IsSkipped(), "create for instance-1 must be skipped while instance-0 is waiting")
+
+	// No template Update actions must be produced.
+	assert.Empty(t, updateActions, "no template Update must be produced for a matching-hash instance")
+
+	// A PatchLabels action must be produced for instance-0.
+	assert.Len(t, patchActions, 1, "exactly one PatchLabels action for the label-drifted instance")
+	assert.Equal(t, "test-backfill-notready-0", patchActions[0].Object.GetName())
+	assert.False(t, patchActions[0].IsSkipped(), "PatchLabels must not be skipped by the rollout skip-loop")
+
+	// The patched object must carry all desired labels.
+	patched, ok := patchActions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+	assert.Equal(t, deployment.GetName(), patched.Labels[v1alpha.WorkloadDeploymentNameLabel])
+	assert.Equal(t, deployment.Spec.CityCode, patched.Labels[v1alpha.CityCodeLabel])
+	assert.Equal(t, deployment.Spec.WorkloadRef.Name, patched.Labels[v1alpha.WorkloadNameLabel])
+	assert.Equal(t, deployment.Spec.PlacementName, patched.Labels[v1alpha.PlacementNameLabel])
+
+	// The patched object's spec and template-hash must be unchanged.
+	assert.Equal(t, instancecontrol.ComputeHash(deployment.Spec.Template), patched.Spec.Controller.TemplateHash,
+		"template hash must be unchanged by the label backfill")
+	assert.Equal(t, deployment.Spec.Template.Spec.Runtime, patched.Spec.Runtime,
+		"spec must be unchanged by the label backfill")
+}
+
+// TestLabelBackfill_Idempotent verifies that an instance already carrying all
+// correct controller-managed labels produces no PatchLabels action.
+func TestLabelBackfill_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-backfill-idempotent", 1)
+
+	// Instance already has all controller-managed labels set correctly.
+	instance := getInstanceForDeployment(deployment, 0)
+	instance.Labels = map[string]string{
+		v1alpha.InstanceIndexLabel:          "0",
+		v1alpha.WorkloadUIDLabel:            string(deployment.Spec.WorkloadRef.UID),
+		v1alpha.WorkloadDeploymentUIDLabel:  string(deployment.GetUID()),
+		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
+		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
+		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+	}
+
+	currentInstances := []v1alpha.Instance{*instance}
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+
+	for _, a := range actions {
+		assert.NotEqual(t, instancecontrol.ActionTypePatchLabels, a.ActionType(),
+			"no PatchLabels action must be produced when all labels are already correct")
+	}
+}
+
+// TestLabelBackfill_ReadyInstanceCorrected verifies that a Ready instance with
+// correct template hash but drifted labels receives a PatchLabels action
+// without triggering a template rollout Update.
+func TestLabelBackfill_ReadyInstanceCorrected(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-backfill-ready", 1)
+
+	// Ready instance with matching hash but missing city-code label.
+	instance := getInstanceForDeployment(deployment, 0)
+	// Remove the city-code label to simulate drift.
+	delete(instance.Labels, v1alpha.CityCodeLabel)
+
+	currentInstances := []v1alpha.Instance{*instance}
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+
+	var updateActions, patchActions []instancecontrol.Action
+	for _, a := range actions {
+		switch a.ActionType() {
+		case instancecontrol.ActionTypeUpdate:
+			updateActions = append(updateActions, a)
+		case instancecontrol.ActionTypePatchLabels:
+			patchActions = append(patchActions, a)
+		}
+	}
+
+	// No template Update must be produced — template hash matches.
+	assert.Empty(t, updateActions, "no template Update must be produced for a matching-hash ready instance")
+
+	// A PatchLabels action must be produced.
+	assert.Len(t, patchActions, 1, "PatchLabels action must be produced for the label-drifted ready instance")
+	patched, ok := patchActions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+	assert.Equal(t, deployment.Spec.CityCode, patched.Labels[v1alpha.CityCodeLabel],
+		"city-code label must be corrected by the backfill")
+}
+
+// TestLabelBackfill_DoesNotAffectRollingUpdate verifies that a genuine template
+// change on a Ready instance still produces a normal ordered Update action and
+// that the PatchLabels path does not interfere with or duplicate it.
+func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-backfill-rolling", 2)
+
+	// Two ready instances with all correct labels and matching current hash.
+	instance0 := getInstanceForDeployment(deployment, 0)
+	instance0.Labels = map[string]string{
+		v1alpha.InstanceIndexLabel:          "0",
+		v1alpha.WorkloadUIDLabel:            string(deployment.Spec.WorkloadRef.UID),
+		v1alpha.WorkloadDeploymentUIDLabel:  string(deployment.GetUID()),
+		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
+		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
+		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+	}
+	instance1 := getInstanceForDeployment(deployment, 1)
+	instance1.Labels = map[string]string{
+		v1alpha.InstanceIndexLabel:          "1",
+		v1alpha.WorkloadUIDLabel:            string(deployment.Spec.WorkloadRef.UID),
+		v1alpha.WorkloadDeploymentUIDLabel:  string(deployment.GetUID()),
+		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
+		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
+		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+	}
+
+	// Trigger a template change.
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "rolling-update-image"
+
+	currentInstances := []v1alpha.Instance{*instance0, *instance1}
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+
+	var updateActions, patchActions []instancecontrol.Action
+	for _, a := range actions {
+		switch a.ActionType() {
+		case instancecontrol.ActionTypeUpdate:
+			updateActions = append(updateActions, a)
+		case instancecontrol.ActionTypePatchLabels:
+			patchActions = append(patchActions, a)
+		}
+	}
+
+	// Two Update actions expected (one per instance), ordered highest-to-lowest.
+	assert.Len(t, updateActions, 2, "both instances must produce Update actions on template change")
+	assert.Equal(t, "test-backfill-rolling-1", updateActions[0].Object.GetName(),
+		"Update actions must be ordered highest ordinal first")
+	assert.Equal(t, "test-backfill-rolling-0", updateActions[1].Object.GetName())
+	assert.False(t, updateActions[0].IsSkipped(), "first Update must be active")
+	assert.True(t, updateActions[1].IsSkipped(), "second Update must be skipped (ordered rollout)")
+
+	// No PatchLabels — all labels are already correct.
+	assert.Empty(t, patchActions, "no PatchLabels when all labels are already correct")
+}
+
 func getWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDeployment {
 	instance := getInstanceTemplate(name, 0)
 	deployment := &v1alpha.WorkloadDeployment{
@@ -363,6 +572,20 @@ func getInstanceForDeployment(deployment *v1alpha.WorkloadDeployment, ordinal in
 	instance.Spec.Controller = &v1alpha.InstanceController{
 		TemplateHash: instancecontrol.ComputeHash(deployment.Spec.Template),
 	}
+
+	// Stamp all controller-managed labels so that the label-backfill path is a
+	// no-op for instances built by this helper. Tests that specifically exercise
+	// label drift should manipulate the labels directly after calling this helper.
+	if instance.Labels == nil {
+		instance.Labels = map[string]string{}
+	}
+	instance.Labels[v1alpha.InstanceIndexLabel] = strconv.Itoa(ordinal)
+	instance.Labels[v1alpha.WorkloadUIDLabel] = string(deployment.Spec.WorkloadRef.UID)
+	instance.Labels[v1alpha.WorkloadDeploymentUIDLabel] = string(deployment.GetUID())
+	instance.Labels[v1alpha.WorkloadDeploymentNameLabel] = deployment.GetName()
+	instance.Labels[v1alpha.CityCodeLabel] = deployment.Spec.CityCode
+	instance.Labels[v1alpha.WorkloadNameLabel] = deployment.Spec.WorkloadRef.Name
+	instance.Labels[v1alpha.PlacementNameLabel] = deployment.Spec.PlacementName
 
 	return instance
 }
