@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,6 +45,12 @@ const (
 
 	// projTestWDName is the name of the owning WorkloadDeployment.
 	projTestWDName = "my-wd"
+
+	// projTestWorkloadUID is the UID of the owning Workload (carried via WorkloadUIDLabel).
+	projTestWorkloadUID = "wl-uid-1111-2222-3333-4444"
+
+	// projTestInstanceIndex is the ordinal index of the instance (carried via InstanceIndexLabel).
+	projTestInstanceIndex = "0"
 )
 
 // encodedCluster returns the value of the UpstreamOwnerClusterNameLabel for
@@ -90,10 +97,10 @@ func projTestKarmadaInstance(labelOverrides map[string]string) *computev1alpha.I
 		downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
 		downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
 		computev1alpha.WorkloadDeploymentUIDLabel:      string(projTestWDUID),
+		computev1alpha.WorkloadUIDLabel:                projTestWorkloadUID,
+		computev1alpha.InstanceIndexLabel:              projTestInstanceIndex,
 	}
-	for k, v := range labelOverrides {
-		labels[k] = v
-	}
+	maps.Copy(labels, labelOverrides)
 	return &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      projTestInstanceName,
@@ -210,6 +217,19 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			projectObjs:     []client.Object{projTestProjectNS()},
 			wantProjection:  false,
 		},
+		{
+			// Verify that all three linking labels (WorkloadUID, WorkloadDeploymentUID,
+			// InstanceIndex) survive from the Karmada write-back object through to the
+			// projection. This is the core correctness assertion for the label-loss fix.
+			name:            "all three linking labels propagated from Karmada to projection",
+			karmadaInstance: projTestKarmadaInstance(nil),
+			projectObjs: []client.Object{
+				projTestProjectNS(),
+				projTestWorkloadDeployment(),
+			},
+			wantProjection: true,
+			wantOwnerRef:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -269,6 +289,24 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 					assert.Equal(t, v, projection.Labels[k],
 						"projection label %q should match Karmada instance label", k)
 				}
+			}
+
+			// All three linking labels must survive from the Karmada instance to
+			// the projection so that the CLI can resolve Workload name, city, and
+			// instance ordinal.
+			if tt.wantProjection && tt.karmadaInstance != nil {
+				assert.Equal(t,
+					tt.karmadaInstance.Labels[computev1alpha.WorkloadUIDLabel],
+					projection.Labels[computev1alpha.WorkloadUIDLabel],
+					"WorkloadUIDLabel must be propagated to the projection")
+				assert.Equal(t,
+					tt.karmadaInstance.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+					projection.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+					"WorkloadDeploymentUIDLabel must be propagated to the projection")
+				assert.Equal(t,
+					tt.karmadaInstance.Labels[computev1alpha.InstanceIndexLabel],
+					projection.Labels[computev1alpha.InstanceIndexLabel],
+					"InstanceIndexLabel must be propagated to the projection")
 			}
 
 			// Owner reference check.
