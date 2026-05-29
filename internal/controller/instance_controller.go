@@ -960,6 +960,9 @@ func (r *InstanceReconciler) SetupWithManager(
 ) error {
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
+	//nolint:staticcheck // GetEventRecorder (new events API) has an incompatible Eventf
+	// signature (requires related object + action args) that would require migrating
+	// all emit sites. GetEventRecorderFor remains correct; migration is deferred.
 	r.recorder = mgr.GetLocalManager().GetEventRecorderFor("instance-controller")
 	r.edgeClusterName = edgeClusterName
 	r.projectIDForInstance = projectIDForInstance
