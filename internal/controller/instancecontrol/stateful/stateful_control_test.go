@@ -150,6 +150,67 @@ func TestScaleDownWithAllReadyInstances(t *testing.T) {
 	assert.False(t, actions[0].IsSkipped())
 }
 
+// TestNetworkingEnabledAddsNetworkGate verifies that when networking is enabled
+// (the default), newly created Instances receive both the Network and Quota
+// scheduling gates so that they are held until the network is provisioned.
+func TestNetworkingEnabledAddsNetworkGate(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{NetworkingEnabled: true})
+
+	deployment := getWorkloadDeployment("test-deploy-net-on", 1)
+
+	var currentInstances []v1alpha.Instance
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+	assert.Len(t, actions, 1)
+	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[0].ActionType())
+
+	instance, ok := actions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+	assert.NotNil(t, instance.Spec.Controller)
+
+	gateNames := make([]string, 0, len(instance.Spec.Controller.SchedulingGates))
+	for _, g := range instance.Spec.Controller.SchedulingGates {
+		gateNames = append(gateNames, g.Name)
+	}
+	assert.Contains(t, gateNames, instancecontrol.NetworkSchedulingGate.String(),
+		"Network gate must be present when networking is enabled")
+	assert.Contains(t, gateNames, instancecontrol.QuotaSchedulingGate.String(),
+		"Quota gate must be present")
+}
+
+// TestNetworkingDisabledOmitsNetworkGate verifies that when networking is
+// disabled, newly created Instances do NOT receive the Network scheduling gate,
+// so they are not blocked on network provisioning. The Quota gate is still
+// added so quota enforcement remains active.
+func TestNetworkingDisabledOmitsNetworkGate(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{NetworkingEnabled: false})
+
+	deployment := getWorkloadDeployment("test-deploy-net-off", 1)
+
+	var currentInstances []v1alpha.Instance
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+	assert.Len(t, actions, 1)
+	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[0].ActionType())
+
+	instance, ok := actions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+	assert.NotNil(t, instance.Spec.Controller)
+
+	gateNames := make([]string, 0, len(instance.Spec.Controller.SchedulingGates))
+	for _, g := range instance.Spec.Controller.SchedulingGates {
+		gateNames = append(gateNames, g.Name)
+	}
+	assert.NotContains(t, gateNames, instancecontrol.NetworkSchedulingGate.String(),
+		"Network gate must NOT be present when networking is disabled")
+	assert.Contains(t, gateNames, instancecontrol.QuotaSchedulingGate.String(),
+		"Quota gate must still be present when networking is disabled")
+}
+
 // Add more test functions below for different scenarios.
 
 func getWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDeployment {

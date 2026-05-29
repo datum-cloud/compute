@@ -43,6 +43,13 @@ type WorkloadDeploymentReconciler struct {
 	// the Karmada namespace after each reconcile so the WorkloadDeploymentFederator
 	// can aggregate it into the project-namespace object. Set to nil to disable.
 	KarmadaClient client.Client
+
+	// NetworkingEnabled controls whether the networking integration with
+	// network-services-operator is active. When false, NetworkBinding creation is
+	// skipped, the Network scheduling gate is never added to Instances (and is
+	// actively removed if present), and the networking step is treated as
+	// immediately ready. Defaults to true.
+	NetworkingEnabled bool
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;create;update;patch;delete
@@ -107,7 +114,9 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("failed listing instances: %w", err)
 	}
 
-	instanceControl := instancecontrolstateful.New()
+	instanceControl := instancecontrolstateful.NewWithOptions(instancecontrolstateful.Options{
+		NetworkingEnabled: r.NetworkingEnabled,
+	})
 
 	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, instances.Items)
 	if err != nil {
@@ -129,9 +138,18 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		}
 	}
 
-	networkReady, err := r.reconcileNetworks(ctx, cl.GetClient(), &deployment)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed reconciling networks: %w", err)
+	// When networking is disabled, bypass the entire network provisioning path.
+	// The Network scheduling gate is treated as cleared and no NetworkBindings
+	// are created. This lets Instances reach the runtime on cells where
+	// network-services-operator (VPC) is not yet available.
+	var networkReady bool
+	if !r.NetworkingEnabled {
+		networkReady = true
+	} else {
+		networkReady, err = r.reconcileNetworks(ctx, cl.GetClient(), &deployment)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed reconciling networks: %w", err)
+		}
 	}
 
 	// Networks are all ready with subnets ready to use, remove any scheduling
@@ -527,23 +545,32 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager) e
 	if err := r.finalizers.Register(workloadControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)
 	}
-	return mcbuilder.ControllerManagedBy(mgr).
+
+	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Owns(&computev1alpha.Instance{}).
-		Owns(&networkingv1alpha.NetworkBinding{}).
-		Watches(&networkingv1alpha.SubnetClaim{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
-				subnetClaim := o.(*networkingv1alpha.SubnetClaim)
-				return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnetClaim.Spec.Location)
+		Owns(&computev1alpha.Instance{})
+
+	// Only watch networking resources when the networking integration is enabled.
+	// On cells without network-services-operator these watches would log spurious
+	// errors for missing CRDs.
+	if r.NetworkingEnabled {
+		b = b.
+			Owns(&networkingv1alpha.NetworkBinding{}).
+			Watches(&networkingv1alpha.SubnetClaim{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
+					subnetClaim := o.(*networkingv1alpha.SubnetClaim)
+					return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnetClaim.Spec.Location)
+				})
+			}).
+			Watches(&networkingv1alpha.Subnet{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
+					subnet := o.(*networkingv1alpha.Subnet)
+					return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnet.Spec.Location)
+				})
 			})
-		}).
-		Watches(&networkingv1alpha.Subnet{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
-				subnet := o.(*networkingv1alpha.Subnet)
-				return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnet.Spec.Location)
-			})
-		}).
-		Complete(r)
+	}
+
+	return b.Complete(r)
 }
 
 func enqueueWorkloadDeploymentByLocation(ctx context.Context, mgr mcmanager.Manager, clusterName multicluster.ClusterName, locationRef networkingv1alpha.LocationReference) []mcreconcile.Request {

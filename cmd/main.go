@@ -39,6 +39,7 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
+	"go.datum.net/compute/internal/features"
 	quotametrics "go.datum.net/compute/internal/quota"
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
@@ -114,6 +115,12 @@ func main() {
 	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", false,
 		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler).")
 
+	var featureGatesFlag string
+	flag.StringVar(&featureGatesFlag, "feature-gates", "",
+		"A set of key=value pairs that describe feature gates for the compute operator. "+
+			"Example: --feature-gates=NetworkingIntegration=false. "+
+			"Available features: NetworkingIntegration (default=true).")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -122,6 +129,14 @@ func main() {
 
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	if featureGatesFlag != "" {
+		if err := features.MutableFeatureGate.Set(featureGatesFlag); err != nil {
+			setupLog.Error(err, "unable to parse feature gates", "feature-gates", featureGatesFlag)
+			os.Exit(1)
+		}
+	}
+	setupLog.Info("feature gates", "NetworkingIntegration", features.FeatureGate.Enabled(features.NetworkingIntegration))
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -270,7 +285,9 @@ func main() {
 	}
 
 	if enableCellControllers {
-		if err = (&controller.WorkloadDeploymentReconciler{}).SetupWithManager(mgr); err != nil {
+		if err = (&controller.WorkloadDeploymentReconciler{
+			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 			os.Exit(1)
 		}

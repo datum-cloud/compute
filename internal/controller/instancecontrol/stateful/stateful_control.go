@@ -15,13 +15,30 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
+// Options controls optional behaviours of the stateful instance control strategy.
+type Options struct {
+	// NetworkingEnabled controls whether the Network scheduling gate is added to
+	// newly created Instances. Set to false when the networking integration is
+	// disabled so that Instances are not blocked waiting for a NetworkBinding.
+	// Defaults to true.
+	NetworkingEnabled bool
+}
+
 // Behavior inspired by https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/statefulset
 // Does not currently implement exact behavior.
 type statefulControl struct {
+	opts Options
 }
 
+// New returns a stateful instance control strategy with networking enabled.
 func New() instancecontrol.Strategy {
-	return &statefulControl{}
+	return NewWithOptions(Options{NetworkingEnabled: true})
+}
+
+// NewWithOptions returns a stateful instance control strategy with the given
+// options.
+func NewWithOptions(opts Options) instancecontrol.Strategy {
+	return &statefulControl{opts: opts}
 }
 
 func (c *statefulControl) GetActions(
@@ -69,12 +86,19 @@ func (c *statefulControl) GetActions(
 				Spec: deployment.Spec.Template.Spec,
 			}
 			// TODO(jreese) consider adding scheduling gates via mutating webhooks
-			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
-				TemplateHash: instanceTemplateHash,
-				SchedulingGates: []v1alpha.SchedulingGate{
+			gates := []v1alpha.SchedulingGate{
+				{Name: instancecontrol.QuotaSchedulingGate.String()},
+			}
+			if c.opts.NetworkingEnabled {
+				// Prepend the Network gate so it is cleared first; quota is
+				// independent and evaluated in parallel by InstanceReconciler.
+				gates = append([]v1alpha.SchedulingGate{
 					{Name: instancecontrol.NetworkSchedulingGate.String()},
-					{Name: instancecontrol.QuotaSchedulingGate.String()},
-				},
+				}, gates...)
+			}
+			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
+				TemplateHash:    instanceTemplateHash,
+				SchedulingGates: gates,
 			}
 
 			addInstanceControllerLabels(desiredInstances[i], getInstanceOrdinal(desiredInstances[i].Name), deployment)
