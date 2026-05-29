@@ -36,6 +36,7 @@ spec:
           - --federation-kubeconfig=$(FEDERATION_KUBECONFIG)
           - --enable-management-controllers=$(ENABLE_MANAGEMENT_CONTROLLERS)
           - --enable-cell-controllers=$(ENABLE_CELL_CONTROLLERS)
+          - --feature-gates=$(FEATURE_GATES)
         env:
           - name: LEADER_ELECT
             value: "true"
@@ -49,6 +50,8 @@ spec:
             value: "false"
           - name: ENABLE_CELL_CONTROLLERS
             value: "false"
+          - name: FEATURE_GATES
+            value: ""
         image: ghcr.io/datum-cloud/compute:latest
         ports:
         - containerPort: 9443
