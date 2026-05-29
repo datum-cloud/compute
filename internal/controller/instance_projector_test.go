@@ -368,9 +368,17 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 
 			require.NoError(t, err, "expected projection to exist in project namespace")
 
-			// Labels should be copied from the Karmada instance.
+			// Labels should be copied from the Karmada instance, with one
+			// deliberate exception: WorkloadDeploymentUIDLabel is overwritten with
+			// the project-cluster WD UID (not the edge/Karmada UID) so that
+			// label-selector lookups in the project cluster return correct results.
 			if tt.karmadaInstance != nil {
 				for k, v := range tt.karmadaInstance.Labels {
+					if k == computev1alpha.WorkloadDeploymentUIDLabel {
+						// Checked separately below — the projection must carry
+						// the project-cluster UID, not the cell/Karmada UID.
+						continue
+					}
 					assert.Equal(t, v, projection.Labels[k],
 						"projection label %q should match Karmada instance label", k)
 				}
@@ -383,10 +391,18 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 					tt.karmadaInstance.Labels[computev1alpha.WorkloadUIDLabel],
 					projection.Labels[computev1alpha.WorkloadUIDLabel],
 					"WorkloadUIDLabel must be propagated to the projection")
+				// WorkloadDeploymentUIDLabel must carry the PROJECT-cluster WD UID,
+				// not the cell/Karmada UID. The projector overwrites this label after
+				// copying the rest. Verify the project UID is present and that the
+				// edge UID was NOT passed through.
 				assert.Equal(t,
-					tt.karmadaInstance.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+					string(projTestWDUID),
 					projection.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
-					"WorkloadDeploymentUIDLabel must be propagated to the projection")
+					"WorkloadDeploymentUIDLabel must be the project-cluster WD UID on the projection")
+				assert.NotEqual(t,
+					string(projTestEdgeWDUID),
+					projection.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+					"WorkloadDeploymentUIDLabel must NOT be the edge/Karmada WD UID on the projection")
 				assert.Equal(t,
 					tt.karmadaInstance.Labels[computev1alpha.WorkloadDeploymentNameLabel],
 					projection.Labels[computev1alpha.WorkloadDeploymentNameLabel],
