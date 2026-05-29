@@ -6,6 +6,9 @@ spec:
   serviceRef:
     name: compute
   phase: Published
+  locations:
+    supportedClasses:
+    - datum-managed
   monitoredResourceTypes:
   - type: compute.datumapis.com/Instance
     displayName: Compute Instance
