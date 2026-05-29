@@ -37,6 +37,14 @@ spec:
     - jsonPath: .status.currentReplicas
       name: Up-to-date
       type: string
+    - jsonPath: .status.location.namespace
+      name: Location Namespace
+      priority: 1
+      type: string
+    - jsonPath: .status.location.name
+      name: Location Name
+      priority: 1
+      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:
@@ -1087,6 +1095,20 @@ spec:
                 description: The desired number of instances
                 format: int32
                 type: integer
+              location:
+                description: The location which the deployment has been scheduled
+                  to
+                properties:
+                  name:
+                    description: Name of a datum location
+                    type: string
+                  namespace:
+                    description: Namespace for the datum location
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
               readyReplicas:
                 description: The number of instances which are ready.
                 format: int32

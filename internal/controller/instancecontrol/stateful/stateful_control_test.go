@@ -13,6 +13,8 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/utils/ptr"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+
 	"go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
@@ -213,14 +215,135 @@ func TestNetworkingDisabledOmitsNetworkGate(t *testing.T) {
 
 // Add more test functions below for different scenarios.
 
+// TestInstanceLabels_FourNewLabelsStamped verifies that all four new
+// self-describing labels are stamped on newly created Instances, with values
+// sourced from the WorkloadDeployment spec.
+func TestInstanceLabels_FourNewLabelsStamped(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-labels-deploy", 1)
+
+	var currentInstances []v1alpha.Instance
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+	assert.Len(t, actions, 1)
+	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[0].ActionType())
+
+	instance, ok := actions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+
+	assert.Equal(t, deployment.GetName(), instance.Labels[v1alpha.WorkloadDeploymentNameLabel],
+		"WorkloadDeploymentNameLabel must equal deployment name")
+	assert.Equal(t, deployment.Spec.CityCode, instance.Labels[v1alpha.CityCodeLabel],
+		"CityCodeLabel must equal deployment.Spec.CityCode")
+	assert.Equal(t, deployment.Spec.WorkloadRef.Name, instance.Labels[v1alpha.WorkloadNameLabel],
+		"WorkloadNameLabel must equal deployment.Spec.WorkloadRef.Name")
+	assert.Equal(t, deployment.Spec.PlacementName, instance.Labels[v1alpha.PlacementNameLabel],
+		"PlacementNameLabel must equal deployment.Spec.PlacementName")
+}
+
+// TestInstanceLabels_PropagatedOnUpdate verifies that when an existing instance
+// is updated (rolling update path), the four new labels are refreshed from the
+// deployment so they remain accurate after spec changes.
+func TestInstanceLabels_PropagatedOnUpdate(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-labels-update", 1)
+
+	// Build a ready existing instance.
+	currentInstances := []v1alpha.Instance{*getInstanceForDeployment(deployment, 0)}
+
+	// Trigger a rolling update by changing the image.
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "updated-image"
+
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+	assert.Len(t, actions, 1)
+	assert.Equal(t, instancecontrol.ActionTypeUpdate, actions[0].ActionType())
+
+	instance, ok := actions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+
+	assert.Equal(t, deployment.GetName(), instance.Labels[v1alpha.WorkloadDeploymentNameLabel],
+		"WorkloadDeploymentNameLabel must be refreshed on update")
+	assert.Equal(t, deployment.Spec.CityCode, instance.Labels[v1alpha.CityCodeLabel],
+		"CityCodeLabel must be refreshed on update")
+	assert.Equal(t, deployment.Spec.WorkloadRef.Name, instance.Labels[v1alpha.WorkloadNameLabel],
+		"WorkloadNameLabel must be refreshed on update")
+	assert.Equal(t, deployment.Spec.PlacementName, instance.Labels[v1alpha.PlacementNameLabel],
+		"PlacementNameLabel must be refreshed on update")
+}
+
+// TestInstanceLocation_SetWhenDeploymentStatusLocationPresent verifies that when
+// deployment.Status.Location is set, the new Instance receives it as Spec.Location.
+func TestInstanceLocation_SetWhenDeploymentStatusLocationPresent(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-location-set", 1)
+	deployment.Status.Location = &networkingv1alpha.LocationReference{
+		Name:      "loc-dfw-1",
+		Namespace: "networking-system",
+	}
+
+	var currentInstances []v1alpha.Instance
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err)
+	assert.Len(t, actions, 1)
+
+	instance, ok := actions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+	assert.NotNil(t, instance.Spec.Location,
+		"Spec.Location must be set when deployment.Status.Location is non-nil")
+	assert.Equal(t, "loc-dfw-1", instance.Spec.Location.Name)
+	assert.Equal(t, "networking-system", instance.Spec.Location.Namespace)
+}
+
+// TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent verifies that when
+// deployment.Status.Location is nil (no Location object matches the city code),
+// instance creation still succeeds and Spec.Location remains nil — no regression
+// on the "create instances regardless of Location" contract.
+func TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent(t *testing.T) {
+	ctx := context.Background()
+	control := New()
+
+	deployment := getWorkloadDeployment("test-location-nil", 1)
+	// deployment.Status.Location is intentionally not set (nil)
+
+	var currentInstances []v1alpha.Instance
+	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+
+	assert.NoError(t, err, "instance creation must succeed even when Status.Location is nil")
+	assert.Len(t, actions, 1, "exactly one create action must be produced")
+
+	instance, ok := actions[0].Object.(*v1alpha.Instance)
+	assert.True(t, ok)
+	assert.Nil(t, instance.Spec.Location,
+		"Spec.Location must remain nil when deployment.Status.Location is not set")
+	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[0].ActionType(),
+		"action must be a Create, proving instance creation is not gated on Location")
+}
+
 func getWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDeployment {
 	instance := getInstanceTemplate(name, 0)
 	deployment := &v1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
+			UID:       "test-wd-uid",
 		},
 		Spec: v1alpha.WorkloadDeploymentSpec{
+			WorkloadRef: v1alpha.WorkloadReference{
+				Name: "test-workload",
+				UID:  "test-workload-uid",
+			},
+			PlacementName: "test-placement",
+			CityCode:      "DFW",
 			ScaleSettings: v1alpha.HorizontalScaleSettings{
 				MinReplicas:              minReplicas,
 				InstanceManagementPolicy: v1alpha.OrderedReadyInstanceManagementPolicyType,

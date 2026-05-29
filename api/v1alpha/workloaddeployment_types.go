@@ -2,6 +2,8 @@ package v1alpha
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // WorkloadDeploymentSpec defines the desired state of WorkloadDeployment
@@ -35,6 +37,11 @@ type WorkloadDeploymentSpec struct {
 
 // WorkloadDeploymentStatus defines the observed state of WorkloadDeployment
 type WorkloadDeploymentStatus struct {
+	// The location which the deployment has been scheduled to
+	//
+	// +kubebuilder:validation:Optional
+	Location *networkingv1alpha.LocationReference `json:"location,omitempty"`
+
 	// Represents the observations of a deployment's current state.
 	// Known condition types are: "Available", "Progressing"
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -73,6 +80,8 @@ const (
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Desired",type=string,JSONPath=`.status.desiredReplicas`
 // +kubebuilder:printcolumn:name="Up-to-date",type=string,JSONPath=`.status.currentReplicas`
+// +kubebuilder:printcolumn:name="Location Namespace",type=string,JSONPath=`.status.location.namespace`,priority=1
+// +kubebuilder:printcolumn:name="Location Name",type=string,JSONPath=`.status.location.name`,priority=1
 type WorkloadDeployment struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -57,9 +57,15 @@ const (
 	wbTestInstanceIndex  = "0"
 	wbTestUpstreamNS     = "proj-namespace"
 	wbTestEncodedCluster = "cluster-" + wbTestClusterName
+
+	// Four new self-describing labels.
+	wbTestWDName       = "my-workload-deployment"
+	wbTestCityCode     = "DFW"
+	wbTestWorkloadName = "my-workload"
+	wbTestPlacement    = "us-central"
 )
 
-// wbTestCellInstance builds a cell-side Instance with the three linking labels
+// wbTestCellInstance builds a cell-side Instance with all seven owned labels
 // pre-populated, as addInstanceControllerLabels would produce.
 func wbTestCellInstance() *computev1alpha.Instance {
 	return &computev1alpha.Instance{
@@ -67,9 +73,13 @@ func wbTestCellInstance() *computev1alpha.Instance {
 			Name:      wbTestInstanceName,
 			Namespace: wbTestNamespace,
 			Labels: map[string]string{
-				computev1alpha.WorkloadUIDLabel:           wbTestWorkloadUID,
-				computev1alpha.WorkloadDeploymentUIDLabel: wbTestWDUID,
-				computev1alpha.InstanceIndexLabel:         wbTestInstanceIndex,
+				computev1alpha.WorkloadUIDLabel:            wbTestWorkloadUID,
+				computev1alpha.WorkloadDeploymentUIDLabel:  wbTestWDUID,
+				computev1alpha.InstanceIndexLabel:          wbTestInstanceIndex,
+				computev1alpha.WorkloadDeploymentNameLabel: wbTestWDName,
+				computev1alpha.CityCodeLabel:               wbTestCityCode,
+				computev1alpha.WorkloadNameLabel:           wbTestWorkloadName,
+				computev1alpha.PlacementNameLabel:          wbTestPlacement,
 			},
 		},
 		Spec: computev1alpha.InstanceSpec{
@@ -344,4 +354,95 @@ func TestWriteBackToUpstream_EmptyLinkingLabels_NonFatal(t *testing.T) {
 		assert.True(t, strings.Contains(allRendered, key),
 			"expected missing label key %q to appear in warning log; got:\n%s", key, allRendered)
 	}
+}
+
+// TestWriteBackToUpstream_FourNewLabels_CreatePath verifies that all four new
+// self-describing labels (WorkloadDeploymentName, CityCode, WorkloadName,
+// PlacementName) are written to the Karmada object on the create path.
+func TestWriteBackToUpstream_FourNewLabels_CreatePath(t *testing.T) {
+	t.Parallel()
+
+	s := newKarmadaScheme()
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(wbTestDownstreamNS()).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		Build()
+
+	r := newWriteBackReconciler(upstreamClient)
+	cellInstance := wbTestCellInstance()
+
+	err := r.writeBackToUpstream(context.Background(), multicluster.ClusterName(wbTestClusterName), cellInstance)
+	require.NoError(t, err)
+
+	var created computev1alpha.Instance
+	require.NoError(t, upstreamClient.Get(context.Background(),
+		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
+		&created))
+
+	assert.Equal(t, wbTestWDName, created.Labels[computev1alpha.WorkloadDeploymentNameLabel],
+		"WorkloadDeploymentNameLabel must propagate to Karmada object")
+	assert.Equal(t, wbTestCityCode, created.Labels[computev1alpha.CityCodeLabel],
+		"CityCodeLabel must propagate to Karmada object")
+	assert.Equal(t, wbTestWorkloadName, created.Labels[computev1alpha.WorkloadNameLabel],
+		"WorkloadNameLabel must propagate to Karmada object")
+	assert.Equal(t, wbTestPlacement, created.Labels[computev1alpha.PlacementNameLabel],
+		"PlacementNameLabel must propagate to Karmada object")
+}
+
+// TestWriteBackToUpstream_FourNewLabels_UpdatePath verifies that all four new
+// self-describing labels are written on the update path and existing Karmada-
+// managed labels on the downstream object are preserved.
+func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
+	t.Parallel()
+
+	karmadaManagedLabel := "karmada.io/managed"
+
+	existingKarmadaInstance := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      wbTestInstanceName,
+			Namespace: wbTestNamespace,
+			Labels: map[string]string{
+				downstreamclient.UpstreamOwnerClusterNameLabel: wbTestEncodedCluster,
+				downstreamclient.UpstreamOwnerNamespaceLabel:   wbTestUpstreamNS,
+				karmadaManagedLabel:                            "true",
+			},
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
+			},
+		},
+	}
+
+	s := newKarmadaScheme()
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		Build()
+
+	r := newWriteBackReconciler(upstreamClient)
+	cellInstance := wbTestCellInstance()
+
+	err := r.writeBackToUpstream(context.Background(), multicluster.ClusterName(wbTestClusterName), cellInstance)
+	require.NoError(t, err)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, upstreamClient.Get(context.Background(),
+		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
+		&updated))
+
+	assert.Equal(t, wbTestWDName, updated.Labels[computev1alpha.WorkloadDeploymentNameLabel],
+		"WorkloadDeploymentNameLabel must be set on update path")
+	assert.Equal(t, wbTestCityCode, updated.Labels[computev1alpha.CityCodeLabel],
+		"CityCodeLabel must be set on update path")
+	assert.Equal(t, wbTestWorkloadName, updated.Labels[computev1alpha.WorkloadNameLabel],
+		"WorkloadNameLabel must be set on update path")
+	assert.Equal(t, wbTestPlacement, updated.Labels[computev1alpha.PlacementNameLabel],
+		"PlacementNameLabel must be set on update path")
+
+	// Karmada-managed label must survive the merge.
+	assert.Equal(t, "true", updated.Labels[karmadaManagedLabel],
+		"Karmada-managed label must be preserved after the update merge")
 }
