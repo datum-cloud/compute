@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/datumctl/plugin"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -47,6 +48,9 @@ func NewClient(project string) (client.Client, error) {
 	scheme := runtime.NewScheme()
 	if err := computev1alpha.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering compute scheme: %w", err)
+	}
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering networking scheme: %w", err)
 	}
 	if err := quotav1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering quota scheme: %w", err)
