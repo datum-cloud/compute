@@ -261,7 +261,10 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 		}
 
 		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
-			if instance.Status.Controller.ObservedTemplateHash == templateHash {
+			// Status.Controller is a pointer that the infra provider may not have
+			// populated yet even after it sets Programmed=True. Guard the deref to
+			// avoid a panic that would abort the reconcile before the status write.
+			if instance.Status.Controller != nil && instance.Status.Controller.ObservedTemplateHash == templateHash {
 				currentReplicas++
 			}
 		}
