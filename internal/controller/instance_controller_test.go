@@ -613,7 +613,7 @@ func TestReconcileQuota(t *testing.T) {
 		return r, projectClient, quotaClient
 	}
 
-	t.Run("quota granted flow: claim granted removes gate and sets QuotaGranted=True", func(t *testing.T) {
+	t.Run("quota granted flow: claim granted removes gate and sets QuotaGranted=True in single reconcile", func(t *testing.T) {
 		s := newTestScheme(t)
 		instance := makeInstance(s,
 			computev1alpha.SchedulingGate{Name: instancecontrol.NetworkSchedulingGate.String()},
@@ -623,7 +623,10 @@ func TestReconcileQuota(t *testing.T) {
 
 		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim})
 
-		// First reconcile: sets QuotaGranted=True in status, returns early.
+		// Single reconcile: sets QuotaGranted=True in status AND removes the
+		// Quota scheduling gate in the same pass. The early-return-before-gate-
+		// removal bug required a second reconcile that never arrived because
+		// ResourceClaims are immutable and local Instances are not watched.
 		_, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
@@ -635,19 +638,13 @@ func TestReconcileQuota(t *testing.T) {
 		assert.Equal(t, metav1.ConditionTrue, quotaCond.Status)
 		assert.Equal(t, computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable, quotaCond.Reason)
 
-		// Second reconcile: status is already set, so removes the scheduling gate.
-		_, err = r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
-		require.NoError(t, err)
-
-		require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: instanceName}, &updated))
-
 		hasQuotaGate := false
 		for _, g := range updated.Spec.Controller.SchedulingGates {
 			if g.Name == instancecontrol.QuotaSchedulingGate.String() {
 				hasQuotaGate = true
 			}
 		}
-		assert.False(t, hasQuotaGate, "QuotaSchedulingGate should have been removed")
+		assert.False(t, hasQuotaGate, "QuotaSchedulingGate must be removed in the same reconcile pass as the status update")
 	})
 
 	t.Run("quota exceeded flow: conditions cascade to block Programmed/Running/Ready", func(t *testing.T) {
@@ -721,7 +718,9 @@ func TestReconcileQuota(t *testing.T) {
 		}
 		require.NoError(t, mgmtClient.Status().Update(context.Background(), &existingClaim))
 
-		// Second reconcile should see granted claim and update status.
+		// Second reconcile should see the granted claim, update status to
+		// QuotaGranted=True, AND remove the gate in the same pass (no third
+		// reconcile required).
 		_, err = r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.NoError(t, err)
 
@@ -731,18 +730,13 @@ func TestReconcileQuota(t *testing.T) {
 		require.NotNil(t, quotaCond)
 		assert.Equal(t, metav1.ConditionTrue, quotaCond.Status)
 
-		// Third reconcile removes the gate (status is already true, no more status write needed).
-		_, err = r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
-		require.NoError(t, err)
-
-		require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: instanceName}, &recovered))
 		hasQuotaGate := false
 		for _, g := range recovered.Spec.Controller.SchedulingGates {
 			if g.Name == instancecontrol.QuotaSchedulingGate.String() {
 				hasQuotaGate = true
 			}
 		}
-		assert.False(t, hasQuotaGate, "QuotaSchedulingGate should have been removed after quota granted")
+		assert.False(t, hasQuotaGate, "QuotaSchedulingGate should be removed in the same reconcile pass that sets QuotaGranted=True")
 	})
 
 	t.Run("deleted before grant: finalizer deletes claim and is removed", func(t *testing.T) {
@@ -795,6 +789,194 @@ func TestReconcileQuota(t *testing.T) {
 			assert.NotContains(t, updated.Finalizers, instanceQuotaFinalizer)
 		}
 	})
+}
+
+// TestQuotaGateRemovedInSingleReconcile is a regression test for the bug where
+// the Quota scheduling gate was never removed from an Instance after quota was
+// granted. The root cause was an early return in the Reconcile function: when
+// reconcileQuotaCondition set QuotaGranted=True (statusChanged=true), the code
+// wrote the status update and returned before reaching removeQuotaSchedulingGate.
+// Because ResourceClaims are immutable (no further transitions) and local
+// Instances are not watched (WithEngageWithLocalCluster(false)), no requeue ever
+// arrived — leaving the Quota gate stranded in spec.controller.schedulingGates
+// and the projected Instance stuck "Pending (SchedulingGatesPresent)".
+//
+// The fix: on the success path (quotaErr==nil), fall through to
+// removeQuotaSchedulingGate after persisting the status update, so gate removal
+// happens in the same reconcile pass as the QuotaGranted=True status write.
+func TestQuotaGateRemovedInSingleReconcile(t *testing.T) {
+	const (
+		clusterName    = "test-project"
+		namespace      = "default"
+		instanceName   = "my-instance"
+		deploymentName = "my-deployment"
+	)
+
+	claimName := namespace + "--" + instanceName
+
+	tests := []struct {
+		name           string
+		initialGates   []computev1alpha.SchedulingGate
+		expectGateGone bool
+	}{
+		{
+			name: "Quota gate only: removed in single reconcile when claim is granted",
+			initialGates: []computev1alpha.SchedulingGate{
+				{Name: instancecontrol.QuotaSchedulingGate.String()},
+			},
+			expectGateGone: true,
+		},
+		{
+			name: "Quota gate plus Network gate: Quota removed, Network preserved",
+			initialGates: []computev1alpha.SchedulingGate{
+				{Name: instancecontrol.NetworkSchedulingGate.String()},
+				{Name: instancecontrol.QuotaSchedulingGate.String()},
+			},
+			expectGateGone: true,
+		},
+		{
+			name:           "No gates: no-op, reconcile completes cleanly",
+			initialGates:   []computev1alpha.SchedulingGate{},
+			expectGateGone: false, // no gate to begin with
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestScheme(t)
+
+			instance := &computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       instanceName,
+					Namespace:  namespace,
+					Generation: 1,
+					Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: testComputeAPIVersion,
+							Kind:       kindWorkloadDeploymentTest,
+							Name:       deploymentName,
+							UID:        testUIDString,
+							Controller: func() *bool { b := true; return &b }(),
+						},
+					},
+				},
+				Spec: computev1alpha.InstanceSpec{
+					Controller: &computev1alpha.InstanceController{
+						SchedulingGates: tt.initialGates,
+					},
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
+					},
+					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+				},
+			}
+
+			deployment := &computev1alpha.WorkloadDeployment{
+				ObjectMeta: metav1.ObjectMeta{Name: deploymentName, Namespace: namespace, UID: testUIDString},
+			}
+
+			// ResourceClaim already in QuotaAvailable state — simulates the state
+			// that triggered the bug: claim already granted but gate still present.
+			claim := &quotav1alpha1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace},
+				Spec: quotav1alpha1.ResourceClaimSpec{
+					ConsumerRef: quotav1alpha1.ConsumerRef{
+						APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName,
+					},
+					ResourceRef: quotav1alpha1.UnversionedObjectReference{
+						APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName,
+					},
+					Requests: []quotav1alpha1.ResourceRequest{
+						{ResourceType: quotaResourceTypeInstances, Amount: 1},
+					},
+				},
+				Status: quotav1alpha1.ResourceClaimStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:               quotav1alpha1.ResourceClaimGranted,
+							Status:             metav1.ConditionTrue,
+							Reason:             quotav1alpha1.ResourceClaimGrantedReason,
+							Message:            "quota available",
+							LastTransitionTime: metav1.Now(),
+						},
+					},
+				},
+			}
+
+			projectClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(instance, deployment).
+				WithStatusSubresource(&computev1alpha.Instance{}).
+				Build()
+
+			quotaClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(claim).
+				WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
+				Build()
+
+			mgr := &fakeMCManager{
+				clusters: map[string]cluster.Cluster{
+					clusterName: newFakeCluster(projectClient),
+				},
+			}
+
+			qm := quota.New(nil)
+			qm.StoreClient(clusterName, quotaClient)
+
+			r := &InstanceReconciler{
+				mgr:                mgr,
+				scheme:             s,
+				quotaClientManager: qm,
+				edgeClusterName:    testEdgeClusterName,
+				projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+					return string(cn), nil
+				},
+			}
+			r.finalizers = finalizer.NewFinalizers()
+			require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
+			// Exactly one reconcile — must be sufficient to both set QuotaGranted=True
+			// and remove the Quota gate. No second reconcile should be required.
+			_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+				Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}},
+				ClusterName: clusterName,
+			})
+			require.NoError(t, err)
+
+			var updated computev1alpha.Instance
+			require.NoError(t, projectClient.Get(context.Background(),
+				types.NamespacedName{Namespace: namespace, Name: instanceName}, &updated))
+
+			// QuotaGranted condition must be set to True.
+			quotaCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+			require.NotNil(t, quotaCond, "QuotaGranted condition must be present")
+			assert.Equal(t, metav1.ConditionTrue, quotaCond.Status)
+			assert.Equal(t, computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable, quotaCond.Reason)
+
+			// Quota gate must be gone after the single reconcile.
+			hasQuotaGate := false
+			for _, g := range updated.Spec.Controller.SchedulingGates {
+				if g.Name == instancecontrol.QuotaSchedulingGate.String() {
+					hasQuotaGate = true
+				}
+			}
+			if tt.expectGateGone {
+				assert.False(t, hasQuotaGate,
+					"Quota gate must be removed in the same reconcile pass as the QuotaGranted=True status write; "+
+						"a stranded gate leaves the projected Instance stuck Pending (SchedulingGatesPresent)")
+			}
+
+			// Network gate (if present) must be preserved — only the Quota gate is
+			// cleared by InstanceReconciler; NetworkSchedulingGate is owned by
+			// WorkloadDeploymentReconciler.
+			for _, g := range updated.Spec.Controller.SchedulingGates {
+				assert.NotEqual(t, instancecontrol.QuotaSchedulingGate.String(), g.Name,
+					"Quota gate must not remain after granted claim")
+			}
+		})
+	}
 }
 
 // TestReconcileQuotaSingleMode verifies that in single-cell mode:
@@ -1364,32 +1546,24 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 		r.finalizers = finalizer.NewFinalizers()
 		require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
 
-		// First reconcile: the live claim is True, but reconcileQuotaCondition will
-		// write a new QuotaGranted=True with ObservedGeneration=2. Status update
-		// triggers early return.
+		// Single reconcile: reconcileQuotaCondition writes QuotaGranted=True with
+		// ObservedGeneration=2 into the in-memory instance, status is persisted,
+		// then removeQuotaSchedulingGate reads the in-memory condition (gen=2 ==
+		// instance.Generation=2) and removes the gate — all in one pass.
 		_, err := r.Reconcile(context.Background(), reconcileReq())
-		require.NoError(t, err)
-
-		// The gate must NOT have been removed yet — the stale True (gen=1) should
-		// have been replaced with updated True (gen=2) in the first reconcile, but
-		// removeQuotaSchedulingGate is only called after status is written and the
-		// function returns early after the status update.
-		// Second reconcile: now status has QuotaGranted=True/gen=2 → gate is removed.
-		_, err = r.Reconcile(context.Background(), reconcileReq())
 		require.NoError(t, err)
 
 		var updated computev1alpha.Instance
 		require.NoError(t, projectClient.Get(context.Background(),
 			types.NamespacedName{Namespace: testNS, Name: testInstance}, &updated))
 
-		// After two reconciles with a live granted claim, gate should be removed.
 		hasGate := false
 		for _, g := range updated.Spec.Controller.SchedulingGates {
 			if g.Name == instancecontrol.QuotaSchedulingGate.String() {
 				hasGate = true
 			}
 		}
-		assert.False(t, hasGate, "gate should be removed after quota confirmed for current generation")
+		assert.False(t, hasGate, "gate should be removed in the same reconcile that refreshes the condition to current generation")
 
 		cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceQuotaGranted)
 		require.NotNil(t, cond)

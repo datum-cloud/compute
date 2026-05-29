@@ -213,15 +213,19 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
-			return ctrl.Result{}, err
+		// Return with the quota error (nil or transient) so controller-runtime
+		// requeues with backoff on failures. On the success path (quotaErr==nil)
+		// we fall through to removeQuotaSchedulingGate below instead of returning
+		// early, so the gate is cleared in the same reconcile pass rather than
+		// waiting for a requeue that may never come (ResourceClaim is immutable
+		// and local Instances are not watched).
+		if quotaErr != nil {
+			if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, quotaErr
 		}
-		// Return after the status update. If there was a quota error, return it
-		// so controller-runtime requeues with backoff for transient failures.
-		return ctrl.Result{}, quotaErr
-	}
-
-	if quotaErr != nil {
+	} else if quotaErr != nil {
 		// No status change but quota evaluation failed — return error to requeue.
 		return ctrl.Result{}, quotaErr
 	}
