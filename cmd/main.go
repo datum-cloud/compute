@@ -489,6 +489,17 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
 	}
 
+	// WorkloadDeploymentStatusSyncer watches WDs on the Karmada hub and
+	// reactively syncs their aggregated status back to the project cluster.
+	// This complements WorkloadDeploymentFederator.syncStatusFromDownstream,
+	// which only fires when the project-side WD changes (spec updates/restarts).
+	if err = (&controller.WorkloadDeploymentStatusSyncer{
+		FederationClient: federationClient,
+		MCManager:        mgr,
+	}).SetupWithManager(federationMgr); err != nil {
+		return nil, fmt.Errorf("WorkloadDeploymentStatusSyncer: %w", err)
+	}
+
 	return []manager.Runnable{federationMgr}, nil
 }
 
