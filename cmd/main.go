@@ -39,6 +39,7 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
+	quotametrics "go.datum.net/compute/internal/quota"
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -161,8 +162,11 @@ func main() {
 	}
 	if quotaRestConfig != nil {
 		setupLog.Info("quota REST config loaded", "path", serverConfig.Discovery.QuotaKubeconfigPath)
+		quotametrics.EnforcementEnabled.Set(1)
 	} else {
-		setupLog.Info("quota REST config not configured; quota enforcement disabled")
+		setupLog.Error(nil, "quota enforcement is DISABLED — workloads will schedule without quota accounting; "+
+			"set quotaKubeconfigPath in server config to enable enforcement")
+		quotametrics.EnforcementEnabled.Set(0)
 	}
 
 	cfg := ctrl.GetConfigOrDie()

@@ -400,6 +400,38 @@ const (
 	InstanceQuotaGrantedReasonQuotaExceeded     = "QuotaExceeded"
 	InstanceQuotaGrantedReasonValidationFailed  = "ValidationFailed"
 	InstanceProgrammedReasonPendingQuota        = "PendingQuota"
+
+	// InstanceQuotaGrantedReasonQuotaDisabled indicates quota enforcement is
+	// intentionally disabled: no credential path was configured.
+	InstanceQuotaGrantedReasonQuotaDisabled = "QuotaDisabled"
+
+	// InstanceQuotaGrantedReasonBackendUnavailable indicates quota enforcement
+	// is configured but the Milo quota backend is unreachable (network error,
+	// TLS failure, 401/503).
+	InstanceQuotaGrantedReasonBackendUnavailable = "QuotaBackendUnavailable"
+
+	// InstanceQuotaGrantedReasonProjectNotFound indicates the Milo project
+	// referenced by this instance does not exist (404 on the project control plane).
+	InstanceQuotaGrantedReasonProjectNotFound = "QuotaProjectNotFound"
+
+	// InstanceQuotaGrantedReasonNamespaceNotFound indicates the claim namespace
+	// does not exist on the Milo project control plane (FM-5).
+	InstanceQuotaGrantedReasonNamespaceNotFound = "QuotaNamespaceNotFound"
+
+	// InstanceQuotaGrantedReasonMisconfigured indicates the ResourceClaim was
+	// rejected by the Milo admission plugin (403/422): ResourceRegistration absent
+	// or claimingRules mismatch.
+	InstanceQuotaGrantedReasonMisconfigured = "QuotaMisconfigured"
+
+	// InstanceQuotaGrantedReasonProjectIDUnresolvable indicates the namespace
+	// label required to derive the Milo project ID is missing or unreadable.
+	InstanceQuotaGrantedReasonProjectIDUnresolvable = "QuotaProjectIDUnresolvable"
+
+	// InstanceQuotaGrantedReasonNoBudget indicates the ResourceClaim exists and
+	// is pending because no AllowanceBucket has been configured for the project.
+	// This is distinct from PendingEvaluation (claim not yet created or first eval
+	// in progress) and from QuotaExceeded (explicitly denied).
+	InstanceQuotaGrantedReasonNoBudget = "QuotaNoBudget"
 )
 
 const (
@@ -453,6 +485,7 @@ type InstanceTemplateSpec struct {
 // +kubebuilder:printcolumn:name="Network IP",type=string,JSONPath=`.status.networkInterfaces[0].assignments.networkIP`
 // +kubebuilder:printcolumn:name="External IP",type=string,JSONPath=`.status.networkInterfaces[0].assignments.externalIP`
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
+// +kubebuilder:printcolumn:name="Quota",type=string,JSONPath=`.status.conditions[?(@.type=="QuotaGranted")].reason`,priority=1
 type Instance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
