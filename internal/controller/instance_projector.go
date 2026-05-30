@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -152,9 +153,9 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if projection.Labels == nil {
 			projection.Labels = make(map[string]string)
 		}
-		for k, v := range downstreamInstance.Labels {
-			projection.Labels[k] = v
-		}
+		maps.Copy(projection.Labels, downstreamInstance.Labels)
+		// Cell-plane Instances carry the Karmada WD UID; project-side label lookups need the project WD UID.
+		projection.Labels[computev1alpha.WorkloadDeploymentUIDLabel] = string(ownerWD.UID)
 
 		projection.Spec = downstreamInstance.Spec
 

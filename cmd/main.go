@@ -489,6 +489,14 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
 	}
 
+	// Reactively syncs hub WD status to the project cluster.
+	if err = (&controller.WorkloadDeploymentStatusSyncer{
+		FederationClient: federationClient,
+		MCManager:        mgr,
+	}).SetupWithManager(federationMgr); err != nil {
+		return nil, fmt.Errorf("WorkloadDeploymentStatusSyncer: %w", err)
+	}
+
 	return []manager.Runnable{federationMgr}, nil
 }
 

@@ -261,7 +261,8 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 		}
 
 		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
-			if instance.Status.Controller.ObservedTemplateHash == templateHash {
+			// Infra providers may set Programmed=True before populating Status.Controller.
+			if instance.Status.Controller != nil && instance.Status.Controller.ObservedTemplateHash == templateHash {
 				currentReplicas++
 			}
 		}

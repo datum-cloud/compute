@@ -318,6 +318,9 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 // syncStatusFromDownstream reads the aggregated status of the WorkloadDeployment
 // from the downstream namespace and writes it back to the project-namespace
 // object. It is a no-op when the downstream object does not yet exist.
+//
+// WorkloadDeploymentStatusSyncer is the primary reactive path; this call also
+// pulls status during spec-change reconciles (e.g. manager restarts).
 func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	ctx context.Context,
 	projectClient client.Client,
