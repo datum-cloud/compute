@@ -319,12 +319,8 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 // from the downstream namespace and writes it back to the project-namespace
 // object. It is a no-op when the downstream object does not yet exist.
 //
-// Belt-and-suspenders: WorkloadDeploymentStatusSyncer (registered with
-// federationMgr) is the primary reactive path — it fires whenever Karmada
-// updates the hub WD status. This call ensures status is also pulled during
-// spec-change reconciles (e.g. manager restarts, propagation re-syncs).
-// Removal of this call is deferred to a separate cleanup PR once the syncer
-// is proven in production.
+// WorkloadDeploymentStatusSyncer is the primary reactive path; this call also
+// pulls status during spec-change reconciles (e.g. manager restarts).
 func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	ctx context.Context,
 	projectClient client.Client,
