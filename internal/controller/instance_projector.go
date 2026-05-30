@@ -154,11 +154,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			projection.Labels = make(map[string]string)
 		}
 		maps.Copy(projection.Labels, downstreamInstance.Labels)
-		// Overwrite the WD UID label with the project-cluster WD UID. The
-		// downstream Instance carries the cell-plane WD UID (assigned by Karmada
-		// when it propagated the WD), which never matches the project WD UID.
-		// Consumers doing label-selector lookups by WorkloadDeploymentUIDLabel
-		// (e.g. CLI CITY column) must see the project-side UID.
+		// Cell-plane Instances carry the Karmada WD UID; project-side label lookups need the project WD UID.
 		projection.Labels[computev1alpha.WorkloadDeploymentUIDLabel] = string(ownerWD.UID)
 
 		projection.Spec = downstreamInstance.Spec
