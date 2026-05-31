@@ -17,6 +17,7 @@ status: proposed
   - [Consumption on the provider](#consumption-on-the-provider)
   - [Scheduling gate](#scheduling-gate)
   - [Rotation and restart](#rotation-and-restart)
+- [Platform direction](#platform-direction)
 - [Security](#security)
 - [Alternatives](#alternatives)
 - [Failure modes](#failure-modes)
@@ -175,6 +176,43 @@ rolls the instances, which pick up the refreshed values — no new machinery. An
 opt-in automatic roll on content change is a possible future addition, not part of
 this RFC.
 
+## Platform direction
+
+The delivery half of this design — follow references, read them in the trusted
+plane, materialize derived companions, route them to the cells where the resource is
+placed, and signal readiness — is **not specific to compute**. It's a recurring
+platform need: image pull credentials want the same thing next, and the network
+operator already propagates derived Secrets/ConfigMaps to cells by label today. The
+building blocks are already platform-level — the shared namespace-mapping and
+downstream-delivery library, the label-based propagation pattern, and the
+established policy-driven capabilities (quota, activity, insights) that a delivery
+policy would sit naturally beside.
+
+We deliberately **do not** build that generic capability now. With a single consumer
+in hand the abstraction's seams aren't yet known, and a cross-cutting platform
+capability would slow the first ship and widen the security review. Instead, this RFC
+builds toward it on purpose:
+
+- **Build the resolver in compute now, behind a narrow, capability-shaped
+  interface** — in: a subject, its set of referenced objects, and its placement
+  targets; out: companions delivered plus a readiness signal. It reuses the existing
+  platform delivery library rather than inventing its own placement and cleanup.
+- **Keep delivery cleanly separable from consumption.** The scheduling gate and the
+  translation into the runtime's Pod spec stay in compute and depend only on the
+  readiness signal, so the delivery component carries no compute-specific knowledge.
+- **Promote on the second consumer.** When a second user of this pattern appears
+  (image pull credentials, or another service), lift the delivery component into the
+  platform as a capability — most likely an admin-authored delivery policy that
+  declares, per resource kind, which references to follow and where to deliver them,
+  fitting the existing capability-policy pattern. Two real consumers is when the
+  abstraction can be shaped correctly.
+
+This keeps compute shippable and autonomous today while making the design a
+deliberate step toward a shared capability, not a one-off to untangle later. A
+governance benefit falls out: when the policy lands, *what may be propagated, and
+where* becomes an inspectable, access-controlled object rather than logic buried in a
+controller.
+
 ## Security
 
 - **Bytes never in user-visible specs.** The Workload and the Instance the user sees
@@ -246,6 +284,9 @@ this RFC.
 - **Gate contract:** an explicit expected-companion set recorded on the deployment,
   not guessed.
 - **One resolver, not two:** pull secrets are a later consumer.
+- **Platform direction:** build delivery behind a capability-shaped seam in compute
+  now; promote it to a platform-owned, policy-driven capability when a second
+  consumer appears — not before.
 - **Sequencing:** ships before image pull credentials; owns the scoped read identity
   and provider gate-honoring.
 
