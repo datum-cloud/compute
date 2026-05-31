@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"path"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -86,8 +87,125 @@ func validateInstanceSpec(
 
 	allErrs = append(allErrs, validateInstanceRuntimeSpec(spec.Runtime, volumes, fieldPath.Child("runtime"))...)
 	allErrs = append(allErrs, validateInstanceNetworkInterfaces(spec.NetworkInterfaces, fieldPath.Child("networkInterfaces"), opts)...)
+	allErrs = append(allErrs, validateReferencedDataAccess(spec, fieldPath, opts)...)
 
 	return allErrs
+}
+
+// validateReferencedDataAccess issues a SubjectAccessReview for each unique
+// ConfigMap and Secret referenced by the spec (volumes, env valueFrom, envFrom).
+// The check mirrors the existing Network interface SAR pattern exactly —
+// build from AdmissionRequest.UserInfo, deny if not allowed.
+//
+// References are deduplicated before issuing SARs to avoid redundant API calls.
+// All references are name-only / same-namespace (the Workload namespace).
+func validateReferencedDataAccess(
+	spec computev1alpha.InstanceSpec,
+	fieldPath *field.Path,
+	opts WorkloadValidationOptions,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	// Build template-like struct to reuse the collector.
+	refs := collectRefsFromSpec(spec)
+	if len(refs) == 0 {
+		return nil
+	}
+
+	for _, ref := range refs {
+		var resource string
+		switch ref.Kind {
+		case "ConfigMap":
+			resource = "configmaps"
+		case "Secret":
+			resource = "secrets"
+		default:
+			continue
+		}
+
+		review := authorizationv1.SubjectAccessReview{
+			Spec: authorizationv1.SubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Verb:      "get",
+					Group:     "",
+					Version:   "v1",
+					Resource:  resource,
+					Name:      ref.Name,
+					Namespace: opts.Workload.Namespace,
+				},
+				User:   opts.AdmissionRequest.UserInfo.Username,
+				Groups: opts.AdmissionRequest.UserInfo.Groups,
+				UID:    opts.AdmissionRequest.UserInfo.UID,
+			},
+		}
+
+		refPath := fieldPath.Child(resource).Key(ref.Name)
+		if err := opts.Client.Create(opts.Context, &review); err != nil {
+			allErrs = append(allErrs, field.InternalError(refPath,
+				fmt.Errorf("failed creating SubjectAccessReview for %s %s/%s access: %w",
+					ref.Kind, opts.Workload.Namespace, ref.Name, err)))
+		} else if !review.Status.Allowed {
+			allErrs = append(allErrs, field.Forbidden(refPath,
+				fmt.Sprintf("permission to get %s %q was denied", ref.Kind, ref.Name)))
+		}
+	}
+
+	return allErrs
+}
+
+// collectRefsFromSpec walks an InstanceSpec and returns a deduplicated list of
+// (kind, name) pairs for all referenced ConfigMaps and Secrets. Uses the same
+// traversal order as the referenceddata collector.
+func collectRefsFromSpec(spec computev1alpha.InstanceSpec) []struct{ Kind, Name string } {
+	seen := make(map[string]struct{})
+	var refs []struct{ Kind, Name string }
+
+	add := func(kind, name string) {
+		if name == "" {
+			return
+		}
+		key := kind + "/" + name
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, struct{ Kind, Name string }{kind, name})
+	}
+
+	if sb := spec.Runtime.Sandbox; sb != nil {
+		for _, c := range sb.Containers {
+			for _, e := range c.Env {
+				if e.ValueFrom == nil {
+					continue
+				}
+				if e.ValueFrom.ConfigMapKeyRef != nil {
+					add("ConfigMap", e.ValueFrom.ConfigMapKeyRef.Name)
+				}
+				if e.ValueFrom.SecretKeyRef != nil {
+					add("Secret", e.ValueFrom.SecretKeyRef.Name)
+				}
+			}
+			for _, ef := range c.EnvFrom {
+				if ef.ConfigMapRef != nil {
+					add("ConfigMap", ef.ConfigMapRef.Name)
+				}
+				if ef.SecretRef != nil {
+					add("Secret", ef.SecretRef.Name)
+				}
+			}
+		}
+	}
+
+	for _, v := range spec.Volumes {
+		if v.ConfigMap != nil {
+			add("ConfigMap", v.ConfigMap.Name)
+		}
+		if v.Secret != nil {
+			add("Secret", v.Secret.SecretName)
+		}
+	}
+
+	return refs
 }
 
 func validateInstanceNetworkInterfaces(
@@ -248,7 +366,7 @@ func validateVolumeSource(source computev1alpha.VolumeSource, fieldPath *field.P
 			allErrs = append(allErrs, field.Forbidden(secretField, "may not specify more than 1 volume source"))
 		} else {
 			numSources++
-			// TODO(jreese) validate secret volume source
+			allErrs = append(allErrs, validateSecretVolumeSource(source.Secret, secretField)...)
 		}
 	}
 
@@ -337,15 +455,69 @@ func validateConfigMapVolumeSource(configMapSource *corev1.ConfigMapVolumeSource
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("defaultMode"), *configMapMode, fileModeErrorMsg))
 	}
 
-	itemsPath := fldPath.Child("items")
-	if len(configMapSource.Items) > 0 {
-		allErrs = append(allErrs, field.Forbidden(itemsPath, "not implemented"))
+	for i, kp := range configMapSource.Items {
+		itemPath := fldPath.Child("items").Index(i)
+		allErrs = append(allErrs, validateKeyToPath(&kp, itemPath)...)
 	}
-	// TODO(jreese) implement validation here
-	// for i, kp := range configMapSource.Items {
-	// 	itemPath := itemsPath.Index(i)
-	// 	allErrs = append(allErrs, validateKeyToPath(&kp, itemPath)...)
-	// }
+	return allErrs
+}
+
+func validateSecretVolumeSource(secretSource *corev1.SecretVolumeSource, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if len(secretSource.SecretName) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath.Child("secretName"), ""))
+	}
+
+	secretMode := secretSource.DefaultMode
+	if secretMode != nil && (*secretMode > 0777 || *secretMode < 0) {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("defaultMode"), *secretMode, fileModeErrorMsg))
+	}
+
+	for i, kp := range secretSource.Items {
+		itemPath := fldPath.Child("items").Index(i)
+		allErrs = append(allErrs, validateKeyToPath(&kp, itemPath)...)
+	}
+	return allErrs
+}
+
+// validateKeyToPath validates a corev1.KeyToPath projection entry.
+func validateKeyToPath(kp *corev1.KeyToPath, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if len(kp.Key) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath.Child("key"), ""))
+	}
+
+	if len(kp.Path) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath.Child("path"), ""))
+	} else {
+		allErrs = append(allErrs, validateVolumeProjectionPath(kp.Path, fldPath.Child("path"))...)
+	}
+
+	if kp.Mode != nil && (*kp.Mode > 0777 || *kp.Mode < 0) {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("mode"), *kp.Mode, fileModeErrorMsg))
+	}
+
+	return allErrs
+}
+
+// validateVolumeProjectionPath validates that a volume key→path target path is
+// safe: it must be relative, must not be absolute, and must not contain ".."
+// path elements that would escape the volume mount directory.
+func validateVolumeProjectionPath(p string, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if path.IsAbs(p) {
+		allErrs = append(allErrs, field.Invalid(fldPath, p, "must be a relative path"))
+		return allErrs
+	}
+
+	// Clean the path and check for ".." escape.
+	cleaned := path.Clean(p)
+	if strings.HasPrefix(cleaned, "..") {
+		allErrs = append(allErrs, field.Invalid(fldPath, p, "must not contain '..' path elements"))
+	}
+
 	return allErrs
 }
 
@@ -552,8 +724,65 @@ func validateContainerCommon(
 
 	allErrs = append(allErrs, validateVolumeAttachments(container.VolumeAttachments, volumes, fieldPath.Child("volumeAttachments"))...)
 
+	allErrs = append(allErrs, validateEnvFrom(container.EnvFrom, fieldPath.Child("envFrom"))...)
+
 	// TODO(jreese) validate named ports are unique across all containers?
 	allErrs = append(allErrs, validateNamedPorts(container.Ports, fieldPath.Child("ports"))...)
+
+	return allErrs
+}
+
+// validateEnvFrom validates the envFrom field on a SandboxContainer.
+// Each entry must reference exactly one of configMapRef or secretRef. The
+// optional prefix must be a valid C_IDENTIFIER. Source names must satisfy
+// DNS label constraints.
+func validateEnvFrom(envFrom []computev1alpha.EnvFromSource, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	for i, ef := range envFrom {
+		indexPath := fldPath.Index(i)
+
+		// Validate prefix — must be empty or a valid C_IDENTIFIER.
+		if ef.Prefix != "" {
+			if errs := apimachineryutilvalidation.IsCIdentifier(ef.Prefix); len(errs) > 0 {
+				allErrs = append(allErrs, field.Invalid(indexPath.Child("prefix"), ef.Prefix, strings.Join(errs, "; ")))
+			}
+		}
+
+		numSources := 0
+
+		if ef.ConfigMapRef != nil {
+			numSources++
+			refPath := indexPath.Child("configMapRef")
+			if len(ef.ConfigMapRef.Name) == 0 {
+				allErrs = append(allErrs, field.Required(refPath.Child("name"), ""))
+			} else {
+				for _, msg := range apimachineryvalidation.NameIsDNSLabel(ef.ConfigMapRef.Name, false) {
+					allErrs = append(allErrs, field.Invalid(refPath.Child("name"), ef.ConfigMapRef.Name, msg))
+				}
+			}
+		}
+
+		if ef.SecretRef != nil {
+			numSources++
+			refPath := indexPath.Child("secretRef")
+			if numSources > 1 {
+				allErrs = append(allErrs, field.Forbidden(refPath, "may not specify more than 1 source per envFrom entry"))
+			} else {
+				if len(ef.SecretRef.Name) == 0 {
+					allErrs = append(allErrs, field.Required(refPath.Child("name"), ""))
+				} else {
+					for _, msg := range apimachineryvalidation.NameIsDNSLabel(ef.SecretRef.Name, false) {
+						allErrs = append(allErrs, field.Invalid(refPath.Child("name"), ef.SecretRef.Name, msg))
+					}
+				}
+			}
+		}
+
+		if numSources == 0 {
+			allErrs = append(allErrs, field.Required(indexPath, "must specify exactly one of configMapRef or secretRef"))
+		}
+	}
 
 	return allErrs
 }

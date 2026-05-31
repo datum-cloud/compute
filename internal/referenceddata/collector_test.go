@@ -1,0 +1,275 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package referenceddata
+
+import (
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+)
+
+func TestCollectFromTemplate(t *testing.T) {
+	ns := "my-project"
+
+	cases := map[string]struct {
+		template computev1alpha.InstanceTemplateSpec
+		want     ReferencedSet
+	}{
+		"empty template": {
+			template: computev1alpha.InstanceTemplateSpec{},
+			want:     nil,
+		},
+		"sandbox with no references": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{Name: "c1", Image: "img", Env: []corev1.EnvVar{{Name: "FOO", Value: "bar"}}},
+					},
+				}
+			}),
+			want: nil,
+		},
+		"env.valueFrom.configMapKeyRef": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:  "c1",
+							Image: "img",
+							Env: []corev1.EnvVar{
+								{
+									Name: "KEY",
+									ValueFrom: &corev1.EnvVarSource{
+										ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+											Key:                  "key",
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			}),
+			want: ReferencedSet{
+				{Kind: "ConfigMap", Name: "app-config", Namespace: ns},
+			},
+		},
+		"env.valueFrom.secretKeyRef": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:  "c1",
+							Image: "img",
+							Env: []corev1.EnvVar{
+								{
+									Name: "PASS",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: "db-creds"},
+											Key:                  "password",
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			}),
+			want: ReferencedSet{
+				{Kind: "Secret", Name: "db-creds", Namespace: ns},
+			},
+		},
+		"envFrom.configMapRef": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:    "c1",
+							Image:   "img",
+							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "env-config"}}},
+						},
+					},
+				}
+			}),
+			want: ReferencedSet{
+				{Kind: "ConfigMap", Name: "env-config", Namespace: ns},
+			},
+		},
+		"envFrom.secretRef": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:    "c1",
+							Image:   "img",
+							EnvFrom: []computev1alpha.EnvFromSource{{SecretRef: &computev1alpha.SecretEnvSource{Name: "env-secret"}}},
+						},
+					},
+				}
+			}),
+			want: ReferencedSet{
+				{Kind: "Secret", Name: "env-secret", Namespace: ns},
+			},
+		},
+		"volume configMap": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: "cfg-vol",
+						VolumeSource: computev1alpha.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "vol-config"},
+							},
+						},
+					},
+				}
+			}),
+			want: ReferencedSet{
+				{Kind: "ConfigMap", Name: "vol-config", Namespace: ns},
+			},
+		},
+		"volume secret": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: "sec-vol",
+						VolumeSource: computev1alpha.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{SecretName: "vol-secret"},
+						},
+					},
+				}
+			}),
+			want: ReferencedSet{
+				{Kind: "Secret", Name: "vol-secret", Namespace: ns},
+			},
+		},
+		"deduplication across containers": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:    "c1",
+							Image:   "img",
+							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "shared-cfg"}}},
+						},
+						{
+							Name:    "c2",
+							Image:   "img",
+							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "shared-cfg"}}},
+						},
+					},
+				}
+			}),
+			want: ReferencedSet{
+				{Kind: "ConfigMap", Name: "shared-cfg", Namespace: ns},
+			},
+		},
+		"mixed sources sorted configmap-first then secret": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:  "c1",
+							Image: "img",
+							EnvFrom: []computev1alpha.EnvFromSource{
+								{SecretRef: &computev1alpha.SecretEnvSource{Name: "z-secret"}},
+								{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "a-config"}},
+							},
+						},
+					},
+				}
+			}),
+			// Sorted: ConfigMap < Secret lexicographically, then name ascending
+			want: ReferencedSet{
+				{Kind: "ConfigMap", Name: "a-config", Namespace: ns},
+				{Kind: "Secret", Name: "z-secret", Namespace: ns},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := CollectFromTemplate(ns, tc.template)
+			if len(got) != len(tc.want) {
+				t.Fatalf("CollectFromTemplate: len=%d want=%d; got=%v want=%v", len(got), len(tc.want), got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("index %d: got %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestTemplateReferencesData(t *testing.T) {
+	cases := map[string]struct {
+		template computev1alpha.InstanceTemplateSpec
+		want     bool
+	}{
+		"empty": {
+			template: computev1alpha.InstanceTemplateSpec{},
+			want:     false,
+		},
+		"plain env only": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{Name: "c", Image: "img", Env: []corev1.EnvVar{{Name: "X", Value: "y"}}},
+					},
+				}
+			}),
+			want: false,
+		},
+		"has configmap ref": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{Name: "v", VolumeSource: computev1alpha.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "cfg"},
+						},
+					}},
+				}
+			}),
+			want: true,
+		},
+		"has secret ref": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:  "c",
+							Image: "img",
+							EnvFrom: []computev1alpha.EnvFromSource{
+								{SecretRef: &computev1alpha.SecretEnvSource{Name: "s", Optional: ptr.To(true)}},
+							},
+						},
+					},
+				}
+			}),
+			want: true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := TemplateReferencesData(tc.template)
+			if got != tc.want {
+				t.Errorf("TemplateReferencesData = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// makeTemplate is a helper that creates a minimal InstanceTemplateSpec and
+// applies the given mutations.
+func makeTemplate(fn func(*computev1alpha.InstanceTemplateSpec)) computev1alpha.InstanceTemplateSpec {
+	t := computev1alpha.InstanceTemplateSpec{}
+	fn(&t)
+	return t
+}

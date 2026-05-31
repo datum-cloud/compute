@@ -29,7 +29,7 @@ func init() {
 
 func TestFreshDeployment(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := New(Options{})
 
 	deployment := getWorkloadDeployment("test-fresh-deploy", 2)
 
@@ -51,7 +51,7 @@ func TestFreshDeployment(t *testing.T) {
 
 func TestUpdateWithAllReadyInstances(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := New(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 2)
 
@@ -77,7 +77,7 @@ func TestUpdateWithAllReadyInstances(t *testing.T) {
 
 func TestScaleUpWithNotReadyInstance(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := New(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 3)
 
@@ -107,7 +107,7 @@ func TestScaleUpWithNotReadyInstance(t *testing.T) {
 
 func TestScaleUpWithDeletingReadyInstance(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := New(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 3)
 
@@ -134,7 +134,7 @@ func TestScaleUpWithDeletingReadyInstance(t *testing.T) {
 
 func TestScaleDownWithAllReadyInstances(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := New(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 1)
 

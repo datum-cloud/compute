@@ -579,6 +579,54 @@ spec:
                                       x-kubernetes-list-map-keys:
                                       - name
                                       x-kubernetes-list-type: map
+                                    envFrom:
+                                      description: |-
+                                        List of sources to populate environment variables in the container.
+                                        The keys defined within a source must be a C_IDENTIFIER. All invalid
+                                        keys will be reported as an event when the container is starting. When a
+                                        key exists in multiple sources, the value associated with the last source
+                                        will take precedence. Values defined by an Env with a duplicate key will
+                                        take precedence.
+                                      items:
+                                        description: |-
+                                          EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+                                          used as environment variables in a container.
+                                        properties:
+                                          configMapRef:
+                                            description: The ConfigMap to select from.
+                                            properties:
+                                              name:
+                                                description: Name of the ConfigMap
+                                                  in the same namespace as the Workload.
+                                                type: string
+                                              optional:
+                                                description: Specify whether the ConfigMap
+                                                  must be defined.
+                                                type: boolean
+                                            required:
+                                            - name
+                                            type: object
+                                          prefix:
+                                            description: |-
+                                              An optional identifier to prepend to each key in the referenced
+                                              ConfigMap or Secret. Must be a valid C_IDENTIFIER.
+                                            type: string
+                                          secretRef:
+                                            description: The Secret to select from.
+                                            properties:
+                                              name:
+                                                description: Name of the Secret in
+                                                  the same namespace as the Workload.
+                                                type: string
+                                              optional:
+                                                description: Specify whether the Secret
+                                                  must be defined.
+                                                type: boolean
+                                            required:
+                                            - name
+                                            type: object
+                                        type: object
+                                      type: array
                                     image:
                                       description: The fully qualified container image
                                         name.
