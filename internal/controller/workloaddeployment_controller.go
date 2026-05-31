@@ -177,7 +177,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		desiredReplicas = 0
 	}
 
-	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
+	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -189,14 +189,22 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	deployment.Status.ReadyReplicas = int32(readyReplicas)
 	deployment.Status.ObservedGeneration = deployment.Generation
 
-	if quotaBlockedReplicas > 0 {
+	switch {
+	case quotaBlockedReplicas > 0:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
 			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
 			Message: fmt.Sprintf("%d of %d desired replicas are pending quota", quotaBlockedReplicas, desiredReplicas),
 		})
-	} else {
+	case referencedDataBlockedReplicas > 0:
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.ReferencedDataReasonAwaitingPropagation,
+			Message: fmt.Sprintf("%d of %d desired replicas are waiting for referenced data companions", referencedDataBlockedReplicas, desiredReplicas),
+		})
+	default:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
 			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
 			Status:  metav1.ConditionTrue,
@@ -247,11 +255,15 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 	deployment *computev1alpha.WorkloadDeployment,
 	instances []computev1alpha.Instance,
 	networkReady bool,
-) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas int, err error) {
+) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas int, err error) {
 	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
 	for _, instance := range instances {
 		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
 			quotaBlockedReplicas++
+		}
+
+		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.ReferencedDataReady, metav1.ConditionFalse) {
+			referencedDataBlockedReplicas++
 		}
 
 		if networkReady && len(instance.Spec.Controller.SchedulingGates) > 0 {
@@ -263,7 +275,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 					instance.Spec.Controller.SchedulingGates = newGates
 					return nil
 				}); patchErr != nil {
-					return 0, 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
+					return 0, 0, 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
 				}
 			}
 		}
@@ -290,7 +302,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 			readyReplicas++
 		}
 	}
-	return currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, nil
+	return currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, nil
 }
 
 // writeStatusToKarmada copies the WorkloadDeployment status to the matching

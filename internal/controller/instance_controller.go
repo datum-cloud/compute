@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"strings"
@@ -41,6 +42,7 @@ import (
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	quotametrics "go.datum.net/compute/internal/quota"
+	"go.datum.net/compute/internal/referenceddata"
 )
 
 const (
@@ -281,6 +283,16 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	// Even when reconcileQuotaCondition returns a transient error, persist any
 	// condition change first so the failure reason is visible on the Instance.
 	// We return the error afterwards so controller-runtime requeues with backoff.
+
+	// Reconcile the ReferencedData condition: diff expected companions against
+	// those present on the cell. The result tells us whether the gate may be
+	// cleared in the spec-patch pass below.
+	refDataResult, requeueAfter, err := r.reconcileReferencedDataCondition(ctx, cl.GetClient(), &instance)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed reconciling referenced data condition: %w", err)
+	}
+	statusChanged = refDataResult.conditionChanged || statusChanged
+
 	readyChanged, err := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -297,8 +309,8 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		}
 		// Return with the quota error (nil or transient) so controller-runtime
 		// requeues with backoff on failures. On the success path (quotaErr==nil)
-		// we fall through to removeQuotaSchedulingGate below instead of returning
-		// early, so the gate is cleared in the same reconcile pass rather than
+		// we fall through to reconcileSchedulingGates below instead of returning
+		// early, so gates are cleared in the same reconcile pass rather than
 		// waiting for a requeue that may never come (ResourceClaim is immutable
 		// and local Instances are not watched).
 		if quotaErr != nil {
@@ -312,7 +324,10 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, quotaErr
 	}
 
-	if err := r.removeQuotaSchedulingGate(ctx, cl.GetClient(), &instance); err != nil {
+	// Spec-patch pass: remove scheduling gates for conditions that are now
+	// persisted as True. Handles both the Quota gate and the ReferencedData gate
+	// in a single patch to avoid duplicate API calls.
+	if err := r.reconcileSchedulingGates(ctx, cl.GetClient(), &instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -325,12 +340,356 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	if quotaReq > 0 {
-		logger.Info("requeuing instance", "after", quotaReq.String(),
+	// Honor both the quota safety-net requeue and the referenced-data resolver
+	// requeue: pick the soonest non-zero deadline so neither pending wait is
+	// dropped.
+	effectiveRequeue := quotaReq
+	if requeueAfter > 0 && (effectiveRequeue == 0 || requeueAfter < effectiveRequeue) {
+		effectiveRequeue = requeueAfter
+	}
+	if effectiveRequeue > 0 {
+		logger.Info("requeuing instance", "after", effectiveRequeue.String(),
 			"cluster", req.ClusterName.String(), "instance", instance.Name)
 	}
 
-	return ctrl.Result{RequeueAfter: quotaReq}, nil
+	return ctrl.Result{RequeueAfter: effectiveRequeue}, nil
+}
+
+// reconcileSchedulingGates removes scheduling gates whose corresponding
+// conditions have been persisted as True. It handles both the Quota gate and
+// the ReferencedData gate in a single patch to avoid duplicate API calls.
+func (r *InstanceReconciler) reconcileSchedulingGates(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) error {
+	if instance.Spec.Controller == nil || len(instance.Spec.Controller.SchedulingGates) == 0 {
+		return nil
+	}
+
+	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	refDataCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+
+	newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
+	gatesRemoved := false
+	for _, gate := range instance.Spec.Controller.SchedulingGates {
+		removeQuota := gate.Name == instancecontrol.QuotaSchedulingGate.String() &&
+			quotaGrantedCond != nil && quotaGrantedCond.Status == metav1.ConditionTrue
+		removeRefData := gate.Name == instancecontrol.ReferencedDataSchedulingGate.String() &&
+			refDataCond != nil && refDataCond.Status == metav1.ConditionTrue
+		if removeQuota || removeRefData {
+			gatesRemoved = true
+			// Observe gate-wait duration and emit event when the ReferencedData
+			// gate clears.
+			if removeRefData {
+				r.observeGateWaitDuration(instance)
+				r.emitReferencedDataClearedEvent(instance)
+			}
+			continue
+		}
+		newGates = append(newGates, gate)
+	}
+	if gatesRemoved {
+		patch := client.MergeFrom(instance.DeepCopy())
+		instance.Spec.Controller.SchedulingGates = newGates
+		if err := cl.Patch(ctx, instance, patch); err != nil {
+			return fmt.Errorf("failed patching scheduling gates: %w", err)
+		}
+	}
+	return nil
+}
+
+// referencedDataResult carries outputs of reconcileReferencedDataCondition.
+type referencedDataResult struct {
+	// conditionChanged is true when the ReferencedDataReady condition was updated.
+	conditionChanged bool
+}
+
+// reconcileReferencedDataCondition checks whether all expected companion
+// ConfigMaps/Secrets are present on the cell for the given instance.
+//
+// It reads the expected-set annotation from the owning WorkloadDeployment,
+// lists labeled companions in the namespace, and computes the diff.
+//
+//   - Annotation absent (resolver not yet finished): Resolving / Unknown, requeueAfter.
+//   - Expected set present but some companions missing: AwaitingPropagation / False.
+//   - All companions present: Ready / True (gate cleared by caller).
+//
+// Returns a requeueAfter duration when the annotation is not yet stamped on the
+// WD, so the instance reconciler retries even without a watch event.
+func (r *InstanceReconciler) reconcileReferencedDataCondition(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) (referencedDataResult, time.Duration, error) {
+	// If the instance does not carry the ReferencedData gate there is nothing to
+	// reconcile here — skip silently.
+	hasGate := false
+	if instance.Spec.Controller != nil {
+		for _, g := range instance.Spec.Controller.SchedulingGates {
+			if g.Name == instancecontrol.ReferencedDataSchedulingGate.String() {
+				hasGate = true
+				break
+			}
+		}
+	}
+	if !hasGate {
+		// Gate already gone — ensure condition is Ready if the gate was just
+		// cleared on a previous pass (idempotent).
+		existing := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+		if existing == nil {
+			// Gate never present; nothing to do.
+			return referencedDataResult{}, 0, nil
+		}
+		if existing.Status != metav1.ConditionTrue {
+			// Gate was cleared externally without going through this code path —
+			// mark ready so status is consistent.
+			changed := apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+				Type:               computev1alpha.ReferencedDataReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             computev1alpha.ReferencedDataReasonReady,
+				Message:            "All referenced companions are available",
+				ObservedGeneration: instance.Generation,
+			})
+			return referencedDataResult{conditionChanged: changed}, 0, nil
+		}
+		return referencedDataResult{}, 0, nil
+	}
+
+	// Stamp the gate-start annotation once so we can measure duration later.
+	r.stampGateStartAnnotation(ctx, cl, instance)
+
+	// Fetch the owning WorkloadDeployment to read the expected-set annotation.
+	wd, err := r.fetchOwnerWorkloadDeployment(ctx, cl, instance)
+	if err != nil {
+		return referencedDataResult{}, 0, err
+	}
+
+	// Annotation not yet present — the resolver hasn't finished. Signal Resolving
+	// and requeue so we re-check even without a new watch event.
+	annoRaw, hasAnno := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
+	if !hasAnno || annoRaw == "" {
+		changed := r.setReferencedDataCondition(instance, metav1.ConditionUnknown,
+			computev1alpha.ReferencedDataReasonResolving,
+			"Waiting for the resolver to finish reading source objects")
+		return referencedDataResult{conditionChanged: changed}, 5 * time.Second, nil
+	}
+
+	// Decode the expected companion names.
+	var expectedNames []string
+	if err := json.Unmarshal([]byte(annoRaw), &expectedNames); err != nil {
+		// Malformed annotation — treat like absent; the resolver will fix it.
+		changed := r.setReferencedDataCondition(instance, metav1.ConditionUnknown,
+			computev1alpha.ReferencedDataReasonResolving,
+			"expected-referenced-data annotation is malformed; waiting for resolver")
+		return referencedDataResult{conditionChanged: changed}, 5 * time.Second, nil
+	}
+
+	// No companions expected (WD template has no references) — clear the gate.
+	if len(expectedNames) == 0 {
+		changed := r.setReferencedDataCondition(instance, metav1.ConditionTrue,
+			computev1alpha.ReferencedDataReasonReady,
+			"No referenced companions required")
+		return referencedDataResult{conditionChanged: changed}, 0, nil
+	}
+
+	// List labeled companions in the instance's namespace.
+	presentNames, err := r.listPresentCompanionNames(ctx, cl, instance.Namespace)
+	if err != nil {
+		return referencedDataResult{}, 0, fmt.Errorf("failed listing companion objects: %w", err)
+	}
+
+	// Diff: find which expected companions are missing.
+	var missing []string
+	for _, name := range expectedNames {
+		if _, ok := presentNames[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+
+	// Update metrics.
+	present := len(expectedNames) - len(missing)
+	referenceddata.CompanionsExpected.WithLabelValues(instance.Namespace, instance.Name).Set(float64(len(expectedNames)))
+	referenceddata.CompanionsPresent.WithLabelValues(instance.Namespace, instance.Name).Set(float64(present))
+
+	if len(missing) > 0 {
+		msg := fmt.Sprintf("Waiting for %d companion(s) to arrive on cell: %s",
+			len(missing), strings.Join(missing, ", "))
+		changed := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
+			computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
+		if changed {
+			r.emitEvent(instance, corev1.EventTypeWarning,
+				computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
+		}
+		return referencedDataResult{conditionChanged: changed}, 0, nil
+	}
+
+	// All companions present.
+	changed := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionTrue,
+		computev1alpha.ReferencedDataReasonReady,
+		fmt.Sprintf("All %d referenced companion(s) are present on cell", len(expectedNames)))
+	return referencedDataResult{conditionChanged: changed}, 0, nil
+}
+
+// setReferencedDataCondition sets the ReferencedDataReady condition and returns
+// whether it changed.
+func (r *InstanceReconciler) setReferencedDataCondition(
+	instance *computev1alpha.Instance,
+	status metav1.ConditionStatus,
+	reason, message string,
+) bool {
+	return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: instance.Generation,
+	})
+}
+
+// setReferencedDataConditionWithTransition sets the condition and, when it
+// changed, increments the condition-transition metric.
+func (r *InstanceReconciler) setReferencedDataConditionWithTransition(
+	instance *computev1alpha.Instance,
+	status metav1.ConditionStatus,
+	reason, message string,
+) bool {
+	prev := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+	fromReason := "none"
+	if prev != nil {
+		fromReason = prev.Reason
+	}
+	changed := r.setReferencedDataCondition(instance, status, reason, message)
+	if changed && fromReason != reason {
+		referenceddata.ConditionTransitions.WithLabelValues(instance.Namespace, fromReason, reason).Inc()
+	}
+	return changed
+}
+
+// listPresentCompanionNames returns a set (map[name]struct{}) of companion
+// ConfigMap and Secret names present in the given namespace (matched by the
+// ReferencedDataLabel).
+func (r *InstanceReconciler) listPresentCompanionNames(
+	ctx context.Context,
+	cl client.Client,
+	namespace string,
+) (map[string]struct{}, error) {
+	labelSel := client.MatchingLabels{computev1alpha.ReferencedDataLabel: "true"}
+	inNs := client.InNamespace(namespace)
+
+	names := make(map[string]struct{})
+
+	var cmList corev1.ConfigMapList
+	if err := cl.List(ctx, &cmList, inNs, labelSel); err != nil {
+		return nil, fmt.Errorf("list companion ConfigMaps: %w", err)
+	}
+	for _, cm := range cmList.Items {
+		names[cm.Name] = struct{}{}
+	}
+
+	var secretList corev1.SecretList
+	if err := cl.List(ctx, &secretList, inNs, labelSel); err != nil {
+		return nil, fmt.Errorf("list companion Secrets: %w", err)
+	}
+	for _, s := range secretList.Items {
+		names[s.Name] = struct{}{}
+	}
+
+	return names, nil
+}
+
+// fetchOwnerWorkloadDeployment retrieves the WorkloadDeployment that owns the
+// given instance. It is shared by the network-failure check and the
+// referenced-data condition reconciler to avoid duplicate fetches; callers
+// that already hold the WD should not call this a second time.
+func (r *InstanceReconciler) fetchOwnerWorkloadDeployment(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) (*computev1alpha.WorkloadDeployment, error) {
+	ownerRef := metav1.GetControllerOf(instance)
+	if ownerRef == nil {
+		return nil, fmt.Errorf("instance %s/%s has no controller owner reference", instance.Namespace, instance.Name)
+	}
+	var wd computev1alpha.WorkloadDeployment
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: ownerRef.Name}, &wd); err != nil {
+		return nil, fmt.Errorf("failed fetching owning WorkloadDeployment %q: %w", ownerRef.Name, err)
+	}
+	return &wd, nil
+}
+
+// stampGateStartAnnotation records the RFC3339 time at which the ReferencedData
+// gate was first observed. It is a best-effort, no-op if the annotation is
+// already present or the patch fails.
+//
+// The status conditions on instance are preserved across the patch: the fake
+// client (and real API server) does not touch status in a metadata-only Patch,
+// but the controller-runtime fake client zeroes and re-unmarshals instance from
+// the server response, which would lose any in-memory status changes not yet
+// persisted via Status().Update(). We save and restore them explicitly.
+func (r *InstanceReconciler) stampGateStartAnnotation(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) {
+	if instance.Annotations != nil {
+		if _, ok := instance.Annotations[computev1alpha.ReferencedDataGateStartAnnotation]; ok {
+			return
+		}
+	}
+	// Preserve in-memory status so the Patch does not discard conditions that
+	// have been set by earlier reconcile steps but not yet persisted to the
+	// API server via Status().Update().
+	savedStatus := instance.Status.DeepCopy()
+
+	patch := client.MergeFrom(instance.DeepCopy())
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+	instance.Annotations[computev1alpha.ReferencedDataGateStartAnnotation] = time.Now().UTC().Format(time.RFC3339)
+	if err := cl.Patch(ctx, instance, patch); err != nil {
+		log.FromContext(ctx).V(1).Info("could not stamp gate-start annotation (non-fatal)", "error", err)
+	}
+
+	// Restore the in-memory status after the patch overwrites it with the
+	// server-side state.
+	instance.Status = *savedStatus
+}
+
+// observeGateWaitDuration records the gate-wait histogram when the
+// ReferencedData gate is being cleared. It reads the start annotation stamped
+// when the gate was first observed.
+func (r *InstanceReconciler) observeGateWaitDuration(instance *computev1alpha.Instance) {
+	if instance.Annotations == nil {
+		return
+	}
+	startStr, ok := instance.Annotations[computev1alpha.ReferencedDataGateStartAnnotation]
+	if !ok {
+		return
+	}
+	startTime, err := time.Parse(time.RFC3339, startStr)
+	if err != nil {
+		return
+	}
+	elapsed := time.Since(startTime).Seconds()
+	referenceddata.GateWaitDuration.WithLabelValues(instance.Namespace).Observe(elapsed)
+}
+
+// emitReferencedDataClearedEvent records a Normal event on the instance when
+// the ReferencedData gate is cleared.
+func (r *InstanceReconciler) emitReferencedDataClearedEvent(instance *computev1alpha.Instance) {
+	r.emitEvent(instance, corev1.EventTypeNormal,
+		computev1alpha.ReferencedDataReasonReady,
+		"All referenced companion ConfigMaps/Secrets are present; ReferencedData gate cleared")
+}
+
+// emitEvent emits a Kubernetes event if a recorder is available. Guard against
+// a nil recorder so that unit tests that don't wire up a recorder don't panic.
+func (r *InstanceReconciler) emitEvent(obj *computev1alpha.Instance, eventType, reason, message string) {
+	if r.recorder == nil {
+		return
+	}
+	r.recorder.Event(obj, eventType, reason, message)
 }
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
@@ -1325,5 +1684,56 @@ func (r *InstanceReconciler) SetupWithManager(
 				return obj.GetLabels()[instanceQuotaClaimSourceLabel] == edgeClusterNameVal
 			})),
 		).
+		// Watch companion ConfigMaps: when one arrives (or is updated) re-queue all
+		// Instances in the namespace so they can attempt gate-clearing.
+		Watches(&corev1.ConfigMap{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != "true" {
+					return nil
+				}
+				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
+			})
+		}).
+		// Watch companion Secrets for the same reason.
+		Watches(&corev1.Secret{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != "true" {
+					return nil
+				}
+				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
+			})
+		}).
 		Complete(r)
+}
+
+// enqueueInstancesInNamespace returns reconcile requests for every Instance
+// in namespace that is indexed under instanceByWorkloadDeploymentUIDIndex.
+// It lists all Instances in the namespace without a UID filter because the
+// companion is shared and any gated instance in the namespace should re-check.
+func enqueueInstancesInNamespace(
+	ctx context.Context,
+	cl client.Client,
+	clusterName, namespace string,
+) []mcreconcile.Request {
+	logger := log.FromContext(ctx)
+
+	var instanceList computev1alpha.InstanceList
+	if err := cl.List(ctx, &instanceList, client.InNamespace(namespace)); err != nil {
+		logger.Error(err, "failed listing instances for companion watch", "namespace", namespace)
+		return nil
+	}
+
+	requests := make([]mcreconcile.Request, 0, len(instanceList.Items))
+	for _, inst := range instanceList.Items {
+		requests = append(requests, mcreconcile.Request{
+			Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: inst.Namespace,
+					Name:      inst.Name,
+				},
+			},
+			ClusterName: clusterName,
+		})
+	}
+	return requests
 }
