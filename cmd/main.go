@@ -331,7 +331,13 @@ func main() {
 		// ProjectReader is nil for single-cluster mode; the controller falls back
 		// to a LocalReader. Set this to a *referenceddata.ProjectReader when the
 		// Milo multicluster mode is active and cross-project reads are required.
-		Reader:              nil,
+		Reader: nil,
+		// FederationClient is set when the federation hub (Karmada) is configured.
+		// When non-nil, companions are materialised into the downstream
+		// ns-{project-uid} namespace on the hub so Karmada can propagate them
+		// to cells alongside the WorkloadDeployment. When nil, companions land
+		// in the project namespace (single-cluster / dev path).
+		FederationClient:    federationClient,
 		PerObjectLimitBytes: serverConfig.ReferencedData.PerObjectLimitBytes,
 		AggregateLimitBytes: serverConfig.ReferencedData.AggregateLimitBytes,
 	}); err != nil {
