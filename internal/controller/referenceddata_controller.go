@@ -29,6 +29,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/referenceddata"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
 const (
@@ -66,13 +67,11 @@ const (
 // Phase 1 (single-cluster): localCompanionWriter writes companions to the same
 // cluster and namespace that the WorkloadDeployment lives in.
 //
-// Phase 1b (federation, TODO): add a downstreamCompanionWriter implementation
-// that uses Milo's MappedNamespaceResourceStrategy + downstreamclient to write
-// companions into the cell-side `ns-{project-uid}` namespace and extend the
-// federator's PropagationPolicy with an always-on label selector for
-// `compute.datumapis.com/referenced-data: "true"`. That implementation can
-// slot in here without any restructuring — the controller only calls
-// companionWriter.Apply/Delete and does not care about the destination cluster.
+// Phase 1b (federation): downstreamCompanionWriter uses Milo's
+// MappedNamespaceResourceStrategy to write companions into the
+// `ns-{project-uid}` namespace on the Karmada hub so they are propagated to
+// cells alongside the WorkloadDeployment. The federator's PropagationPolicy
+// always includes ConfigMap/Secret selectors matching the referenced-data label.
 type companionWriter interface {
 	// Apply creates or updates the companion ConfigMap in the target namespace.
 	// It is idempotent and must preserve the ref-count annotation set by the
@@ -167,12 +166,110 @@ func (w *localCompanionWriter) GetSecret(ctx context.Context, namespace, name st
 	return &s, nil
 }
 
+// downstreamCompanionWriter implements companionWriter by materialising
+// companions into the `ns-{project-uid}` namespace on the Karmada hub using
+// MappedNamespaceResourceStrategy. Companions written here are propagated to
+// cells via the always-on referenced-data ResourceSelectors in the city-code
+// PropagationPolicy.
+//
+// The downstreamNamespace field is pre-computed by the controller from the
+// strategy so that every CRUD call uses the same stable name without needing
+// to resolve it repeatedly.
+type downstreamCompanionWriter struct {
+	// hubClient is a client.Client pointed at the Karmada federation control
+	// plane (the same client used by WorkloadDeploymentFederator).
+	hubClient client.Client
+	// downstreamNamespace is the resolved ns-{project-uid} name on the hub.
+	downstreamNamespace string
+}
+
+func (w *downstreamCompanionWriter) ApplyConfigMap(ctx context.Context, cm *corev1.ConfigMap) error {
+	// Redirect the object into the downstream namespace.
+	cm = cm.DeepCopy()
+	cm.Namespace = w.downstreamNamespace
+
+	existing := &corev1.ConfigMap{}
+	err := w.hubClient.Get(ctx, client.ObjectKeyFromObject(cm), existing)
+	if apierrors.IsNotFound(err) {
+		return w.hubClient.Create(ctx, cm)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Labels = cm.Labels
+	existing.Annotations = cm.Annotations
+	existing.Data = cm.Data
+	existing.BinaryData = cm.BinaryData
+	return w.hubClient.Update(ctx, existing)
+}
+
+func (w *downstreamCompanionWriter) ApplySecret(ctx context.Context, secret *corev1.Secret) error {
+	secret = secret.DeepCopy()
+	secret.Namespace = w.downstreamNamespace
+
+	existing := &corev1.Secret{}
+	err := w.hubClient.Get(ctx, client.ObjectKeyFromObject(secret), existing)
+	if apierrors.IsNotFound(err) {
+		return w.hubClient.Create(ctx, secret)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Labels = secret.Labels
+	existing.Annotations = secret.Annotations
+	existing.Data = secret.Data
+	existing.Type = secret.Type
+	return w.hubClient.Update(ctx, existing)
+}
+
+func (w *downstreamCompanionWriter) DeleteConfigMap(ctx context.Context, _, name string) error {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: w.downstreamNamespace, Name: name}}
+	return client.IgnoreNotFound(w.hubClient.Delete(ctx, cm))
+}
+
+func (w *downstreamCompanionWriter) DeleteSecret(ctx context.Context, _, name string) error {
+	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: w.downstreamNamespace, Name: name}}
+	return client.IgnoreNotFound(w.hubClient.Delete(ctx, s))
+}
+
+func (w *downstreamCompanionWriter) GetConfigMap(ctx context.Context, _, name string) (*corev1.ConfigMap, error) {
+	var cm corev1.ConfigMap
+	err := w.hubClient.Get(ctx, types.NamespacedName{Namespace: w.downstreamNamespace, Name: name}, &cm)
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cm, nil
+}
+
+func (w *downstreamCompanionWriter) GetSecret(ctx context.Context, _, name string) (*corev1.Secret, error) {
+	var s corev1.Secret
+	err := w.hubClient.Get(ctx, types.NamespacedName{Namespace: w.downstreamNamespace, Name: name}, &s)
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
 // ReferencedDataControllerOptions configures the ReferencedDataController.
 type ReferencedDataControllerOptions struct {
 	// Reader is used to read source ConfigMaps and Secrets from the project
 	// control plane. When nil, a LocalReader backed by the cluster client is
 	// used, which is appropriate for single-cluster and dev environments.
 	Reader referenceddata.ProjectConfigSecretReader
+
+	// FederationClient is a client pointed at the Karmada federation control
+	// plane (the same client used by WorkloadDeploymentFederator). When
+	// non-nil, companions are materialised into the downstream
+	// ns-{project-uid} namespace on the hub so that Karmada can propagate
+	// them to cells alongside the WorkloadDeployment. When nil, the
+	// single-cluster path is used and companions land in the project namespace.
+	FederationClient client.Client
 
 	// PerObjectLimitBytes is the maximum allowed byte size for a single
 	// companion object (sum of all Data + BinaryData values). Defaults to
@@ -251,7 +348,10 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 	logger.Info("reconciling referenced data", "workloaddeployment", req.NamespacedName)
 	defer logger.Info("reconcile complete")
 
-	writer := r.writerFor(cl.GetClient())
+	writer, err := r.writerFor(ctx, string(req.ClusterName), cl.GetClient(), &wd)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("referenceddata: build companion writer: %w", err)
+	}
 	reader := r.readerFor(cl.GetClient())
 
 	// Handle deletion first: release companions this WD holds a reference to.
@@ -662,12 +762,39 @@ func (r *ReferencedDataController) releaseOneCompanion(
 	return nil
 }
 
-// writerFor returns the companionWriter to use for the given cluster client.
-// In Phase 1 this is always a localCompanionWriter.
+// writerFor returns the companionWriter appropriate for the current mode.
 //
-// Phase 1b: inject a downstreamCompanionWriter here when federation is active.
-func (r *ReferencedDataController) writerFor(c client.Client) companionWriter {
-	return &localCompanionWriter{cl: c}
+// When a FederationClient is configured (management-plane federation mode),
+// it returns a downstreamCompanionWriter that materialises companions into the
+// ns-{project-uid} namespace on the Karmada hub so they are propagated to
+// cells alongside the WorkloadDeployment.
+//
+// When FederationClient is nil (single-cluster / dev mode), it falls back to a
+// localCompanionWriter that writes companions into the same cluster and
+// namespace as the WorkloadDeployment.
+func (r *ReferencedDataController) writerFor(
+	ctx context.Context,
+	clusterName string,
+	projectClient client.Client,
+	wd *computev1alpha.WorkloadDeployment,
+) (companionWriter, error) {
+	if r.opts.FederationClient == nil {
+		return &localCompanionWriter{cl: projectClient}, nil
+	}
+
+	// Compute the downstream namespace using the same MappedNamespaceResourceStrategy
+	// the WorkloadDeploymentFederator uses, so companions land in the same
+	// ns-{project-uid} namespace as the federated WorkloadDeployment.
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(clusterName, projectClient, r.opts.FederationClient)
+	downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, wd.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("resolve downstream namespace: %w", err)
+	}
+
+	return &downstreamCompanionWriter{
+		hubClient:           r.opts.FederationClient,
+		downstreamNamespace: downstreamNS,
+	}, nil
 }
 
 // readerFor returns the ProjectConfigSecretReader to use. When the controller

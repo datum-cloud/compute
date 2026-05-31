@@ -605,6 +605,154 @@ func TestReferencedData_CompanionNamespaceInvariant(t *testing.T) {
 	assert.Equal(t, ns, companion.Namespace, "companion must be in WD's namespace")
 }
 
+// ─── Phase 1b: federated companion writer ────────────────────────────────────
+
+// newRDControllerFederated creates a ReferencedDataController wired with a
+// FederationClient (fake hub client). The project cluster holds the WDs and
+// source ConfigMaps/Secrets; the hub client is the destination for companions.
+func newRDControllerFederated(
+	t *testing.T,
+	projectCl client.Client,
+	hubCl client.Client,
+	reader referenceddata.ProjectConfigSecretReader,
+) (*ReferencedDataController, string) {
+	t.Helper()
+	clusterName := "test-cluster"
+
+	mgr := &fakeMCManager{
+		clusters: map[string]cluster.Cluster{
+			clusterName: &fakeCluster{cl: projectCl},
+		},
+	}
+
+	c := &ReferencedDataController{
+		mgr: mgr,
+		opts: ReferencedDataControllerOptions{
+			Reader:           reader,
+			FederationClient: hubCl,
+		},
+	}
+	return c, clusterName
+}
+
+// TestReferencedData_Federated_CompanionWrittenToHub asserts that, when a
+// FederationClient is configured, companions are materialised into the
+// downstream ns-{project-uid} namespace on the hub rather than the project
+// namespace. The expected-set annotation must also be set on the project WD.
+func TestReferencedData_Federated_CompanionWrittenToHub(t *testing.T) {
+	// Use the same UID as the shared test constants so the downstream namespace
+	// name is deterministic and matches testKarmadaNSStr.
+	projNS := testProjNS
+	projNSUID := testProjNSUID
+	cmName := rdTestAppConfig
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+
+	// Project cluster objects: namespace (with UID), source ConfigMap, WD.
+	projNSObj := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: projNSUID},
+	}
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: projNS, Name: cmName},
+		Data:       map[string]string{"key": "federated-value"},
+	}
+	wd := makeWD(projNS, "wd-fed-1", templateWithConfigMap(cmName))
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s)) // Namespace type
+
+	projectCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(projNSObj, srcCM, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	// Hub client: empty federation control plane.
+	hubScheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(hubScheme))
+	require.NoError(t, computev1alpha.AddToScheme(hubScheme))
+	hubCl := fake.NewClientBuilder().WithScheme(hubScheme).Build()
+
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl, nil)
+
+	// First reconcile: stamps finalizer.
+	reconcileWD(t, c, clusterName, projNS, "wd-fed-1")
+	// Fetch updated WD.
+	wd = getWD(t, projectCl, types.NamespacedName{Namespace: projNS, Name: "wd-fed-1"})
+	require.Contains(t, wd.Finalizers, referencedDataFinalizer)
+
+	// Second reconcile: materialises companion on the hub.
+	reconcileWD(t, c, clusterName, projNS, "wd-fed-1")
+
+	// Companion must exist on the HUB in the downstream namespace, NOT in the project namespace.
+	downstreamNS := testKarmadaNSStr // "ns-aabbccdd-0000-1111-2222-333344445555"
+	var hubCM corev1.ConfigMap
+	require.NoError(t, hubCl.Get(context.Background(),
+		types.NamespacedName{Namespace: downstreamNS, Name: companionName}, &hubCM),
+		"companion ConfigMap must exist on the hub in the downstream namespace")
+	assert.Equal(t, "federated-value", hubCM.Data["key"], "hub companion must copy source Data")
+	assert.Equal(t, "true", hubCM.Labels[computev1alpha.ReferencedDataLabel],
+		"hub companion must carry referenced-data label")
+
+	// Companion must NOT exist in the project namespace.
+	var projCM corev1.ConfigMap
+	err := projectCl.Get(context.Background(),
+		types.NamespacedName{Namespace: projNS, Name: companionName}, &projCM)
+	assert.Error(t, err, "companion must NOT be written to the project namespace in federated mode")
+
+	// Expected-set annotation must be set on the project WD.
+	wd = getWD(t, projectCl, types.NamespacedName{Namespace: projNS, Name: "wd-fed-1"})
+	expectedNames := decodeExpectedAnnotation(t, wd)
+	assert.Equal(t, []string{companionName}, expectedNames)
+}
+
+// TestReferencedData_WriterSelection asserts that writerFor returns a
+// localCompanionWriter when FederationClient is nil, and a
+// downstreamCompanionWriter when it is set.
+func TestReferencedData_WriterSelection(t *testing.T) {
+	t.Parallel()
+
+	projNS := testProjNS
+	projNSUID := testProjNSUID
+
+	projNSObj := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: projNSUID},
+	}
+	wd := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: projNS, Name: "wd-sel"},
+	}
+
+	s := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(s))
+	require.NoError(t, computev1alpha.AddToScheme(s))
+
+	projectCl := fake.NewClientBuilder().WithScheme(s).WithObjects(projNSObj, wd).Build()
+
+	t.Run("no federation client returns localCompanionWriter", func(t *testing.T) {
+		t.Parallel()
+		c := &ReferencedDataController{opts: ReferencedDataControllerOptions{}}
+		w, err := c.writerFor(context.Background(), "test-cluster", projectCl, wd)
+		require.NoError(t, err)
+		_, ok := w.(*localCompanionWriter)
+		assert.True(t, ok, "expected *localCompanionWriter when FederationClient is nil")
+	})
+
+	t.Run("with federation client returns downstreamCompanionWriter", func(t *testing.T) {
+		t.Parallel()
+
+		hubScheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(hubScheme))
+		hubCl := fake.NewClientBuilder().WithScheme(hubScheme).Build()
+
+		c := &ReferencedDataController{opts: ReferencedDataControllerOptions{FederationClient: hubCl}}
+		w, err := c.writerFor(context.Background(), "test-cluster", projectCl, wd)
+		require.NoError(t, err)
+		dsw, ok := w.(*downstreamCompanionWriter)
+		require.True(t, ok, "expected *downstreamCompanionWriter when FederationClient is set")
+		assert.Equal(t, testKarmadaNSStr, dsw.downstreamNamespace,
+			"downstream namespace must be ns-{project-uid}")
+	})
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // stubReader allows individual test cases to inject custom reader behaviour.
