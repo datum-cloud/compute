@@ -4,6 +4,7 @@ package validation
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -424,6 +425,188 @@ func TestReferencedDataSAR(t *testing.T) {
 			cmpErrs(t, tc.expectedErrors, errs)
 		})
 	}
+}
+
+// TestBothRefsSetEnvFrom verifies that an envFrom entry with both configMapRef
+// and secretRef set is rejected by validateEnvFrom AND that the collector
+// produces no refs for the invalid entry (so no SAR is issued for it).
+func TestBothRefsSetEnvFrom(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	// sarCount tracks how many SubjectAccessReviews are created.
+	sarCount := 0
+	cl := interceptor.NewClient(
+		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+					sarCount++
+					sar.GenerateName = sarGenerateName
+					sar.Status.Allowed = true
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		},
+	)
+
+	envFrom := []computev1alpha.EnvFromSource{
+		{
+			ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "cfg"},
+			SecretRef:    &computev1alpha.SecretEnvSource{Name: "sec"},
+		},
+	}
+	root := field.NewPath("envFrom")
+	errs := validateEnvFrom(envFrom, root)
+
+	// Structural validation must reject it.
+	wantErrs := field.ErrorList{
+		field.Forbidden(root.Index(0).Child("secretRef"), ""),
+	}
+	cmpErrs(t, wantErrs, errs)
+
+	// No SAR should have been issued for the invalid entry.
+	workload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].EnvFrom = envFrom
+	})
+	sarCountBefore := sarCount
+	specPath := field.NewPath("spec").Child("template").Child("spec")
+	opts := WorkloadValidationOptions{
+		Client:           cl,
+		Context:          context.Background(),
+		Workload:         workload,
+		AdmissionRequest: admission.Request{},
+		ValidCityCodes:   []string{testCityCodeDFW},
+	}
+	_ = validateReferencedDataAccess(workload.Spec.Template.Spec, specPath, opts)
+	if sarCount != sarCountBefore {
+		t.Errorf("SAR was issued for invalid both-refs-set envFrom entry: got %d SAR(s), want 0 additional", sarCount-sarCountBefore)
+	}
+}
+
+// TestReferencedDataSARInternalError verifies that when Client.Create returns
+// an error the check is fail-closed (InternalError, not silent allow).
+func TestReferencedDataSARInternalError(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	errored := interceptor.NewClient(
+		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		interceptor.Funcs{
+			Create: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.CreateOption) error {
+				if _, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+					return fmt.Errorf("injected SAR error")
+				}
+				return nil
+			},
+		},
+	)
+
+	workload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
+			{
+				Name: "cfg-vol",
+				VolumeSource: computev1alpha.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+					},
+				},
+			},
+		}
+	})
+
+	specPath := field.NewPath("spec").Child("template").Child("spec")
+	opts := WorkloadValidationOptions{
+		Client:           errored,
+		Context:          context.Background(),
+		Workload:         workload,
+		AdmissionRequest: admission.Request{},
+		ValidCityCodes:   []string{testCityCodeDFW},
+	}
+
+	errs := validateReferencedDataAccess(workload.Spec.Template.Spec, specPath, opts)
+	if len(errs) == 0 {
+		t.Fatal("expected InternalError when SAR Client.Create fails, got no errors")
+	}
+	for _, e := range errs {
+		if e.Type != field.ErrorTypeInternal {
+			t.Errorf("expected InternalError type, got %v", e.Type)
+		}
+	}
+}
+
+// TestValidateUpdateSARPath verifies that ValidateUpdate exercises the same
+// referenced-data SAR path as ValidateCreate. We test the validation function
+// directly (not the webhook handler) because wiring a full mcmanager in a unit
+// test is out of scope; the webhook's ValidateUpdate delegates to
+// ValidateWorkloadCreate, which is the function under test here.
+func TestValidateUpdateSARPath(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	// denyConfigMaps denies SARs for configmaps, allows everything else.
+	// This isolates the referenced-data check from the network check.
+	denyConfigMaps := interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+				sar.GenerateName = sarGenerateName
+				if sar.Spec.ResourceAttributes != nil && sar.Spec.ResourceAttributes.Resource == "configmaps" {
+					sar.Status.Allowed = false
+				} else {
+					sar.Status.Allowed = true
+				}
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	}
+
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(&networkingv1alpha.Network{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testDefaultNamespace, Name: testDefaultNamespace},
+		}).
+		Build()
+
+	// Workload now references a ConfigMap — the SAR check must fire on update.
+	newWorkload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
+			{
+				Name: "cfg-vol",
+				VolumeSource: computev1alpha.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+					},
+				},
+			},
+		}
+		w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].VolumeAttachments = []computev1alpha.VolumeAttachment{
+			{Name: "cfg-vol"},
+		}
+	})
+
+	cl := interceptor.NewClient(baseClient, denyConfigMaps)
+	opts := WorkloadValidationOptions{
+		Client:           cl,
+		Context:          context.Background(),
+		Workload:         newWorkload,
+		AdmissionRequest: admission.Request{},
+		ValidCityCodes:   []string{testCityCodeDFW},
+	}
+
+	// ValidateWorkloadCreate is called by ValidateUpdate in the webhook; here
+	// we call it directly to verify the SAR path fires for the new template.
+	errs := ValidateWorkloadCreate(newWorkload, opts)
+	specPath := field.NewPath("spec").Child("template").Child("spec")
+	wantErrs := field.ErrorList{
+		field.Forbidden(specPath.Child("configmaps").Key("app-config"), ""),
+	}
+	cmpErrs(t, wantErrs, errs)
 }
 
 // TestValidateVolumeProjectionPath tests the path safety validator.
