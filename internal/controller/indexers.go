@@ -23,12 +23,6 @@ const (
 
 	deploymentLocationIndex = "deploymentLocationIndex"
 
-	// instanceByWorkloadDeploymentUIDIndex indexes Instances by the
-	// workload-deployment-uid label value. Used by the companion watch handler
-	// to efficiently find all Instances belonging to a given WorkloadDeployment
-	// when a companion ConfigMap or Secret changes.
-	instanceByWorkloadDeploymentUIDIndex = "instanceByWorkloadDeploymentUIDIndex"
-
 	// wdRefersToConfigMapIndex indexes WorkloadDeployments by the ConfigMap
 	// names they reference (via env.ValueFrom, envFrom, or volumes). Used by
 	// the ReferencedDataController's source-watch to re-queue WDs when a source
@@ -48,20 +42,12 @@ func AddIndexers(ctx context.Context, mgr mcmanager.Manager) error {
 	)
 }
 
-func addInstanceIndexers(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &computev1alpha.Instance{}, instanceByWorkloadDeploymentUIDIndex, instanceByWorkloadDeploymentUIDIndexFunc); err != nil {
-		return fmt.Errorf("failed to add instance indexer %q: %w", instanceByWorkloadDeploymentUIDIndex, err)
-	}
+func addInstanceIndexers(_ context.Context, _ mcmanager.Manager) error {
+	// No instance-level indexes are currently registered. The companion-watch
+	// enqueue handler (enqueueInstancesInNamespace) lists all Instances in the
+	// namespace directly, which is correct because companions are shared across
+	// all Instances in a namespace.
 	return nil
-}
-
-func instanceByWorkloadDeploymentUIDIndexFunc(o client.Object) []string {
-	instance := o.(*computev1alpha.Instance)
-	uid := instance.Labels[computev1alpha.WorkloadDeploymentUIDLabel]
-	if uid == "" {
-		return nil
-	}
-	return []string{uid}
 }
 
 func addWorkloadDeploymentIndexers(ctx context.Context, mgr mcmanager.Manager) error {

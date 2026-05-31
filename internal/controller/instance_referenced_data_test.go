@@ -460,14 +460,96 @@ drainLoop:
 	assert.Equal(t, 1, normalEvents, "expected exactly one Normal/Ready event on gate-clear")
 }
 
-// drainEvents consumes all pending events from the channel without blocking.
-func drainEvents(ch <-chan string) {
-	for {
-		select {
-		case <-ch:
-		default:
-			return
-		}
+// TestReferencedDataStaleConditionGuard verifies that a stale True condition
+// from generation N does not cause the ReferencedData gate to be removed for
+// an instance at generation N+1. The gate must only be cleared once the
+// condition has been re-evaluated at the current generation.
+func TestReferencedDataStaleConditionGuard(t *testing.T) {
+	expected := []string{"configmap.app-config"}
+	annoVal, _ := json.Marshal(expected)
+	wd := makeWDForCell(string(annoVal))
+
+	companion := makeCompanionConfigMap("configmap.app-config")
+
+	// Build an instance at generation 2 whose ReferencedDataReady condition is
+	// True but was observed at generation 1 (stale). The gate is present because
+	// the spec was updated (rolling update) after the condition was last written.
+	inst := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       refDataTestInstance,
+			Namespace:  refDataTestNamespace,
+			Generation: 2, // current generation after spec update
+			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
+			Labels: map[string]string{
+				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "compute.datumapis.com/v1alpha",
+					Kind:       "WorkloadDeployment",
+					Name:       refDataTestDeployment,
+					UID:        "wd-uid",
+					Controller: func() *bool { b := true; return &b }(),
+				},
+			},
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+				},
+			},
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+			},
+			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+		},
+		Status: computev1alpha.InstanceStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:   computev1alpha.ReferencedDataReady,
+					Status: metav1.ConditionTrue,
+					Reason: computev1alpha.ReferencedDataReasonReady,
+					// ObservedGeneration=1: stale — condition was set before the rolling update
+					// bumped the spec to generation 2.
+					ObservedGeneration: 1,
+					Message:            "All 1 referenced companion(s) are present on cell",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	r, projectClient, _ := newRefDataReconciler(t,
+		[]client.Object{inst, wd, companion},
+	)
+
+	// First reconcile: re-evaluates condition at generation 2 (updates ObservedGeneration).
+	// The gate must NOT be removed during this pass because reconcileSchedulingGates
+	// sees the stale condition (ObservedGeneration=1) that was loaded before the
+	// status update. After the status update the condition is at generation 2.
+	reconcileRefData(t, r)
+
+	var afterFirst computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &afterFirst))
+
+	// Condition should now reflect generation 2.
+	cond := apimeta.FindStatusCondition(afterFirst.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond, "ReferencedDataReady condition should be present")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, int64(2), cond.ObservedGeneration, "condition ObservedGeneration should be updated to current generation")
+
+	// Second reconcile: condition is now at generation 2 — gate should be cleared.
+	reconcileRefData(t, r)
+
+	var afterSecond computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &afterSecond))
+
+	for _, g := range afterSecond.Spec.Controller.SchedulingGates {
+		assert.NotEqual(t, instancecontrol.ReferencedDataSchedulingGate.String(), g.Name,
+			"ReferencedData gate should be removed once condition is at current generation")
 	}
 }
 
