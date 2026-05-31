@@ -65,14 +65,19 @@ const (
 // companionWriter is the abstraction that the controller uses to materialise
 // companion ConfigMaps and Secrets on the target namespace/cluster.
 //
-// Phase 1 (single-cluster): localCompanionWriter writes companions to the same
-// cluster and namespace that the WorkloadDeployment lives in.
+// localCompanionWriter: writes companions to the same cluster and namespace
+// that the WorkloadDeployment lives in. This path is selected when
+// FederationClient is nil. NOTE: on the federation branch the management
+// controllers always set FederationClient, so localCompanionWriter is
+// effectively unreachable in production. It is retained for single-cluster
+// dev/test environments and is NOT used in any management-plane federation
+// wiring on this branch.
 //
-// Phase 1b (federation): downstreamCompanionWriter uses Milo's
-// MappedNamespaceResourceStrategy to write companions into the
-// `ns-{project-uid}` namespace on the Karmada hub so they are propagated to
-// cells alongside the WorkloadDeployment. The federator's PropagationPolicy
-// always includes ConfigMap/Secret selectors matching the referenced-data label.
+// downstreamCompanionWriter: uses Milo's MappedNamespaceResourceStrategy to
+// write companions into the `ns-{project-uid}` namespace on the Karmada hub
+// so they are propagated to cells alongside the WorkloadDeployment. The
+// federator's PropagationPolicy always includes ConfigMap/Secret selectors
+// matching the referenced-data label.
 type companionWriter interface {
 	// Apply creates or updates the companion ConfigMap in the target namespace.
 	// It is idempotent and must preserve the ref-count annotation set by the
@@ -110,8 +115,8 @@ func (w *localCompanionWriter) ApplyConfigMap(ctx context.Context, cm *corev1.Co
 	if err != nil {
 		return err
 	}
-	existing.Labels = cm.Labels
-	existing.Annotations = cm.Annotations
+	mergeLabels(existing, cm.Labels)
+	mergeAnnotations(existing, cm.Annotations)
 	existing.Data = cm.Data
 	existing.BinaryData = cm.BinaryData
 	return w.cl.Update(ctx, existing)
@@ -126,8 +131,8 @@ func (w *localCompanionWriter) ApplySecret(ctx context.Context, secret *corev1.S
 	if err != nil {
 		return err
 	}
-	existing.Labels = secret.Labels
-	existing.Annotations = secret.Annotations
+	mergeLabels(existing, secret.Labels)
+	mergeAnnotations(existing, secret.Annotations)
 	existing.Data = secret.Data
 	existing.Type = secret.Type
 	return w.cl.Update(ctx, existing)
@@ -197,8 +202,11 @@ func (w *downstreamCompanionWriter) ApplyConfigMap(ctx context.Context, cm *core
 	if err != nil {
 		return err
 	}
-	existing.Labels = cm.Labels
-	existing.Annotations = cm.Annotations
+	// Merge controller-owned labels/annotations into the existing object rather
+	// than replacing them wholesale. This preserves Karmada bookkeeping
+	// annotations that the federation hub stamps on propagated objects.
+	mergeLabels(existing, cm.Labels)
+	mergeAnnotations(existing, cm.Annotations)
 	existing.Data = cm.Data
 	existing.BinaryData = cm.BinaryData
 	return w.hubClient.Update(ctx, existing)
@@ -216,8 +224,9 @@ func (w *downstreamCompanionWriter) ApplySecret(ctx context.Context, secret *cor
 	if err != nil {
 		return err
 	}
-	existing.Labels = secret.Labels
-	existing.Annotations = secret.Annotations
+	// Same merge semantics as ApplyConfigMap — preserve Karmada bookkeeping.
+	mergeLabels(existing, secret.Labels)
+	mergeAnnotations(existing, secret.Annotations)
 	existing.Data = secret.Data
 	existing.Type = secret.Type
 	return w.hubClient.Update(ctx, existing)
@@ -387,7 +396,7 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 
 	// Read each source, enforcing size limits.
 	// Cluster name = project ID in Milo mode; ignored by LocalReader.
-	sources, condErr := r.resolveAndValidateSources(ctx, reader, string(req.ClusterName), refs)
+	sources, condErr := r.resolveAndValidateSources(ctx, reader, string(req.ClusterName), refs, wd.Spec.Template)
 	if condErr != nil {
 		// A condition error signals a transient or permanent source problem —
 		// surface it on the WD and return without requeueing (source watch re-triggers).
@@ -399,7 +408,9 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 		expectedNames = append(expectedNames, referenceddata.CompanionNameForRef(src.ref))
 	}
 
-	wdKey := types.NamespacedName{Namespace: wd.Namespace, Name: wd.Name}.String()
+	// wdKey is used both as the ref-count entry key (string form) and for GET/Patch retries.
+	wdNSN := types.NamespacedName{Namespace: wd.Namespace, Name: wd.Name}
+	wdKey := wdNSN.String()
 
 	if err := r.materialiseCompanions(ctx, writer, wd.Namespace, wdKey, sources); err != nil {
 		return ctrl.Result{}, err
@@ -411,31 +422,53 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 	}
 
 	// Stamp the expected-set annotation on the WD so the cell can gate-clear.
+	// Wrap in RetryOnConflict: the federator may concurrently update the same WD,
+	// producing a conflict on the Patch. The annotation write is idempotent, so
+	// retrying with a fresh GET is safe.
 	annoVal, err := json.Marshal(expectedNames)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("referenceddata: marshal expected-referenced-data annotation: %w", err)
 	}
-	patch := client.MergeFrom(wd.DeepCopy())
-	if wd.Annotations == nil {
-		wd.Annotations = make(map[string]string)
-	}
-	wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation] = string(annoVal)
-	if err := cl.GetClient().Patch(ctx, &wd, patch); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := cl.GetClient().Get(ctx, wdNSN, &wd); err != nil {
+			return err
+		}
+		patch := client.MergeFrom(wd.DeepCopy())
+		if wd.Annotations == nil {
+			wd.Annotations = make(map[string]string)
+		}
+		wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation] = string(annoVal)
+		return cl.GetClient().Patch(ctx, &wd, patch)
+	}); err != nil {
+		if apierrors.IsConflict(err) {
+			// Conflict after retries — requeue for the next cycle.
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("referenceddata: patch expected-referenced-data annotation: %w", err)
 	}
 
 	// Update ReferencedDataReady=True on the WD status.
-	changed := apimeta.SetStatusCondition(&wd.Status.Conditions, metav1.Condition{
-		Type:               computev1alpha.ReferencedDataReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             computev1alpha.ReferencedDataReasonReady,
-		Message:            fmt.Sprintf("All %d referenced companion(s) are materialised", len(expectedNames)),
-		ObservedGeneration: wd.Generation,
-	})
-	if changed {
-		if err := cl.GetClient().Status().Update(ctx, &wd); err != nil {
-			return ctrl.Result{}, fmt.Errorf("referenceddata: update WD status (ready): %w", err)
+	// Tolerate conflict: the federator may have updated the WD status concurrently.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := cl.GetClient().Get(ctx, wdNSN, &wd); err != nil {
+			return err
 		}
+		changed := apimeta.SetStatusCondition(&wd.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.ReferencedDataReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.ReferencedDataReasonReady,
+			Message:            fmt.Sprintf("All %d referenced companion(s) are materialised", len(expectedNames)),
+			ObservedGeneration: wd.Generation,
+		})
+		if !changed {
+			return nil
+		}
+		return cl.GetClient().Status().Update(ctx, &wd)
+	}); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("referenceddata: update WD status (ready): %w", err)
 	}
 
 	return ctrl.Result{}, nil
@@ -524,11 +557,17 @@ type conditionError struct {
 // enforces per-object and aggregate size limits, and returns the resolved set.
 // On the first validation failure it returns a conditionError; the caller
 // surfaces this as a False condition on the WD.
+//
+// Optional sources: when a source has optional=true in the WD template and is
+// missing (SourceNotFound) or oversized (SourceTooLarge), it is silently
+// skipped rather than aborting the whole WD. The WD may proceed with the
+// remaining non-optional companions.
 func (r *ReferencedDataController) resolveAndValidateSources(
 	ctx context.Context,
 	reader referenceddata.ProjectConfigSecretReader,
 	projectID string,
 	refs referenceddata.ReferencedSet,
+	tmpl computev1alpha.InstanceTemplateSpec,
 ) ([]sourceResult, *conditionError) {
 	perObjLimit := r.opts.PerObjectLimitBytes
 	if perObjLimit <= 0 {
@@ -543,11 +582,20 @@ func (r *ReferencedDataController) resolveAndValidateSources(
 	var aggregateBytes int64
 
 	for _, ref := range refs {
+		optional := isOptionalRef(ref, tmpl)
 		src, sz, cerr := r.resolveOneSource(ctx, reader, projectID, ref)
 		if cerr != nil {
+			// Skip optional sources that are missing or unauthorized.
+			if optional && (cerr.reason == computev1alpha.ReferencedDataReasonSourceNotFound ||
+				cerr.reason == computev1alpha.ReferencedDataReasonSourceUnauthorized) {
+				continue
+			}
 			return nil, cerr
 		}
 		if sz > perObjLimit {
+			if optional {
+				continue // skip oversized optional sources
+			}
 			return nil, &conditionError{
 				reason:  computev1alpha.ReferencedDataReasonSourceTooLarge,
 				message: fmt.Sprintf("%s %q in namespace %q exceeds per-object size limit (%d bytes > %d bytes)", ref.Kind, ref.Name, ref.Namespace, sz, perObjLimit),
@@ -565,8 +613,69 @@ func (r *ReferencedDataController) resolveAndValidateSources(
 	return sources, nil
 }
 
+// isOptionalRef returns true when the given ObjectRef corresponds to a source
+// that was marked optional=true anywhere in the instance template spec.
+// It checks all volume mounts and env/envFrom sources that match (kind, name).
+func isOptionalRef(ref referenceddata.ObjectRef, tmpl computev1alpha.InstanceTemplateSpec) bool {
+	boolTrue := func(b *bool) bool { return b != nil && *b }
+
+	// Check volumes.
+	for _, v := range tmpl.Spec.Volumes {
+		switch ref.Kind {
+		case kindConfigMap:
+			if v.ConfigMap != nil && v.ConfigMap.Name == ref.Name {
+				if boolTrue(v.ConfigMap.Optional) {
+					return true
+				}
+			}
+		case kindSecret:
+			if v.Secret != nil && v.Secret.SecretName == ref.Name {
+				if boolTrue(v.Secret.Optional) {
+					return true
+				}
+			}
+		}
+	}
+
+	// Check sandbox container env/envFrom.
+	if sb := tmpl.Spec.Runtime.Sandbox; sb != nil {
+		for _, c := range sb.Containers {
+			for _, ef := range c.EnvFrom {
+				switch ref.Kind {
+				case kindConfigMap:
+					if ef.ConfigMapRef != nil && ef.ConfigMapRef.Name == ref.Name && boolTrue(ef.ConfigMapRef.Optional) {
+						return true
+					}
+				case kindSecret:
+					if ef.SecretRef != nil && ef.SecretRef.Name == ref.Name && boolTrue(ef.SecretRef.Optional) {
+						return true
+					}
+				}
+			}
+			for _, e := range c.Env {
+				if e.ValueFrom == nil {
+					continue
+				}
+				switch ref.Kind {
+				case kindConfigMap:
+					if e.ValueFrom.ConfigMapKeyRef != nil && e.ValueFrom.ConfigMapKeyRef.Name == ref.Name && boolTrue(e.ValueFrom.ConfigMapKeyRef.Optional) {
+						return true
+					}
+				case kindSecret:
+					if e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == ref.Name && boolTrue(e.ValueFrom.SecretKeyRef.Optional) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // resolveOneSource reads a single ConfigMap or Secret from the project. It
 // returns the sourceResult, its byte size, and any condition error.
+// A (nil, nil) return from the reader is treated as SourceNotFound.
 func (r *ReferencedDataController) resolveOneSource(
 	ctx context.Context,
 	reader referenceddata.ProjectConfigSecretReader,
@@ -580,6 +689,12 @@ func (r *ReferencedDataController) resolveOneSource(
 			reason, msg := classifyReaderError(err, ref)
 			return nil, 0, &conditionError{reason: reason, message: msg}
 		}
+		if cm == nil {
+			return nil, 0, &conditionError{
+				reason:  computev1alpha.ReferencedDataReasonSourceNotFound,
+				message: fmt.Sprintf("ConfigMap %q not found in namespace %q", ref.Name, ref.Namespace),
+			}
+		}
 		return &sourceResult{ref: ref, cm: cm}, configMapSize(cm), nil
 
 	case kindSecret:
@@ -587,6 +702,12 @@ func (r *ReferencedDataController) resolveOneSource(
 		if err != nil {
 			reason, msg := classifyReaderError(err, ref)
 			return nil, 0, &conditionError{reason: reason, message: msg}
+		}
+		if secret == nil {
+			return nil, 0, &conditionError{
+				reason:  computev1alpha.ReferencedDataReasonSourceNotFound,
+				message: fmt.Sprintf("Secret %q not found in namespace %q", ref.Name, ref.Namespace),
+			}
 		}
 		return &sourceResult{ref: ref, secret: secret}, secretSize(secret), nil
 
@@ -614,6 +735,11 @@ func (r *ReferencedDataController) materialiseCompanions(
 }
 
 // materialiseOne applies a single companion ConfigMap or Secret.
+//
+// The ref-count annotation is read-modify-written inside a RetryOnConflict
+// loop: we fetch the latest companion, update the annotation, and apply.
+// This makes the ref-count mutation conflict-safe when two WDs sharing a
+// source reconcile concurrently.
 func (r *ReferencedDataController) materialiseOne(
 	ctx context.Context,
 	writer companionWriter,
@@ -622,34 +748,54 @@ func (r *ReferencedDataController) materialiseOne(
 ) error {
 	switch src.ref.Kind {
 	case kindConfigMap:
-		existing, err := writer.GetConfigMap(ctx, namespace, companionName)
-		if err != nil {
-			return fmt.Errorf("referenceddata: get companion ConfigMap %q: %w", companionName, err)
-		}
-		var existingAnnots map[string]string
-		if existing != nil {
-			existingAnnots = existing.Annotations
-		}
-		refs := refCountAdd(existingAnnots, wdKey)
-		cm := buildCompanionConfigMap(namespace, companionName, src.cm, refs)
-		if err := writer.ApplyConfigMap(ctx, cm); err != nil {
-			return fmt.Errorf("referenceddata: apply companion ConfigMap %q: %w", companionName, err)
-		}
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			existing, err := writer.GetConfigMap(ctx, namespace, companionName)
+			if err != nil {
+				return fmt.Errorf("referenceddata: get companion ConfigMap %q: %w", companionName, err)
+			}
+			var existingAnnots map[string]string
+			if existing != nil {
+				existingAnnots = existing.Annotations
+			}
+			refs, err := refCountAdd(existingAnnots, wdKey)
+			if err != nil {
+				return fmt.Errorf("referenceddata: ref-count add for ConfigMap %q: %w", companionName, err)
+			}
+			// Guard: src.cm may be nil if the reader returned (nil, nil).
+			if src.cm == nil {
+				return fmt.Errorf("referenceddata: source ConfigMap for companion %q is nil", companionName)
+			}
+			cm := buildCompanionConfigMap(namespace, companionName, src.cm, refs)
+			if err := writer.ApplyConfigMap(ctx, cm); err != nil {
+				return fmt.Errorf("referenceddata: apply companion ConfigMap %q: %w", companionName, err)
+			}
+			return nil
+		})
 
 	case kindSecret:
-		existing, err := writer.GetSecret(ctx, namespace, companionName)
-		if err != nil {
-			return fmt.Errorf("referenceddata: get companion Secret %q: %w", companionName, err)
-		}
-		var existingAnnots map[string]string
-		if existing != nil {
-			existingAnnots = existing.Annotations
-		}
-		refs := refCountAdd(existingAnnots, wdKey)
-		s := buildCompanionSecret(namespace, companionName, src.secret, refs)
-		if err := writer.ApplySecret(ctx, s); err != nil {
-			return fmt.Errorf("referenceddata: apply companion Secret %q: %w", companionName, err)
-		}
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			existing, err := writer.GetSecret(ctx, namespace, companionName)
+			if err != nil {
+				return fmt.Errorf("referenceddata: get companion Secret %q: %w", companionName, err)
+			}
+			var existingAnnots map[string]string
+			if existing != nil {
+				existingAnnots = existing.Annotations
+			}
+			refs, err := refCountAdd(existingAnnots, wdKey)
+			if err != nil {
+				return fmt.Errorf("referenceddata: ref-count add for Secret %q: %w", companionName, err)
+			}
+			// Guard: src.secret may be nil if the reader returned (nil, nil).
+			if src.secret == nil {
+				return fmt.Errorf("referenceddata: source Secret for companion %q is nil", companionName)
+			}
+			s := buildCompanionSecret(namespace, companionName, src.secret, refs)
+			if err := writer.ApplySecret(ctx, s); err != nil {
+				return fmt.Errorf("referenceddata: apply companion Secret %q: %w", companionName, err)
+			}
+			return nil
+		})
 	}
 	return nil
 }
@@ -760,6 +906,13 @@ func (r *ReferencedDataController) releaseRemovedCompanions(
 // releaseOneCompanion removes wdKey from the ref-count annotation of the named
 // companion (checking both ConfigMap and Secret kinds). If the ref-count
 // becomes empty the companion is deleted.
+//
+// The read-modify-write is wrapped in RetryOnConflict: two WDs concurrently
+// releasing the same companion will each re-read and update safely.
+//
+// If the ref-count annotation is unparseable the whole call returns an error
+// (transient). The companion is NOT deleted in that case — it may still be
+// referenced by other WDs whose entries are recorded in the corrupt annotation.
 func (r *ReferencedDataController) releaseOneCompanion(
 	ctx context.Context,
 	_ client.Client,
@@ -767,34 +920,58 @@ func (r *ReferencedDataController) releaseOneCompanion(
 	namespace, companionName, wdKey string,
 ) error {
 	// Try ConfigMap.
-	cm, err := writer.GetConfigMap(ctx, namespace, companionName)
-	if err != nil {
-		return fmt.Errorf("get companion ConfigMap %q: %w", companionName, err)
-	}
-	if cm != nil {
-		remaining := refCountRemove(cm.Annotations, wdKey)
+	var cmExists bool
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm, err := writer.GetConfigMap(ctx, namespace, companionName)
+		if err != nil {
+			return fmt.Errorf("get companion ConfigMap %q: %w", companionName, err)
+		}
+		if cm == nil {
+			return nil // not a ConfigMap companion
+		}
+		cmExists = true
+		remaining, err := refCountRemove(cm.Annotations, wdKey)
+		if err != nil {
+			// Annotation is corrupt — treat as transient to avoid unsafe deletion.
+			return fmt.Errorf("referenceddata: corrupt ref-count on ConfigMap %q: %w", companionName, err)
+		}
 		if len(remaining) == 0 {
 			return writer.DeleteConfigMap(ctx, namespace, companionName)
 		}
+		if cm.Annotations == nil {
+			cm.Annotations = make(map[string]string)
+		}
 		cm.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
 		return writer.ApplyConfigMap(ctx, cm)
+	}); err != nil {
+		return err
+	}
+	if cmExists {
+		return nil
 	}
 
 	// Try Secret.
-	s, err := writer.GetSecret(ctx, namespace, companionName)
-	if err != nil {
-		return fmt.Errorf("get companion Secret %q: %w", companionName, err)
-	}
-	if s != nil {
-		remaining := refCountRemove(s.Annotations, wdKey)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		s, err := writer.GetSecret(ctx, namespace, companionName)
+		if err != nil {
+			return fmt.Errorf("get companion Secret %q: %w", companionName, err)
+		}
+		if s == nil {
+			return nil
+		}
+		remaining, err := refCountRemove(s.Annotations, wdKey)
+		if err != nil {
+			return fmt.Errorf("referenceddata: corrupt ref-count on Secret %q: %w", companionName, err)
+		}
 		if len(remaining) == 0 {
 			return writer.DeleteSecret(ctx, namespace, companionName)
 		}
+		if s.Annotations == nil {
+			s.Annotations = make(map[string]string)
+		}
 		s.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
 		return writer.ApplySecret(ctx, s)
-	}
-
-	return nil
+	})
 }
 
 // writerFor returns the companionWriter appropriate for the current mode.
@@ -884,35 +1061,50 @@ func buildCompanionSecret(namespace, name string, src *corev1.Secret, refs []str
 
 // refCountAdd returns the sorted, deduplicated slice of WD keys after adding
 // wdKey. annotations may be nil (companion does not yet exist).
-func refCountAdd(annotations map[string]string, wdKey string) []string {
-	current := decodeRefCount(annotations)
+// Returns an error when the existing ref-count annotation cannot be parsed —
+// the caller must treat this as a transient error and NOT delete the companion.
+func refCountAdd(annotations map[string]string, wdKey string) ([]string, error) {
+	current, err := decodeRefCount(annotations)
+	if err != nil {
+		return nil, err
+	}
 	for _, k := range current {
 		if k == wdKey {
-			return current
+			return current, nil
 		}
 	}
 	current = append(current, wdKey)
 	slices.Sort(current)
-	return current
+	return current, nil
 }
 
 // refCountRemove returns the remaining WD keys after removing wdKey.
-func refCountRemove(annotations map[string]string, wdKey string) []string {
-	current := decodeRefCount(annotations)
-	return slices.DeleteFunc(current, func(k string) bool { return k == wdKey })
+// Returns an error when the existing ref-count annotation cannot be parsed —
+// the caller must treat this as a transient error and NOT delete the companion,
+// because other WDs may still hold references recorded in the corrupt entry.
+func refCountRemove(annotations map[string]string, wdKey string) ([]string, error) {
+	current, err := decodeRefCount(annotations)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(current, func(k string) bool { return k == wdKey }), nil
 }
 
 // decodeRefCount parses the ref-count annotation into a slice of WD keys.
-func decodeRefCount(annotations map[string]string) []string {
+// Returns (nil, nil) when the annotation is absent or empty.
+// Returns an error when the annotation is present but cannot be parsed — the
+// caller must treat this as a transient error rather than an empty ref-count,
+// to avoid incorrectly deleting a companion that may still be referenced.
+func decodeRefCount(annotations map[string]string) ([]string, error) {
 	raw, ok := annotations[companionRefCountAnnotation]
 	if !ok || raw == "" {
-		return nil
+		return nil, nil
 	}
 	var keys []string
 	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
-		return nil
+		return nil, fmt.Errorf("referenceddata: corrupt ref-count annotation %q: %w", raw, err)
 	}
-	return keys
+	return keys, nil
 }
 
 // encodeRefCount serialises WD keys as a JSON array. Returns "[]" on error.
@@ -925,6 +1117,40 @@ func encodeRefCount(refs []string) string {
 		return "[]"
 	}
 	return string(b)
+}
+
+// mergeLabels merges wanted labels into obj.Labels, preserving keys not present
+// in wanted. This ensures third-party labels (e.g. from Karmada) are not
+// discarded on update.
+func mergeLabels(obj interface {
+	GetLabels() map[string]string
+	SetLabels(map[string]string)
+}, wanted map[string]string) {
+	existing := obj.GetLabels()
+	if existing == nil {
+		existing = make(map[string]string)
+	}
+	for k, v := range wanted {
+		existing[k] = v
+	}
+	obj.SetLabels(existing)
+}
+
+// mergeAnnotations merges wanted annotations into obj.Annotations, preserving
+// keys not present in wanted. This ensures third-party annotations (e.g. from
+// Karmada bookkeeping) are not discarded on update.
+func mergeAnnotations(obj interface {
+	GetAnnotations() map[string]string
+	SetAnnotations(map[string]string)
+}, wanted map[string]string) {
+	existing := obj.GetAnnotations()
+	if existing == nil {
+		existing = make(map[string]string)
+	}
+	for k, v := range wanted {
+		existing[k] = v
+	}
+	obj.SetAnnotations(existing)
 }
 
 // configMapSize returns the total byte size of all Data and BinaryData values

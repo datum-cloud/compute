@@ -34,22 +34,15 @@ type ProjectReader struct {
 	// per-project copies are created via rest.CopyConfig.
 	baseConfig *rest.Config
 
-	// schemeBuilder is used when constructing per-project clients.
-	scheme interface{ AddToScheme(s interface{}) error }
-
 	mu      sync.Mutex
 	clients map[string]client.Client
 }
 
 // NewProjectReader creates a ProjectReader that will rewrite baseConfig to each
-// project's control plane. The caller must supply a *runtime.Scheme that
-// includes corev1; typically clientgoscheme is sufficient.
-func NewProjectReader(baseConfig *rest.Config, scheme interface {
-	AddToScheme(s interface{}) error
-}) *ProjectReader {
+// project's control plane.
+func NewProjectReader(baseConfig *rest.Config) *ProjectReader {
 	return &ProjectReader{
 		baseConfig: baseConfig,
-		scheme:     scheme,
 		clients:    make(map[string]client.Client),
 	}
 }
