@@ -297,6 +297,9 @@ tasks:
             yaml.dump(cfg, f, default_flow_style=False)
         PYEOF
         rm {{.KUBECONFIG_DIR}}/karmada-raw.yaml
+      # Copy karmada.yaml → downstream.yaml so Chainsaw tests that declare
+      # cluster: downstream can load it (chainsaw-config.yaml references this path).
+      - cp {{.KUBECONFIG_DIR}}/karmada.yaml {{.KUBECONFIG_DIR}}/downstream.yaml
 
   # ════════════════════════════════════════════════════════════════════════
   #  POP cell cluster registration
@@ -360,10 +363,11 @@ tasks:
   # ════════════════════════════════════════════════════════════════════════
 
   e2e:crds:install:
-    desc: "Install compute + NSO CRDs to all clusters"
+    desc: "Install compute + NSO + quota CRDs to all clusters"
     cmds:
       - task: _e2e:crds:compute
       - task: _e2e:crds:nso
+      - task: _e2e:crds:quota
 
   _e2e:crds:compute:
     internal: true
@@ -404,6 +408,28 @@ tasks:
           kubectl --kubeconfig="$KC" apply -k "${NSO_CRD_PATH}" --server-side
         done
 
+  _e2e:crds:quota:
+    internal: true
+    desc: "Apply Milo quota CRDs to all clusters and the Karmada API server"
+    cmds:
+      # Quota CRDs (ResourceClaim, ResourceGrant, etc.) are required on all
+      # clusters so the InstanceReconciler can create and watch ResourceClaims
+      # against project Milo control planes without cache startup errors.
+      - |
+        go mod download go.miloapis.com/milo
+        MILO_VERSION=$(go list -m -json go.miloapis.com/milo \
+          | python3 -c "import sys, json; print(json.load(sys.stdin)['Version'])")
+        QUOTA_CRD_PATH="$(go env GOMODCACHE)/go.miloapis.com/milo@${MILO_VERSION}/config/crd/bases/quota"
+        echo "Milo quota CRDs from: ${QUOTA_CRD_PATH}"
+        for KC in \
+          {{.KUBECONFIG_DIR}}/control-plane.yaml \
+          {{.KUBECONFIG_DIR}}/karmada.yaml \
+          {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+          {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
+          echo "Installing Milo quota CRDs → $(basename $KC .yaml)..."
+          kubectl --kubeconfig="$KC" apply -k "${QUOTA_CRD_PATH}" --server-side
+        done
+
   # ════════════════════════════════════════════════════════════════════════
   #  Operator lifecycle (background processes for federation e2e)
   # ════════════════════════════════════════════════════════════════════════
@@ -416,7 +442,8 @@ tasks:
         echo "Starting management operator (control-plane)..."
         KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
         go run ./cmd/main.go \
-          --karmada-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          --federation-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          --enable-management-controllers=true \
           --enable-cell-controllers=false \
           --leader-elect=false \
           --health-probe-bind-address=:9091 \
@@ -439,7 +466,7 @@ tasks:
         echo "Starting cell operator (pop-dfw)..."
         KUBECONFIG={{.KUBECONFIG_DIR}}/pop-dfw.yaml \
         go run ./cmd/main.go \
-          --karmada-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          --federation-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
           --enable-management-controllers=false \
           --leader-elect=false \
           --health-probe-bind-address=:9092 \
@@ -479,3 +506,58 @@ tasks:
             echo "PID file not found: $PIDFILE"
           fi
         done
+
+  e2e:operator:start:referenced-data:
+    desc: "Start management + cell operators with featureFlags.enableReferencedDataGate=true (for referenced-data-mounts e2e test)"
+    cmds:
+      - mkdir -p {{.E2E_DIR}}/logs {{.E2E_DIR}}/pids
+      - |
+        echo "Starting management operator (control-plane) with referenced-data feature flag..."
+        KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
+        go run ./cmd/main.go \
+          --federation-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          --enable-management-controllers=true \
+          --enable-cell-controllers=false \
+          --leader-elect=false \
+          --health-probe-bind-address=:9091 \
+          --server-config=hack/e2e/operator-config-referenced-data.yaml \
+          > {{.E2E_DIR}}/logs/operator-management-refdata.log 2>&1 &
+        echo $! > {{.E2E_DIR}}/pids/operator-management.pid
+        echo "Management operator PID: $!"
+      - |
+        echo "Waiting for management operator health check on :9091..."
+        deadline=$((SECONDS + 30))
+        until curl -sf http://localhost:9091/healthz >/dev/null 2>&1; do
+          if [ $SECONDS -ge $deadline ]; then
+            echo "ERROR: management operator did not become healthy within 30s"
+            cat {{.E2E_DIR}}/logs/operator-management-refdata.log || true
+            exit 1
+          fi
+          sleep 1
+        done
+        echo "Management operator is healthy"
+      - |
+        echo "Starting cell operator (pop-dfw) with referenced-data feature flag..."
+        KUBECONFIG={{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+        go run ./cmd/main.go \
+          --federation-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          --enable-management-controllers=false \
+          --enable-cell-controllers=true \
+          --leader-elect=false \
+          --health-probe-bind-address=:9092 \
+          --server-config=hack/e2e/operator-config-referenced-data.yaml \
+          > {{.E2E_DIR}}/logs/operator-cell-dfw-refdata.log 2>&1 &
+        echo $! > {{.E2E_DIR}}/pids/operator-cell-dfw.pid
+        echo "Cell operator PID: $!"
+      - |
+        echo "Waiting for cell operator health check on :9092..."
+        deadline=$((SECONDS + 30))
+        until curl -sf http://localhost:9092/healthz >/dev/null 2>&1; do
+          if [ $SECONDS -ge $deadline ]; then
+            echo "ERROR: cell operator did not become healthy within 30s"
+            cat {{.E2E_DIR}}/logs/operator-cell-dfw-refdata.log || true
+            exit 1
+          fi
+          sleep 1
+        done
+        echo "Cell operator is healthy"
