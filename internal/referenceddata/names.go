@@ -55,6 +55,14 @@ func CompanionName(kind, sourceName string) string {
 	// Strip any trailing non-alphanumeric characters to keep the name clean.
 	truncated = strings.TrimRight(truncated, "-.")
 
+	// If stripping trailing separators emptied the truncated segment (e.g. a
+	// source name composed entirely of '-' or '.'), omit the segment entirely
+	// so we produce "<prefix>.<hash>" rather than "<prefix>.-<hash>" which
+	// would start a DNS label with '-'.
+	if truncated == "" {
+		return fmt.Sprintf("%s.%s", prefix, hashStr)
+	}
+
 	return fmt.Sprintf("%s.%s%s", prefix, truncated, suffix)
 }
 

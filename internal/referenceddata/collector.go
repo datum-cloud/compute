@@ -54,7 +54,12 @@ func CollectFromTemplate(namespace string, template computev1alpha.InstanceTempl
 			}
 
 			// envFrom[]
+			// Skip entries that have both refs set — validateEnvFrom rejects
+			// them, so there is no valid single source to collect from.
 			for _, ef := range c.EnvFrom {
+				if ef.ConfigMapRef != nil && ef.SecretRef != nil {
+					continue
+				}
 				if ef.ConfigMapRef != nil {
 					add("ConfigMap", ef.ConfigMapRef.Name)
 				}
@@ -97,6 +102,13 @@ func CollectFromTemplate(namespace string, template computev1alpha.InstanceTempl
 	})
 
 	return ReferencedSet(refs)
+}
+
+// CollectFromSpec is a convenience wrapper around CollectFromTemplate for
+// callers (e.g. the admission webhook validator) that already hold a bare
+// InstanceSpec rather than the full InstanceTemplateSpec.
+func CollectFromSpec(namespace string, spec computev1alpha.InstanceSpec) ReferencedSet {
+	return CollectFromTemplate(namespace, computev1alpha.InstanceTemplateSpec{Spec: spec})
 }
 
 // TemplateReferencesData returns true if the template references at least one

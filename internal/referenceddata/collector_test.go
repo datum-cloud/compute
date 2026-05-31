@@ -169,6 +169,29 @@ func TestCollectFromTemplate(t *testing.T) {
 				{Kind: "ConfigMap", Name: "shared-cfg", Namespace: ns},
 			},
 		},
+		// When both configMapRef and secretRef are set on the same envFrom
+		// entry, validateEnvFrom rejects it, so the collector must skip it
+		// rather than collecting (and later SAR-ing) both refs.
+		"both refs set on envFrom entry — skipped": {
+			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
+				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:  "c1",
+							Image: "img",
+							EnvFrom: []computev1alpha.EnvFromSource{
+								{
+									ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "cfg"},
+									SecretRef:    &computev1alpha.SecretEnvSource{Name: "sec"},
+								},
+							},
+						},
+					},
+				}
+			}),
+			// No refs collected — the invalid entry is skipped entirely.
+			want: nil,
+		},
 		"mixed sources sorted configmap-first then secret": {
 			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
 				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{

@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/referenceddata"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -97,8 +98,10 @@ func validateInstanceSpec(
 // The check mirrors the existing Network interface SAR pattern exactly —
 // build from AdmissionRequest.UserInfo, deny if not allowed.
 //
-// References are deduplicated before issuing SARs to avoid redundant API calls.
-// All references are name-only / same-namespace (the Workload namespace).
+// References are collected and deduplicated by referenceddata.CollectFromSpec,
+// which is the single source of truth for "what counts as a reference". Entries
+// with both configMapRef and secretRef set are skipped (validateEnvFrom rejects
+// them separately, so no SAR is needed for invalid entries).
 func validateReferencedDataAccess(
 	spec computev1alpha.InstanceSpec,
 	fieldPath *field.Path,
@@ -106,19 +109,23 @@ func validateReferencedDataAccess(
 ) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// Build template-like struct to reuse the collector.
-	refs := collectRefsFromSpec(spec)
+	refs := referenceddata.CollectFromSpec(opts.Workload.Namespace, spec)
 	if len(refs) == 0 {
 		return nil
 	}
 
+	extra := make(map[string]authorizationv1.ExtraValue, len(opts.AdmissionRequest.UserInfo.Extra))
+	for k, v := range opts.AdmissionRequest.UserInfo.Extra {
+		extra[k] = authorizationv1.ExtraValue(v)
+	}
+
 	for _, ref := range refs {
-		var resource string
+		var resourceName string
 		switch ref.Kind {
 		case "ConfigMap":
-			resource = "configmaps"
+			resourceName = "configmaps"
 		case "Secret":
-			resource = "secrets"
+			resourceName = "secrets"
 		default:
 			continue
 		}
@@ -129,17 +136,18 @@ func validateReferencedDataAccess(
 					Verb:      "get",
 					Group:     "",
 					Version:   "v1",
-					Resource:  resource,
+					Resource:  resourceName,
 					Name:      ref.Name,
 					Namespace: opts.Workload.Namespace,
 				},
 				User:   opts.AdmissionRequest.UserInfo.Username,
 				Groups: opts.AdmissionRequest.UserInfo.Groups,
 				UID:    opts.AdmissionRequest.UserInfo.UID,
+				Extra:  extra,
 			},
 		}
 
-		refPath := fieldPath.Child(resource).Key(ref.Name)
+		refPath := fieldPath.Child(resourceName).Key(ref.Name)
 		if err := opts.Client.Create(opts.Context, &review); err != nil {
 			allErrs = append(allErrs, field.InternalError(refPath,
 				fmt.Errorf("failed creating SubjectAccessReview for %s %s/%s access: %w",
@@ -151,61 +159,6 @@ func validateReferencedDataAccess(
 	}
 
 	return allErrs
-}
-
-// collectRefsFromSpec walks an InstanceSpec and returns a deduplicated list of
-// (kind, name) pairs for all referenced ConfigMaps and Secrets. Uses the same
-// traversal order as the referenceddata collector.
-func collectRefsFromSpec(spec computev1alpha.InstanceSpec) []struct{ Kind, Name string } {
-	seen := make(map[string]struct{})
-	var refs []struct{ Kind, Name string }
-
-	add := func(kind, name string) {
-		if name == "" {
-			return
-		}
-		key := kind + "/" + name
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		refs = append(refs, struct{ Kind, Name string }{kind, name})
-	}
-
-	if sb := spec.Runtime.Sandbox; sb != nil {
-		for _, c := range sb.Containers {
-			for _, e := range c.Env {
-				if e.ValueFrom == nil {
-					continue
-				}
-				if e.ValueFrom.ConfigMapKeyRef != nil {
-					add("ConfigMap", e.ValueFrom.ConfigMapKeyRef.Name)
-				}
-				if e.ValueFrom.SecretKeyRef != nil {
-					add("Secret", e.ValueFrom.SecretKeyRef.Name)
-				}
-			}
-			for _, ef := range c.EnvFrom {
-				if ef.ConfigMapRef != nil {
-					add("ConfigMap", ef.ConfigMapRef.Name)
-				}
-				if ef.SecretRef != nil {
-					add("Secret", ef.SecretRef.Name)
-				}
-			}
-		}
-	}
-
-	for _, v := range spec.Volumes {
-		if v.ConfigMap != nil {
-			add("ConfigMap", v.ConfigMap.Name)
-		}
-		if v.Secret != nil {
-			add("Secret", v.Secret.SecretName)
-		}
-	}
-
-	return refs
 }
 
 func validateInstanceNetworkInterfaces(
