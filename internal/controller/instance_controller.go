@@ -1455,7 +1455,7 @@ func enqueueInstancesInNamespace(
 					Name:      inst.Name,
 				},
 			},
-			ClusterName: clusterName,
+			ClusterName: multicluster.ClusterName(clusterName),
 		})
 	}
 	return requests

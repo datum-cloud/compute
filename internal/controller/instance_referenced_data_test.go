@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -61,7 +62,7 @@ func makeInstanceWithRefDataGate() *computev1alpha.Instance {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       refDataTestInstance,
 			Namespace:  refDataTestNamespace,
-			Finalizers: []string{instanceQuotaFinalizer},
+			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 			Labels: map[string]string{
 				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid",
 			},
@@ -133,22 +134,19 @@ func newRefDataReconciler(
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
-	mgmtClient := fake.NewClientBuilder().
-		WithScheme(s).
-		Build()
-
 	mgr := &fakeMCManager{
 		clusters: map[string]cluster.Cluster{
-			refDataTestCluster: &fakeCluster{client: projectClient, scheme: s},
+			refDataTestCluster: &fakeCluster{cl: projectClient},
 		},
 	}
 
 	fakeRec := record.NewFakeRecorder(32)
 	r := &InstanceReconciler{
-		mgr:               mgr,
-		managementCluster: &fakeCluster{client: mgmtClient, scheme: s},
-		recorder:          fakeRec,
+		mgr:      mgr,
+		recorder: fakeRec,
 	}
+	r.finalizers = finalizer.NewFinalizers()
+	require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
 	return r, projectClient, fakeRec
 }
 
@@ -310,7 +308,7 @@ func TestReferencedDataIdempotentWhenAlreadyReady(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       refDataTestInstance,
 			Namespace:  refDataTestNamespace,
-			Finalizers: []string{instanceQuotaFinalizer},
+			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 			Labels: map[string]string{
 				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid",
 			},
@@ -426,25 +424,17 @@ func TestReferencedDataEventEmittedOnClear(t *testing.T) {
 		[]client.Object{inst, wd, companion},
 	)
 
-	// Pass 1: set condition to Ready, status updated, return early — no gate patch yet.
-	reconcileRefData(t, r)
-
-	var afterStatus computev1alpha.Instance
-	require.NoError(t, projectClient.Get(context.Background(),
-		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &afterStatus))
-	cond := apimeta.FindStatusCondition(afterStatus.Status.Conditions, computev1alpha.ReferencedDataReady)
-	require.NotNil(t, cond)
-	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-
-	// Drain any events from pass 1 (there shouldn't be any before the gate patch).
-	drainEvents(fakeRec.Events)
-
-	// Pass 2: status already True → patch the gate away → emit event.
+	// Single pass: condition set to Ready, status updated, gate patched away, event emitted.
+	// The federation branch clears the gate in the same reconcile pass as the status update
+	// (rather than a separate pass) because gate removal is inlined after status.Update.
 	reconcileRefData(t, r)
 
 	var cleared computev1alpha.Instance
 	require.NoError(t, projectClient.Get(context.Background(),
 		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &cleared))
+	cond := apimeta.FindStatusCondition(cleared.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 
 	hasGate := false
 	for _, g := range cleared.Spec.Controller.SchedulingGates {
@@ -452,7 +442,7 @@ func TestReferencedDataEventEmittedOnClear(t *testing.T) {
 			hasGate = true
 		}
 	}
-	assert.False(t, hasGate, "gate should be cleared on second pass")
+	assert.False(t, hasGate, "gate should be cleared in the same pass as status update")
 
 	// Expect exactly one Normal/Ready event.
 	var normalEvents int

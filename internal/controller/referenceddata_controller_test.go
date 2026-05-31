@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -48,11 +49,10 @@ func rdTestScheme(t *testing.T) *runtime.Scheme {
 func newRDController(t *testing.T, cl client.Client, reader referenceddata.ProjectConfigSecretReader, opts ...func(*ReferencedDataControllerOptions)) (*ReferencedDataController, string) {
 	t.Helper()
 	clusterName := "test-cluster"
-	scheme := rdTestScheme(t)
 
 	mgr := &fakeMCManager{
 		clusters: map[string]cluster.Cluster{
-			clusterName: &fakeCluster{client: cl, scheme: scheme},
+			clusterName: &fakeCluster{cl: cl},
 		},
 	}
 
@@ -74,12 +74,13 @@ func newRDController(t *testing.T, cl client.Client, reader referenceddata.Proje
 // in namespace ns on clusterName.
 func reconcileWD(t *testing.T, c *ReferencedDataController, clusterName, ns, name string) {
 	t.Helper()
-	ctx := mccontext.WithCluster(context.Background(), clusterName)
+	cn := multicluster.ClusterName(clusterName)
+	ctx := mccontext.WithCluster(context.Background(), cn)
 	_, err := c.Reconcile(ctx, mcreconcile.Request{
 		Request: reconcile.Request{
 			NamespacedName: types.NamespacedName{Namespace: ns, Name: name},
 		},
-		ClusterName: clusterName,
+		ClusterName: cn,
 	})
 	require.NoError(t, err)
 }
