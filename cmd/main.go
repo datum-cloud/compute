@@ -327,6 +327,17 @@ func main() {
 		}
 		runnables = append(runnables, extra...)
 	}
+	if err = (&controller.ReferencedDataController{}).SetupWithManager(mgr, controller.ReferencedDataControllerOptions{
+		// ProjectReader is nil for single-cluster mode; the controller falls back
+		// to a LocalReader. Set this to a *referenceddata.ProjectReader when the
+		// Milo multicluster mode is active and cross-project reads are required.
+		Reader:              nil,
+		PerObjectLimitBytes: serverConfig.ReferencedData.PerObjectLimitBytes,
+		AggregateLimitBytes: serverConfig.ReferencedData.AggregateLimitBytes,
+	}); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ReferencedData")
+		os.Exit(1)
+	}
 
 	if serverConfig.WebhookServer != nil {
 		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr); err != nil {
