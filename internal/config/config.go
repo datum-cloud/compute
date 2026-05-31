@@ -39,6 +39,26 @@ type WorkloadOperator struct {
 
 	// FeatureFlags configures optional management-plane feature gates.
 	FeatureFlags FeatureFlagsConfig `json:"featureFlags,omitempty"`
+
+	// ReferencedData configures the ReferencedDataController.
+	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// ReferencedDataConfig holds size-limit knobs for the ReferencedDataController.
+// Both limits default to zero, which causes the controller to use its built-in
+// defaults (256 KiB per object, 1 MiB aggregate per WorkloadDeployment).
+type ReferencedDataConfig struct {
+	// PerObjectLimitBytes is the maximum allowed byte size for a single
+	// companion ConfigMap or Secret (sum of all Data + BinaryData values).
+	// A value of 0 uses the built-in default of 256 KiB.
+	PerObjectLimitBytes int64 `json:"perObjectLimitBytes,omitempty"`
+
+	// AggregateLimitBytes is the maximum allowed aggregate byte size across
+	// all companion objects for a single WorkloadDeployment.
+	// A value of 0 uses the built-in default of 1 MiB.
+	AggregateLimitBytes int64 `json:"aggregateLimitBytes,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
