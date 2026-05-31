@@ -799,14 +799,14 @@ func TestReconcileQuota(t *testing.T) {
 // the Quota scheduling gate was never removed from an Instance after quota was
 // granted. The root cause was an early return in the Reconcile function: when
 // reconcileQuotaCondition set QuotaGranted=True (statusChanged=true), the code
-// wrote the status update and returned before reaching removeQuotaSchedulingGate.
+// wrote the status update and returned before reaching reconcileSchedulingGates.
 // Because ResourceClaims are immutable (no further transitions) and local
 // Instances are not watched (WithEngageWithLocalCluster(false)), no requeue ever
 // arrived — leaving the Quota gate stranded in spec.controller.schedulingGates
 // and the projected Instance stuck "Pending (SchedulingGatesPresent)".
 //
 // The fix: on the success path (quotaErr==nil), fall through to
-// removeQuotaSchedulingGate after persisting the status update, so gate removal
+// reconcileSchedulingGates after persisting the status update, so gate removal
 // happens in the same reconcile pass as the QuotaGranted=True status write.
 func TestQuotaGateRemovedInSingleReconcile(t *testing.T) {
 	const (
@@ -1552,7 +1552,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 		// Single reconcile: reconcileQuotaCondition writes QuotaGranted=True with
 		// ObservedGeneration=2 into the in-memory instance, status is persisted,
-		// then removeQuotaSchedulingGate reads the in-memory condition (gen=2 ==
+		// then reconcileSchedulingGates reads the in-memory condition (gen=2 ==
 		// instance.Generation=2) and removes the gate — all in one pass.
 		_, err := r.Reconcile(context.Background(), reconcileReq())
 		require.NoError(t, err)

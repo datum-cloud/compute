@@ -358,6 +358,10 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 // reconcileSchedulingGates removes scheduling gates whose corresponding
 // conditions have been persisted as True. It handles both the Quota gate and
 // the ReferencedData gate in a single patch to avoid duplicate API calls.
+//
+// Both gates are guarded by ObservedGeneration == instance.Generation to
+// prevent a stale True condition from generation N unblocking a generation N+1
+// instance before quota/referenced-data for the new spec has been re-evaluated.
 func (r *InstanceReconciler) reconcileSchedulingGates(
 	ctx context.Context,
 	cl client.Client,
@@ -373,10 +377,15 @@ func (r *InstanceReconciler) reconcileSchedulingGates(
 	newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
 	gatesRemoved := false
 	for _, gate := range instance.Spec.Controller.SchedulingGates {
+		// Guard on ObservedGeneration to prevent a stale True condition from a
+		// prior generation clearing a freshly-stamped gate before the condition
+		// has been re-evaluated at the current generation.
 		removeQuota := gate.Name == instancecontrol.QuotaSchedulingGate.String() &&
-			quotaGrantedCond != nil && quotaGrantedCond.Status == metav1.ConditionTrue
+			quotaGrantedCond != nil && quotaGrantedCond.Status == metav1.ConditionTrue &&
+			quotaGrantedCond.ObservedGeneration == instance.Generation
 		removeRefData := gate.Name == instancecontrol.ReferencedDataSchedulingGate.String() &&
-			refDataCond != nil && refDataCond.Status == metav1.ConditionTrue
+			refDataCond != nil && refDataCond.Status == metav1.ConditionTrue &&
+			refDataCond.ObservedGeneration == instance.Generation
 		if removeQuota || removeRefData {
 			gatesRemoved = true
 			// Observe gate-wait duration and emit event when the ReferencedData
@@ -441,19 +450,50 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 			// Gate never present; nothing to do.
 			return referencedDataResult{}, 0, nil
 		}
-		if existing.Status != metav1.ConditionTrue {
-			// Gate was cleared externally without going through this code path —
-			// mark ready so status is consistent.
-			changed := apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-				Type:               computev1alpha.ReferencedDataReady,
-				Status:             metav1.ConditionTrue,
-				Reason:             computev1alpha.ReferencedDataReasonReady,
-				Message:            "All referenced companions are available",
-				ObservedGeneration: instance.Generation,
-			})
-			return referencedDataResult{conditionChanged: changed}, 0, nil
+		if existing.Status == metav1.ConditionTrue {
+			// Already marked ready — nothing to do.
+			return referencedDataResult{}, 0, nil
 		}
-		return referencedDataResult{}, 0, nil
+		// Gate is absent but condition is not True. Only self-heal to True when we
+		// can confirm that all companions are actually present — fetching the WD
+		// annotation to validate. If the annotation is absent (resolver hasn't
+		// finished yet) or companions are still missing, leave the condition alone
+		// rather than falsely reporting Ready.
+		wd, err := r.fetchOwnerWorkloadDeployment(ctx, cl, instance)
+		if err != nil {
+			return referencedDataResult{}, 0, err
+		}
+		annoRaw, hasAnno := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
+		if !hasAnno || annoRaw == "" {
+			// Resolver hasn't stamped the annotation yet — cannot confirm readiness.
+			return referencedDataResult{}, 0, nil
+		}
+		var expectedNames []string
+		if err := json.Unmarshal([]byte(annoRaw), &expectedNames); err != nil {
+			// Malformed annotation — cannot confirm readiness.
+			return referencedDataResult{}, 0, nil
+		}
+		if len(expectedNames) > 0 {
+			presentNames, err := r.listPresentCompanionNames(ctx, cl, instance.Namespace)
+			if err != nil {
+				return referencedDataResult{}, 0, fmt.Errorf("failed listing companion objects during self-heal check: %w", err)
+			}
+			for _, name := range expectedNames {
+				if _, ok := presentNames[name]; !ok {
+					// At least one companion is missing — do not self-heal to True.
+					return referencedDataResult{}, 0, nil
+				}
+			}
+		}
+		// All companions confirmed present (or none expected) — mark ready.
+		changed := apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.ReferencedDataReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.ReferencedDataReasonReady,
+			Message:            "All referenced companions are available",
+			ObservedGeneration: instance.Generation,
+		})
+		return referencedDataResult{conditionChanged: changed}, 0, nil
 	}
 
 	// Stamp the gate-start annotation once so we can measure duration later.
@@ -507,17 +547,26 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 		}
 	}
 
-	// Update metrics.
+	// Update metrics (aggregated per namespace to avoid high-cardinality per-instance series).
 	present := len(expectedNames) - len(missing)
-	referenceddata.CompanionsExpected.WithLabelValues(instance.Namespace, instance.Name).Set(float64(len(expectedNames)))
-	referenceddata.CompanionsPresent.WithLabelValues(instance.Namespace, instance.Name).Set(float64(present))
+	referenceddata.CompanionsExpected.WithLabelValues(instance.Namespace).Set(float64(len(expectedNames)))
+	referenceddata.CompanionsPresent.WithLabelValues(instance.Namespace).Set(float64(present))
 
 	if len(missing) > 0 {
 		msg := fmt.Sprintf("Waiting for %d companion(s) to arrive on cell: %s",
 			len(missing), strings.Join(missing, ", "))
+		// Capture the previous reason before the condition is updated, so we can
+		// determine whether the reason has transitioned. We emit a Warning event
+		// only on a reason transition (not on every reconcile where the missing-set
+		// message changes) to avoid event floods.
+		prevCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+		prevReason := ""
+		if prevCond != nil {
+			prevReason = prevCond.Reason
+		}
 		changed := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
 			computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
-		if changed {
+		if prevReason != computev1alpha.ReferencedDataReasonAwaitingPropagation {
 			r.emitEvent(instance, corev1.EventTypeWarning,
 				computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
 		}
@@ -859,47 +908,6 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 	default: // grantedCondition == nil && claimErr != nil — should not reach here
 		return false, claimErr
 	}
-}
-
-// removeQuotaSchedulingGate removes the quota scheduling gate from the
-// Instance spec once QuotaGranted=True has been persisted to status.
-// It guards on ObservedGeneration to prevent a stale True condition from
-// generation N unblocking a generation N+1 instance before quota for the
-// new spec has been evaluated.
-func (r *InstanceReconciler) removeQuotaSchedulingGate(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
-	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
-	if quotaGrantedCond == nil || quotaGrantedCond.Status != metav1.ConditionTrue {
-		return nil
-	}
-	// Stale condition guard: only remove the gate if the condition reflects the
-	// current spec generation. A condition from an older generation means quota
-	// has not yet been evaluated for the current spec.
-	if quotaGrantedCond.ObservedGeneration != instance.Generation {
-		return nil
-	}
-	if instance.Spec.Controller == nil {
-		return nil
-	}
-
-	newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
-	gateRemoved := false
-	for _, gate := range instance.Spec.Controller.SchedulingGates {
-		if gate.Name == instancecontrol.QuotaSchedulingGate.String() {
-			gateRemoved = true
-			continue
-		}
-		newGates = append(newGates, gate)
-	}
-	if !gateRemoved {
-		return nil
-	}
-
-	patch := client.MergeFrom(instance.DeepCopy())
-	instance.Spec.Controller.SchedulingGates = newGates
-	if err := cl.Patch(ctx, instance, patch); err != nil {
-		return fmt.Errorf("failed patching quota scheduling gate: %w", err)
-	}
-	return nil
 }
 
 // Finalize removes the downstream write-back Instance when the local Instance is
@@ -1532,17 +1540,8 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 // Rough way to propagate creation errors up to the instance as soon as possible.
 // Lots of room for improvement here.
 func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context, upstreamClient client.Client, instance *computev1alpha.Instance) (failed bool, message string, err error) {
-	workloadDeploymentRef := metav1.GetControllerOf(instance)
-	if workloadDeploymentRef == nil {
-		return false, "", fmt.Errorf("instance is not owned by a workload deployment")
-	}
-
-	var workloadDeployment computev1alpha.WorkloadDeployment
-	workloadDeploymentObjectKey := client.ObjectKey{
-		Namespace: instance.Namespace,
-		Name:      workloadDeploymentRef.Name,
-	}
-	if err := upstreamClient.Get(ctx, workloadDeploymentObjectKey, &workloadDeployment); err != nil {
+	workloadDeployment, err := r.fetchOwnerWorkloadDeployment(ctx, upstreamClient, instance)
+	if err != nil {
 		return false, "", fmt.Errorf("failed fetching workload deployment: %w", err)
 	}
 
@@ -1707,9 +1706,9 @@ func (r *InstanceReconciler) SetupWithManager(
 }
 
 // enqueueInstancesInNamespace returns reconcile requests for every Instance
-// in namespace that is indexed under instanceByWorkloadDeploymentUIDIndex.
-// It lists all Instances in the namespace without a UID filter because the
-// companion is shared and any gated instance in the namespace should re-check.
+// in the given namespace. Companions are shared across all Instances in a
+// namespace, so any gated instance in the namespace should re-check when a
+// companion ConfigMap or Secret arrives.
 func enqueueInstancesInNamespace(
 	ctx context.Context,
 	cl client.Client,
