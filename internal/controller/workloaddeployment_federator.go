@@ -10,8 +10,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -334,7 +336,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					// Propagate companion ConfigMaps alongside WorkloadDeployments.
 					// The referenced-data label is the only selector needed; there
 					// is no per-city partitioning of companions.
-					APIVersion: "v1",
+					APIVersion: corev1.SchemeGroupVersion.String(),
 					Kind:       kindConfigMap,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
@@ -344,7 +346,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 				},
 				{
 					// Propagate companion Secrets alongside WorkloadDeployments.
-					APIVersion: "v1",
+					APIVersion: corev1.SchemeGroupVersion.String(),
 					Kind:       kindSecret,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
@@ -377,8 +379,16 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 }
 
 // syncStatusFromDownstream reads the aggregated status of the WorkloadDeployment
-// from the downstream namespace and writes it back to the project-namespace
+// from the downstream namespace and merges it back into the project-namespace
 // object. It is a no-op when the downstream object does not yet exist.
+//
+// Merge semantics: the resolver (ReferencedDataController) owns the
+// ReferencedDataReady condition and any conditions with SourceNotFound,
+// SourceUnauthorized, or SourceTooLarge reasons. This method preserves those
+// conditions, overwriting only the downstream-owned portion of the status
+// (replica counts, Programmed, Ready, etc.). Without this merge a concurrent
+// federator status sync would overwrite the resolver's condition with whatever
+// (empty or stale) value the downstream WD carries.
 func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	ctx context.Context,
 	projectClient client.Client,
@@ -396,15 +406,40 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 		return fmt.Errorf("failed to get downstream deployment for status sync: %w", err)
 	}
 
-	if equality.Semantic.DeepEqual(deployment.Status, kd.Status) {
+	// Build the merged status: start from downstream, then re-apply the
+	// resolver-owned ReferencedDataReady condition from the project WD so we
+	// never overwrite it with the downstream's copy.
+	merged := kd.Status.DeepCopy()
+	if resolverCond := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady); resolverCond != nil {
+		apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
+	}
+
+	if equality.Semantic.DeepEqual(deployment.Status, *merged) {
 		return nil
 	}
 
-	deployment.Status = kd.Status
-	if err := projectClient.Status().Update(ctx, deployment); err != nil {
-		return fmt.Errorf("failed to write downstream status back to project deployment: %w", err)
-	}
-	return nil
+	// Wrap in RetryOnConflict so a concurrent annotation Patch by the resolver
+	// does not cause a hard error. The status write is idempotent from the
+	// perspective of the downstream fields it carries.
+	key := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := projectClient.Get(ctx, key, deployment); err != nil {
+			return err
+		}
+		// Re-compute merged on each attempt in case the resolver condition changed.
+		merged = kd.Status.DeepCopy()
+		if resolverCond := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady); resolverCond != nil {
+			apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
+		}
+		if equality.Semantic.DeepEqual(deployment.Status, *merged) {
+			return nil
+		}
+		deployment.Status = *merged
+		if err := projectClient.Status().Update(ctx, deployment); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // cleanupPropagationPolicyIfUnused deletes the PropagationPolicy for the given
