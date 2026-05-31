@@ -11,33 +11,34 @@ import (
 //
 // All metrics use the prefix "compute_referenced_data_" to group them.
 var (
-	// CompanionsPresent tracks the ratio of companions present on the cell
-	// relative to the total number expected, per instance. It is set to
-	// present/expected at each reconcile; set to 1 when the gate clears.
+	// CompanionsPresent tracks the number of companions present on the cell,
+	// aggregated per namespace. Aggregating per namespace (rather than per
+	// instance) avoids an unbounded cardinality growth as instances are created
+	// and deleted.
 	CompanionsPresent = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "compute",
 			Subsystem: "referenced_data",
 			Name:      "companions_present",
 			Help: "Number of expected companion ConfigMaps/Secrets that are present " +
-				"on the cell for an instance. Set to the expected total once all " +
-				"companions arrive and the gate is cleared.",
+				"on the cell, aggregated per namespace. Set at each reconcile while " +
+				"instances are waiting for companions.",
 		},
-		[]string{"namespace", "instance"},
+		[]string{"namespace"},
 	)
 
-	// CompanionsExpected tracks how many companions the cell expects for each
-	// instance (from the expected-set annotation). Useful as the denominator
+	// CompanionsExpected tracks how many companions the cell expects, aggregated
+	// per namespace (from the expected-set annotation). Useful as the denominator
 	// when evaluating CompanionsPresent.
 	CompanionsExpected = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "compute",
 			Subsystem: "referenced_data",
 			Name:      "companions_expected",
-			Help: "Total number of companion ConfigMaps/Secrets expected on the cell " +
-				"for an instance, as recorded in the expected-referenced-data annotation.",
+			Help: "Total number of companion ConfigMaps/Secrets expected on the cell, " +
+				"aggregated per namespace, as recorded in the expected-referenced-data annotation.",
 		},
-		[]string{"namespace", "instance"},
+		[]string{"namespace"},
 	)
 
 	// GateWaitDuration observes how long (in seconds) an Instance spent blocked
