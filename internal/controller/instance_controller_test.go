@@ -54,6 +54,7 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	require.NoError(t, computev1alpha.AddToScheme(s))
 	require.NoError(t, quotav1alpha1.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
 	return s
 }
 
