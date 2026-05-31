@@ -327,22 +327,28 @@ func main() {
 		}
 		runnables = append(runnables, extra...)
 	}
-	if err = (&controller.ReferencedDataController{}).SetupWithManager(mgr, controller.ReferencedDataControllerOptions{
-		// ProjectReader is nil for single-cluster mode; the controller falls back
-		// to a LocalReader. Set this to a *referenceddata.ProjectReader when the
-		// Milo multicluster mode is active and cross-project reads are required.
-		Reader: nil,
-		// FederationClient is set when the federation hub (Karmada) is configured.
-		// When non-nil, companions are materialised into the downstream
-		// ns-{project-uid} namespace on the hub so Karmada can propagate them
-		// to cells alongside the WorkloadDeployment. When nil, companions land
-		// in the project namespace (single-cluster / dev path).
-		FederationClient:    federationClient,
-		PerObjectLimitBytes: serverConfig.ReferencedData.PerObjectLimitBytes,
-		AggregateLimitBytes: serverConfig.ReferencedData.AggregateLimitBytes,
-	}); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ReferencedData")
-		os.Exit(1)
+	// ReferencedDataController is a management-plane controller (it reconciles
+	// WorkloadDeployments on project clusters and materialises companions). Gate
+	// it to the management controller set so it does not collide with the cell's
+	// WorkloadDeploymentReconciler.
+	if enableManagementControllers {
+		if err = (&controller.ReferencedDataController{}).SetupWithManager(mgr, controller.ReferencedDataControllerOptions{
+			// ProjectReader is nil for single-cluster mode; the controller falls back
+			// to a LocalReader. Set this to a *referenceddata.ProjectReader when the
+			// Milo multicluster mode is active and cross-project reads are required.
+			Reader: nil,
+			// FederationClient is set when the federation hub (Karmada) is configured.
+			// When non-nil, companions are materialised into the downstream
+			// ns-{project-uid} namespace on the hub so Karmada can propagate them
+			// to cells alongside the WorkloadDeployment. When nil, companions land
+			// in the project namespace (single-cluster / dev path).
+			FederationClient:    federationClient,
+			PerObjectLimitBytes: serverConfig.ReferencedData.PerObjectLimitBytes,
+			AggregateLimitBytes: serverConfig.ReferencedData.AggregateLimitBytes,
+		}); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ReferencedData")
+			os.Exit(1)
+		}
 	}
 
 	if serverConfig.WebhookServer != nil {
