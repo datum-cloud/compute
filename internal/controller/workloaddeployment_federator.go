@@ -273,6 +273,15 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 		kd.Labels[cityCodeLabel] = deployment.Spec.CityCode
 		kd.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = deployment.Namespace
 		kd.Spec = deployment.Spec
+		// Propagate controller-managed annotations from the project WD to the
+		// downstream WD. The cell reads the expected-referenced-data annotation
+		// to gate-clear instances; without this copy it would never arrive.
+		if anno, ok := deployment.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]; ok {
+			if kd.Annotations == nil {
+				kd.Annotations = make(map[string]string)
+			}
+			kd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation] = anno
+		}
 		return nil
 	})
 	if err != nil {
@@ -300,10 +309,17 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 
 	result, err := controllerutil.CreateOrPatch(ctx, r.FederationClient, pp, func() error {
 		pp.Spec = karmadapolicyv1alpha1.PropagationSpec{
-			// Select all WorkloadDeployments in this namespace that carry the
-			// city-code label. Using a label selector (rather than individual
-			// resource names) means that new deployments for this city are
-			// automatically picked up without updating the policy.
+			// Select WorkloadDeployments by city-code label, plus ALL
+			// companion ConfigMaps and Secrets in this namespace that carry the
+			// referenced-data label. The label selector on ConfigMap/Secret is
+			// city-code-agnostic — companions are shared across city codes when
+			// multiple WDs reference the same source. Karmada propagates the
+			// entire set to matching clusters in one policy, so companions
+			// co-arrive with their WorkloadDeployment.
+			//
+			// Using separate ResourceSelectors for each kind (WorkloadDeployment,
+			// ConfigMap, Secret) is the idiomatic Karmada pattern for
+			// multi-kind propagation within a single policy.
 			ResourceSelectors: []karmadapolicyv1alpha1.ResourceSelector{
 				{
 					APIVersion: computev1alpha.GroupVersion.String(),
@@ -311,6 +327,28 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							cityCodeLabel: cityCode,
+						},
+					},
+				},
+				{
+					// Propagate companion ConfigMaps alongside WorkloadDeployments.
+					// The referenced-data label is the only selector needed; there
+					// is no per-city partitioning of companions.
+					APIVersion: "v1",
+					Kind:       kindConfigMap,
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							computev1alpha.ReferencedDataLabel: "true",
+						},
+					},
+				},
+				{
+					// Propagate companion Secrets alongside WorkloadDeployments.
+					APIVersion: "v1",
+					Kind:       kindSecret,
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							computev1alpha.ReferencedDataLabel: "true",
 						},
 					},
 				},

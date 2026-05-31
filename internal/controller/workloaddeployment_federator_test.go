@@ -390,13 +390,27 @@ func TestWorkloadDeploymentFederator_FederatesToKarmada(t *testing.T) {
 	}, &pp)
 	require.NoError(t, err, "PropagationPolicy %q should exist", ppName)
 
-	// The PP must select WorkloadDeployments by the city-code label.
-	require.Len(t, pp.Spec.ResourceSelectors, 1)
-	sel := pp.Spec.ResourceSelectors[0]
-	assert.Equal(t, computev1alpha.GroupVersion.String(), sel.APIVersion)
-	assert.Equal(t, "WorkloadDeployment", sel.Kind)
-	require.NotNil(t, sel.LabelSelector)
-	assert.Equal(t, testCityCodeLAX, sel.LabelSelector.MatchLabels[cityCodeLabel])
+	// The PP must have three selectors: WorkloadDeployment (city-code), ConfigMap
+	// (referenced-data), and Secret (referenced-data).
+	require.Len(t, pp.Spec.ResourceSelectors, 3)
+
+	wdSel := pp.Spec.ResourceSelectors[0]
+	assert.Equal(t, computev1alpha.GroupVersion.String(), wdSel.APIVersion)
+	assert.Equal(t, "WorkloadDeployment", wdSel.Kind)
+	require.NotNil(t, wdSel.LabelSelector)
+	assert.Equal(t, testCityCodeLAX, wdSel.LabelSelector.MatchLabels[cityCodeLabel])
+
+	cmSel := pp.Spec.ResourceSelectors[1]
+	assert.Equal(t, "v1", cmSel.APIVersion)
+	assert.Equal(t, "ConfigMap", cmSel.Kind)
+	require.NotNil(t, cmSel.LabelSelector)
+	assert.Equal(t, "true", cmSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
+
+	secretSel := pp.Spec.ResourceSelectors[2]
+	assert.Equal(t, "v1", secretSel.APIVersion)
+	assert.Equal(t, "Secret", secretSel.Kind)
+	require.NotNil(t, secretSel.LabelSelector)
+	assert.Equal(t, "true", secretSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
 
 	// The PP cluster affinity must target clusters carrying the same city-code.
 	require.NotNil(t, pp.Spec.Placement.ClusterAffinity)
@@ -522,6 +536,79 @@ func TestWorkloadDeploymentFederator_Finalization(t *testing.T) {
 				"project WD should be gone after finalizer removal (DeletionTimestamp + empty Finalizers = GC)")
 		})
 	}
+}
+
+// TestWorkloadDeploymentFederator_PropagationPolicyHasReferencedDataSelectors
+// verifies that the PropagationPolicy always includes ConfigMap and Secret
+// selectors for the referenced-data label in addition to the WorkloadDeployment
+// city-code selector. This is the always-on companion co-propagation.
+func TestWorkloadDeploymentFederator_PropagationPolicyHasReferencedDataSelectors(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer)
+	projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+	karmadaClient := newKarmadaFakeClient()
+	r := newTestFederator(projectClient, karmadaClient)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	ppName := propagationPolicyNameFor(testCityCodeLAX)
+	var pp karmadapolicyv1alpha1.PropagationPolicy
+	require.NoError(t, karmadaClient.Get(context.Background(), types.NamespacedName{
+		Name:      ppName,
+		Namespace: testKarmadaNSStr,
+	}, &pp))
+
+	require.Len(t, pp.Spec.ResourceSelectors, 3, "PP must have WD + ConfigMap + Secret selectors")
+
+	kinds := make(map[string]bool)
+	for _, sel := range pp.Spec.ResourceSelectors {
+		kinds[sel.Kind] = true
+	}
+	assert.True(t, kinds["WorkloadDeployment"], "PP must select WorkloadDeployments")
+	assert.True(t, kinds["ConfigMap"], "PP must select ConfigMaps with referenced-data label")
+	assert.True(t, kinds["Secret"], "PP must select Secrets with referenced-data label")
+
+	// Verify the ConfigMap and Secret selectors match on the referenced-data label.
+	for _, sel := range pp.Spec.ResourceSelectors {
+		if sel.Kind == "ConfigMap" || sel.Kind == "Secret" {
+			require.NotNil(t, sel.LabelSelector)
+			assert.Equal(t, "true", sel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel],
+				"%s selector must match referenced-data=true label", sel.Kind)
+		}
+	}
+}
+
+// TestWorkloadDeploymentFederator_AnnotationPropagation verifies that the
+// federator copies the expected-referenced-data annotation from the project WD
+// to the downstream (Karmada hub) WD so the cell can gate-clear.
+func TestWorkloadDeploymentFederator_AnnotationPropagation(t *testing.T) {
+	t.Parallel()
+
+	const expectedAnno = `["configmap.app-config","secret.db-creds"]`
+
+	wd := testWorkloadDeployment(withFinalizer, func(w *computev1alpha.WorkloadDeployment) {
+		w.Annotations = map[string]string{
+			computev1alpha.ExpectedReferencedDataAnnotation: expectedAnno,
+		}
+	})
+	projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+	karmadaClient := newKarmadaFakeClient()
+	r := newTestFederator(projectClient, karmadaClient)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var karmadaWD computev1alpha.WorkloadDeployment
+	require.NoError(t, karmadaClient.Get(context.Background(), types.NamespacedName{
+		Name:      testWDName,
+		Namespace: testKarmadaNSStr,
+	}, &karmadaWD))
+
+	got := karmadaWD.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
+	assert.Equal(t, expectedAnno, got,
+		"federator must propagate expected-referenced-data annotation to the downstream WD")
 }
 
 // TestWorkloadDeploymentFederator_NotFound verifies that a missing
