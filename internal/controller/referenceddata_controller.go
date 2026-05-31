@@ -24,6 +24,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -274,7 +275,7 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 
 	// Read each source, enforcing size limits.
 	// Cluster name = project ID in Milo mode; ignored by LocalReader.
-	sources, condErr := r.resolveAndValidateSources(ctx, reader, req.ClusterName, refs)
+	sources, condErr := r.resolveAndValidateSources(ctx, reader, string(req.ClusterName), refs)
 	if condErr != nil {
 		// A condition error signals a transient or permanent source problem —
 		// surface it on the WD and return without requeueing (source watch re-triggers).
@@ -795,13 +796,13 @@ func (r *ReferencedDataController) SetupWithManager(mgr mcmanager.Manager, opts 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		// Watch source ConfigMaps; re-queue any WD that references them (rotation).
-		Watches(&corev1.ConfigMap{}, func(clusterName string, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		Watches(&corev1.ConfigMap{}, func(clusterName multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 				return r.enqueueWDsForSource(ctx, r.mgr, clusterName, "ConfigMap", obj)
 			})
 		}).
 		// Watch source Secrets; re-queue any WD that references them (rotation).
-		Watches(&corev1.Secret{}, func(clusterName string, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		Watches(&corev1.Secret{}, func(clusterName multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 				return r.enqueueWDsForSource(ctx, r.mgr, clusterName, "Secret", obj)
 			})
@@ -815,7 +816,8 @@ func (r *ReferencedDataController) SetupWithManager(mgr mcmanager.Manager, opts 
 func (r *ReferencedDataController) enqueueWDsForSource(
 	ctx context.Context,
 	getter clusterGetter,
-	clusterName, kind string,
+	clusterName multicluster.ClusterName,
+	kind string,
 	obj client.Object,
 ) []mcreconcile.Request {
 	logger := log.FromContext(ctx)
