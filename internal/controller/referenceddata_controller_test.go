@@ -478,7 +478,8 @@ func TestReferencedData_RefCount_TwoWDs(t *testing.T) {
 	reconcileWD(t, c, clusterName, ns, "wd-1")
 
 	companion := getCompanionCM(t, cl, ns, companionName)
-	refs1 := decodeRefCount(companion.Annotations)
+	refs1, err := decodeRefCount(companion.Annotations)
+	require.NoError(t, err)
 	assert.Contains(t, refs1, types.NamespacedName{Namespace: ns, Name: "wd-1"}.String())
 
 	// Materialise for wd-2.
@@ -486,7 +487,8 @@ func TestReferencedData_RefCount_TwoWDs(t *testing.T) {
 	reconcileWD(t, c, clusterName, ns, "wd-2")
 
 	companion = getCompanionCM(t, cl, ns, companionName)
-	refs2 := decodeRefCount(companion.Annotations)
+	refs2, err := decodeRefCount(companion.Annotations)
+	require.NoError(t, err)
 	assert.Len(t, refs2, 2, "companion must list both WDs")
 	assert.Contains(t, refs2, types.NamespacedName{Namespace: ns, Name: "wd-1"}.String())
 	assert.Contains(t, refs2, types.NamespacedName{Namespace: ns, Name: "wd-2"}.String())
@@ -498,7 +500,8 @@ func TestReferencedData_RefCount_TwoWDs(t *testing.T) {
 
 	// Companion must still exist (wd-2 still holds it).
 	companion = getCompanionCM(t, cl, ns, companionName)
-	refs3 := decodeRefCount(companion.Annotations)
+	refs3, err := decodeRefCount(companion.Annotations)
+	require.NoError(t, err)
 	assert.Len(t, refs3, 1, "wd-1 should have been removed from ref-count")
 	assert.Contains(t, refs3, types.NamespacedName{Namespace: ns, Name: "wd-2"}.String())
 
@@ -509,8 +512,8 @@ func TestReferencedData_RefCount_TwoWDs(t *testing.T) {
 
 	// Companion must be gone.
 	var gone corev1.ConfigMap
-	err := cl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: companionName}, &gone)
-	assert.Error(t, err, "companion must be deleted when last WD is removed")
+	getErr := cl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: companionName}, &gone)
+	assert.Error(t, getErr, "companion must be deleted when last WD is removed")
 }
 
 // ─── WD deletion cleans up companion ─────────────────────────────────────────
@@ -947,6 +950,260 @@ func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
 
 	assert.GreaterOrEqual(t, int(updateCalls.Load()), 2,
 		"Update must have been called at least twice during deletion (conflict + retry)")
+}
+
+// ─── Regression: two WDs sharing a source, interleaved reconciles ─────────────
+
+// TestReferencedData_RefCount_ConcurrentInterleaved verifies that when two WDs
+// share the same source ConfigMap and their reconciles are interleaved, both
+// ref-count entries are preserved and the companion is not orphaned or deleted.
+//
+// This is the regression test for the ref-count race (fix 2).
+func TestReferencedData_RefCount_ConcurrentInterleaved(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := "shared-concurrent-config"
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
+		Data:       map[string]string{"k": "v"},
+	}
+	wd1 := makeWD(ns, "wd-c1", templateWithConfigMap(cmName))
+	wd2 := makeWD(ns, "wd-c2", templateWithConfigMap(cmName))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(rdTestScheme(t)).
+		WithObjects(srcCM, wd1, wd2).
+		WithStatusSubresource(wd1, wd2).
+		Build()
+
+	c, clusterName := newRDController(t, cl, nil)
+
+	// Stamp finalizers for both WDs.
+	reconcileWD(t, c, clusterName, ns, "wd-c1")
+	reconcileWD(t, c, clusterName, ns, "wd-c2")
+
+	// Interleave: wd-c1 writes companion (with its ref), then wd-c2 should
+	// read the companion fresh and add its own ref — not start from scratch.
+	reconcileWD(t, c, clusterName, ns, "wd-c1")
+	reconcileWD(t, c, clusterName, ns, "wd-c2")
+
+	companion := getCompanionCM(t, cl, ns, companionName)
+	refs, err := decodeRefCount(companion.Annotations)
+	require.NoError(t, err)
+	assert.Len(t, refs, 2, "both WD ref-count entries must be present after interleaved reconciles")
+	assert.Contains(t, refs, types.NamespacedName{Namespace: ns, Name: "wd-c1"}.String())
+	assert.Contains(t, refs, types.NamespacedName{Namespace: ns, Name: "wd-c2"}.String())
+
+	// Delete wd-c1; companion must survive with only wd-c2's entry.
+	wd1 = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-c1"})
+	require.NoError(t, cl.Delete(context.Background(), wd1))
+	reconcileWD(t, c, clusterName, ns, "wd-c1")
+
+	companion = getCompanionCM(t, cl, ns, companionName)
+	refs2, err := decodeRefCount(companion.Annotations)
+	require.NoError(t, err)
+	assert.Len(t, refs2, 1, "companion must survive with wd-c2 still referencing it")
+	assert.Contains(t, refs2, types.NamespacedName{Namespace: ns, Name: "wd-c2"}.String(),
+		"wd-c2 entry must remain in ref-count after wd-c1 deletion")
+}
+
+// ─── Regression: optional missing source → WD not failed ──────────────────────
+
+// TestReferencedData_OptionalMissingSource_Skipped verifies that a source
+// marked optional=true that does not exist is silently skipped: the WD is NOT
+// set to Failed/SourceNotFound, and the companion for the optional source is
+// not expected.
+//
+// This is the regression test for the optional source escape hatch (fix 3).
+func TestReferencedData_OptionalMissingSource_Skipped(t *testing.T) {
+	ns := rdTestNamespace
+
+	// A required ConfigMap that exists.
+	cmRequired := "required-config"
+	cmOptional := "optional-config"
+	companionRequired := referenceddata.CompanionName("ConfigMap", cmRequired)
+
+	srcRequired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmRequired},
+		Data:       map[string]string{"key": "value"},
+	}
+
+	// Template references both: required (no optional flag) and optional.
+	optionalTrue := true
+	_ = optionalTrue
+	template := computev1alpha.InstanceTemplateSpec{
+		Spec: computev1alpha.InstanceSpec{
+			Volumes: []computev1alpha.InstanceVolume{
+				{
+					Name: "req-vol",
+					VolumeSource: computev1alpha.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: cmRequired},
+						},
+					},
+				},
+				{
+					Name: "opt-vol",
+					VolumeSource: computev1alpha.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: cmOptional},
+							Optional:             &[]bool{true}[0],
+						},
+					},
+				},
+			},
+		},
+	}
+	wd := makeWD(ns, "wd-opt", template)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(rdTestScheme(t)).
+		WithObjects(srcRequired, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	c, clusterName := newRDController(t, cl, nil)
+
+	// Two passes: first stamps finalizer, second resolves.
+	reconcileWD(t, c, clusterName, ns, "wd-opt")
+	reconcileWD(t, c, clusterName, ns, "wd-opt")
+
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-opt"})
+
+	// The WD must NOT have a False/SourceNotFound condition.
+	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond, "ReferencedDataReady condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status,
+		"WD must be Ready when only optional sources are missing")
+	assert.Equal(t, computev1alpha.ReferencedDataReasonReady, cond.Reason)
+
+	// The required companion must exist.
+	_ = getCompanionCM(t, cl, ns, companionRequired)
+
+	// The optional companion must NOT exist.
+	var phantom corev1.ConfigMap
+	err := cl.Get(context.Background(),
+		types.NamespacedName{Namespace: ns, Name: referenceddata.CompanionName("ConfigMap", cmOptional)}, &phantom)
+	assert.Error(t, err, "companion for optional missing source must not be created")
+
+	// The expected-set annotation must only list the required companion.
+	expectedNames := decodeExpectedAnnotation(t, wd)
+	assert.Equal(t, []string{companionRequired}, expectedNames)
+}
+
+// ─── Regression: unparseable ref-count annotation → companion NOT deleted ─────
+
+// TestReferencedData_CorruptRefCount_NotDeleted verifies that when the
+// ref-count annotation on a companion is unparseable, the release path returns
+// an error (transient) and does NOT delete the companion. This guards against
+// data loss when the annotation is corrupt but other WDs may still reference
+// the companion.
+//
+// This is the regression test for fix 4.
+func TestReferencedData_CorruptRefCount_NotDeleted(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := "shared-config-corrupt"
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+	wdKey := types.NamespacedName{Namespace: ns, Name: "wd-corrupt"}.String()
+
+	// Companion already exists with a corrupt ref-count annotation.
+	companion := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      companionName,
+			Labels:    map[string]string{computev1alpha.ReferencedDataLabel: "true"},
+			Annotations: map[string]string{
+				companionRefCountAnnotation: `{not-valid-json}`,
+			},
+		},
+		Data: map[string]string{"k": "v"},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(rdTestScheme(t)).
+		WithObjects(companion).
+		Build()
+
+	// Use a localCompanionWriter backed by the fake client.
+	writer := &localCompanionWriter{cl: cl}
+
+	ctrl := &ReferencedDataController{}
+	err := ctrl.releaseOneCompanion(context.Background(), nil, writer, ns, companionName, wdKey)
+	assert.Error(t, err, "corrupt ref-count annotation must cause releaseOneCompanion to return an error")
+	assert.Contains(t, err.Error(), "corrupt ref-count",
+		"error message must mention corrupt ref-count")
+
+	// Companion must NOT have been deleted.
+	var still corev1.ConfigMap
+	getErr := cl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: companionName}, &still)
+	assert.NoError(t, getErr, "companion must NOT be deleted when ref-count annotation is corrupt")
+}
+
+// ─── Regression: federator status sync preserves ReferencedDataReady ──────────
+
+// TestFederator_StatusSync_PreservesReferencedDataReadyCondition verifies that
+// syncStatusFromDownstream does NOT overwrite the resolver-owned
+// ReferencedDataReady condition on the project WD with the downstream WD's
+// (empty or stale) copy.
+//
+// This is the regression test for fix 1.
+func TestFederator_StatusSync_PreservesReferencedDataReadyCondition(t *testing.T) {
+	t.Parallel()
+
+	// Project WD has the resolver's ReferencedDataReady=True condition.
+	resolverCond := metav1.Condition{
+		Type:    computev1alpha.ReferencedDataReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  computev1alpha.ReferencedDataReasonReady,
+		Message: "All 1 referenced companion(s) are materialised",
+	}
+
+	wd := testWorkloadDeployment(withFinalizer, func(w *computev1alpha.WorkloadDeployment) {
+		w.Status.Conditions = []metav1.Condition{resolverCond}
+	})
+	projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+
+	// Downstream WD has NO ReferencedDataReady condition (as would be the case
+	// when the cell hasn't set it, or when it was never populated downstream).
+	karmadaWD := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testWDName,
+			Namespace: testKarmadaNSStr,
+			Labels:    map[string]string{cityCodeLabel: testCityCodeLAX},
+		},
+		Spec: computev1alpha.WorkloadDeploymentSpec{
+			CityCode:      testCityCodeLAX,
+			PlacementName: testDefaultPlacement,
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
+			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+		},
+		Status: computev1alpha.WorkloadDeploymentStatus{
+			// Downstream status has replica counts but NO ReferencedDataReady condition.
+		},
+	}
+
+	karmadaClient := newKarmadaFakeClient(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testKarmadaNSStr}},
+		karmadaWD,
+	)
+
+	r := newTestFederator(projectClient, karmadaClient)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	// After reconcile, the project WD must still have ReferencedDataReady=True.
+	var updatedWD computev1alpha.WorkloadDeployment
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Name: testWDName, Namespace: testProjNS}, &updatedWD))
+
+	cond := apimeta.FindStatusCondition(updatedWD.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond, "ReferencedDataReady condition must still be present after federator status sync")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status,
+		"resolver's ReferencedDataReady=True must be preserved by federator status sync")
+	assert.Equal(t, computev1alpha.ReferencedDataReasonReady, cond.Reason,
+		"resolver's Ready reason must be preserved by federator status sync")
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
