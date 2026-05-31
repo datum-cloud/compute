@@ -14,6 +14,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -365,9 +366,20 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 	}
 
 	// Stamp finalizer so we can clean up companions on WD deletion.
+	// Use RetryOnConflict so that a concurrent federator finalizer update on the
+	// same object does not produce a noisy optimistic-lock error — we simply
+	// re-read and re-apply our own finalizer addition.
 	if !controllerutil.ContainsFinalizer(&wd, referencedDataFinalizer) {
-		controllerutil.AddFinalizer(&wd, referencedDataFinalizer)
-		if err := cl.GetClient().Update(ctx, &wd); err != nil {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := cl.GetClient().Get(ctx, req.NamespacedName, &wd); err != nil {
+				return err
+			}
+			if controllerutil.ContainsFinalizer(&wd, referencedDataFinalizer) {
+				return nil // already present from a previous attempt
+			}
+			controllerutil.AddFinalizer(&wd, referencedDataFinalizer)
+			return cl.GetClient().Update(ctx, &wd)
+		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("referenceddata: add finalizer: %w", err)
 		}
 		return ctrl.Result{}, nil
@@ -443,8 +455,20 @@ func (r *ReferencedDataController) reconcileDeleted(
 	if err := r.releaseCompanions(ctx, c, writer, wd); err != nil {
 		return fmt.Errorf("referenceddata: release companions on deletion: %w", err)
 	}
-	controllerutil.RemoveFinalizer(wd, referencedDataFinalizer)
-	if err := c.Update(ctx, wd); err != nil {
+	// Use RetryOnConflict so that a concurrent federator finalizer update does
+	// not produce an optimistic-lock error. We re-read the object each attempt
+	// and only proceed if our finalizer is still present.
+	key := types.NamespacedName{Namespace: wd.Namespace, Name: wd.Name}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := c.Get(ctx, key, wd); err != nil {
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(wd, referencedDataFinalizer) {
+			return nil // already removed by a previous attempt
+		}
+		controllerutil.RemoveFinalizer(wd, referencedDataFinalizer)
+		return c.Update(ctx, wd)
+	}); err != nil {
 		return fmt.Errorf("referenceddata: remove finalizer: %w", err)
 	}
 	return nil
@@ -462,8 +486,19 @@ func (r *ReferencedDataController) reconcileEmpty(
 		if err := r.releaseCompanions(ctx, c, writer, wd); err != nil {
 			return fmt.Errorf("referenceddata: release companions (empty refs): %w", err)
 		}
-		controllerutil.RemoveFinalizer(wd, referencedDataFinalizer)
-		if err := c.Update(ctx, wd); err != nil {
+		// Use RetryOnConflict so that a concurrent federator finalizer update does
+		// not produce an optimistic-lock error.
+		key := types.NamespacedName{Namespace: wd.Namespace, Name: wd.Name}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := c.Get(ctx, key, wd); err != nil {
+				return err
+			}
+			if !controllerutil.ContainsFinalizer(wd, referencedDataFinalizer) {
+				return nil // already removed by a previous attempt
+			}
+			controllerutil.RemoveFinalizer(wd, referencedDataFinalizer)
+			return c.Update(ctx, wd)
+		}); err != nil {
 			return fmt.Errorf("referenceddata: remove finalizer (empty refs): %w", err)
 		}
 	}

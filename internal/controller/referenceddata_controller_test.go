@@ -6,17 +6,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -751,6 +755,198 @@ func TestReferencedData_WriterSelection(t *testing.T) {
 		assert.Equal(t, testKarmadaNSStr, dsw.downstreamNamespace,
 			"downstream namespace must be ns-{project-uid}")
 	})
+}
+
+// ─── Conflict-tolerant finalizer ─────────────────────────────────────────────
+
+// TestReferencedData_AddFinalizer_ConflictRetried asserts that the finalizer
+// add path survives a single optimistic-lock conflict (as would occur when the
+// WorkloadDeploymentFederator concurrently adds its own finalizer) and still
+// stamps the finalizer on the object after retrying.
+func TestReferencedData_AddFinalizer_ConflictRetried(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := rdTestAppConfig
+
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
+		Data:       map[string]string{"key": "value"},
+	}
+	wd := makeWD(ns, "wd-conflict", templateWithConfigMap(cmName))
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	realCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(srcCM, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	// Intercept the first Update call and return a conflict; let subsequent
+	// calls pass through to the real fake client so the retry succeeds.
+	var updateCalls atomic.Int32
+	wdGR := schema.GroupResource{Group: "compute.datumapis.com", Resource: "workloaddeployments"}
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(srcCM, wd).
+		WithStatusSubresource(wd).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*computev1alpha.WorkloadDeployment); ok {
+					if updateCalls.Add(1) == 1 {
+						// Simulate the conflict the federator would cause.
+						return apierrors.NewConflict(wdGR, obj.GetName(),
+							fmt.Errorf("the object has been modified; please apply your changes to the latest version and try again"))
+					}
+					// Subsequent calls pass through to the real client.
+					return realCl.Update(ctx, obj, opts...)
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				// Always read from the real client so retries see the latest state.
+				return realCl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	clusterName := "test-cluster"
+	mgr := &fakeMCManager{
+		clusters: map[string]cluster.Cluster{
+			clusterName: &fakeCluster{cl: cl},
+		},
+	}
+	c := &ReferencedDataController{
+		mgr:  mgr,
+		opts: ReferencedDataControllerOptions{},
+	}
+
+	// First reconcile: should add the finalizer despite the initial conflict.
+	cn := multicluster.ClusterName(clusterName)
+	ctx := mccontext.WithCluster(context.Background(), cn)
+	_, err := c.Reconcile(ctx, mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "wd-conflict"}},
+		ClusterName: cn,
+	})
+	require.NoError(t, err, "reconcile must succeed even when the first Update conflicts")
+
+	// Verify the finalizer was added to the real object.
+	updated := getWD(t, realCl, types.NamespacedName{Namespace: ns, Name: "wd-conflict"})
+	assert.Contains(t, updated.Finalizers, referencedDataFinalizer,
+		"finalizer must be present after conflict-retried Update")
+
+	// Update was called at least twice (once for the conflict, once for the retry).
+	assert.GreaterOrEqual(t, int(updateCalls.Load()), 2,
+		"Update must have been called at least twice (conflict + retry)")
+}
+
+// TestReferencedData_RemoveFinalizer_ConflictRetried asserts that the finalizer
+// removal path (on WD deletion) survives an optimistic-lock conflict.
+func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := rdTestAppConfig
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
+		Data:       map[string]string{"key": "value"},
+	}
+	wd := makeWD(ns, "wd-del-conflict", templateWithConfigMap(cmName))
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	// Build the WD to a state where the finalizer and companion are already present.
+	realCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(srcCM, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	{
+		cn := multicluster.ClusterName("setup")
+		ctx := mccontext.WithCluster(context.Background(), cn)
+		setupMgr := &fakeMCManager{
+			clusters: map[string]cluster.Cluster{
+				"setup": &fakeCluster{cl: realCl},
+			},
+		}
+		setupC := &ReferencedDataController{mgr: setupMgr, opts: ReferencedDataControllerOptions{}}
+		req := mcreconcile.Request{
+			Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"}},
+			ClusterName: cn,
+		}
+		// Reconcile twice: first stamps finalizer, second materialises companion.
+		_, err := setupC.Reconcile(ctx, req)
+		require.NoError(t, err)
+		_, err = setupC.Reconcile(ctx, req)
+		require.NoError(t, err)
+	}
+
+	// Verify setup: finalizer present, companion exists.
+	wdObj := getWD(t, realCl, types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"})
+	require.Contains(t, wdObj.Finalizers, referencedDataFinalizer)
+	getCompanionCM(t, realCl, ns, companionName)
+
+	// Now delete the WD.
+	require.NoError(t, realCl.Delete(context.Background(), wdObj))
+
+	// Intercept the first Update during deletion and return a conflict.
+	var updateCalls atomic.Int32
+	wdGR := schema.GroupResource{Group: "compute.datumapis.com", Resource: "workloaddeployments"}
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*computev1alpha.WorkloadDeployment); ok {
+					if updateCalls.Add(1) == 1 {
+						return apierrors.NewConflict(wdGR, obj.GetName(),
+							fmt.Errorf("the object has been modified; please apply your changes to the latest version and try again"))
+					}
+					return realCl.Update(ctx, obj, opts...)
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+			Get: func(ctx context.Context, _ client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				return realCl.Get(ctx, key, obj, opts...)
+			},
+			Delete: func(ctx context.Context, _ client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				return realCl.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	cn := multicluster.ClusterName("del-cluster")
+	mgr := &fakeMCManager{
+		clusters: map[string]cluster.Cluster{
+			"del-cluster": &fakeCluster{cl: cl},
+		},
+	}
+	c := &ReferencedDataController{mgr: mgr, opts: ReferencedDataControllerOptions{}}
+	ctx := mccontext.WithCluster(context.Background(), cn)
+	req := mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"}},
+		ClusterName: cn,
+	}
+
+	_, err := c.Reconcile(ctx, req)
+	require.NoError(t, err, "reconcile must succeed even when the first Update conflicts during deletion")
+
+	// When all finalizers are removed the fake client GCs the object immediately,
+	// so we expect either: (a) the object is gone, or (b) it exists without our
+	// finalizer. Both outcomes confirm the finalizer was removed correctly.
+	var finalObj computev1alpha.WorkloadDeployment
+	getErr := realCl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"}, &finalObj)
+	if getErr == nil {
+		assert.NotContains(t, finalObj.Finalizers, referencedDataFinalizer,
+			"finalizer must be removed after conflict-retried Update on deletion")
+	} else {
+		require.True(t, apierrors.IsNotFound(getErr),
+			"expected object to be gone or exist without finalizer, got: %v", getErr)
+	}
+
+	assert.GreaterOrEqual(t, int(updateCalls.Load()), 2,
+		"Update must have been called at least twice during deletion (conflict + retry)")
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
