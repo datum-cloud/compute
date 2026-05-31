@@ -922,6 +922,8 @@ func (r *ReferencedDataController) SetupWithManager(mgr mcmanager.Manager, opts 
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		// Distinct name so it never collides with the cell's WorkloadDeploymentReconciler.
+		Named("referenced-data").
 		// Watch source ConfigMaps; re-queue any WD that references them (rotation).
 		Watches(&corev1.ConfigMap{}, func(clusterName multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
