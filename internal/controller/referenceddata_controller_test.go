@@ -1008,6 +1008,175 @@ func TestReferencedData_RefCount_ConcurrentInterleaved(t *testing.T) {
 		"wd-c2 entry must remain in ref-count after wd-c1 deletion")
 }
 
+// ─── Regression: ref-count RMW must be atomic (silent lost-update without race)─
+
+// TestReferencedData_RefCount_ConflictForcesReread verifies that when a
+// concurrent WD adds its ref-count key between wd-race-1's GET of the companion
+// and wd-race-1's Update, the resulting conflict causes RetryOnConflict to
+// re-read the companion (now containing the concurrent key) so that the final
+// annotation carries ALL keys — including the one written concurrently.
+//
+// Race anatomy:
+//  1. wd-race-1's outer GET returns companion at R1 with [wd2Key].
+//  2. Concurrently, wd-race-3 adds wd3Key to the companion, advancing it to R2
+//     ([wd2Key, wd3Key]).
+//  3. wd-race-1 computes [wd1Key, wd2Key] from R1 and calls Update.
+//
+// Under the FIXED code the Update carries R1, which now conflicts with R2.
+// RetryOnConflict re-runs the loop: the fresh GET returns R2 [wd2Key, wd3Key],
+// refCountAdd produces [wd1Key, wd2Key, wd3Key], and the Update succeeds. All
+// three keys are present. ✓
+//
+// Under the OLD double-GET code ApplyConfigMap issued its own internal GET
+// (returning R2 [wd2Key, wd3Key]) and then called mergeAnnotations, which
+// overwrote the referenced-by key with the R1-derived [wd1Key, wd2Key], silently
+// dropping wd3Key. The Update at R2 succeeded with no conflict, so
+// RetryOnConflict never fired. Final: [wd1Key, wd2Key] — wd3Key lost. ✗
+//
+// The interceptor simulates the concurrent write by:
+//   - On the first GET of the companion ConfigMap, returning R1 to the caller
+//     and then immediately writing wd3Key into the companion on realCl (R2).
+//   - Letting the Update pass through to realCl unmodified.
+//
+// Fixed code: Update at R1 conflicts with R2 → retry → all three keys.
+// Old code:   Internal GET returns R2 with wd3Key, but mergeAnnotations drops it
+//
+//	→ Update at R2 silently succeeds → wd3Key lost → test fails.
+func TestReferencedData_RefCount_ConflictForcesReread(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := "shared-race-config"
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+
+	wd1Key := types.NamespacedName{Namespace: ns, Name: "wd-race-1"}.String()
+	wd2Key := types.NamespacedName{Namespace: ns, Name: "wd-race-2"}.String()
+	wd3Key := types.NamespacedName{Namespace: ns, Name: "wd-race-3"}.String()
+
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
+		Data:       map[string]string{"k": "v"},
+	}
+	wd1 := makeWD(ns, "wd-race-1", templateWithConfigMap(cmName))
+	wd2 := makeWD(ns, "wd-race-2", templateWithConfigMap(cmName))
+	wd3 := makeWD(ns, "wd-race-3", templateWithConfigMap(cmName))
+
+	s := rdTestScheme(t)
+
+	// realCl is the ground-truth store. All intercepted operations are forwarded
+	// here so state changes persist across the retry.
+	realCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(srcCM, wd1, wd2, wd3).
+		WithStatusSubresource(wd1, wd2, wd3).
+		Build()
+
+	// Phase 1: stamp finalizers on all three WDs.
+	{
+		setupC, cn := newRDController(t, realCl, nil)
+		reconcileWD(t, setupC, cn, ns, "wd-race-1")
+		reconcileWD(t, setupC, cn, ns, "wd-race-2")
+		reconcileWD(t, setupC, cn, ns, "wd-race-3")
+	}
+
+	// Phase 2: fully materialise wd-race-2 so the companion already exists
+	// with wd2Key in its ref-count before the race starts.
+	{
+		setupC, cn := newRDController(t, realCl, nil)
+		reconcileWD(t, setupC, cn, ns, "wd-race-2")
+	}
+
+	// Sanity: companion exists with wd2Key only.
+	companion := getCompanionCM(t, realCl, ns, companionName)
+	initialRefs, err := decodeRefCount(companion.Annotations)
+	require.NoError(t, err)
+	require.Contains(t, initialRefs, wd2Key, "setup: wd-race-2 key must be in companion before race test")
+	require.NotContains(t, initialRefs, wd1Key)
+	require.NotContains(t, initialRefs, wd3Key)
+
+	// concurrentWriteDone ensures the concurrent write injected by the interceptor
+	// happens exactly once (on the first GET of the companion).
+	var concurrentWriteDone atomic.Bool
+
+	// interceptedCl is used only for the wd-race-1 reconcile. It intercepts:
+	//   • GET of the companion: on the first call, after returning the result to
+	//     the caller, it immediately writes wd3Key into the companion on realCl,
+	//     advancing it to R2. This simulates wd-race-3 writing its ref-count key
+	//     after wd-race-1's GET but before wd-race-1's Update.
+	//   • All other operations are forwarded to realCl unchanged.
+	interceptedCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, _ client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				err := realCl.Get(ctx, key, obj, opts...)
+				if err != nil {
+					return err
+				}
+				// After returning R1 to wd-race-1, inject wd-race-3's key into the
+				// companion on realCl so the object advances to R2 before wd-race-1
+				// calls Update.
+				cm, isCM := obj.(*corev1.ConfigMap)
+				if isCM && cm.Name == companionName && !concurrentWriteDone.Swap(true) {
+					bump := &corev1.ConfigMap{}
+					if gerr := realCl.Get(ctx, types.NamespacedName{Namespace: cm.Namespace, Name: cm.Name}, bump); gerr == nil {
+						// Add wd3Key to the ref-count to simulate the concurrent write.
+						newRefs, _ := refCountAdd(bump.Annotations, wd3Key)
+						if bump.Annotations == nil {
+							bump.Annotations = make(map[string]string)
+						}
+						bump.Annotations[companionRefCountAnnotation] = encodeRefCount(newRefs)
+						_ = realCl.Update(ctx, bump) // advances resourceVersion to R2
+					}
+				}
+				return nil
+			},
+			Update: func(ctx context.Context, _ client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				return realCl.Update(ctx, obj, opts...)
+			},
+			Create: func(ctx context.Context, _ client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				return realCl.Create(ctx, obj, opts...)
+			},
+			Delete: func(ctx context.Context, _ client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				return realCl.Delete(ctx, obj, opts...)
+			},
+			Patch: func(ctx context.Context, _ client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				return realCl.Patch(ctx, obj, patch, opts...)
+			},
+			SubResourceUpdate: func(ctx context.Context, _ client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				return realCl.SubResource(subResource).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	c, clusterName := newRDController(t, interceptedCl, nil)
+
+	// Reconcile wd-race-1. The interceptor advances the companion's
+	// resourceVersion (adding wd3Key) after the outer GET returns.
+	//
+	// FIXED code: the Update carries R1 which conflicts with R2 → RetryOnConflict
+	// re-reads at R2 (with wd3Key present), computes [wd1Key, wd2Key, wd3Key],
+	// Update succeeds → all three keys present.
+	//
+	// OLD code: ApplyConfigMap's internal GET sees R2 (with wd3Key), but
+	// mergeAnnotations overwrites referenced-by with the R1-derived [wd1Key,
+	// wd2Key], dropping wd3Key. Update at R2 succeeds silently → wd3Key lost.
+	reconcileWD(t, c, clusterName, ns, "wd-race-1")
+
+	// Assert: the concurrent write was actually injected (otherwise the test is vacuous).
+	require.True(t, concurrentWriteDone.Load(), "interceptor must have injected the concurrent wd3Key write")
+
+	// Assert: all three keys must be in the companion ref-count after reconcile.
+	finalCompanion := getCompanionCM(t, realCl, ns, companionName)
+	finalRefs, err := decodeRefCount(finalCompanion.Annotations)
+	require.NoError(t, err)
+	assert.Contains(t, finalRefs, wd1Key,
+		"wd-race-1 key must be in companion ref-count after conflict-retry")
+	assert.Contains(t, finalRefs, wd2Key,
+		"wd-race-2 key must be preserved in companion ref-count")
+	assert.Contains(t, finalRefs, wd3Key,
+		"wd-race-3 key (concurrent write) must NOT be lost by wd-race-1's reconcile")
+	assert.Len(t, finalRefs, 3,
+		"companion ref-count must contain all three WD keys (no lost update)")
+}
+
 // ─── Regression: optional missing source → WD not failed ──────────────────────
 
 // TestReferencedData_OptionalMissingSource_Skipped verifies that a source
