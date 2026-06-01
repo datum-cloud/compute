@@ -13,6 +13,7 @@ const (
 	testNameAppConfig = "app-config"
 	testNameDBCreds   = "db-creds"
 	testNameCfg       = "cfg"
+	testNameMySecret  = "my-secret"
 )
 
 func TestCompanionName(t *testing.T) {
@@ -24,22 +25,22 @@ func TestCompanionName(t *testing.T) {
 		"configmap simple": {
 			kind:       testKindConfigMap,
 			sourceName: testNameAppConfig,
-			want:       "configmap.app-config",
+			want:       testNameAppConfig,
 		},
 		"secret simple": {
 			kind:       testKindSecret,
 			sourceName: testNameDBCreds,
-			want:       "secret.db-creds",
+			want:       testNameDBCreds,
 		},
 		"kind already lower": {
 			kind:       "configmap",
 			sourceName: testNameCfg,
-			want:       "configmap.cfg",
+			want:       testNameCfg,
 		},
 		"secret upper": {
 			kind:       "SECRET",
-			sourceName: "my-secret",
-			want:       "secret.my-secret",
+			sourceName: testNameMySecret,
+			want:       testNameMySecret,
 		},
 	}
 
@@ -50,6 +51,52 @@ func TestCompanionName(t *testing.T) {
 				t.Errorf("CompanionName(%q, %q) = %q, want %q", tc.kind, tc.sourceName, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCompanionName_SourceNameContract is the seam-crossing contract test.
+// It asserts that CompanionName always returns the source name unchanged for
+// names that fit in 253 chars and satisfy DNS subdomain rules — regardless of
+// the kind argument. Old prefixed code would fail this contract.
+func TestCompanionName_SourceNameContract(t *testing.T) {
+	cases := []struct {
+		kind string
+		name string
+	}{
+		{testKindConfigMap, testNameAppConfig},
+		{testKindSecret, testNameAppConfig}, // same source name, different kind
+		{testKindConfigMap, testNameDBCreds},
+		{"configmap", "my-cm"},
+		{"SECRET", testNameMySecret},
+	}
+
+	for _, tc := range cases {
+		got := CompanionName(tc.kind, tc.name)
+		if got != tc.name {
+			t.Errorf("CompanionName(%q, %q) = %q, want source name %q (contract violation)",
+				tc.kind, tc.name, got, tc.name)
+		}
+	}
+}
+
+// TestCompanionName_SameSourceDifferentKind asserts that a ConfigMap and a
+// Secret with the same source name produce the same companion name. Cross-kind
+// collision is safe because ConfigMap and Secret are distinct object types in
+// Kubernetes — they cannot conflict in the same namespace.
+func TestCompanionName_SameSourceDifferentKind(t *testing.T) {
+	name := testNameAppConfig
+	cmCompanion := CompanionName(testKindConfigMap, name)
+	secretCompanion := CompanionName(testKindSecret, name)
+
+	if cmCompanion != name {
+		t.Errorf("ConfigMap companion = %q, want %q", cmCompanion, name)
+	}
+	if secretCompanion != name {
+		t.Errorf("Secret companion = %q, want %q", secretCompanion, name)
+	}
+	if cmCompanion != secretCompanion {
+		t.Errorf("same source name must produce the same companion name regardless of kind: %q != %q",
+			cmCompanion, secretCompanion)
 	}
 }
 
@@ -75,8 +122,8 @@ func TestCompanionName_LongName(t *testing.T) {
 
 func TestCompanionName_AllDashesSource(t *testing.T) {
 	// A source name composed entirely of '-' characters exceeds maxNameLength
-	// when prefixed. After TrimRight, truncated becomes "". The function must
-	// produce a valid DNS subdomain: "<prefix>.<hash>" (no leading '-').
+	// when long. After TrimRight, truncated becomes "". The function must
+	// produce a valid DNS subdomain (just the hash).
 	longDashes := strings.Repeat("-", 250)
 	result := CompanionName(testKindConfigMap, longDashes)
 
@@ -96,7 +143,7 @@ func TestCompanionName_AllDashesSource(t *testing.T) {
 
 func TestCompanionName_AllDotsSource(t *testing.T) {
 	// A source name composed entirely of '.' characters has the same edge:
-	// TrimRight wipes it out, producing "<prefix>.<hash>".
+	// TrimRight wipes it out, producing just the hash.
 	longDots := strings.Repeat(".", 250)
 	result := CompanionName(testKindConfigMap, longDots)
 
@@ -109,13 +156,13 @@ func TestCompanionName_AllDotsSource(t *testing.T) {
 }
 
 func TestCompanionName_NameEndingOnDot(t *testing.T) {
-	// A source name whose truncation point lands exactly on a '.'.  The
+	// A source name whose truncation point lands exactly on a '.'. The
 	// trailing '.' is stripped and the result must still be a valid subdomain.
 	//
-	// "configmap." is 10 chars; maxNameLength=253; suffix="-HHHHHHHH" (9).
-	// maxSourceLen = 253 - 9 (prefix "configmap") - 1 (dot) - 9 (suffix) = 234.
-	// Build a name that is exactly 234 chars and ends with '.'.
-	base := strings.Repeat("a", 233) + "."
+	// maxNameLength=253; suffix="-HHHHHHHH" (9).
+	// maxSourceLen = 253 - 9 (suffix) = 244.
+	// Build a name that is exactly 244 chars and ends with '.'.
+	base := strings.Repeat("a", 243) + "."
 	result := CompanionName("configmap", base)
 
 	if len(result) > maxNameLength {
@@ -126,11 +173,11 @@ func TestCompanionName_NameEndingOnDot(t *testing.T) {
 	}
 }
 
-func TestCompanionName_ValidPrefix(t *testing.T) {
+func TestCompanionName_ValidShortName(t *testing.T) {
 	// Positive case: a simple name that fits within maxNameLength without
-	// truncation should be returned unchanged in "<prefix>.<source>" form.
-	result := CompanionName(testKindSecret, "my-secret")
-	want := "secret.my-secret"
+	// truncation should be returned unchanged.
+	result := CompanionName(testKindSecret, testNameMySecret)
+	want := testNameMySecret
 	if result != want {
 		t.Errorf("CompanionName = %q, want %q", result, want)
 	}
@@ -142,8 +189,8 @@ func TestCompanionName_ValidPrefix(t *testing.T) {
 func TestCompanionName_Deterministic(t *testing.T) {
 	// Same inputs always produce the same output.
 	for i := 0; i < 100; i++ {
-		a := CompanionName(testKindSecret, "my-secret")
-		b := CompanionName(testKindSecret, "my-secret")
+		a := CompanionName(testKindSecret, testNameMySecret)
+		b := CompanionName(testKindSecret, testNameMySecret)
 		if a != b {
 			t.Fatalf("non-deterministic: %q != %q", a, b)
 		}
@@ -153,7 +200,7 @@ func TestCompanionName_Deterministic(t *testing.T) {
 func TestCompanionNameForRef(t *testing.T) {
 	ref := ObjectRef{Kind: testKindConfigMap, Name: testNameAppConfig, Namespace: "default"}
 	got := CompanionNameForRef(ref)
-	want := "configmap.app-config"
+	want := testNameAppConfig
 	if got != want {
 		t.Errorf("CompanionNameForRef = %q, want %q", got, want)
 	}
@@ -167,5 +214,23 @@ func TestShortHash_Deterministic(t *testing.T) {
 	}
 	if len(h1) != hashSuffixLength {
 		t.Errorf("shortHash len=%d, want %d", len(h1), hashSuffixLength)
+	}
+}
+
+func TestCompanionToken(t *testing.T) {
+	cases := []struct {
+		kind string
+		name string
+		want string
+	}{
+		{testKindConfigMap, testNameAppConfig, testKindConfigMap + "/" + testNameAppConfig},
+		{testKindSecret, testNameDBCreds, testKindSecret + "/" + testNameDBCreds},
+		{testKindSecret, testNameAppConfig, testKindSecret + "/" + testNameAppConfig},
+	}
+	for _, tc := range cases {
+		got := CompanionToken(tc.kind, tc.name)
+		if got != tc.want {
+			t.Errorf("CompanionToken(%q, %q) = %q, want %q", tc.kind, tc.name, got, tc.want)
+		}
 	}
 }
