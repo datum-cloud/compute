@@ -37,6 +37,15 @@ const (
 
 	// rdTestAppConfig is a frequently reused source ConfigMap name in tests.
 	rdTestAppConfig = "app-config"
+
+	rdTestClusterName   = "test-cluster"
+	rdTestDataKey       = "key"
+	rdTestDataValue     = "value"
+	rdTestWD1           = "wd-1"
+	rdTestWD2           = "wd-2"
+	rdTestBlobKey       = "blob"
+	rdTestWDDelConflict = "wd-del-conflict"
+	rdTestWorkloadName  = "test-workload"
 )
 
 // rdTestScheme builds a runtime.Scheme suitable for ReferencedDataController tests.
@@ -52,7 +61,7 @@ func rdTestScheme(t *testing.T) *runtime.Scheme {
 // into a fake multicluster manager that has one cluster identified by clusterName.
 func newRDController(t *testing.T, cl client.Client, reader referenceddata.ProjectConfigSecretReader, opts ...func(*ReferencedDataControllerOptions)) (*ReferencedDataController, string) {
 	t.Helper()
-	clusterName := "test-cluster"
+	clusterName := rdTestClusterName
 
 	mgr := &fakeMCManager{
 		clusters: map[string]cluster.Cluster{
@@ -181,9 +190,9 @@ func TestReferencedData_HappyPath_ConfigMap(t *testing.T) {
 
 	srcCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
-		Data:       map[string]string{"key": "value"},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
 	}
-	wd := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -194,21 +203,21 @@ func TestReferencedData_HappyPath_ConfigMap(t *testing.T) {
 	c, clusterName := newRDController(t, cl, nil)
 
 	// First reconcile: stamps finalizer and returns.
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 	// Fetch updated WD (finalizer stamped).
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	require.Contains(t, wd.Finalizers, referencedDataFinalizer, "finalizer should be present after first reconcile")
 
 	// Second reconcile: materialises companion + stamps annotation + sets condition.
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	// Companion ConfigMap should exist.
 	companion := getCompanionCM(t, cl, ns, companionName)
-	assert.Equal(t, "true", companion.Labels[computev1alpha.ReferencedDataLabel], "companion must have referenced-data label")
-	assert.Equal(t, "value", companion.Data["key"], "companion must copy source Data")
+	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, companion.Labels[computev1alpha.ReferencedDataLabel], "companion must have referenced-data label")
+	assert.Equal(t, rdTestDataValue, companion.Data[rdTestDataKey], "companion must copy source Data")
 
 	// Expected annotation should list the companion name.
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	expectedNames := decodeExpectedAnnotation(t, wd)
 	assert.Equal(t, []string{companionName}, expectedNames)
 
@@ -229,7 +238,7 @@ func TestReferencedData_HappyPath_Secret(t *testing.T) {
 		Data:       map[string][]byte{"password": []byte("hunter2")},
 		Type:       corev1.SecretTypeOpaque,
 	}
-	wd := makeWD(ns, "wd-1", templateWithSecret(secretName))
+	wd := makeWD(ns, rdTestWD1, templateWithSecret(secretName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -239,15 +248,15 @@ func TestReferencedData_HappyPath_Secret(t *testing.T) {
 
 	c, clusterName := newRDController(t, cl, nil)
 
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	companion := getCompanionSecret(t, cl, ns, companionName)
-	assert.Equal(t, "true", companion.Labels[computev1alpha.ReferencedDataLabel])
+	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, companion.Labels[computev1alpha.ReferencedDataLabel])
 	assert.Equal(t, []byte("hunter2"), companion.Data["password"])
 	assert.Equal(t, corev1.SecretTypeOpaque, companion.Type)
 
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	expectedNames := decodeExpectedAnnotation(t, wd)
 	assert.Equal(t, []string{companionName}, expectedNames)
 
@@ -263,7 +272,7 @@ func TestReferencedData_SourceNotFound(t *testing.T) {
 	cmName := "missing-config"
 
 	// Source ConfigMap does NOT exist in the cluster.
-	wd := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -273,13 +282,13 @@ func TestReferencedData_SourceNotFound(t *testing.T) {
 
 	c, clusterName := newRDController(t, cl, nil)
 
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	require.Contains(t, wd.Finalizers, referencedDataFinalizer)
 
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -296,7 +305,7 @@ func TestReferencedData_SourceUnauthorized(t *testing.T) {
 	ns := rdTestNamespace
 	cmName := "auth-config"
 
-	wd := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -313,10 +322,10 @@ func TestReferencedData_SourceUnauthorized(t *testing.T) {
 
 	c, clusterName := newRDController(t, cl, unauthorizedReader)
 
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -333,9 +342,9 @@ func TestReferencedData_SourceTooLarge_PerObject(t *testing.T) {
 	bigData := make([]byte, 300*1024) // 300 KiB > 256 KiB default
 	srcCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
-		BinaryData: map[string][]byte{"blob": bigData},
+		BinaryData: map[string][]byte{rdTestBlobKey: bigData},
 	}
-	wd := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -345,10 +354,10 @@ func TestReferencedData_SourceTooLarge_PerObject(t *testing.T) {
 
 	c, clusterName := newRDController(t, cl, nil)
 
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -369,11 +378,11 @@ func TestReferencedData_SourceTooLarge_Aggregate(t *testing.T) {
 	halfBig := make([]byte, 600*1024)
 	src1 := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName1},
-		BinaryData: map[string][]byte{"blob": halfBig},
+		BinaryData: map[string][]byte{rdTestBlobKey: halfBig},
 	}
 	src2 := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName2},
-		BinaryData: map[string][]byte{"blob": halfBig},
+		BinaryData: map[string][]byte{rdTestBlobKey: halfBig},
 	}
 
 	template := computev1alpha.InstanceTemplateSpec{
@@ -388,7 +397,7 @@ func TestReferencedData_SourceTooLarge_Aggregate(t *testing.T) {
 			},
 		},
 	}
-	wd := makeWD(ns, "wd-1", template)
+	wd := makeWD(ns, rdTestWD1, template)
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -402,10 +411,10 @@ func TestReferencedData_SourceTooLarge_Aggregate(t *testing.T) {
 		o.AggregateLimitBytes = 1000 * 1024 // 1000 KiB — aggregate fails at 1.2 MiB
 	})
 
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -423,7 +432,7 @@ func TestReferencedData_Rotation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
 		Data:       map[string]string{"ver": "v1"},
 	}
-	wd := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -434,8 +443,8 @@ func TestReferencedData_Rotation(t *testing.T) {
 	c, clusterName := newRDController(t, cl, nil)
 
 	// Two passes to materialise initially.
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	companion := getCompanionCM(t, cl, ns, companionName)
 	assert.Equal(t, "v1", companion.Data["ver"])
@@ -445,7 +454,7 @@ func TestReferencedData_Rotation(t *testing.T) {
 	require.NoError(t, cl.Update(context.Background(), srcCM))
 
 	// Re-reconcile (as if triggered by the source watch).
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	companion = getCompanionCM(t, cl, ns, companionName)
 	assert.Equal(t, "v2", companion.Data["ver"], "companion must reflect rotated source")
@@ -462,8 +471,8 @@ func TestReferencedData_RefCount_TwoWDs(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
 		Data:       map[string]string{"k": "v"},
 	}
-	wd1 := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
-	wd2 := makeWD(ns, "wd-2", templateWithConfigMap(cmName))
+	wd1 := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
+	wd2 := makeWD(ns, rdTestWD2, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -474,41 +483,41 @@ func TestReferencedData_RefCount_TwoWDs(t *testing.T) {
 	c, clusterName := newRDController(t, cl, nil)
 
 	// Materialise for wd-1.
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	companion := getCompanionCM(t, cl, ns, companionName)
 	refs1, err := decodeRefCount(companion.Annotations)
 	require.NoError(t, err)
-	assert.Contains(t, refs1, types.NamespacedName{Namespace: ns, Name: "wd-1"}.String())
+	assert.Contains(t, refs1, types.NamespacedName{Namespace: ns, Name: rdTestWD1}.String())
 
 	// Materialise for wd-2.
-	reconcileWD(t, c, clusterName, ns, "wd-2")
-	reconcileWD(t, c, clusterName, ns, "wd-2")
+	reconcileWD(t, c, clusterName, ns, rdTestWD2)
+	reconcileWD(t, c, clusterName, ns, rdTestWD2)
 
 	companion = getCompanionCM(t, cl, ns, companionName)
 	refs2, err := decodeRefCount(companion.Annotations)
 	require.NoError(t, err)
 	assert.Len(t, refs2, 2, "companion must list both WDs")
-	assert.Contains(t, refs2, types.NamespacedName{Namespace: ns, Name: "wd-1"}.String())
-	assert.Contains(t, refs2, types.NamespacedName{Namespace: ns, Name: "wd-2"}.String())
+	assert.Contains(t, refs2, types.NamespacedName{Namespace: ns, Name: rdTestWD1}.String())
+	assert.Contains(t, refs2, types.NamespacedName{Namespace: ns, Name: rdTestWD2}.String())
 
 	// Delete wd-1 (simulate deletion + finalizer processing).
-	wd1 = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd1 = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	require.NoError(t, cl.Delete(context.Background(), wd1))
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	// Companion must still exist (wd-2 still holds it).
 	companion = getCompanionCM(t, cl, ns, companionName)
 	refs3, err := decodeRefCount(companion.Annotations)
 	require.NoError(t, err)
 	assert.Len(t, refs3, 1, "wd-1 should have been removed from ref-count")
-	assert.Contains(t, refs3, types.NamespacedName{Namespace: ns, Name: "wd-2"}.String())
+	assert.Contains(t, refs3, types.NamespacedName{Namespace: ns, Name: rdTestWD2}.String())
 
 	// Delete wd-2 too.
-	wd2 = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-2"})
+	wd2 = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD2})
 	require.NoError(t, cl.Delete(context.Background(), wd2))
-	reconcileWD(t, c, clusterName, ns, "wd-2")
+	reconcileWD(t, c, clusterName, ns, rdTestWD2)
 
 	// Companion must be gone.
 	var gone corev1.ConfigMap
@@ -527,7 +536,7 @@ func TestReferencedData_WDDeletion_CleansUpCompanion(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
 		Data:       map[string]string{"a": "b"},
 	}
-	wd := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -537,20 +546,20 @@ func TestReferencedData_WDDeletion_CleansUpCompanion(t *testing.T) {
 
 	c, clusterName := newRDController(t, cl, nil)
 
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	// Companion must exist.
 	getCompanionCM(t, cl, ns, companionName)
 
 	// Delete the WD.
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	require.NoError(t, cl.Delete(context.Background(), wd))
 
 	// Reconcile handles the deletion + finalizer removal.
 	// After the controller removes the finalizer, the fake client may GC the WD,
 	// so we capture the state before reconcile.
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	// Companion must be gone.
 	var gone corev1.ConfigMap
@@ -564,7 +573,7 @@ func TestReferencedData_EmptyRefs_NoCompanionNoFinalizer(t *testing.T) {
 	ns := rdTestNamespace
 
 	// WD template has no ConfigMap/Secret references.
-	wd := makeWD(ns, "wd-1", computev1alpha.InstanceTemplateSpec{})
+	wd := makeWD(ns, rdTestWD1, computev1alpha.InstanceTemplateSpec{})
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -573,9 +582,9 @@ func TestReferencedData_EmptyRefs_NoCompanionNoFinalizer(t *testing.T) {
 		Build()
 
 	c, clusterName := newRDController(t, cl, nil)
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
-	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: "wd-1"})
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
 	assert.NotContains(t, wd.Finalizers, referencedDataFinalizer, "no finalizer for empty refs")
 	_, hasAnno := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
 	assert.False(t, hasAnno, "no annotation for empty refs")
@@ -596,7 +605,7 @@ func TestReferencedData_CompanionNamespaceInvariant(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
 		Data:       map[string]string{"x": "y"},
 	}
-	wd := makeWD(ns, "wd-1", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
 	cl := fake.NewClientBuilder().
 		WithScheme(rdTestScheme(t)).
@@ -605,8 +614,8 @@ func TestReferencedData_CompanionNamespaceInvariant(t *testing.T) {
 		Build()
 
 	c, clusterName := newRDController(t, cl, nil)
-	reconcileWD(t, c, clusterName, ns, "wd-1")
-	reconcileWD(t, c, clusterName, ns, "wd-1")
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
 
 	companion := getCompanionCM(t, cl, ns, companionName)
 	assert.Equal(t, ns, companion.Namespace, "companion must be in WD's namespace")
@@ -624,7 +633,7 @@ func newRDControllerFederated(
 	reader referenceddata.ProjectConfigSecretReader,
 ) (*ReferencedDataController, string) {
 	t.Helper()
-	clusterName := "test-cluster"
+	clusterName := rdTestClusterName
 
 	mgr := &fakeMCManager{
 		clusters: map[string]cluster.Cluster{
@@ -660,7 +669,7 @@ func TestReferencedData_Federated_CompanionWrittenToHub(t *testing.T) {
 	}
 	srcCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: projNS, Name: cmName},
-		Data:       map[string]string{"key": "federated-value"},
+		Data:       map[string]string{rdTestDataKey: "federated-value"},
 	}
 	wd := makeWD(projNS, "wd-fed-1", templateWithConfigMap(cmName))
 
@@ -696,8 +705,8 @@ func TestReferencedData_Federated_CompanionWrittenToHub(t *testing.T) {
 	require.NoError(t, hubCl.Get(context.Background(),
 		types.NamespacedName{Namespace: downstreamNS, Name: companionName}, &hubCM),
 		"companion ConfigMap must exist on the hub in the downstream namespace")
-	assert.Equal(t, "federated-value", hubCM.Data["key"], "hub companion must copy source Data")
-	assert.Equal(t, "true", hubCM.Labels[computev1alpha.ReferencedDataLabel],
+	assert.Equal(t, "federated-value", hubCM.Data[rdTestDataKey], "hub companion must copy source Data")
+	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, hubCM.Labels[computev1alpha.ReferencedDataLabel],
 		"hub companion must carry referenced-data label")
 
 	// Companion must NOT exist in the project namespace.
@@ -772,7 +781,7 @@ func TestReferencedData_AddFinalizer_ConflictRetried(t *testing.T) {
 
 	srcCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
-		Data:       map[string]string{"key": "value"},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
 	}
 	wd := makeWD(ns, "wd-conflict", templateWithConfigMap(cmName))
 
@@ -813,7 +822,7 @@ func TestReferencedData_AddFinalizer_ConflictRetried(t *testing.T) {
 		}).
 		Build()
 
-	clusterName := "test-cluster"
+	clusterName := rdTestClusterName
 	mgr := &fakeMCManager{
 		clusters: map[string]cluster.Cluster{
 			clusterName: &fakeCluster{cl: cl},
@@ -852,9 +861,9 @@ func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
 
 	srcCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
-		Data:       map[string]string{"key": "value"},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
 	}
-	wd := makeWD(ns, "wd-del-conflict", templateWithConfigMap(cmName))
+	wd := makeWD(ns, rdTestWDDelConflict, templateWithConfigMap(cmName))
 
 	s := rdTestScheme(t)
 	require.NoError(t, corev1.AddToScheme(s))
@@ -876,7 +885,7 @@ func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
 		}
 		setupC := &ReferencedDataController{mgr: setupMgr, opts: ReferencedDataControllerOptions{}}
 		req := mcreconcile.Request{
-			Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"}},
+			Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: rdTestWDDelConflict}},
 			ClusterName: cn,
 		}
 		// Reconcile twice: first stamps finalizer, second materialises companion.
@@ -887,7 +896,7 @@ func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
 	}
 
 	// Verify setup: finalizer present, companion exists.
-	wdObj := getWD(t, realCl, types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"})
+	wdObj := getWD(t, realCl, types.NamespacedName{Namespace: ns, Name: rdTestWDDelConflict})
 	require.Contains(t, wdObj.Finalizers, referencedDataFinalizer)
 	getCompanionCM(t, realCl, ns, companionName)
 
@@ -928,7 +937,7 @@ func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
 	c := &ReferencedDataController{mgr: mgr, opts: ReferencedDataControllerOptions{}}
 	ctx := mccontext.WithCluster(context.Background(), cn)
 	req := mcreconcile.Request{
-		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"}},
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: rdTestWDDelConflict}},
 		ClusterName: cn,
 	}
 
@@ -939,7 +948,7 @@ func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
 	// so we expect either: (a) the object is gone, or (b) it exists without our
 	// finalizer. Both outcomes confirm the finalizer was removed correctly.
 	var finalObj computev1alpha.WorkloadDeployment
-	getErr := realCl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "wd-del-conflict"}, &finalObj)
+	getErr := realCl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: rdTestWDDelConflict}, &finalObj)
 	if getErr == nil {
 		assert.NotContains(t, finalObj.Finalizers, referencedDataFinalizer,
 			"finalizer must be removed after conflict-retried Update on deletion")
@@ -1195,7 +1204,7 @@ func TestReferencedData_OptionalMissingSource_Skipped(t *testing.T) {
 
 	srcRequired := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmRequired},
-		Data:       map[string]string{"key": "value"},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
 	}
 
 	// Template references both: required (no optional flag) and optional.
@@ -1281,7 +1290,7 @@ func TestReferencedData_CorruptRefCount_NotDeleted(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      companionName,
-			Labels:    map[string]string{computev1alpha.ReferencedDataLabel: "true"},
+			Labels:    map[string]string{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue},
 			Annotations: map[string]string{
 				companionRefCountAnnotation: `{not-valid-json}`,
 			},
@@ -1344,7 +1353,7 @@ func TestFederator_StatusSync_PreservesReferencedDataReadyCondition(t *testing.T
 		Spec: computev1alpha.WorkloadDeploymentSpec{
 			CityCode:      testCityCodeLAX,
 			PlacementName: testDefaultPlacement,
-			WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 		},
 		Status: computev1alpha.WorkloadDeploymentStatus{

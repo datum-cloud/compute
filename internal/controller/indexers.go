@@ -135,7 +135,7 @@ func wdRefersToSecretIndexFunc(o client.Object) []string {
 	refs := referenceddata.CollectFromTemplate(wd.Namespace, wd.Spec.Template)
 	var keys []string
 	for _, ref := range refs {
-		if ref.Kind == "Secret" {
+		if ref.Kind == kindSecret {
 			keys = append(keys, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}.String())
 		}
 	}

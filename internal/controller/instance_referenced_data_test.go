@@ -26,10 +26,15 @@ import (
 )
 
 const (
-	refDataTestCluster    = "test-project"
-	refDataTestNamespace  = "ns-test-uid"
-	refDataTestDeployment = "my-deployment"
-	refDataTestInstance   = "my-instance"
+	refDataTestCluster             = "test-project"
+	refDataTestNamespace           = "ns-test-uid"
+	refDataTestDeployment          = "my-deployment"
+	refDataTestInstance            = "my-instance"
+	refDataTestWDUID               = "wd-uid"
+	refDataTestDataKey             = "key"
+	refDataTestCMCompanionName     = "configmap.app-config"
+	refDataTestSecretCompanionName = "secret.db-creds"
+	refDataTestDataValue           = "value"
 )
 
 // makeWDForCell builds a WorkloadDeployment that can own test instances in the
@@ -40,7 +45,7 @@ func makeWDForCell(annotationValue string) *computev1alpha.WorkloadDeployment {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      refDataTestDeployment,
 			Namespace: refDataTestNamespace,
-			UID:       "wd-uid",
+			UID:       refDataTestWDUID,
 		},
 	}
 	if annotationValue != "" {
@@ -64,14 +69,14 @@ func makeInstanceWithRefDataGate() *computev1alpha.Instance {
 			Namespace:  refDataTestNamespace,
 			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid",
+				computev1alpha.WorkloadDeploymentUIDLabel: refDataTestWDUID,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: "compute.datumapis.com/v1alpha",
-					Kind:       "WorkloadDeployment",
+					APIVersion: testComputeAPIVersion,
+					Kind:       kindWorkloadDeployment,
 					Name:       refDataTestDeployment,
-					UID:        "wd-uid",
+					UID:        refDataTestWDUID,
 					Controller: func() *bool { b := true; return &b }(),
 				},
 			},
@@ -81,7 +86,7 @@ func makeInstanceWithRefDataGate() *computev1alpha.Instance {
 				SchedulingGates: gates,
 			},
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
 		},
@@ -96,10 +101,10 @@ func makeCompanionConfigMap(name string) *corev1.ConfigMap {
 			Name:      name,
 			Namespace: refDataTestNamespace,
 			Labels: map[string]string{
-				computev1alpha.ReferencedDataLabel: "true",
+				computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
 			},
 		},
-		Data: map[string]string{"key": "value"},
+		Data: map[string]string{refDataTestDataKey: refDataTestDataValue},
 	}
 }
 
@@ -111,10 +116,10 @@ func makeCompanionSecret(name string) *corev1.Secret {
 			Name:      name,
 			Namespace: refDataTestNamespace,
 			Labels: map[string]string{
-				computev1alpha.ReferencedDataLabel: "true",
+				computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
 			},
 		},
-		Data: map[string][]byte{"key": []byte("value")},
+		Data: map[string][]byte{refDataTestDataKey: []byte(refDataTestDataValue)},
 	}
 }
 
@@ -197,13 +202,13 @@ func TestReferencedDataGateHeldWhenAnnotationAbsent(t *testing.T) {
 // companions are present the condition is AwaitingPropagation/False and the
 // gate is not removed. The missing companion names should appear in the message.
 func TestReferencedDataGateHeldWhenCompanionsMissing(t *testing.T) {
-	expected := []string{"configmap.app-config", "secret.db-creds"}
+	expected := []string{refDataTestCMCompanionName, refDataTestSecretCompanionName}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 	inst := makeInstanceWithRefDataGate()
 
 	// Only the ConfigMap companion is present; the Secret is missing.
-	companionCM := makeCompanionConfigMap("configmap.app-config")
+	companionCM := makeCompanionConfigMap(refDataTestCMCompanionName)
 
 	r, projectClient, fakeRec := newRefDataReconciler(t,
 		[]client.Object{inst, wd, companionCM},
@@ -219,7 +224,7 @@ func TestReferencedDataGateHeldWhenCompanionsMissing(t *testing.T) {
 	require.NotNil(t, cond, "ReferencedDataReady condition should be set")
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.ReferencedDataReasonAwaitingPropagation, cond.Reason)
-	assert.Contains(t, cond.Message, "secret.db-creds", "message should name the missing companion")
+	assert.Contains(t, cond.Message, refDataTestSecretCompanionName, "message should name the missing companion")
 
 	// Gate must still be present.
 	hasGate := false
@@ -244,13 +249,13 @@ func TestReferencedDataGateHeldWhenCompanionsMissing(t *testing.T) {
 // TestReferencedDataGateClearedWhenAllPresent verifies the full happy path:
 // all expected companions are present → gate is removed and condition is Ready.
 func TestReferencedDataGateClearedWhenAllPresent(t *testing.T) {
-	expected := []string{"configmap.app-config", "secret.db-creds"}
+	expected := []string{refDataTestCMCompanionName, refDataTestSecretCompanionName}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 	inst := makeInstanceWithRefDataGate()
 
-	companionCM := makeCompanionConfigMap("configmap.app-config")
-	companionSecret := makeCompanionSecret("secret.db-creds")
+	companionCM := makeCompanionConfigMap(refDataTestCMCompanionName)
+	companionSecret := makeCompanionSecret(refDataTestSecretCompanionName)
 
 	r, projectClient, fakeRec := newRefDataReconciler(t,
 		[]client.Object{inst, wd, companionCM, companionSecret},
@@ -299,7 +304,7 @@ done:
 // TestReferencedDataIdempotentWhenAlreadyReady verifies that a second reconcile
 // when the gate is gone and condition is already True produces no changes.
 func TestReferencedDataIdempotentWhenAlreadyReady(t *testing.T) {
-	expected := []string{"configmap.app-config"}
+	expected := []string{refDataTestCMCompanionName}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 
@@ -310,14 +315,14 @@ func TestReferencedDataIdempotentWhenAlreadyReady(t *testing.T) {
 			Namespace:  refDataTestNamespace,
 			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid",
+				computev1alpha.WorkloadDeploymentUIDLabel: refDataTestWDUID,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: "compute.datumapis.com/v1alpha",
-					Kind:       "WorkloadDeployment",
+					APIVersion: testComputeAPIVersion,
+					Kind:       kindWorkloadDeployment,
 					Name:       refDataTestDeployment,
-					UID:        "wd-uid",
+					UID:        refDataTestWDUID,
 					Controller: func() *bool { b := true; return &b }(),
 				},
 			},
@@ -327,7 +332,7 @@ func TestReferencedDataIdempotentWhenAlreadyReady(t *testing.T) {
 				SchedulingGates: []computev1alpha.SchedulingGate{},
 			},
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
 		},
@@ -344,7 +349,7 @@ func TestReferencedDataIdempotentWhenAlreadyReady(t *testing.T) {
 		},
 	}
 
-	companionCM := makeCompanionConfigMap("configmap.app-config")
+	companionCM := makeCompanionConfigMap(refDataTestCMCompanionName)
 
 	r, projectClient, fakeRec := newRefDataReconciler(t,
 		[]client.Object{inst, wd, companionCM},
@@ -465,11 +470,11 @@ drainLoop:
 // an instance at generation N+1. The gate must only be cleared once the
 // condition has been re-evaluated at the current generation.
 func TestReferencedDataStaleConditionGuard(t *testing.T) {
-	expected := []string{"configmap.app-config"}
+	expected := []string{refDataTestCMCompanionName}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 
-	companion := makeCompanionConfigMap("configmap.app-config")
+	companion := makeCompanionConfigMap(refDataTestCMCompanionName)
 
 	// Build an instance at generation 2 whose ReferencedDataReady condition is
 	// True but was observed at generation 1 (stale). The gate is present because
@@ -481,14 +486,14 @@ func TestReferencedDataStaleConditionGuard(t *testing.T) {
 			Generation: 2, // current generation after spec update
 			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid",
+				computev1alpha.WorkloadDeploymentUIDLabel: refDataTestWDUID,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: "compute.datumapis.com/v1alpha",
-					Kind:       "WorkloadDeployment",
+					APIVersion: testComputeAPIVersion,
+					Kind:       kindWorkloadDeployment,
 					Name:       refDataTestDeployment,
-					UID:        "wd-uid",
+					UID:        refDataTestWDUID,
 					Controller: func() *bool { b := true; return &b }(),
 				},
 			},
@@ -500,7 +505,7 @@ func TestReferencedDataStaleConditionGuard(t *testing.T) {
 				},
 			},
 			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "d1-standard-2"},
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 			},
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
 		},
