@@ -26,15 +26,20 @@ import (
 )
 
 const (
-	refDataTestCluster             = "test-project"
-	refDataTestNamespace           = "ns-test-uid"
-	refDataTestDeployment          = "my-deployment"
-	refDataTestInstance            = "my-instance"
-	refDataTestWDUID               = "wd-uid"
-	refDataTestDataKey             = "key"
-	refDataTestCMCompanionName     = "configmap.app-config"
-	refDataTestSecretCompanionName = "secret.db-creds"
-	refDataTestDataValue           = "value"
+	refDataTestCluster    = "test-project"
+	refDataTestNamespace  = "ns-test-uid"
+	refDataTestDeployment = "my-deployment"
+	refDataTestInstance   = "my-instance"
+	refDataTestWDUID      = "wd-uid"
+	refDataTestDataKey    = "key"
+	// Companion objects are now named by source name (option B fix).
+	refDataTestCMCompanionName     = "app-config"
+	refDataTestSecretCompanionName = "db-creds"
+
+	// Annotation tokens are kind-qualified "Kind/name" strings.
+	refDataTestCMToken     = "ConfigMap/app-config"
+	refDataTestSecretToken = "Secret/db-creds"
+	refDataTestDataValue   = "value"
 )
 
 // makeWDForCell builds a WorkloadDeployment that can own test instances in the
@@ -202,7 +207,7 @@ func TestReferencedDataGateHeldWhenAnnotationAbsent(t *testing.T) {
 // companions are present the condition is AwaitingPropagation/False and the
 // gate is not removed. The missing companion names should appear in the message.
 func TestReferencedDataGateHeldWhenCompanionsMissing(t *testing.T) {
-	expected := []string{refDataTestCMCompanionName, refDataTestSecretCompanionName}
+	expected := []string{refDataTestCMToken, refDataTestSecretToken}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 	inst := makeInstanceWithRefDataGate()
@@ -224,7 +229,7 @@ func TestReferencedDataGateHeldWhenCompanionsMissing(t *testing.T) {
 	require.NotNil(t, cond, "ReferencedDataReady condition should be set")
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.ReferencedDataReasonAwaitingPropagation, cond.Reason)
-	assert.Contains(t, cond.Message, refDataTestSecretCompanionName, "message should name the missing companion")
+	assert.Contains(t, cond.Message, refDataTestSecretToken, "message should name the missing companion token")
 
 	// Gate must still be present.
 	hasGate := false
@@ -249,7 +254,7 @@ func TestReferencedDataGateHeldWhenCompanionsMissing(t *testing.T) {
 // TestReferencedDataGateClearedWhenAllPresent verifies the full happy path:
 // all expected companions are present → gate is removed and condition is Ready.
 func TestReferencedDataGateClearedWhenAllPresent(t *testing.T) {
-	expected := []string{refDataTestCMCompanionName, refDataTestSecretCompanionName}
+	expected := []string{refDataTestCMToken, refDataTestSecretToken}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 	inst := makeInstanceWithRefDataGate()
@@ -304,7 +309,7 @@ done:
 // TestReferencedDataIdempotentWhenAlreadyReady verifies that a second reconcile
 // when the gate is gone and condition is already True produces no changes.
 func TestReferencedDataIdempotentWhenAlreadyReady(t *testing.T) {
-	expected := []string{refDataTestCMCompanionName}
+	expected := []string{refDataTestCMToken}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 
@@ -386,13 +391,14 @@ func TestReferencedDataIdempotentWhenAlreadyReady(t *testing.T) {
 // TestReferencedDataPartialPresenceShowsDiff verifies the diff message names
 // specifically which companions are missing when only some are present.
 func TestReferencedDataPartialPresenceShowsDiff(t *testing.T) {
-	expected := []string{"configmap.cfg-a", "configmap.cfg-b", "secret.sec-x"}
+	// Annotation uses kind-qualified tokens; companion objects use source names.
+	expected := []string{"ConfigMap/cfg-a", "ConfigMap/cfg-b", "Secret/sec-x"}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 	inst := makeInstanceWithRefDataGate()
 
-	// Only the first ConfigMap is present.
-	companionA := makeCompanionConfigMap("configmap.cfg-a")
+	// Only cfg-a companion is present; cfg-b and sec-x are missing.
+	companionA := makeCompanionConfigMap("cfg-a")
 
 	r, projectClient, _ := newRefDataReconciler(t,
 		[]client.Object{inst, wd, companionA},
@@ -409,21 +415,21 @@ func TestReferencedDataPartialPresenceShowsDiff(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.ReferencedDataReasonAwaitingPropagation, cond.Reason)
 
-	// Both missing companions should be mentioned in the message.
-	assert.Contains(t, cond.Message, "configmap.cfg-b")
-	assert.Contains(t, cond.Message, "secret.sec-x")
+	// Both missing companions should be mentioned in the message as kind-qualified tokens.
+	assert.Contains(t, cond.Message, "ConfigMap/cfg-b")
+	assert.Contains(t, cond.Message, "Secret/sec-x")
 	// The present one should NOT be mentioned as missing.
-	assert.NotContains(t, cond.Message, "configmap.cfg-a")
+	assert.NotContains(t, cond.Message, "ConfigMap/cfg-a")
 }
 
 // TestReferencedDataEventEmittedOnClear verifies that a Normal event is emitted
 // precisely once when the gate transitions from present to cleared.
 func TestReferencedDataEventEmittedOnClear(t *testing.T) {
-	expected := []string{"configmap.my-config"}
+	expected := []string{"ConfigMap/my-config"}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 	inst := makeInstanceWithRefDataGate()
-	companion := makeCompanionConfigMap("configmap.my-config")
+	companion := makeCompanionConfigMap("my-config")
 
 	r, projectClient, fakeRec := newRefDataReconciler(t,
 		[]client.Object{inst, wd, companion},
@@ -470,7 +476,7 @@ drainLoop:
 // an instance at generation N+1. The gate must only be cleared once the
 // condition has been re-evaluated at the current generation.
 func TestReferencedDataStaleConditionGuard(t *testing.T) {
-	expected := []string{refDataTestCMCompanionName}
+	expected := []string{refDataTestCMToken}
 	annoVal, _ := json.Marshal(expected)
 	wd := makeWDForCell(string(annoVal))
 
