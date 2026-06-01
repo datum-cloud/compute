@@ -112,11 +112,11 @@ func processDeployments(
 		key := d.Spec.CityCode
 		prev, exists := states[key]
 
-		desired := d.Status.DesiredReplicas
+		desired := resolveDesired(d)
 		ready := d.Status.ReadyReplicas
 		current := d.Status.CurrentReplicas
 
-		newPhase := computePhase(desired, ready, current, prev)
+		newPhase := computePhase(desired, ready, current, d.Status.Replicas)
 
 		if !exists || prev.desired != desired || prev.ready != ready || prev.current != current || prev.phase != newPhase {
 			newPhase = updateDeploymentState(states, key, d, exists, prev, desired, ready, current, newPhase)
@@ -186,10 +186,7 @@ func printDeploymentRow(
 	current, ready int32,
 	newPhase deploymentPhase,
 ) {
-	old := d.Status.Replicas - d.Status.CurrentReplicas
-	if old < 0 {
-		old = 0
-	}
+	old := max(d.Status.Replicas-d.Status.CurrentReplicas, 0)
 
 	_, _ = fmt.Fprintf(tw, "  %s\t%s\t%d\t%d\t%d\t%s\n",
 		d.Spec.PlacementName,
@@ -217,15 +214,27 @@ func printElapsed(out io.Writer, elapsed time.Duration) {
 	}
 }
 
-func computePhase(desired, ready, current int32, _ *deploymentState) deploymentPhase {
+// resolveDesired returns the replica count the rollout should wait for.
+// Status.DesiredReplicas stays at zero until the controller first reconciles
+// the deployment; until then, fall back to the spec minimum so a freshly
+// created deployment isn't reported Done before any instances are scheduled.
+// Once the controller has reported a desired count, trust it.
+func resolveDesired(d computev1alpha.WorkloadDeployment) int32 {
+	if d.Status.DesiredReplicas == 0 {
+		return d.Spec.ScaleSettings.MinReplicas
+	}
+	return d.Status.DesiredReplicas
+}
+
+func computePhase(desired, ready, current, replicas int32) deploymentPhase {
 	if desired == 0 {
+		return phaseDone
+	}
+	if ready >= desired && current >= desired && replicas <= current {
 		return phaseDone
 	}
 	if current == 0 {
 		return phasePending
-	}
-	if ready >= desired && current >= desired {
-		return phaseDone
 	}
 	return phaseUpdating
 }
