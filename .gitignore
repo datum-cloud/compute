@@ -28,3 +28,9 @@ bin/
 
 # Local e2e environment artefacts (Kind kubeconfigs, etc.)
 tmp/
+
+# GoReleaser build output
+dist/
+
+# Local datumctl plugin build binary
+/datumctl-compute
