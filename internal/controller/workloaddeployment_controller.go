@@ -146,9 +146,17 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	if !r.NetworkingEnabled {
 		networkReady = true
 	} else {
-		networkReady, err = r.reconcileNetworks(ctx, cl.GetClient(), &deployment)
+		var resolvedLocation *networkingv1alpha.LocationReference
+		networkReady, resolvedLocation, err = r.reconcileNetworks(ctx, cl.GetClient(), &deployment)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed reconciling networks: %w", err)
+		}
+		// Persist the resolved Location to status so downstream components (e.g.
+		// the stateful instance control strategy) can propagate it to Instances.
+		// When no matching Location exists, resolvedLocation is nil and
+		// Status.Location remains nil — instance creation is not blocked.
+		if resolvedLocation != nil {
+			deployment.Status.Location = resolvedLocation
 		}
 	}
 
@@ -293,11 +301,16 @@ func (r *WorkloadDeploymentReconciler) writeStatusToKarmada(ctx context.Context,
 	return nil
 }
 
+// reconcileNetworks ensures NetworkBindings and SubnetClaims exist for all
+// network interfaces on the deployment. It returns (networkReady, resolvedLocation, err).
+// resolvedLocation is non-nil when a Location matching the deployment's city code
+// was found; nil otherwise. Instance creation is never gated on resolvedLocation
+// being non-nil — callers must treat a nil location as best-effort only.
 func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 	ctx context.Context,
 	c client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
-) (bool, error) {
+) (bool, *networkingv1alpha.LocationReference, error) {
 	logger := log.FromContext(ctx)
 
 	// Resolve the Location for this deployment's city code. With Karmada
@@ -305,7 +318,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 	// requested city, so the Location object for that city must exist locally.
 	var locationList networkingv1alpha.LocationList
 	if err := c.List(ctx, &locationList); err != nil {
-		return false, fmt.Errorf("failed to list locations: %w", err)
+		return false, nil, fmt.Errorf("failed to list locations: %w", err)
 	}
 
 	var locationRef *networkingv1alpha.LocationReference
@@ -321,7 +334,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 
 	if locationRef == nil {
 		logger.Info("no location found for city code, waiting", "cityCode", deployment.Spec.CityCode)
-		return false, nil
+		return false, nil, nil
 	}
 
 	// First, ensure we have a NetworkBinding for each interface, and that the
@@ -337,7 +350,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 		}
 
 		if err := c.Get(ctx, networkBindingObjectKey, &networkBinding); client.IgnoreNotFound(err) != nil {
-			return false, fmt.Errorf("failed checking for existing network binding: %w", err)
+			return false, nil, fmt.Errorf("failed checking for existing network binding: %w", err)
 		}
 
 		if networkBinding.CreationTimestamp.IsZero() {
@@ -353,11 +366,11 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 			}
 
 			if err := controllerutil.SetControllerReference(deployment, &networkBinding, c.Scheme()); err != nil {
-				return false, fmt.Errorf("failed to set controller on network binding: %w", err)
+				return false, nil, fmt.Errorf("failed to set controller on network binding: %w", err)
 			}
 
 			if err := c.Create(ctx, &networkBinding); err != nil {
-				return false, fmt.Errorf("failed creating network binding: %w", err)
+				return false, nil, fmt.Errorf("failed creating network binding: %w", err)
 			}
 		}
 
@@ -370,7 +383,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 
 	if !allNetworkBindingsReady {
 		logger.Info("waiting for network bindings to be ready")
-		return false, nil
+		return false, locationRef, nil
 	}
 
 	// TODO(jreese): Currently this makes a SubnetClaim that will be used by
@@ -389,12 +402,12 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 		}
 
 		if err := c.Get(ctx, networkContextObjectKey, &networkContext); client.IgnoreNotFound(err) != nil {
-			return false, fmt.Errorf("failed checking for existing network context: %w", err)
+			return false, nil, fmt.Errorf("failed checking for existing network context: %w", err)
 		}
 
 		if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
 			logger.Info("waiting for network context to be ready", "network_context", networkContext.Name)
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		var subnetClaims networkingv1alpha.SubnetClaimList
@@ -403,7 +416,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 		}
 
 		if err := c.List(ctx, &subnetClaims, listOpts...); err != nil {
-			return false, fmt.Errorf("failed listing subnet claims: %w", err)
+			return false, nil, fmt.Errorf("failed listing subnet claims: %w", err)
 		}
 
 		var subnetClaim networkingv1alpha.SubnetClaim
@@ -453,23 +466,23 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 			}
 
 			if err := controllerutil.SetOwnerReference(&networkContext, &subnetClaim, c.Scheme()); err != nil {
-				return false, fmt.Errorf("failed to set controller on subnet claim: %w", err)
+				return false, nil, fmt.Errorf("failed to set controller on subnet claim: %w", err)
 			}
 
 			if err := c.Create(ctx, &subnetClaim); err != nil {
-				return false, fmt.Errorf("failed creating subnet claim: %w", err)
+				return false, nil, fmt.Errorf("failed creating subnet claim: %w", err)
 			}
 
 			logger.Info("created subnet claim", "subnetClaim", subnetClaim.Name)
 
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		logger.Info("found subnet claim", "subnetClaim", subnetClaim.Name)
 
 		if !apimeta.IsStatusConditionTrue(subnetClaim.Status.Conditions, "Ready") {
 			logger.Info("waiting for subnet claim to be ready", "subnetClaim", subnetClaim.Name)
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		var subnet networkingv1alpha.Subnet
@@ -478,19 +491,19 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 			Name:      subnetClaim.Status.SubnetRef.Name,
 		}
 		if err := c.Get(ctx, subnetObjectKey, &subnet); err != nil {
-			return false, fmt.Errorf("failed fetching subnet: %w", err)
+			return false, nil, fmt.Errorf("failed fetching subnet: %w", err)
 		}
 
 		if !apimeta.IsStatusConditionTrue(subnet.Status.Conditions, "Ready") {
 			logger.Info("waiting for subnet to be ready", "subnet", subnet.Name)
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		logger.Info("subnet is ready", "subnet", subnet.Name)
 
 	}
 
-	return true, nil
+	return true, locationRef, nil
 }
 
 var errDeploymentHasInstances = errors.New("deployment has instances")

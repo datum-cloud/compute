@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -37,13 +38,30 @@ const (
 	projTestKarmadaNS = "ns-deadbeef-1111-2222-3333-444455556666"
 
 	// projTestInstanceName is the name of the Karmada (and projected) Instance.
-	projTestInstanceName = "inst-abc"
+	// Follows the "<wd-name>-<ordinal>" convention: "my-wd-0".
+	projTestInstanceName = "my-wd-0"
 
-	// projTestWDUID is the UID of the owning WorkloadDeployment.
-	projTestWDUID = types.UID("wd-uid-9999-aaaa-bbbb-cccc")
+	// projTestWDUID is the UID of the owning WorkloadDeployment as it exists in
+	// the PROJECT cluster. This is the UID that owner references must use, since
+	// Kubernetes GC in the project cluster only knows this UID.
+	projTestWDUID = types.UID("project-wd-uid-9999-aaaa-bbbb-cccc")
 
-	// projTestWDName is the name of the owning WorkloadDeployment.
+	// projTestEdgeWDUID is the UID of the WorkloadDeployment as it exists on the
+	// EDGE/Karmada plane. Each plane mints its own UID, so this is intentionally
+	// distinct from projTestWDUID. The WorkloadDeploymentUIDLabel on downstream
+	// Instances carries this edge UID — NOT the project UID.
+	projTestEdgeWDUID = types.UID("edge-uid-0000-1111-2222-3333")
+
+	// projTestWDName is the name of the owning WorkloadDeployment. The name is
+	// the same across all planes (project cluster, Karmada, edge) and is the
+	// correct cross-plane stable identifier.
 	projTestWDName = "my-wd"
+
+	// projTestWorkloadUID is the UID of the owning Workload (carried via WorkloadUIDLabel).
+	projTestWorkloadUID = "wl-uid-1111-2222-3333-4444"
+
+	// projTestInstanceIndex is the ordinal index of the instance (carried via InstanceIndexLabel).
+	projTestInstanceIndex = "0"
 )
 
 // encodedCluster returns the value of the UpstreamOwnerClusterNameLabel for
@@ -89,11 +107,15 @@ func projTestKarmadaInstance(labelOverrides map[string]string) *computev1alpha.I
 	labels := map[string]string{
 		downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
 		downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
-		computev1alpha.WorkloadDeploymentUIDLabel:      string(projTestWDUID),
+		// WorkloadDeploymentUIDLabel carries the EDGE UID — intentionally distinct
+		// from projTestWDUID (the project-cluster WD UID). Owner references must
+		// never be built from this value.
+		computev1alpha.WorkloadDeploymentUIDLabel:  string(projTestEdgeWDUID),
+		computev1alpha.WorkloadDeploymentNameLabel: projTestWDName,
+		computev1alpha.WorkloadUIDLabel:            projTestWorkloadUID,
+		computev1alpha.InstanceIndexLabel:          projTestInstanceIndex,
 	}
-	for k, v := range labelOverrides {
-		labels[k] = v
-	}
+	maps.Copy(labels, labelOverrides)
 	return &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      projTestInstanceName,
@@ -143,6 +165,9 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 		// projectObjs are pre-populated in the project cluster fake client.
 		projectObjs []client.Object
 
+		// request overrides the default projectorRequest() when set.
+		request *ctrl.Request
+
 		// wantProjection controls whether a projected Instance should appear.
 		wantProjection bool
 
@@ -167,17 +192,80 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			wantOwnerRef:   true,
 		},
 		{
-			name: "projection created without owner ref when WD UID label absent",
+			// Cross-plane UID regression test: the Karmada Instance carries the EDGE
+			// WD UID in WorkloadDeploymentUIDLabel (projTestEdgeWDUID), which is
+			// intentionally different from the project-cluster WD UID (projTestWDUID).
+			// The owner reference on the projection must use the project-cluster UID.
+			// This test fails if someone reintroduces UID-based matching against the
+			// edge/Karmada plane.
+			name:            "WD name label present, edge UID differs from project UID — owner ref UID equals project WD UID",
+			karmadaInstance: projTestKarmadaInstance(nil), // carries projTestEdgeWDUID, not projTestWDUID
+			projectObjs: []client.Object{
+				projTestProjectNS(),
+				projTestWorkloadDeployment(), // UID is projTestWDUID
+			},
+			wantProjection: true,
+			wantOwnerRef:   true,
+		},
+		{
+			// Fallback: when WorkloadDeploymentNameLabel is absent (Instances created
+			// before the label was introduced), the projector derives the WD name from
+			// the Instance name by stripping the trailing "-<ordinal>" suffix.
+			// Instance name "my-wd-0" → WD name "my-wd".
+			name: "WD name label absent, fallback name extraction from instance name — owner ref attached",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
-				// Override: remove the WD UID label.
-				computev1alpha.WorkloadDeploymentUIDLabel: "",
+				// Remove the name label to exercise the fallback path.
+				computev1alpha.WorkloadDeploymentNameLabel: "",
 			}),
 			projectObjs: []client.Object{
 				projTestProjectNS(),
-				// No WorkloadDeployment in project cluster.
+				projTestWorkloadDeployment(),
 			},
 			wantProjection: true,
-			wantOwnerRef:   false,
+			wantOwnerRef:   true,
+		},
+		{
+			// NotFound requeue: when the project WD does not yet exist (transient
+			// ordering race — Instance projected before WorkloadReconciler created
+			// the project WD), the projector must requeue and NOT create an ownerless
+			// projection. A projection must never be created without an owner reference.
+			name:            "project WD not found — requeue, no ownerless projection created",
+			karmadaInstance: projTestKarmadaInstance(nil),
+			projectObjs: []client.Object{
+				projTestProjectNS(),
+				// No WorkloadDeployment — simulates the transient ordering race.
+			},
+			wantProjection: false,
+			wantRequeue:    true,
+		},
+		{
+			// Unresolvable WD name: both the label is absent and the Instance name has
+			// no numeric suffix to strip (unrecognised naming format). The projector
+			// should skip without error — no projection created, no requeue.
+			// The instance name "inst-no-ordinal" has no trailing numeric segment.
+			name: "WD name label absent and instance name yields no resolvable WD — skip, no projection",
+			karmadaInstance: &computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "inst-no-ordinal",
+					Namespace: projTestKarmadaNS,
+					Labels: map[string]string{
+						downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
+						downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
+						// No WorkloadDeploymentNameLabel — no label, no numeric suffix.
+						computev1alpha.WorkloadUIDLabel:   projTestWorkloadUID,
+						computev1alpha.InstanceIndexLabel: projTestInstanceIndex,
+					},
+				},
+			},
+			request: &ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "inst-no-ordinal",
+					Namespace: projTestKarmadaNS,
+				},
+			},
+			projectObjs:    []client.Object{projTestProjectNS()},
+			wantProjection: false,
+			wantRequeue:    false,
 		},
 		{
 			name: "missing upstream-cluster-name label — skipped, no projection",
@@ -210,6 +298,19 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			projectObjs:     []client.Object{projTestProjectNS()},
 			wantProjection:  false,
 		},
+		{
+			// Verify that all linking labels (WorkloadUID, WorkloadDeploymentUID,
+			// WorkloadDeploymentNameLabel, InstanceIndex) survive from the Karmada
+			// write-back object through to the projection.
+			name:            "all linking labels propagated from Karmada to projection",
+			karmadaInstance: projTestKarmadaInstance(nil),
+			projectObjs: []client.Object{
+				projTestProjectNS(),
+				projTestWorkloadDeployment(),
+			},
+			wantProjection: true,
+			wantOwnerRef:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -232,7 +333,11 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 
 			r := newTestProjector(karmadaClient, projectClient)
 
-			result, err := r.Reconcile(context.Background(), projectorRequest())
+			req := projectorRequest()
+			if tt.request != nil {
+				req = *tt.request
+			}
+			result, err := r.Reconcile(context.Background(), req)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -271,13 +376,39 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 				}
 			}
 
+			// Linking labels must survive from the Karmada instance to the projection
+			// so that the CLI can resolve Workload name, city, and instance ordinal.
+			if tt.wantProjection && tt.karmadaInstance != nil {
+				assert.Equal(t,
+					tt.karmadaInstance.Labels[computev1alpha.WorkloadUIDLabel],
+					projection.Labels[computev1alpha.WorkloadUIDLabel],
+					"WorkloadUIDLabel must be propagated to the projection")
+				assert.Equal(t,
+					tt.karmadaInstance.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+					projection.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+					"WorkloadDeploymentUIDLabel must be propagated to the projection")
+				assert.Equal(t,
+					tt.karmadaInstance.Labels[computev1alpha.WorkloadDeploymentNameLabel],
+					projection.Labels[computev1alpha.WorkloadDeploymentNameLabel],
+					"WorkloadDeploymentNameLabel must be propagated to the projection")
+				assert.Equal(t,
+					tt.karmadaInstance.Labels[computev1alpha.InstanceIndexLabel],
+					projection.Labels[computev1alpha.InstanceIndexLabel],
+					"InstanceIndexLabel must be propagated to the projection")
+			}
+
 			// Owner reference check.
 			if tt.wantOwnerRef {
 				require.NotEmpty(t, projection.OwnerReferences,
 					"projected instance should have an owner reference to the WorkloadDeployment")
 				ownerRef := projection.OwnerReferences[0]
+				// Core invariant: owner ref UID must be the PROJECT-cluster WD UID.
 				assert.Equal(t, string(projTestWDUID), string(ownerRef.UID),
-					"owner reference UID should match the WorkloadDeployment UID")
+					"owner reference UID must match the project-cluster WorkloadDeployment UID")
+				// Regression guard: the edge UID must NOT appear in the owner ref.
+				// If this assertion fails, someone reintroduced cross-plane UID matching.
+				assert.NotEqual(t, string(projTestEdgeWDUID), string(ownerRef.UID),
+					"owner reference UID must NOT be the edge/Karmada WD UID")
 				assert.Equal(t, projTestWDName, ownerRef.Name,
 					"owner reference name should match the WorkloadDeployment name")
 			} else {

@@ -97,22 +97,46 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// 5. Find the owning WorkloadDeployment in the project cluster by UID.
-	// The downstream Instance carries WorkloadDeploymentUIDLabel so we can find
-	// the owning deployment without relying on field selectors.
-	wdUID := downstreamInstance.Labels[computev1alpha.WorkloadDeploymentUIDLabel]
-
-	var wdList computev1alpha.WorkloadDeploymentList
-	if err := projectClient.List(ctx, &wdList, client.InNamespace(targetNamespace)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed listing WorkloadDeployments in %s/%s: %w", clusterName, targetNamespace, err)
+	// 5. Resolve the owning WorkloadDeployment by NAME in the project cluster.
+	//
+	// Core invariant: the ownerReference MUST be built from a project-cluster
+	// object obtained via projectClient.Get — never from any edge/Karmada
+	// identity. The WD name is stable across all planes (project cluster, Karmada,
+	// edge) and is the correct cross-plane identifier.
+	//
+	// Resolution order:
+	//  a) Read WorkloadDeploymentNameLabel from the downstream Instance (stamped by
+	//     the edge stateful control strategy).
+	//  b) If absent (Instances created before the label was introduced), fall back
+	//     to stripping the trailing "-<ordinal>" suffix from the Instance name.
+	wdName := downstreamInstance.Labels[computev1alpha.WorkloadDeploymentNameLabel]
+	if wdName == "" {
+		wdName = wdNameFromInstanceName(downstreamInstance.Name)
+	}
+	if wdName == "" {
+		logger.Info("cannot resolve WorkloadDeployment name from Instance — skipping projection",
+			"instance", downstreamInstance.Name)
+		return ctrl.Result{}, nil
 	}
 
-	var ownerWD *computev1alpha.WorkloadDeployment
-	for i := range wdList.Items {
-		if string(wdList.Items[i].UID) == wdUID {
-			ownerWD = &wdList.Items[i]
-			break
+	// Fetch the project-cluster WD directly by name. The returned object carries
+	// the project-cluster metadata.uid — the only UID that GC in the project
+	// cluster can act on.
+	var ownerWD computev1alpha.WorkloadDeployment
+	if err := projectClient.Get(ctx, client.ObjectKey{Namespace: targetNamespace, Name: wdName}, &ownerWD); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Either a transient ordering race (Instance projected before
+			// WorkloadReconciler created the project WD) or the WD has been
+			// deleted. In both cases, do NOT create an ownerless projection.
+			// Requeue so the projection is created with a correct owner
+			// reference once the WD exists. The 5 s interval matches the
+			// existing upstream-namespace label requeue above.
+			logger.Info("project WorkloadDeployment not found — requeueing without creating projection",
+				"wdName", wdName, "namespace", targetNamespace)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
+		return ctrl.Result{}, fmt.Errorf("failed getting WorkloadDeployment %s/%s in project cluster %s: %w",
+			targetNamespace, wdName, clusterName, err)
 	}
 
 	// 6. Create or update the projection in the project namespace.
@@ -134,12 +158,10 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 		projection.Spec = downstreamInstance.Spec
 
-		// Attach an owner reference to the WorkloadDeployment so the projection
-		// is garbage-collected when the deployment is removed.
-		if ownerWD != nil {
-			return controllerutil.SetOwnerReference(ownerWD, projection, projectCluster.GetScheme())
-		}
-		return nil
+		// Attach an owner reference using the live project-cluster WD object.
+		// controllerutil.SetOwnerReference reads UID and GVK from ownerWD, which
+		// was fetched from projectClient — satisfying the core invariant.
+		return controllerutil.SetOwnerReference(&ownerWD, projection, projectCluster.GetScheme())
 	})
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed upserting Instance projection in %s/%s: %w", clusterName, targetNamespace, err)
@@ -154,6 +176,31 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// wdNameFromInstanceName derives the WorkloadDeployment name from an Instance
+// name by stripping the trailing "-<ordinal>" suffix. Instance names follow the
+// convention "<wd-name>-<ordinal>" (e.g. "my-api-default-dfw-0"), which is
+// structurally enforced by the stateful control strategy. Returns empty string
+// if the name does not contain a numeric suffix (unrecognised format).
+//
+// This is used as a fallback when the WorkloadDeploymentNameLabel is absent on
+// Instances created before that label was introduced.
+func wdNameFromInstanceName(name string) string {
+	lastDash := strings.LastIndex(name, "-")
+	if lastDash <= 0 {
+		return ""
+	}
+	suffix := name[lastDash+1:]
+	for _, c := range suffix {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	if len(suffix) == 0 {
+		return ""
+	}
+	return name[:lastDash]
 }
 
 // SetupWithManager registers the InstanceProjector with upstreamMgr, a standard

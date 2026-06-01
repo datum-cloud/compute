@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -221,15 +222,19 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
-			return ctrl.Result{}, err
+		// Return with the quota error (nil or transient) so controller-runtime
+		// requeues with backoff on failures. On the success path (quotaErr==nil)
+		// we fall through to removeQuotaSchedulingGate below instead of returning
+		// early, so the gate is cleared in the same reconcile pass rather than
+		// waiting for a requeue that may never come (ResourceClaim is immutable
+		// and local Instances are not watched).
+		if quotaErr != nil {
+			if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, quotaErr
 		}
-		// Return after the status update. If there was a quota error, return it
-		// so controller-runtime requeues with backoff for transient failures.
-		return ctrl.Result{}, quotaErr
-	}
-
-	if quotaErr != nil {
+	} else if quotaErr != nil {
 		// No status change but quota evaluation failed — return error to requeue.
 		return ctrl.Result{}, quotaErr
 	}
@@ -470,6 +475,23 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 		}
 	}
 
+	logger := log.FromContext(ctx)
+	missingLabels := []string{}
+	for _, key := range []string{
+		computev1alpha.WorkloadUIDLabel,
+		computev1alpha.WorkloadDeploymentUIDLabel,
+		computev1alpha.InstanceIndexLabel,
+	} {
+		if instance.Labels[key] == "" {
+			missingLabels = append(missingLabels, key)
+		}
+	}
+	if len(missingLabels) > 0 {
+		logger.Info("instance is missing linking labels for write-back; projection owner-ref will not be set",
+			"instance", instance.Name, "namespace", instance.Namespace,
+			"missingLabels", missingLabels)
+	}
+
 	writeBack := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      instance.Name,
@@ -477,6 +499,13 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: encodedClusterName,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamNamespace,
+				computev1alpha.WorkloadUIDLabel:                instance.Labels[computev1alpha.WorkloadUIDLabel],
+				computev1alpha.WorkloadDeploymentUIDLabel:      instance.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+				computev1alpha.InstanceIndexLabel:              instance.Labels[computev1alpha.InstanceIndexLabel],
+				computev1alpha.WorkloadDeploymentNameLabel:     instance.Labels[computev1alpha.WorkloadDeploymentNameLabel],
+				computev1alpha.CityCodeLabel:                   instance.Labels[computev1alpha.CityCodeLabel],
+				computev1alpha.WorkloadNameLabel:               instance.Labels[computev1alpha.WorkloadNameLabel],
+				computev1alpha.PlacementNameLabel:              instance.Labels[computev1alpha.PlacementNameLabel],
 			},
 		},
 		Spec: instance.Spec,
@@ -503,11 +532,24 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, clusterNam
 		return fmt.Errorf("failed getting downstream instance: %w", err)
 	}
 
-	// Update spec + labels only if they differ.
+	// Build a comparable map containing only the keys this function owns so that
+	// Karmada-managed labels on the existing object do not cause spurious updates.
+	ownedLabels := make(map[string]string, len(writeBack.Labels))
+	for k := range writeBack.Labels {
+		ownedLabels[k] = existing.Labels[k]
+	}
+
+	// Update spec + labels only if owned keys differ.
 	if !apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
-		!apiequality.Semantic.DeepEqual(existing.Labels, writeBack.Labels) {
+		!apiequality.Semantic.DeepEqual(ownedLabels, writeBack.Labels) {
 		existing.Spec = instance.Spec
-		existing.Labels = writeBack.Labels
+		// Merge writeBack.Labels into existing.Labels. Only keys owned by
+		// writeBackToUpstream are written; any labels Karmada or other actors
+		// have placed on the downstream object are preserved.
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		maps.Copy(existing.Labels, writeBack.Labels)
 		if err := r.FederationClient.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed updating downstream write-back instance: %w", err)
 		}

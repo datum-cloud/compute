@@ -37,6 +37,14 @@ spec:
     - jsonPath: .status.currentReplicas
       name: Up-to-date
       type: string
+    - jsonPath: .status.location.namespace
+      name: Location Namespace
+      priority: 1
+      type: string
+    - jsonPath: .status.location.name
+      name: Location Name
+      priority: 1
+      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:
@@ -367,6 +375,28 @@ spec:
                                   sandbox.
                                 items:
                                   properties:
+                                    args:
+                                      description: |-
+                                        Arguments to the entrypoint, overriding the image's CMD. Combined with
+                                        Command: when Command is also set the resulting invocation is
+                                        append(Command, Args...).  When only Args is set it overrides CMD while
+                                        preserving the image's ENTRYPOINT.
+
+                                        If neither Command nor Args is set, the image's own ENTRYPOINT and CMD
+                                        are used unchanged.
+                                      items:
+                                        type: string
+                                      type: array
+                                    command:
+                                      description: |-
+                                        Entrypoint array to run in the container image, overriding the image's
+                                        ENTRYPOINT. Each element is a separate token, not a shell command — to run a
+                                        shell command use: ["sh", "-c", "my command"].
+
+                                        If not provided, the container image's own ENTRYPOINT is used.
+                                      items:
+                                        type: string
+                                      type: array
                                     env:
                                       description: |-
                                         List of environment variables to set in the container.
@@ -1065,6 +1095,20 @@ spec:
                 description: The desired number of instances
                 format: int32
                 type: integer
+              location:
+                description: The location which the deployment has been scheduled
+                  to
+                properties:
+                  name:
+                    description: Name of a datum location
+                    type: string
+                  namespace:
+                    description: Namespace for the datum location
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
               readyReplicas:
                 description: The number of instances which are ready.
                 format: int32

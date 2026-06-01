@@ -15,16 +15,15 @@ const (
 
 	InstanceIndexLabel = LabelNamespace + "/instance-index"
 
-	// CityCodeLabel carries the city code (e.g. "DFW") that the Instance is
-	// scheduled to. Stamped at creation time and immutable.
+	// CityCodeLabel carries the city code of the WorkloadDeployment that owns
+	// an Instance, matching WorkloadDeploymentSpec.CityCode.
 	CityCodeLabel = LabelNamespace + "/city-code"
 
-	// WorkloadNameLabel carries the name of the Workload that owns this
-	// Instance. Stamped at creation time and immutable.
+	// WorkloadNameLabel carries the name of the Workload that an Instance
+	// ultimately belongs to, sourced from WorkloadDeploymentSpec.WorkloadRef.Name.
 	WorkloadNameLabel = LabelNamespace + "/workload-name"
 
-	// PlacementNameLabel carries the name of the placement entry within the
-	// Workload spec that produced this Instance. Stamped at creation time and
-	// immutable.
+	// PlacementNameLabel carries the placement name from the Workload that drove
+	// this Instance's deployment, sourced from WorkloadDeploymentSpec.PlacementName.
 	PlacementNameLabel = LabelNamespace + "/placement-name"
 )
