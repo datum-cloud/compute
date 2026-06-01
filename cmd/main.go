@@ -315,6 +315,13 @@ func main() {
 		}
 	}
 
+	if enableCellControllers {
+		if err = (&controller.CompanionGCReconciler{}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "CompanionGC")
+			os.Exit(1)
+		}
+	}
+
 	// WorkloadDeploymentFederator and InstanceProjector are management-plane
 	// controllers that run on the control-plane cluster. The fail-loud guard above
 	// ensures federationRestConfig is non-nil when enableManagementControllers is

@@ -17,14 +17,11 @@ import (
 )
 
 const (
-	// wdControllerTestName / wdControllerTestNS / wdControllerTestUID are shared
-	// fixtures for the WorkloadDeployment controller unit tests.
+	// wdControllerTestName, wdControllerTestNS, wdControllerTestUID are the
+	// stable identifiers used across the WorkloadDeployment controller tests.
 	wdControllerTestName = "test-wd"
-	wdControllerTestNS   = "default"
+	wdControllerTestNS   = gcTestProjectNamespace // "default"
 	wdControllerTestUID  = "wd-uid-test"
-
-	// cityCode is the shared CityCode fixture for WorkloadDeployment tests.
-	cityCode = "DFW"
 )
 
 // TestReconcileInstanceGates_NilController_DoesNotPanic is a regression test for
@@ -51,7 +48,7 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 			UID:       wdControllerTestUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      cityCode,
+			CityCode:      wbTestCityCode,
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
@@ -190,7 +187,7 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	deployment := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{Name: wdControllerTestName, Namespace: wdControllerTestNS, UID: wdControllerTestUID},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      cityCode,
+			CityCode:      wbTestCityCode,
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
