@@ -164,3 +164,44 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	assert.Equal(t, 0, quotaBlockedReplicas)
 	assert.Equal(t, 0, referencedDataBlockedReplicas)
 }
+
+// TestReconcileInstanceGates_NilSpecController_DoesNotPanic is a regression test
+// for the second nil-deref in reconcileInstanceGates: Spec.Controller is also a
+// nilable pointer, and the network gate-clearing path dereferenced
+// instance.Spec.Controller.SchedulingGates without a nil guard. When
+// networkReady is true and an instance has no controller spec, the unguarded
+// deref panicked the reconcile. This must not panic.
+func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	deployment := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-wd", Namespace: "default", UID: "wd-uid-test"},
+		Spec: computev1alpha.WorkloadDeploymentSpec{
+			CityCode:      "DFW",
+			PlacementName: testDefaultPlacement,
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
+			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+			Template:      computev1alpha.InstanceTemplateSpec{},
+		},
+	}
+
+	// Spec.Controller intentionally nil — the network gate-clearing path runs
+	// (networkReady=true) and must skip this instance instead of panicking.
+	instanceNilSpecController := computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{Name: "instance-nil-spec-controller", Namespace: "default"},
+	}
+
+	cl := newProjectFakeClient()
+	r := &WorkloadDeploymentReconciler{}
+
+	require.NotPanics(t, func() {
+		_, _, _, _, err := r.reconcileInstanceGates(
+			context.Background(),
+			cl,
+			deployment,
+			[]computev1alpha.Instance{instanceNilSpecController},
+			true, // networkReady=true exercises the Spec.Controller deref path
+		)
+		require.NoError(t, err)
+	})
+}
