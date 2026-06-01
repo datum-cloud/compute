@@ -340,7 +340,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					Kind:       kindConfigMap,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							computev1alpha.ReferencedDataLabel: "true",
+							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
 						},
 					},
 				},
@@ -350,7 +350,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					Kind:       kindSecret,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							computev1alpha.ReferencedDataLabel: "true",
+							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
 						},
 					},
 				},

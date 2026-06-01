@@ -11,6 +11,13 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
+const (
+	testContainerImage = "img"
+	testEnvConfigMap   = "app-config"
+	testSharedCfg      = "shared-cfg"
+	testCfgRef         = "cfg"
+)
+
 func TestCollectFromTemplate(t *testing.T) {
 	ns := "my-project"
 
@@ -26,7 +33,7 @@ func TestCollectFromTemplate(t *testing.T) {
 			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
 				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
 					Containers: []computev1alpha.SandboxContainer{
-						{Name: "c1", Image: "img", Env: []corev1.EnvVar{{Name: "FOO", Value: "bar"}}},
+						{Name: "c1", Image: testContainerImage, Env: []corev1.EnvVar{{Name: "FOO", Value: "bar"}}},
 					},
 				}
 			}),
@@ -38,13 +45,13 @@ func TestCollectFromTemplate(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:  "c1",
-							Image: "img",
+							Image: testContainerImage,
 							Env: []corev1.EnvVar{
 								{
 									Name: "KEY",
 									ValueFrom: &corev1.EnvVarSource{
 										ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+											LocalObjectReference: corev1.LocalObjectReference{Name: testEnvConfigMap},
 											Key:                  "key",
 										},
 									},
@@ -55,7 +62,7 @@ func TestCollectFromTemplate(t *testing.T) {
 				}
 			}),
 			want: ReferencedSet{
-				{Kind: "ConfigMap", Name: "app-config", Namespace: ns},
+				{Kind: testKindConfigMap, Name: testEnvConfigMap, Namespace: ns},
 			},
 		},
 		"env.valueFrom.secretKeyRef": {
@@ -64,13 +71,13 @@ func TestCollectFromTemplate(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:  "c1",
-							Image: "img",
+							Image: testContainerImage,
 							Env: []corev1.EnvVar{
 								{
 									Name: "PASS",
 									ValueFrom: &corev1.EnvVarSource{
 										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: "db-creds"},
+											LocalObjectReference: corev1.LocalObjectReference{Name: testNameDBCreds},
 											Key:                  "password",
 										},
 									},
@@ -81,7 +88,7 @@ func TestCollectFromTemplate(t *testing.T) {
 				}
 			}),
 			want: ReferencedSet{
-				{Kind: "Secret", Name: "db-creds", Namespace: ns},
+				{Kind: testKindSecret, Name: testNameDBCreds, Namespace: ns},
 			},
 		},
 		"envFrom.configMapRef": {
@@ -90,14 +97,14 @@ func TestCollectFromTemplate(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:    "c1",
-							Image:   "img",
+							Image:   testContainerImage,
 							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "env-config"}}},
 						},
 					},
 				}
 			}),
 			want: ReferencedSet{
-				{Kind: "ConfigMap", Name: "env-config", Namespace: ns},
+				{Kind: testKindConfigMap, Name: "env-config", Namespace: ns},
 			},
 		},
 		"envFrom.secretRef": {
@@ -106,14 +113,14 @@ func TestCollectFromTemplate(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:    "c1",
-							Image:   "img",
+							Image:   testContainerImage,
 							EnvFrom: []computev1alpha.EnvFromSource{{SecretRef: &computev1alpha.SecretEnvSource{Name: "env-secret"}}},
 						},
 					},
 				}
 			}),
 			want: ReferencedSet{
-				{Kind: "Secret", Name: "env-secret", Namespace: ns},
+				{Kind: testKindSecret, Name: "env-secret", Namespace: ns},
 			},
 		},
 		"volume configMap": {
@@ -130,7 +137,7 @@ func TestCollectFromTemplate(t *testing.T) {
 				}
 			}),
 			want: ReferencedSet{
-				{Kind: "ConfigMap", Name: "vol-config", Namespace: ns},
+				{Kind: testKindConfigMap, Name: "vol-config", Namespace: ns},
 			},
 		},
 		"volume secret": {
@@ -145,7 +152,7 @@ func TestCollectFromTemplate(t *testing.T) {
 				}
 			}),
 			want: ReferencedSet{
-				{Kind: "Secret", Name: "vol-secret", Namespace: ns},
+				{Kind: testKindSecret, Name: "vol-secret", Namespace: ns},
 			},
 		},
 		"deduplication across containers": {
@@ -154,19 +161,19 @@ func TestCollectFromTemplate(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:    "c1",
-							Image:   "img",
-							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "shared-cfg"}}},
+							Image:   testContainerImage,
+							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testSharedCfg}}},
 						},
 						{
 							Name:    "c2",
-							Image:   "img",
-							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "shared-cfg"}}},
+							Image:   testContainerImage,
+							EnvFrom: []computev1alpha.EnvFromSource{{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testSharedCfg}}},
 						},
 					},
 				}
 			}),
 			want: ReferencedSet{
-				{Kind: "ConfigMap", Name: "shared-cfg", Namespace: ns},
+				{Kind: testKindConfigMap, Name: testSharedCfg, Namespace: ns},
 			},
 		},
 		// When both configMapRef and secretRef are set on the same envFrom
@@ -178,10 +185,10 @@ func TestCollectFromTemplate(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:  "c1",
-							Image: "img",
+							Image: testContainerImage,
 							EnvFrom: []computev1alpha.EnvFromSource{
 								{
-									ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "cfg"},
+									ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testCfgRef},
 									SecretRef:    &computev1alpha.SecretEnvSource{Name: "sec"},
 								},
 							},
@@ -198,7 +205,7 @@ func TestCollectFromTemplate(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:  "c1",
-							Image: "img",
+							Image: testContainerImage,
 							EnvFrom: []computev1alpha.EnvFromSource{
 								{SecretRef: &computev1alpha.SecretEnvSource{Name: "z-secret"}},
 								{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "a-config"}},
@@ -209,8 +216,8 @@ func TestCollectFromTemplate(t *testing.T) {
 			}),
 			// Sorted: ConfigMap < Secret lexicographically, then name ascending
 			want: ReferencedSet{
-				{Kind: "ConfigMap", Name: "a-config", Namespace: ns},
-				{Kind: "Secret", Name: "z-secret", Namespace: ns},
+				{Kind: testKindConfigMap, Name: "a-config", Namespace: ns},
+				{Kind: testKindSecret, Name: "z-secret", Namespace: ns},
 			},
 		},
 	}
@@ -243,7 +250,7 @@ func TestTemplateReferencesData(t *testing.T) {
 			template: makeTemplate(func(t *computev1alpha.InstanceTemplateSpec) {
 				t.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
 					Containers: []computev1alpha.SandboxContainer{
-						{Name: "c", Image: "img", Env: []corev1.EnvVar{{Name: "X", Value: "y"}}},
+						{Name: "c", Image: testContainerImage, Env: []corev1.EnvVar{{Name: "X", Value: "y"}}},
 					},
 				}
 			}),
@@ -254,7 +261,7 @@ func TestTemplateReferencesData(t *testing.T) {
 				t.Spec.Volumes = []computev1alpha.InstanceVolume{
 					{Name: "v", VolumeSource: computev1alpha.VolumeSource{
 						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "cfg"},
+							LocalObjectReference: corev1.LocalObjectReference{Name: testCfgRef},
 						},
 					}},
 				}
@@ -267,7 +274,7 @@ func TestTemplateReferencesData(t *testing.T) {
 					Containers: []computev1alpha.SandboxContainer{
 						{
 							Name:  "c",
-							Image: "img",
+							Image: testContainerImage,
 							EnvFrom: []computev1alpha.EnvFromSource{
 								{SecretRef: &computev1alpha.SecretEnvSource{Name: "s", Optional: ptr.To(true)}},
 							},

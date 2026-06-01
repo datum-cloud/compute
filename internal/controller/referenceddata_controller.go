@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -614,59 +615,66 @@ func (r *ReferencedDataController) resolveAndValidateSources(
 // that was marked optional=true anywhere in the instance template spec.
 // It checks all volume mounts and env/envFrom sources that match (kind, name).
 func isOptionalRef(ref referenceddata.ObjectRef, tmpl computev1alpha.InstanceTemplateSpec) bool {
-	boolTrue := func(b *bool) bool { return b != nil && *b }
+	if isOptionalInVolumes(ref, tmpl.Spec.Volumes) {
+		return true
+	}
+	if sb := tmpl.Spec.Runtime.Sandbox; sb != nil {
+		return isOptionalInContainers(ref, sb.Containers)
+	}
+	return false
+}
 
-	// Check volumes.
-	for _, v := range tmpl.Spec.Volumes {
+// isOptionalInVolumes returns true when ref is an optional volume source in volumes.
+func isOptionalInVolumes(ref referenceddata.ObjectRef, volumes []computev1alpha.InstanceVolume) bool {
+	boolTrue := func(b *bool) bool { return b != nil && *b }
+	for _, v := range volumes {
 		switch ref.Kind {
 		case kindConfigMap:
-			if v.ConfigMap != nil && v.ConfigMap.Name == ref.Name {
-				if boolTrue(v.ConfigMap.Optional) {
-					return true
-				}
+			if v.ConfigMap != nil && v.ConfigMap.Name == ref.Name && boolTrue(v.ConfigMap.Optional) {
+				return true
 			}
 		case kindSecret:
-			if v.Secret != nil && v.Secret.SecretName == ref.Name {
-				if boolTrue(v.Secret.Optional) {
+			if v.Secret != nil && v.Secret.SecretName == ref.Name && boolTrue(v.Secret.Optional) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isOptionalInContainers returns true when ref is optional in any container's
+// env or envFrom sources.
+func isOptionalInContainers(ref referenceddata.ObjectRef, containers []computev1alpha.SandboxContainer) bool {
+	boolTrue := func(b *bool) bool { return b != nil && *b }
+	for _, c := range containers {
+		for _, ef := range c.EnvFrom {
+			switch ref.Kind {
+			case kindConfigMap:
+				if ef.ConfigMapRef != nil && ef.ConfigMapRef.Name == ref.Name && boolTrue(ef.ConfigMapRef.Optional) {
+					return true
+				}
+			case kindSecret:
+				if ef.SecretRef != nil && ef.SecretRef.Name == ref.Name && boolTrue(ef.SecretRef.Optional) {
+					return true
+				}
+			}
+		}
+		for _, e := range c.Env {
+			if e.ValueFrom == nil {
+				continue
+			}
+			switch ref.Kind {
+			case kindConfigMap:
+				if e.ValueFrom.ConfigMapKeyRef != nil && e.ValueFrom.ConfigMapKeyRef.Name == ref.Name && boolTrue(e.ValueFrom.ConfigMapKeyRef.Optional) {
+					return true
+				}
+			case kindSecret:
+				if e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == ref.Name && boolTrue(e.ValueFrom.SecretKeyRef.Optional) {
 					return true
 				}
 			}
 		}
 	}
-
-	// Check sandbox container env/envFrom.
-	if sb := tmpl.Spec.Runtime.Sandbox; sb != nil {
-		for _, c := range sb.Containers {
-			for _, ef := range c.EnvFrom {
-				switch ref.Kind {
-				case kindConfigMap:
-					if ef.ConfigMapRef != nil && ef.ConfigMapRef.Name == ref.Name && boolTrue(ef.ConfigMapRef.Optional) {
-						return true
-					}
-				case kindSecret:
-					if ef.SecretRef != nil && ef.SecretRef.Name == ref.Name && boolTrue(ef.SecretRef.Optional) {
-						return true
-					}
-				}
-			}
-			for _, e := range c.Env {
-				if e.ValueFrom == nil {
-					continue
-				}
-				switch ref.Kind {
-				case kindConfigMap:
-					if e.ValueFrom.ConfigMapKeyRef != nil && e.ValueFrom.ConfigMapKeyRef.Name == ref.Name && boolTrue(e.ValueFrom.ConfigMapKeyRef.Optional) {
-						return true
-					}
-				case kindSecret:
-					if e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == ref.Name && boolTrue(e.ValueFrom.SecretKeyRef.Optional) {
-						return true
-					}
-				}
-			}
-		}
-	}
-
 	return false
 }
 
@@ -1040,7 +1048,7 @@ func buildCompanionConfigMap(namespace, name string, src *corev1.ConfigMap, refs
 			Namespace: namespace,
 			Name:      name,
 			Labels: map[string]string{
-				computev1alpha.ReferencedDataLabel: "true",
+				computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
 			},
 			Annotations: map[string]string{
 				companionRefCountAnnotation: encodeRefCount(refs),
@@ -1060,7 +1068,7 @@ func buildCompanionSecret(namespace, name string, src *corev1.Secret, refs []str
 			Namespace: namespace,
 			Name:      name,
 			Labels: map[string]string{
-				computev1alpha.ReferencedDataLabel: "true",
+				computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
 			},
 			Annotations: map[string]string{
 				companionRefCountAnnotation: encodeRefCount(refs),
@@ -1080,10 +1088,8 @@ func refCountAdd(annotations map[string]string, wdKey string) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range current {
-		if k == wdKey {
-			return current, nil
-		}
+	if slices.Contains(current, wdKey) {
+		return current, nil
 	}
 	current = append(current, wdKey)
 	slices.Sort(current)
@@ -1142,9 +1148,7 @@ func mergeLabels(obj interface {
 	if existing == nil {
 		existing = make(map[string]string)
 	}
-	for k, v := range wanted {
-		existing[k] = v
-	}
+	maps.Copy(existing, wanted)
 	obj.SetLabels(existing)
 }
 
@@ -1159,9 +1163,7 @@ func mergeAnnotations(obj interface {
 	if existing == nil {
 		existing = make(map[string]string)
 	}
-	for k, v := range wanted {
-		existing[k] = v
-	}
+	maps.Copy(existing, wanted)
 	obj.SetAnnotations(existing)
 }
 
@@ -1231,7 +1233,7 @@ func (r *ReferencedDataController) enqueueWDsForSource(
 	}
 
 	indexKey := wdRefersToConfigMapIndex
-	if kind == "Secret" {
+	if kind == kindSecret {
 		indexKey = wdRefersToSecretIndex
 	}
 

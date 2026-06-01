@@ -648,7 +648,7 @@ func MakeSandboxWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload 
 					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{
 						{
 							Network: networkingv1alpha.NetworkRef{
-								Name: "default",
+								Name: testDefaultNamespace,
 							},
 						},
 					},
@@ -705,7 +705,7 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{
 						{
 							Network: networkingv1alpha.NetworkRef{
-								Name: "default",
+								Name: testDefaultNamespace,
 							},
 						},
 					},

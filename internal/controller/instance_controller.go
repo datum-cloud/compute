@@ -623,7 +623,7 @@ func (r *InstanceReconciler) listPresentCompanionNames(
 	cl client.Client,
 	namespace string,
 ) (map[string]struct{}, error) {
-	labelSel := client.MatchingLabels{computev1alpha.ReferencedDataLabel: "true"}
+	labelSel := client.MatchingLabels{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue}
 	inNs := client.InNamespace(namespace)
 
 	names := make(map[string]struct{})
@@ -1687,7 +1687,7 @@ func (r *InstanceReconciler) SetupWithManager(
 		// Instances in the namespace so they can attempt gate-clearing.
 		Watches(&corev1.ConfigMap{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != "true" {
+				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != computev1alpha.ReferencedDataLabelValue {
 					return nil
 				}
 				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
@@ -1696,7 +1696,7 @@ func (r *InstanceReconciler) SetupWithManager(
 		// Watch companion Secrets for the same reason.
 		Watches(&corev1.Secret{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != "true" {
+				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != computev1alpha.ReferencedDataLabelValue {
 					return nil
 				}
 				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())

@@ -60,7 +60,7 @@ func testWorkloadDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *c
 		Spec: computev1alpha.WorkloadDeploymentSpec{
 			CityCode: testCityCodeLAX,
 			WorkloadRef: computev1alpha.WorkloadReference{
-				Name: "test-workload",
+				Name: rdTestWorkloadName,
 			},
 			PlacementName: testDefaultPlacement,
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
@@ -396,21 +396,21 @@ func TestWorkloadDeploymentFederator_FederatesToKarmada(t *testing.T) {
 
 	wdSel := pp.Spec.ResourceSelectors[0]
 	assert.Equal(t, computev1alpha.GroupVersion.String(), wdSel.APIVersion)
-	assert.Equal(t, "WorkloadDeployment", wdSel.Kind)
+	assert.Equal(t, kindWorkloadDeployment, wdSel.Kind)
 	require.NotNil(t, wdSel.LabelSelector)
 	assert.Equal(t, testCityCodeLAX, wdSel.LabelSelector.MatchLabels[cityCodeLabel])
 
 	cmSel := pp.Spec.ResourceSelectors[1]
 	assert.Equal(t, "v1", cmSel.APIVersion)
-	assert.Equal(t, "ConfigMap", cmSel.Kind)
+	assert.Equal(t, kindConfigMap, cmSel.Kind)
 	require.NotNil(t, cmSel.LabelSelector)
-	assert.Equal(t, "true", cmSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
+	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, cmSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
 
 	secretSel := pp.Spec.ResourceSelectors[2]
 	assert.Equal(t, "v1", secretSel.APIVersion)
-	assert.Equal(t, "Secret", secretSel.Kind)
+	assert.Equal(t, kindSecret, secretSel.Kind)
 	require.NotNil(t, secretSel.LabelSelector)
-	assert.Equal(t, "true", secretSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
+	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, secretSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
 
 	// The PP cluster affinity must target clusters carrying the same city-code.
 	require.NotNil(t, pp.Spec.Placement.ClusterAffinity)
@@ -566,15 +566,15 @@ func TestWorkloadDeploymentFederator_PropagationPolicyHasReferencedDataSelectors
 	for _, sel := range pp.Spec.ResourceSelectors {
 		kinds[sel.Kind] = true
 	}
-	assert.True(t, kinds["WorkloadDeployment"], "PP must select WorkloadDeployments")
-	assert.True(t, kinds["ConfigMap"], "PP must select ConfigMaps with referenced-data label")
-	assert.True(t, kinds["Secret"], "PP must select Secrets with referenced-data label")
+	assert.True(t, kinds[kindWorkloadDeployment], "PP must select WorkloadDeployments")
+	assert.True(t, kinds[kindConfigMap], "PP must select ConfigMaps with referenced-data label")
+	assert.True(t, kinds[kindSecret], "PP must select Secrets with referenced-data label")
 
 	// Verify the ConfigMap and Secret selectors match on the referenced-data label.
 	for _, sel := range pp.Spec.ResourceSelectors {
-		if sel.Kind == "ConfigMap" || sel.Kind == "Secret" {
+		if sel.Kind == kindConfigMap || sel.Kind == kindSecret {
 			require.NotNil(t, sel.LabelSelector)
-			assert.Equal(t, "true", sel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel],
+			assert.Equal(t, computev1alpha.ReferencedDataLabelValue, sel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel],
 				"%s selector must match referenced-data=true label", sel.Kind)
 		}
 	}
