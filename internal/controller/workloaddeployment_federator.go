@@ -4,8 +4,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -13,6 +15,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,7 +52,50 @@ const (
 
 	// kindWorkloadDeployment is the Kind string for WorkloadDeployment resources.
 	kindWorkloadDeployment = "WorkloadDeployment"
+
+	// companionGuardRequeueAfter is the delay inserted between companion-guard
+	// requeue attempts. Long enough for the referenced-data controller to delete
+	// the hub companion; short enough that the deletion is not visibly delayed.
+	companionGuardRequeueAfter = 5 * time.Second
+
+	// companionGuardTimeout is the maximum wall-clock time the companion ordering
+	// guard will block a WD deletion after its deletionTimestamp was set. After
+	// this timeout the guard is bypassed and a warning is logged. The cell-side
+	// CompanionGCReconciler is the authoritative cleanup path regardless.
+	companionGuardTimeout = 2 * time.Minute
 )
+
+// errCompanionsStillPresent is a sentinel returned by Finalize when hub
+// companions are still present in the downstream namespace. Reconcile intercepts
+// it, logs at Info (not Error), and returns RequeueAfter so the wait does not
+// inflate the error-rate metric.
+type errCompanionsStillPresent struct{ namespace string }
+
+func (e errCompanionsStillPresent) Error() string {
+	return fmt.Sprintf("companions still present in %s; waiting for referenced-data controller to finish cleanup", e.namespace)
+}
+
+// findCompanionGuardSentinel searches err (including any kerrors.Aggregate
+// members) for errCompanionsStillPresent. The finalizer framework wraps errors
+// in a kerrors.Aggregate whose Errors() slice contains the per-finalizer
+// wrapped errors; because Aggregate does not implement Unwrap() the standard
+// errors.As cannot traverse it, so we walk manually.
+func findCompanionGuardSentinel(err error) (errCompanionsStillPresent, bool) {
+	if agg, ok := err.(kerrors.Aggregate); ok {
+		for _, e := range agg.Errors() {
+			var sentinel errCompanionsStillPresent
+			if errors.As(e, &sentinel) {
+				return sentinel, true
+			}
+		}
+		return errCompanionsStillPresent{}, false
+	}
+	var sentinel errCompanionsStillPresent
+	if errors.As(err, &sentinel) {
+		return sentinel, true
+	}
+	return errCompanionsStillPresent{}, false
+}
 
 // WorkloadDeploymentFederator replicates WorkloadDeployments from project
 // namespaces into the downstream control plane so it can propagate them to the
@@ -125,6 +171,16 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 
 	finalizationResult, err := r.finalizers.Finalize(ctx, &deployment)
 	if err != nil {
+		// The finalizer framework returns a kerrors.Aggregate which does not
+		// implement Unwrap, so errors.As cannot traverse it directly. Walk the
+		// aggregate manually to find the companion-guard sentinel so we can
+		// requeue gracefully (Info log + RequeueAfter) instead of inflating the
+		// error-rate metric.
+		if waitErr, ok := findCompanionGuardSentinel(err); ok {
+			logger.Info("deferring PropagationPolicy cleanup: hub companions still present",
+				"downstreamNamespace", waitErr.namespace)
+			return ctrl.Result{RequeueAfter: companionGuardRequeueAfter}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
 	if finalizationResult.Updated {
@@ -223,6 +279,23 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	}
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
 
+	// The companion ordering guard only applies when this is the last WD for its
+	// city code — i.e. when cleanupPropagationPolicyIfUnused is actually about to
+	// delete the PP. If other WDs with the same city code still exist the PP is
+	// not deleted on this call anyway, so blocking here would deadlock any
+	// shared-namespace deletion (WD-A blocked by WD-B's companion, forever).
+	isLastForCity, err := r.isLastDeploymentForCity(ctx, downstreamNS, deployment.Spec.CityCode)
+	if err != nil {
+		return finalizer.Result{}, fmt.Errorf("failed to check city-code peers in %s: %w", downstreamNS, err)
+	}
+	if isLastForCity {
+		if blocked, err := r.companionsStillPresent(ctx, downstreamNS, deployment); err != nil {
+			return finalizer.Result{}, fmt.Errorf("failed to check for remaining companions in %s: %w", downstreamNS, err)
+		} else if blocked {
+			return finalizer.Result{}, errCompanionsStillPresent{namespace: downstreamNS}
+		}
+	}
+
 	// Clean up the PropagationPolicy if no other deployments with the same city
 	// code remain in this downstream namespace.
 	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.CityCode); err != nil {
@@ -230,6 +303,70 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	}
 
 	return finalizer.Result{}, nil
+}
+
+// isLastDeploymentForCity reports whether there are no other WorkloadDeployments
+// with the same city code as cityCode remaining in downstreamNS (besides the one
+// being deleted, which was already removed above).
+func (r *WorkloadDeploymentFederator) isLastDeploymentForCity(ctx context.Context, downstreamNS, cityCode string) (bool, error) {
+	var remaining computev1alpha.WorkloadDeploymentList
+	if err := r.FederationClient.List(ctx, &remaining,
+		client.InNamespace(downstreamNS),
+		client.MatchingLabels{cityCodeLabel: cityCode},
+	); err != nil {
+		return false, fmt.Errorf("list downstream deployments for city %q: %w", cityCode, err)
+	}
+	return len(remaining.Items) == 0, nil
+}
+
+// companionsStillPresent reports whether any companion ConfigMaps or Secrets
+// (labeled referenced-data=true) remain in the given downstream namespace.
+// Returns (true, nil) when companions are present, (false, nil) when the
+// namespace is clear, and (false, err) on API failure.
+//
+// deployment is the project-plane WD being finalized. Its DeletionTimestamp is
+// used to bound how long the guard can block: if the WD has been terminating
+// for longer than companionGuardTimeout the guard is bypassed with a warning.
+// The cell-side CompanionGCReconciler is the authoritative cleanup path and
+// will eventually clean up regardless.
+func (r *WorkloadDeploymentFederator) companionsStillPresent(
+	ctx context.Context,
+	downstreamNS string,
+	deployment *computev1alpha.WorkloadDeployment,
+) (bool, error) {
+	// If the WD has been terminating longer than the timeout, skip the check so
+	// a wedged referenced-data controller cannot block deletion permanently.
+	if deployment.DeletionTimestamp != nil {
+		age := time.Since(deployment.DeletionTimestamp.Time)
+		if age > companionGuardTimeout {
+			log.FromContext(ctx).Info(
+				"companion-guard timeout reached; bypassing guard — cell-side GC will clean up remaining companions",
+				"age", age.Round(time.Second),
+				"timeout", companionGuardTimeout,
+				"downstreamNamespace", downstreamNS,
+			)
+			return false, nil
+		}
+	}
+
+	companionSelector := client.MatchingLabels{
+		computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
+	}
+	nsSelector := client.InNamespace(downstreamNS)
+
+	var cms corev1.ConfigMapList
+	if err := r.FederationClient.List(ctx, &cms, nsSelector, companionSelector); err != nil {
+		return false, fmt.Errorf("list companion ConfigMaps: %w", err)
+	}
+	if len(cms.Items) > 0 {
+		return true, nil
+	}
+
+	var secrets corev1.SecretList
+	if err := r.FederationClient.List(ctx, &secrets, nsSelector, companionSelector); err != nil {
+		return false, fmt.Errorf("list companion Secrets: %w", err)
+	}
+	return len(secrets.Items) > 0, nil
 }
 
 // ensureDownstreamNamespace creates or updates the downstream namespace, stamping
