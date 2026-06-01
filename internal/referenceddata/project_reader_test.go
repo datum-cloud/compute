@@ -27,7 +27,7 @@ var fakeScheme = func() *runtime.Scheme {
 func TestLocalReader_GetConfigMap_Found(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "app-config",
+			Name:      testNameAppConfig,
 			Namespace: "default",
 		},
 		Data: map[string]string{"key": "value"},
@@ -35,12 +35,12 @@ func TestLocalReader_GetConfigMap_Found(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 	r := NewLocalReader(cl)
 
-	got, err := r.GetConfigMap(context.Background(), "ignored-project", "default", "app-config")
+	got, err := r.GetConfigMap(context.Background(), "ignored-project", "default", testNameAppConfig)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Name != "app-config" {
-		t.Errorf("got name %q, want %q", got.Name, "app-config")
+	if got.Name != testNameAppConfig {
+		t.Errorf("got name %q, want %q", got.Name, testNameAppConfig)
 	}
 }
 
@@ -60,7 +60,7 @@ func TestLocalReader_GetConfigMap_NotFound(t *testing.T) {
 func TestLocalReader_GetSecret_Found(t *testing.T) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "db-creds",
+			Name:      testNameDBCreds,
 			Namespace: "prod",
 		},
 		Data: map[string][]byte{"password": []byte("secret!")},
@@ -68,12 +68,12 @@ func TestLocalReader_GetSecret_Found(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(secret).Build()
 	r := NewLocalReader(cl)
 
-	got, err := r.GetSecret(context.Background(), "ignored", "prod", "db-creds")
+	got, err := r.GetSecret(context.Background(), "ignored", "prod", testNameDBCreds)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Name != "db-creds" {
-		t.Errorf("got name %q, want %q", got.Name, "db-creds")
+	if got.Name != testNameDBCreds {
+		t.Errorf("got name %q, want %q", got.Name, testNameDBCreds)
 	}
 }
 
