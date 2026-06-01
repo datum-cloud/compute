@@ -266,7 +266,10 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 			referencedDataBlockedReplicas++
 		}
 
-		if networkReady && len(instance.Spec.Controller.SchedulingGates) > 0 {
+		// Spec.Controller is a nilable pointer; guard it before dereferencing the
+		// scheduling gates so an instance without controller state cannot panic
+		// the reconcile (mirrors the Status.Controller guard below).
+		if networkReady && instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) > 0 {
 			newGates := slices.DeleteFunc(instance.Spec.Controller.SchedulingGates, func(gate computev1alpha.SchedulingGate) bool {
 				return gate.Name == instancecontrol.NetworkSchedulingGate.String()
 			})
