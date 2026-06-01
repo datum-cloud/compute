@@ -79,13 +79,23 @@ const (
 // federator's PropagationPolicy always includes ConfigMap/Secret selectors
 // matching the referenced-data label.
 type companionWriter interface {
-	// Apply creates or updates the companion ConfigMap in the target namespace.
-	// It is idempotent and must preserve the ref-count annotation set by the
-	// caller.
-	ApplyConfigMap(ctx context.Context, cm *corev1.ConfigMap) error
+	// ApplyConfigMap creates or updates the companion ConfigMap.
+	//
+	// existing is the object previously returned by GetConfigMap for the same
+	// companion in the same RetryOnConflict iteration (nil when the companion
+	// does not yet exist). When existing is non-nil the implementation MUST
+	// write to that exact object — it must NOT perform an additional independent
+	// GET, which would introduce a second resourceVersion read and defeat the
+	// atomic read-modify-write guarantee. The ref-count annotation on desired
+	// was computed from existing's annotations; a second GET could advance to a
+	// newer resourceVersion that already has a concurrent WD's ref-count entry,
+	// and merging desired's annotations over it would silently drop that entry.
+	ApplyConfigMap(ctx context.Context, existing *corev1.ConfigMap, desired *corev1.ConfigMap) error
 
-	// ApplySecret creates or updates the companion Secret in the target namespace.
-	ApplySecret(ctx context.Context, secret *corev1.Secret) error
+	// ApplySecret creates or updates the companion Secret.
+	//
+	// existing follows the same contract as ApplyConfigMap.existing.
+	ApplySecret(ctx context.Context, existing *corev1.Secret, desired *corev1.Secret) error
 
 	// DeleteConfigMap deletes the companion ConfigMap if it exists.
 	DeleteConfigMap(ctx context.Context, namespace, name string) error
@@ -106,35 +116,28 @@ type localCompanionWriter struct {
 	cl client.Client
 }
 
-func (w *localCompanionWriter) ApplyConfigMap(ctx context.Context, cm *corev1.ConfigMap) error {
-	existing := &corev1.ConfigMap{}
-	err := w.cl.Get(ctx, client.ObjectKeyFromObject(cm), existing)
-	if apierrors.IsNotFound(err) {
-		return w.cl.Create(ctx, cm)
+func (w *localCompanionWriter) ApplyConfigMap(ctx context.Context, existing *corev1.ConfigMap, desired *corev1.ConfigMap) error {
+	if existing == nil {
+		return w.cl.Create(ctx, desired)
 	}
-	if err != nil {
-		return err
-	}
-	mergeLabels(existing, cm.Labels)
-	mergeAnnotations(existing, cm.Annotations)
-	existing.Data = cm.Data
-	existing.BinaryData = cm.BinaryData
+	// Write desired fields onto the already-fetched existing object so the
+	// Update carries the same resourceVersion we read. A concurrent change
+	// will raise a conflict, which bubbles up to RetryOnConflict.
+	mergeLabels(existing, desired.Labels)
+	mergeAnnotations(existing, desired.Annotations)
+	existing.Data = desired.Data
+	existing.BinaryData = desired.BinaryData
 	return w.cl.Update(ctx, existing)
 }
 
-func (w *localCompanionWriter) ApplySecret(ctx context.Context, secret *corev1.Secret) error {
-	existing := &corev1.Secret{}
-	err := w.cl.Get(ctx, client.ObjectKeyFromObject(secret), existing)
-	if apierrors.IsNotFound(err) {
-		return w.cl.Create(ctx, secret)
+func (w *localCompanionWriter) ApplySecret(ctx context.Context, existing *corev1.Secret, desired *corev1.Secret) error {
+	if existing == nil {
+		return w.cl.Create(ctx, desired)
 	}
-	if err != nil {
-		return err
-	}
-	mergeLabels(existing, secret.Labels)
-	mergeAnnotations(existing, secret.Annotations)
-	existing.Data = secret.Data
-	existing.Type = secret.Type
+	mergeLabels(existing, desired.Labels)
+	mergeAnnotations(existing, desired.Annotations)
+	existing.Data = desired.Data
+	existing.Type = desired.Type
 	return w.cl.Update(ctx, existing)
 }
 
@@ -189,46 +192,40 @@ type downstreamCompanionWriter struct {
 	downstreamNamespace string
 }
 
-func (w *downstreamCompanionWriter) ApplyConfigMap(ctx context.Context, cm *corev1.ConfigMap) error {
-	// Redirect the object into the downstream namespace.
-	cm = cm.DeepCopy()
-	cm.Namespace = w.downstreamNamespace
+func (w *downstreamCompanionWriter) ApplyConfigMap(ctx context.Context, existing *corev1.ConfigMap, desired *corev1.ConfigMap) error {
+	// Redirect the desired object into the downstream namespace. The caller
+	// already holds the existing object (from GetConfigMap, which redirects
+	// the lookup to the same downstream namespace), so no second GET is needed.
+	desired = desired.DeepCopy()
+	desired.Namespace = w.downstreamNamespace
 
-	existing := &corev1.ConfigMap{}
-	err := w.hubClient.Get(ctx, client.ObjectKeyFromObject(cm), existing)
-	if apierrors.IsNotFound(err) {
-		return w.hubClient.Create(ctx, cm)
+	if existing == nil {
+		return w.hubClient.Create(ctx, desired)
 	}
-	if err != nil {
-		return err
-	}
-	// Merge controller-owned labels/annotations into the existing object rather
-	// than replacing them wholesale. This preserves Karmada bookkeeping
-	// annotations that the federation hub stamps on propagated objects.
-	mergeLabels(existing, cm.Labels)
-	mergeAnnotations(existing, cm.Annotations)
-	existing.Data = cm.Data
-	existing.BinaryData = cm.BinaryData
+	// Merge controller-owned labels/annotations into the already-fetched existing
+	// object rather than replacing them wholesale. This preserves Karmada
+	// bookkeeping annotations that the federation hub stamps on propagated objects.
+	// Writing to existing (same resourceVersion) ensures a concurrent change raises
+	// a conflict that RetryOnConflict will catch.
+	mergeLabels(existing, desired.Labels)
+	mergeAnnotations(existing, desired.Annotations)
+	existing.Data = desired.Data
+	existing.BinaryData = desired.BinaryData
 	return w.hubClient.Update(ctx, existing)
 }
 
-func (w *downstreamCompanionWriter) ApplySecret(ctx context.Context, secret *corev1.Secret) error {
-	secret = secret.DeepCopy()
-	secret.Namespace = w.downstreamNamespace
+func (w *downstreamCompanionWriter) ApplySecret(ctx context.Context, existing *corev1.Secret, desired *corev1.Secret) error {
+	desired = desired.DeepCopy()
+	desired.Namespace = w.downstreamNamespace
 
-	existing := &corev1.Secret{}
-	err := w.hubClient.Get(ctx, client.ObjectKeyFromObject(secret), existing)
-	if apierrors.IsNotFound(err) {
-		return w.hubClient.Create(ctx, secret)
-	}
-	if err != nil {
-		return err
+	if existing == nil {
+		return w.hubClient.Create(ctx, desired)
 	}
 	// Same merge semantics as ApplyConfigMap — preserve Karmada bookkeeping.
-	mergeLabels(existing, secret.Labels)
-	mergeAnnotations(existing, secret.Annotations)
-	existing.Data = secret.Data
-	existing.Type = secret.Type
+	mergeLabels(existing, desired.Labels)
+	mergeAnnotations(existing, desired.Annotations)
+	existing.Data = desired.Data
+	existing.Type = desired.Type
 	return w.hubClient.Update(ctx, existing)
 }
 
@@ -736,10 +733,13 @@ func (r *ReferencedDataController) materialiseCompanions(
 
 // materialiseOne applies a single companion ConfigMap or Secret.
 //
-// The ref-count annotation is read-modify-written inside a RetryOnConflict
-// loop: we fetch the latest companion, update the annotation, and apply.
-// This makes the ref-count mutation conflict-safe when two WDs sharing a
-// source reconcile concurrently.
+// The ref-count annotation is read-modify-written atomically inside a single
+// RetryOnConflict loop. The same GET result that the ref-count is computed from
+// is passed directly to ApplyConfigMap/ApplySecret, which must NOT issue a
+// second independent GET. This ensures the Update carries the same
+// resourceVersion that was used to compute the ref-count, so a concurrent WD
+// that commits its own ref-count entry between the outer GET and the Update
+// will cause a conflict error that RetryOnConflict re-reads and retries from.
 func (r *ReferencedDataController) materialiseOne(
 	ctx context.Context,
 	writer companionWriter,
@@ -749,6 +749,9 @@ func (r *ReferencedDataController) materialiseOne(
 	switch src.ref.Kind {
 	case kindConfigMap:
 		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			// Single GET: the ref-count is computed from this exact snapshot and
+			// the same snapshot is passed to ApplyConfigMap so the Update targets
+			// the same resourceVersion. A concurrent ref-count write will conflict.
 			existing, err := writer.GetConfigMap(ctx, namespace, companionName)
 			if err != nil {
 				return fmt.Errorf("referenceddata: get companion ConfigMap %q: %w", companionName, err)
@@ -765,8 +768,10 @@ func (r *ReferencedDataController) materialiseOne(
 			if src.cm == nil {
 				return fmt.Errorf("referenceddata: source ConfigMap for companion %q is nil", companionName)
 			}
-			cm := buildCompanionConfigMap(namespace, companionName, src.cm, refs)
-			if err := writer.ApplyConfigMap(ctx, cm); err != nil {
+			desired := buildCompanionConfigMap(namespace, companionName, src.cm, refs)
+			// Pass existing (the same GET snapshot) so ApplyConfigMap can Update
+			// it without a second GET, preserving the atomicity guarantee.
+			if err := writer.ApplyConfigMap(ctx, existing, desired); err != nil {
 				return fmt.Errorf("referenceddata: apply companion ConfigMap %q: %w", companionName, err)
 			}
 			return nil
@@ -790,8 +795,8 @@ func (r *ReferencedDataController) materialiseOne(
 			if src.secret == nil {
 				return fmt.Errorf("referenceddata: source Secret for companion %q is nil", companionName)
 			}
-			s := buildCompanionSecret(namespace, companionName, src.secret, refs)
-			if err := writer.ApplySecret(ctx, s); err != nil {
+			desired := buildCompanionSecret(namespace, companionName, src.secret, refs)
+			if err := writer.ApplySecret(ctx, existing, desired); err != nil {
 				return fmt.Errorf("referenceddata: apply companion Secret %q: %w", companionName, err)
 			}
 			return nil
@@ -908,7 +913,9 @@ func (r *ReferencedDataController) releaseRemovedCompanions(
 // becomes empty the companion is deleted.
 //
 // The read-modify-write is wrapped in RetryOnConflict: two WDs concurrently
-// releasing the same companion will each re-read and update safely.
+// releasing the same companion will each re-read and update safely. The GET
+// and the subsequent Update target the same resourceVersion so a concurrent
+// change causes a conflict that drives a re-read and retry.
 //
 // If the ref-count annotation is unparseable the whole call returns an error
 // (transient). The companion is NOT deleted in that case — it may still be
@@ -938,11 +945,15 @@ func (r *ReferencedDataController) releaseOneCompanion(
 		if len(remaining) == 0 {
 			return writer.DeleteConfigMap(ctx, namespace, companionName)
 		}
-		if cm.Annotations == nil {
-			cm.Annotations = make(map[string]string)
+		// Build a desired object that carries the updated ref-count. Pass the
+		// already-fetched cm as existing so ApplyConfigMap updates it at the
+		// same resourceVersion — a concurrent write will conflict and retry.
+		desired := cm.DeepCopy()
+		if desired.Annotations == nil {
+			desired.Annotations = make(map[string]string)
 		}
-		cm.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
-		return writer.ApplyConfigMap(ctx, cm)
+		desired.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
+		return writer.ApplyConfigMap(ctx, cm, desired)
 	}); err != nil {
 		return err
 	}
@@ -966,11 +977,12 @@ func (r *ReferencedDataController) releaseOneCompanion(
 		if len(remaining) == 0 {
 			return writer.DeleteSecret(ctx, namespace, companionName)
 		}
-		if s.Annotations == nil {
-			s.Annotations = make(map[string]string)
+		desired := s.DeepCopy()
+		if desired.Annotations == nil {
+			desired.Annotations = make(map[string]string)
 		}
-		s.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
-		return writer.ApplySecret(ctx, s)
+		desired.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
+		return writer.ApplySecret(ctx, s, desired)
 	})
 }
 
