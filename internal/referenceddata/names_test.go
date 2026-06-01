@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+const (
+	testKindConfigMap = "ConfigMap"
+	testKindSecret    = "Secret"
+	testNameAppConfig = "app-config"
+	testNameDBCreds   = "db-creds"
+	testNameCfg       = "cfg"
+)
+
 func TestCompanionName(t *testing.T) {
 	cases := map[string]struct {
 		kind       string
@@ -14,18 +22,18 @@ func TestCompanionName(t *testing.T) {
 		want       string
 	}{
 		"configmap simple": {
-			kind:       "ConfigMap",
-			sourceName: "app-config",
+			kind:       testKindConfigMap,
+			sourceName: testNameAppConfig,
 			want:       "configmap.app-config",
 		},
 		"secret simple": {
-			kind:       "Secret",
-			sourceName: "db-creds",
+			kind:       testKindSecret,
+			sourceName: testNameDBCreds,
 			want:       "secret.db-creds",
 		},
 		"kind already lower": {
 			kind:       "configmap",
-			sourceName: "cfg",
+			sourceName: testNameCfg,
 			want:       "configmap.cfg",
 		},
 		"secret upper": {
@@ -48,7 +56,7 @@ func TestCompanionName(t *testing.T) {
 func TestCompanionName_LongName(t *testing.T) {
 	// Build a name that would exceed 253 chars.
 	longName := strings.Repeat("a", 250)
-	result := CompanionName("ConfigMap", longName)
+	result := CompanionName(testKindConfigMap, longName)
 
 	if len(result) > maxNameLength {
 		t.Errorf("CompanionName with long source: len=%d exceeds maxNameLength=%d", len(result), maxNameLength)
@@ -59,7 +67,7 @@ func TestCompanionName_LongName(t *testing.T) {
 	}
 
 	// The result must be deterministic.
-	result2 := CompanionName("ConfigMap", longName)
+	result2 := CompanionName(testKindConfigMap, longName)
 	if result != result2 {
 		t.Errorf("CompanionName is not deterministic: %q != %q", result, result2)
 	}
@@ -70,7 +78,7 @@ func TestCompanionName_AllDashesSource(t *testing.T) {
 	// when prefixed. After TrimRight, truncated becomes "". The function must
 	// produce a valid DNS subdomain: "<prefix>.<hash>" (no leading '-').
 	longDashes := strings.Repeat("-", 250)
-	result := CompanionName("ConfigMap", longDashes)
+	result := CompanionName(testKindConfigMap, longDashes)
 
 	if len(result) > maxNameLength {
 		t.Errorf("len=%d exceeds maxNameLength=%d", len(result), maxNameLength)
@@ -90,7 +98,7 @@ func TestCompanionName_AllDotsSource(t *testing.T) {
 	// A source name composed entirely of '.' characters has the same edge:
 	// TrimRight wipes it out, producing "<prefix>.<hash>".
 	longDots := strings.Repeat(".", 250)
-	result := CompanionName("ConfigMap", longDots)
+	result := CompanionName(testKindConfigMap, longDots)
 
 	if len(result) > maxNameLength {
 		t.Errorf("len=%d exceeds maxNameLength=%d", len(result), maxNameLength)
@@ -121,7 +129,7 @@ func TestCompanionName_NameEndingOnDot(t *testing.T) {
 func TestCompanionName_ValidPrefix(t *testing.T) {
 	// Positive case: a simple name that fits within maxNameLength without
 	// truncation should be returned unchanged in "<prefix>.<source>" form.
-	result := CompanionName("Secret", "my-secret")
+	result := CompanionName(testKindSecret, "my-secret")
 	want := "secret.my-secret"
 	if result != want {
 		t.Errorf("CompanionName = %q, want %q", result, want)
@@ -134,8 +142,8 @@ func TestCompanionName_ValidPrefix(t *testing.T) {
 func TestCompanionName_Deterministic(t *testing.T) {
 	// Same inputs always produce the same output.
 	for i := 0; i < 100; i++ {
-		a := CompanionName("Secret", "my-secret")
-		b := CompanionName("Secret", "my-secret")
+		a := CompanionName(testKindSecret, "my-secret")
+		b := CompanionName(testKindSecret, "my-secret")
 		if a != b {
 			t.Fatalf("non-deterministic: %q != %q", a, b)
 		}
@@ -143,7 +151,7 @@ func TestCompanionName_Deterministic(t *testing.T) {
 }
 
 func TestCompanionNameForRef(t *testing.T) {
-	ref := ObjectRef{Kind: "ConfigMap", Name: "app-config", Namespace: "default"}
+	ref := ObjectRef{Kind: testKindConfigMap, Name: testNameAppConfig, Namespace: "default"}
 	got := CompanionNameForRef(ref)
 	want := "configmap.app-config"
 	if got != want {

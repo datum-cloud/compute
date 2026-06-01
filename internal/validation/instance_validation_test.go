@@ -137,7 +137,7 @@ func TestValidateConfigMapItems(t *testing.T) {
 	}{
 		"valid with items": {
 			source: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "cfg"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: testCfgName},
 				Items: []corev1.KeyToPath{
 					{Key: "app.conf", Path: "etc/app.conf"},
 				},
@@ -145,7 +145,7 @@ func TestValidateConfigMapItems(t *testing.T) {
 		},
 		"items absolute path": {
 			source: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "cfg"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: testCfgName},
 				Items: []corev1.KeyToPath{
 					{Key: "k", Path: "/absolute/path"},
 				},
@@ -156,7 +156,7 @@ func TestValidateConfigMapItems(t *testing.T) {
 		},
 		"items dotdot path escape": {
 			source: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "cfg"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: testCfgName},
 				Items: []corev1.KeyToPath{
 					{Key: "k", Path: "../escape"},
 				},
@@ -259,12 +259,12 @@ func TestValidateEnvFrom(t *testing.T) {
 		},
 		"valid with prefix": {
 			envFrom: []computev1alpha.EnvFromSource{
-				{Prefix: "APP_", ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "cfg"}},
+				{Prefix: "APP_", ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testCfgName}},
 			},
 		},
 		"invalid prefix not C_IDENTIFIER": {
 			envFrom: []computev1alpha.EnvFromSource{
-				{Prefix: "123BAD", ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "cfg"}},
+				{Prefix: "123BAD", ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testCfgName}},
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(root.Index(0).Child("prefix"), "123BAD", ""),
@@ -281,7 +281,7 @@ func TestValidateEnvFrom(t *testing.T) {
 		"both sources specified": {
 			envFrom: []computev1alpha.EnvFromSource{
 				{
-					ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "cfg"},
+					ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testCfgName},
 					SecretRef:    &computev1alpha.SecretEnvSource{Name: "sec"},
 				},
 			},
@@ -330,7 +330,12 @@ func TestValidateEnvFrom(t *testing.T) {
 
 // sarGenerateName is used as a GenerateName prefix on synthetic SAR objects so
 // the fake client accepts them. Extracted as a constant to satisfy goconst.
-const sarGenerateName = "sar-"
+const (
+	sarGenerateName   = "sar-"
+	testCfgName       = "cfg"
+	testCfgVolName    = "cfg-vol"
+	testAppConfigName = "app-config"
+)
 
 // TestReferencedDataSAR tests that the admission SAR check fires for referenced
 // ConfigMaps and Secrets, and produces the expected errors on deny.
@@ -368,10 +373,10 @@ func TestReferencedDataSAR(t *testing.T) {
 	workloadWithConfigMap := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
 		w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
 			{
-				Name: "cfg-vol",
+				Name: testCfgVolName,
 				VolumeSource: computev1alpha.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+						LocalObjectReference: corev1.LocalObjectReference{Name: testAppConfigName},
 					},
 				},
 			},
@@ -397,7 +402,7 @@ func TestReferencedDataSAR(t *testing.T) {
 			workload:    workloadWithConfigMap,
 			interceptor: denyAll,
 			expectedErrors: field.ErrorList{
-				field.Forbidden(specPath.Child("configmaps").Key("app-config"), ""),
+				field.Forbidden(specPath.Child("configmaps").Key(testAppConfigName), ""),
 			},
 		},
 		"secret denied": {
@@ -454,7 +459,7 @@ func TestBothRefsSetEnvFrom(t *testing.T) {
 
 	envFrom := []computev1alpha.EnvFromSource{
 		{
-			ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "cfg"},
+			ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testCfgName},
 			SecretRef:    &computev1alpha.SecretEnvSource{Name: "sec"},
 		},
 	}
@@ -509,10 +514,10 @@ func TestReferencedDataSARInternalError(t *testing.T) {
 	workload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
 		w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
 			{
-				Name: "cfg-vol",
+				Name: testCfgVolName,
 				VolumeSource: computev1alpha.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+						LocalObjectReference: corev1.LocalObjectReference{Name: testAppConfigName},
 					},
 				},
 			},
@@ -577,16 +582,16 @@ func TestValidateUpdateSARPath(t *testing.T) {
 	newWorkload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
 		w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
 			{
-				Name: "cfg-vol",
+				Name: testCfgVolName,
 				VolumeSource: computev1alpha.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+						LocalObjectReference: corev1.LocalObjectReference{Name: testAppConfigName},
 					},
 				},
 			},
 		}
 		w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].VolumeAttachments = []computev1alpha.VolumeAttachment{
-			{Name: "cfg-vol"},
+			{Name: testCfgVolName},
 		}
 	})
 
@@ -604,7 +609,7 @@ func TestValidateUpdateSARPath(t *testing.T) {
 	errs := ValidateWorkloadCreate(newWorkload, opts)
 	specPath := field.NewPath("spec").Child("template").Child("spec")
 	wantErrs := field.ErrorList{
-		field.Forbidden(specPath.Child("configmaps").Key("app-config"), ""),
+		field.Forbidden(specPath.Child("configmaps").Key(testAppConfigName), ""),
 	}
 	cmpErrs(t, wantErrs, errs)
 }
@@ -663,24 +668,24 @@ func TestWorkloadWithReferencedDataE2E(t *testing.T) {
 			},
 		}).
 		WithObjects(&networkingv1alpha.Network{
-			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "default"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: testDefaultNamespace, Name: testDefaultNamespace},
 		}).
 		Build()
 
 	workload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
 		w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
 			{
-				Name: "cfg-vol",
+				Name: testCfgVolName,
 				VolumeSource: computev1alpha.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+						LocalObjectReference: corev1.LocalObjectReference{Name: testAppConfigName},
 					},
 				},
 			},
 		}
 		// Wire volume attachment to satisfy validation.
 		w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].VolumeAttachments = []computev1alpha.VolumeAttachment{
-			{Name: "cfg-vol"},
+			{Name: testCfgVolName},
 		}
 	})
 

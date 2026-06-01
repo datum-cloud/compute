@@ -29,4 +29,7 @@ const (
 	// that reference external ConfigMaps or Secrets. Used as a label selector
 	// by the Karmada PropagationPolicy to propagate companions to cells.
 	ReferencedDataLabel = LabelNamespace + "/referenced-data"
+
+	// ReferencedDataLabelValue is the value used for ReferencedDataLabel.
+	ReferencedDataLabelValue = "true"
 )
