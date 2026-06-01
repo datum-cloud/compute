@@ -17,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -150,14 +152,17 @@ func newGCReconciler(cellClient client.Client) *CompanionGCReconciler {
 	return &CompanionGCReconciler{mgr: mgr}
 }
 
-// reconcileGC runs one GC reconcile for the named object in gcTestNamespace.
-func reconcileGC(t *testing.T, r *CompanionGCReconciler, name string) (ctrl.Result, error) {
+// reconcileGCForWD runs one GC reconcile triggered by a WorkloadDeployment
+// event in gcTestNamespace. The WD object may or may not exist — a deleted WD
+// still fires the namespace sweep. The request name is gcTestWD1Name; only
+// req.Namespace matters for the sweep logic.
+func reconcileGCForWD(t *testing.T, r *CompanionGCReconciler) (ctrl.Result, error) {
 	t.Helper()
 	ctx := mccontext.WithCluster(context.Background(), multicluster.ClusterName(gcTestCluster))
 	return r.Reconcile(ctx, mcreconcile.Request{
 		ClusterName: multicluster.ClusterName(gcTestCluster),
 		Request: ctrl.Request{
-			NamespacedName: types.NamespacedName{Namespace: gcTestNamespace, Name: name},
+			NamespacedName: types.NamespacedName{Namespace: gcTestNamespace, Name: gcTestWD1Name},
 		},
 	})
 }
@@ -339,6 +344,41 @@ func TestHasLiveReferrer(t *testing.T) {
 
 // ─── CompanionGCReconciler.Reconcile tests ────────────────────────────────────
 
+// TestCompanionGC_NamespaceSweep_WDEventTriggersGC verifies the core entry
+// path: a WorkloadDeployment event (here the WD is absent, simulating a
+// deletion) causes Reconcile to sweep the WD's namespace and delete any
+// orphaned companions it finds there.
+//
+// This also documents that the controller is driven by For(WorkloadDeployment),
+// NOT For(ConfigMap). The test exercises the full Reconcile path that results
+// from a WD delete event, confirming no CM/Secret informer is needed.
+func TestCompanionGC_NamespaceSweep_WDEventTriggersGC(t *testing.T) {
+	t.Parallel()
+
+	// Two companions in the namespace, both with no live referrer.
+	cm := companionCM([]string{prodRefKey(gcTestWD1Name)})
+	sec := companionSecret(gcTestSecName, gcTestNamespace, []string{prodRefKey(gcTestWD1Name)})
+	// No WD in the cell — the WD was deleted, triggering this reconcile.
+	cellClient := newCellFakeClient(cm, sec)
+	r := newGCReconciler(cellClient)
+
+	// The reconcile request names the WD that was deleted (namespace sweep uses
+	// req.Namespace, not req.Name, so the WD need not exist).
+	result, err := reconcileGCForWD(t, r)
+	require.NoError(t, err)
+	// Event-driven reconcile returns empty result (no requeue).
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Both companions must be gone.
+	var gotCM corev1.ConfigMap
+	err = cellClient.Get(context.Background(), types.NamespacedName{Namespace: gcTestNamespace, Name: gcTestCMName}, &gotCM)
+	assert.True(t, apierrors.IsNotFound(err), "companion ConfigMap should be deleted when all referrers are absent")
+
+	var gotSec corev1.Secret
+	err = cellClient.Get(context.Background(), types.NamespacedName{Namespace: gcTestNamespace, Name: gcTestSecName}, &gotSec)
+	assert.True(t, apierrors.IsNotFound(err), "companion Secret should be deleted when all referrers are absent")
+}
+
 // TestCompanionGC_ConfigMap_DeletedWhenAllReferrersAbsent verifies that a
 // companion ConfigMap is deleted when the WD listed in its referenced-by
 // annotation (using production "projectNS/name" format) is absent from the cell.
@@ -350,7 +390,7 @@ func TestCompanionGC_ConfigMap_DeletedWhenAllReferrersAbsent(t *testing.T) {
 	cellClient := newCellFakeClient(cm)
 	r := newGCReconciler(cellClient)
 
-	result, err := reconcileGC(t, r, gcTestCMName)
+	result, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -368,7 +408,7 @@ func TestCompanionGC_Secret_DeletedWhenAllReferrersAbsent(t *testing.T) {
 	cellClient := newCellFakeClient(secret)
 	r := newGCReconciler(cellClient)
 
-	result, err := reconcileGC(t, r, gcTestSecName)
+	result, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -396,7 +436,7 @@ func TestCompanionGC_ProjectNamespaceKey_PreservesCompanionWithLiveLocalWD(t *te
 	cellClient := newCellFakeClient(cm, wd)
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	_, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 
 	// Companion must NOT be deleted — the WD exists on this cell.
@@ -416,7 +456,7 @@ func TestCompanionGC_PreservedWhenLiveReferrerExists(t *testing.T) {
 	cellClient := newCellFakeClient(cm, wd)
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	_, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 
 	var got corev1.ConfigMap
@@ -436,7 +476,7 @@ func TestCompanionGC_PreservedWhenTerminatingReferrerExists(t *testing.T) {
 	cellClient := newCellFakeClient(cm, wd)
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	_, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 
 	var got corev1.ConfigMap
@@ -462,7 +502,8 @@ func TestCompanionGC_MultiReferrer_OneDifferentCell_OtherLiveLocal(t *testing.T)
 	cellClient := newCellFakeClient(cm, wd2)
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	// WD1 deletion event triggers the sweep; WD2 is still alive locally.
+	_, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 
 	// Companion must NOT have been deleted because WD2 is still alive on this cell.
@@ -485,7 +526,7 @@ func TestCompanionGC_MultiReferrer_AllAbsent_Deleted(t *testing.T) {
 	cellClient := newCellFakeClient(cm)
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	_, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 
 	var got corev1.ConfigMap
@@ -502,7 +543,7 @@ func TestCompanionGC_EmptyRefCount_Deleted(t *testing.T) {
 	cellClient := newCellFakeClient(cm)
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	_, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 
 	var got corev1.ConfigMap
@@ -515,11 +556,14 @@ func TestCompanionGC_EmptyRefCount_Deleted(t *testing.T) {
 func TestCompanionGC_NonCompanionNotTouched(t *testing.T) {
 	t.Parallel()
 
+	// A plain ConfigMap without the companion label is never returned by the
+	// label-scoped List and is therefore never passed to maybeDeleteConfigMap.
+	// We verify the object survives the sweep.
 	cm := plainCM(gcTestCMName, gcTestNamespace)
 	cellClient := newCellFakeClient(cm)
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	_, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
 
 	var got corev1.ConfigMap
@@ -528,16 +572,156 @@ func TestCompanionGC_NonCompanionNotTouched(t *testing.T) {
 		"ConfigMap without referenced-data label must not be deleted")
 }
 
-// TestCompanionGC_ObjectAlreadyGone verifies that reconciling a missing object
-// is a no-op (no error).
-func TestCompanionGC_ObjectAlreadyGone(t *testing.T) {
+// TestCompanionGC_EmptyNamespace_NoOp verifies that reconciling a namespace that
+// contains no companions is a no-op with no error (covers the case where a WD
+// event fires for a namespace that never had companions).
+func TestCompanionGC_EmptyNamespace_NoOp(t *testing.T) {
 	t.Parallel()
 
-	cellClient := newCellFakeClient() // nothing pre-loaded
+	// Nothing pre-loaded — no companions, no WDs.
+	cellClient := newCellFakeClient()
 	r := newGCReconciler(cellClient)
 
-	_, err := reconcileGC(t, r, gcTestCMName)
+	result, err := reconcileGCForWD(t, r)
 	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
+// ─── Periodic backstop tests ──────────────────────────────────────────────────
+
+// TestCompanionGCBackstop_SweepDeletesOrphanInWDlessNamespace is the key
+// regression test for the coverage gap identified in review. It proves that a
+// companion orphaned in a namespace that has NO WorkloadDeployment object
+// present (i.e. the last WD was deleted before the controller started, so the
+// For(WD) watch would never enqueue that namespace) is collected by the periodic
+// backstop sweep.
+//
+// The test exercises companionGCBackstop.sweep() directly (not via a hand-fed
+// Reconcile request) to confirm the sweep generates the namespace-keyed event
+// AND that the resulting Reconcile call cleans up the orphan.
+func TestCompanionGCBackstop_SweepDeletesOrphanInWDlessNamespace(t *testing.T) {
+	t.Parallel()
+
+	// Orphaned companion in a namespace with NO WDs present — the last WD was
+	// deleted before this controller started.
+	cm := companionCM([]string{prodRefKey(gcTestWD1Name)}) // WD name in annotation but WD gone
+	cellClient := newCellFakeClient(cm)                    // no WD objects
+
+	cl := newFakeCluster(cellClient)
+	mgr := newFakeMCManager(gcTestCluster, cl)
+	reconciler := &CompanionGCReconciler{mgr: mgr}
+
+	// Wire the backstop with a buffered channel. We give it a generous buffer
+	// so the non-blocking send in sweep() succeeds.
+	backstopCh := make(chan event.GenericEvent, companionGCChannelBuffer)
+	backstop := &companionGCBackstop{
+		ch: backstopCh,
+		clusters: map[multicluster.ClusterName]cluster.Cluster{
+			multicluster.ClusterName(gcTestCluster): cl,
+		},
+	}
+
+	// Fire one sweep tick synchronously (no ticker needed in tests).
+	backstop.sweep(context.Background())
+
+	// The sweep must have emitted at least one event for gcTestNamespace.
+	require.NotEmpty(t, backstopCh, "backstop must emit a namespace-sweep event for a namespace containing companions")
+
+	// Drain the channel and invoke Reconcile for each namespace-keyed event,
+	// exactly as the WatchesRawSource → backstopEventHandler → workqueue path
+	// would do in production.
+	sweptNamespaces := map[string]struct{}{}
+	ctx := mccontext.WithCluster(context.Background(), multicluster.ClusterName(gcTestCluster))
+	for len(backstopCh) > 0 {
+		ev := <-backstopCh
+		// backstopEventHandler maps: obj.Name → ClusterName, obj.Namespace → ns.
+		clusterName := multicluster.ClusterName(ev.Object.GetName())
+		ns := ev.Object.GetNamespace()
+		sweptNamespaces[ns] = struct{}{}
+
+		_, err := reconciler.Reconcile(ctx, mcreconcile.Request{
+			ClusterName: clusterName,
+			Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns}},
+		})
+		require.NoError(t, err)
+	}
+
+	// The backstop must have swept gcTestNamespace.
+	assert.Contains(t, sweptNamespaces, gcTestNamespace,
+		"backstop sweep must enqueue the namespace containing the orphaned companion")
+
+	// The companion must be gone — collected by the Reconcile call above, not by
+	// a hand-fed request. This proves the backstop closes the WD-less namespace gap.
+	var got corev1.ConfigMap
+	err := cellClient.Get(context.Background(),
+		types.NamespacedName{Namespace: gcTestNamespace, Name: gcTestCMName}, &got)
+	assert.True(t, apierrors.IsNotFound(err),
+		"companion orphaned in WD-less namespace must be collected by the backstop sweep")
+}
+
+// TestCompanionGCBackstop_SweepSkipsNamespaceWithLiveWD verifies that the
+// backstop sweep does not delete a companion when a live WD still exists in the
+// same namespace — the per-cell multi-referrer safety rule applies equally to
+// backstop-triggered sweeps.
+func TestCompanionGCBackstop_SweepSkipsNamespaceWithLiveWD(t *testing.T) {
+	t.Parallel()
+
+	cm := companionCM([]string{prodRefKey(gcTestWD1Name)})
+	wd := cellWD(gcTestWD1Name, gcTestNamespace) // live WD still present
+	cellClient := newCellFakeClient(cm, wd)
+
+	cl := newFakeCluster(cellClient)
+	mgr := newFakeMCManager(gcTestCluster, cl)
+	reconciler := &CompanionGCReconciler{mgr: mgr}
+
+	backstopCh := make(chan event.GenericEvent, companionGCChannelBuffer)
+	backstop := &companionGCBackstop{
+		ch: backstopCh,
+		clusters: map[multicluster.ClusterName]cluster.Cluster{
+			multicluster.ClusterName(gcTestCluster): cl,
+		},
+	}
+
+	backstop.sweep(context.Background())
+
+	ctx := mccontext.WithCluster(context.Background(), multicluster.ClusterName(gcTestCluster))
+	for len(backstopCh) > 0 {
+		ev := <-backstopCh
+		clusterName := multicluster.ClusterName(ev.Object.GetName())
+		ns := ev.Object.GetNamespace()
+		_, err := reconciler.Reconcile(ctx, mcreconcile.Request{
+			ClusterName: clusterName,
+			Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns}},
+		})
+		require.NoError(t, err)
+	}
+
+	// Companion must NOT be deleted — the WD is still alive.
+	var got corev1.ConfigMap
+	require.NoError(t, cellClient.Get(context.Background(),
+		types.NamespacedName{Namespace: gcTestNamespace, Name: gcTestCMName}, &got),
+		"backstop must preserve companion when a live WD still references it")
+}
+
+// TestCompanionGCBackstop_NoEventWhenNoCopanions verifies that the backstop
+// emits no events when there are no companion objects in the cluster at all
+// (no spurious requeues for empty clusters).
+func TestCompanionGCBackstop_NoEventWhenNoCopanions(t *testing.T) {
+	t.Parallel()
+
+	cellClient := newCellFakeClient() // nothing
+	cl := newFakeCluster(cellClient)
+
+	backstopCh := make(chan event.GenericEvent, companionGCChannelBuffer)
+	backstop := &companionGCBackstop{
+		ch: backstopCh,
+		clusters: map[multicluster.ClusterName]cluster.Cluster{
+			multicluster.ClusterName(gcTestCluster): cl,
+		},
+	}
+
+	backstop.sweep(context.Background())
+	assert.Empty(t, backstopCh, "backstop must emit no events when no companions exist")
 }
 
 // ─── Federator ordering guard tests ───────────────────────────────────────────
