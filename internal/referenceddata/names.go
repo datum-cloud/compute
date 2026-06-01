@@ -20,30 +20,28 @@ const (
 )
 
 // CompanionName returns the deterministic companion object name for a given
-// (kind, sourceName) pair. The format is "<lower-kind>.<source-name>", for
-// example:
+// (kind, sourceName) pair. The companion is named after the SOURCE name only —
+// no kind prefix — so that consumer references (volumes, env, envFrom) resolve
+// naturally without any translation layer.
 //
-//	CompanionName("ConfigMap", "app-config") → "configmap.app-config"
-//	CompanionName("Secret",    "db-creds")   → "secret.db-creds"
+// Cross-kind collisions are safe: a ConfigMap companion and a Secret companion
+// may both be named "app-config" because they are distinct Kubernetes objects of
+// different resource types in the same namespace.
 //
-// If the resulting name exceeds maxNameLength, the source-name portion is
-// truncated and a deterministic 8-character FNV-1a hex suffix is appended to
-// avoid collisions. The returned name always satisfies DNS subdomain
-// constraints required by Kubernetes.
-func CompanionName(kind, sourceName string) string {
-	prefix := strings.ToLower(kind)
-	candidate := fmt.Sprintf("%s.%s", prefix, sourceName)
-
-	if len(candidate) <= maxNameLength && isValidDNSSubdomain(candidate) {
-		return candidate
+// If the source name exceeds maxNameLength (253 chars), the name is truncated
+// and a deterministic 8-character FNV-1a hex suffix is appended to avoid
+// collisions. The returned name always satisfies DNS subdomain constraints
+// required by Kubernetes.
+func CompanionName(_, sourceName string) string {
+	if len(sourceName) <= maxNameLength && isValidDNSSubdomain(sourceName) {
+		return sourceName
 	}
 
-	// Truncate the source name so that prefix + "." + truncated + "-" + hash
-	// fits within maxNameLength.
-	// Format: "<prefix>.<truncated>-<8-char-hash>"
+	// Truncate the source name so that truncated + "-" + hash fits within
+	// maxNameLength. Format: "<truncated>-<8-char-hash>"
 	hashStr := shortHash(sourceName)
 	suffix := "-" + hashStr
-	maxSourceLen := maxNameLength - len(prefix) - 1 /* dot */ - len(suffix)
+	maxSourceLen := maxNameLength - len(suffix)
 	if maxSourceLen < 1 {
 		maxSourceLen = 1
 	}
@@ -56,20 +54,25 @@ func CompanionName(kind, sourceName string) string {
 	truncated = strings.TrimRight(truncated, "-.")
 
 	// If stripping trailing separators emptied the truncated segment (e.g. a
-	// source name composed entirely of '-' or '.'), omit the segment entirely
-	// so we produce "<prefix>.<hash>" rather than "<prefix>.-<hash>" which
-	// would start a DNS label with '-'.
+	// source name composed entirely of '-' or '.'), fall back to just the hash.
 	if truncated == "" {
-		return fmt.Sprintf("%s.%s", prefix, hashStr)
+		return hashStr
 	}
 
-	return fmt.Sprintf("%s.%s%s", prefix, truncated, suffix)
+	return fmt.Sprintf("%s%s", truncated, suffix)
 }
 
 // CompanionNameForRef is a convenience wrapper around CompanionName that
 // accepts an ObjectRef.
 func CompanionNameForRef(ref ObjectRef) string {
 	return CompanionName(ref.Kind, ref.Name)
+}
+
+// CompanionToken returns the kind-qualified token "Kind/name" used in the
+// expected-referenced-data annotation so that the cell can disambiguate
+// companions by kind without probing both resource types.
+func CompanionToken(kind, name string) string {
+	return kind + "/" + name
 }
 
 // isValidDNSSubdomain returns true if s satisfies Kubernetes DNS subdomain

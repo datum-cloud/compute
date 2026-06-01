@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -401,6 +402,16 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, r.setConditionAndReturn(ctx, cl.GetClient(), &wd, condErr.reason, condErr.message)
 	}
 
+	// expectedTokens is a kind-qualified JSON array written to the
+	// expected-referenced-data annotation, e.g. ["ConfigMap/app-config","Secret/db-creds"].
+	// Using "Kind/name" tokens lets the cell disambiguate which companion is a
+	// ConfigMap and which is a Secret without probing both resource types.
+	expectedTokens := make([]string, 0, len(sources))
+	for _, src := range sources {
+		expectedTokens = append(expectedTokens, referenceddata.CompanionToken(src.ref.Kind, referenceddata.CompanionNameForRef(src.ref)))
+	}
+	// expectedNames is the flat list of companion object names (source names) used
+	// for ref-count bookkeeping and release.
 	expectedNames := make([]string, 0, len(sources))
 	for _, src := range sources {
 		expectedNames = append(expectedNames, referenceddata.CompanionNameForRef(src.ref))
@@ -420,10 +431,13 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 	}
 
 	// Stamp the expected-set annotation on the WD so the cell can gate-clear.
+	// The annotation is a kind-qualified JSON array, e.g.
+	// ["ConfigMap/app-config","Secret/db-creds"], so the cell can match
+	// companions by kind without probing both resource types.
 	// Wrap in RetryOnConflict: the federator may concurrently update the same WD,
 	// producing a conflict on the Patch. The annotation write is idempotent, so
 	// retrying with a fresh GET is safe.
-	annoVal, err := json.Marshal(expectedNames)
+	annoVal, err := json.Marshal(expectedTokens)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("referenceddata: marshal expected-referenced-data annotation: %w", err)
 	}
@@ -455,7 +469,7 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 			Type:               computev1alpha.ReferencedDataReady,
 			Status:             metav1.ConditionTrue,
 			Reason:             computev1alpha.ReferencedDataReasonReady,
-			Message:            fmt.Sprintf("All %d referenced companion(s) are materialised", len(expectedNames)),
+			Message:            fmt.Sprintf("All %d referenced companion(s) are materialised", len(expectedTokens)),
 			ObservedGeneration: wd.Generation,
 		})
 		if !changed {
@@ -852,6 +866,30 @@ func classifyReaderError(err error, ref referenceddata.ObjectRef) (reason, messa
 	}
 }
 
+// parseAnnotationTokens parses the expected-referenced-data annotation value
+// (a kind-qualified JSON array such as ["ConfigMap/app-config","Secret/db-creds"])
+// and returns a slice of (kind, companionName) pairs.
+//
+// For backwards-compatibility, tokens that do not contain a '/' are treated as
+// plain companion names with an unknown kind (both ConfigMap and Secret will be
+// probed during release).
+func parseAnnotationTokens(raw string) ([]struct{ kind, name string }, error) {
+	var tokens []string
+	if err := json.Unmarshal([]byte(raw), &tokens); err != nil {
+		return nil, err
+	}
+	out := make([]struct{ kind, name string }, 0, len(tokens))
+	for _, tok := range tokens {
+		if idx := strings.Index(tok, "/"); idx >= 0 {
+			out = append(out, struct{ kind, name string }{tok[:idx], tok[idx+1:]})
+		} else {
+			// Legacy plain name — kind unknown, will probe both types.
+			out = append(out, struct{ kind, name string }{"", tok})
+		}
+	}
+	return out, nil
+}
+
 // releaseCompanions removes this WD's entry from all companion objects it owns.
 // Companions with an empty ref-count after removal are deleted.
 func (r *ReferencedDataController) releaseCompanions(
@@ -861,23 +899,20 @@ func (r *ReferencedDataController) releaseCompanions(
 	wd *computev1alpha.WorkloadDeployment,
 ) error {
 	// Determine which companions this WD currently claims from the annotation.
-	var expectedNames []string
-	if anno, ok := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]; ok {
-		if err := json.Unmarshal([]byte(anno), &expectedNames); err != nil {
-			// Annotation is malformed; clear it and proceed.
-			expectedNames = nil
-		}
+	anno, ok := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
+	if !ok || anno == "" {
+		return nil
 	}
-	if len(expectedNames) == 0 {
+	entries, err := parseAnnotationTokens(anno)
+	if err != nil || len(entries) == 0 {
+		// Annotation is malformed or empty; nothing to release.
 		return nil
 	}
 
 	wdKey := types.NamespacedName{Namespace: wd.Namespace, Name: wd.Name}.String()
 
-	// We don't know the kinds of the companions from names alone, so we probe
-	// both ConfigMap and Secret for each expected companion name.
-	for _, companionName := range expectedNames {
-		if err := r.releaseOneCompanion(ctx, c, writer, wd.Namespace, companionName, wdKey); err != nil {
+	for _, entry := range entries {
+		if err := r.releaseOneCompanion(ctx, c, writer, wd.Namespace, entry.kind, entry.name, wdKey); err != nil {
 			return err
 		}
 	}
@@ -886,6 +921,7 @@ func (r *ReferencedDataController) releaseCompanions(
 
 // releaseRemovedCompanions removes this WD's ref-count entry from companions
 // that were previously expected but are no longer in the current desired set.
+// currentNames is the flat list of current companion object names (source names).
 func (r *ReferencedDataController) releaseRemovedCompanions(
 	ctx context.Context,
 	c client.Client,
@@ -893,23 +929,22 @@ func (r *ReferencedDataController) releaseRemovedCompanions(
 	wd *computev1alpha.WorkloadDeployment,
 	currentNames []string,
 ) error {
-	var previousNames []string
-	if anno, ok := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]; ok {
-		if err := json.Unmarshal([]byte(anno), &previousNames); err != nil {
-			previousNames = nil
-		}
+	anno, ok := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
+	if !ok || anno == "" {
+		return nil
 	}
-	if len(previousNames) == 0 {
+	prevEntries, err := parseAnnotationTokens(anno)
+	if err != nil || len(prevEntries) == 0 {
 		return nil
 	}
 
 	wdKey := types.NamespacedName{Namespace: wd.Namespace, Name: wd.Name}.String()
 
-	for _, name := range previousNames {
-		if slices.Contains(currentNames, name) {
+	for _, entry := range prevEntries {
+		if slices.Contains(currentNames, entry.name) {
 			continue
 		}
-		if err := r.releaseOneCompanion(ctx, c, writer, wd.Namespace, name, wdKey); err != nil {
+		if err := r.releaseOneCompanion(ctx, c, writer, wd.Namespace, entry.kind, entry.name, wdKey); err != nil {
 			return err
 		}
 	}
@@ -917,8 +952,9 @@ func (r *ReferencedDataController) releaseRemovedCompanions(
 }
 
 // releaseOneCompanion removes wdKey from the ref-count annotation of the named
-// companion (checking both ConfigMap and Secret kinds). If the ref-count
-// becomes empty the companion is deleted.
+// companion. When kind is known ("ConfigMap" or "Secret") only that resource type
+// is probed; when kind is empty (legacy annotation without kind qualification)
+// both ConfigMap and Secret are probed.
 //
 // The read-modify-write is wrapped in RetryOnConflict: two WDs concurrently
 // releasing the same companion will each re-read and update safely. The GET
@@ -932,40 +968,49 @@ func (r *ReferencedDataController) releaseOneCompanion(
 	ctx context.Context,
 	_ client.Client,
 	writer companionWriter,
-	namespace, companionName, wdKey string,
+	namespace, kind, companionName, wdKey string,
 ) error {
+	releaseConfigMap := kind == kindConfigMap || kind == ""
+	releaseSecret := kind == kindSecret || kind == ""
+
 	// Try ConfigMap.
 	var cmExists bool
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		cm, err := writer.GetConfigMap(ctx, namespace, companionName)
-		if err != nil {
-			return fmt.Errorf("get companion ConfigMap %q: %w", companionName, err)
+	if releaseConfigMap {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			cm, err := writer.GetConfigMap(ctx, namespace, companionName)
+			if err != nil {
+				return fmt.Errorf("get companion ConfigMap %q: %w", companionName, err)
+			}
+			if cm == nil {
+				return nil // not a ConfigMap companion
+			}
+			cmExists = true
+			remaining, err := refCountRemove(cm.Annotations, wdKey)
+			if err != nil {
+				// Annotation is corrupt — treat as transient to avoid unsafe deletion.
+				return fmt.Errorf("referenceddata: corrupt ref-count on ConfigMap %q: %w", companionName, err)
+			}
+			if len(remaining) == 0 {
+				return writer.DeleteConfigMap(ctx, namespace, companionName)
+			}
+			// Build a desired object that carries the updated ref-count. Pass the
+			// already-fetched cm as existing so ApplyConfigMap updates it at the
+			// same resourceVersion — a concurrent write will conflict and retry.
+			desired := cm.DeepCopy()
+			if desired.Annotations == nil {
+				desired.Annotations = make(map[string]string)
+			}
+			desired.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
+			return writer.ApplyConfigMap(ctx, cm, desired)
+		}); err != nil {
+			return err
 		}
-		if cm == nil {
-			return nil // not a ConfigMap companion
-		}
-		cmExists = true
-		remaining, err := refCountRemove(cm.Annotations, wdKey)
-		if err != nil {
-			// Annotation is corrupt — treat as transient to avoid unsafe deletion.
-			return fmt.Errorf("referenceddata: corrupt ref-count on ConfigMap %q: %w", companionName, err)
-		}
-		if len(remaining) == 0 {
-			return writer.DeleteConfigMap(ctx, namespace, companionName)
-		}
-		// Build a desired object that carries the updated ref-count. Pass the
-		// already-fetched cm as existing so ApplyConfigMap updates it at the
-		// same resourceVersion — a concurrent write will conflict and retry.
-		desired := cm.DeepCopy()
-		if desired.Annotations == nil {
-			desired.Annotations = make(map[string]string)
-		}
-		desired.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
-		return writer.ApplyConfigMap(ctx, cm, desired)
-	}); err != nil {
-		return err
 	}
 	if cmExists {
+		return nil
+	}
+
+	if !releaseSecret {
 		return nil
 	}
 

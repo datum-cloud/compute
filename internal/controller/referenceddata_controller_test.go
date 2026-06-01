@@ -216,10 +216,10 @@ func TestReferencedData_HappyPath_ConfigMap(t *testing.T) {
 	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, companion.Labels[computev1alpha.ReferencedDataLabel], "companion must have referenced-data label")
 	assert.Equal(t, rdTestDataValue, companion.Data[rdTestDataKey], "companion must copy source Data")
 
-	// Expected annotation should list the companion name.
+	// Expected annotation should list the kind-qualified token, not the plain name.
 	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
-	expectedNames := decodeExpectedAnnotation(t, wd)
-	assert.Equal(t, []string{companionName}, expectedNames)
+	expectedTokens := decodeExpectedAnnotation(t, wd)
+	assert.Equal(t, []string{referenceddata.CompanionToken(kindConfigMap, companionName)}, expectedTokens)
 
 	// Condition should be True/Ready.
 	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
@@ -257,8 +257,8 @@ func TestReferencedData_HappyPath_Secret(t *testing.T) {
 	assert.Equal(t, corev1.SecretTypeOpaque, companion.Type)
 
 	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
-	expectedNames := decodeExpectedAnnotation(t, wd)
-	assert.Equal(t, []string{companionName}, expectedNames)
+	expectedTokens := decodeExpectedAnnotation(t, wd)
+	assert.Equal(t, []string{referenceddata.CompanionToken(kindSecret, companionName)}, expectedTokens)
 
 	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
 	require.NotNil(t, cond)
@@ -363,10 +363,16 @@ func TestReferencedData_SourceTooLarge_PerObject(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceTooLarge, cond.Reason)
 
-	// Companion must NOT have been materialised.
+	// Companion must NOT have been materialised (no labeled companion object should exist).
+	// With option B, companion and source share the same name, so we check for the
+	// referenced-data label which distinguishes companions from sources.
 	var phantom corev1.ConfigMap
 	err := cl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: companionName}, &phantom)
-	assert.Error(t, err, "companion must not exist when source is too large")
+	if err == nil {
+		// Object exists — it must NOT carry the companion label.
+		assert.NotEqual(t, computev1alpha.ReferencedDataLabelValue, phantom.Labels[computev1alpha.ReferencedDataLabel],
+			"source ConfigMap must not be labelled as a companion when source is too large")
+	}
 }
 
 func TestReferencedData_SourceTooLarge_Aggregate(t *testing.T) {
@@ -449,7 +455,13 @@ func TestReferencedData_Rotation(t *testing.T) {
 	companion := getCompanionCM(t, cl, ns, companionName)
 	assert.Equal(t, "v1", companion.Data["ver"])
 
-	// Simulate a source update (rotation).
+	// Simulate a source update (rotation). Re-fetch first: with option B the
+	// companion shares the same name/namespace as the source in local mode, so
+	// the controller has already written labels/annotations onto the object and
+	// advanced its resourceVersion. Updating the stale in-memory srcCM would
+	// produce a conflict. Re-fetching ensures we update at the current RV.
+	require.NoError(t, cl.Get(context.Background(),
+		types.NamespacedName{Namespace: ns, Name: cmName}, srcCM))
 	srcCM.Data["ver"] = "v2"
 	require.NoError(t, cl.Update(context.Background(), srcCM))
 
@@ -709,16 +721,23 @@ func TestReferencedData_Federated_CompanionWrittenToHub(t *testing.T) {
 	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, hubCM.Labels[computev1alpha.ReferencedDataLabel],
 		"hub companion must carry referenced-data label")
 
-	// Companion must NOT exist in the project namespace.
+	// Companion must NOT have been written to the project namespace as a companion
+	// (the source ConfigMap has the same name, but must NOT carry the referenced-data label).
+	// With option B the companion and source share the same name, so we check the label
+	// rather than expecting the object to be absent.
 	var projCM corev1.ConfigMap
-	err := projectCl.Get(context.Background(),
+	getErr := projectCl.Get(context.Background(),
 		types.NamespacedName{Namespace: projNS, Name: companionName}, &projCM)
-	assert.Error(t, err, "companion must NOT be written to the project namespace in federated mode")
+	if getErr == nil {
+		// Object exists — it must be the source, not a companion (no referenced-data label).
+		assert.NotEqual(t, computev1alpha.ReferencedDataLabelValue, projCM.Labels[computev1alpha.ReferencedDataLabel],
+			"project-namespace object must NOT carry the companion label in federated mode")
+	}
 
-	// Expected-set annotation must be set on the project WD.
+	// Expected-set annotation must be set on the project WD with kind-qualified tokens.
 	wd = getWD(t, projectCl, types.NamespacedName{Namespace: projNS, Name: "wd-fed-1"})
-	expectedNames := decodeExpectedAnnotation(t, wd)
-	assert.Equal(t, []string{companionName}, expectedNames)
+	expectedTokens := decodeExpectedAnnotation(t, wd)
+	assert.Equal(t, []string{referenceddata.CompanionToken(kindConfigMap, companionName)}, expectedTokens)
 }
 
 // TestReferencedData_WriterSelection asserts that writerFor returns a
@@ -1265,9 +1284,9 @@ func TestReferencedData_OptionalMissingSource_Skipped(t *testing.T) {
 		types.NamespacedName{Namespace: ns, Name: referenceddata.CompanionName("ConfigMap", cmOptional)}, &phantom)
 	assert.Error(t, err, "companion for optional missing source must not be created")
 
-	// The expected-set annotation must only list the required companion.
-	expectedNames := decodeExpectedAnnotation(t, wd)
-	assert.Equal(t, []string{companionRequired}, expectedNames)
+	// The expected-set annotation must only list the required companion as a kind-qualified token.
+	expectedTokens := decodeExpectedAnnotation(t, wd)
+	assert.Equal(t, []string{referenceddata.CompanionToken(kindConfigMap, companionRequired)}, expectedTokens)
 }
 
 // ─── Regression: unparseable ref-count annotation → companion NOT deleted ─────
@@ -1307,7 +1326,7 @@ func TestReferencedData_CorruptRefCount_NotDeleted(t *testing.T) {
 	writer := &localCompanionWriter{cl: cl}
 
 	ctrl := &ReferencedDataController{}
-	err := ctrl.releaseOneCompanion(context.Background(), nil, writer, ns, companionName, wdKey)
+	err := ctrl.releaseOneCompanion(context.Background(), nil, writer, ns, kindConfigMap, companionName, wdKey)
 	assert.Error(t, err, "corrupt ref-count annotation must cause releaseOneCompanion to return an error")
 	assert.Contains(t, err.Error(), "corrupt ref-count",
 		"error message must mention corrupt ref-count")
