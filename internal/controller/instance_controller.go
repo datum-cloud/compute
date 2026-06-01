@@ -468,18 +468,18 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 			// Resolver hasn't stamped the annotation yet — cannot confirm readiness.
 			return referencedDataResult{}, 0, nil
 		}
-		var expectedNames []string
-		if err := json.Unmarshal([]byte(annoRaw), &expectedNames); err != nil {
+		var expectedTokens []string
+		if err := json.Unmarshal([]byte(annoRaw), &expectedTokens); err != nil {
 			// Malformed annotation — cannot confirm readiness.
 			return referencedDataResult{}, 0, nil
 		}
-		if len(expectedNames) > 0 {
-			presentNames, err := r.listPresentCompanionNames(ctx, cl, instance.Namespace)
+		if len(expectedTokens) > 0 {
+			presentByKindName, err := r.listPresentCompanionsByKindName(ctx, cl, instance.Namespace)
 			if err != nil {
 				return referencedDataResult{}, 0, fmt.Errorf("failed listing companion objects during self-heal check: %w", err)
 			}
-			for _, name := range expectedNames {
-				if _, ok := presentNames[name]; !ok {
+			for _, token := range expectedTokens {
+				if _, ok := presentByKindName[token]; !ok {
 					// At least one companion is missing — do not self-heal to True.
 					return referencedDataResult{}, 0, nil
 				}
@@ -515,9 +515,9 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 		return referencedDataResult{conditionChanged: changed}, 5 * time.Second, nil
 	}
 
-	// Decode the expected companion names.
-	var expectedNames []string
-	if err := json.Unmarshal([]byte(annoRaw), &expectedNames); err != nil {
+	// Decode the expected companion tokens (kind-qualified "Kind/name" strings).
+	var expectedTokens []string
+	if err := json.Unmarshal([]byte(annoRaw), &expectedTokens); err != nil {
 		// Malformed annotation — treat like absent; the resolver will fix it.
 		changed := r.setReferencedDataCondition(instance, metav1.ConditionUnknown,
 			computev1alpha.ReferencedDataReasonResolving,
@@ -526,30 +526,32 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 	}
 
 	// No companions expected (WD template has no references) — clear the gate.
-	if len(expectedNames) == 0 {
+	if len(expectedTokens) == 0 {
 		changed := r.setReferencedDataCondition(instance, metav1.ConditionTrue,
 			computev1alpha.ReferencedDataReasonReady,
 			"No referenced companions required")
 		return referencedDataResult{conditionChanged: changed}, 0, nil
 	}
 
-	// List labeled companions in the instance's namespace.
-	presentNames, err := r.listPresentCompanionNames(ctx, cl, instance.Namespace)
+	// List labeled companions in the instance's namespace, keyed by "Kind/name"
+	// to match the kind-qualified tokens in the annotation.
+	presentByKindName, err := r.listPresentCompanionsByKindName(ctx, cl, instance.Namespace)
 	if err != nil {
 		return referencedDataResult{}, 0, fmt.Errorf("failed listing companion objects: %w", err)
 	}
 
 	// Diff: find which expected companions are missing.
+	// expectedTokens contains "Kind/name" tokens; presentByKindName is keyed the same way.
 	var missing []string
-	for _, name := range expectedNames {
-		if _, ok := presentNames[name]; !ok {
-			missing = append(missing, name)
+	for _, token := range expectedTokens {
+		if _, ok := presentByKindName[token]; !ok {
+			missing = append(missing, token)
 		}
 	}
 
 	// Update metrics (aggregated per namespace to avoid high-cardinality per-instance series).
-	present := len(expectedNames) - len(missing)
-	referenceddata.CompanionsExpected.WithLabelValues(instance.Namespace).Set(float64(len(expectedNames)))
+	present := len(expectedTokens) - len(missing)
+	referenceddata.CompanionsExpected.WithLabelValues(instance.Namespace).Set(float64(len(expectedTokens)))
 	referenceddata.CompanionsPresent.WithLabelValues(instance.Namespace).Set(float64(present))
 
 	if len(missing) > 0 {
@@ -576,7 +578,7 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 	// All companions present.
 	changed := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionTrue,
 		computev1alpha.ReferencedDataReasonReady,
-		fmt.Sprintf("All %d referenced companion(s) are present on cell", len(expectedNames)))
+		fmt.Sprintf("All %d referenced companion(s) are present on cell", len(expectedTokens)))
 	return referencedDataResult{conditionChanged: changed}, 0, nil
 }
 
@@ -615,10 +617,12 @@ func (r *InstanceReconciler) setReferencedDataConditionWithTransition(
 	return changed
 }
 
-// listPresentCompanionNames returns a set (map[name]struct{}) of companion
-// ConfigMap and Secret names present in the given namespace (matched by the
-// ReferencedDataLabel).
-func (r *InstanceReconciler) listPresentCompanionNames(
+// listPresentCompanionsByKindName returns a set keyed by kind-qualified tokens
+// ("Kind/name", e.g. "ConfigMap/app-config") for every companion ConfigMap and
+// Secret present in the given namespace (matched by ReferencedDataLabel). This
+// allows the gate-clearing logic to match the kind-qualified tokens stored in
+// the expected-referenced-data annotation without ambiguity.
+func (r *InstanceReconciler) listPresentCompanionsByKindName(
 	ctx context.Context,
 	cl client.Client,
 	namespace string,
@@ -626,14 +630,14 @@ func (r *InstanceReconciler) listPresentCompanionNames(
 	labelSel := client.MatchingLabels{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue}
 	inNs := client.InNamespace(namespace)
 
-	names := make(map[string]struct{})
+	present := make(map[string]struct{})
 
 	var cmList corev1.ConfigMapList
 	if err := cl.List(ctx, &cmList, inNs, labelSel); err != nil {
 		return nil, fmt.Errorf("list companion ConfigMaps: %w", err)
 	}
 	for _, cm := range cmList.Items {
-		names[cm.Name] = struct{}{}
+		present[referenceddata.CompanionToken(kindConfigMap, cm.Name)] = struct{}{}
 	}
 
 	var secretList corev1.SecretList
@@ -641,10 +645,10 @@ func (r *InstanceReconciler) listPresentCompanionNames(
 		return nil, fmt.Errorf("list companion Secrets: %w", err)
 	}
 	for _, s := range secretList.Items {
-		names[s.Name] = struct{}{}
+		present[referenceddata.CompanionToken(kindSecret, s.Name)] = struct{}{}
 	}
 
-	return names, nil
+	return present, nil
 }
 
 // fetchOwnerWorkloadDeployment retrieves the WorkloadDeployment that owns the
