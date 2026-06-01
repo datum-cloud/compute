@@ -14,6 +14,14 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
+const (
+	// wdControllerTestName, wdControllerTestNS, wdControllerTestUID are the
+	// stable identifiers used across the WorkloadDeployment controller tests.
+	wdControllerTestName = "test-wd"
+	wdControllerTestNS   = gcTestProjectNamespace // "default"
+	wdControllerTestUID  = "wd-uid-test"
+)
+
 // TestReconcileInstanceGates_NilController_DoesNotPanic is a regression test for
 // the case where an Instance has Programmed=True but Status.Controller is nil.
 //
@@ -33,14 +41,14 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	// Build a deployment with a minimal template so ComputeHash produces a stable hash.
 	deployment := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-wd",
-			Namespace: "default",
-			UID:       "wd-uid-test",
+			Name:      wdControllerTestName,
+			Namespace: wdControllerTestNS,
+			UID:       wdControllerTestUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      "DFW",
+			CityCode:      wbTestCityCode,
 			PlacementName: testDefaultPlacement,
-			WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
 				MinReplicas: 2,
 			},
@@ -61,9 +69,9 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	instanceNilController := computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "instance-nil-controller",
-			Namespace: "default",
+			Namespace: wdControllerTestNS,
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid-test",
+				computev1alpha.WorkloadDeploymentUIDLabel: wdControllerTestUID,
 			},
 		},
 		Status: computev1alpha.InstanceStatus{
@@ -85,9 +93,9 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	instanceWithController := computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "instance-with-controller",
-			Namespace: "default",
+			Namespace: wdControllerTestNS,
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid-test",
+				computev1alpha.WorkloadDeploymentUIDLabel: wdControllerTestUID,
 			},
 		},
 		Status: computev1alpha.InstanceStatus{
@@ -109,9 +117,9 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	instanceReady := computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "instance-ready",
-			Namespace: "default",
+			Namespace: wdControllerTestNS,
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid-test",
+				computev1alpha.WorkloadDeploymentUIDLabel: wdControllerTestUID,
 			},
 		},
 		Status: computev1alpha.InstanceStatus{
@@ -175,11 +183,11 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	t.Parallel()
 
 	deployment := &computev1alpha.WorkloadDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-wd", Namespace: "default", UID: "wd-uid-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: wdControllerTestName, Namespace: wdControllerTestNS, UID: wdControllerTestUID},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      "DFW",
+			CityCode:      wbTestCityCode,
 			PlacementName: testDefaultPlacement,
-			WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 			Template:      computev1alpha.InstanceTemplateSpec{},
 		},
@@ -188,7 +196,7 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	// Spec.Controller intentionally nil — the network gate-clearing path runs
 	// (networkReady=true) and must skip this instance instead of panicking.
 	instanceNilSpecController := computev1alpha.Instance{
-		ObjectMeta: metav1.ObjectMeta{Name: "instance-nil-spec-controller", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "instance-nil-spec-controller", Namespace: wdControllerTestNS},
 	}
 
 	cl := newProjectFakeClient()
