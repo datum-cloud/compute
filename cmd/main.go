@@ -303,6 +303,13 @@ func main() {
 		}
 	}
 
+	if enableCellControllers {
+		if err = (&controller.CompanionGCReconciler{}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "CompanionGC")
+			os.Exit(1)
+		}
+	}
+
 	// The fail-loud guard above ensures federationRestConfig is non-nil when
 	// management controllers are enabled; the nil check here is defensive.
 	if enableManagementControllers && federationRestConfig != nil {
