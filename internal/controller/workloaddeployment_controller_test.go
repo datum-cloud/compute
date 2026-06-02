@@ -39,10 +39,6 @@ const (
 	// matching what the infra provider writes on Instances.
 	wdTestReasonProgrammed = "Programmed"
 	wdTestReasonReady      = "Ready"
-
-	// testMsgConfigMapNotFound is a representative terminal referenced-data
-	// message used across the Available-rollup unit tests.
-	testMsgConfigMapNotFound = `ConfigMap "app-config" not found in namespace "default"`
 )
 
 // wdControllerTestDeployment builds a WorkloadDeployment fixture shaped like a
