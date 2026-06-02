@@ -1,0 +1,24 @@
+# Kraftfile for the dynamically-linked glibc PHP runtime proof.
+#
+# Like the CPython proof (and unlike the static-PIE Go/Rust proofs), the rootfs
+# ships the php CLI binary, its bundled extensions, the glibc dynamic loader,
+# and the glibc shared-library closure. The bet, proven for Python: base:latest
+# (app-elfloader) runs a dynamic ELF when the loader + every needed .so is
+# present in the rootfs. `rootfs: ./Dockerfile` makes kraft build that rootfs
+# from the multi-stage Dockerfile.
+#
+# The cmd runs PHP's built-in web server, which binds the literal 0.0.0.0:8080
+# (php -S does not read $PORT), serving every request through /server.php.
+#
+# Build/push (push-only, do not start):
+#   kraft cloud --metro <metro>/v1 --token <token> \
+#     --buildkit-host docker-container://buildkit \
+#     deploy --no-start -M 1024 --name hello-php \
+#     --runtime base:latest --rootfs ./Dockerfile .
+spec: v0.6
+
+runtime: base:latest
+
+rootfs: ./Dockerfile
+
+cmd: ["/usr/local/bin/php", "-S", "0.0.0.0:8080", "/server.php"]
