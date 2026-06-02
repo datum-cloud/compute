@@ -8,11 +8,23 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
+)
+
+const (
+	// wdControllerTestName / wdControllerTestNS are shared fixtures for the
+	// WorkloadDeployment controller unit tests.
+	wdControllerTestName = "test-wd"
+	wdControllerTestNS   = "default"
+
+	// testMsgConfigMapNotFound is a representative terminal referenced-data
+	// message used across the Available-rollup unit tests.
+	testMsgConfigMapNotFound = `ConfigMap "app-config" not found in namespace "default"`
 )
 
 // TestReconcileInstanceGates_NilController_DoesNotPanic is a regression test for
@@ -207,158 +219,12 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	})
 }
 
-// makeWDForAvailTest constructs a WorkloadDeployment for Available-condition
-// unit tests, optionally stamping a ReferencedDataReady condition on status.
-func makeWDForAvailTest(generation int64, refDataStatus metav1.ConditionStatus, refDataReason, refDataMessage string) *computev1alpha.WorkloadDeployment {
-	d := &computev1alpha.WorkloadDeployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       wdControllerTestName,
-			Namespace:  wdControllerTestNS,
-			Generation: generation,
-		},
-	}
-	if refDataReason != "" {
-		d.Status.Conditions = []metav1.Condition{
-			{
-				Type:               computev1alpha.ReferencedDataReady,
-				Status:             refDataStatus,
-				Reason:             refDataReason,
-				Message:            refDataMessage,
-				LastTransitionTime: metav1.Now(),
-			},
-		}
-	}
-	return d
-}
-
-// TestWDAvailableCondition_ReferencedDataSourceNotFound verifies that when the
-// WD's ReferencedDataReady condition is False/SourceNotFound, the Available
-// condition is set to False/ReferencedDataNotReady with the resolver message
-// verbatim and ObservedGeneration equal to the deployment generation.
-func TestWDAvailableCondition_ReferencedDataSourceNotFound(t *testing.T) {
-	const (
-		gen             = int64(5)
-		desiredReplicas = int32(2)
-		replicas        = 2
-	)
-	msg := testMsgConfigMapNotFound
-	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
-		computev1alpha.ReferencedDataReasonSourceNotFound, msg)
-
-	cond := selectWDBlockingCondition(deployment, true, 0, 1, replicas, desiredReplicas)
-
-	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
-	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason)
-	assert.Equal(t, msg, cond.Message, "message must be the resolver message verbatim")
-	assert.Equal(t, gen, cond.ObservedGeneration, "ObservedGeneration must match deployment generation")
-}
-
-// TestWDAvailableCondition_QuotaNotGranted verifies that QuotaNotGranted is
-// surfaced when replicas are quota-blocked and there is no resolver error.
-func TestWDAvailableCondition_QuotaNotGranted(t *testing.T) {
-	const (
-		gen             = int64(2)
-		desiredReplicas = int32(3)
-		replicas        = 3
-	)
-	deployment := makeWDForAvailTest(gen, metav1.ConditionTrue, computev1alpha.ReferencedDataReasonReady, "all present")
-
-	cond := selectWDBlockingCondition(deployment, true, 2, 0, replicas, desiredReplicas)
-
-	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, cond.Reason)
-	assert.Contains(t, cond.Message, "2 of")
-	assert.Equal(t, gen, cond.ObservedGeneration)
-}
-
-// TestWDAvailableCondition_ReferencedDataWinsOverQuota verifies evaluate-all-then-pick:
-// when both ReferencedDataReady=False and quotaBlockedReplicas > 0, referenced-data
-// (priority 4) beats quota (priority 3).
-func TestWDAvailableCondition_ReferencedDataWinsOverQuota(t *testing.T) {
-	const (
-		gen             = int64(1)
-		desiredReplicas = int32(2)
-		replicas        = 2
-	)
-	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
-		computev1alpha.ReferencedDataReasonSourceNotFound,
-		`ConfigMap "X" not found in namespace "default"`)
-
-	cond := selectWDBlockingCondition(deployment, true, 1, 1, replicas, desiredReplicas)
-
-	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
-		"ReferencedDataNotReady (priority 4) must beat QuotaNotGranted (priority 3)")
-}
-
-// TestWDAvailableCondition_NetworkProvisioningVsReferencedData verifies that when
-// network is not ready AND the WD has ReferencedDataReady=False/SourceNotFound,
-// referenced-data wins because priority 4 > priority 2. This is the key
-// evaluate-all-then-pick test: the old code would have short-circuited at
-// network-not-ready and returned NetworkProvisioning.
-func TestWDAvailableCondition_NetworkProvisioningVsReferencedData(t *testing.T) {
-	const (
-		gen             = int64(1)
-		desiredReplicas = int32(1)
-		replicas        = 1
-	)
-	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
-		computev1alpha.ReferencedDataReasonSourceNotFound,
-		`ConfigMap "X" not found`)
-
-	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, 0, 1, replicas, desiredReplicas)
-
-	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
-		"ReferencedDataNotReady (priority 4) must beat NetworkProvisioning (priority 2)")
-}
-
-// TestWDBlockingReasonPriority_WD exhaustively verifies every entry in the
-// wdBlockingReasonPriority switch statement.
-func TestWDBlockingReasonPriority_WD(t *testing.T) {
-	tests := []struct {
-		reason   string
-		wantPrio int
-	}{
-		{"", 0},
-		{"Unknown", 0},
-		{computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, 1},
-		{computev1alpha.WorkloadDeploymentReasonNetworkProvisioning, 2},
-		{computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, 3},
-		{computev1alpha.InstanceProgrammedReasonPendingQuota, 3},
-		{computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, 4},
-		{computev1alpha.ReferencedDataReasonAwaitingPropagation, 4},
-		{computev1alpha.ReferencedDataReasonResolving, 4},
-		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
-		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
-		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
-		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
-		{reasonNetworkFailedToCreate, 7},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.reason, func(t *testing.T) {
-			assert.Equal(t, tt.wantPrio, wdBlockingReasonPriority(tt.reason))
-		})
-	}
-}
-
-// TestWDAvailableCondition_ObservedGeneration verifies that the Available
-// condition emitted by selectWDBlockingCondition always carries ObservedGeneration
-// equal to the deployment's current generation.
-func TestWDAvailableCondition_ObservedGeneration(t *testing.T) {
-	const gen = int64(42)
-	deployment := makeWDForAvailTest(gen, "", "", "")
-
-	cond := selectWDBlockingCondition(deployment, true, 0, 0, 0, 1)
-
-	assert.Equal(t, gen, cond.ObservedGeneration, "ObservedGeneration must match deployment generation")
-	// Verify the condition is also reachable via apimeta.FindStatusCondition (field
-	// names match what the API machinery expects).
-	conditions := []metav1.Condition{cond}
-	found := apimeta.FindStatusCondition(conditions, computev1alpha.WorkloadDeploymentAvailable)
-	require.NotNil(t, found)
-	assert.Equal(t, gen, found.ObservedGeneration)
-}
+// NOTE (split): the Available-condition unit tests that exercised
+// selectWDBlockingCondition and wdBlockingReasonPriority (TestWDAvailableCondition_*,
+// TestWDBlockingReasonPriority_WD, and the makeWDForAvailTest helper) were moved to
+// layer E (split/refdata-blocking-reason), where those functions are introduced.
+// They were authored against the E-refactored WD controller and cannot compile in
+// this layer, which still carries the inline blocking-reason switch.
 
 // ─── wdRefDataCondChanged tests ───────────────────────────────────────────────
 
@@ -563,16 +429,18 @@ func TestWDPredicate_AvailableOnlyChange(t *testing.T) {
 
 	// The WD reconciler wrote Available=InstancesProvisioning (old) and then
 	// Available=ReferencedDataNotReady (new). ReferencedDataReady is unchanged.
+	// NOTE (split): the named reason constants land in layer E; literals are used
+	// here because the predicate only cares that the Available reason changed.
 	apimeta.SetStatusCondition(&oldWD.Status.Conditions, metav1.Condition{
 		Type:    computev1alpha.WorkloadDeploymentAvailable,
 		Status:  metav1.ConditionFalse,
-		Reason:  computev1alpha.WorkloadDeploymentReasonInstancesProvisioning,
+		Reason:  "InstancesProvisioning",
 		Message: "Instances are being provisioned",
 	})
 	apimeta.SetStatusCondition(&newWD.Status.Conditions, metav1.Condition{
 		Type:    computev1alpha.WorkloadDeploymentAvailable,
 		Status:  metav1.ConditionFalse,
-		Reason:  computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+		Reason:  "ReferencedDataNotReady",
 		Message: testMsgConfigMapNotFound,
 	})
 
