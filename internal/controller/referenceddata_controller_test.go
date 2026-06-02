@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/referenceddata"
 )
@@ -779,11 +780,11 @@ func TestReferencedData_CompanionNamespaceInvariant(t *testing.T) {
 // newRDControllerFederated creates a ReferencedDataController wired with a
 // FederationClient (fake hub client). The project cluster holds the WDs and
 // source ConfigMaps/Secrets; the hub client is the destination for companions.
+// Reader is always nil in tests; the controller falls back to LocalReader.
 func newRDControllerFederated(
 	t *testing.T,
 	projectCl client.Client,
 	hubCl client.Client,
-	reader referenceddata.ProjectConfigSecretReader,
 ) (*ReferencedDataController, string) {
 	t.Helper()
 	clusterName := rdTestClusterName
@@ -797,7 +798,6 @@ func newRDControllerFederated(
 	c := &ReferencedDataController{
 		mgr: mgr,
 		opts: ReferencedDataControllerOptions{
-			Reader:           reader,
 			FederationClient: hubCl,
 		},
 	}
@@ -841,7 +841,7 @@ func TestReferencedData_Federated_CompanionWrittenToHub(t *testing.T) {
 	require.NoError(t, computev1alpha.AddToScheme(hubScheme))
 	hubCl := fake.NewClientBuilder().WithScheme(hubScheme).Build()
 
-	c, clusterName := newRDControllerFederated(t, projectCl, hubCl, nil)
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
 
 	// First reconcile: stamps finalizer.
 	reconcileWD(t, c, clusterName, projNS, "wd-fed-1")
@@ -1542,6 +1542,312 @@ func TestFederator_StatusSync_PreservesReferencedDataReadyCondition(t *testing.T
 		"resolver's ReferencedDataReady=True must be preserved by federator status sync")
 	assert.Equal(t, computev1alpha.ReferencedDataReasonReady, cond.Reason,
 		"resolver's Ready reason must be preserved by federator status sync")
+}
+
+// ─── Component 3: Explicit ResourceBinding teardown ──────────────────────────
+
+// TestRBTeardown_ConfigMap asserts that when a federated companion ConfigMap is
+// deleted (ref-count reaches zero), the controller also deletes the Karmada
+// ResourceBinding named "{companionName}-configmap" in the downstream namespace.
+func TestRBTeardown_ConfigMap(t *testing.T) {
+	t.Parallel()
+
+	projNS := testProjNS
+	projNSUID := testProjNSUID
+	cmName := rdTestAppConfig
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+	rbName := companionName + "-configmap"
+	wdName := "wd-rb-teardown-cm"
+
+	now := metav1.Now()
+	wdKey := types.NamespacedName{Namespace: projNS, Name: wdName}.String()
+
+	projNSObj := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: projNSUID},
+	}
+	// WD pre-seeded with deletionTimestamp + finalizer + annotation to trigger
+	// the deletion reconcile path directly.
+	wd := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         projNS,
+			Name:              wdName,
+			DeletionTimestamp: &now,
+			Finalizers:        []string{referencedDataFinalizer},
+			Annotations: map[string]string{
+				computev1alpha.ExpectedReferencedDataAnnotation: `["ConfigMap/` + companionName + `"]`,
+			},
+		},
+	}
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	projectCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(projNSObj, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	// Hub: companion ConfigMap already exists + the RB the reconciler should delete.
+	downstreamNS := testKarmadaNSStr
+	existingCompanion := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: downstreamNS,
+			Name:      companionName,
+			Labels:    map[string]string{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue},
+			Annotations: map[string]string{
+				companionRefCountAnnotation: encodeRefCount([]string{wdKey}),
+			},
+		},
+	}
+	existingRB := &karmadaworkv1alpha2.ResourceBinding{
+		ObjectMeta: metav1.ObjectMeta{Namespace: downstreamNS, Name: rbName},
+	}
+
+	hubCl := fake.NewClientBuilder().
+		WithScheme(newKarmadaScheme()).
+		WithObjects(existingCompanion, existingRB).
+		Build()
+
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
+
+	// Reconcile deletion: should delete companion + RB.
+	cn := multicluster.ClusterName(clusterName)
+	ctx := mccontext.WithCluster(context.Background(), cn)
+	_, err := c.Reconcile(ctx, mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: projNS, Name: wdName}},
+		ClusterName: cn,
+	})
+	require.NoError(t, err)
+
+	// Companion must be gone from the hub.
+	var hubCM corev1.ConfigMap
+	err = hubCl.Get(context.Background(), types.NamespacedName{Namespace: downstreamNS, Name: companionName}, &hubCM)
+	require.True(t, apierrors.IsNotFound(err), "hub companion ConfigMap must be deleted")
+
+	// ResourceBinding must be gone from the hub.
+	var rb karmadaworkv1alpha2.ResourceBinding
+	err = hubCl.Get(context.Background(), types.NamespacedName{Namespace: downstreamNS, Name: rbName}, &rb)
+	require.True(t, apierrors.IsNotFound(err), "ResourceBinding %q must be deleted after companion deletion", rbName)
+}
+
+// TestRBTeardown_Secret asserts the same teardown behaviour for Secret companions.
+func TestRBTeardown_Secret(t *testing.T) {
+	t.Parallel()
+
+	projNS := testProjNS
+	projNSUID := testProjNSUID
+	secretName := "db-creds"
+	companionName := referenceddata.CompanionName("Secret", secretName)
+	rbName := companionName + "-secret"
+	wdName := "wd-rb-teardown-sec"
+
+	now := metav1.Now()
+	wdKey := types.NamespacedName{Namespace: projNS, Name: wdName}.String()
+
+	projNSObj := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: projNSUID},
+	}
+	wd := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         projNS,
+			Name:              wdName,
+			DeletionTimestamp: &now,
+			Finalizers:        []string{referencedDataFinalizer},
+			Annotations: map[string]string{
+				computev1alpha.ExpectedReferencedDataAnnotation: `["Secret/` + companionName + `"]`,
+			},
+		},
+	}
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	projectCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(projNSObj, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	downstreamNS := testKarmadaNSStr
+	existingCompanion := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: downstreamNS,
+			Name:      companionName,
+			Labels:    map[string]string{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue},
+			Annotations: map[string]string{
+				companionRefCountAnnotation: encodeRefCount([]string{wdKey}),
+			},
+		},
+	}
+	existingRB := &karmadaworkv1alpha2.ResourceBinding{
+		ObjectMeta: metav1.ObjectMeta{Namespace: downstreamNS, Name: rbName},
+	}
+
+	hubCl := fake.NewClientBuilder().
+		WithScheme(newKarmadaScheme()).
+		WithObjects(existingCompanion, existingRB).
+		Build()
+
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
+
+	cn := multicluster.ClusterName(clusterName)
+	ctx := mccontext.WithCluster(context.Background(), cn)
+	_, err := c.Reconcile(ctx, mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: projNS, Name: wdName}},
+		ClusterName: cn,
+	})
+	require.NoError(t, err)
+
+	var hubSecret corev1.Secret
+	err = hubCl.Get(context.Background(), types.NamespacedName{Namespace: downstreamNS, Name: companionName}, &hubSecret)
+	require.True(t, apierrors.IsNotFound(err), "hub companion Secret must be deleted")
+
+	var rb karmadaworkv1alpha2.ResourceBinding
+	err = hubCl.Get(context.Background(), types.NamespacedName{Namespace: downstreamNS, Name: rbName}, &rb)
+	require.True(t, apierrors.IsNotFound(err), "ResourceBinding %q must be deleted after companion deletion", rbName)
+}
+
+// TestRBTeardown_ToleratesNotFound asserts that companion deletion succeeds
+// even when the ResourceBinding is already gone (Karmada beat the controller).
+func TestRBTeardown_ToleratesNotFound(t *testing.T) {
+	t.Parallel()
+
+	projNS := testProjNS
+	projNSUID := testProjNSUID
+	cmName := rdTestAppConfig
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+	wdName := "wd-rb-notfound"
+
+	now := metav1.Now()
+	wdKey := types.NamespacedName{Namespace: projNS, Name: wdName}.String()
+
+	projNSObj := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: projNSUID},
+	}
+	wd := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         projNS,
+			Name:              wdName,
+			DeletionTimestamp: &now,
+			Finalizers:        []string{referencedDataFinalizer},
+			Annotations: map[string]string{
+				computev1alpha.ExpectedReferencedDataAnnotation: `["ConfigMap/` + companionName + `"]`,
+			},
+		},
+	}
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	projectCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(projNSObj, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	downstreamNS := testKarmadaNSStr
+	existingCompanion := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: downstreamNS,
+			Name:      companionName,
+			Labels:    map[string]string{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue},
+			Annotations: map[string]string{
+				companionRefCountAnnotation: encodeRefCount([]string{wdKey}),
+			},
+		},
+	}
+	// RB is intentionally absent — Karmada already deleted it.
+	hubCl := fake.NewClientBuilder().
+		WithScheme(newKarmadaScheme()).
+		WithObjects(existingCompanion).
+		Build()
+
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
+
+	cn := multicluster.ClusterName(clusterName)
+	ctx := mccontext.WithCluster(context.Background(), cn)
+	_, err := c.Reconcile(ctx, mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: projNS, Name: wdName}},
+		ClusterName: cn,
+	})
+	// Must not error even though the RB is already gone.
+	require.NoError(t, err, "RB teardown must tolerate NotFound")
+}
+
+// TestRBTeardown_LocalWriter_NoOp asserts that the localCompanionWriter path
+// (FederationClient == nil, single-cluster dev mode) does NOT attempt to delete
+// any ResourceBindings — there is no Karmada hub in single-cluster mode.
+//
+// The companion and its source share the same name/namespace in single-cluster
+// mode. We seed the WD as already terminating so the deletion path fires
+// immediately.
+func TestRBTeardown_LocalWriter_NoOp(t *testing.T) {
+	t.Parallel()
+
+	ns := rdTestNamespace
+	cmName := rdTestAppConfig
+	companionName := referenceddata.CompanionName("ConfigMap", cmName)
+	wdName := "wd-local-noop"
+
+	now := metav1.Now()
+	wdKey := types.NamespacedName{Namespace: ns, Name: wdName}.String()
+
+	// In single-cluster mode the companion == source (same name/namespace).
+	// Seed the companion directly as if the controller had materialised it.
+	companion := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      companionName,
+			Labels:    map[string]string{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue},
+			Annotations: map[string]string{
+				companionRefCountAnnotation: encodeRefCount([]string{wdKey}),
+			},
+		},
+	}
+	wd := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         ns,
+			Name:              wdName,
+			DeletionTimestamp: &now,
+			Finalizers:        []string{referencedDataFinalizer},
+			Annotations: map[string]string{
+				computev1alpha.ExpectedReferencedDataAnnotation: `["ConfigMap/` + companionName + `"]`,
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(rdTestScheme(t)).
+		WithObjects(companion, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	// Track Delete calls to detect any unexpected RB deletes.
+	var rbDeleteCalled bool
+	interceptedCl := interceptor.NewClient(cl, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*karmadaworkv1alpha2.ResourceBinding); ok {
+				rbDeleteCalled = true
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+
+	// No FederationClient → localCompanionWriter path.
+	c, clusterName := newRDController(t, interceptedCl, nil)
+
+	cn := multicluster.ClusterName(clusterName)
+	ctx := mccontext.WithCluster(context.Background(), cn)
+	_, err := c.Reconcile(ctx, mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: wdName}},
+		ClusterName: cn,
+	})
+	require.NoError(t, err)
+
+	// The companion ConfigMap is deleted (localCompanionWriter deletes it
+	// directly), but NO ResourceBinding delete should have been attempted.
+	assert.False(t, rbDeleteCalled, "localCompanionWriter must NOT delete ResourceBindings (no Karmada hub in single-cluster mode)")
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
