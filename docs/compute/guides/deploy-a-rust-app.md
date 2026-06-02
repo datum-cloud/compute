@@ -1,7 +1,6 @@
 # Deploy a Rust Web Service on Datum Compute
 
-> Last verified: 2026-06-02 — the `hello-rust` example built, published, deployed,
-> and served (HTTP 200) on the lab; boot time 14.73 ms.
+> Last verified: 2026-06-02 against the `hello-rust` example and the live `kraft` / `datumctl compute` CLIs.
 
 This guide walks you through taking a Rust HTTP service from source code to a live, reachable instance on Datum compute. By the end you will have:
 
@@ -9,8 +8,6 @@ This guide walks you through taking a Rust HTTP service from source code to a li
 - The image published to the Unikraft Cloud metro registry
 - A running workload deployed with `datumctl compute deploy`
 - A verified HTTP response from your instance
-
-The build, publish, and deploy mechanics are identical to the [Go guide](./deploy-a-go-app.md) — only the build stage (how you produce the static binary) differs. The runnable companion to this guide is the [`hello-rust`](../examples/hello-rust/) example.
 
 **What you need before starting:**
 
@@ -39,7 +36,7 @@ opt-level = "z"
 lto = true
 ```
 
-**`src/main.rs`** — a minimal HTTP service using only the standard library, listening on `$PORT` (default `8080`):
+**`src/main.rs`**
 
 ```rust
 use std::io::{Read, Write};
@@ -114,7 +111,7 @@ fn handle(mut stream: TcpStream) -> std::io::Result<()> {
 }
 ```
 
-The service has no external dependencies. Keeping it dependency-light isolates the runtime from FFI and async-runtime variables; `tokio`/`hyper` also work under static musl, but see [Troubleshooting](#a-dependency-broke-the-static-build) for the constraint on crates that link C libraries.
+The service listens on `$PORT` (default `8080`), answers `/healthz` with `ok`, and uses only the standard library — no external dependencies.
 
 ---
 
@@ -122,21 +119,24 @@ The service has no external dependencies. Keeping it dependency-light isolates t
 
 ### Why the binary must be static and position-independent
 
-Datum's Unikraft runtime uses an app-elfloader that loads your binary directly as the unikernel entrypoint. If the binary is dynamically linked — it expects a separate interpreter (`ld-linux` / `ld-musl`) at boot — the elfloader rejects it:
+Datum's Unikraft runtime uses an app-elfloader that loads your binary directly as the unikernel entrypoint. If the binary is dynamically linked — it expects a separate interpreter (`ld-linux` / `ld-musl`) to be present at boot — the elfloader rejects it:
 
 ```
 [appelfloader] ELF executable is not position-independent! ... Exec format error (-8)
 ```
 
-The reliable solution is a fully static, **position-independent (PIE)** binary packaged `FROM scratch`. Rust's `x86_64-unknown-linux-musl` target produces exactly this — a static **PIE** ELF — by default (Rust ≥ 1.46). With no interpreter to find, the app IS the entrypoint.
+The reliable solution is a fully static, **position-independent (PIE)** binary packaged in a `FROM scratch` image. Rust's `x86_64-unknown-linux-musl` target produces exactly this — a static PIE — by default (Rust ≥ 1.46). With no interpreter for the elfloader to find, the app IS the entrypoint.
 
-A plain `docker build` OCI image will NOT boot on the runtime. The image must be in the Unikraft Cloud format produced by `kraft`.
+A plain `docker build` OCI image will NOT boot on the runtime. The image must be in the Unikraft Cloud format produced by `kraft`. The `Kraftfile` and `kraft cloud deploy` command handle this packaging.
 
 ### Write the Dockerfile
 
-The Dockerfile builds against the musl target and includes a **self-check that fails the build unless the binary is a static PIE** — so a wrong-shaped binary can never reach the registry:
+The build compiles against the musl target and then verifies the binary's shape before it can be published — a `readelf`/`file` self-check that fails the build unless the binary is a static PIE. This catches a wrong-shaped binary at build time rather than as a boot failure later.
 
 ```dockerfile
+# Stage 1: build a fully static, position-independent binary for the musl target.
+# x86_64-unknown-linux-musl produces a static PIE by default (Rust >= 1.46), so
+# there is no dynamic interpreter for the elfloader to reject at boot.
 FROM rust:1.83-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends binutils file \
     && rm -rf /var/lib/apt/lists/*
@@ -147,9 +147,10 @@ COPY src ./src
 RUN cargo build --release --target x86_64-unknown-linux-musl
 RUN cp target/x86_64-unknown-linux-musl/release/hello-rust /server
 
-# Static-PIE self-check: fail the build unless the binary is ET_DYN (PIE),
-# statically linked, and has no program interpreter. A dynamically-linked binary
-# or one with an INTERP segment would be rejected by the elfloader at boot.
+# Verify the shape before publishing: the binary must be ET_DYN (PIE), statically
+# linked, and have no program interpreter. A correct musl static-PIE binary is
+# reported by `file` as "static-pie linked" (not "statically linked") and by
+# `readelf -h` as Type: DYN.
 RUN readelf -h /server | grep -q 'Type:[[:space:]]*DYN' \
         || (echo "FAIL: binary is not ET_DYN (not PIE)"; exit 1)
 RUN if file /server | grep -q 'dynamically linked'; then \
@@ -162,12 +163,12 @@ RUN if readelf -l /server | grep -qi 'INTERP'; then \
     fi
 RUN echo "OK: /server is a static-PIE ELF (ET_DYN, static-pie linked, no INTERP)"
 
+# Stage 2: a minimal rootfs containing only the binary.
+# FROM scratch ensures there are no dynamic libraries for the elfloader to reject.
 FROM scratch
 COPY --from=build /server /server
 ENTRYPOINT ["/server"]
 ```
-
-> **Note:** a correct musl static-PIE binary is reported by `file` as `static-pie linked` — **not** `statically linked`. `readelf -h` shows `Type: DYN` (a position-independent executable, not a shared library). That `DYN` + static-pie + no `INTERP` combination is exactly what the elfloader accepts.
 
 ### Write the Kraftfile
 
@@ -181,7 +182,7 @@ rootfs: ./Dockerfile
 cmd: ["/server"]
 ```
 
-`runtime: base:latest` is the Unikraft Cloud app-elfloader runtime. `rootfs: ./Dockerfile` tells `kraft` to build the rootfs from your Dockerfile.
+`runtime: base:latest` is the Unikraft Cloud app-elfloader runtime. `rootfs: ./Dockerfile` tells `kraft` to build the rootfs from your Dockerfile rather than expecting a pre-built image.
 
 ### Start a BuildKit daemon
 
@@ -193,7 +194,7 @@ docker run -d --name buildkit --privileged moby/buildkit:latest
 
 ### Build and publish with `kraft cloud deploy --no-start`
 
-Use `kraft` only to build and publish the image — you deploy the running workload with `datumctl compute` in the next step. The `--no-start` (`-S`) flag builds the unikernel package and pushes it to the metro registry **without** starting an instance. It pushes to `index.unikraft.io/datum/<name>`. The `-M` flag sets the memory allocation in MiB and is required.
+Use `kraft` only to build and publish the image — you deploy the running workload with `datumctl compute` in the next step. The `--no-start` (`-S`) flag builds the unikernel package and pushes it to the metro registry **without** starting an instance, so `kraft` never runs your workload. It pushes to `index.unikraft.io/datum/<name>`. The `-M` flag sets the memory allocation in MiB and is required.
 
 ```sh
 export KRAFTKIT_NO_CHECK_UPDATES=true
@@ -280,7 +281,15 @@ List instances and watch for the status to reach `Running`:
 datumctl compute instances --workload=hello-rust
 ```
 
-Once the instance is live, curl the external endpoint. UKC fronts the service with TLS on port 443:
+A healthy instance shows `Ready: true` and `Running`. The `EXTERNAL IP` column is populated once the instance is live.
+
+For a detailed view of a single instance, including conditions and any failure reason:
+
+```sh
+datumctl compute instances describe <instance-name>
+```
+
+Once the instance is `Running`, curl the external endpoint. UKC fronts the service with TLS on port 443 and redirects plain HTTP on port 80:
 
 ```sh
 # Get the external IP or hostname from the instance list, then:
@@ -297,17 +306,11 @@ Use `-k` if the TLS certificate is self-signed in your metro:
 curl -k https://<EXTERNAL-IP>/
 ```
 
-For a detailed view of a single instance, including conditions and any failure reason:
-
-```sh
-datumctl compute instances describe <instance-name>
-```
-
 ---
 
 ## 5. Update the workload
 
-To deploy a new version, rebuild and publish the image (repeating step 2), then redeploy:
+To deploy a new version, rebuild and publish the image (repeating step 2), then redeploy. Using the manifest:
 
 ```sh
 kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
@@ -316,6 +319,15 @@ kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   --runtime base:latest --rootfs ./Dockerfile .
 
 datumctl compute deploy -f workload.yaml -y
+```
+
+Or with flags:
+
+```sh
+datumctl compute deploy hello-rust \
+  --image=index.unikraft.io/datum/hello-rust:latest \
+  --city=DFW \
+  --port=8080
 ```
 
 Watch the rollout progress:
@@ -346,15 +358,23 @@ docker rm -f buildkit
 [appelfloader] probe: ELF executable is not position-independent! ... Exec format error (-8)
 ```
 
-This means the binary is dynamically linked or otherwise not a static PIE. The self-check in the Dockerfile above is designed to catch this at build time — if the build passed the `OK: /server is a static-PIE ELF` line, the binary shape is correct. If you removed the self-check, confirm:
+This means the binary is dynamically linked or has the wrong ELF shape. If your build printed the `OK: /server is a static-PIE ELF` line from the Dockerfile self-check, the shape is correct. If you removed that check, confirm:
 
-- You built for `x86_64-unknown-linux-musl` (not the default glibc target).
-- `file /server` reports `static-pie linked` (not `dynamically linked`), and `readelf -h /server` shows `Type: DYN`.
-- The `FROM scratch` stage is present.
+- You built for the `x86_64-unknown-linux-musl` target, not the default glibc target. A glibc binary is dynamically linked.
+- `file /server` reports `static-pie linked` (not `dynamically linked`) and `readelf -h /server` shows `Type: DYN`.
+- The `FROM scratch` stage is present. If the rootfs contains a Linux filesystem with shared libraries, the elfloader may find an interpreter and try (and fail) to use it.
+- The image was built with `kraft cloud deploy`, not plain `docker build`. A plain OCI image pushed to a container registry will not boot on the Unikraft runtime regardless of how the binary is built.
+
+Rebuild from the Dockerfile in this guide, re-publish (step 2), and redeploy.
 
 ### A dependency broke the static build
 
-musl static-PIE linking breaks if a crate links a C shared library (the symbols resolve to null and the binary segfaults), or if `-C target-feature=-crt-static` is set (which silently links glibc dynamically). Keep dependencies pure-Rust; for TLS use `rustls` rather than an OpenSSL-backed crate. `tokio`/`hyper` are fine under static musl.
+A correct musl static-PIE binary can quietly become a dynamic one. The two common causes:
+
+- A crate links a C shared library (for example an OpenSSL-backed TLS crate). Under static musl those symbols resolve to null and the binary crashes. Prefer pure-Rust crates; for TLS use `rustls` rather than OpenSSL.
+- `-C target-feature=-crt-static` is set somewhere (a `.cargo/config.toml`, `RUSTFLAGS`), which links glibc dynamically.
+
+`tokio` and `hyper` build fine under static musl, so a typical async web stack works. The Dockerfile self-check will fail the build before publishing if a dependency changes the binary's shape.
 
 ### Instance shows `Ready` but the endpoint doesn't respond
 
@@ -365,8 +385,24 @@ kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   instance logs <ukc-instance-name>
 ```
 
-A healthy boot prints your `listening on :8080` line. A boot error such as `appelfloader ... not position-independent` means the image must be rebuilt as a static PIE (see above). The `<ukc-instance-name>` appears in the instance's details from `datumctl compute instances describe <instance-name>`.
+A healthy boot prints your `listening on :8080` line. A boot error such as `appelfloader ... not position-independent` means the image must be rebuilt as a static PIE (see the first troubleshooting entry). The `<ukc-instance-name>` appears in the instance's details from `datumctl compute instances describe <instance-name>`.
 
 ### Image pull failures on the instance
 
-`datumctl compute instances describe <instance-name>` reports a condition with reason `ImageUnavailable` when the platform cannot pull the image. Confirm the image was pushed to `index.unikraft.io/datum/<name>` (the metro registry) and that the image name in `workload.yaml` matches exactly, including the `latest` tag.
+`datumctl compute instances describe <instance-name>` reports a condition with reason `ImageUnavailable` when the platform cannot pull the image. Confirm:
+
+- The image was pushed to `index.unikraft.io/datum/<name>` (the metro registry), not to an external container registry like GHCR or Docker Hub. The platform pulls from the UKC metro registry.
+- The `kraft cloud deploy` command completed without errors and printed the image reference.
+- The image name in `workload.yaml` matches exactly what `kraft cloud deploy` reported, including the `latest` tag.
+
+### Instance is stuck and not progressing
+
+```sh
+datumctl compute instances describe <instance-name>
+```
+
+Look at the conditions in the output. Common states:
+
+- `QuotaGranted: False` — compute quota has not been provisioned for the project. Contact your platform operator.
+- `Programmed: False` — the instance has not been scheduled to a node yet. This is normal for a few seconds after deploy; if it persists, check that the city code in your workload matches an available location.
+- `Ready: False, reason: SchedulingGatesPresent` — a scheduling prerequisite (such as a network) has not been satisfied. Confirm your project has a `default` Network resource provisioned.
