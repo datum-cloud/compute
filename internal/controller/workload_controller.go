@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -124,7 +125,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		changed := apimeta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
 			Type:    workloadConditionTypeAvailable,
 			Status:  metav1.ConditionFalse,
-			Reason:  "NetworkNotFound",
+			Reason:  computev1alpha.WorkloadReasonNetworkNotFound,
 			Message: fmt.Sprintf("Unable to find networks: %s", missingNetworks),
 		})
 
@@ -227,9 +228,27 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 
 	availablePlacementFound := false
 
+	// worstReason / worstMessage track the highest-priority blocking reason seen
+	// across all non-available deployments. When at least one deployment is
+	// available the workload is available regardless, so these are only used in
+	// the not-available path.
+	worstReason := computev1alpha.WorkloadReasonNoAvailablePlacements
+	worstMessage := "No available placements were found for the workload"
+	worstPriority := workloadBlockingReasonPriority(worstReason)
+
 	// Reconcile placement status
 	newWorkloadStatus.Placements = []computev1alpha.WorkloadPlacementStatus{}
-	for placementName, placementDeployments := range placementDeployments {
+
+	// Sort placement names for deterministic iteration so that equal-priority
+	// deployments in different placements are compared in a stable order.
+	placementNames := make([]string, 0, len(placementDeployments))
+	for name := range placementDeployments {
+		placementNames = append(placementNames, name)
+	}
+	sort.Strings(placementNames)
+
+	for _, placementName := range placementNames {
+		placementDeployments := placementDeployments[placementName]
 		placementStatus := computev1alpha.WorkloadPlacementStatus{
 			Name: placementName,
 		}
@@ -243,9 +262,9 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		}
 
 		placementAvailableCondition := metav1.Condition{
-			Type:    "Available",
+			Type:    workloadConditionTypeAvailable,
 			Status:  metav1.ConditionFalse,
-			Reason:  "NoAvailableDeployments",
+			Reason:  computev1alpha.WorkloadReasonNoAvailableDeployments,
 			Message: "No available deployments were found for the placement",
 		}
 
@@ -256,15 +275,36 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		desiredReplicas := int32(0)
 		readyReplicas := int32(0)
 		totalDeployments += int32(len(placementDeployments))
-		for _, deployment := range placementDeployments {
+
+		// Sort deployments by name within each placement so the tie-break between
+		// equal-priority blockers is deterministic.
+		sortedDeployments := make([]computev1alpha.WorkloadDeployment, len(placementDeployments))
+		copy(sortedDeployments, placementDeployments)
+		sort.Slice(sortedDeployments, func(i, j int) bool {
+			return sortedDeployments[i].Name < sortedDeployments[j].Name
+		})
+
+		for _, deployment := range sortedDeployments {
 			replicas += deployment.Status.Replicas
 			currentReplicas += deployment.Status.CurrentReplicas
 			updatedReplicas += deployment.Status.UpdatedReplicas
 			desiredReplicas += deployment.Status.DesiredReplicas
 			readyReplicas += deployment.Status.ReadyReplicas
 
-			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, "Available") {
+			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, workloadConditionTypeAvailable) {
 				foundAvailableDeployment = true
+				continue
+			}
+
+			// Propagate the worst blocking reason upward from non-available deployments.
+			availCond := apimeta.FindStatusCondition(deployment.Status.Conditions, workloadConditionTypeAvailable)
+			if availCond != nil {
+				p := workloadBlockingReasonPriority(availCond.Reason)
+				if p > worstPriority {
+					worstPriority = p
+					worstReason = availCond.Reason
+					worstMessage = availCond.Message
+				}
 			}
 		}
 		totalReplicas += replicas
@@ -291,17 +331,23 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		newWorkloadStatus.Placements = append(newWorkloadStatus.Placements, placementStatus)
 	}
 
-	availableCondition := metav1.Condition{
-		Type:    "Available",
-		Status:  metav1.ConditionFalse,
-		Reason:  "NoAvailablePlacements",
-		Message: "No available placements were found for the workload",
-	}
-
+	var availableCondition metav1.Condition
 	if availablePlacementFound {
-		availableCondition.Status = metav1.ConditionTrue
-		availableCondition.Reason = "AvailablePlacementFound"
-		availableCondition.Message = "At least one available placement was found"
+		availableCondition = metav1.Condition{
+			Type:               workloadConditionTypeAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AvailablePlacementFound",
+			Message:            "At least one available placement was found",
+			ObservedGeneration: workload.Generation,
+		}
+	} else {
+		availableCondition = metav1.Condition{
+			Type:               workloadConditionTypeAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             worstReason,
+			Message:            worstMessage,
+			ObservedGeneration: workload.Generation,
+		}
 	}
 
 	apimeta.SetStatusCondition(&newWorkloadStatus.Conditions, availableCondition)
@@ -513,4 +559,46 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			})
 		}).
 		Complete(r)
+}
+
+// workloadBlockingReasonPriority returns the relative priority of a blocking
+// reason on Workload.Available. Higher numbers indicate causes that are more
+// actionable and should be surfaced over lower-priority transient states.
+// This is a server-internal ranking; clients observe only the winning condition.
+//
+// Priority table (matches RFC §5.4):
+//
+//	0 - NoAvailablePlacements / NoAvailableDeployments (default fallback)
+//	1 - InstancesProvisioning  (transient startup)
+//	2 - NetworkProvisioning    (infra provisioning)
+//	3 - QuotaNotGranted / PendingQuota (operator action may be needed)
+//	4 - ReferencedDataNotReady / AwaitingPropagation / Resolving (transient)
+//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
+//	6 - NetworkNotFound        (hard error; user action required)
+//	7 - NetworkFailedToCreate  (hard infra error)
+func workloadBlockingReasonPriority(reason string) int {
+	switch reason {
+	case computev1alpha.WorkloadReasonNoAvailablePlacements,
+		computev1alpha.WorkloadReasonNoAvailableDeployments:
+		return 0
+	case computev1alpha.WorkloadDeploymentReasonInstancesProvisioning:
+		return 1
+	case computev1alpha.WorkloadDeploymentReasonNetworkProvisioning:
+		return 2
+	case computev1alpha.WorkloadDeploymentReasonQuotaNotGranted,
+		computev1alpha.InstanceProgrammedReasonPendingQuota:
+		return 3
+	case computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+		computev1alpha.ReferencedDataReasonAwaitingPropagation,
+		computev1alpha.ReferencedDataReasonResolving:
+		return 4
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized:
+		return 5
+	case computev1alpha.WorkloadReasonNetworkNotFound:
+		return 6
+	default:
+		return 0
+	}
 }

@@ -233,7 +233,7 @@ func TestWorkloadDeploymentReconcile_NoMatchingLocation_SetsCondition(t *testing
 	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.WorkloadDeploymentAvailable)
 	require.NotNil(t, cond, "Available must be set while the city has no Location")
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, "NoMatchingLocation", cond.Reason)
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonNoMatchingLocation, cond.Reason)
 	assert.Contains(t, cond.Message, locTestCityCode,
 		"the condition message must name the unresolved city code")
 	assert.Nil(t, updated.Status.Location)
@@ -249,7 +249,7 @@ func TestWorkloadDeploymentReconcile_NoMatchingLocation_SetsCondition(t *testing
 	require.NoError(t, cl.Get(context.Background(), req.NamespacedName, &updated))
 	cond = apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.WorkloadDeploymentAvailable)
 	require.NotNil(t, cond)
-	assert.Equal(t, "ProvisioningInstances", cond.Reason,
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
 		"the unresolved-city reason must give way once the Location resolves")
 	require.NotNil(t, updated.Status.Location)
 	assert.Equal(t, matchingLocation.Name, updated.Status.Location.Name)
