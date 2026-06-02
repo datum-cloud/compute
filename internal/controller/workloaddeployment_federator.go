@@ -55,8 +55,9 @@ const (
 
 	// companionGuardTimeout is the maximum wall-clock time the companion ordering
 	// guard will block a WD deletion after its deletionTimestamp was set. After
-	// this timeout the guard is bypassed and a warning is logged. The cell-side
-	// CompanionGCReconciler is the authoritative cleanup path regardless.
+	// this timeout the guard is bypassed and a warning is logged. The hub-side
+	// OrphanRBReconciler is the authoritative backstop that reclaims any
+	// ResourceBinding left behind, so bypassing the guard cannot leak an edge copy.
 	companionGuardTimeout = 2 * time.Minute
 )
 
@@ -304,8 +305,8 @@ func (r *WorkloadDeploymentFederator) isLastDeploymentForCity(ctx context.Contex
 // deployment is the project-plane WD being finalized. Its DeletionTimestamp is
 // used to bound how long the guard can block: if the WD has been terminating
 // for longer than companionGuardTimeout the guard is bypassed with a warning.
-// The cell-side CompanionGCReconciler is the authoritative cleanup path and
-// will eventually clean up regardless.
+// The hub-side OrphanRBReconciler is the authoritative backstop that reclaims any
+// ResourceBinding left behind, so a bypass cannot leak an edge copy.
 func (r *WorkloadDeploymentFederator) companionsStillPresent(
 	ctx context.Context,
 	downstreamNS string,
@@ -317,7 +318,7 @@ func (r *WorkloadDeploymentFederator) companionsStillPresent(
 		age := time.Since(deployment.DeletionTimestamp.Time)
 		if age > companionGuardTimeout {
 			log.FromContext(ctx).Info(
-				"companion-guard timeout reached; bypassing guard — cell-side GC will clean up remaining companions",
+				"companion-guard timeout reached; bypassing guard — hub-side OrphanRBReconciler will reclaim any remaining companions",
 				"age", age.Round(time.Second),
 				"timeout", companionGuardTimeout,
 				"downstreamNamespace", downstreamNS,
