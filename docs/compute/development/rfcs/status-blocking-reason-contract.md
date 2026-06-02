@@ -219,29 +219,46 @@ sets `ReferencedDataReady` with specific messages in `reconcileReferencedDataCon
 - `SourceNotFound`: "Waiting for N companion(s) to arrive on cell: ConfigMap/X" (from
   `ReferencedDataReasonAwaitingPropagation`). At this level the cell knows which companions are
   missing.
-- For the `SourceNotFound` reason from the resolver (visible on the WD), the cell sets
-  `AwaitingPropagation` because from the cell's perspective the companion simply hasn't arrived —
-  it cannot distinguish "missing at source" from "slow propagation". The WD's `ReferencedDataReady`
-  condition carries the authoritative `SourceNotFound` reason+message from the resolver.
+- For the `SourceNotFound` reason from the resolver (visible on the HUB WD), the cell sets
+  `AwaitingPropagation` by default because from the cell's perspective the companion simply hasn't
+  arrived — it cannot distinguish "missing at source" from "slow propagation".
 
-**Propagating the WD's source-not-found reason to the Instance:** The cell instance controller
-already fetches the owning WD in `fetchOwnerWorkloadDeployment` (used by
-`reconcileReferencedDataCondition`). Extend `reconcileReferencedDataCondition` to prefer the WD's
-`ReferencedDataReady` reason and message when the WD condition has `SourceNotFound`,
-`SourceUnauthorized`, or `SourceTooLarge`. In those cases the WD condition is authoritative: the
-companion will never arrive because the source does not exist. The Instance then sets:
+**Federation boundary — why conditions are not enough:** In federation, Karmada's
+`statusAggregation` interpreter is cell→hub only. The HUB WD carries
+`ReferencedDataReady=False/SourceNotFound` as a status condition, but this condition is **not**
+propagated back to the cell WD copy. Annotations DO flow hub→cell via Karmada's metadata
+propagation (carried on the federated WorkloadDeployment object).
+
+**Propagating the terminal error via annotation (hub→cell):** The `ReferencedDataController`
+(management/hub plane) stamps a `compute.datumapis.com/referenced-data-error` annotation on the
+HUB WD whenever it sets a terminal error condition (`SourceNotFound`, `SourceUnauthorized`,
+`SourceTooLarge`). The annotation carries a JSON payload `{"reason":"...","message":"..."}`.
+Karmada propagates this annotation to the cell WD copy alongside the WorkloadDeployment object.
+
+The cell `InstanceReconciler` reads this annotation from the cell WD (returned by
+`fetchOwnerWorkloadDeployment`) via the `applyTerminalErrorFromWD` helper. When the annotation
+is present with a terminal reason, the Instance's `ReferencedDataReady` condition is set directly:
 
 ```
 ReferencedDataReady = False
-reason  = SourceNotFound   (from WD.ReferencedDataReady.Reason)
-message = ConfigMap "X" not found in namespace "default"   (from WD.ReferencedDataReady.Message)
+reason  = SourceNotFound   (from annotation "reason" field)
+message = ConfigMap "X" not found in namespace "default"   (from annotation "message" field)
 ```
 
-When the WD condition reason is `AwaitingPropagation` or `Resolving`, the Instance uses its own
-companion-diff message (the list of missing "Kind/name" tokens) because that is more specific.
+A condition-based fallback (reading `wd.Status.Conditions` directly) is retained for
+single-cluster deployments where the condition is locally readable, and for the controller upgrade
+window before the annotation was introduced.
 
-This approach is justified because `fetchOwnerWorkloadDeployment` is already called every reconcile
-for this instance; the additional field read is zero extra API calls.
+When no terminal-error annotation is present and the WD condition reason is `AwaitingPropagation`
+or `Resolving`, the Instance uses its own companion-diff message (the list of missing "Kind/name"
+tokens) because that is more specific.
+
+The annotation is cleared by the resolver when the error resolves (companion materialises /
+`ReferencedDataReady` flips True) and when `reconcileEmpty` runs (WD template has no references).
+This prevents a stale annotation from permanently blocking a healthy Instance.
+
+This approach requires zero extra API calls: `fetchOwnerWorkloadDeployment` is already called
+every reconcile for this instance, and the annotation read is a map lookup on the returned object.
 
 **Resulting Instance.Ready states after this RFC:**
 
