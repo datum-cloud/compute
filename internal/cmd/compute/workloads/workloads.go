@@ -381,7 +381,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 				readyStr := fmt.Sprintf("%d/%d", d.Status.ReadyReplicas, d.Status.DesiredReplicas)
 				annotation := ""
 				if d.Status.ReadyReplicas < d.Status.DesiredReplicas {
-					// Find a reason from instances — best-effort.
+					// Read blocking reason from the deployment's own condition.
 					annotation = degradedAnnotation(ctx, c, d)
 				}
 				if annotation != "" {
@@ -437,34 +437,22 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// degradedAnnotation looks up the first unhealthy instance for a deployment
-// and returns a short annotation string, e.g. "Degraded — quota exceeded".
-func degradedAnnotation(ctx context.Context, c client.Client, d computev1alpha.WorkloadDeployment) string {
-	depSelector := labels.SelectorFromSet(labels.Set{computev1alpha.WorkloadDeploymentUIDLabel: string(d.UID)})
-	var instList computev1alpha.InstanceList
-	if err := c.List(ctx, &instList, client.InNamespace(util.ResourceNamespace), client.MatchingLabelsSelector{Selector: depSelector}); err != nil {
+// degradedAnnotation returns a short annotation for a per-city line when the
+// deployment is not fully ready. It reads the blocking reason+message from the
+// deployment's own Available condition, which the server rolls up from the
+// underlying instances. No per-instance fetch or reason branching needed.
+func degradedAnnotation(_ context.Context, _ client.Client, d computev1alpha.WorkloadDeployment) string {
+	reason, msg, blocked := util.ReadinessBlock(d.Status.Conditions, computev1alpha.WorkloadDeploymentAvailable)
+	if !blocked {
 		return ""
 	}
-
-	for _, inst := range instList.Items {
-		readyCond := util.FindCondition(inst.Status.Conditions, computev1alpha.InstanceReady)
-		if readyCond != nil && readyCond.Status == "True" {
-			continue
-		}
-		quotaCond := util.FindCondition(inst.Status.Conditions, computev1alpha.InstanceQuotaGranted)
-		if quotaCond != nil && quotaCond.Reason == computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded {
-			msg := quotaCond.Message
-			if msg != "" {
-				return "Degraded — quota exceeded (" + msg + ")"
-			}
-			return "Degraded — quota exceeded"
-		}
-		statusLine, _ := util.InstanceStatusDetail(inst.Status.Conditions)
-		if statusLine != "" && statusLine != "Unknown" {
-			return "Degraded — " + strings.ToLower(statusLine)
-		}
+	if msg != "" {
+		return "Blocked — " + msg
 	}
-	return ""
+	if reason != "" {
+		return "Blocked — " + reason
+	}
+	return "Blocked"
 }
 
 // formatEnvVar renders a single EnvVar for display.

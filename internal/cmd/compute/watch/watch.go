@@ -239,26 +239,17 @@ func computePhase(desired, ready, current, replicas int32) deploymentPhase {
 	return phaseUpdating
 }
 
-// printBlockedDetail fetches instances for the deployment and prints a reason
-// for the first non-ready instance.
-func printBlockedDetail(ctx context.Context, c client.Client, out io.Writer, _ string, d computev1alpha.WorkloadDeployment) {
-	selector := labels.SelectorFromSet(labels.Set{
-		computev1alpha.WorkloadDeploymentUIDLabel: string(d.UID),
-	})
-	var instList computev1alpha.InstanceList
-	if err := c.List(ctx, &instList, client.InNamespace(util.ResourceNamespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+// printBlockedDetail prints the blocking reason from the deployment's own
+// Available condition. The server rolls up the underlying instance cause there,
+// so no per-instance fetch is needed.
+func printBlockedDetail(_ context.Context, _ client.Client, out io.Writer, _ string, d computev1alpha.WorkloadDeployment) {
+	reason, msg, blocked := util.ReadinessBlock(d.Status.Conditions, computev1alpha.WorkloadDeploymentAvailable)
+	if !blocked {
 		return
 	}
-	for _, inst := range instList.Items {
-		ready := util.FindCondition(inst.Status.Conditions, computev1alpha.InstanceReady)
-		if ready == nil || ready.Status != "True" {
-			status, detail := util.InstanceStatusDetail(inst.Status.Conditions)
-			if detail != "" {
-				fmt.Fprintf(out, "    Blocked reason: %s — %s\n", status, detail)
-			} else {
-				fmt.Fprintf(out, "    Blocked reason: %s\n", status)
-			}
-			return
-		}
+	if msg != "" {
+		fmt.Fprintf(out, "    Blocked reason: %s — %s\n", reason, msg)
+	} else if reason != "" {
+		fmt.Fprintf(out, "    Blocked reason: %s\n", reason)
 	}
 }

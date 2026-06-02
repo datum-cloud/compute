@@ -17,6 +17,18 @@ func FindCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 	return nil
 }
 
+// ReadinessBlock reads the named readiness condition and reports whether it is
+// blocking (present and not True). When blocked, it returns the machine-readable
+// reason and human-readable message from the condition. Callers must not branch
+// on specific reason values — display whatever the server emits.
+func ReadinessBlock(conditions []metav1.Condition, condType string) (reason, message string, blocked bool) {
+	c := FindCondition(conditions, condType)
+	if c == nil || c.Status == metav1.ConditionTrue {
+		return "", "", false
+	}
+	return c.Reason, c.Message, true
+}
+
 // InstanceStatus returns a short user-facing status string for list views.
 // Priority order:
 //
@@ -27,7 +39,7 @@ func FindCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 //	Programmed=False/PendingProgramming or ProgrammingInProgress → "Pending (network provisioning)"
 //	Running=False/Starting → "Starting"
 //	Running=False/Stopping → "Stopping"
-//	Ready=False/SchedulingGatesPresent → "Pending (scheduling gates)"
+//	Ready=False/<reason> → "Pending (<reason>)" from server-rolled-up blocking reason
 //	default → "Pending"
 func InstanceStatus(conditions []metav1.Condition) string {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
@@ -68,10 +80,12 @@ func InstanceStatus(conditions []metav1.Condition) string {
 		}
 	}
 
-	if ready != nil && ready.Status == metav1.ConditionFalse {
-		if ready.Reason == v1alpha.InstanceReadyReasonSchedulingGatesPresent {
-			return "Pending (scheduling gates)"
-		}
+	// Use the server-rolled-up blocking reason from the Ready condition. This
+	// surfaces reasons like SourceNotFound or ReferencedDataNotReady that the
+	// sub-condition checks above don't cover, without requiring client-side
+	// knowledge of every reason value.
+	if reason, _, blocked := ReadinessBlock(conditions, v1alpha.InstanceReady); blocked && reason != "" {
+		return "Pending (" + reason + ")"
 	}
 
 	return "Pending"
@@ -85,7 +99,8 @@ func InstanceStatus(conditions []metav1.Condition) string {
 //	Programmed=False/ProgrammingInProgress → "Not running — network provisioning in progress", ""
 //	Running=False/Starting → "Starting", ""
 //	Running=False/Stopping → "Stopping", ""
-//	default → "Unknown", ""
+//	Ready=False/<reason> → "Pending — <reason>", message  (server-rolled-up blocking reason)
+//	default → "Pending", ""
 func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string) {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
 	if ready != nil && ready.Status == metav1.ConditionTrue {
@@ -117,14 +132,22 @@ func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string)
 		}
 	}
 
-	return "Unknown", ""
+	// Fall back to the server-rolled-up blocking reason on the Ready condition.
+	// This surfaces reasons like SourceNotFound and ReferencedDataNotReady
+	// without requiring client-side special-casing of every reason value.
+	if reason, msg, blocked := ReadinessBlock(conditions, v1alpha.InstanceReady); blocked && reason != "" {
+		return "Pending — " + reason, msg
+	}
+
+	return "Pending", ""
 }
 
 // WorkloadHealth derives a one-line health summary from workload Available condition + replica counts.
 //
 //	Available=True, ready==desired → "Available — all placements at desired replicas"
 //	Available=True, ready<desired  → "Degraded — N instances below desired count"  (N = desired-ready)
-//	Available=False               → "Unavailable — no healthy instances"
+//	Available=False/<reason>       → "Unavailable — <reason>" (reason from server-rolled-up blocking reason)
+//	Available=False (no reason)    → "Unavailable — no healthy instances"
 //	Unknown/missing               → "Unknown"
 func WorkloadHealth(conditions []metav1.Condition, ready, desired int32) string {
 	avail := FindCondition(conditions, v1alpha.WorkloadAvailable)
@@ -132,6 +155,9 @@ func WorkloadHealth(conditions []metav1.Condition, ready, desired int32) string 
 		return "Unknown"
 	}
 	if avail.Status == metav1.ConditionFalse {
+		if avail.Reason != "" {
+			return "Unavailable — " + avail.Reason
+		}
 		return "Unavailable — no healthy instances"
 	}
 	// Available=True
