@@ -44,6 +44,17 @@ const (
 	testQuotaAPIGroup          = "quota.miloapis.com"
 	testQuotaResource          = "resourceclaims"
 	kindWorkloadDeploymentTest = "WorkloadDeployment" // mirrors kindWorkloadDeployment
+
+	// testMsgNetworkCreationFailed is the network-failure message used across
+	// multiple test cases that exercise the NetworkFailedToCreate path.
+	testMsgNetworkCreationFailed = "Network creation failed: timeout"
+
+	// testMsgConfigMapNotFound is the resolver message for a missing ConfigMap,
+	// used across Instance.Ready and WD.Available rollup tests.
+	testMsgConfigMapNotFound = `ConfigMap "app-config" not found in namespace "default"`
+
+	// testPlacementA is the placement key used in Workload status rollup tests.
+	testPlacementA = "placement-a"
 )
 
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
@@ -137,14 +148,14 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 				},
 			},
 			networkFailureFunc: func(ctx context.Context, upstreamClient client.Client, instance *computev1alpha.Instance) (bool, string, error) {
-				return true, "Network creation failed: timeout", nil
+				return true, testMsgNetworkCreationFailed, nil
 			},
 			expectedChanged: true,
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionFalse,
 				Reason:             reasonNetworkFailedToCreate,
-				Message:            "Network creation failed: timeout",
+				Message:            testMsgNetworkCreationFailed,
 				ObservedGeneration: 1,
 			},
 		},
@@ -1571,4 +1582,228 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 		require.NotNil(t, cond)
 		assert.Equal(t, int64(2), cond.ObservedGeneration, "condition must reflect current generation")
 	})
+}
+
+// makeInstanceWithRefDataCondition builds an Instance with the ReferencedData
+// scheduling gate and a ReferencedDataReady=False condition with the given
+// reason and message. Omit reason to skip setting the condition entirely.
+func makeInstanceWithRefDataCondition(refDataReason, refDataMessage string) *computev1alpha.Instance {
+	inst := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testInstanceName,
+			Namespace:  testDefaultNamespace,
+			Generation: 1,
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+				},
+			},
+		},
+	}
+	if refDataReason != "" {
+		inst.Status.Conditions = []metav1.Condition{
+			{
+				Type:               computev1alpha.ReferencedDataReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             refDataReason,
+				Message:            refDataMessage,
+				LastTransitionTime: metav1.Now(),
+			},
+		}
+	}
+	return inst
+}
+
+// TestReconcileInstanceReadyCondition_ReferencedDataEnrichment verifies that
+// reconcileInstanceReadyCondition surfaces the most specific blocking reason from
+// the ReferencedDataReady sub-condition rather than always falling back to
+// SchedulingGatesPresent.
+func TestReconcileInstanceReadyCondition_ReferencedDataEnrichment(t *testing.T) {
+	noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+		return false, "", nil
+	}
+
+	tests := []struct {
+		name            string
+		instance        *computev1alpha.Instance
+		wantStatus      metav1.ConditionStatus
+		wantReason      string
+		wantMsgContains string
+	}{
+		{
+			name: "SourceNotFound from ReferencedDataReady propagates to Ready",
+			instance: makeInstanceWithRefDataCondition(
+				computev1alpha.ReferencedDataReasonSourceNotFound,
+				testMsgConfigMapNotFound,
+			),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.ReferencedDataReasonSourceNotFound,
+			wantMsgContains: `ConfigMap "app-config" not found`,
+		},
+		{
+			name: "SourceTooLarge from ReferencedDataReady propagates verbatim",
+			instance: makeInstanceWithRefDataCondition(
+				computev1alpha.ReferencedDataReasonSourceTooLarge,
+				"ConfigMap app-config exceeds the 1 MiB limit",
+			),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.ReferencedDataReasonSourceTooLarge,
+			wantMsgContains: "exceeds the 1 MiB limit",
+		},
+		{
+			name: "AwaitingPropagation uses cell-side message from ReferencedDataReady",
+			instance: makeInstanceWithRefDataCondition(
+				computev1alpha.ReferencedDataReasonAwaitingPropagation,
+				"Waiting for 1 companion(s) to arrive on cell: ConfigMap/app-config",
+			),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.ReferencedDataReasonAwaitingPropagation,
+			wantMsgContains: "ConfigMap/app-config",
+		},
+		{
+			name: "ReferencedData gate with no sub-condition falls back to SchedulingGatesPresent",
+			instance: &computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Spec: computev1alpha.InstanceSpec{
+					Controller: &computev1alpha.InstanceController{
+						SchedulingGates: []computev1alpha.SchedulingGate{
+							{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+						},
+					},
+				},
+			},
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
+			wantMsgContains: "ReferencedData",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &InstanceReconciler{}
+			changed, err := r.reconcileInstanceReadyCondition(context.Background(), nil, tt.instance, noNetworkFailure)
+			require.NoError(t, err)
+			assert.True(t, changed)
+
+			cond := apimeta.FindStatusCondition(tt.instance.Status.Conditions, computev1alpha.InstanceReady)
+			require.NotNil(t, cond)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Contains(t, cond.Message, tt.wantMsgContains)
+		})
+	}
+}
+
+// TestReconcileInstanceReadyCondition_EvaluateAllThenPick verifies that all
+// blocking sub-conditions are evaluated before selecting the winner, so a
+// higher-priority cause wins even when a lower-priority one is encountered first.
+func TestReconcileInstanceReadyCondition_EvaluateAllThenPick(t *testing.T) {
+	t.Run("NetworkFailedToCreate wins over AwaitingPropagation (priority 7 > 4)", func(t *testing.T) {
+		// priority 7 (NetworkFailedToCreate) must beat priority 4 (AwaitingPropagation).
+		instance := makeInstanceWithRefDataCondition(
+			computev1alpha.ReferencedDataReasonAwaitingPropagation,
+			"Waiting for 1 companion(s) to arrive on cell: ConfigMap/app-config",
+		)
+
+		alwaysNetworkFailed := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+			return true, testMsgNetworkCreationFailed, nil
+		}
+
+		r := &InstanceReconciler{}
+		_, err := r.reconcileInstanceReadyCondition(context.Background(), nil, instance, alwaysNetworkFailed)
+		require.NoError(t, err)
+
+		cond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceReady)
+		require.NotNil(t, cond)
+		assert.Equal(t, reasonNetworkFailedToCreate, cond.Reason,
+			"NetworkFailedToCreate (priority 7) should beat AwaitingPropagation (priority 4)")
+	})
+
+	t.Run("SourceNotFound wins over AwaitingPropagation (priority 5 > 4)", func(t *testing.T) {
+		// Both are referenced-data related, but SourceNotFound is terminal.
+		inst := &computev1alpha.Instance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       testInstanceName,
+				Namespace:  testDefaultNamespace,
+				Generation: 1,
+			},
+			Spec: computev1alpha.InstanceSpec{
+				Controller: &computev1alpha.InstanceController{
+					SchedulingGates: []computev1alpha.SchedulingGate{
+						{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+					},
+				},
+			},
+			Status: computev1alpha.InstanceStatus{
+				Conditions: []metav1.Condition{
+					{
+						Type:               computev1alpha.ReferencedDataReady,
+						Status:             metav1.ConditionFalse,
+						Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+						Message:            testMsgConfigMapNotFound,
+						LastTransitionTime: metav1.Now(),
+					},
+				},
+			},
+		}
+
+		noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+			return false, "", nil
+		}
+		r := &InstanceReconciler{}
+		_, err := r.reconcileInstanceReadyCondition(context.Background(), nil, inst, noNetworkFailure)
+		require.NoError(t, err)
+
+		cond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceReady)
+		require.NotNil(t, cond)
+		assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
+			"SourceNotFound should propagate verbatim to Ready condition")
+		assert.Contains(t, cond.Message, `ConfigMap "app-config" not found`)
+	})
+}
+
+// TestInstanceBlockingReasonPriority exhaustively verifies the priority table
+// for Instance.Ready reason selection. Every listed reason must return the
+// expected integer; unknown strings must return 0.
+func TestInstanceBlockingReasonPriority(t *testing.T) {
+	tests := []struct {
+		reason   string
+		wantPrio int
+	}{
+		// Priority 0: unknown
+		{"", 0},
+		{"SomethingElse", 0},
+		// Priority 1: transient startup
+		{computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, 1},
+		// Priority 2: infra provisioning
+		{computev1alpha.WorkloadDeploymentReasonNetworkProvisioning, 2},
+		// Priority 3: quota
+		{computev1alpha.InstanceProgrammedReasonPendingQuota, 3},
+		{computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, 3},
+		// Priority 4: transient referenced-data
+		{computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, 4},
+		{computev1alpha.ReferencedDataReasonAwaitingPropagation, 4},
+		{computev1alpha.ReferencedDataReasonResolving, 4},
+		// Priority 5: terminal referenced-data
+		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
+		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
+		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
+		// Priority 6: missing network
+		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
+		// Priority 7: hard infra error
+		{reasonNetworkFailedToCreate, 7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			assert.Equal(t, tt.wantPrio, instanceBlockingReasonPriority(tt.reason),
+				"unexpected priority for reason %q", tt.reason)
+		})
+	}
 }

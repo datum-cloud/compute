@@ -401,10 +401,25 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 	// Stamp the gate-start annotation once so we can measure duration later.
 	r.stampGateStartAnnotation(ctx, cl, instance)
 
-	// Fetch the owning WorkloadDeployment to read the expected-set annotation.
+	// Fetch the owning WorkloadDeployment to read the expected-set annotation and
+	// the resolver's verdict. fetchOwnerWorkloadDeployment is already called every
+	// reconcile on this path, so this is zero extra API calls.
 	wd, err := r.fetchOwnerWorkloadDeployment(ctx, cl, instance)
 	if err != nil {
 		return referencedDataResult{}, 0, err
+	}
+
+	// When the WD's ReferencedDataReady condition reports a terminal source error
+	// (the resolver confirmed the source object is missing, unauthorized, or too
+	// large), the companion will never arrive regardless of cell state. Use the
+	// WD's reason and message verbatim so the Instance carries the actionable
+	// diagnosis rather than a generic "waiting for propagation" message.
+	if wdRefDataCond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady); wdRefDataCond != nil &&
+		wdRefDataCond.Status == metav1.ConditionFalse &&
+		isTerminalReferencedDataReason(wdRefDataCond.Reason) {
+		changed := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
+			wdRefDataCond.Reason, wdRefDataCond.Message)
+		return referencedDataResult{conditionChanged: changed}, 0, nil
 	}
 
 	// Annotation not yet present — the resolver hasn't finished. Signal Resolving
@@ -517,6 +532,60 @@ func (r *InstanceReconciler) setReferencedDataConditionWithTransition(
 		referenceddata.ConditionTransitions.WithLabelValues(instance.Namespace, fromReason, reason).Inc()
 	}
 	return changed
+}
+
+// isTerminalReferencedDataReason reports whether the given ReferencedData reason
+// is terminal — i.e., the companion will never arrive because the source object
+// is permanently unavailable, not just slow to propagate.
+func isTerminalReferencedDataReason(reason string) bool {
+	switch reason {
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		computev1alpha.ReferencedDataReasonSourceTooLarge:
+		return true
+	}
+	return false
+}
+
+// instanceBlockingReasonPriority returns the relative priority of a blocking
+// reason on Instance.Ready. Higher numbers indicate causes that are more
+// actionable and should be surfaced over lower-priority transient states.
+// This is a server-internal ranking; clients observe only the winning condition.
+//
+// Priority table (matches RFC §5.4):
+//
+//	0 - unknown/default
+//	1 - InstancesProvisioning  (transient startup)
+//	2 - NetworkProvisioning    (infra provisioning)
+//	3 - PendingQuota           (operator action may be needed)
+//	4 - ReferencedDataNotReady / AwaitingPropagation / Resolving (transient)
+//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
+//	6 - NetworkNotFound        (hard error; user action required)
+//	7 - NetworkFailedToCreate  (hard infra error)
+func instanceBlockingReasonPriority(reason string) int {
+	switch reason {
+	case computev1alpha.WorkloadDeploymentReasonInstancesProvisioning:
+		return 1
+	case computev1alpha.WorkloadDeploymentReasonNetworkProvisioning:
+		return 2
+	case computev1alpha.InstanceProgrammedReasonPendingQuota,
+		computev1alpha.WorkloadDeploymentReasonQuotaNotGranted:
+		return 3
+	case computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+		computev1alpha.ReferencedDataReasonAwaitingPropagation,
+		computev1alpha.ReferencedDataReasonResolving:
+		return 4
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized:
+		return 5
+	case computev1alpha.WorkloadReasonNetworkNotFound:
+		return 6
+	case reasonNetworkFailedToCreate:
+		return 7
+	default:
+		return 0
+	}
 }
 
 // listPresentCompanionsByKindName returns a set keyed by kind-qualified tokens
@@ -1206,19 +1275,50 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			schedulingGateNames = append(schedulingGateNames, gate.Name)
 		}
 
+		// Evaluate ALL blocking sub-conditions before choosing which to surface.
+		// A short-circuit on the first match would let a low-priority transient
+		// cause (e.g. network provisioning) mask a high-priority actionable error
+		// (e.g. a missing source ConfigMap).
+		type candidate struct {
+			status   metav1.ConditionStatus
+			reason   string
+			message  string
+			priority int
+		}
+
+		// Start with the generic fallback so there is always a winner.
+		best := candidate{
+			status:   metav1.ConditionFalse,
+			reason:   computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
+			message:  fmt.Sprintf("Scheduling gates present: %s", strings.Join(schedulingGateNames, ", ")),
+			priority: 0,
+		}
+
+		consider := func(status metav1.ConditionStatus, reason, message string) {
+			p := instanceBlockingReasonPriority(reason)
+			if p > best.priority {
+				best = candidate{status: status, reason: reason, message: message, priority: p}
+			}
+		}
+
+		// Check the ReferencedDataReady sub-condition set earlier in this reconcile.
+		if refDataCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady); refDataCond != nil && refDataCond.Status != metav1.ConditionTrue {
+			consider(refDataCond.Status, refDataCond.Reason, refDataCond.Message)
+		}
+
+		// Network creation failure is a hard error; call the checker unconditionally
+		// so priority logic can compare it against other blocking causes.
 		networkCreationFailure, networkCreationFailureMessage, err := networkFailureChecker(ctx, clusterClient, instance)
 		if err != nil {
 			return false, fmt.Errorf("failed checking for network creation failure: %w", err)
 		}
-
-		readyCondition.Status = metav1.ConditionFalse
 		if networkCreationFailure {
-			readyCondition.Reason = reasonNetworkFailedToCreate
-			readyCondition.Message = networkCreationFailureMessage
-		} else {
-			readyCondition.Reason = computev1alpha.InstanceReadyReasonSchedulingGatesPresent
-			readyCondition.Message = fmt.Sprintf("Scheduling gates present: %s", strings.Join(schedulingGateNames, ", "))
+			consider(metav1.ConditionFalse, reasonNetworkFailedToCreate, networkCreationFailureMessage)
 		}
+
+		readyCondition.Status = best.status
+		readyCondition.Reason = best.reason
+		readyCondition.Message = best.message
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
