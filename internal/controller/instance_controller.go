@@ -499,7 +499,9 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 	// Stamp the gate-start annotation once so we can measure duration later.
 	r.stampGateStartAnnotation(ctx, cl, instance)
 
-	// Fetch the owning WorkloadDeployment to read the expected-set annotation.
+	// Fetch the owning WorkloadDeployment to read the expected-set annotation and
+	// the resolver's verdict. fetchOwnerWorkloadDeployment is already called every
+	// reconcile on this path, so this is zero extra API calls.
 	wd, err := r.fetchOwnerWorkloadDeployment(ctx, cl, instance)
 	if err != nil {
 		return referencedDataResult{}, 0, err
@@ -1396,8 +1398,11 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 //	0 - unknown/default
 //	1 - Provisioning              (transient runtime startup)
 //	3 - PendingQuota              (operator action may be needed)
-//	5 - ImageUnavailable / InstanceCrashing / ConfigurationError
-//	    (hard runtime error, user-actionable)
+//	4 - ReferencedDataNotReady / AwaitingPropagation / Resolving
+//	    (transient referenced-data propagation)
+//	5 - ImageUnavailable / InstanceCrashing / ConfigurationError /
+//	    SourceNotFound / SourceTooLarge / SourceUnauthorized
+//	    (hard runtime or referenced-data spec error, user-actionable)
 //	7 - NetworkFailedToCreate     (hard infra error)
 func instanceBlockingReasonPriority(reason string) int {
 	switch reason {
@@ -1405,12 +1410,23 @@ func instanceBlockingReasonPriority(reason string) int {
 		return 1
 	case computev1alpha.InstanceProgrammedReasonPendingQuota:
 		return 3
+	case computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+		computev1alpha.ReferencedDataReasonAwaitingPropagation,
+		computev1alpha.ReferencedDataReasonResolving:
+		// Transient referenced-data propagation ranks above quota but below hard
+		// spec errors: the companion is still on its way to the cell.
+		return 4
 	case computev1alpha.InstanceReadyReasonImageUnavailable,
 		computev1alpha.InstanceReadyReasonInstanceCrashing,
-		computev1alpha.InstanceReadyReasonConfigurationError:
+		computev1alpha.InstanceReadyReasonConfigurationError,
+		computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized:
 		// Hard runtime errors are user-actionable (wrong image, crashing app, bad
 		// config) and rank highest among non-infra reasons so they are not buried
-		// under transient startup/quota reasons.
+		// under transient startup/quota reasons. Terminal referenced-data source
+		// errors (missing/too-large/unauthorized source object) are equally
+		// actionable spec errors and share this tier.
 		return 5
 	case reasonNetworkFailedToCreate:
 		return 7
@@ -1478,19 +1494,50 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			schedulingGateNames = append(schedulingGateNames, gate.Name)
 		}
 
+		// Evaluate ALL blocking sub-conditions before choosing which to surface.
+		// A short-circuit on the first match would let a low-priority transient
+		// cause (e.g. network provisioning) mask a high-priority actionable error
+		// (e.g. a missing source ConfigMap).
+		type candidate struct {
+			status   metav1.ConditionStatus
+			reason   string
+			message  string
+			priority int
+		}
+
+		// Start with the generic fallback so there is always a winner.
+		best := candidate{
+			status:   metav1.ConditionFalse,
+			reason:   computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
+			message:  fmt.Sprintf("Scheduling gates present: %s", strings.Join(schedulingGateNames, ", ")),
+			priority: 0,
+		}
+
+		consider := func(status metav1.ConditionStatus, reason, message string) {
+			p := instanceBlockingReasonPriority(reason)
+			if p > best.priority {
+				best = candidate{status: status, reason: reason, message: message, priority: p}
+			}
+		}
+
+		// Check the ReferencedDataReady sub-condition set earlier in this reconcile.
+		if refDataCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady); refDataCond != nil && refDataCond.Status != metav1.ConditionTrue {
+			consider(refDataCond.Status, refDataCond.Reason, refDataCond.Message)
+		}
+
+		// Network creation failure is a hard error; call the checker unconditionally
+		// so priority logic can compare it against other blocking causes.
 		networkCreationFailure, networkCreationFailureMessage, err := networkFailureChecker(ctx, clusterClient, instance)
 		if err != nil {
 			return false, fmt.Errorf("failed checking for network creation failure: %w", err)
 		}
-
-		readyCondition.Status = metav1.ConditionFalse
 		if networkCreationFailure {
-			readyCondition.Reason = reasonNetworkFailedToCreate
-			readyCondition.Message = networkCreationFailureMessage
-		} else {
-			readyCondition.Reason = computev1alpha.InstanceReadyReasonSchedulingGatesPresent
-			readyCondition.Message = fmt.Sprintf("Scheduling gates present: %s", strings.Join(schedulingGateNames, ", "))
+			consider(metav1.ConditionFalse, reasonNetworkFailedToCreate, networkCreationFailureMessage)
 		}
+
+		readyCondition.Status = best.status
+		readyCondition.Reason = best.reason
+		readyCondition.Message = best.message
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}

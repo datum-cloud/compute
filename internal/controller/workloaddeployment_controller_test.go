@@ -25,10 +25,6 @@ const (
 
 	// cityCode is the shared CityCode fixture for WorkloadDeployment tests.
 	cityCode = "DFW"
-
-	// testMsgConfigMapNotFound is a representative terminal referenced-data
-	// message used across the Available-rollup unit tests.
-	testMsgConfigMapNotFound = `ConfigMap "app-config" not found in namespace "default"`
 )
 
 // TestReconcileInstanceGates_NilController_DoesNotPanic is a regression test for
