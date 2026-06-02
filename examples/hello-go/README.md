@@ -11,8 +11,10 @@ This is the runnable companion to the step-by-step guide:
 
 - `main.go` — the service (standard library only, no dependencies).
 - `go.mod` — module definition.
-- `Dockerfile` — multi-stage build producing a fully static binary (`CGO_ENABLED=0`)
-  packaged `FROM scratch`, so the app is the unikernel entrypoint.
+- `Dockerfile` — multi-stage build producing a static-PIE binary (linked against
+  musl) packaged `FROM scratch`, so the app is the unikernel entrypoint. A static
+  PIE is required: the `base:latest` elfloader rejects a plain `CGO_ENABLED=0`
+  (`ET_EXEC`, non-PIE) binary. Includes a build-time self-check.
 - `Kraftfile` — packages the rootfs on the `base:latest` runtime.
 - `workload.yaml` — the Datum compute Workload manifest.
 

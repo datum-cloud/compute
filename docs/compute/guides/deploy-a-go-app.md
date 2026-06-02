@@ -68,32 +68,60 @@ Replace `your-org` with your actual module path. The service has no external dep
 
 ## 2. Build and publish the unikernel image with `kraft`
 
-### Why the binary must be fully static
+### Why the binary must be a static PIE
 
-Datum's Unikraft runtime uses an app-elfloader that loads your binary directly as the unikernel entrypoint. If the binary has any dynamic linking (shared libraries, a C runtime interpreter), the elfloader rejects it at boot:
+Datum's Unikraft runtime uses an app-elfloader that loads your binary directly as the unikernel entrypoint. It requires a **position-independent executable (static PIE)**: an `ET_DYN` binary that is statically linked and has no program interpreter. A binary that doesn't meet this is rejected at boot:
 
 ```
 [appelfloader] ELF executable is not position-independent! ... Exec format error (-8)
 ```
 
-The reliable solution is a fully static binary (`CGO_ENABLED=0`) packaged in a `FROM scratch` image. With no interpreter for the elfloader to find, the app IS the entrypoint. This is the shape that the platform's known-good Go examples use.
+This is the part to get right for Go, because **stock `go build` cannot produce a static PIE for a pure-Go binary**:
 
-A plain `docker build` OCI image will NOT boot on the runtime. The image must be in the Unikraft Cloud format produced by `kraft`. The `Kraftfile` and `kraft cloud deploy` command handle this packaging.
+- A plain `CGO_ENABLED=0` build is statically linked but **`ET_EXEC` (non-PIE)** — the elfloader rejects it.
+- Adding `-buildmode=pie` makes it position-independent but emits an **`INTERP` segment** requesting `/lib64/ld-linux-x86-64.so.2` — and `base:latest` has no dynamic loader, so that's rejected too.
+
+The working recipe (the same approach the Rust example uses) is to link statically against **musl** via CGO, which yields a static PIE with no interpreter. The Dockerfile below installs a musl cross-toolchain and builds with `-buildmode=pie -extldflags "-static-pie"`, then runs a self-check that fails the build unless the result is `ET_DYN` with no `INTERP` — so a wrong-shaped binary can never be published.
+
+A plain `docker build` OCI image will NOT boot on the runtime regardless. The image must be in the Unikraft Cloud format produced by `kraft`.
 
 ### Write the Dockerfile
 
 ```dockerfile
-# Stage 1: build a fully static binary.
-# CGO_ENABLED=0 produces a static Go binary with no libc dependency.
-# GOOS/GOARCH target the linux/amd64 architecture UKC expects.
-FROM golang:1.22 AS build
+# base:latest is an app-elfloader: it requires a static-PIE (ET_DYN, no INTERP).
+# Plain `CGO_ENABLED=0 go build` is ET_EXEC (non-PIE), and `-buildmode=pie` alone
+# emits an INTERP segment -- both are rejected at boot. Linking statically against
+# musl yields a static PIE with no interpreter.
+#
+# --platform=$BUILDPLATFORM keeps the Go toolchain native to the builder and
+# cross-compiles to amd64, avoiding a qemu-emulated amd64 assembler segfault when
+# building on an arm64 host.
+FROM --platform=$BUILDPLATFORM golang:1.24 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        binutils file curl xz-utils ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://musl.cc/x86_64-linux-musl-cross.tgz -o /tmp/musl.tgz \
+    && tar -xzf /tmp/musl.tgz -C /opt && rm /tmp/musl.tgz
+ENV PATH="/opt/x86_64-linux-musl-cross/bin:${PATH}"
 WORKDIR /src
 COPY go.mod main.go ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o /server ./main.go
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=x86_64-linux-musl-gcc \
+    go build -buildmode=pie \
+        -ldflags='-s -w -linkmode=external -extldflags "-static-pie"' \
+        -o /server ./main.go
+
+# Static-PIE self-check: fail the build unless /server is ET_DYN, statically
+# linked, and has no INTERP segment.
+RUN readelf -h /server | grep -q 'Type:[[:space:]]*DYN' \
+        || (echo "FAIL: binary is not ET_DYN (not PIE)"; exit 1)
+RUN if readelf -l /server | grep -qi 'INTERP'; then \
+        echo "FAIL: binary has a program interpreter (INTERP segment)"; exit 1; \
+    fi
+RUN if file /server | grep -q 'dynamically linked'; then \
+        echo "FAIL: binary is dynamically linked"; exit 1; \
+    fi
 
 # Stage 2: a minimal rootfs containing only the binary.
-# FROM scratch ensures there are no dynamic libraries for the elfloader to reject.
-# kraft turns this rootfs + the chosen runtime into a Unikraft unikernel package.
 FROM scratch
 COPY --from=build /server /server
 ENTRYPOINT ["/server"]
@@ -287,10 +315,10 @@ docker rm -f buildkit
 [appelfloader] probe: ELF executable is not position-independent! ... Exec format error (-8)
 ```
 
-This means the binary is dynamically linked or has the wrong ELF shape. Check:
+This means the binary is not a static PIE. The most common cause is building with `CGO_ENABLED=0` (or `-buildmode=pie` alone): both produce a binary the elfloader rejects — `CGO_ENABLED=0` is `ET_EXEC` (non-PIE), and `-buildmode=pie` adds an `INTERP` segment. Use the musl static-PIE recipe in the Dockerfile above. Check:
 
-- `CGO_ENABLED=0` was set during the build. A binary built with CGO has a dynamic C runtime dependency.
-- The `FROM scratch` stage is present. If the rootfs contains a Linux filesystem with shared libraries, the elfloader may find an interpreter and try (and fail) to use it.
+- The build linked statically against musl (`CGO_ENABLED=1 CC=x86_64-linux-musl-gcc ... -buildmode=pie -extldflags "-static-pie"`). The Dockerfile's self-check confirms the result is `ET_DYN` with no `INTERP` before it can be published — if your build printed the self-check lines, the shape is correct.
+- The `FROM scratch` stage is present.
 - The image was built with `kraft cloud deploy`, not plain `docker build`. A plain OCI image pushed to a container registry will not boot on the Unikraft runtime regardless of how the binary is built.
 
 Rebuild from the Dockerfile in this guide, re-publish (step 2), and redeploy. The boot error appears on the unikernel console — see "Instance shows `Ready` but the endpoint doesn't respond" below to read it.
