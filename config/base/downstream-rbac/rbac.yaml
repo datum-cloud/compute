@@ -24,7 +24,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["work.karmada.io"]
     resources: ["resourcebindings", "clusterresourcebindings"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "delete"]
   - apiGroups: ["config.karmada.io"]
     resources: ["resourceinterpreterwebhookconfigurations", "resourceinterpretercustomizations"]
     verbs: ["get", "list", "watch"]
