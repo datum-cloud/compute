@@ -505,6 +505,14 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 		return referencedDataResult{}, 0, err
 	}
 
+	// When the resolver has determined a terminal source error (the source object
+	// is missing, unauthorized, or too large), the companion will never arrive.
+	// Promote the terminal error to the Instance condition so it is visible without
+	// a secondary fetch. Returns (changed, true) when a terminal error was found.
+	if changed, terminal := r.applyTerminalErrorFromWD(ctx, wd, instance); terminal {
+		return referencedDataResult{conditionChanged: changed}, 0, nil
+	}
+
 	// Annotation not yet present — the resolver hasn't finished. Signal Resolving
 	// and requeue so we re-check even without a new watch event.
 	annoRaw, hasAnno := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
@@ -615,6 +623,75 @@ func (r *InstanceReconciler) setReferencedDataConditionWithTransition(
 		referenceddata.ConditionTransitions.WithLabelValues(instance.Namespace, fromReason, reason).Inc()
 	}
 	return changed
+}
+
+// isTerminalReferencedDataReason reports whether the given ReferencedData reason
+// is terminal — i.e., the companion will never arrive because the source object
+// is permanently unavailable, not just slow to propagate.
+func isTerminalReferencedDataReason(reason string) bool {
+	switch reason {
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		computev1alpha.ReferencedDataReasonSourceTooLarge:
+		return true
+	}
+	return false
+}
+
+// applyTerminalErrorFromWD reads the terminal-error signal from the owner WD and,
+// when a valid terminal error is found, sets the Instance's ReferencedDataReady
+// condition. Returns (changed, true) when a terminal error was applied, or
+// (false, false) when there is no terminal error to apply.
+//
+// The signal is read from two places in priority order:
+//  1. ReferencedDataErrorAnnotation on the WD metadata — the primary path in
+//     federation, because Karmada propagates annotations hub→cell but does not
+//     propagate status.conditions in that direction.
+//  2. The WD's ReferencedDataReady status condition — the fallback for
+//     single-cluster deployments or during a controller version upgrade before
+//     the annotation was introduced.
+func (r *InstanceReconciler) applyTerminalErrorFromWD(
+	ctx context.Context,
+	wd *computev1alpha.WorkloadDeployment,
+	instance *computev1alpha.Instance,
+) (changed, terminal bool) {
+	// Path 1: annotation (federation-safe).
+	if termErrRaw := wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation]; termErrRaw != "" {
+		termReason, termMessage, decodeErr := decodeTerminalErrorAnnotation(termErrRaw)
+		if decodeErr != nil {
+			log.FromContext(ctx).V(1).Info("malformed referenced-data-error annotation on WD; ignoring",
+				"workloadDeployment", wd.Name, "error", decodeErr)
+		} else if isTerminalReferencedDataReason(termReason) {
+			ch := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
+				termReason, termMessage)
+			return ch, true
+		}
+	}
+
+	// Path 2: status condition fallback (single-cluster).
+	wdCond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	if wdCond != nil && wdCond.Status == metav1.ConditionFalse && isTerminalReferencedDataReason(wdCond.Reason) {
+		ch := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
+			wdCond.Reason, wdCond.Message)
+		return ch, true
+	}
+
+	return false, false
+}
+
+// decodeTerminalErrorAnnotation parses the value of ReferencedDataErrorAnnotation
+// into (reason, message). Returns an error when the annotation is malformed.
+// Both files in the same package share this unexported helper through Go's
+// package-level visibility — no cross-file coupling issue.
+func decodeTerminalErrorAnnotation(raw string) (reason, message string, err error) {
+	var payload struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", "", fmt.Errorf("decode referenced-data-error annotation %q: %w", raw, err)
+	}
+	return payload.Reason, payload.Message, nil
 }
 
 // listPresentCompanionsByKindName returns a set keyed by kind-qualified tokens

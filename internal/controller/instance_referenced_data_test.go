@@ -564,6 +564,217 @@ func TestReferencedDataStaleConditionGuard(t *testing.T) {
 	}
 }
 
+// ─── Federation annotation bridge: terminal error propagation hub→cell ────────
+
+// makeWDWithTerminalError returns a WD carrying the ReferencedDataErrorAnnotation
+// as a cell WD copy would after Karmada propagation from the hub.
+func makeWDWithTerminalError(reason, message string) *computev1alpha.WorkloadDeployment {
+	raw, _ := encodeTerminalError(reason, message)
+	wd := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      refDataTestDeployment,
+			Namespace: refDataTestNamespace,
+			UID:       refDataTestWDUID,
+			Annotations: map[string]string{
+				computev1alpha.ReferencedDataErrorAnnotation: raw,
+			},
+		},
+	}
+	return wd
+}
+
+// TestFederated_TerminalAnnotation_SourceNotFound verifies that when the cell WD
+// copy carries the ReferencedDataErrorAnnotation with SourceNotFound, the Instance
+// gets Ready=False/SourceNotFound with the hub message rather than AwaitingPropagation.
+func TestFederated_TerminalAnnotation_SourceNotFound(t *testing.T) {
+	msg := `ConfigMap "app-config" not found in namespace "default"`
+	wd := makeWDWithTerminalError(computev1alpha.ReferencedDataReasonSourceNotFound, msg)
+	inst := makeInstanceWithRefDataGate()
+
+	r, projectClient, _ := newRefDataReconciler(t, []client.Object{inst, wd})
+	reconcileRefData(t, r)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &updated))
+
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond, "ReferencedDataReady condition should be set")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
+		"should use the hub resolver reason, not generic AwaitingPropagation")
+	assert.Equal(t, msg, cond.Message,
+		"should carry the hub resolver message verbatim")
+
+	// Gate must remain until the error is resolved (companion will never arrive).
+	hasGate := false
+	if updated.Spec.Controller != nil {
+		for _, g := range updated.Spec.Controller.SchedulingGates {
+			if g.Name == instancecontrol.ReferencedDataSchedulingGate.String() {
+				hasGate = true
+			}
+		}
+	}
+	assert.True(t, hasGate, "ReferencedData gate should remain when a terminal error is present")
+}
+
+// TestFederated_TerminalAnnotation_SourceTooLarge verifies SourceTooLarge propagates
+// via the annotation the same way as SourceNotFound.
+func TestFederated_TerminalAnnotation_SourceTooLarge(t *testing.T) {
+	msg := `ConfigMap "fat-config" in namespace "default" exceeds per-object size limit`
+	wd := makeWDWithTerminalError(computev1alpha.ReferencedDataReasonSourceTooLarge, msg)
+	inst := makeInstanceWithRefDataGate()
+
+	r, projectClient, _ := newRefDataReconciler(t, []client.Object{inst, wd})
+	reconcileRefData(t, r)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &updated))
+
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceTooLarge, cond.Reason)
+	assert.Equal(t, msg, cond.Message)
+}
+
+// TestFederated_TerminalAnnotation_SourceUnauthorized verifies SourceUnauthorized propagates
+// via the annotation.
+func TestFederated_TerminalAnnotation_SourceUnauthorized(t *testing.T) {
+	msg := `not authorized to read ConfigMap "secret-cfg" in namespace "default"`
+	wd := makeWDWithTerminalError(computev1alpha.ReferencedDataReasonSourceUnauthorized, msg)
+	inst := makeInstanceWithRefDataGate()
+
+	r, projectClient, _ := newRefDataReconciler(t, []client.Object{inst, wd})
+	reconcileRefData(t, r)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &updated))
+
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceUnauthorized, cond.Reason)
+	assert.Equal(t, msg, cond.Message)
+}
+
+// TestFederated_NoAnnotation_AnnotationAbsent verifies that when the WD has no
+// terminal-error annotation AND no expected-data annotation (resolver not done),
+// the Instance gets Resolving/Unknown — NOT SourceNotFound.
+func TestFederated_NoAnnotation_AnnotationAbsent(t *testing.T) {
+	// WD has neither annotation — Karmada propagated it before the resolver ran.
+	wd := makeWDForCell("") // no annotations
+	inst := makeInstanceWithRefDataGate()
+
+	r, projectClient, _ := newRefDataReconciler(t, []client.Object{inst, wd})
+	reconcileRefData(t, r)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &updated))
+
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status,
+		"should be Unknown/Resolving when no annotation is present")
+	assert.Equal(t, computev1alpha.ReferencedDataReasonResolving, cond.Reason)
+}
+
+// TestFederated_AnnotationPresent_CompanionsMissing verifies that when the WD has
+// the expected-data annotation (resolver succeeded, no terminal error) but companions
+// haven't arrived yet, the Instance gets AwaitingPropagation — not SourceNotFound.
+func TestFederated_AnnotationPresent_CompanionsMissing(t *testing.T) {
+	expected := []string{refDataTestCMToken}
+	annoVal, _ := json.Marshal(expected)
+	// WD has the expected annotation but NOT the terminal-error annotation.
+	wd := makeWDForCell(string(annoVal))
+	inst := makeInstanceWithRefDataGate()
+
+	// No companion ConfigMap present yet.
+	r, projectClient, _ := newRefDataReconciler(t, []client.Object{inst, wd})
+	reconcileRefData(t, r)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &updated))
+
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonAwaitingPropagation, cond.Reason,
+		"should be AwaitingPropagation (not SourceNotFound) when resolver succeeded but companion is still in flight")
+	assert.Contains(t, cond.Message, refDataTestCMToken)
+}
+
+// TestFederated_AnnotationPresent_CompanionsPresent verifies that when the WD
+// has the expected-data annotation and all companions are present (healthy path),
+// the Instance advances to Ready=True.
+func TestFederated_AnnotationPresent_CompanionsPresent(t *testing.T) {
+	expected := []string{refDataTestCMToken}
+	annoVal, _ := json.Marshal(expected)
+	wd := makeWDForCell(string(annoVal))
+	inst := makeInstanceWithRefDataGate()
+	companionCM := makeCompanionConfigMap(refDataTestCMCompanionName)
+
+	r, projectClient, _ := newRefDataReconciler(t, []client.Object{inst, wd, companionCM})
+	reconcileRefData(t, r)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &updated))
+
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status,
+		"should be Ready=True when all companions are present and no terminal error")
+}
+
+// TestFederated_QuotaAndSourceNotFound_SourceNotFoundWins verifies that when
+// both the Quota gate and ReferencedData gate are present, and the cell WD
+// carries a terminal-error annotation, Instance.Ready picks SourceNotFound
+// (priority 5) over PendingQuota (priority 3).
+func TestFederated_QuotaAndSourceNotFound_SourceNotFoundWins(t *testing.T) {
+	msg := `ConfigMap "app-config" not found in namespace "default"`
+	wd := makeWDWithTerminalError(computev1alpha.ReferencedDataReasonSourceNotFound, msg)
+	inst := makeInstanceWithRefDataGate()
+
+	// Add the Quota gate alongside ReferencedData.
+	inst.Spec.Controller.SchedulingGates = append(inst.Spec.Controller.SchedulingGates,
+		computev1alpha.SchedulingGate{Name: instancecontrol.QuotaSchedulingGate.String()},
+	)
+
+	// Seed a QuotaGranted=False/QuotaExceeded condition on the instance.
+	inst.Status.Conditions = []metav1.Condition{
+		{
+			Type:               computev1alpha.InstanceQuotaGranted,
+			Status:             metav1.ConditionFalse,
+			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
+			Message:            "Quota exceeded for project",
+			ObservedGeneration: 1,
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+
+	r, projectClient, _ := newRefDataReconciler(t, []client.Object{inst, wd})
+	reconcileRefData(t, r)
+
+	var updated computev1alpha.Instance
+	require.NoError(t, projectClient.Get(context.Background(),
+		types.NamespacedName{Namespace: refDataTestNamespace, Name: refDataTestInstance}, &updated))
+
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
+		"SourceNotFound should be set on ReferencedDataReady so reconcileGatedReadyCondition picks priority 5")
+
+	// Note: reconcileGatedReadyCondition (called by reconcileInstanceReadyCondition,
+	// not tested here) is where the priority competition between SourceNotFound (p5)
+	// and PendingQuota (p3) is resolved. This test verifies that reconcileReferencedDataCondition
+	// sets the right ReferencedDataReady sub-condition that feeds into that priority logic.
+}
+
 // containsAll returns true when s contains all substrings.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
