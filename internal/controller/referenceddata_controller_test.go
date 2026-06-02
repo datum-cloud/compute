@@ -46,6 +46,9 @@ const (
 	rdTestBlobKey       = "blob"
 	rdTestWDDelConflict = "wd-del-conflict"
 	rdTestWorkloadName  = "test-workload"
+
+	// rdTestFatConfig is the ConfigMap name used in SourceTooLarge tests.
+	rdTestFatConfig = "fat-config"
 )
 
 // rdTestScheme builds a runtime.Scheme suitable for ReferencedDataController tests.
@@ -294,9 +297,147 @@ func TestReferencedData_SourceNotFound(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason)
 
-	// No annotation should be set (nothing was delivered).
+	// No expected-set annotation should be set (nothing was delivered).
 	_, hasAnno := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
 	assert.False(t, hasAnno)
+
+	// Terminal-error annotation MUST be stamped so it propagates hub→cell via Karmada.
+	termErrRaw, hasTermAnno := wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation]
+	require.True(t, hasTermAnno, "terminal-error annotation should be stamped on SourceNotFound")
+	termReason, termMsg, decErr := decodeTerminalError(termErrRaw)
+	require.NoError(t, decErr)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, termReason)
+	assert.Contains(t, termMsg, "missing-config")
+}
+
+// ─── Terminal-error annotation is cleared when error resolves ─────────────────
+
+// TestReferencedData_TerminalErrorAnnotationCleared verifies that after a
+// SourceNotFound error the terminal-error annotation is stamped, and that once
+// the source is created and the resolver succeeds the annotation is removed.
+func TestReferencedData_TerminalErrorAnnotationCleared(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := "initially-missing"
+
+	// WD references a ConfigMap that does not yet exist.
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(rdTestScheme(t)).
+		WithObjects(wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	c, clusterName := newRDController(t, cl, nil)
+
+	// First reconcile: stamps finalizer.
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	// Second reconcile: source missing → stamps SourceNotFound condition + annotation.
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
+	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason)
+
+	// Terminal-error annotation must be present after the error.
+	_, hasTermAnno := wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation]
+	assert.True(t, hasTermAnno, "terminal-error annotation should be present after SourceNotFound")
+
+	// Now create the source ConfigMap.
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
+	}
+	require.NoError(t, cl.Create(context.Background(), srcCM))
+
+	// Third reconcile: source now exists → companions materialised → condition True.
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
+	resolvedCond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, resolvedCond)
+	assert.Equal(t, metav1.ConditionTrue, resolvedCond.Status)
+
+	// Terminal-error annotation MUST be cleared after the error resolves.
+	_, hasTermAnnoAfter := wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation]
+	assert.False(t, hasTermAnnoAfter, "terminal-error annotation should be cleared when error resolves")
+}
+
+// TestReferencedData_TerminalErrorAnnotationStampedForEachReason verifies that
+// all three terminal reason codes (SourceNotFound, SourceUnauthorized,
+// SourceTooLarge) each result in the terminal-error annotation being stamped.
+func TestReferencedData_TerminalErrorAnnotationStampedForEachReason(t *testing.T) {
+	bigData := make([]byte, 300*1024) // 300 KiB > 256 KiB default
+
+	tests := []struct {
+		name           string
+		reader         referenceddata.ProjectConfigSecretReader
+		srcCM          *corev1.ConfigMap
+		cmName         string
+		expectedReason string
+	}{
+		{
+			name:   "SourceNotFound",
+			cmName: "missing-config",
+			// reader nil: localReader fallback returns (nil,nil) → SourceNotFound
+			expectedReason: computev1alpha.ReferencedDataReasonSourceNotFound,
+		},
+		{
+			name:   "SourceUnauthorized",
+			cmName: "auth-config",
+			reader: &stubReader{
+				getCM: func(_ context.Context, _, _, name string) (*corev1.ConfigMap, error) {
+					return nil, fmt.Errorf("%w: %s", referenceddata.ErrSourceUnauthorized, name)
+				},
+			},
+			expectedReason: computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		},
+		{
+			name:   "SourceTooLarge",
+			cmName: rdTestFatConfig,
+			srcCM: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Namespace: rdTestNamespace, Name: rdTestFatConfig},
+				BinaryData: map[string][]byte{rdTestBlobKey: bigData},
+			},
+			expectedReason: computev1alpha.ReferencedDataReasonSourceTooLarge,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := rdTestNamespace
+
+			wd := makeWD(ns, rdTestWD1, templateWithConfigMap(tc.cmName))
+
+			var objs []client.Object
+			objs = append(objs, wd)
+			if tc.srcCM != nil {
+				objs = append(objs, tc.srcCM)
+			}
+
+			cl := fake.NewClientBuilder().
+				WithScheme(rdTestScheme(t)).
+				WithObjects(objs...).
+				WithStatusSubresource(wd).
+				Build()
+
+			// Use the interface directly to avoid the nil-concrete-in-interface panic.
+			c, clusterName := newRDController(t, cl, tc.reader)
+
+			reconcileWD(t, c, clusterName, ns, rdTestWD1)
+			reconcileWD(t, c, clusterName, ns, rdTestWD1)
+
+			wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
+
+			termErrRaw, hasTermAnno := wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation]
+			require.True(t, hasTermAnno, "terminal-error annotation should be stamped for reason %s", tc.expectedReason)
+
+			termReason, _, decErr := decodeTerminalError(termErrRaw)
+			require.NoError(t, decErr)
+			assert.Equal(t, tc.expectedReason, termReason)
+		})
+	}
 }
 
 // ─── Source-unauthorized sets SourceUnauthorized condition ───────────────────
@@ -336,7 +477,7 @@ func TestReferencedData_SourceUnauthorized(t *testing.T) {
 
 func TestReferencedData_SourceTooLarge_PerObject(t *testing.T) {
 	ns := rdTestNamespace
-	cmName := "fat-config"
+	cmName := rdTestFatConfig
 	companionName := referenceddata.CompanionName("ConfigMap", cmName)
 
 	bigData := make([]byte, 300*1024) // 300 KiB > 256 KiB default

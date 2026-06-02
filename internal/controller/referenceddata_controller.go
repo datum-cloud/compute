@@ -483,6 +483,12 @@ func (r *ReferencedDataController) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, fmt.Errorf("referenceddata: update WD status (ready): %w", err)
 	}
 
+	// Clear the terminal-error annotation now that all companions materialised.
+	// This is idempotent: if the annotation is absent no Patch is issued.
+	if err := r.clearTerminalErrorAnnotation(ctx, cl.GetClient(), &wd); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -553,6 +559,11 @@ func (r *ReferencedDataController) reconcileEmpty(
 		if err := c.Patch(ctx, wd, patch); err != nil {
 			return fmt.Errorf("referenceddata: remove annotation: %w", err)
 		}
+	}
+	// Also clear any terminal-error annotation left over from a previous error
+	// cycle. The template now has no references, so there is nothing to be wrong.
+	if err := r.clearTerminalErrorAnnotation(ctx, c, wd); err != nil {
+		return err
 	}
 	return nil
 }
@@ -831,6 +842,13 @@ func (r *ReferencedDataController) materialiseOne(
 // with the given (False) reason and message and returns nil so the controller
 // reconcile returns (no requeue error). The WD will be re-triggered by the
 // source watch when the source changes.
+//
+// When reason is a terminal error (SourceNotFound, SourceUnauthorized,
+// SourceTooLarge), this also stamps the ReferencedDataErrorAnnotation on the WD
+// metadata. This annotation propagates hub→cell via Karmada so the cell
+// InstanceReconciler can surface the terminal error without needing to read hub
+// status conditions (which do not propagate in that direction). For non-terminal
+// reasons (e.g. Resolving) the annotation is cleared to avoid stale state.
 func (r *ReferencedDataController) setConditionAndReturn(
 	ctx context.Context,
 	c client.Client,
@@ -847,7 +865,93 @@ func (r *ReferencedDataController) setConditionAndReturn(
 	if err := c.Status().Update(ctx, wd); err != nil {
 		return fmt.Errorf("referenceddata: update WD status (%s): %w", reason, err)
 	}
+
+	if isTerminalReferencedDataReason(reason) {
+		if err := r.stampTerminalErrorAnnotation(ctx, c, wd, reason, message); err != nil {
+			return err
+		}
+	} else {
+		// Non-terminal errors (e.g. Resolving) should not leave a stale terminal
+		// annotation from a previous cycle.
+		if err := r.clearTerminalErrorAnnotation(ctx, c, wd); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// stampTerminalErrorAnnotation writes the ReferencedDataErrorAnnotation on the
+// WD metadata with the given reason and message. It is idempotent: if the
+// annotation already carries the same JSON it does not issue a Patch.
+func (r *ReferencedDataController) stampTerminalErrorAnnotation(
+	ctx context.Context,
+	c client.Client,
+	wd *computev1alpha.WorkloadDeployment,
+	reason, message string,
+) error {
+	desired, err := encodeTerminalError(reason, message)
+	if err != nil {
+		return fmt.Errorf("referenceddata: encode terminal error annotation: %w", err)
+	}
+	if wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation] == desired {
+		return nil // already up to date; skip the Patch
+	}
+	patch := client.MergeFrom(wd.DeepCopy())
+	if wd.Annotations == nil {
+		wd.Annotations = make(map[string]string)
+	}
+	wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation] = desired
+	if err := c.Patch(ctx, wd, patch); err != nil {
+		return fmt.Errorf("referenceddata: patch terminal error annotation: %w", err)
+	}
+	return nil
+}
+
+// clearTerminalErrorAnnotation removes the ReferencedDataErrorAnnotation from
+// the WD metadata when the error has resolved. It is idempotent: if the
+// annotation is absent it does not issue a Patch.
+func (r *ReferencedDataController) clearTerminalErrorAnnotation(
+	ctx context.Context,
+	c client.Client,
+	wd *computev1alpha.WorkloadDeployment,
+) error {
+	if _, ok := wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation]; !ok {
+		return nil // not present; nothing to do
+	}
+	patch := client.MergeFrom(wd.DeepCopy())
+	delete(wd.Annotations, computev1alpha.ReferencedDataErrorAnnotation)
+	if err := c.Patch(ctx, wd, patch); err != nil {
+		return fmt.Errorf("referenceddata: clear terminal error annotation: %w", err)
+	}
+	return nil
+}
+
+// terminalErrorPayload is the JSON shape written to ReferencedDataErrorAnnotation.
+type terminalErrorPayload struct {
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// encodeTerminalError marshals reason+message into the annotation value string.
+func encodeTerminalError(reason, message string) (string, error) {
+	b, err := json.Marshal(terminalErrorPayload{Reason: reason, Message: message})
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// decodeTerminalError parses a ReferencedDataErrorAnnotation value. Returns
+// ("", "", nil) when the annotation value is empty or absent.
+func decodeTerminalError(raw string) (reason, message string, err error) {
+	if raw == "" {
+		return "", "", nil
+	}
+	var p terminalErrorPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return "", "", fmt.Errorf("referenceddata: parse terminal error annotation %q: %w", raw, err)
+	}
+	return p.Reason, p.Message, nil
 }
 
 // classifyReaderError maps a ProjectConfigSecretReader error to a
