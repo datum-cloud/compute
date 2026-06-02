@@ -58,6 +58,9 @@ const (
 	// testMsgNetworkCreationFailed is the network-failure message used by the
 	// evaluate-all-then-pick blocking-reason tests.
 	testMsgNetworkCreationFailed = "Network creation failed: timeout"
+
+	// testPlacementA is the placement key used in Workload status rollup tests.
+	testPlacementA = "placement-a"
 )
 
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
@@ -2639,6 +2642,85 @@ func TestReconcileInstanceReadyCondition_EvaluateAllThenPick(t *testing.T) {
 			"SourceNotFound should propagate verbatim to Ready condition")
 		assert.Contains(t, cond.Message, `ConfigMap "app-config" not found`)
 	})
+}
+
+// TestReconcileInstanceReadyCondition_QuotaVsReferencedData is the RFC §8.1
+// headline case: QuotaGranted=False/QuotaExceeded AND
+// ReferencedDataReady=False/SourceNotFound co-occur.
+//
+// SourceNotFound (priority 5) must win over PendingQuota (priority 3) on Ready.
+// Programmed=False and Running=False must still be set (quota side effects are
+// preserved regardless of which reason wins Ready).
+func TestReconcileInstanceReadyCondition_QuotaVsReferencedData(t *testing.T) {
+	noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+		return false, "", nil
+	}
+
+	// Instance has both the Quota gate and the ReferencedData gate, matching the
+	// scenario where reconcileQuotaCondition and reconcileReferencedDataCondition
+	// have both already run and written their respective sub-conditions.
+	inst := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testInstanceName,
+			Namespace:  testDefaultNamespace,
+			Generation: 1,
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.QuotaSchedulingGate.String()},
+					{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+				},
+			},
+		},
+		Status: computev1alpha.InstanceStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               computev1alpha.InstanceQuotaGranted,
+					Status:             metav1.ConditionFalse,
+					Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
+					Message:            testMsgQuotaExceeded,
+					LastTransitionTime: metav1.Now(),
+				},
+				{
+					Type:               computev1alpha.ReferencedDataReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+					Message:            testMsgConfigMapNotFound,
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	r := &InstanceReconciler{}
+	changed, err := r.reconcileInstanceReadyCondition(context.Background(), nil, inst, noNetworkFailure)
+	require.NoError(t, err)
+	assert.True(t, changed)
+
+	// Ready must carry the higher-priority SourceNotFound reason (priority 5),
+	// not PendingQuota (priority 3).
+	readyCond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceReady)
+	require.NotNil(t, readyCond, "Ready condition must be set")
+	assert.Equal(t, metav1.ConditionFalse, readyCond.Status)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, readyCond.Reason,
+		"SourceNotFound (priority 5) must beat PendingQuota (priority 3)")
+	assert.Equal(t, testMsgConfigMapNotFound, readyCond.Message,
+		"Ready message must be the SourceNotFound message verbatim")
+
+	// Programmed and Running must still be set to False/PendingQuota — quota
+	// side effects are preserved regardless of which reason wins Ready.
+	programmedCond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceProgrammed)
+	require.NotNil(t, programmedCond, "Programmed condition must be set when quota is denied")
+	assert.Equal(t, metav1.ConditionFalse, programmedCond.Status)
+	assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, programmedCond.Reason,
+		"Programmed must reflect quota denial even when Ready surfaces a different reason")
+
+	availableCond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceAvailable)
+	require.NotNil(t, availableCond, "Available condition must be set when quota is denied")
+	assert.Equal(t, metav1.ConditionFalse, availableCond.Status)
+	assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, availableCond.Reason,
+		"Available must reflect quota denial even when Ready surfaces a different reason")
 }
 
 // TestInstanceBlockingReasonPriority exhaustively verifies the priority table for

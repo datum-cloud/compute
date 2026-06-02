@@ -635,6 +635,103 @@ func (r *InstanceReconciler) setReferencedDataConditionWithTransition(
 	return changed
 }
 
+// reconcileGatedReadyCondition handles the scheduling-gates branch of
+// reconcileInstanceReadyCondition. It evaluates ALL blocking sub-conditions
+// (quota, referenced-data, network failure) via the priority function and sets
+// Instance.Ready to the highest-priority cause.
+//
+// When quota is denied, Programmed=False and Running=False are also set
+// regardless of which reason wins Ready — quota gates programmatic activity
+// independently of the Ready reason displayed to the user.
+//
+// This is extracted from reconcileInstanceReadyCondition to keep that function's
+// cyclomatic complexity within the project lint limit.
+func (r *InstanceReconciler) reconcileGatedReadyCondition(
+	ctx context.Context,
+	clusterClient client.Client,
+	instance *computev1alpha.Instance,
+	quotaDenied bool,
+	quotaGrantedCondition *metav1.Condition,
+	readyCondition *metav1.Condition,
+	checker networkFailureChecker,
+) (changed bool, err error) {
+	schedulingGateNames := make([]string, 0, len(instance.Spec.Controller.SchedulingGates))
+	for _, gate := range instance.Spec.Controller.SchedulingGates {
+		schedulingGateNames = append(schedulingGateNames, gate.Name)
+	}
+
+	type candidate struct {
+		status   metav1.ConditionStatus
+		reason   string
+		message  string
+		priority int
+	}
+
+	// Start with the generic fallback so there is always a winner.
+	best := candidate{
+		status:   metav1.ConditionFalse,
+		reason:   computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
+		message:  fmt.Sprintf("Scheduling gates present: %s", strings.Join(schedulingGateNames, ", ")),
+		priority: 0,
+	}
+
+	consider := func(status metav1.ConditionStatus, reason, message string) {
+		p := instanceBlockingReasonPriority(reason)
+		if p > best.priority {
+			best = candidate{status: status, reason: reason, message: message, priority: p}
+		}
+	}
+
+	// Quota is a gate-level blocker: feed it through the priority function so it
+	// competes fairly with other causes (priority 3). A co-occurring SourceNotFound
+	// (priority 5) will correctly beat it.
+	if quotaDenied {
+		consider(metav1.ConditionFalse, computev1alpha.InstanceProgrammedReasonPendingQuota, quotaGrantedCondition.Message)
+	}
+
+	// Check the ReferencedDataReady sub-condition set earlier in this reconcile.
+	if refDataCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady); refDataCond != nil && refDataCond.Status != metav1.ConditionTrue {
+		consider(refDataCond.Status, refDataCond.Reason, refDataCond.Message)
+	}
+
+	// Network creation failure is a hard error; call the checker unconditionally
+	// so priority logic can compare it against other blocking causes.
+	networkCreationFailure, networkCreationFailureMessage, err := checker(ctx, clusterClient, instance)
+	if err != nil {
+		return false, fmt.Errorf("failed checking for network creation failure: %w", err)
+	}
+	if networkCreationFailure {
+		consider(metav1.ConditionFalse, reasonNetworkFailedToCreate, networkCreationFailureMessage)
+	}
+
+	// When quota is denied, always stamp Programmed=False and Available=False
+	// regardless of which reason wins Ready. These reflect quota state independently
+	// of the Ready reason selection.
+	if quotaDenied {
+		msg := quotaGrantedCondition.Message
+		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceProgrammed,
+			Status:             metav1.ConditionFalse,
+			Reason:             computev1alpha.InstanceProgrammedReasonPendingQuota,
+			Message:            msg,
+			ObservedGeneration: instance.Generation,
+		})
+		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             computev1alpha.InstanceProgrammedReasonPendingQuota,
+			Message:            msg,
+			ObservedGeneration: instance.Generation,
+		}) || changed
+	}
+
+	readyCondition.Status = best.status
+	readyCondition.Reason = best.reason
+	readyCondition.Message = best.message
+
+	return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition) || changed, nil
+}
+
 // isTerminalReferencedDataReason reports whether the given ReferencedData reason
 // is terminal — i.e., the companion will never arrive because the source object
 // is permanently unavailable, not just slow to propagate.
@@ -1464,7 +1561,21 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	logger := log.FromContext(ctx)
 
 	quotaGrantedCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
-	if quotaGrantedCondition != nil && quotaGrantedCondition.Status == metav1.ConditionFalse {
+	quotaDenied := quotaGrantedCondition != nil && quotaGrantedCondition.Status == metav1.ConditionFalse
+
+	// When scheduling gates are present, all blocking causes — including quota —
+	// are evaluated together so the priority function picks the most actionable
+	// one to surface on Ready. Quota side effects (Programmed=False, Running=False)
+	// are preserved unconditionally when quota is denied, regardless of which
+	// reason wins Ready.
+	//
+	// When no gates are present and quota is denied, fall through to the early
+	// return below which sets Ready, Programmed, and Running atomically.
+	hasSchedulingGates := instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) > 0
+
+	if quotaDenied && !hasSchedulingGates {
+		// No gates: quota is the only active blocking cause. Set all three
+		// conditions atomically and return — same behavior as before.
 		msg := quotaGrantedCondition.Message
 		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 			Type:               computev1alpha.InstanceProgrammed,
@@ -1503,58 +1614,8 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 		readyCondition = readyCondition.DeepCopy()
 	}
 
-	if instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) > 0 {
-		var schedulingGateNames []string
-		for _, gate := range instance.Spec.Controller.SchedulingGates {
-			schedulingGateNames = append(schedulingGateNames, gate.Name)
-		}
-
-		// Evaluate ALL blocking sub-conditions before choosing which to surface.
-		// A short-circuit on the first match would let a low-priority transient
-		// cause (e.g. network provisioning) mask a high-priority actionable error
-		// (e.g. a missing source ConfigMap).
-		type candidate struct {
-			status   metav1.ConditionStatus
-			reason   string
-			message  string
-			priority int
-		}
-
-		// Start with the generic fallback so there is always a winner.
-		best := candidate{
-			status:   metav1.ConditionFalse,
-			reason:   computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
-			message:  fmt.Sprintf("Scheduling gates present: %s", strings.Join(schedulingGateNames, ", ")),
-			priority: 0,
-		}
-
-		consider := func(status metav1.ConditionStatus, reason, message string) {
-			p := instanceBlockingReasonPriority(reason)
-			if p > best.priority {
-				best = candidate{status: status, reason: reason, message: message, priority: p}
-			}
-		}
-
-		// Check the ReferencedDataReady sub-condition set earlier in this reconcile.
-		if refDataCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady); refDataCond != nil && refDataCond.Status != metav1.ConditionTrue {
-			consider(refDataCond.Status, refDataCond.Reason, refDataCond.Message)
-		}
-
-		// Network creation failure is a hard error; call the checker unconditionally
-		// so priority logic can compare it against other blocking causes.
-		networkCreationFailure, networkCreationFailureMessage, err := networkFailureChecker(ctx, clusterClient, instance)
-		if err != nil {
-			return false, fmt.Errorf("failed checking for network creation failure: %w", err)
-		}
-		if networkCreationFailure {
-			consider(metav1.ConditionFalse, reasonNetworkFailedToCreate, networkCreationFailureMessage)
-		}
-
-		readyCondition.Status = best.status
-		readyCondition.Reason = best.reason
-		readyCondition.Message = best.message
-
-		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
+	if hasSchedulingGates {
+		return r.reconcileGatedReadyCondition(ctx, clusterClient, instance, quotaDenied, quotaGrantedCondition, readyCondition, networkFailureChecker)
 	}
 
 	pendingReason := "Pending"
