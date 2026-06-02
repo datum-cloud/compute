@@ -5,7 +5,7 @@ compute. It responds `Hello from Datum (Rust)` on `/` and `ok` on `/healthz`,
 listening on `$PORT` (default `8080`).
 
 This is the runnable companion to the step-by-step guide:
-[Deploy a Rust Web Service on Datum Compute](../../guides/deploy-a-rust-app.md).
+[Deploy a Rust Web Service on Datum Compute](../../docs/compute/guides/deploy-a-rust-app.md).
 
 ## Files
 
@@ -35,6 +35,6 @@ datumctl compute instances --workload=hello-rust
 curl https://<EXTERNAL-IP>/
 ```
 
-See the [guide](../../guides/deploy-a-rust-app.md) for prerequisites, why the binary
+See the [guide](../../docs/compute/guides/deploy-a-rust-app.md) for prerequisites, why the binary
 must be a static PIE (the `static-pie linked` vs `dynamically linked` distinction),
 and troubleshooting.

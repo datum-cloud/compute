@@ -37,7 +37,7 @@ datumctl compute instances --workload=hello-node
 curl https://<EXTERNAL-IP>/
 ```
 
-See the [Go guide](../../guides/deploy-a-go-app.md) for the general workflow,
+See the [Go guide](../../docs/compute/guides/deploy-a-go-app.md) for the general workflow,
 prerequisites, and troubleshooting — the build/publish/deploy mechanics are the
 same; only the runtime (`base-compat:latest`) and the libraries copied into the
 rootfs differ.

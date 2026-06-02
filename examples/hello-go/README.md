@@ -5,7 +5,7 @@ compute. It responds `Hello from Datum` on `/` and `ok` on `/healthz`, listening
 on `$PORT` (default `8080`).
 
 This is the runnable companion to the step-by-step guide:
-[Deploy a Go Web Service on Datum Compute](../../guides/deploy-a-go-app.md).
+[Deploy a Go Web Service on Datum Compute](../../docs/compute/guides/deploy-a-go-app.md).
 
 ## Files
 
@@ -33,5 +33,5 @@ datumctl compute instances --workload=hello-datum
 curl https://<EXTERNAL-IP>/
 ```
 
-See the [guide](../../guides/deploy-a-go-app.md) for prerequisites, the
+See the [guide](../../docs/compute/guides/deploy-a-go-app.md) for prerequisites, the
 explanation of why the binary must be static, and troubleshooting.
