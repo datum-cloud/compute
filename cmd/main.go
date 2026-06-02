@@ -36,6 +36,7 @@ import (
 
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
@@ -83,6 +84,7 @@ func init() {
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaworkv1alpha2.Install(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -315,13 +317,6 @@ func main() {
 		}
 	}
 
-	if enableCellControllers {
-		if err = (&controller.CompanionGCReconciler{}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "CompanionGC")
-			os.Exit(1)
-		}
-	}
-
 	// WorkloadDeploymentFederator and InstanceProjector are management-plane
 	// controllers that run on the control-plane cluster. The fail-loud guard above
 	// ensures federationRestConfig is non-nil when enableManagementControllers is
@@ -533,6 +528,15 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		MCManager:        mgr,
 	}).SetupWithManager(federationMgr); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
+	}
+
+	// OrphanRBReconciler sweeps Karmada ResourceBindings whose hub companion is
+	// gone, ensuring Works and cell copies are cleaned up even when Karmada's
+	// event-driven cascade misses the companion-deletion event (e.g. PP deleted
+	// before binding-controller reconcile completed). Runs on the hub federation
+	// manager alongside InstanceProjector.
+	if err = controller.SetupOrphanRBWithManager(federationMgr, federationClient); err != nil {
+		return nil, fmt.Errorf("OrphanRBReconciler: %w", err)
 	}
 
 	return []manager.Runnable{federationMgr}, nil
