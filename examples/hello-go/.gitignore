@@ -1,3 +1,0 @@
-# Build artifacts produced locally; not committed.
-/server
-.unikraft/
