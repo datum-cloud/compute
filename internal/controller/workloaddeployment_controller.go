@@ -18,11 +18,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -316,68 +314,6 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 		}
 	}
 	return currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, nil
-}
-
-// wdReferencedDataChangedPredicate returns a predicate for the WorkloadDeployment
-// For() watch that fires on:
-//   - Any Create, Delete, or Generic event (always enqueue).
-//   - An Update event where metadata.generation changed (spec updated), OR where
-//     the ReferencedDataReady condition's Status, Reason, or Message changed.
-//
-// The predicate intentionally does NOT fire when only the Available or
-// ReplicasReady conditions change, because those are written by this reconciler
-// itself. Without this guard the reconciler's own Status().Update would re-enqueue
-// itself on every run, creating a tight reconcile loop. The equality check before
-// Status().Update is a complementary guard, but the predicate is the primary
-// protection: it prevents re-enqueuing entirely so the workqueue stays quiet between
-// meaningful state transitions.
-//
-// Loop prevention: the ReferencedDataController (the only other writer of the
-// ReferencedDataReady condition) is the intended trigger. When it sets
-// ReferencedDataReady=False/SourceNotFound the predicate passes and this
-// reconciler re-runs, sees the resolver verdict in deployment.Status.Conditions, and
-// promotes Available to ReferencedDataNotReady. Subsequent runs by this reconciler
-// (which write Available but not ReferencedDataReady) are filtered out.
-func wdReferencedDataChangedPredicate() predicate.Predicate {
-	return predicate.Funcs{
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldWD, ok1 := e.ObjectOld.(*computev1alpha.WorkloadDeployment)
-			newWD, ok2 := e.ObjectNew.(*computev1alpha.WorkloadDeployment)
-			if !ok1 || !ok2 {
-				return true // be conservative when type assertion fails
-			}
-			// Spec change: always reconcile.
-			if oldWD.Generation != newWD.Generation {
-				return true
-			}
-			// ReferencedDataReady condition changed: reconcile so Available is
-			// updated to reflect the resolver's verdict.
-			return wdRefDataCondChanged(
-				apimeta.FindStatusCondition(oldWD.Status.Conditions, computev1alpha.ReferencedDataReady),
-				apimeta.FindStatusCondition(newWD.Status.Conditions, computev1alpha.ReferencedDataReady),
-			)
-		},
-		CreateFunc:  func(_ event.CreateEvent) bool { return true },
-		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
-		GenericFunc: func(_ event.GenericEvent) bool { return true },
-	}
-}
-
-// wdRefDataCondChanged returns true when the ReferencedDataReady condition's
-// observable fields (Status, Reason, Message) differ between old and new. Presence
-// changes (nil → non-nil or vice versa) are also treated as a change. The
-// LastTransitionTime field is excluded because it changes on every status flip and
-// would defeat the loop-prevention intent of wdReferencedDataChangedPredicate.
-func wdRefDataCondChanged(old, new *metav1.Condition) bool {
-	if (old == nil) != (new == nil) {
-		return true // condition was added or removed
-	}
-	if old == nil {
-		return false // both nil — no change
-	}
-	return old.Status != new.Status ||
-		old.Reason != new.Reason ||
-		old.Message != new.Message
 }
 
 // selectWDBlockingCondition evaluates all blocking causes for a WorkloadDeployment
@@ -805,15 +741,15 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 	}
 
 	b := mcbuilder.ControllerManagedBy(mgr).
-		// The predicate gates re-enqueuing on meaningful WD changes: spec updates
-		// (generation bump) or a ReferencedDataReady condition change written by
-		// ReferencedDataController. Without it, each Status().Update by this
-		// reconciler (writing Available/ReplicasReady) would re-enqueue itself,
-		// creating a tight loop and delaying the ReferencedDataReady signal from
-		// the resolver.
+		// Watch all WorkloadDeployment events. The reconciler's own Status().Update
+		// cannot create a self-trigger loop because the equality.Semantic.DeepEqual
+		// guard skips the write when nothing changed, so no self-event is produced.
+		// We deliberately do NOT filter Update events with a predicate: an earlier
+		// predicate that only passed generation/ReferencedDataReady changes dropped
+		// metadata-only updates such as the initial finalizer-add, which wedged new
+		// WorkloadDeployments until a controller restart.
 		For(&computev1alpha.WorkloadDeployment{},
 			mcbuilder.WithEngageWithLocalCluster(false),
-			mcbuilder.WithPredicates(wdReferencedDataChangedPredicate()),
 		).
 		Owns(&computev1alpha.Instance{})
 
