@@ -229,25 +229,15 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 
 	if readyReplicas > 0 {
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-			Type:    computev1alpha.WorkloadDeploymentAvailable,
-			Status:  metav1.ConditionTrue,
-			Reason:  "StableInstanceFound",
-			Message: fmt.Sprintf("%d/%d instances are ready", readyReplicas, replicas),
+			Type:               computev1alpha.WorkloadDeploymentAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.WorkloadDeploymentReasonStableInstanceFound,
+			Message:            fmt.Sprintf("%d/%d instances are ready", readyReplicas, replicas),
+			ObservedGeneration: deployment.Generation,
 		})
-	} else if !networkReady {
-		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-			Type:    computev1alpha.WorkloadDeploymentAvailable,
-			Status:  metav1.ConditionFalse,
-			Reason:  "ProvisioningNetwork",
-			Message: "Network is being provisioned",
-		})
-	} else if replicas > 0 {
-		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-			Type:    computev1alpha.WorkloadDeploymentAvailable,
-			Status:  metav1.ConditionFalse,
-			Reason:  "ProvisioningInstances",
-			Message: "Instances are being provisioned",
-		})
+	} else {
+		availCond := selectWDBlockingCondition(&deployment, networkReady, quotaBlockedReplicas, referencedDataBlockedReplicas, replicas, desiredReplicas)
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, availCond)
 	}
 
 	// Skip the write when the status is unchanged. Without this guard the
@@ -388,6 +378,120 @@ func wdRefDataCondChanged(old, new *metav1.Condition) bool {
 	return old.Status != new.Status ||
 		old.Reason != new.Reason ||
 		old.Message != new.Message
+}
+
+// selectWDBlockingCondition evaluates all blocking causes for a WorkloadDeployment
+// that has no ready replicas and returns the Available condition reflecting the
+// highest-priority blocker. All causes are evaluated before selecting the winner
+// so that a transient cause (e.g. network provisioning) cannot mask a more
+// actionable one (e.g. missing referenced data).
+func selectWDBlockingCondition(
+	deployment *computev1alpha.WorkloadDeployment,
+	networkReady bool,
+	quotaBlockedReplicas, referencedDataBlockedReplicas, replicas int,
+	desiredReplicas int32,
+) metav1.Condition {
+	type candidate struct {
+		reason   string
+		message  string
+		priority int
+	}
+
+	var best candidate
+
+	// Try each blocking cause and track the highest-priority one.
+	consider := func(reason, message string) {
+		p := wdBlockingReasonPriority(reason)
+		if p > best.priority {
+			best = candidate{reason: reason, message: message, priority: p}
+		}
+	}
+
+	if !networkReady {
+		consider(computev1alpha.WorkloadDeploymentReasonNetworkProvisioning, "Network is being provisioned")
+	}
+
+	// WD-level ReferencedDataReady condition reflects the resolver verdict; when
+	// it is False, the source object is missing/unauthorized/too-large and the
+	// companion will never arrive. Treat this as a hard, high-priority blocker.
+	if wdRefDataCond := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady); wdRefDataCond != nil && wdRefDataCond.Status == metav1.ConditionFalse {
+		consider(computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, wdRefDataCond.Message)
+	}
+
+	if quotaBlockedReplicas > 0 {
+		consider(computev1alpha.WorkloadDeploymentReasonQuotaNotGranted,
+			fmt.Sprintf("%d of %d desired instances pending quota", quotaBlockedReplicas, desiredReplicas))
+	}
+
+	// referencedDataBlockedReplicas > 0 with no WD-level resolver error means
+	// companions are still propagating to the cell (propagation lag, not a hard error).
+	if referencedDataBlockedReplicas > 0 {
+		wdRefDataTrue := apimeta.IsStatusConditionTrue(deployment.Status.Conditions, computev1alpha.ReferencedDataReady)
+		wdRefDataAbsent := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady) == nil
+		if wdRefDataTrue || wdRefDataAbsent {
+			consider(computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+				fmt.Sprintf("%d of %d desired instances waiting for companion propagation", referencedDataBlockedReplicas, desiredReplicas))
+		}
+	}
+
+	if replicas > 0 {
+		consider(computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, "Instances are being provisioned")
+	}
+
+	// Fallback: nothing more specific is known yet.
+	if best.priority == 0 {
+		best.reason = computev1alpha.WorkloadDeploymentReasonInstancesProvisioning
+		best.message = "No instances available yet"
+	}
+
+	return metav1.Condition{
+		Type:               computev1alpha.WorkloadDeploymentAvailable,
+		Status:             metav1.ConditionFalse,
+		Reason:             best.reason,
+		Message:            best.message,
+		ObservedGeneration: deployment.Generation,
+	}
+}
+
+// wdBlockingReasonPriority returns the relative priority of a blocking reason on
+// WorkloadDeployment.Available. Higher numbers indicate causes that are more
+// actionable and should be surfaced over lower-priority transient states.
+// This is a server-internal ranking; clients observe only the winning condition.
+//
+// Priority table (matches RFC §5.4):
+//
+//	0 - unknown/default
+//	1 - InstancesProvisioning  (transient startup)
+//	2 - NetworkProvisioning    (infra provisioning)
+//	3 - QuotaNotGranted        (operator action may be needed)
+//	4 - ReferencedDataNotReady (AwaitingPropagation / Resolving — expected to clear)
+//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
+//	6 - NetworkNotFound        (hard error; user action required)
+//	7 - NetworkFailedToCreate  (hard infra error)
+func wdBlockingReasonPriority(reason string) int {
+	switch reason {
+	case computev1alpha.WorkloadDeploymentReasonInstancesProvisioning:
+		return 1
+	case computev1alpha.WorkloadDeploymentReasonNetworkProvisioning:
+		return 2
+	case computev1alpha.WorkloadDeploymentReasonQuotaNotGranted,
+		computev1alpha.InstanceProgrammedReasonPendingQuota:
+		return 3
+	case computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+		computev1alpha.ReferencedDataReasonAwaitingPropagation,
+		computev1alpha.ReferencedDataReasonResolving:
+		return 4
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized:
+		return 5
+	case computev1alpha.WorkloadReasonNetworkNotFound:
+		return 6
+	case reasonNetworkFailedToCreate:
+		return 7
+	default:
+		return 0
+	}
 }
 
 // writeStatusToKarmada copies the WorkloadDeployment status to the matching
