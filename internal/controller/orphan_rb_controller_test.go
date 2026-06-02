@@ -81,16 +81,16 @@ func reconcileRB(t *testing.T, r *OrphanRBReconciler, name string) (ctrl.Result,
 func TestOrphanRB_DeletesOrphanedConfigMapRB(t *testing.T) {
 	t.Parallel()
 
-	rb := makeCompanionRB("cm-pristine-configmap")
+	rb := makeCompanionRB(gcCMPristineRBName)
 	// No ConfigMap "cm-pristine" in the hub namespace — the RB is orphaned.
 	r, hubCl := newOrphanRBReconciler(rb)
 
-	_, err := reconcileRB(t, r, "cm-pristine-configmap")
+	_, err := reconcileRB(t, r, gcCMPristineRBName)
 	require.NoError(t, err)
 
 	var got karmadaworkv1alpha2.ResourceBinding
 	err = hubCl.Get(context.Background(),
-		types.NamespacedName{Namespace: orbTestNS, Name: "cm-pristine-configmap"}, &got)
+		types.NamespacedName{Namespace: orbTestNS, Name: gcCMPristineRBName}, &got)
 	require.True(t, apierrors.IsNotFound(err), "orphaned companion RB must be deleted")
 }
 
@@ -244,7 +244,7 @@ func TestOrphanRB_CompanionFromRBName_Patterns(t *testing.T) {
 		wantName string
 		wantKind string
 	}{
-		{"cm-pristine-configmap", true, "cm-pristine", kindConfigMap},
+		{gcCMPristineRBName, true, "cm-pristine", kindConfigMap},
 		{"secret-foo-secret", true, "secret-foo", kindSecret},
 		{"a-b-c-secret", true, "a-b-c", kindSecret},
 		{"wd-foo-workloaddeployment", false, "", ""},
