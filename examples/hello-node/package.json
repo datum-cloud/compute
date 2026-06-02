@@ -1,0 +1,10 @@
+{
+  "name": "hello-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal Node HTTP service for the Datum compute Node.js runtime proof.",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  }
+}
