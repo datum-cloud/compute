@@ -1,0 +1,19 @@
+# Kraftfile for the ConfigMap/Secret mount-verification probe.
+#
+# UKC sandbox instances on the lab metro require a kraftkit-packaged image
+# (manifest `os: kraftcloud`), NOT a plain `docker build` OCI image. A raw
+# linux/amd64 image fails to boot with a UKC assertion error (boot time 0.00ms,
+# empty console). This Kraftfile drives `kraft cloud deploy`, which builds the
+# app rootfs from ./Dockerfile and packages it against the UKC `base` runtime.
+#
+# Build/push/deploy:
+#   kraft cloud --metro <metro>/v1 --token <token> deploy \
+#     --name config-secret-probe --runtime base:latest --rootfs ./Dockerfile .
+spec: v0.6
+
+runtime: base:latest
+
+rootfs: ./Dockerfile
+
+# The image's own entrypoint runs the probe under bun.
+cmd: ["/usr/bin/bun", "run", "/usr/src/probe.ts"]

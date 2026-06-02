@@ -1,0 +1,94 @@
+# Datum Cloud Workload: ConfigMap/Secret mount-verification probe.
+#
+# Mounts probe-cm and probe-secret BOTH as file volumes AND injects their values
+# as env vars, then the probe image reports sha256/preview per item to the UKC
+# console (observable via `kraft cloud instance logs`). Proves the referenced-data
+# mount path delivers byte-exact source bytes into a running unikernel.
+#
+# Field shapes validated against compute/api/v1alpha/instance_types.go:
+#   - InstanceSpec.Volumes[]: {name, configMap:{name}} / {name, secret:{secretName}}  (VolumeSource inline)
+#   - SandboxContainer.VolumeAttachments[]: {name, mountPath}  -> k8s VolumeMount (dir mount)
+#   - SandboxContainer.Env[].valueFrom.{configMapKeyRef,secretKeyRef}
+# A ConfigMap/Secret volume mounted at mountPath is a DIRECTORY; each data key
+# becomes a file under it (key `greeting` -> /etc/cm/greeting).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: probe-cm
+data:
+  greeting: probe-cm-OK
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: probe-secret
+stringData:
+  token: probe-secret-OK
+---
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: config-secret-probe
+  labels:
+    app: config-secret-probe
+spec:
+  template:
+    metadata:
+      labels:
+        app: config-secret-probe
+    spec:
+      volumes:
+        - name: cm-vol
+          configMap:
+            name: probe-cm
+        - name: secret-vol
+          secret:
+            secretName: probe-secret
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: index.unikraft.io/datum/config-secret-test:latest
+              env:
+                - name: PROBE_FILES
+                  value: /etc/cm/greeting,/etc/secret/token
+                - name: PROBE_ENV_VARS
+                  value: GREETING,APP_TOKEN
+                - name: PROBE_SECRET_PATHS
+                  value: /etc/secret/token
+                - name: PROBE_SECRET_ENV_VARS
+                  value: APP_TOKEN
+                - name: GREETING
+                  valueFrom:
+                    configMapKeyRef:
+                      name: probe-cm
+                      key: greeting
+                - name: APP_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: probe-secret
+                      key: token
+              volumeAttachments:
+                - name: cm-vol
+                  mountPath: /etc/cm
+                - name: secret-vol
+                  mountPath: /etc/secret
+              ports:
+                - name: http
+                  port: 3000
+                  protocol: TCP
+              # NOTE: container-level `resources` is rejected by the compute
+              # validating webhook on this branch ("not implemented"); memory
+              # defaults to 128Mi in the unikraft-provider (mapContainerMemory).
+      networkInterfaces:
+        - network:
+            name: default
+  placements:
+    - name: default
+      cityCodes:
+        - DFW
+      scaleSettings:
+        minReplicas: 1
+        instanceManagementPolicy: OrderedReady
