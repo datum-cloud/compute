@@ -154,6 +154,30 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			wantStatus: "Not running — quota exceeded",
 			wantDetail: "quota limit reached",
 		},
+		{
+			name: "Programmed Unknown/PendingProgramming — not running network provisioning",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonPendingProgramming, ""),
+			},
+			wantStatus: "Not running — network provisioning",
+			wantDetail: "",
+		},
+		{
+			name: "Programmed Unknown/ProgrammingInProgress — not running network provisioning in progress",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
+			},
+			wantStatus: "Not running — network provisioning in progress",
+			wantDetail: "",
+		},
+		{
+			name: "Programmed False/ProgrammingInProgress — not running network provisioning in progress",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
+			},
+			wantStatus: "Not running — network provisioning in progress",
+			wantDetail: "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -195,6 +219,20 @@ func TestInstanceStatus_BlockingReason(t *testing.T) {
 				makeCondition(v1alpha.InstanceReady, "False", "ReferencedDataNotReady", ""),
 			},
 			wantStatus: "Pending (ReferencedDataNotReady)",
+		},
+		{
+			name: "Programmed Unknown/PendingProgramming — Pending (network provisioning)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonPendingProgramming, ""),
+			},
+			wantStatus: "Pending (network provisioning)",
+		},
+		{
+			name: "Programmed Unknown/ProgrammingInProgress — Pending (network provisioning)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
+			},
+			wantStatus: "Pending (network provisioning)",
 		},
 	}
 

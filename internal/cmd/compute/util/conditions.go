@@ -36,10 +36,10 @@ func ReadinessBlock(conditions []metav1.Condition, condType string) (reason, mes
 //	QuotaGranted=False/QuotaExceeded → "Pending (quota exceeded)"
 //	QuotaGranted=False/ValidationFailed → "Pending (quota validation failed)"
 //	QuotaGranted=Unknown/PendingEvaluation → "Pending (quota evaluation)"
-//	Programmed=False/PendingProgramming or ProgrammingInProgress → "Pending (network provisioning)"
+//	Programmed≠True/PendingProgramming or ProgrammingInProgress → "Pending (network provisioning)"
 //	Running=False/Starting → "Starting"
 //	Running=False/Stopping → "Stopping"
-//	Ready=False/<reason> → "Pending (<reason>)" from server-rolled-up blocking reason
+//	Ready≠True/<reason> → "Pending (<reason>)" from server-rolled-up blocking reason
 //	default → "Pending"
 func InstanceStatus(conditions []metav1.Condition) string {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
@@ -63,7 +63,7 @@ func InstanceStatus(conditions []metav1.Condition) string {
 	}
 
 	programmed := FindCondition(conditions, v1alpha.InstanceProgrammed)
-	if programmed != nil && programmed.Status == metav1.ConditionFalse {
+	if programmed != nil && programmed.Status != metav1.ConditionTrue {
 		switch programmed.Reason {
 		case v1alpha.InstanceProgrammedReasonPendingProgramming, v1alpha.InstanceProgrammedReasonProgrammingInProgress:
 			return "Pending (network provisioning)"
@@ -95,11 +95,11 @@ func InstanceStatus(conditions []metav1.Condition) string {
 //
 //	Ready=True → "Running", ""
 //	QuotaGranted=False/QuotaExceeded → "Not running — quota exceeded", condition.Message
-//	Programmed=False/PendingProgramming → "Not running — network provisioning", ""
-//	Programmed=False/ProgrammingInProgress → "Not running — network provisioning in progress", ""
+//	Programmed≠True/PendingProgramming → "Not running — network provisioning", ""
+//	Programmed≠True/ProgrammingInProgress → "Not running — network provisioning in progress", ""
 //	Running=False/Starting → "Starting", ""
 //	Running=False/Stopping → "Stopping", ""
-//	Ready=False/<reason> → "Pending — <reason>", message  (server-rolled-up blocking reason)
+//	Ready≠True/<reason> → "Pending — <reason>", message  (server-rolled-up blocking reason)
 //	default → "Pending", ""
 func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string) {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
@@ -113,7 +113,7 @@ func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string)
 	}
 
 	programmed := FindCondition(conditions, v1alpha.InstanceProgrammed)
-	if programmed != nil && programmed.Status == metav1.ConditionFalse {
+	if programmed != nil && programmed.Status != metav1.ConditionTrue {
 		switch programmed.Reason {
 		case v1alpha.InstanceProgrammedReasonPendingProgramming:
 			return "Not running — network provisioning", ""
