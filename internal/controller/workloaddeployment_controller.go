@@ -424,6 +424,21 @@ func selectWDBlockingCondition(
 		consider(computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, wdRefDataCond.Message)
 	}
 
+	// In federated topology the Karmada status-aggregation pathway carries status
+	// cell→hub only, so the cell WD never receives the ReferencedDataReady condition
+	// written by the hub-side resolver. The ReferencedDataErrorAnnotation bridges
+	// terminal errors hub→cell alongside ObjectMeta (Karmada propagates annotations).
+	// Read it here as a parallel path so the cell WD Available condition reflects the
+	// terminal error even without the status condition. The annotation takes priority
+	// over the propagation-lag check below when both could apply to the same bucket.
+	if raw, ok := deployment.Annotations[computev1alpha.ReferencedDataErrorAnnotation]; ok && raw != "" {
+		if reason, message, err := decodeTerminalError(raw); err == nil && reason != "" {
+			consider(reason, message)
+		}
+		// Malformed annotation values are silently ignored: a parse failure here
+		// should not block the WD from reporting whatever state it does know.
+	}
+
 	if quotaBlockedReplicas > 0 {
 		consider(computev1alpha.WorkloadDeploymentReasonQuotaNotGranted,
 			fmt.Sprintf("%d of %d desired instances pending quota", quotaBlockedReplicas, desiredReplicas))

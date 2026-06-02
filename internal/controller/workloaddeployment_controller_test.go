@@ -869,3 +869,172 @@ func TestWDAvailableCondition_ObservedGeneration(t *testing.T) {
 	require.NotNil(t, found)
 	assert.Equal(t, gen, found.ObservedGeneration)
 }
+
+// makeWDWithAnnotation builds a WorkloadDeployment carrying the given
+// ReferencedDataErrorAnnotation value but no status conditions, simulating a
+// cell WD copy that received the annotation from the hub via Karmada propagation
+// but has no locally-written resolver conditions.
+func makeWDWithAnnotation(generation int64, annotValue string) *computev1alpha.WorkloadDeployment {
+	d := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       wdControllerTestName,
+			Namespace:  wdControllerTestNS,
+			Generation: generation,
+			Annotations: map[string]string{
+				computev1alpha.ReferencedDataErrorAnnotation: annotValue,
+			},
+		},
+	}
+	return d
+}
+
+// mustEncodeTerminalError encodes a terminal error annotation value for use in
+// tests. It panics on encoding failure, which should never happen in tests.
+func mustEncodeTerminalError(reason, message string) string {
+	v, err := encodeTerminalError(reason, message)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// TestWDAvailableCondition_AnnotationSourceNotFound verifies that a cell WD
+// carrying the ReferencedDataErrorAnnotation (set by the hub-side resolver and
+// propagated by Karmada) promotes Available to False/SourceNotFound even when no
+// ReferencedDataReady status condition is present on the cell WD.
+//
+// This is the federation bridge introduced by task #40: the annotation is the
+// only terminal-error signal visible on the cell WD copy.
+func TestWDAvailableCondition_AnnotationSourceNotFound(t *testing.T) {
+	const (
+		gen             = int64(3)
+		desiredReplicas = int32(2)
+		replicas        = 2
+	)
+	annot := mustEncodeTerminalError(
+		computev1alpha.ReferencedDataReasonSourceNotFound,
+		testMsgConfigMapNotFound,
+	)
+	deployment := makeWDWithAnnotation(gen, annot)
+
+	cond := selectWDBlockingCondition(deployment, true, true, 0, 1, replicas, desiredReplicas)
+
+	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	// The annotation carries the raw terminal reason (SourceNotFound, priority 5),
+	// which beats InstancesProvisioning (priority 1) and ReferencedDataNotReady (priority 4).
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason)
+	assert.Equal(t, testMsgConfigMapNotFound, cond.Message, "message must be the resolver message verbatim")
+	assert.Equal(t, gen, cond.ObservedGeneration)
+}
+
+// TestWDAvailableCondition_AnnotationAndConditionBothPresent verifies that when
+// both the annotation and the ReferencedDataReady=False status condition are
+// present (e.g. single-cluster mode, or a race during federation rollout), the
+// annotation path is taken at the same effective priority because both encode the
+// same terminal reason.
+func TestWDAvailableCondition_AnnotationAndConditionBothPresent(t *testing.T) {
+	const (
+		gen             = int64(7)
+		desiredReplicas = int32(1)
+		replicas        = 1
+	)
+	annot := mustEncodeTerminalError(
+		computev1alpha.ReferencedDataReasonSourceNotFound,
+		testMsgConfigMapNotFound,
+	)
+	// Stamp both the annotation and the status condition with matching reason+message.
+	deployment := makeWDWithAnnotation(gen, annot)
+	deployment.Status.Conditions = []metav1.Condition{
+		{
+			Type:               computev1alpha.ReferencedDataReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+			Message:            testMsgConfigMapNotFound,
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+
+	cond := selectWDBlockingCondition(deployment, true, true, 0, 1, replicas, desiredReplicas)
+
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	// Both paths arrive at the same terminal reason; the winner is stable regardless
+	// of evaluation order since both carry priority 5.
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason)
+	assert.Equal(t, testMsgConfigMapNotFound, cond.Message)
+}
+
+// TestWDAvailableCondition_AnnotationWinsOverQuota verifies that a terminal
+// annotation reason (priority 5) beats quotaBlockedReplicas (priority 3) even
+// when quota is also blocking.
+func TestWDAvailableCondition_AnnotationWinsOverQuota(t *testing.T) {
+	const (
+		gen             = int64(2)
+		desiredReplicas = int32(2)
+		replicas        = 2
+	)
+	annot := mustEncodeTerminalError(
+		computev1alpha.ReferencedDataReasonSourceNotFound,
+		testMsgConfigMapNotFound,
+	)
+	deployment := makeWDWithAnnotation(gen, annot)
+
+	// quotaBlockedReplicas=1 would normally surface QuotaNotGranted (priority 3).
+	cond := selectWDBlockingCondition(deployment, true, true, 1, 0, replicas, desiredReplicas)
+
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
+		"SourceNotFound (priority 5) must beat QuotaNotGranted (priority 3)")
+}
+
+// TestWDAvailableCondition_NoAnnotationPropagationLag verifies that the existing
+// propagation-lag path (referencedDataBlockedReplicas > 0, no annotation, no
+// ReferencedDataReady condition) is unaffected by the annotation bridge change.
+func TestWDAvailableCondition_NoAnnotationPropagationLag(t *testing.T) {
+	const (
+		gen             = int64(1)
+		desiredReplicas = int32(2)
+		replicas        = 2
+	)
+	// No annotation, no ReferencedDataReady condition: companions still propagating.
+	deployment := makeWDForAvailTest(gen, "", "", "")
+
+	cond := selectWDBlockingCondition(deployment, true, true, 0, 1, replicas, desiredReplicas)
+
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
+		"propagation-lag path must still fire when annotation is absent")
+	assert.Contains(t, cond.Message, "waiting for companion propagation")
+}
+
+// TestWDAvailableCondition_AnnotationEmptyString verifies that an empty annotation
+// value is treated as absent and falls through to the existing logic.
+func TestWDAvailableCondition_AnnotationEmptyString(t *testing.T) {
+	const (
+		gen             = int64(1)
+		desiredReplicas = int32(1)
+		replicas        = 1
+	)
+	deployment := makeWDWithAnnotation(gen, "")
+
+	cond := selectWDBlockingCondition(deployment, true, true, 0, 0, replicas, desiredReplicas)
+
+	// No real blockers; falls through to InstancesProvisioning.
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason)
+}
+
+// TestWDAvailableCondition_AnnotationMalformedJSON verifies that a malformed
+// annotation value is silently ignored (no panic) and the function falls through
+// to the next applicable blocking reason.
+func TestWDAvailableCondition_AnnotationMalformedJSON(t *testing.T) {
+	const (
+		gen             = int64(1)
+		desiredReplicas = int32(1)
+		replicas        = 1
+	)
+	deployment := makeWDWithAnnotation(gen, "not-valid-json{{")
+
+	// Should not panic; malformed annotation is skipped.
+	cond := selectWDBlockingCondition(deployment, true, true, 0, 0, replicas, desiredReplicas)
+
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
+		"malformed annotation must be silently ignored; fallback to InstancesProvisioning")
+}
