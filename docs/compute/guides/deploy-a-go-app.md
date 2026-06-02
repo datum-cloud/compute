@@ -1,10 +1,10 @@
 # Deploy a Go Web Service on Datum Compute
 
-> Last verified: 2026-06-02 against the `config-secret-probe` example and the live `kraft` / `datumctl compute` CLIs.
+> Last verified: 2026-06-02 against the `hello-go` example and the live `kraft` / `datumctl compute` CLIs.
 
 This guide walks you through taking a Go HTTP service from source code to a live, reachable instance on Datum compute. By the end you will have:
 
-- A fully static Go binary packaged as a Unikraft unikernel image
+- A static-PIE Go binary packaged as a Unikraft unikernel image
 - The image published to the Unikraft Cloud metro registry
 - A running workload deployed with `datumctl compute deploy`
 - A verified HTTP response from your instance
@@ -40,7 +40,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "Hello from Datum")
+		fmt.Fprintln(w, "Hello from Datum (Go)")
 	})
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -57,7 +57,7 @@ func main() {
 **`go.mod`**
 
 ```
-module github.com/your-org/hello-datum
+module github.com/your-org/hello-go
 
 go 1.22
 ```
@@ -158,11 +158,11 @@ export KRAFTKIT_NO_CHECK_UPDATES=true
 
 kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   --buildkit-host docker-container://buildkit \
-  deploy --no-start -M 512 --name hello-datum \
+  deploy --no-start -M 512 --name hello-go \
   --runtime base:latest --rootfs ./Dockerfile .
 ```
 
-After this command completes, your image is available at `index.unikraft.io/datum/hello-datum:latest`, ready for Datum compute to deploy.
+After this command completes, your image is available at `index.unikraft.io/datum/hello-go:latest`, ready for Datum compute to deploy.
 
 ---
 
@@ -178,14 +178,14 @@ Create `workload.yaml`:
 apiVersion: compute.datumapis.com/v1alpha
 kind: Workload
 metadata:
-  name: hello-datum
+  name: hello-go
   labels:
-    app: hello-datum
+    app: hello-go
 spec:
   template:
     metadata:
       labels:
-        app: hello-datum
+        app: hello-go
     spec:
       runtime:
         resources:
@@ -193,7 +193,7 @@ spec:
         sandbox:
           containers:
             - name: app
-              image: index.unikraft.io/datum/hello-datum:latest
+              image: index.unikraft.io/datum/hello-go:latest
               ports:
                 - name: http
                   port: 8080
@@ -219,8 +219,8 @@ datumctl compute deploy -f workload.yaml -y
 ### Option B — flags
 
 ```sh
-datumctl compute deploy hello-datum \
-  --image=index.unikraft.io/datum/hello-datum:latest \
+datumctl compute deploy hello-go \
+  --image=index.unikraft.io/datum/hello-go:latest \
   --city=DFW \
   --port=8080 \
   --min=1
@@ -235,7 +235,7 @@ Both forms create (or update) the workload. The `--city` flag accepts one or mor
 List instances and watch for the status to reach `Running`:
 
 ```sh
-datumctl compute instances --workload=hello-datum
+datumctl compute instances --workload=hello-go
 ```
 
 A healthy instance shows `Ready: true` and `Running`. The `EXTERNAL IP` column is populated once the instance is live.
@@ -251,7 +251,7 @@ Once the instance is `Running`, curl the external endpoint. UKC fronts the servi
 ```sh
 # Get the external IP or hostname from the instance list, then:
 curl https://<EXTERNAL-IP>/
-# -> Hello from Datum
+# -> Hello from Datum (Go)
 
 curl https://<EXTERNAL-IP>/healthz
 # -> ok
@@ -272,7 +272,7 @@ To deploy a new version, rebuild and push the image (repeating step 2), then red
 ```sh
 kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   --buildkit-host docker-container://buildkit \
-  deploy --no-start -M 512 --name hello-datum \
+  deploy --no-start -M 512 --name hello-go \
   --runtime base:latest --rootfs ./Dockerfile .
 
 datumctl compute deploy -f workload.yaml -y
@@ -281,8 +281,8 @@ datumctl compute deploy -f workload.yaml -y
 Or with flags:
 
 ```sh
-datumctl compute deploy hello-datum \
-  --image=index.unikraft.io/datum/hello-datum:latest \
+datumctl compute deploy hello-go \
+  --image=index.unikraft.io/datum/hello-go:latest \
   --city=DFW \
   --port=8080
 ```
@@ -290,7 +290,7 @@ datumctl compute deploy hello-datum \
 Watch the rollout progress:
 
 ```sh
-datumctl compute rollout hello-datum
+datumctl compute rollout hello-go
 ```
 
 ---
@@ -299,7 +299,7 @@ datumctl compute rollout hello-datum
 
 ```sh
 # Delete the workload and all its instances.
-datumctl compute destroy hello-datum -y
+datumctl compute destroy hello-go -y
 
 # Stop the local BuildKit daemon.
 docker rm -f buildkit

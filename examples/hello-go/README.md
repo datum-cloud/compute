@@ -1,7 +1,7 @@
 # hello-go
 
 A minimal Go HTTP service packaged as a Unikraft unikernel and deployed on Datum
-compute. It responds `Hello from Datum` on `/` and `ok` on `/healthz`, listening
+compute. It responds `Hello from Datum (Go)` on `/` and `ok` on `/healthz`, listening
 on `$PORT` (default `8080`).
 
 This is the runnable companion to the step-by-step guide:
@@ -24,14 +24,14 @@ This is the runnable companion to the step-by-step guide:
 # 1. Build and publish the image (kraft builds + pushes; it does not run it).
 kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   --buildkit-host docker-container://buildkit \
-  deploy --no-start -M 512 --name hello-datum \
+  deploy --no-start -M 512 --name hello-go \
   --runtime base:latest --rootfs ./Dockerfile .
 
 # 2. Deploy on Datum compute.
 datumctl compute deploy -f workload.yaml -y
 
 # 3. Verify.
-datumctl compute instances --workload=hello-datum
+datumctl compute instances --workload=hello-go
 curl https://<EXTERNAL-IP>/
 ```
 
