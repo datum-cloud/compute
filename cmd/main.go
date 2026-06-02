@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -500,12 +502,33 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
 	}
 
+	// companionLabelSelector scopes the federation manager's ConfigMap and
+	// Secret informer cache to referenced-data companions only. Without this,
+	// For(&corev1.ConfigMap{}) in CompanionGCReconciler would establish a
+	// cluster-wide ConfigMap+Secret informer that caches every object on the
+	// Karmada hub — the same OOM pattern that killed the cell CompanionGCReconciler.
+	// The label CACHE scope (not the predicate) is the correct OOM guard:
+	// predicates filter events, not cache contents.
+	companionLabelSelector := labels.SelectorFromSet(labels.Set{
+		computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
+	})
+
 	// InstanceProjector runs in the management plane, watches Instances written
 	// back by POP-cell operators to the Karmada federation control plane, and
 	// projects them into the corresponding project namespaces via the multicluster manager.
 	federationMgr, err := manager.New(federationRestConfig, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		Cache: cache.Options{
+			// Scope ConfigMap and Secret informers to referenced-data companions.
+			// CompanionGCReconciler is the only consumer on federationMgr that
+			// reads these types; nothing else (InstanceProjector, OrphanRBReconciler)
+			// needs non-companion CMs or Secrets from the cache.
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.ConfigMap{}: {Label: companionLabelSelector},
+				&corev1.Secret{}:    {Label: companionLabelSelector},
+			},
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("federation manager for InstanceProjector: %w", err)
@@ -524,6 +547,16 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// manager alongside InstanceProjector.
 	if err = controller.SetupOrphanRBWithManager(federationMgr, federationClient); err != nil {
 		return nil, fmt.Errorf("OrphanRBReconciler: %w", err)
+	}
+
+	// CompanionGCReconciler is a level-triggered backstop for stranded hub
+	// companions: labeled ConfigMaps/Secrets whose referenced-by annotation
+	// points at WDs that no longer exist on the hub. On each reconcile it
+	// checks all referrer WDs in the hub namespace; if all are absent the
+	// companion and its ResourceBinding are deleted, driving the Karmada
+	// cascade to clean up Works and cell copies permanently.
+	if err = controller.SetupCompanionGCWithManager(federationMgr, federationClient); err != nil {
+		return nil, fmt.Errorf("CompanionGCReconciler: %w", err)
 	}
 
 	return []manager.Runnable{federationMgr}, nil

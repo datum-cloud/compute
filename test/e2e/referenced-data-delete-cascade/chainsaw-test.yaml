@@ -1,0 +1,358 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: referenced-data-delete-cascade
+spec:
+  description: |
+    Validates the full delete-cascade for referenced-data companions and the
+    level-triggered companion GC backstop (CompanionGCReconciler).
+
+    Two scenarios are validated:
+
+    SCENARIO 1 — HAPPY-PATH CASCADE
+    Create a WorkloadDeployment referencing a ConfigMap + Secret. Assert companions
+    materialize and propagate to the member cluster. Delete the WD (last referrer).
+    Assert the hub companion, its Karmada ResourceBinding, and the member-cluster
+    copy are all deleted and stay deleted (no re-create loop).
+
+    SCENARIO 2 — STRANDED COMPANION BACKSTOP
+    Simulate interrupted finalization by creating a referenced-data-labeled
+    companion whose referenced-by annotation points at a non-existent WD.
+    Assert the CompanionGCReconciler reclaims it within the sweep interval:
+    the stranded companion and its ResourceBinding are both deleted.
+
+    Prerequisites:
+    - task e2e:up completed
+    - operators started with featureFlags.enableReferencedDataGate: true
+      (task e2e:operator:start:referenced-data)
+    - CompanionGCReconciler enabled in the management operator
+    - tmp/e2e/kubeconfigs/downstream.yaml exists
+
+  template: true
+
+  steps:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SCENARIO 1: HAPPY-PATH CASCADE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: s1-create-source-data
+    description: Create the source ConfigMap and Secret in the project namespace.
+    try:
+    - apply:
+        file: source-configmap.yaml
+    - apply:
+        file: source-secret.yaml
+
+  - name: s1-create-workload-deployment
+    description: Create the WorkloadDeployment referencing both sources.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: s1-assert-companions-on-hub
+    description: |
+      Assert companions materialize in ns-{project-uid} on the Karmada hub
+      with the referenced-data label. The CompanionGCReconciler watches these.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($companionNS)
+            name: gc-test-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($companionNS)
+            name: gc-test-secret
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  - name: s1-assert-companion-rbs-on-hub
+    description: |
+      Assert ResourceBindings for both companions exist on the hub.
+      These RBs will be deleted by the ReferencedDataController's explicit
+      teardown (Component 3) when the WD is deleted.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: work.karmada.io/v1alpha2
+          kind: ResourceBinding
+          metadata:
+            namespace: ($companionNS)
+            name: gc-test-config-configmap
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: work.karmada.io/v1alpha2
+          kind: ResourceBinding
+          metadata:
+            namespace: ($companionNS)
+            name: gc-test-secret-secret
+
+  - name: s1-assert-companions-on-cell
+    description: Assert Karmada propagated companions to the pop-dfw cell.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: cellNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($cellNS)
+            name: gc-test-config
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($cellNS)
+            name: gc-test-secret
+
+  - name: s1-delete-workload-deployment
+    description: Delete the WorkloadDeployment (the sole referrer).
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          namespace: ($namespace)
+          name: gc-test-wd
+
+  - name: s1-assert-hub-companion-cm-deleted
+    description: |
+      Assert the hub companion ConfigMap is deleted by the ReferencedDataController
+      finalizer after the WD is gone.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - wait:
+        apiVersion: v1
+        kind: ConfigMap
+        namespace: ($companionNS)
+        name: gc-test-config
+        timeout: 60s
+        for:
+          deletion: {}
+
+  - name: s1-assert-hub-companion-secret-deleted
+    description: Assert the hub companion Secret is also deleted.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - wait:
+        apiVersion: v1
+        kind: Secret
+        namespace: ($companionNS)
+        name: gc-test-secret
+        timeout: 60s
+        for:
+          deletion: {}
+
+  - name: s1-assert-rbs-deleted
+    description: |
+      Assert the ResourceBindings are deleted (Component 3 explicit teardown).
+      Deletion of the RB drives Karmada to remove the Work and cell copies.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - wait:
+        apiVersion: work.karmada.io/v1alpha2
+        kind: ResourceBinding
+        namespace: ($companionNS)
+        name: gc-test-config-configmap
+        timeout: 60s
+        for:
+          deletion: {}
+    - wait:
+        apiVersion: work.karmada.io/v1alpha2
+        kind: ResourceBinding
+        namespace: ($companionNS)
+        name: gc-test-secret-secret
+        timeout: 60s
+        for:
+          deletion: {}
+
+  - name: s1-assert-cell-copies-deleted-and-stay-deleted
+    description: |
+      Assert the cell copies are gone and STAY gone for 30 seconds.
+      If a Work were still present, Karmada would re-create the cell copy
+      within ~5 seconds — the poll window catches any recreate loop.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: cellNS
+          value: ($stdout)
+    - wait:
+        apiVersion: v1
+        kind: ConfigMap
+        namespace: ($cellNS)
+        name: gc-test-config
+        timeout: 90s
+        for:
+          deletion: {}
+    - wait:
+        apiVersion: v1
+        kind: Secret
+        namespace: ($cellNS)
+        name: gc-test-secret
+        timeout: 90s
+        for:
+          deletion: {}
+    - script:
+        # Poll for 30 seconds to confirm no recreate loop. If Karmada re-creates
+        # the cell copy from a still-live Work, this script catches it.
+        timeout: 40s
+        content: |
+          CELL_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          for i in $(seq 1 6); do
+            sleep 5
+            CM=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+              get configmap gc-test-config \
+              --namespace "$CELL_NS" \
+              --ignore-not-found 2>/dev/null)
+            if [ -n "$CM" ]; then
+              echo "ERROR: gc-test-config ConfigMap was re-created on cell (Karmada recreate loop!)"
+              exit 1
+            fi
+            SEC=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+              get secret gc-test-secret \
+              --namespace "$CELL_NS" \
+              --ignore-not-found 2>/dev/null)
+            if [ -n "$SEC" ]; then
+              echo "ERROR: gc-test-secret Secret was re-created on cell (Karmada recreate loop!)"
+              exit 1
+            fi
+          done
+          echo "OK: cell copies absent for 30+ seconds — no recreate loop"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SCENARIO 2: STRANDED COMPANION BACKSTOP
+  #
+  # Simulate interrupted finalization: inject a labeled companion whose
+  # referenced-by annotation points at a WD that does not exist. The
+  # CompanionGCReconciler must detect and reclaim it.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: s2-inject-stranded-companion
+    description: |
+      Inject a stranded companion ConfigMap directly into the hub namespace.
+      Its referenced-by annotation points at "default/nonexistent-wd" — a WD
+      that does not (and never did) exist. This simulates an interrupted
+      finalization where the controller pod restarted mid-flight.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          COMPANION_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            apply -f - <<EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: stranded-companion-cm
+            namespace: ${COMPANION_NS}
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+            annotations:
+              compute.datumapis.com/referenced-by: '["default/nonexistent-wd"]'
+          data:
+            key: stranded-value
+          EOF
+
+          echo "injected stranded companion in ${COMPANION_NS}"
+
+  - name: s2-assert-stranded-companion-reclaimed
+    description: |
+      Assert the CompanionGCReconciler reclaims the stranded companion within
+      the sweep interval (5 minutes). The companion GC reads the referenced-by
+      annotation, checks the hub for "nonexistent-wd" in the same namespace
+      (absent), and deletes the companion + its RB.
+      Timeout is set to 6 minutes to account for the full sweep interval plus
+      propagation lag.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - wait:
+        apiVersion: v1
+        kind: ConfigMap
+        namespace: ($companionNS)
+        name: stranded-companion-cm
+        timeout: 360s
+        for:
+          deletion: {}

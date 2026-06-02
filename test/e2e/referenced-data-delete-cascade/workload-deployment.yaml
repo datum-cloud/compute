@@ -1,0 +1,38 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  name: gc-test-wd
+  # namespace injected by Chainsaw from ($namespace)
+spec:
+  cityCode: dfw
+  placementName: default
+  workloadRef:
+    name: gc-test-workload
+    uid: "00000000-0000-0000-0000-000000000099"
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          containers:
+          - name: app
+            image: docker.io/library/busybox:stable
+            env:
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gc-test-secret
+                  key: token
+            volumeAttachments:
+            - name: cfg-vol
+              mountPath: /etc/config
+      volumes:
+      - name: cfg-vol
+        configMap:
+          name: gc-test-config
+      networkInterfaces:
+      - network:
+          name: test-network
+  scaleSettings:
+    minReplicas: 1
