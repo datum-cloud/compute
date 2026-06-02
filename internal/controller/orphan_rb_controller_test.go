@@ -25,8 +25,14 @@ const (
 	// orbTestNS is the hub namespace where companion RBs and their companions live.
 	orbTestNS = "ns-efdf8ca1-9c2d-4ac8-b161-1951503a2879"
 
-	// orbCityPPName is the PropagationPolicy name label used on companion RBs.
+	// orbCityPPName is the PropagationPolicy name stored in metadata.annotations
+	// on companion RBs. Karmada writes it to annotations, not labels (labels only
+	// carry permanent-id UUIDs).
 	orbCityPPName = "city-dfw"
+
+	// Karmada permanent-id label keys — present in metadata.labels on production RBs.
+	orbPPPermanentIDKey = "propagationpolicy.karmada.io/permanent-id"
+	orbRBPermanentIDKey = "resourcebinding.karmada.io/permanent-id"
 )
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -40,15 +46,22 @@ func newOrphanRBReconciler(objs ...client.Object) (*OrphanRBReconciler, client.C
 	return &OrphanRBReconciler{HubClient: hubCl}, hubCl
 }
 
-// makeCompanionRB returns a ResourceBinding that represents an in-scope
-// companion RB (city-PP label + configmap/secret name suffix). The RB is
-// placed in orbTestNS.
+// makeCompanionRB returns a ResourceBinding that mirrors the production shape
+// observed in the lab: PP name in metadata.annotations (NOT labels), and
+// permanent-id UUIDs in labels. This matches what Karmada's binding-controller
+// actually stamps on each ResourceBinding.
 func makeCompanionRB(name string) *karmadaworkv1alpha2.ResourceBinding {
 	return &karmadaworkv1alpha2.ResourceBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: orbTestNS,
 			Name:      name,
-			Labels:    map[string]string{ppNameLabelKey: orbCityPPName},
+			Labels: map[string]string{
+				orbPPPermanentIDKey: "a3d5b1ac-0000-0000-0000-000000000001",
+				orbRBPermanentIDKey: "ee4b0939-0000-0000-0000-000000000001",
+			},
+			Annotations: map[string]string{
+				ppNameAnnotationKey: orbCityPPName,
+			},
 		},
 	}
 }
@@ -153,12 +166,17 @@ func TestOrphanRB_SkipsTerminatingCompanion(t *testing.T) {
 func TestOrphanRB_IgnoresNonCityPPRB(t *testing.T) {
 	t.Parallel()
 
-	// RB has a non-city PP label (e.g. a WD's PP or an unrelated tenant's PP).
+	// RB has a non-city PP annotation (e.g. a WD's PP or an unrelated tenant's PP).
+	// Production shape: PP name in annotations, permanent-ids in labels.
 	nonCityRB := &karmadaworkv1alpha2.ResourceBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: orbTestNS,
 			Name:      "cm-other-configmap",
-			Labels:    map[string]string{ppNameLabelKey: "other-pp"},
+			Labels: map[string]string{
+				"propagationpolicy.karmada.io/permanent-id": "a3d5b1ac-0000-0000-0000-000000000099",
+				"resourcebinding.karmada.io/permanent-id":   "ee4b0939-0000-0000-0000-000000000099",
+			},
+			Annotations: map[string]string{ppNameAnnotationKey: "other-pp"},
 		},
 	}
 	r, hubCl := newOrphanRBReconciler(nonCityRB)
@@ -179,12 +197,17 @@ func TestOrphanRB_IgnoresNonCityPPRB(t *testing.T) {
 func TestOrphanRB_IgnoresWorkloadDeploymentRB(t *testing.T) {
 	t.Parallel()
 
-	// WD RB: correct city- PP label but wrong kind suffix.
+	// WD RB: correct city- PP annotation but wrong kind suffix ("-workloaddeployment"
+	// instead of "-configmap"/"-secret"). Production shape: PP name in annotations.
 	wdRB := &karmadaworkv1alpha2.ResourceBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: orbTestNS,
 			Name:      "my-workload-workloaddeployment",
-			Labels:    map[string]string{ppNameLabelKey: "city-dfw"},
+			Labels: map[string]string{
+				"propagationpolicy.karmada.io/permanent-id": "a3d5b1ac-0000-0000-0000-000000000088",
+				"resourcebinding.karmada.io/permanent-id":   "ee4b0939-0000-0000-0000-000000000088",
+			},
+			Annotations: map[string]string{ppNameAnnotationKey: "city-dfw"},
 		},
 	}
 	r, hubCl := newOrphanRBReconciler(wdRB)

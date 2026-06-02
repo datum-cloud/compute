@@ -25,14 +25,17 @@ const (
 	// ResourceBindings whose hub companion was deleted before the controller started.
 	orphanRBSweepInterval = 5 * time.Minute
 
-	// ppNameLabelKey is the label Karmada's binding-controller stamps on every
-	// ResourceBinding to link it back to its governing PropagationPolicy.
-	ppNameLabelKey = "propagationpolicy.karmada.io/name"
+	// ppNameAnnotationKey is the annotation Karmada's binding-controller stamps on
+	// every ResourceBinding to link it back to its governing PropagationPolicy.
+	// Despite the "name" in the key string, Karmada stores this value in
+	// metadata.annotations, NOT metadata.labels (labels carry only permanent-id
+	// UUIDs). Reading from labels always returns "" and breaks scope filtering.
+	ppNameAnnotationKey = "propagationpolicy.karmada.io/name"
 
 	// cityPPPrefix is the prefix of PropagationPolicy names created by
 	// propagationPolicyNameFor in workloaddeployment_federator.go. RBs whose
-	// PP label starts with this prefix were created for referenced-data companion
-	// propagation.
+	// PP annotation starts with this prefix were created for referenced-data
+	// companion propagation.
 	cityPPPrefix = "city-"
 )
 
@@ -49,8 +52,9 @@ const (
 // Only ResourceBindings satisfying ALL three conditions are ever deleted:
 //  1. Name ends with "-configmap" or "-secret" (Karmada's kind-suffix for
 //     namespace-scoped ConfigMap/Secret RBs — WD RBs end in "-workloaddeployment").
-//  2. The propagationpolicy.karmada.io/name label starts with "city-" (all
-//     referenced-data PropagationPolicies use this prefix).
+//  2. The propagationpolicy.karmada.io/name annotation starts with "city-" (all
+//     referenced-data PropagationPolicies use this prefix; Karmada stores this
+//     in annotations, not labels).
 //  3. The hub companion derived by stripping the kind suffix does NOT exist
 //     in the same namespace (and has no deletionTimestamp — a terminating
 //     companion means Karmada cascade is still in progress).
@@ -116,9 +120,9 @@ func (r *OrphanRBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // isInScope returns true when the ResourceBinding falls within the tight scope
-// of referenced-data companion RBs: city-PP label AND kind suffix.
+// of referenced-data companion RBs: city-PP annotation AND kind suffix.
 func (r *OrphanRBReconciler) isInScope(rb *karmadaworkv1alpha2.ResourceBinding) bool {
-	ppName := rb.Labels[ppNameLabelKey]
+	ppName := rb.Annotations[ppNameAnnotationKey]
 	if !strings.HasPrefix(ppName, cityPPPrefix) {
 		return false
 	}
@@ -187,7 +191,7 @@ func (r *OrphanRBReconciler) SetupWithManager(mgr manager.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&karmadaworkv1alpha2.ResourceBinding{},
 			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
-				ppName := obj.GetLabels()[ppNameLabelKey]
+				ppName := obj.GetAnnotations()[ppNameAnnotationKey]
 				if !strings.HasPrefix(ppName, cityPPPrefix) {
 					return false
 				}
