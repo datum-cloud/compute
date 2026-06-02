@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
@@ -142,7 +143,7 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	r := &WorkloadDeploymentReconciler{}
 
 	// The call must not panic — that is the primary regression assertion.
-	currentReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, err := r.reconcileInstanceGates(
+	currentReplicas, _, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, err := r.reconcileInstanceGates(
 		context.Background(),
 		cl,
 		deployment,
@@ -195,7 +196,7 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	r := &WorkloadDeploymentReconciler{}
 
 	require.NotPanics(t, func() {
-		_, _, _, _, err := r.reconcileInstanceGates(
+		_, _, _, _, _, err := r.reconcileInstanceGates(
 			context.Background(),
 			cl,
 			deployment,
@@ -204,4 +205,439 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 		)
 		require.NoError(t, err)
 	})
+}
+
+// makeWDForAvailTest constructs a WorkloadDeployment for Available-condition
+// unit tests, optionally stamping a ReferencedDataReady condition on status.
+func makeWDForAvailTest(generation int64, refDataStatus metav1.ConditionStatus, refDataReason, refDataMessage string) *computev1alpha.WorkloadDeployment {
+	d := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       wdControllerTestName,
+			Namespace:  wdControllerTestNS,
+			Generation: generation,
+		},
+	}
+	if refDataReason != "" {
+		d.Status.Conditions = []metav1.Condition{
+			{
+				Type:               computev1alpha.ReferencedDataReady,
+				Status:             refDataStatus,
+				Reason:             refDataReason,
+				Message:            refDataMessage,
+				LastTransitionTime: metav1.Now(),
+			},
+		}
+	}
+	return d
+}
+
+// TestWDAvailableCondition_ReferencedDataSourceNotFound verifies that when the
+// WD's ReferencedDataReady condition is False/SourceNotFound, the Available
+// condition is set to False/ReferencedDataNotReady with the resolver message
+// verbatim and ObservedGeneration equal to the deployment generation.
+func TestWDAvailableCondition_ReferencedDataSourceNotFound(t *testing.T) {
+	const (
+		gen             = int64(5)
+		desiredReplicas = int32(2)
+		replicas        = 2
+	)
+	msg := testMsgConfigMapNotFound
+	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
+		computev1alpha.ReferencedDataReasonSourceNotFound, msg)
+
+	cond := selectWDBlockingCondition(deployment, true, 0, 1, replicas, desiredReplicas)
+
+	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason)
+	assert.Equal(t, msg, cond.Message, "message must be the resolver message verbatim")
+	assert.Equal(t, gen, cond.ObservedGeneration, "ObservedGeneration must match deployment generation")
+}
+
+// TestWDAvailableCondition_QuotaNotGranted verifies that QuotaNotGranted is
+// surfaced when replicas are quota-blocked and there is no resolver error.
+func TestWDAvailableCondition_QuotaNotGranted(t *testing.T) {
+	const (
+		gen             = int64(2)
+		desiredReplicas = int32(3)
+		replicas        = 3
+	)
+	deployment := makeWDForAvailTest(gen, metav1.ConditionTrue, computev1alpha.ReferencedDataReasonReady, "all present")
+
+	cond := selectWDBlockingCondition(deployment, true, 2, 0, replicas, desiredReplicas)
+
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, cond.Reason)
+	assert.Contains(t, cond.Message, "2 of")
+	assert.Equal(t, gen, cond.ObservedGeneration)
+}
+
+// TestWDAvailableCondition_ReferencedDataWinsOverQuota verifies evaluate-all-then-pick:
+// when both ReferencedDataReady=False and quotaBlockedReplicas > 0, referenced-data
+// (priority 4) beats quota (priority 3).
+func TestWDAvailableCondition_ReferencedDataWinsOverQuota(t *testing.T) {
+	const (
+		gen             = int64(1)
+		desiredReplicas = int32(2)
+		replicas        = 2
+	)
+	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
+		computev1alpha.ReferencedDataReasonSourceNotFound,
+		`ConfigMap "X" not found in namespace "default"`)
+
+	cond := selectWDBlockingCondition(deployment, true, 1, 1, replicas, desiredReplicas)
+
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
+		"ReferencedDataNotReady (priority 4) must beat QuotaNotGranted (priority 3)")
+}
+
+// TestWDAvailableCondition_NetworkProvisioningVsReferencedData verifies that when
+// network is not ready AND the WD has ReferencedDataReady=False/SourceNotFound,
+// referenced-data wins because priority 4 > priority 2. This is the key
+// evaluate-all-then-pick test: the old code would have short-circuited at
+// network-not-ready and returned NetworkProvisioning.
+func TestWDAvailableCondition_NetworkProvisioningVsReferencedData(t *testing.T) {
+	const (
+		gen             = int64(1)
+		desiredReplicas = int32(1)
+		replicas        = 1
+	)
+	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
+		computev1alpha.ReferencedDataReasonSourceNotFound,
+		`ConfigMap "X" not found`)
+
+	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, 0, 1, replicas, desiredReplicas)
+
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
+		"ReferencedDataNotReady (priority 4) must beat NetworkProvisioning (priority 2)")
+}
+
+// TestWDBlockingReasonPriority_WD exhaustively verifies every entry in the
+// wdBlockingReasonPriority switch statement.
+func TestWDBlockingReasonPriority_WD(t *testing.T) {
+	tests := []struct {
+		reason   string
+		wantPrio int
+	}{
+		{"", 0},
+		{"Unknown", 0},
+		{computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, 1},
+		{computev1alpha.WorkloadDeploymentReasonNetworkProvisioning, 2},
+		{computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, 3},
+		{computev1alpha.InstanceProgrammedReasonPendingQuota, 3},
+		{computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, 4},
+		{computev1alpha.ReferencedDataReasonAwaitingPropagation, 4},
+		{computev1alpha.ReferencedDataReasonResolving, 4},
+		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
+		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
+		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
+		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
+		{reasonNetworkFailedToCreate, 7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			assert.Equal(t, tt.wantPrio, wdBlockingReasonPriority(tt.reason))
+		})
+	}
+}
+
+// TestWDAvailableCondition_ObservedGeneration verifies that the Available
+// condition emitted by selectWDBlockingCondition always carries ObservedGeneration
+// equal to the deployment's current generation.
+func TestWDAvailableCondition_ObservedGeneration(t *testing.T) {
+	const gen = int64(42)
+	deployment := makeWDForAvailTest(gen, "", "", "")
+
+	cond := selectWDBlockingCondition(deployment, true, 0, 0, 0, 1)
+
+	assert.Equal(t, gen, cond.ObservedGeneration, "ObservedGeneration must match deployment generation")
+	// Verify the condition is also reachable via apimeta.FindStatusCondition (field
+	// names match what the API machinery expects).
+	conditions := []metav1.Condition{cond}
+	found := apimeta.FindStatusCondition(conditions, computev1alpha.WorkloadDeploymentAvailable)
+	require.NotNil(t, found)
+	assert.Equal(t, gen, found.ObservedGeneration)
+}
+
+// ─── wdRefDataCondChanged tests ───────────────────────────────────────────────
+
+// TestWdRefDataCondChanged_BothNil verifies that two nil conditions are treated
+// as unchanged (no predicate trigger).
+func TestWdRefDataCondChanged_BothNil(t *testing.T) {
+	assert.False(t, wdRefDataCondChanged(nil, nil),
+		"both nil conditions must not be treated as a change")
+}
+
+// TestWdRefDataCondChanged_AddedCondition verifies that a nil→non-nil transition
+// (condition first appears on the WD) is treated as a change.
+func TestWdRefDataCondChanged_AddedCondition(t *testing.T) {
+	newCond := &metav1.Condition{
+		Type:   computev1alpha.ReferencedDataReady,
+		Status: metav1.ConditionFalse,
+		Reason: computev1alpha.ReferencedDataReasonSourceNotFound,
+	}
+	assert.True(t, wdRefDataCondChanged(nil, newCond),
+		"nil→non-nil must be treated as a change")
+}
+
+// TestWdRefDataCondChanged_RemovedCondition verifies that a non-nil→nil transition
+// (condition removed) is treated as a change.
+func TestWdRefDataCondChanged_RemovedCondition(t *testing.T) {
+	oldCond := &metav1.Condition{
+		Type:   computev1alpha.ReferencedDataReady,
+		Status: metav1.ConditionTrue,
+		Reason: computev1alpha.ReferencedDataReasonReady,
+	}
+	assert.True(t, wdRefDataCondChanged(oldCond, nil),
+		"non-nil→nil must be treated as a change")
+}
+
+// TestWdRefDataCondChanged_StatusChange verifies that a change in the condition's
+// Status field is detected.
+func TestWdRefDataCondChanged_StatusChange(t *testing.T) {
+	old := &metav1.Condition{
+		Type:   computev1alpha.ReferencedDataReady,
+		Status: metav1.ConditionUnknown,
+		Reason: computev1alpha.ReferencedDataReasonResolving,
+	}
+	new := &metav1.Condition{
+		Type:   computev1alpha.ReferencedDataReady,
+		Status: metav1.ConditionFalse,
+		Reason: computev1alpha.ReferencedDataReasonSourceNotFound,
+	}
+	assert.True(t, wdRefDataCondChanged(old, new),
+		"status change must be detected")
+}
+
+// TestWdRefDataCondChanged_MessageChange verifies that a change in Message is
+// detected, e.g. when the resolver updates the missing-object name.
+func TestWdRefDataCondChanged_MessageChange(t *testing.T) {
+	old := &metav1.Condition{
+		Type:    computev1alpha.ReferencedDataReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  computev1alpha.ReferencedDataReasonSourceNotFound,
+		Message: `ConfigMap "a" not found in namespace "default"`,
+	}
+	new := &metav1.Condition{
+		Type:    computev1alpha.ReferencedDataReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  computev1alpha.ReferencedDataReasonSourceNotFound,
+		Message: `ConfigMap "b" not found in namespace "default"`,
+	}
+	assert.True(t, wdRefDataCondChanged(old, new),
+		"message change must be detected")
+}
+
+// TestWdRefDataCondChanged_Identical verifies that an identical condition (same
+// Status/Reason/Message, differing only in LastTransitionTime) is NOT treated as
+// a change. This is the key no-self-trigger property: the reconciler's own
+// Status().Update does not re-enqueue via the For() predicate.
+func TestWdRefDataCondChanged_Identical(t *testing.T) {
+	t1 := metav1.Now()
+	t2 := metav1.Now()
+	old := &metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+		Message:            testMsgConfigMapNotFound,
+		LastTransitionTime: t1,
+	}
+	new := &metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+		Message:            testMsgConfigMapNotFound,
+		LastTransitionTime: t2, // different timestamp, same content
+	}
+	assert.False(t, wdRefDataCondChanged(old, new),
+		"identical conditions with differing LastTransitionTime must not be treated as a change")
+}
+
+// ─── wdReferencedDataChangedPredicate tests ───────────────────────────────────
+
+// makeWDPair builds two empty WorkloadDeployment objects (no conditions) for
+// predicate Update tests. Callers mutate the returned objects before constructing
+// the event.UpdateEvent.
+func makeWDPair(gen int64) (old, new *computev1alpha.WorkloadDeployment) {
+	old = &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       wdControllerTestName,
+			Namespace:  wdControllerTestNS,
+			Generation: gen,
+		},
+	}
+	new = &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       wdControllerTestName,
+			Namespace:  wdControllerTestNS,
+			Generation: gen,
+		},
+	}
+	return old, new
+}
+
+// TestWDPredicate_ReferencedDataReadyAdded verifies that the predicate passes
+// when the resolver writes ReferencedDataReady=False for the first time. This is
+// the primary gap-closure scenario: the WD had no ReferencedDataReady condition
+// (reconciler wrote Available=InstancesProvisioning), the resolver adds
+// ReferencedDataReady=False/SourceNotFound, and the predicate must fire so the
+// reconciler re-runs and promotes Available to ReferencedDataNotReady.
+func TestWDPredicate_ReferencedDataReadyAdded(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+
+	oldWD, newWD := makeWDPair(1)
+	apimeta.SetStatusCondition(&newWD.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+		Message:            testMsgConfigMapNotFound,
+		LastTransitionTime: metav1.Now(),
+	})
+
+	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
+	assert.True(t, pred.Update(e),
+		"predicate must pass when ReferencedDataReady is added (nil→False/SourceNotFound)")
+}
+
+// TestWDPredicate_ReferencedDataReadyCleared verifies that the predicate passes
+// when the resolver sets ReferencedDataReady=True (source ConfigMap was created).
+// The WD reconciler must re-run so Available can be promoted from
+// ReferencedDataNotReady to StableInstanceFound (or InstancesProvisioning).
+func TestWDPredicate_ReferencedDataReadyCleared(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+
+	oldWD, newWD := makeWDPair(1)
+	apimeta.SetStatusCondition(&oldWD.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+		Message:            testMsgConfigMapNotFound,
+		LastTransitionTime: metav1.Now(),
+	})
+	apimeta.SetStatusCondition(&newWD.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             computev1alpha.ReferencedDataReasonReady,
+		Message:            "All companions are ready",
+		LastTransitionTime: metav1.Now(),
+	})
+
+	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
+	assert.True(t, pred.Update(e),
+		"predicate must pass when ReferencedDataReady flips from False to True")
+}
+
+// TestWDPredicate_GenerationChanged verifies that the predicate passes when the
+// WD's generation changes (spec update), even if the ReferencedDataReady condition
+// did not change.
+func TestWDPredicate_GenerationChanged(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+
+	oldWD, newWD := makeWDPair(1)
+	newWD.Generation = 2
+
+	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
+	assert.True(t, pred.Update(e),
+		"predicate must pass when metadata.generation increases")
+}
+
+// TestWDPredicate_AvailableOnlyChange verifies that the predicate DROPS updates
+// where only the Available condition changed. This is the self-trigger prevention:
+// after the WD reconciler writes Available=ReferencedDataNotReady, the predicate
+// must not re-enqueue the same reconciler via the For() watch.
+func TestWDPredicate_AvailableOnlyChange(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+
+	// Both old and new have the SAME ReferencedDataReady condition.
+	refDataCond := metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+		Message:            testMsgConfigMapNotFound,
+		LastTransitionTime: metav1.Now(),
+	}
+	oldWD, newWD := makeWDPair(1)
+	apimeta.SetStatusCondition(&oldWD.Status.Conditions, refDataCond)
+	apimeta.SetStatusCondition(&newWD.Status.Conditions, refDataCond)
+
+	// The WD reconciler wrote Available=InstancesProvisioning (old) and then
+	// Available=ReferencedDataNotReady (new). ReferencedDataReady is unchanged.
+	apimeta.SetStatusCondition(&oldWD.Status.Conditions, metav1.Condition{
+		Type:    computev1alpha.WorkloadDeploymentAvailable,
+		Status:  metav1.ConditionFalse,
+		Reason:  computev1alpha.WorkloadDeploymentReasonInstancesProvisioning,
+		Message: "Instances are being provisioned",
+	})
+	apimeta.SetStatusCondition(&newWD.Status.Conditions, metav1.Condition{
+		Type:    computev1alpha.WorkloadDeploymentAvailable,
+		Status:  metav1.ConditionFalse,
+		Reason:  computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+		Message: testMsgConfigMapNotFound,
+	})
+
+	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
+	assert.False(t, pred.Update(e),
+		"predicate must drop update when only Available changed; "+
+			"ReferencedDataReady is unchanged so the reconciler's own write must not re-enqueue itself")
+}
+
+// TestWDPredicate_ReplicasReadyOnlyChange verifies that the predicate DROPS updates
+// where only the ReplicasReady condition changed (also written by this reconciler),
+// for the same self-trigger prevention reason as the Available-only case.
+func TestWDPredicate_ReplicasReadyOnlyChange(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+
+	refDataCond := metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             computev1alpha.ReferencedDataReasonReady,
+		Message:            "all ready",
+		LastTransitionTime: metav1.Now(),
+	}
+	oldWD, newWD := makeWDPair(2)
+	apimeta.SetStatusCondition(&oldWD.Status.Conditions, refDataCond)
+	apimeta.SetStatusCondition(&newWD.Status.Conditions, refDataCond)
+
+	// ReplicasReady changed (more instances became ready) but ReferencedDataReady is identical.
+	apimeta.SetStatusCondition(&oldWD.Status.Conditions, metav1.Condition{
+		Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonReplicasAvailable,
+		Message: "0/2 replicas available",
+	})
+	apimeta.SetStatusCondition(&newWD.Status.Conditions, metav1.Condition{
+		Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonReplicasAvailable,
+		Message: "2/2 replicas available",
+	})
+
+	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
+	assert.False(t, pred.Update(e),
+		"predicate must drop update when only ReplicasReady changed")
+}
+
+// TestWDPredicate_CreateAlwaysPasses verifies that Create events always trigger
+// the reconciler regardless of conditions.
+func TestWDPredicate_CreateAlwaysPasses(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+	e := event.CreateEvent{Object: &computev1alpha.WorkloadDeployment{}}
+	assert.True(t, pred.Create(e))
+}
+
+// TestWDPredicate_DeleteAlwaysPasses verifies that Delete events always trigger
+// the reconciler.
+func TestWDPredicate_DeleteAlwaysPasses(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+	e := event.DeleteEvent{Object: &computev1alpha.WorkloadDeployment{}}
+	assert.True(t, pred.Delete(e))
+}
+
+// TestWDPredicate_GenericAlwaysPasses verifies that Generic events (e.g. from
+// external sources) always trigger the reconciler.
+func TestWDPredicate_GenericAlwaysPasses(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+	e := event.GenericEvent{Object: &computev1alpha.WorkloadDeployment{}}
+	assert.True(t, pred.Generic(e))
 }
