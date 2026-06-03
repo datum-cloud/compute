@@ -2,9 +2,6 @@
 
 > Last verified: 2026-06-03 on the `ash-sore-hamster` lab metro against the live `datumctl compute` and `kraft` CLIs.
 
-> [!IMPORTANT]
-> The cross-plane delivery this guide describes is introduced by the [ConfigMap/Secret mounts RFC](../compute/development/rfcs/configmap-secret-mounts.md) and lands with [#129](https://github.com/datum-cloud/compute/pull/129). Until that merges, the delivery half is not yet available on `main` — the runtime mechanics (the `base-compat:latest` + erofs file-mount path) are real today.
-
 This guide shows how to deliver configuration files and secret material to a running instance — without baking them into the image. You create a `ConfigMap` or `Secret` in your project, reference it by name from a `Workload`, and the platform delivers the data to every cell where the instance is placed. By the end you will know how to:
 
 - Mount a ConfigMap or Secret as **files** at a path inside the instance (volumes)
@@ -84,7 +81,7 @@ Two things differ from a plain `base:latest` image:
 - **`rootfs.format: erofs`** packages the rootfs as an erofs image. The mounted ConfigMap/Secret arrives as an additional read-only ROM device alongside it.
 
 > [!TIP]
-> A complete, runnable image built this way — a generic Node.js runtime that executes a function supplied entirely via a mounted ConfigMap — is in [#139](https://github.com/datum-cloud/compute/pull/139). Use it as a reference for the `Dockerfile`/`Kraftfile` shape.
+> A complete, runnable image built this way — a generic Node.js runtime that executes a function supplied entirely via a mounted ConfigMap — is in [`examples/serverless-js-configmap/`](../../examples/serverless-js-configmap/). Use it as a reference for the `Dockerfile`/`Kraftfile` shape.
 
 ### Create the source objects
 
@@ -220,7 +217,7 @@ The same delivery path backs both forms — once the companion is present on the
 > RunWithoutApiError(... InvalidKernelCommandLine("Invalid cmdline capacity provided."))
 > ```
 >
-> This is a platform limitation, not a defect in your workload — the same overflow reproduces with a known-good image once enough env is present. If you hit it, keep your own env minimal; the long-term fix (passing env via initrd/file rather than the kernel cmdline, and disabling service links) is tracked alongside the delivery work.
+> This is a platform limitation, not a defect in your workload — the same overflow reproduces with a known-good image once enough env is present. If you hit it, keep your own env minimal; the long-term fix (passing env via initrd/file rather than the kernel cmdline, and disabling service links) is tracked separately.
 
 ---
 
@@ -269,7 +266,7 @@ Look at the `ReferencedDataReady` condition. The reason tells you what is happen
 
 ## Image pull secrets
 
-Pulling an image from a private registry needs the same machinery — deliver a referenced `Secret` to the cell where the instance runs — so image pull credentials are built as a later consumer of this exact delivery path rather than a separate mechanism. See the [ConfigMap/Secret mounts RFC](../compute/development/rfcs/configmap-secret-mounts.md), which sequences pull-secret support on top of the resolver introduced here.
+Pulling an image from a private registry needs the same machinery — deliver a referenced `Secret` to the cell where the instance runs — so image pull credentials build on this exact delivery path as a later consumer rather than a separate mechanism. See the [ConfigMap/Secret mounts RFC](../compute/development/rfcs/configmap-secret-mounts.md), which sequences pull-secret support on top of the resolver this guide describes.
 
 ---
 
@@ -300,5 +297,5 @@ Running instances are not rolled automatically. Run `datumctl compute restart <w
 - [ConfigMap/Secret mounts RFC](../compute/development/rfcs/configmap-secret-mounts.md) — the delivery design (resolver, companions, scheduling gate, rotation).
 - [Workload API reference](../api/workloads.md) — `spec.template.spec.volumes[]` and `runtime.sandbox.containers[].volumeAttachments[]`.
 - [Instance API reference](../api/instances.md) — the same volume/attachment shapes on the resulting Instance.
-- [#139](https://github.com/datum-cloud/compute/pull/139) — a runnable `base-compat:latest` + erofs example that delivers application code via a mounted ConfigMap.
-- [#129](https://github.com/datum-cloud/compute/pull/129) — the implementation that delivers referenced ConfigMaps/Secrets to instances.
+- [`examples/serverless-js-configmap/`](../../examples/serverless-js-configmap/) — a runnable `base-compat:latest` + erofs example that delivers application code via a mounted ConfigMap.
+- [`examples/config-secret-probe/`](../../examples/config-secret-probe/) — a probe that verifies, byte-for-byte, that referenced ConfigMap/Secret data lands as mounted files and injected environment variables.
