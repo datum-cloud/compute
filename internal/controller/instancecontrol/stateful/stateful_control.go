@@ -53,8 +53,10 @@ func (c *statefulControl) GetActions(
 	var createActions []instancecontrol.Action
 	var waitActions []instancecontrol.Action
 
-	// highest -> lowest
-	var updateActions []instancecontrol.Action
+	// highest -> lowest. Instances whose template hash has drifted from the
+	// desired template are deleted and recreated (not updated in place) so the
+	// change actually rolls the backing pod — see the recreate branch below.
+	var recreateActions []instancecontrol.Action
 
 	// highest -> lowest
 	var deleteActions []instancecontrol.Action
@@ -129,14 +131,19 @@ func (c *statefulControl) GetActions(
 			if !apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady) {
 				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 			} else if needsUpdate(instance, instanceTemplateHash) {
-				updatedInstance := instance.DeepCopy()
-				updatedInstance.Annotations = deployment.Spec.Template.Annotations
-				updatedInstance.Labels = deployment.Spec.Template.Labels
-
-				addInstanceControllerLabels(updatedInstance, getInstanceOrdinal(updatedInstance.Name), deployment)
-
-				updatedInstance.Spec = deployment.Spec.Template.Spec
-				updateActions = append(updateActions, instancecontrol.NewUpdateAction(updatedInstance))
+				// The instance's template hash no longer matches the desired
+				// template — e.g. an image change, or a restart requested via the
+				// RestartedAtAnnotation, which is part of the template hash. The
+				// unikraft provider bakes the pod's runtime, rootfs, and file
+				// mounts at pod-creation time and never reconciles an existing
+				// pod's spec, so an in-place Instance update would silently fail to
+				// roll the running workload. Delete the instance instead; the next
+				// reconcile recreates it from the current template via the create
+				// path above, and the provider tears down the old pod
+				// (finalizer-gated) and boots a fresh one. Ordered, one-at-a-time
+				// pacing is preserved by the descending-ordinal sort, the
+				// skip-all-but-first logic, and the DeletionTimestamp WaitAction.
+				recreateActions = append(recreateActions, instancecontrol.NewDeleteAction(instance))
 			}
 		}
 	}
@@ -168,10 +175,10 @@ func (c *statefulControl) GetActions(
 		}
 	}
 
-	slices.SortFunc(updateActions, descendingOrdinal)
+	slices.SortFunc(recreateActions, descendingOrdinal)
 	slices.SortFunc(deleteActions, descendingOrdinal)
 
-	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(updateActions)+len(deleteActions)+len(patchLabelActions))
+	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions))
 
 	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
 	case v1alpha.OrderedReadyInstanceManagementPolicyType:
@@ -186,7 +193,7 @@ func (c *statefulControl) GetActions(
 
 		slices.SortFunc(actions, ascendingOrdinal)
 
-		actions = append(actions, updateActions...)
+		actions = append(actions, recreateActions...)
 		actions = append(actions, deleteActions...)
 
 		// Skip all actions except the first one.
