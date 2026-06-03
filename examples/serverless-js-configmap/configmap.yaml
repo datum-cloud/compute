@@ -1,0 +1,36 @@
+# The serverless function payload, delivered as a ConfigMap. The `index.js` key
+# becomes the file /app/index.js inside the microVM (a ConfigMap volume mounted
+# at /app is a directory; each data key becomes a file under it).
+#
+# Apply this on the PROJECT control plane -- the ReferencedData resolver that
+# turns ConfigMap data into the unikernel mount runs project-side:
+#   kubectl --context datum-project-datum-cloud -n default apply -f configmap.yaml
+#
+# To swap the function: edit the VERSION string below (v1 -> v2), re-apply, then
+# `datumctl compute restart <workload>`. Mounts are read-only roms baked at
+# boot, so the instance must be recreated to pick up new content -- restart is
+# the realistic "redeploy the function" path. No image rebuild required.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: js-function
+data:
+  index.js: |
+    const http = require('http');
+
+    const VERSION = 'v1';
+    const port = parseInt(process.env.PORT, 10) || 8080;
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/healthz') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('ok\n');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('Hello from a ConfigMap-mounted function — ' + VERSION + '\n');
+    });
+
+    server.listen(port, () => {
+      console.log('serverless-js: ' + VERSION + ' listening on :' + port);
+    });

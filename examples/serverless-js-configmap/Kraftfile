@@ -1,0 +1,27 @@
+# Kraftfile for the generic serverless Node.js runtime image.
+#
+# spec v0.7 + rootfs.format: erofs is what makes Datum ConfigMap/Secret file
+# mounts materialize into the unikraft microVM (validated 2026-06-03 on the
+# ash-sore-hamster metro). base-compat:latest is required because node is a
+# dynamic musl ELF (see Dockerfile).
+#
+# The cmd points node at /app/index.js -- a MOUNTED path, not a baked one. The
+# image contains no index.js; the Workload mounts the `js-function` ConfigMap at
+# /app, so /app/index.js is the function supplied at deploy time.
+#
+# Build/push (push-only, do not start):
+#   kraft cloud --metro <metro>/v1 --token <token> \
+#     --buildkit-host docker-container://buildkit \
+#     deploy --no-start -M 512 --name serverless-js-runtime \
+#     --runtime base-compat:latest --rootfs ./Dockerfile .
+spec: v0.7
+
+name: serverless-js-runtime
+
+runtime: base-compat:latest
+
+rootfs:
+  source: ./Dockerfile
+  format: erofs
+
+cmd: ["/usr/bin/node", "/app/index.js"]
