@@ -53,8 +53,10 @@ func (c *statefulControl) GetActions(
 	var createActions []instancecontrol.Action
 	var waitActions []instancecontrol.Action
 
-	// highest -> lowest
-	var updateActions []instancecontrol.Action
+	// highest -> lowest. Instances whose template hash has drifted from the
+	// desired template are deleted and recreated (not updated in place) so the
+	// change actually rolls the backing pod — see the recreate branch below.
+	var recreateActions []instancecontrol.Action
 
 	// highest -> lowest
 	var deleteActions []instancecontrol.Action
@@ -129,24 +131,31 @@ func (c *statefulControl) GetActions(
 			if !apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady) {
 				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 			} else if needsUpdate(instance, instanceTemplateHash) {
-				updatedInstance := instance.DeepCopy()
-				updatedInstance.Annotations = deployment.Spec.Template.Annotations
-				updatedInstance.Labels = deployment.Spec.Template.Labels
-
-				addInstanceControllerLabels(updatedInstance, getInstanceOrdinal(updatedInstance.Name), deployment)
-
-				updatedInstance.Spec = deployment.Spec.Template.Spec
-				updateActions = append(updateActions, instancecontrol.NewUpdateAction(updatedInstance))
+				// The instance's template hash no longer matches the desired
+				// template — e.g. an image change, or a restart requested via the
+				// RestartedAtAnnotation, which is part of the template hash. The
+				// unikraft provider bakes the pod's runtime, rootfs, and file
+				// mounts at pod-creation time and never reconciles an existing
+				// pod's spec, so an in-place Instance update would silently fail to
+				// roll the running workload. Delete the instance instead; the next
+				// reconcile recreates it from the current template via the create
+				// path above, and the provider tears down the old pod
+				// (finalizer-gated) and boots a fresh one. Ordered, one-at-a-time
+				// pacing is preserved by the descending-ordinal sort, the
+				// skip-all-but-first logic, and the DeletionTimestamp WaitAction.
+				recreateActions = append(recreateActions, instancecontrol.NewDeleteAction(instance))
 			}
 		}
 	}
 
-	// Backfill controller-managed labels on every existing instance, regardless
-	// of Ready state or template hash. This ensures newly-introduced labels
-	// (e.g. city-code, workload-name) are applied to pre-existing instances that
-	// were never touched by a rolling update. The patch is metadata-only and is
-	// emitted outside the ordered rollout decision so it never gates or reorders
-	// instance creation/updates.
+	// Converge controller-managed labels on every existing instance, regardless
+	// of Ready state or template hash. Labels are stamped only at instance
+	// creation and rollout is recreate-only, so when the label schema evolves —
+	// a label is added or its value derivation changes — this pass is the only
+	// mechanism that updates live instances; without it, any instance alive at
+	// the time of the change would never receive it. The patch is metadata-only
+	// and is emitted outside the ordered rollout decision so it never gates or
+	// reorders instance creation/updates.
 	var patchLabelActions []instancecontrol.Action
 	for _, instance := range desiredInstances {
 		if instance.CreationTimestamp.IsZero() || !instance.DeletionTimestamp.IsZero() {
@@ -168,10 +177,10 @@ func (c *statefulControl) GetActions(
 		}
 	}
 
-	slices.SortFunc(updateActions, descendingOrdinal)
+	slices.SortFunc(recreateActions, descendingOrdinal)
 	slices.SortFunc(deleteActions, descendingOrdinal)
 
-	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(updateActions)+len(deleteActions)+len(patchLabelActions))
+	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions))
 
 	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
 	case v1alpha.OrderedReadyInstanceManagementPolicyType:
@@ -186,7 +195,7 @@ func (c *statefulControl) GetActions(
 
 		slices.SortFunc(actions, ascendingOrdinal)
 
-		actions = append(actions, updateActions...)
+		actions = append(actions, recreateActions...)
 		actions = append(actions, deleteActions...)
 
 		// Skip all actions except the first one.
@@ -214,17 +223,14 @@ func addInstanceControllerLabels(instance *v1alpha.Instance, index int, deployme
 }
 
 // desiredControllerLabels returns the full set of controller-managed labels
-// that every instance should carry. Used both when stamping a new/updated
-// instance and when checking whether an existing instance needs a backfill
-// patch.
+// that every instance should carry. Used both when stamping a new instance
+// and when checking whether an existing instance needs a backfill patch.
 func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) map[string]string {
 	return map[string]string{
 		v1alpha.InstanceIndexLabel:         strconv.Itoa(index),
 		v1alpha.WorkloadUIDLabel:           string(deployment.Spec.WorkloadRef.UID),
 		v1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
 		// Self-describing labels for routing, filtering, and observability.
-		// Backfilled on every reconcile so they stay accurate even for instances
-		// that pre-date the labels or that were not reached by a rolling update.
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
