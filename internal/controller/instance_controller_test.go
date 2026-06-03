@@ -8,8 +8,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -1621,4 +1623,601 @@ func TestQuotaPendingRequeueAfter(t *testing.T) {
 			assert.Equal(t, tc.want, quotaPendingRequeueAfter(tc.inst, tc.now))
 		})
 	}
+}
+
+
+// TestReconcileInstanceReadyCondition_ProviderSubConditionSurfacing verifies
+// that provider-set sub-condition reasons (e.g. ImageUnavailable written by the
+// unikraft provider onto the Running condition) surface on Ready with both the
+// reason AND the message preserved — even when the sub-condition status is
+// Unknown (the normal state for a retriable image-pull failure).
+//
+// This is the primary regression-prevention test for the "generic message
+// discards actionable reason" bug described in the status-blocking-reason RFC.
+func TestReconcileInstanceReadyCondition_ProviderSubConditionSurfacing(t *testing.T) {
+	// These messages mirror the exact strings that translateWaitingReason in the
+	// unikraft provider writes. Both the reason AND the message must reach Ready.
+	const (
+		msgImageUnavailable      = "The instance image could not be pulled"
+		msgInstanceCrashing      = "The instance is repeatedly failing to start"
+		msgConfigError           = "The instance could not be started due to a configuration error"
+		msgProvisioning          = "Instance is provisioning"
+		msgProgrammingInProgress = "Instance is being programmed"
+	)
+
+	noGates := func(inst *computev1alpha.Instance) *computev1alpha.Instance { return inst }
+	withQuotaGranted := func(inst *computev1alpha.Instance) *computev1alpha.Instance {
+		inst.Status.Conditions = append(inst.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionTrue,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
+			Message: "Quota allocated",
+		})
+		return inst
+	}
+
+	tests := []struct {
+		name        string
+		instance    *computev1alpha.Instance
+		wantStatus  metav1.ConditionStatus
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			// The key scenario from the design: provider writes Running=Unknown/
+			// ImageUnavailable while Programmed is still Unknown/ProgrammingInProgress.
+			// Ready must carry ImageUnavailable + the actionable message, NOT the
+			// generic "Instance has not been programmed".
+			name: "image_pull_failure_surfaces_on_ready",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							// Provider sets Running=Unknown/ImageUnavailable when the
+							// container enters an image-pull waiting state.
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+		{
+			// Demonstrate the OLD (broken) behavior: if we used the pre-fix logic,
+			// the generic message would be emitted instead. This case would have
+			// FAILED before the fix, proving the test catches the regression.
+			//
+			// The old code: "if programmedCondition.Status != Unknown { copy message }"
+			// — since Programmed IS Unknown, message was locked to msgNotProgrammed.
+			// The test now asserts the NEW, correct output.
+			name: "old_behavior_generic_message_would_fail_this_assertion",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			// OLD code would produce: wantReason="PendingProgramming", wantMessage=msgNotProgrammed.
+			// The correct new behavior surfaces the actionable reason+message instead.
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+		{
+			// When both a transient Provisioning and ImageUnavailable are present,
+			// ImageUnavailable (priority 5) must win over Provisioning (priority 1).
+			name: "image_unavailable_beats_transient_provisioning",
+			instance: noGates(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonProvisioning,
+							Message: msgProvisioning,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+		{
+			// When no specific provider sub-condition exists but Programmed carries
+			// a specific reason (ProgrammingInProgress), that reason should
+			// pass-through to Ready. The generic msgNotProgrammed fallback is only
+			// used when Programmed is absent or carries only a generic "Pending" reason.
+			name: "programmed_in_progress_passes_through_when_no_provider_sub_condition",
+			instance: noGates(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+					},
+				},
+			}),
+			// ProgrammingInProgress is more specific than PendingProgramming and
+			// passes through from Programmed → Ready.
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+			wantMessage: msgProgrammingInProgress,
+		},
+		{
+			// True generic fallback: no Programmed condition at all. The default
+			// PendingProgramming/msgNotProgrammed must be emitted.
+			name: "generic_fallback_when_programmed_condition_absent",
+			instance: noGates(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testInstanceName,
+					Namespace: testDefaultNamespace,
+				},
+			}),
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  computev1alpha.InstanceProgrammedReasonPendingProgramming,
+			wantMessage: msgNotProgrammed,
+		},
+		{
+			// InstanceCrashing: terminal-ish (not retried indefinitely by the user,
+			// they must fix the app). Status=Unknown from provider → Ready=Unknown.
+			name: "instance_crashing_surfaces_on_ready",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonInstanceCrashing,
+							Message: msgInstanceCrashing,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonInstanceCrashing,
+			wantMessage: msgInstanceCrashing,
+		},
+		{
+			// ConfigurationError: provider could not start the container due to a
+			// spec/config issue. User must correct the workload.
+			name: "configuration_error_surfaces_on_ready",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonConfigurationError,
+							Message: msgConfigError,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonConfigurationError,
+			wantMessage: msgConfigError,
+		},
+		{
+			// When Programmed=True but Running=Unknown/ImageUnavailable, the
+			// running-not-true branch must also propagate the provider reason+message.
+			name: "image_unavailable_on_running_condition_programmed_true",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionTrue,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammed,
+							Message: msgInstanceProgrammed,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+	}
+
+	noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+		return false, "", nil
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &InstanceReconciler{}
+			_, err := r.reconcileInstanceReadyCondition(context.Background(), nil, tt.instance, noNetworkFailure)
+			require.NoError(t, err)
+
+			ready := apimeta.FindStatusCondition(tt.instance.Status.Conditions, computev1alpha.InstanceReady)
+			require.NotNil(t, ready, "Ready condition must be set")
+			assert.Equal(t, tt.wantStatus, ready.Status, "Ready.Status mismatch")
+			assert.Equal(t, tt.wantReason, ready.Reason, "Ready.Reason mismatch")
+			assert.Equal(t, tt.wantMessage, ready.Message, "Ready.Message mismatch")
+		})
+	}
+}
+
+// TestResolveInstanceResources verifies the three-tier sizing precedence:
+// explicit container Limits > instance-level Requests > instanceType catalog.
+func TestResolveInstanceResources(t *testing.T) {
+	// d1Standard2 is the canonical catalog entry for datumcloud/d1-standard-2
+	// (1 vCPU = 1000 millicores, 2 GiB = 2048 MiB) — the platform-declared quota
+	// size for the instance type.
+	const (
+		d1CPUMillicores = int64(1000)
+		d1MemMiB        = int64(2048)
+	)
+
+	cpu500m := resource.MustParse("500m")
+	cpu1 := resource.MustParse("1")
+	mem256Mi := resource.MustParse("256Mi")
+	mem512Mi := resource.MustParse("512Mi")
+
+	makeContainerResources := func(cpu, mem resource.Quantity) *computev1alpha.ContainerResourceRequirements {
+		return &computev1alpha.ContainerResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    cpu,
+				corev1.ResourceMemory: mem,
+			},
+		}
+	}
+
+	tests := []struct {
+		name            string
+		instance        *computev1alpha.Instance
+		wantCPU         int64
+		wantMem         int64
+		wantResolved    bool
+	}{
+		{
+			// Common production case: instanceType only, no explicit limits.
+			// resolveInstanceResources must consult the catalog and return the
+			// d1-standard-2 values so vcpus + memory are included in the claim.
+			name: "instanceType only: d1-standard-2 resolves from catalog",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: "datumcloud/d1-standard-2",
+						},
+					},
+				},
+			},
+			wantCPU:      d1CPUMillicores,
+			wantMem:      d1MemMiB,
+			wantResolved: true,
+		},
+		{
+			// Explicit container Limits take precedence over the catalog so that
+			// a workload with custom sizing is accounted at its actual footprint.
+			name: "explicit container limits override catalog",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: "datumcloud/d1-standard-2",
+						},
+						Sandbox: &computev1alpha.SandboxRuntime{
+							Containers: []computev1alpha.SandboxContainer{
+								{
+									Name:      "app",
+									Image:     "test/image:latest",
+									Resources: makeContainerResources(cpu500m, mem256Mi),
+								},
+								{
+									Name:      "sidecar",
+									Image:     "test/sidecar:latest",
+									Resources: makeContainerResources(cpu500m, mem256Mi),
+								},
+							},
+						},
+					},
+				},
+			},
+			// Two containers each contributing 500m CPU + 256 MiB → 1000m + 512 MiB.
+			wantCPU:      1000,
+			wantMem:      512,
+			wantResolved: true,
+		},
+		{
+			// A single container with full cpu+memory Limits; no instanceType needed.
+			name: "single container limits, no instanceType",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Sandbox: &computev1alpha.SandboxRuntime{
+							Containers: []computev1alpha.SandboxContainer{
+								{
+									Name:      "app",
+									Image:     "test/image:latest",
+									Resources: makeContainerResources(cpu1, mem512Mi),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantCPU:      1000,
+			wantMem:      512,
+			wantResolved: true,
+		},
+		{
+			// Instance-level Requests (no sandbox, no instanceType) use path 2.
+			name: "instance-level resources.requests resolve correctly",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    cpu1,
+								corev1.ResourceMemory: mem512Mi,
+							},
+						},
+					},
+				},
+			},
+			wantCPU:      1000,
+			wantMem:      512,
+			wantResolved: true,
+		},
+		{
+			// An unknown instanceType with no explicit sizing must not fabricate
+			// values; the caller falls back to claiming instance count only.
+			name: "unknown instanceType, no explicit limits: unresolved",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: "datumcloud/unknown-type-99",
+						},
+					},
+				},
+			},
+			wantCPU:      0,
+			wantMem:      0,
+			wantResolved: false,
+		},
+		{
+			// Empty instanceType and no explicit sizing: unresolved.
+			name: "empty instanceType, nothing explicit: unresolved",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{},
+					},
+				},
+			},
+			wantCPU:      0,
+			wantMem:      0,
+			wantResolved: false,
+		},
+		{
+			// Sandbox containers without any Limits fall through to the catalog
+			// when an instanceType is set — partial container specs must not block
+			// catalog resolution.
+			name: "sandbox containers without limits fall through to catalog",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: "datumcloud/d1-standard-2",
+						},
+						Sandbox: &computev1alpha.SandboxRuntime{
+							Containers: []computev1alpha.SandboxContainer{
+								{
+									Name:  "app",
+									Image: "test/image:latest",
+									// No Resources.Limits set — common for UKC workloads.
+								},
+							},
+						},
+					},
+				},
+			},
+			wantCPU:      d1CPUMillicores,
+			wantMem:      d1MemMiB,
+			wantResolved: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cpu, mem, resolved := resolveInstanceResources(tt.instance)
+			assert.Equal(t, tt.wantResolved, resolved, "resolved mismatch")
+			assert.Equal(t, tt.wantCPU, cpu, "cpuMillicores mismatch")
+			assert.Equal(t, tt.wantMem, mem, "memMiB mismatch")
+		})
+	}
+}
+
+// TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory confirms that when an
+// instance is sized by instanceType alone (the typical production shape), the
+// ResourceClaim created by reconcileQuotaClaim includes vcpus and memory
+// requests in addition to the instance count, so the AllowanceBuckets are fed.
+func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
+	const (
+		clusterName  = "test-project"
+		namespace    = "default"
+		instanceName = "claim-resources-test"
+	)
+
+	claimName := instanceQuotaClaimNamePrefix + instanceName
+
+	s := newTestScheme(t)
+
+	// Instance sized by instanceType only — no container limits, no explicit
+	// instance-level requests. This is the common production workload shape.
+	instance := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       instanceName,
+			Namespace:  namespace,
+			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: testComputeAPIVersion,
+					Kind:       kindWorkloadDeploymentTest,
+					Name:       "owner-deployment",
+					UID:        testUIDString,
+					Controller: func() *bool { b := true; return &b }(),
+				},
+			},
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.QuotaSchedulingGate.String()},
+				},
+			},
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					// No Requests, no container Limits — catalog must supply the values.
+					InstanceType: "datumcloud/d1-standard-2",
+				},
+			},
+			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+		},
+	}
+
+	deployment := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "owner-deployment",
+			Namespace: namespace,
+			UID:       testUIDString,
+		},
+	}
+
+	projectClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(instance, deployment).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		Build()
+
+	quotaClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
+		Build()
+
+	qm := quota.New(nil)
+	qm.StoreClient(clusterName, quotaClient)
+
+	r := &InstanceReconciler{
+		mgr:                &fakeMCManager{clusters: map[string]cluster.Cluster{clusterName: newFakeCluster(projectClient)}},
+		scheme:             s,
+		quotaClientManager: qm,
+		edgeClusterName:    testEdgeClusterName,
+		projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+			return string(cn), nil
+		},
+		recorder: &record.FakeRecorder{},
+	}
+	r.finalizers = finalizer.NewFinalizers()
+	require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
+	_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}},
+		ClusterName: clusterName,
+	})
+	require.NoError(t, err)
+
+	// Verify the created ResourceClaim carries vcpus and memory requests.
+	var createdClaim quotav1alpha1.ResourceClaim
+	require.NoError(t, quotaClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: claimName}, &createdClaim))
+
+	byType := make(map[string]int64, len(createdClaim.Spec.Requests))
+	for _, req := range createdClaim.Spec.Requests {
+		byType[req.ResourceType] = req.Amount
+	}
+
+	assert.Equal(t, int64(1), byType[quotaResourceTypeInstances], "instance count must be 1")
+	assert.Equal(t, int64(1000), byType["compute.datumapis.com/vcpus"],
+		"d1-standard-2 must claim 1000 millicores (1 vCPU)")
+	assert.Equal(t, int64(2048), byType["compute.datumapis.com/memory"],
+		"d1-standard-2 must claim 2048 MiB (2 GiB)")
 }

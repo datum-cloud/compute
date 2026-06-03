@@ -463,6 +463,28 @@ const (
 	// InstanceReadyReasonAvailable indicates that the instance is available
 	InstanceReadyReasonAvailable = "Available"
 
+	// InstanceReadyReasonImageUnavailable indicates the provider could not pull
+	// the instance image (bad name, missing credentials, registry unreachable).
+	// This matches the reason written by translateWaitingReason in the unikraft
+	// provider when the container enters an image-pull waiting state.
+	InstanceReadyReasonImageUnavailable = "ImageUnavailable"
+
+	// InstanceReadyReasonInstanceCrashing indicates the instance process started
+	// but is repeatedly exiting and being restarted (CrashLoopBackOff in the
+	// underlying runtime). This is user-actionable: the application itself is
+	// failing, not the platform.
+	InstanceReadyReasonInstanceCrashing = "InstanceCrashing"
+
+	// InstanceReadyReasonConfigurationError indicates the runtime rejected the
+	// instance configuration before the process could start (e.g. invalid env
+	// variable injection, missing device). User must correct the workload spec.
+	InstanceReadyReasonConfigurationError = "ConfigurationError"
+
+	// InstanceReadyReasonProvisioning indicates the instance runtime is still
+	// setting up the execution environment (container being created, image being
+	// unpacked). This is a transient, non-actionable state.
+	InstanceReadyReasonProvisioning = "Provisioning"
+
 	// InstanceAvailableReasonStopped indicates that the instance is stopped
 	InstanceAvailableReasonStopped = "Stopped"
 
