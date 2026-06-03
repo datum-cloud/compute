@@ -155,28 +155,76 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			wantDetail: "quota limit reached",
 		},
 		{
-			name: "Programmed Unknown/PendingProgramming — not running network provisioning",
+			name: "Programmed Unknown/PendingProgramming — Starting",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonPendingProgramming, ""),
 			},
-			wantStatus: "Not running — network provisioning",
+			wantStatus: "Starting",
 			wantDetail: "",
 		},
 		{
-			name: "Programmed Unknown/ProgrammingInProgress — not running network provisioning in progress",
+			name: "Programmed Unknown/ProgrammingInProgress — Starting",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
 			},
-			wantStatus: "Not running — network provisioning in progress",
+			wantStatus: "Starting",
 			wantDetail: "",
 		},
 		{
-			name: "Programmed False/ProgrammingInProgress — not running network provisioning in progress",
+			name: "Programmed False/ProgrammingInProgress — Starting",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
 			},
-			wantStatus: "Not running — network provisioning in progress",
+			wantStatus: "Starting",
 			wantDetail: "",
+		},
+		{
+			name: "Programmed False/ImageUnavailable — not running image unavailable",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
+			},
+			wantStatus: "Not running — image unavailable",
+			wantDetail: "image pull failed: not found",
+		},
+		{
+			name: "Programmed Unknown/ImageUnavailable — not running image unavailable",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
+			},
+			wantStatus: "Not running — image unavailable",
+			wantDetail: "image pull failed: not found",
+		},
+		{
+			name: "Programmed False/InstanceCrashing — not running instance crashing",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
+			},
+			wantStatus: "Not running — instance crashing",
+			wantDetail: "exit code 1",
+		},
+		{
+			name: "Programmed Unknown/InstanceCrashing — not running instance crashing",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
+			},
+			wantStatus: "Not running — instance crashing",
+			wantDetail: "exit code 1",
+		},
+		{
+			name: "Programmed False/ConfigurationError — not running configuration error",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
+			},
+			wantStatus: "Not running — configuration error",
+			wantDetail: "invalid env var name",
+		},
+		{
+			name: "Programmed Unknown/ConfigurationError — not running configuration error",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
+			},
+			wantStatus: "Not running — configuration error",
+			wantDetail: "invalid env var name",
 		},
 	}
 
@@ -221,18 +269,60 @@ func TestInstanceStatus_BlockingReason(t *testing.T) {
 			wantStatus: "Pending (ReferencedDataNotReady)",
 		},
 		{
-			name: "Programmed Unknown/PendingProgramming — Pending (network provisioning)",
+			name: "Programmed Unknown/PendingProgramming — Starting",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonPendingProgramming, ""),
 			},
-			wantStatus: "Pending (network provisioning)",
+			wantStatus: "Starting",
 		},
 		{
-			name: "Programmed Unknown/ProgrammingInProgress — Pending (network provisioning)",
+			name: "Programmed Unknown/ProgrammingInProgress — Starting",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
 			},
-			wantStatus: "Pending (network provisioning)",
+			wantStatus: "Starting",
+		},
+		{
+			name: "Programmed False/ImageUnavailable — Failed (image unavailable)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
+			},
+			wantStatus: "Failed (image unavailable)",
+		},
+		{
+			name: "Programmed Unknown/ImageUnavailable — Failed (image unavailable)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
+			},
+			wantStatus: "Failed (image unavailable)",
+		},
+		{
+			name: "Programmed False/InstanceCrashing — Failed (crashing)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
+			},
+			wantStatus: "Failed (crashing)",
+		},
+		{
+			name: "Programmed Unknown/InstanceCrashing — Failed (crashing)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
+			},
+			wantStatus: "Failed (crashing)",
+		},
+		{
+			name: "Programmed False/ConfigurationError — Failed (configuration error)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
+			},
+			wantStatus: "Failed (configuration error)",
+		},
+		{
+			name: "Programmed Unknown/ConfigurationError — Failed (configuration error)",
+			conditions: []metav1.Condition{
+				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
+			},
+			wantStatus: "Failed (configuration error)",
 		},
 	}
 

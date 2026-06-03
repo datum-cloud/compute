@@ -481,6 +481,21 @@ const (
 
 	// InstanceProgrammedReasonProgrammed indicates that the instance has been programmed
 	InstanceProgrammedReasonProgrammed = "Programmed"
+
+	// InstanceProgrammedReasonImageUnavailable indicates the instance image could
+	// not be pulled. Set by the infrastructure provider.
+	// User action required: fix the image reference in the workload spec.
+	InstanceProgrammedReasonImageUnavailable = "ImageUnavailable"
+
+	// InstanceProgrammedReasonInstanceCrashing indicates the instance keeps
+	// crashing on startup. Set by the infrastructure provider.
+	// User action required: fix the workload (check logs for crash details).
+	InstanceProgrammedReasonInstanceCrashing = "InstanceCrashing"
+
+	// InstanceProgrammedReasonConfigurationError indicates the instance failed to
+	// start due to a bad configuration. Set by the infrastructure provider.
+	// User action required: fix the workload configuration.
+	InstanceProgrammedReasonConfigurationError = "ConfigurationError"
 )
 
 type InstanceTemplateSpec struct {

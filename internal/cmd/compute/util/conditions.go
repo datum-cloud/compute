@@ -36,7 +36,10 @@ func ReadinessBlock(conditions []metav1.Condition, condType string) (reason, mes
 //	QuotaGranted=False/QuotaExceeded → "Pending (quota exceeded)"
 //	QuotaGranted=False/ValidationFailed → "Pending (quota validation failed)"
 //	QuotaGranted=Unknown/PendingEvaluation → "Pending (quota evaluation)"
-//	Programmed≠True/PendingProgramming or ProgrammingInProgress → "Pending (network provisioning)"
+//	Programmed=False/ImageUnavailable → "Failed (image unavailable)"
+//	Programmed=False/InstanceCrashing → "Failed (crashing)"
+//	Programmed=False/ConfigurationError → "Failed (configuration error)"
+//	Programmed≠True/PendingProgramming or ProgrammingInProgress → "Starting"
 //	Running=False/Starting → "Starting"
 //	Running=False/Stopping → "Stopping"
 //	Ready≠True/<reason> → "Pending (<reason>)" from server-rolled-up blocking reason
@@ -65,8 +68,14 @@ func InstanceStatus(conditions []metav1.Condition) string {
 	programmed := FindCondition(conditions, v1alpha.InstanceProgrammed)
 	if programmed != nil && programmed.Status != metav1.ConditionTrue {
 		switch programmed.Reason {
+		case v1alpha.InstanceProgrammedReasonImageUnavailable:
+			return "Failed (image unavailable)"
+		case v1alpha.InstanceProgrammedReasonInstanceCrashing:
+			return "Failed (crashing)"
+		case v1alpha.InstanceProgrammedReasonConfigurationError:
+			return "Failed (configuration error)"
 		case v1alpha.InstanceProgrammedReasonPendingProgramming, v1alpha.InstanceProgrammedReasonProgrammingInProgress:
-			return "Pending (network provisioning)"
+			return "Starting"
 		}
 	}
 
@@ -95,8 +104,10 @@ func InstanceStatus(conditions []metav1.Condition) string {
 //
 //	Ready=True → "Running", ""
 //	QuotaGranted=False/QuotaExceeded → "Not running — quota exceeded", condition.Message
-//	Programmed≠True/PendingProgramming → "Not running — network provisioning", ""
-//	Programmed≠True/ProgrammingInProgress → "Not running — network provisioning in progress", ""
+//	Programmed=False/ImageUnavailable → "Not running — image unavailable", condition.Message
+//	Programmed=False/InstanceCrashing → "Not running — instance crashing", condition.Message
+//	Programmed=False/ConfigurationError → "Not running — configuration error", condition.Message
+//	Programmed≠True/PendingProgramming or ProgrammingInProgress → "Starting", ""
 //	Running=False/Starting → "Starting", ""
 //	Running=False/Stopping → "Stopping", ""
 //	Ready≠True/<reason> → "Pending — <reason>", message  (server-rolled-up blocking reason)
@@ -115,10 +126,14 @@ func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string)
 	programmed := FindCondition(conditions, v1alpha.InstanceProgrammed)
 	if programmed != nil && programmed.Status != metav1.ConditionTrue {
 		switch programmed.Reason {
-		case v1alpha.InstanceProgrammedReasonPendingProgramming:
-			return "Not running — network provisioning", ""
-		case v1alpha.InstanceProgrammedReasonProgrammingInProgress:
-			return "Not running — network provisioning in progress", ""
+		case v1alpha.InstanceProgrammedReasonImageUnavailable:
+			return "Not running — image unavailable", programmed.Message
+		case v1alpha.InstanceProgrammedReasonInstanceCrashing:
+			return "Not running — instance crashing", programmed.Message
+		case v1alpha.InstanceProgrammedReasonConfigurationError:
+			return "Not running — configuration error", programmed.Message
+		case v1alpha.InstanceProgrammedReasonPendingProgramming, v1alpha.InstanceProgrammedReasonProgrammingInProgress:
+			return "Starting", ""
 		}
 	}
 
