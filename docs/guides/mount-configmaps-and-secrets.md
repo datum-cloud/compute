@@ -1,7 +1,9 @@
 # Mount ConfigMaps and Secrets into Compute Instances
 
 > Last verified: 2026-06-03 on the `ash-sore-hamster` lab metro against the live `datumctl compute` and `kraft` CLIs.
-> The referenced-data delivery this guide describes is introduced by the [ConfigMap/Secret mounts RFC](../compute/development/rfcs/configmap-secret-mounts.md) and lands with [#129](https://github.com/datum-cloud/compute/pull/129). Until that merges, the cross-plane delivery half is not yet available on `main`; the runtime mechanics (the `base-compat:latest` + erofs file-mount path) are real today.
+
+> [!IMPORTANT]
+> The cross-plane delivery this guide describes is introduced by the [ConfigMap/Secret mounts RFC](../compute/development/rfcs/configmap-secret-mounts.md) and lands with [#129](https://github.com/datum-cloud/compute/pull/129). Until that merges, the delivery half is not yet available on `main` — the runtime mechanics (the `base-compat:latest` + erofs file-mount path) are real today.
 
 This guide shows how to deliver configuration files and secret material to a running instance — without baking them into the image. You create a `ConfigMap` or `Secret` in your project, reference it by name from a `Workload`, and the platform delivers the data to every cell where the instance is placed. By the end you will know how to:
 
@@ -23,12 +25,20 @@ This guide shows how to deliver configuration files and secret material to a run
 You only ever touch two things: a `ConfigMap`/`Secret` in your project, and a `Workload` that references it by name. Everything between is the platform's job.
 
 ```
-Your project plane                         Edge cell (where the instance runs)
-┌──────────────────────────┐               ┌────────────────────────────────────┐
-│ ConfigMap / Secret        │   resolve     │ companion ConfigMap / Secret        │
-│ Workload (references it)  │ ───────────▶  │ Instance (held until data present)  │
-└──────────────────────────┘   deliver      │   └─ runtime mounts files / env     │
-                                            └────────────────────────────────────┘
+┌────────────────────────────────────────────┐
+│ Your project plane                         │
+│   ConfigMap  /  Secret                     │
+│   Workload  (references them by name)      │
+└────────────────────────────────────────────┘
+                      |
+              resolve + deliver
+                      v
+┌────────────────────────────────────────────┐
+│ Edge cell  (where the instance runs)       │
+│   companion ConfigMap / Secret             │
+│   Instance  (gated until data is ready)    │
+│     +- runtime mounts files / injects env  │
+└────────────────────────────────────────────┘
 ```
 
 The referenced object lives in your project; the instance runs on an edge cell, potentially thousands of miles away. A management-plane resolver reads the referenced object with a trusted, scoped identity, materializes a derived **companion** copy, and routes it to each cell where the instance is placed. The runtime then mounts the companion natively — as files, as env vars, or both.
@@ -49,7 +59,10 @@ A ConfigMap/Secret volume mounts at a path **as a directory**: each data key bec
 
 ### The runtime requirement: `base-compat:latest` + erofs
 
-This is the part to get right. File mounts are delivered into the unikernel as inline read-only ROM devices, and **inline ROMs are only enabled on the `base-compat:latest` runtime today.** The default `base:latest` runtime (the app-elfloader) does not yet support them — the kernel team is working on enabling inline ROMs for `base` as well, but until then a ConfigMap/Secret volume will simply not appear inside a `base:latest` instance.
+> [!IMPORTANT]
+> Inline file mounts are only enabled on the **`base-compat:latest`** runtime with an **erofs** rootfs today. On the default `base:latest` runtime a ConfigMap/Secret volume will not appear inside the instance at all.
+
+This is the part to get right. File mounts are delivered into the unikernel as inline read-only ROM devices, and inline ROMs are only enabled on the `base-compat:latest` runtime today. The default `base:latest` runtime (the app-elfloader) does not yet support them — the kernel team is working on enabling inline ROMs for `base` as well, but until then a ConfigMap/Secret volume will simply not appear inside a `base:latest` instance.
 
 Build the image with the `base-compat:latest` runtime and an **erofs** rootfs. The `Kraftfile`:
 
@@ -70,6 +83,7 @@ Two things differ from a plain `base:latest` image:
 - **`runtime: base-compat:latest`** is the compatibility runtime that ships a dynamic loader, so it runs ordinary dynamically linked musl ELF binaries (e.g. `node`, `python`) — and it is the runtime where inline ROM mounts are enabled. `base:latest` requires a static-PIE binary and has no ROM-mount support yet.
 - **`rootfs.format: erofs`** packages the rootfs as an erofs image. The mounted ConfigMap/Secret arrives as an additional read-only ROM device alongside it.
 
+> [!TIP]
 > A complete, runnable image built this way — a generic Node.js runtime that executes a function supplied entirely via a mounted ConfigMap — is in [#139](https://github.com/datum-cloud/compute/pull/139). Use it as a reference for the `Dockerfile`/`Kraftfile` shape.
 
 ### Create the source objects
@@ -158,9 +172,9 @@ datumctl compute deploy -f workload.yaml -y
 Inside the running instance this produces:
 
 ```
-/etc/app/app.conf      # from ConfigMap key app.conf  (read-only)
-/etc/tls/tls.crt       # from Secret key tls.crt       (read-only)
-/etc/tls/tls.key       # from Secret key tls.key       (read-only)
+/etc/app/app.conf  # from ConfigMap key app.conf (read-only)
+/etc/tls/tls.crt   # from Secret key tls.crt     (read-only)
+/etc/tls/tls.key   # from Secret key tls.key     (read-only)
 ```
 
 A few details that trip people up:
@@ -199,7 +213,8 @@ runtime:
 
 The same delivery path backs both forms — once the companion is present on the cell, the runtime injects the env var natively from it, exactly as it mounts a file. Env injection is **not** restricted to `base-compat:latest`; it works on any runtime.
 
-> **Current limitation — env capacity in busy cells.** Environment variables are passed to the unikernel through the kernel command line, which has a fixed capacity. In a busy cell, Kubernetes service-link injection (`*_SERVICE_HOST` / `*_PORT_*` for every sibling Service) can add several KB of env on its own and overflow that buffer, surfacing as a boot failure:
+> [!WARNING]
+> **Env capacity in busy cells.** Environment variables are passed to the unikernel through the kernel command line, which has a fixed capacity. In a busy cell, Kubernetes service-link injection (`*_SERVICE_HOST` / `*_PORT_*` for every sibling Service) can add several KB of env on its own and overflow that buffer, surfacing as a boot failure:
 >
 > ```
 > RunWithoutApiError(... InvalidKernelCommandLine("Invalid cmdline capacity provided."))
