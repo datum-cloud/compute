@@ -60,7 +60,7 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 		if workload.Spec.Template.Annotations == nil {
 			workload.Spec.Template.Annotations = make(map[string]string)
 		}
-		workload.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
+		workload.Spec.Template.Annotations[computev1alpha.RestartedAtAnnotation] = restartedAt
 
 		if err := c.Update(ctx, &workload); err != nil {
 			return fmt.Errorf("updating workload: %w", err)
@@ -100,7 +100,7 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 		if matched[i].Spec.Template.Annotations == nil {
 			matched[i].Spec.Template.Annotations = make(map[string]string)
 		}
-		matched[i].Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
+		matched[i].Spec.Template.Annotations[computev1alpha.RestartedAtAnnotation] = restartedAt
 
 		if err := c.Update(ctx, &matched[i]); err != nil {
 			return fmt.Errorf("updating deployment in %s: %w", city, err)
