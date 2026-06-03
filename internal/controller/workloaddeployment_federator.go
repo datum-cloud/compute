@@ -474,7 +474,26 @@ func (r *WorkloadDeploymentFederator) mapDownstreamDeploymentToRequest(
 			"downstreamNamespace", downstream.Namespace)
 		return nil
 	}
-	clusterName := decodeUpstreamClusterName(encodedClusterName)
+	clusterName := projectClusterNameFromLabel(encodedClusterName)
+	if clusterName == "" {
+		logger.V(1).Info("undecodable upstream-cluster-name label; dropping event",
+			"downstreamNamespace", downstream.Namespace, "encoded", encodedClusterName)
+		return nil
+	}
+
+	// Verify the project cluster is engaged before enqueuing. The Milo
+	// multicluster provider keys clusters by bare project name, and GetCluster
+	// returns an error for an unknown name. Without this guard, an unresolvable
+	// name — or the empty string, which mcmanager routes to the local host
+	// cluster that has no compute CRDs — would make Reconcile fail with
+	// "no matches for kind WorkloadDeployment" in a hot loop. Dropping the event
+	// is safe: once the provider engages the project cluster, the For watch
+	// reconciles it and the next downstream status event maps cleanly.
+	if _, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(clusterName)); err != nil {
+		logger.V(1).Info("project cluster not engaged for downstream status mapping; dropping event",
+			"clusterName", clusterName, "downstreamNamespace", downstream.Namespace, "error", err)
+		return nil
+	}
 
 	return []mcreconcile.Request{
 		{
@@ -489,13 +508,26 @@ func (r *WorkloadDeploymentFederator) mapDownstreamDeploymentToRequest(
 	}
 }
 
-// decodeUpstreamClusterName reverses the "cluster-<name>" encoding (with "/"
-// replaced by "_") that MappedNamespaceResourceStrategy applies to the
-// UpstreamOwnerClusterNameLabel value, recovering the original project cluster
-// name.
-func decodeUpstreamClusterName(encoded string) string {
+// projectClusterNameFromLabel extracts the project cluster name that the Milo
+// multicluster provider uses as its cluster key from a downstream namespace's
+// UpstreamOwnerClusterNameLabel value.
+//
+// MappedNamespaceResourceStrategy encodes the label as "cluster-<org>_<project>"
+// (with "/" replaced by "_"), e.g. "cluster-datum-cloud" (no org) or
+// "cluster-_test-project-abc" (empty org). The provider, however, keys clusters
+// by bare project name only (multicluster provider: key = project.Name), so we
+// strip the "cluster-" prefix, decode "_" back to "/", and return the final path
+// segment — the project name. Examples:
+//
+//	"cluster-datum-cloud"        -> "datum-cloud"
+//	"cluster-_test-project-abc"  -> "test-project-abc"
+func projectClusterNameFromLabel(encoded string) string {
 	name := strings.TrimPrefix(encoded, "cluster-")
-	return strings.ReplaceAll(name, "_", "/")
+	name = strings.ReplaceAll(name, "_", "/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
 }
 
 // propagationPolicyNameFor returns the PropagationPolicy name for a given city

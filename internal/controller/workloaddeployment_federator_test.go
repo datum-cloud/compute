@@ -140,6 +140,17 @@ func TestMapDownstreamDeploymentToRequest(t *testing.T) {
 		},
 	}
 
+	// A downstream namespace whose cluster label decodes to a project cluster the
+	// manager has not engaged — used to verify the not-engaged drop path.
+	unknownClusterNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testKarmadaNSStr,
+			Labels: map[string]string{
+				downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-unregistered-project",
+			},
+		},
+	}
+
 	newDownstreamWD := func(labels map[string]string) *computev1alpha.WorkloadDeployment {
 		return &computev1alpha.WorkloadDeployment{
 			ObjectMeta: metav1.ObjectMeta{
@@ -198,6 +209,14 @@ func TestMapDownstreamDeploymentToRequest(t *testing.T) {
 			}),
 			want: nil,
 		},
+		{
+			name:        "project cluster not engaged is dropped",
+			karmadaObjs: []client.Object{unknownClusterNS},
+			downstreamWD: newDownstreamWD(map[string]string{
+				downstreamclient.UpstreamOwnerNamespaceLabel: testProjNS,
+			}),
+			want: nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -206,6 +225,9 @@ func TestMapDownstreamDeploymentToRequest(t *testing.T) {
 
 			karmadaClient := newKarmadaFakeClient(tt.karmadaObjs...)
 			r := &WorkloadDeploymentFederator{
+				// Only testCluster is engaged; the not-engaged case decodes to a
+				// different project name and must be dropped by the GetCluster guard.
+				mgr:               newFakeMCManager(testCluster, newFakeCluster(karmadaClient)),
 				FederationClient:  karmadaClient,
 				FederationCluster: newFakeCluster(karmadaClient),
 			}
@@ -216,7 +238,7 @@ func TestMapDownstreamDeploymentToRequest(t *testing.T) {
 	}
 }
 
-func TestDecodeUpstreamClusterName(t *testing.T) {
+func TestProjectClusterNameFromLabel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -224,13 +246,16 @@ func TestDecodeUpstreamClusterName(t *testing.T) {
 		want    string
 	}{
 		{"cluster-datum-cloud", "datum-cloud"},
-		{"cluster-org_project", "org/project"},
+		// Org-scoped encodings decode to org/project; the provider keys on the
+		// bare project name, so only the final path segment is returned.
+		{"cluster-org_project", "project"},
+		{"cluster-_test-project-abc", "test-project-abc"},
 		{"cluster-test-project-cluster", "test-project-cluster"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.encoded, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, decodeUpstreamClusterName(tt.encoded))
+			assert.Equal(t, tt.want, projectClusterNameFromLabel(tt.encoded))
 		})
 	}
 }
