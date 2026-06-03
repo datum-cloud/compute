@@ -34,7 +34,7 @@ spec:
     - jsonPath: .status.desiredReplicas
       name: Desired
       type: string
-    - jsonPath: .status.currentReplicas
+    - jsonPath: .status.updatedReplicas
       name: Up-to-date
       type: string
     - jsonPath: .status.location.namespace
@@ -1087,8 +1087,9 @@ spec:
                   type: object
                 type: array
               currentReplicas:
-                description: The number of instances which have the latest workload
-                  settings applied.
+                description: |-
+                  The number of instances which have the latest workload settings applied
+                  and are programmed (a subset of UpdatedReplicas that are ready to serve).
                 format: int32
                 type: integer
               desiredReplicas:
@@ -1109,6 +1110,13 @@ spec:
                 - name
                 - namespace
                 type: object
+              observedGeneration:
+                description: |-
+                  The most recent generation observed by the deployment controller. When
+                  this matches metadata.generation, the controller has reconciled the
+                  latest spec (e.g. a restart request).
+                format: int64
+                type: integer
               readyReplicas:
                 description: The number of instances which are ready.
                 format: int32
@@ -1117,11 +1125,20 @@ spec:
                 description: The number of instances created
                 format: int32
                 type: integer
+              updatedReplicas:
+                description: |-
+                  The number of instances updated to the latest template revision, i.e.
+                  whose observed template hash matches the desired template, regardless of
+                  readiness. Lags Replicas during a rolling update or restart, then catches
+                  back up — making an in-progress roll observable.
+                format: int32
+                type: integer
             required:
             - currentReplicas
             - desiredReplicas
             - readyReplicas
             - replicas
+            - updatedReplicas
             type: object
         type: object
     served: true
