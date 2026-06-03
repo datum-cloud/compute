@@ -479,7 +479,7 @@ func TestReconcileQuota(t *testing.T) {
 		instanceName = "my-instance"
 	)
 
-	claimName := namespace + "--" + instanceName
+	claimName := instanceQuotaClaimNamePrefix + instanceName
 
 	const deploymentName = "my-deployment"
 
@@ -812,7 +812,7 @@ func TestQuotaGateRemovedInSingleReconcile(t *testing.T) {
 		deploymentName = "my-deployment"
 	)
 
-	claimName := namespace + "--" + instanceName
+	claimName := instanceQuotaClaimNamePrefix + instanceName
 
 	tests := []struct {
 		name           string
@@ -994,9 +994,9 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		deploymentName = "my-deployment"
 	)
 
-	// Claim name uses the edge namespace prefix (stable identifier for the claim)
-	// but the claim object itself lives in projectNS.
-	claimName := edgeNS + "--" + instanceName
+	// Claim name is the instance-prefixed Instance name; the claim object itself
+	// lives in projectNS (the instance's edge namespace is carried on a label).
+	claimName := instanceQuotaClaimNamePrefix + instanceName
 
 	s := newTestScheme(t)
 
@@ -1346,7 +1346,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 		s := newTestScheme(t)
 		fakeRecorder := record.NewFakeRecorder(10)
 
-		claimName := testNS + "--" + testInstance
+		claimName := instanceQuotaClaimNamePrefix + testInstance
 		pendingClaim := &quotav1alpha1.ResourceClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: testNS},
 			Spec: quotav1alpha1.ResourceClaimSpec{
@@ -1498,7 +1498,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 			WithStatusSubresource(&computev1alpha.Instance{}).
 			Build()
 
-		claimName := testNS + "--" + testInstance
+		claimName := instanceQuotaClaimNamePrefix + testInstance
 		grantedClaim := &quotav1alpha1.ResourceClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: testNS},
 			Spec: quotav1alpha1.ResourceClaimSpec{

@@ -57,6 +57,19 @@ const (
 	// the same project control planes.
 	instanceQuotaClaimSourceLabel = "compute.datumapis.com/source-cluster"
 
+	// instanceQuotaClaimNamespaceLabel records the source Instance's namespace on
+	// the ResourceClaim. The claim lives in the project's quota namespace (not the
+	// Instance's namespace), so the claim watch reads this label to map a grant
+	// back to the owning Instance.
+	instanceQuotaClaimNamespaceLabel = "compute.datumapis.com/instance-namespace"
+
+	// instanceQuotaClaimNamePrefix namespaces an Instance's ResourceClaim name by
+	// resource type. Claims for different resource kinds share the project quota
+	// namespace, so the Instance name alone (unique among Instances, but not
+	// across kinds) could collide with another kind's claim — the prefix prevents
+	// that. The claim watch strips it to recover the Instance name.
+	instanceQuotaClaimNamePrefix = "instance-"
+
 	// quotaResourceTypeInstances is the quota resource type for Instance count.
 	quotaResourceTypeInstances = "compute.datumapis.com/instances"
 
@@ -275,7 +288,7 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 			if err != nil {
 				return fmt.Errorf("resolving project namespace during deletion: %w", err)
 			}
-			claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+			claimName := quotaClaimName(instance)
 			var claim quotav1alpha1.ResourceClaim
 			if err := projectClient.Get(ctx, client.ObjectKey{Namespace: claimNamespace, Name: claimName}, &claim); err != nil {
 				if !apierrors.IsNotFound(err) {
@@ -294,6 +307,16 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 		return fmt.Errorf("failed removing quota finalizer: %w", err)
 	}
 	return nil
+}
+
+// quotaClaimName returns the name of the ResourceClaim backing an Instance's
+// quota: the Instance name (unique among Instances within the project control
+// plane) prefixed by instanceQuotaClaimNamePrefix to avoid colliding with other
+// resource kinds' claims in the shared quota namespace. The owning Instance's
+// namespace is preserved on the claim via instanceQuotaClaimNamespaceLabel so
+// the claim watch can map a grant back to the Instance.
+func quotaClaimName(instance *computev1alpha.Instance) string {
+	return instanceQuotaClaimNamePrefix + instance.Name
 }
 
 // reconcileQuotaCondition reconciles the ResourceClaim and updates the
@@ -627,7 +650,7 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		return nil, nil
 	}
 
-	claimName := fmt.Sprintf("%s--%s", instance.Namespace, instance.Name)
+	claimName := quotaClaimName(instance)
 
 	requests := []quotav1alpha1.ResourceRequest{
 		{
@@ -657,7 +680,8 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 			Name:      claimName,
 			Namespace: claimNamespace,
 			Labels: map[string]string{
-				instanceQuotaClaimSourceLabel: r.edgeClusterName,
+				instanceQuotaClaimSourceLabel:    r.edgeClusterName,
+				instanceQuotaClaimNamespaceLabel: instance.Namespace,
 			},
 		},
 		Spec: quotav1alpha1.ResourceClaimSpec{
@@ -1033,15 +1057,20 @@ func (r *InstanceReconciler) SetupWithManager(
 				return handler.TypedEnqueueRequestsFromMapFunc(
 					func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 						claim := obj.(*quotav1alpha1.ResourceClaim)
-						if claim.Spec.ResourceRef.Name == "" {
+						// Map the claim back to its owning Instance. The Instance
+						// namespace is carried on a label (the claim itself lives in
+						// the project's quota namespace) and the Instance name is the
+						// claim name with the resource-kind prefix stripped.
+						instanceNamespace := claim.GetLabels()[instanceQuotaClaimNamespaceLabel]
+						if instanceNamespace == "" {
 							return nil
 						}
 						return []mcreconcile.Request{
 							{
 								Request: reconcile.Request{
 									NamespacedName: types.NamespacedName{
-										Namespace: claim.Spec.ResourceRef.Namespace,
-										Name:      claim.Spec.ResourceRef.Name,
+										Namespace: instanceNamespace,
+										Name:      strings.TrimPrefix(claim.Name, instanceQuotaClaimNamePrefix),
 									},
 								},
 								ClusterName: r.resolveClusterNameForProject(claim.Spec.ConsumerRef.Name),
