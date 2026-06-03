@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -95,6 +96,16 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	}
 
 	logger := log.FromContext(ctx)
+
+	// An empty cluster name resolves to the local host management cluster, which
+	// has no compute CRDs — any Get would fail with "no matches for kind" and
+	// requeue in a hot loop. The For watch (EngageWithLocalCluster=false) and the
+	// preservation-wrapped downstream watch both set a real project cluster name,
+	// so an empty name here is never legitimate. Drop it without erroring.
+	if req.ClusterName == "" {
+		logger.V(1).Info("dropping reconcile with empty cluster name")
+		return ctrl.Result{}, nil
+	}
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -419,11 +430,22 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 	// Watch the downstream Karmada WorkloadDeployment whose status we mirror.
 	// FederationCluster is a watchable handle for the federation control plane;
 	// it is nil in unit tests, where only the For watch is exercised.
+	//
+	// The handler MUST preserve the ClusterName that mapDownstreamDeploymentToRequest
+	// sets. milosource binds the raw source to the empty cluster name, and the
+	// default TypedEnqueueRequestsFromMapFunc wraps the map in TypedInjectCluster,
+	// which overwrites each request's ClusterName with that bound empty name — so
+	// every request would resolve to the local host cluster (no compute CRDs) and
+	// fail with "no matches for kind WorkloadDeployment". The preservation variant
+	// skips that injection so our project-cluster ClusterName survives to Reconcile.
 	if r.FederationCluster != nil {
+		preserveClusterName := func(_ multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[*computev1alpha.WorkloadDeployment, mcreconcile.Request] {
+			return mchandler.TypedEnqueueRequestsFromMapFuncWithClusterPreservation(r.mapDownstreamDeploymentToRequest)
+		}
 		b = b.WatchesRawSource(milosource.MustNewClusterSource(
 			r.FederationCluster,
 			&computev1alpha.WorkloadDeployment{},
-			mchandler.TypedEnqueueRequestsFromMapFunc(r.mapDownstreamDeploymentToRequest),
+			preserveClusterName,
 		))
 	}
 
