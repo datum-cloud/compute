@@ -220,6 +220,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	newWorkloadStatus := workload.Status.DeepCopy()
 	totalReplicas := int32(0)
 	totalCurrentReplicas := int32(0)
+	totalUpdatedReplicas := int32(0)
 	totalDesiredReplicas := int32(0)
 	totalReadyReplicas := int32(0)
 	totalDeployments := int32(0)
@@ -251,12 +252,14 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		foundAvailableDeployment := false
 		replicas := int32(0)
 		currentReplicas := int32(0)
+		updatedReplicas := int32(0)
 		desiredReplicas := int32(0)
 		readyReplicas := int32(0)
 		totalDeployments += int32(len(placementDeployments))
 		for _, deployment := range placementDeployments {
 			replicas += deployment.Status.Replicas
 			currentReplicas += deployment.Status.CurrentReplicas
+			updatedReplicas += deployment.Status.UpdatedReplicas
 			desiredReplicas += deployment.Status.DesiredReplicas
 			readyReplicas += deployment.Status.ReadyReplicas
 
@@ -266,11 +269,13 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		}
 		totalReplicas += replicas
 		totalCurrentReplicas += currentReplicas
+		totalUpdatedReplicas += updatedReplicas
 		totalDesiredReplicas += desiredReplicas
 		totalReadyReplicas += readyReplicas
 
 		placementStatus.Replicas = replicas
 		placementStatus.CurrentReplicas = currentReplicas
+		placementStatus.UpdatedReplicas = updatedReplicas
 		placementStatus.DesiredReplicas = desiredReplicas
 		placementStatus.ReadyReplicas = readyReplicas
 
@@ -304,8 +309,10 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	newWorkloadStatus.Deployments = totalDeployments
 	newWorkloadStatus.Replicas = totalReplicas
 	newWorkloadStatus.CurrentReplicas = totalCurrentReplicas
+	newWorkloadStatus.UpdatedReplicas = totalUpdatedReplicas
 	newWorkloadStatus.DesiredReplicas = totalDesiredReplicas
 	newWorkloadStatus.ReadyReplicas = totalReadyReplicas
+	newWorkloadStatus.ObservedGeneration = workload.Generation
 
 	if equality.Semantic.DeepEqual(workload.Status, newWorkloadStatus) {
 		return nil

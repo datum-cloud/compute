@@ -171,15 +171,17 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		desiredReplicas = 0
 	}
 
-	currentReplicas, readyReplicas, quotaBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
+	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	deployment.Status.Replicas = int32(replicas)
 	deployment.Status.CurrentReplicas = int32(currentReplicas)
+	deployment.Status.UpdatedReplicas = int32(updatedReplicas)
 	deployment.Status.DesiredReplicas = desiredReplicas
 	deployment.Status.ReadyReplicas = int32(readyReplicas)
+	deployment.Status.ObservedGeneration = deployment.Generation
 
 	if quotaBlockedReplicas > 0 {
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
@@ -246,7 +248,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 	deployment *computev1alpha.WorkloadDeployment,
 	instances []computev1alpha.Instance,
 	networkReady bool,
-) (currentReplicas, readyReplicas, quotaBlockedReplicas int, err error) {
+) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas int, err error) {
 	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
 	for _, instance := range instances {
 		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
@@ -265,22 +267,34 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 					instance.Spec.Controller.SchedulingGates = newGates
 					return nil
 				}); patchErr != nil {
-					return 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
+					return 0, 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
 				}
 			}
 		}
 
-		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
-			if instance.Status.Controller.ObservedTemplateHash == templateHash {
-				currentReplicas++
-			}
+		// An instance is "updated" once it has observed the desired template
+		// revision, regardless of readiness. Counting these (even before they are
+		// Programmed) makes a rolling update / restart observable: UpdatedReplicas
+		// dips below Replicas while the recreated instance comes up, then recovers.
+		// Status.Controller is a pointer the infra provider may not have populated
+		// yet; guard the deref to avoid a panic that would abort the reconcile.
+		onLatestRevision := instance.Status.Controller != nil &&
+			instance.Status.Controller.ObservedTemplateHash == templateHash
+		if onLatestRevision {
+			updatedReplicas++
+		}
+
+		// CurrentReplicas is the Programmed subset of UpdatedReplicas — updated
+		// instances that are ready to serve.
+		if onLatestRevision && apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
+			currentReplicas++
 		}
 
 		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceReady) {
 			readyReplicas++
 		}
 	}
-	return currentReplicas, readyReplicas, quotaBlockedReplicas, nil
+	return currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, nil
 }
 
 // reconcileNetworks ensures NetworkBindings and SubnetClaims exist for all
