@@ -467,7 +467,27 @@ func ignoreCanceled(err error) error {
 // InstanceProjector). Called only when management controllers are enabled and
 // a federation REST config is available.
 func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
-	federator := &controller.WorkloadDeploymentFederator{FederationClient: federationClient}
+	// The federation manager provides a cached, watchable handle to the Karmada
+	// federation control plane. It backs the InstanceProjector's Instance watch
+	// and the WorkloadDeploymentFederator's downstream WorkloadDeployment status
+	// watch. A manager.Manager embeds a cluster.Cluster, so it can be passed
+	// directly anywhere a watchable federation cluster source is required.
+	federationMgr, err := manager.New(federationRestConfig, manager.Options{
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("federation manager: %w", err)
+	}
+
+	// The federator watches both the project WD (via the multicluster manager)
+	// and the downstream Karmada WD (via the federation cluster) so that status
+	// aggregated downstream by Karmada is mirrored back to the project WD
+	// immediately instead of on the next informer resync.
+	federator := &controller.WorkloadDeploymentFederator{
+		FederationClient:  federationClient,
+		FederationCluster: federationMgr,
+	}
 	if err := federator.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
 	}
@@ -475,13 +495,6 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// InstanceProjector runs in the management plane, watches Instances written
 	// back by POP-cell operators to the Karmada federation control plane, and
 	// projects them into the corresponding project namespaces via the multicluster manager.
-	federationMgr, err := manager.New(federationRestConfig, manager.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("federation manager for InstanceProjector: %w", err)
-	}
 	if err = (&controller.InstanceProjector{
 		FederationClient: federationClient,
 		MCManager:        mgr,

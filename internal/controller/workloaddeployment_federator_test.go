@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
 // ─── Shared test constants ────────────────────────────────────────────────────
@@ -117,6 +119,121 @@ func reconcileRequest() mcreconcile.Request {
 }
 
 // ─── Unit tests ───────────────────────────────────────────────────────────────
+
+// TestMapDownstreamDeploymentToRequest verifies the downstream-WD → project-WD
+// mapping used by the cross-plane status watch: the request name equals the
+// downstream WD name, the namespace comes from the WD's upstream-namespace label,
+// and the cluster name is decoded from the downstream namespace's
+// upstream-cluster-name label. Events lacking correlation metadata are dropped.
+func TestMapDownstreamDeploymentToRequest(t *testing.T) {
+	t.Parallel()
+
+	// The encoded cluster name on the downstream namespace decodes to testCluster.
+	encodedCluster := "cluster-" + strings.ReplaceAll(testCluster, "/", "_")
+
+	downstreamNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testKarmadaNSStr,
+			Labels: map[string]string{
+				downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster,
+			},
+		},
+	}
+
+	newDownstreamWD := func(labels map[string]string) *computev1alpha.WorkloadDeployment {
+		return &computev1alpha.WorkloadDeployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testWDName,
+				Namespace: testKarmadaNSStr,
+				Labels:    labels,
+			},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		karmadaObjs  []client.Object
+		downstreamWD *computev1alpha.WorkloadDeployment
+		want         []mcreconcile.Request
+	}{
+		{
+			name:        "maps to project WD request",
+			karmadaObjs: []client.Object{downstreamNS},
+			downstreamWD: newDownstreamWD(map[string]string{
+				downstreamclient.UpstreamOwnerNamespaceLabel: testProjNS,
+			}),
+			want: []mcreconcile.Request{
+				{
+					ClusterName: testCluster,
+					Request: ctrl.Request{
+						NamespacedName: types.NamespacedName{
+							Namespace: testProjNS,
+							Name:      testWDName,
+						},
+					},
+				},
+			},
+		},
+		{
+			name:         "missing upstream-namespace label is dropped",
+			karmadaObjs:  []client.Object{downstreamNS},
+			downstreamWD: newDownstreamWD(nil),
+			want:         nil,
+		},
+		{
+			name:        "missing downstream namespace is dropped",
+			karmadaObjs: nil, // namespace not present in federation cluster
+			downstreamWD: newDownstreamWD(map[string]string{
+				downstreamclient.UpstreamOwnerNamespaceLabel: testProjNS,
+			}),
+			want: nil,
+		},
+		{
+			name: "namespace without cluster label is dropped",
+			karmadaObjs: []client.Object{&corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: testKarmadaNSStr},
+			}},
+			downstreamWD: newDownstreamWD(map[string]string{
+				downstreamclient.UpstreamOwnerNamespaceLabel: testProjNS,
+			}),
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			karmadaClient := newKarmadaFakeClient(tt.karmadaObjs...)
+			r := &WorkloadDeploymentFederator{
+				FederationClient:  karmadaClient,
+				FederationCluster: newFakeCluster(karmadaClient),
+			}
+
+			got := r.mapDownstreamDeploymentToRequest(context.Background(), tt.downstreamWD)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDecodeUpstreamClusterName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		encoded string
+		want    string
+	}{
+		{"cluster-datum-cloud", "datum-cloud"},
+		{"cluster-org_project", "org/project"},
+		{"cluster-test-project-cluster", "test-project-cluster"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.encoded, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, decodeUpstreamClusterName(tt.encoded))
+		})
+	}
+}
 
 func TestPropagationPolicyNameFor(t *testing.T) {
 	t.Parallel()
