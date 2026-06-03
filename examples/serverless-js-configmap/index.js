@@ -5,9 +5,10 @@
 // Dependency-free (Node stdlib only): the generic runtime image ships no
 // node_modules, so the function must not `require` anything outside core.
 //
-// The VERSION string is the swap marker: change it in configmap.yaml, re-apply,
-// restart the workload, and the HTTP response proves the new code took effect
-// with no image rebuild -- the core serverless value prop.
+// The VERSION string is the swap marker: change it here, re-apply with
+// `kubectl apply -k .` (Kustomize regenerates the js-function ConfigMap from
+// this file), restart the workload, and the HTTP response proves the new code
+// took effect with no image rebuild -- the core serverless value prop.
 const http = require('http');
 
 const VERSION = 'v1';

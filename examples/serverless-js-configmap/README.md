@@ -15,8 +15,8 @@ unikraft microVM as read-only `rom` devices when the image is packaged with
 |------|---------|
 | `Dockerfile` | Multi-stage build of the **generic** runtime: a `scratch` image carrying only the `node` interpreter + its musl/libgcc/libstdc++ `.so` files. No app code. |
 | `Kraftfile` | `spec: v0.7`, `base-compat:latest`, `rootfs.format: erofs`, `cmd: ["/usr/bin/node", "/app/index.js"]` (a **mounted** path). |
-| `index.js` | The function: a dependency-free Node stdlib HTTP server on `$PORT` (default 8080). Returns a versioned message; logs a versioned startup line. This is the ConfigMap payload, **not** baked into the image. |
-| `configmap.yaml` | ConfigMap `js-function` with key `index.js` (the `v1` function). |
+| `index.js` | The function and the **single source of truth** for the ConfigMap: a dependency-free Node stdlib HTTP server on `$PORT` (default 8080). Returns a versioned message; logs a versioned startup line. Mounted into the image, **not** baked in. |
+| `kustomization.yaml` | A Kustomize `configMapGenerator` that generates the `js-function` ConfigMap from `index.js` (so there is no hand-maintained copy of the function to drift). `disableNameSuffixHash: true` keeps the name stable for the Workload reference. |
 | `workload.yaml` | A `compute.datumapis.com/v1alpha` Workload mounting `js-function` at `/app`, port 8080, `d1-standard-2`, DFW, `minReplicas: 1`. Env intentionally empty (see Pitfalls). |
 
 ## 1. Build + push the generic runtime image (push-only)
@@ -35,14 +35,19 @@ Packages as an EroFS archive and pushes to
 `index.unikraft.io/datum/serverless-js-runtime:latest`. This image is built
 **once** and reused for every function version.
 
-## 2. Apply the ConfigMap on the PROJECT control plane
+## 2. Generate + apply the ConfigMap on the PROJECT control plane
 
-The ReferencedData resolver that turns ConfigMap data into the unikernel mount
-runs project-side. Applying on the cell is a dead end.
+`kubectl apply -k` runs the `configMapGenerator`, building the `js-function`
+ConfigMap from `index.js` and applying it. The ReferencedData resolver that
+turns ConfigMap data into the unikernel mount runs project-side, so apply it on
+the project plane — applying on the cell is a dead end.
 
 ```sh
-kubectl --context datum-project-datum-cloud -n default apply -f configmap.yaml
+kubectl --context datum-project-datum-cloud -n default apply -k .
 ```
+
+(`kubectl kustomize .` renders the generated ConfigMap to stdout if you want to
+inspect it first.)
 
 ## 3. Deploy the Workload
 
@@ -67,12 +72,12 @@ Derive `<ukc>` from the cell Pod annotation
 
 ## 5. Swap the function (the headline)
 
-Edit `index.js` inside `configmap.yaml` (bump `VERSION` to `v2` and the
-message), re-apply on the project plane, then recreate the instance so the new
-read-only `rom` is baked at boot:
+Edit `index.js` directly (bump `VERSION` to `v2` and the message) — it is the
+only copy. Re-apply with `-k` to regenerate the ConfigMap, then recreate the
+instance so the new read-only `rom` is baked at boot:
 
 ```sh
-kubectl --context datum-project-datum-cloud -n default apply -f configmap.yaml
+kubectl --context datum-project-datum-cloud -n default apply -k .
 datumctl compute restart serverless-js-fn        # rolling restart -> recreate instance
 curl https://<external-fqdn>/                    # -> ... — v2   (same image, no rebuild)
 ```
