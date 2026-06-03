@@ -297,6 +297,28 @@ func TestWorkloadDeploymentFederator_NoFederationClient(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
+// TestWorkloadDeploymentFederator_EmptyClusterNameDropped verifies that a
+// reconcile request carrying an empty cluster name is dropped without error
+// (and without touching GetCluster), so it can never fall back to the local
+// host cluster and spin in a "no matches for kind" requeue loop.
+func TestWorkloadDeploymentFederator_EmptyClusterNameDropped(t *testing.T) {
+	t.Parallel()
+
+	projectClient := newProjectFakeClient(testProjectNamespace(), testWorkloadDeployment())
+	karmadaClient := newKarmadaFakeClient()
+	r := newTestFederator(projectClient, karmadaClient)
+
+	req := mcreconcile.Request{
+		ClusterName: "",
+		Request: ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: testWDName, Namespace: testProjNS},
+		},
+	}
+	result, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
 // TestWorkloadDeploymentFederator_AddsFinalizerOnFirstSeen verifies that the
 // first reconcile of a brand-new WorkloadDeployment adds the finalizer and
 // returns without federating (the finalizer update triggers a re-queue).
