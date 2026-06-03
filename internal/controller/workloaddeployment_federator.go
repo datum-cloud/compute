@@ -14,17 +14,21 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.miloapis.com/milo/pkg/downstreamclient"
+	milosource "go.miloapis.com/milo/pkg/multicluster-runtime/source"
 )
 
 const (
@@ -69,7 +73,15 @@ type WorkloadDeploymentFederator struct {
 	// plane (the federation hub that the management controllers read and write
 	// through). The caller (cmd/main.go) constructs it from --federation-kubeconfig.
 	FederationClient client.Client
-	finalizers       finalizer.Finalizers
+	// FederationCluster is a watchable cluster handle for the same Karmada
+	// federation control plane that FederationClient talks to. It is used to set
+	// up an informer-backed watch on the downstream WorkloadDeployment objects so
+	// that status aggregated by Karmada onto the downstream WD is mirrored back to
+	// the project-namespace WD immediately, rather than waiting for the next
+	// informer resync. When nil (e.g. in unit tests), the downstream watch is
+	// skipped and the controller falls back to watching only the VCP WD.
+	FederationCluster cluster.Cluster
+	finalizers        finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;update;patch
@@ -383,16 +395,107 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 
 // SetupWithManager registers the controller with the multicluster manager.
 // It must only be called when FederationClient is non-nil.
+//
+// The controller watches two control planes:
+//
+//   - The VCP/project WorkloadDeployment (via For), so spec changes in the
+//     project namespace trigger federation to the downstream control plane.
+//   - The downstream Karmada WorkloadDeployment (via WatchesRawSource against
+//     FederationCluster), so when Karmada aggregates new status onto the
+//     downstream WD the corresponding project WD is reconciled immediately and
+//     the status is mirrored back. Without this second watch the federator only
+//     caught up on the next informer resync (~10h), causing status lag.
 func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(federatorFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register federator finalizer: %w", err)
 	}
-	return mcbuilder.ControllerManagedBy(mgr).
+
+	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Named("workload-deployment-federator").
-		Complete(r)
+		Named("workload-deployment-federator")
+
+	// Watch the downstream Karmada WorkloadDeployment whose status we mirror.
+	// FederationCluster is a watchable handle for the federation control plane;
+	// it is nil in unit tests, where only the For watch is exercised.
+	if r.FederationCluster != nil {
+		b = b.WatchesRawSource(milosource.MustNewClusterSource(
+			r.FederationCluster,
+			&computev1alpha.WorkloadDeployment{},
+			mchandler.TypedEnqueueRequestsFromMapFunc(r.mapDownstreamDeploymentToRequest),
+		))
+	}
+
+	return b.Complete(r)
+}
+
+// mapDownstreamDeploymentToRequest maps an event on a downstream Karmada
+// WorkloadDeployment to a reconcile request for the corresponding
+// project-namespace WorkloadDeployment.
+//
+// Correlation mirrors the identity the federator establishes when it mirrors the
+// object downstream (see upsertDownstreamDeployment / ensureDownstreamNamespace):
+//
+//   - The WD name is stable across all planes, so the request name equals the
+//     downstream WD name.
+//   - upsertDownstreamDeployment stamps the downstream WD with
+//     UpstreamOwnerNamespaceLabel = the project namespace, which becomes the
+//     request namespace.
+//   - The project cluster name is not on the WD itself; ensureDownstreamNamespace
+//     stamps it as UpstreamOwnerClusterNameLabel on the downstream namespace
+//     (encoded "cluster-<name>" with "/" -> "_"). We read the namespace from the
+//     federation plane to recover and decode it.
+//
+// Events lacking the required correlation labels (e.g. WorkloadDeployments not
+// created by this federator) are dropped.
+func (r *WorkloadDeploymentFederator) mapDownstreamDeploymentToRequest(
+	ctx context.Context,
+	downstream *computev1alpha.WorkloadDeployment,
+) []mcreconcile.Request {
+	logger := log.FromContext(ctx)
+
+	projectNamespace := downstream.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+	if projectNamespace == "" {
+		// Not federated by us (no upstream-namespace label) — nothing to enqueue.
+		return nil
+	}
+
+	// Recover the project cluster name from the downstream namespace label.
+	var ns corev1.Namespace
+	if err := r.FederationCluster.GetClient().Get(ctx, types.NamespacedName{Name: downstream.Namespace}, &ns); err != nil {
+		logger.V(1).Info("unable to resolve downstream namespace for status mapping; dropping event",
+			"downstreamNamespace", downstream.Namespace, "error", err)
+		return nil
+	}
+	encodedClusterName := ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+	if encodedClusterName == "" {
+		logger.V(1).Info("downstream namespace missing upstream-cluster-name label; dropping event",
+			"downstreamNamespace", downstream.Namespace)
+		return nil
+	}
+	clusterName := decodeUpstreamClusterName(encodedClusterName)
+
+	return []mcreconcile.Request{
+		{
+			ClusterName: multicluster.ClusterName(clusterName),
+			Request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: projectNamespace,
+					Name:      downstream.Name,
+				},
+			},
+		},
+	}
+}
+
+// decodeUpstreamClusterName reverses the "cluster-<name>" encoding (with "/"
+// replaced by "_") that MappedNamespaceResourceStrategy applies to the
+// UpstreamOwnerClusterNameLabel value, recovering the original project cluster
+// name.
+func decodeUpstreamClusterName(encoded string) string {
+	name := strings.TrimPrefix(encoded, "cluster-")
+	return strings.ReplaceAll(name, "_", "/")
 }
 
 // propagationPolicyNameFor returns the PropagationPolicy name for a given city
