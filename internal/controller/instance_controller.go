@@ -371,16 +371,21 @@ func quotaClaimName(instance *computev1alpha.Instance) string {
 
 // quotaPendingRequeueAfter returns a safety-net requeue interval while the
 // instance's quota is not yet granted, backing off the longer it has waited (see
-// the quotaPendingRequeue* constants). It anchors elapsed time on the
-// QuotaGranted condition's last transition (when the instance entered the pending
-// state). It returns 0 when quota is already granted (QuotaGranted=True) or the
-// condition is absent, so a granted/normal instance is not needlessly requeued.
+// the quotaPendingRequeue* constants). It returns 0 when quota is already granted
+// (QuotaGranted=True) or the condition is absent, so a granted/normal instance is
+// not needlessly requeued.
+//
+// Elapsed time is anchored on the instance's creation timestamp, NOT the
+// QuotaGranted condition's LastTransitionTime: while quota is pending the
+// condition stays Unknown (PendingEvaluation and NoBudget are both Unknown), so
+// SetStatusCondition never bumps LastTransitionTime off its 1970-01-01 CRD
+// default — which would peg every pending instance to the slowest tier.
 func quotaPendingRequeueAfter(instance *computev1alpha.Instance, now time.Time) time.Duration {
 	cond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
 	if cond == nil || cond.Status == metav1.ConditionTrue {
 		return 0
 	}
-	elapsed := now.Sub(cond.LastTransitionTime.Time)
+	elapsed := now.Sub(instance.CreationTimestamp.Time)
 	switch {
 	case elapsed < quotaPendingFastWindow:
 		return quotaPendingRequeueFast

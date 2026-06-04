@@ -1578,14 +1578,20 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 func TestQuotaPendingRequeueAfter(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	withQuota := func(s metav1.ConditionStatus, transitioned time.Time) *computev1alpha.Instance {
+	// created is the instance creation time; quota elapsed is measured from it
+	// (NOT the condition's LastTransitionTime, which stays at the 1970 default
+	// while quota is pending). The condition LastTransitionTime here is
+	// deliberately left at the 1970 zero value to mirror that production reality.
+	withQuota := func(s metav1.ConditionStatus, created time.Time) *computev1alpha.Instance {
 		return &computev1alpha.Instance{
+			ObjectMeta: metav1.ObjectMeta{
+				CreationTimestamp: metav1.NewTime(created),
+			},
 			Status: computev1alpha.InstanceStatus{
 				Conditions: []metav1.Condition{{
-					Type:               computev1alpha.InstanceQuotaGranted,
-					Status:             s,
-					Reason:             "PendingEvaluation",
-					LastTransitionTime: metav1.NewTime(transitioned),
+					Type:   computev1alpha.InstanceQuotaGranted,
+					Status: s,
+					Reason: "PendingEvaluation",
 				}},
 			},
 		}
