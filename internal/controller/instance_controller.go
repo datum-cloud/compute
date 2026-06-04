@@ -237,6 +237,18 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 
 	statusChanged, quotaErr := r.reconcileQuotaCondition(ctx, req.ClusterName, &instance)
 
+	// Safety-net requeue while quota is not yet granted, computed up front so
+	// every return path below honors it. A conflict during the pending window
+	// must not drop the instance onto controller-runtime's exponential
+	// error-backoff (which can stretch to minutes), which would defeat recovery
+	// from a missed ResourceClaim grant event. Logged so the requeue is
+	// observable: a re-firing requeue prints this every pass while pending.
+	quotaReq := quotaPendingRequeueAfter(&instance, time.Now())
+	if quotaReq > 0 {
+		logger.Info("quota pending; scheduling safety-net requeue",
+			"after", quotaReq.String(), "cluster", req.ClusterName.String(), "instance", instance.Name)
+	}
+
 	// Even when reconcileQuotaCondition returns a transient error, persist any
 	// condition change first so the failure reason is visible on the Instance.
 	// We return the error afterwards so controller-runtime requeues with backoff.
@@ -247,6 +259,11 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 
 	if statusChanged || readyChanged {
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
+			if quotaReq > 0 && apierrors.IsConflict(err) {
+				logger.Info("status update conflicted while quota pending; requeuing instead of error-backoff",
+					"after", quotaReq.String(), "instance", instance.Name)
+				return ctrl.Result{RequeueAfter: quotaReq}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		// Return with the quota error (nil or transient) so controller-runtime
@@ -271,13 +288,20 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	}
 
 	if err := r.writeBackToUpstream(ctx, req.ClusterName, &instance); err != nil {
+		if quotaReq > 0 && apierrors.IsConflict(err) {
+			logger.Info("upstream writeback conflicted while quota pending; requeuing instead of error-backoff",
+				"after", quotaReq.String(), "instance", instance.Name)
+			return ctrl.Result{RequeueAfter: quotaReq}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
-	// Safety net: while quota is still pending (claim created but not yet
-	// granted), requeue on a backing-off schedule so a missed ResourceClaim
-	// grant event self-heals instead of wedging the instance.
-	return ctrl.Result{RequeueAfter: quotaPendingRequeueAfter(&instance, time.Now())}, nil
+	if quotaReq > 0 {
+		logger.Info("requeuing instance", "after", quotaReq.String(),
+			"cluster", req.ClusterName.String(), "instance", instance.Name)
+	}
+
+	return ctrl.Result{RequeueAfter: quotaReq}, nil
 }
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
