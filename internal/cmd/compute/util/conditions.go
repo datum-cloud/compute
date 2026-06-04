@@ -30,9 +30,11 @@ func ReadinessBlock(conditions []metav1.Condition, condType string) (reason, mes
 }
 
 // InstanceStatus returns a short user-facing status string for list views.
+// It reports availability, not live runtime state — it never indicates
+// whether a process is actively running at this instant.
 // Priority order:
 //
-//	Ready=True → "Running"
+//	Ready=True → "Available"
 //	QuotaGranted=False/QuotaExceeded → "Pending (quota exceeded)"
 //	QuotaGranted=False/ValidationFailed → "Pending (quota validation failed)"
 //	QuotaGranted=Unknown/PendingEvaluation → "Pending (quota evaluation)"
@@ -40,14 +42,12 @@ func ReadinessBlock(conditions []metav1.Condition, condType string) (reason, mes
 //	Programmed=False/InstanceCrashing → "Failed (crashing)"
 //	Programmed=False/ConfigurationError → "Failed (configuration error)"
 //	Programmed≠True/PendingProgramming or ProgrammingInProgress → "Starting"
-//	Running=False/Starting → "Starting"
-//	Running=False/Stopping → "Stopping"
 //	Ready≠True/<reason> → "Pending (<reason>)" from server-rolled-up blocking reason
 //	default → "Pending"
 func InstanceStatus(conditions []metav1.Condition) string {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
 	if ready != nil && ready.Status == metav1.ConditionTrue {
-		return "Running"
+		return "Available"
 	}
 
 	quota := FindCondition(conditions, v1alpha.InstanceQuotaGranted)
@@ -79,16 +79,6 @@ func InstanceStatus(conditions []metav1.Condition) string {
 		}
 	}
 
-	running := FindCondition(conditions, v1alpha.InstanceRunning)
-	if running != nil && running.Status == metav1.ConditionFalse {
-		switch running.Reason {
-		case v1alpha.InstanceRunningReasonStarting:
-			return "Starting"
-		case v1alpha.InstanceRunningReasonStopping:
-			return "Stopping"
-		}
-	}
-
 	// Use the server-rolled-up blocking reason from the Ready condition. This
 	// surfaces reasons like SourceNotFound or ReferencedDataNotReady that the
 	// sub-condition checks above don't cover, without requiring client-side
@@ -102,48 +92,36 @@ func InstanceStatus(conditions []metav1.Condition) string {
 
 // InstanceStatusDetail returns a status line and optional detail message for describe views.
 //
-//	Ready=True → "Running", ""
-//	QuotaGranted=False/QuotaExceeded → "Not running — quota exceeded", condition.Message
-//	Programmed=False/ImageUnavailable → "Not running — image unavailable", condition.Message
-//	Programmed=False/InstanceCrashing → "Not running — instance crashing", condition.Message
-//	Programmed=False/ConfigurationError → "Not running — configuration error", condition.Message
+//	Ready=True → "Available", ""
+//	QuotaGranted=False/QuotaExceeded → "Not available — quota exceeded", condition.Message
+//	Programmed=False/ImageUnavailable → "Not available — image unavailable", condition.Message
+//	Programmed=False/InstanceCrashing → "Not available — instance crashing", condition.Message
+//	Programmed=False/ConfigurationError → "Not available — configuration error", condition.Message
 //	Programmed≠True/PendingProgramming or ProgrammingInProgress → "Starting", ""
-//	Running=False/Starting → "Starting", ""
-//	Running=False/Stopping → "Stopping", ""
 //	Ready≠True/<reason> → "Pending — <reason>", message  (server-rolled-up blocking reason)
 //	default → "Pending", ""
 func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string) {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
 	if ready != nil && ready.Status == metav1.ConditionTrue {
-		return "Running", ""
+		return "Available", ""
 	}
 
 	quota := FindCondition(conditions, v1alpha.InstanceQuotaGranted)
 	if quota != nil && quota.Status == metav1.ConditionFalse && quota.Reason == v1alpha.InstanceQuotaGrantedReasonQuotaExceeded {
-		return "Not running — quota exceeded", quota.Message
+		return "Not available — quota exceeded", quota.Message
 	}
 
 	programmed := FindCondition(conditions, v1alpha.InstanceProgrammed)
 	if programmed != nil && programmed.Status != metav1.ConditionTrue {
 		switch programmed.Reason {
 		case v1alpha.InstanceProgrammedReasonImageUnavailable:
-			return "Not running — image unavailable", programmed.Message
+			return "Not available — image unavailable", programmed.Message
 		case v1alpha.InstanceProgrammedReasonInstanceCrashing:
-			return "Not running — instance crashing", programmed.Message
+			return "Not available — instance crashing", programmed.Message
 		case v1alpha.InstanceProgrammedReasonConfigurationError:
-			return "Not running — configuration error", programmed.Message
+			return "Not available — configuration error", programmed.Message
 		case v1alpha.InstanceProgrammedReasonPendingProgramming, v1alpha.InstanceProgrammedReasonProgrammingInProgress:
 			return "Starting", ""
-		}
-	}
-
-	running := FindCondition(conditions, v1alpha.InstanceRunning)
-	if running != nil && running.Status == metav1.ConditionFalse {
-		switch running.Reason {
-		case v1alpha.InstanceRunningReasonStarting:
-			return "Starting", ""
-		case v1alpha.InstanceRunningReasonStopping:
-			return "Stopping", ""
 		}
 	}
 
@@ -183,8 +161,8 @@ func WorkloadHealth(conditions []metav1.Condition, ready, desired int32) string 
 	return fmt.Sprintf("Degraded — %d instances below desired count", diff)
 }
 
-// IsRunning returns true if the instance's Ready condition status is True.
-func IsRunning(conditions []metav1.Condition) bool {
+// IsAvailable returns true if the instance's Ready condition status is True.
+func IsAvailable(conditions []metav1.Condition) bool {
 	c := FindCondition(conditions, v1alpha.InstanceReady)
 	return c != nil && c.Status == metav1.ConditionTrue
 }

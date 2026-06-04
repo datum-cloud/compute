@@ -404,8 +404,10 @@ const (
 	// InstanceReady indicates that the instance is ready
 	InstanceReady = "Ready"
 
-	// InstanceRunning indicates that the instance is running
-	InstanceRunning = "Running"
+	// InstanceAvailable indicates that the instance is available. It is True
+	// while the instance is serving (including when scaled to zero); it does
+	// not assert that a process is actively running at this instant.
+	InstanceAvailable = "Available"
 
 	// InstanceProgrammed indicates that the instance has been programmed
 	InstanceProgrammed = "Programmed"
@@ -458,20 +460,20 @@ const (
 	// InstanceReadyReasonSchedulingGatesPresent indicates that the instance is not ready because scheduling gates are present.
 	InstanceReadyReasonSchedulingGatesPresent = "SchedulingGatesPresent"
 
-	// InstanceReadyReasonRunning indicates that the instance is running
-	InstanceReadyReasonRunning = "Running"
+	// InstanceReadyReasonAvailable indicates that the instance is available
+	InstanceReadyReasonAvailable = "Available"
 
-	// InstanceRunningReasonStopped indicates that the instance is stopped
-	InstanceRunningReasonStopped = "Stopped"
+	// InstanceAvailableReasonStopped indicates that the instance is stopped
+	InstanceAvailableReasonStopped = "Stopped"
 
-	// InstanceRunningReasonStarting indicates that the instance is starting
-	InstanceRunningReasonStarting = "Starting"
+	// InstanceAvailableReasonStarting indicates that the instance is starting
+	InstanceAvailableReasonStarting = "Starting"
 
-	// InstanceRunningReasonStopping indicates that the instance is stopping
-	InstanceRunningReasonStopping = "Stopping"
+	// InstanceAvailableReasonStopping indicates that the instance is stopping
+	InstanceAvailableReasonStopping = "Stopping"
 
-	// InstanceRunningReasonRunning indicates that the instance is running
-	InstanceRunningReasonRunning = "Running"
+	// InstanceAvailableReasonAvailable indicates that the instance is available
+	InstanceAvailableReasonAvailable = "Available"
 
 	// InstanceProgrammedReasonPendingProgramming indicates that the instance has not been programmed
 	InstanceProgrammedReasonPendingProgramming = "PendingProgramming"
@@ -530,7 +532,7 @@ type Instance struct {
 
 	// Status defines the current state of an Instance.
 	//
-	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Running",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"QuotaGranted",status:"Unknown",reason:"PendingEvaluation",message:"Waiting for quota evaluation",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Available",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"QuotaGranted",status:"Unknown",reason:"PendingEvaluation",message:"Waiting for quota evaluation",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
 	Status InstanceStatus `json:"status,omitempty"`
 }
 

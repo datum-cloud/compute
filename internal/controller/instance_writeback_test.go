@@ -92,7 +92,7 @@ func wbTestCellInstance() *computev1alpha.Instance {
 				{
 					Type:               computev1alpha.InstanceReady,
 					Status:             metav1.ConditionTrue,
-					Reason:             computev1alpha.InstanceReadyReasonRunning,
+					Reason:             computev1alpha.InstanceReadyReasonAvailable,
 					Message:            "Instance is ready",
 					LastTransitionTime: metav1.Now(),
 				},

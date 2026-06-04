@@ -267,18 +267,18 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	}
 	_ = tw.Flush()
 
-	var running, pending, failed int
+	var available, pending, failed int
 	for _, r := range rows {
 		switch {
-		case r.status == "Running":
-			running++
+		case r.status == "Available":
+			available++
 		case strings.HasPrefix(r.status, "Failed"):
 			failed++
 		default:
 			pending++
 		}
 	}
-	_, _ = fmt.Fprintf(out, "\n%d instances — %d Running, %d Pending, %d Failed\n", len(rows), running, pending, failed)
+	_, _ = fmt.Fprintf(out, "\n%d instances — %d Available, %d Pending, %d Failed\n", len(rows), available, pending, failed)
 
 	return nil
 }
@@ -433,9 +433,9 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "  %s\n", networkLine)
 	fmt.Fprintf(out, "\n")
 
-	// Next steps if not running and quota exceeded.
+	// Next steps if not available and quota exceeded.
 	quotaCond := util.FindCondition(inst.Status.Conditions, computev1alpha.InstanceQuotaGranted)
-	if status != "Running" && quotaCond != nil && quotaCond.Reason == computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded {
+	if status != "Available" && quotaCond != nil && quotaCond.Reason == computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded {
 		fmt.Fprintf(out, "Next steps\n")
 		fmt.Fprintf(out, "  datumctl compute scale %s --min=2\n", workloadName)
 		fmt.Fprintf(out, "  datumctl compute quota\n")

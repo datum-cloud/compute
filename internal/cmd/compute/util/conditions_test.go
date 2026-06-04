@@ -36,7 +36,7 @@ func TestReadinessBlock(t *testing.T) {
 		{
 			name: "condition True — not blocked",
 			conditions: []metav1.Condition{
-				makeCondition(v1alpha.InstanceReady, "True", "Running", ""),
+				makeCondition(v1alpha.InstanceReady, "True", "Available", ""),
 			},
 			condType:    v1alpha.InstanceReady,
 			wantBlocked: false,
@@ -123,11 +123,11 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			wantDetail: "",
 		},
 		{
-			name: "Ready True — Running",
+			name: "Ready True — Available",
 			conditions: []metav1.Condition{
-				makeCondition(v1alpha.InstanceReady, "True", "Running", ""),
+				makeCondition(v1alpha.InstanceReady, "True", "Available", ""),
 			},
-			wantStatus: "Running",
+			wantStatus: "Available",
 			wantDetail: "",
 		},
 		{
@@ -151,7 +151,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceQuotaGranted, "False", v1alpha.InstanceQuotaGrantedReasonQuotaExceeded, "quota limit reached"),
 			},
-			wantStatus: "Not running — quota exceeded",
+			wantStatus: "Not available — quota exceeded",
 			wantDetail: "quota limit reached",
 		},
 		{
@@ -179,51 +179,51 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			wantDetail: "",
 		},
 		{
-			name: "Programmed False/ImageUnavailable — not running image unavailable",
+			name: "Programmed False/ImageUnavailable — not available image unavailable",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
 			},
-			wantStatus: "Not running — image unavailable",
+			wantStatus: "Not available — image unavailable",
 			wantDetail: "image pull failed: not found",
 		},
 		{
-			name: "Programmed Unknown/ImageUnavailable — not running image unavailable",
+			name: "Programmed Unknown/ImageUnavailable — not available image unavailable",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
 			},
-			wantStatus: "Not running — image unavailable",
+			wantStatus: "Not available — image unavailable",
 			wantDetail: "image pull failed: not found",
 		},
 		{
-			name: "Programmed False/InstanceCrashing — not running instance crashing",
+			name: "Programmed False/InstanceCrashing — not available instance crashing",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
 			},
-			wantStatus: "Not running — instance crashing",
+			wantStatus: "Not available — instance crashing",
 			wantDetail: "exit code 1",
 		},
 		{
-			name: "Programmed Unknown/InstanceCrashing — not running instance crashing",
+			name: "Programmed Unknown/InstanceCrashing — not available instance crashing",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
 			},
-			wantStatus: "Not running — instance crashing",
+			wantStatus: "Not available — instance crashing",
 			wantDetail: "exit code 1",
 		},
 		{
-			name: "Programmed False/ConfigurationError — not running configuration error",
+			name: "Programmed False/ConfigurationError — not available configuration error",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
 			},
-			wantStatus: "Not running — configuration error",
+			wantStatus: "Not available — configuration error",
 			wantDetail: "invalid env var name",
 		},
 		{
-			name: "Programmed Unknown/ConfigurationError — not running configuration error",
+			name: "Programmed Unknown/ConfigurationError — not available configuration error",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
 			},
-			wantStatus: "Not running — configuration error",
+			wantStatus: "Not available — configuration error",
 			wantDetail: "invalid env var name",
 		},
 	}
