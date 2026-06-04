@@ -118,6 +118,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		health      string
 		healthShort string // first word, for filter comparison
 		readyStr    string
+		upToDateStr string
 		placements  string
 		image       string
 		age         string
@@ -137,9 +138,10 @@ func runList(cmd *cobra.Command, _ []string) error {
 		}
 
 		deps := deploysByWorkload[wUID]
-		var totalReady, totalDesired int32
+		var totalReady, totalUpdated, totalDesired int32
 		for _, d := range deps {
 			totalReady += d.Status.ReadyReplicas
+			totalUpdated += d.Status.UpdatedReplicas
 			totalDesired += d.Status.DesiredReplicas
 		}
 
@@ -169,6 +171,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		}
 
 		readyStr := fmt.Sprintf("%d/%d", totalReady, totalDesired)
+		upToDateStr := fmt.Sprintf("%d/%d", totalUpdated, totalDesired)
 		instType := wl.Spec.Template.Spec.Runtime.Resources.InstanceType
 
 		rows = append(rows, workloadRow{
@@ -176,6 +179,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 			health:      health,
 			healthShort: healthShort,
 			readyStr:    readyStr,
+			upToDateStr: upToDateStr,
 			placements:  placements,
 			image:       image,
 			age:         util.RelativeAge(wl.CreationTimestamp),
@@ -221,18 +225,18 @@ func runList(cmd *cobra.Command, _ []string) error {
 	tw := util.NewTabWriter(out)
 	if !noHeaders {
 		if wide {
-			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tPLACEMENTS\tIMAGE\tAGE\tINSTANCE TYPE\n")
+			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tUP-TO-DATE\tPLACEMENTS\tIMAGE\tAGE\tINSTANCE TYPE\n")
 		} else {
-			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tPLACEMENTS\tIMAGE\tAGE\n")
+			fmt.Fprintf(tw, "NAME\tHEALTH\tREADY\tUP-TO-DATE\tPLACEMENTS\tIMAGE\tAGE\n")
 		}
 	}
 	for _, r := range rows {
 		if wide {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.healthShort, r.readyStr, r.placements, r.image, r.age, r.instType)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.name, r.healthShort, r.readyStr, r.upToDateStr, r.placements, r.image, r.age, r.instType)
 		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.healthShort, r.readyStr, r.placements, r.image, r.age)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.name, r.healthShort, r.readyStr, r.upToDateStr, r.placements, r.image, r.age)
 		}
 	}
 	_ = tw.Flush()
