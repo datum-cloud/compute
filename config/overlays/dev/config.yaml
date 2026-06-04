@@ -2,9 +2,4 @@ apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: WorkloadOperator
 metricsServer:
   bindAddress: "0"
-
-webhookServer:
-  tls:
-    secretRef:
-      name: compute-webhook-cert
-      namespace: kube-system
+webhookServer: {}
