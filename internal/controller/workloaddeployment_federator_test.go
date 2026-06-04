@@ -477,7 +477,7 @@ func TestWorkloadDeploymentFederator_Finalization(t *testing.T) {
 				Spec: computev1alpha.WorkloadDeploymentSpec{
 					CityCode:      testCityCodeLAX,
 					PlacementName: testDefaultPlacement,
-					WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
+					WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 				},
 			}

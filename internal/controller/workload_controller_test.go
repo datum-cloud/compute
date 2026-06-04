@@ -21,7 +21,7 @@ import (
 func makeWorkload(generation int64) *computev1alpha.Workload {
 	return &computev1alpha.Workload{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-workload",
+			Name:       rdTestWorkloadName,
 			Namespace:  testDefaultNamespace,
 			Generation: generation,
 		},
