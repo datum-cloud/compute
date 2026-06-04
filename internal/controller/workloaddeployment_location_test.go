@@ -34,7 +34,6 @@ func newNetworkingScheme() *runtime.Scheme {
 func TestReconcileNetworks_PersistsLocation_WhenLocationFound(t *testing.T) {
 	t.Parallel()
 
-	const cityCode = "DFW"
 	const locationName = "loc-dfw-1"
 	const locationNamespace = "networking-system"
 
@@ -54,7 +53,7 @@ func TestReconcileNetworks_PersistsLocation_WhenLocationFound(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(location).Build()
 
 	deployment := &computev1alpha.WorkloadDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-wd", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: wdControllerTestName, Namespace: wdControllerTestNS},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
 			CityCode: cityCode,
 			// No NetworkInterfaces — the function returns false,locationRef,nil
@@ -98,9 +97,9 @@ func TestReconcileNetworks_ReturnsNilLocation_WhenNoLocationFound(t *testing.T) 
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(otherLocation).Build()
 
 	deployment := &computev1alpha.WorkloadDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-wd", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: wdControllerTestName, Namespace: wdControllerTestNS},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode: "DFW", // no matching Location
+			CityCode: cityCode, // no matching Location
 		},
 	}
 

@@ -751,7 +751,7 @@ func TestFederated_QuotaAndSourceNotFound_SourceNotFoundWins(t *testing.T) {
 			Type:               computev1alpha.InstanceQuotaGranted,
 			Status:             metav1.ConditionFalse,
 			Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
-			Message:            "Quota exceeded for project",
+			Message:            testMsgQuotaExceeded,
 			ObservedGeneration: 1,
 			LastTransitionTime: metav1.Now(),
 		},
