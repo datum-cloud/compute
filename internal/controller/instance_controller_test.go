@@ -1625,6 +1625,12 @@ func TestQuotaPendingRequeueAfter(t *testing.T) {
 	}
 }
 
+// Shared literals for the instance-sizing / blocking-reason tests below
+// (extracted to satisfy goconst).
+const (
+	testContainerName  = "app"
+	testContainerImage = "test/image:latest"
+)
 
 // TestReconcileInstanceReadyCondition_ProviderSubConditionSurfacing verifies
 // that provider-set sub-condition reasons (e.g. ImageUnavailable written by the
@@ -1950,11 +1956,11 @@ func TestResolveInstanceResources(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		instance        *computev1alpha.Instance
-		wantCPU         int64
-		wantMem         int64
-		wantResolved    bool
+		name         string
+		instance     *computev1alpha.Instance
+		wantCPU      int64
+		wantMem      int64
+		wantResolved bool
 	}{
 		{
 			// Common production case: instanceType only, no explicit limits.
@@ -1965,7 +1971,7 @@ func TestResolveInstanceResources(t *testing.T) {
 				Spec: computev1alpha.InstanceSpec{
 					Runtime: computev1alpha.InstanceRuntimeSpec{
 						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/d1-standard-2",
+							InstanceType: instanceTypeD1Standard2,
 						},
 					},
 				},
@@ -1982,13 +1988,13 @@ func TestResolveInstanceResources(t *testing.T) {
 				Spec: computev1alpha.InstanceSpec{
 					Runtime: computev1alpha.InstanceRuntimeSpec{
 						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/d1-standard-2",
+							InstanceType: instanceTypeD1Standard2,
 						},
 						Sandbox: &computev1alpha.SandboxRuntime{
 							Containers: []computev1alpha.SandboxContainer{
 								{
-									Name:      "app",
-									Image:     "test/image:latest",
+									Name:      testContainerName,
+									Image:     testContainerImage,
 									Resources: makeContainerResources(cpu500m, mem256Mi),
 								},
 								{
@@ -2015,8 +2021,8 @@ func TestResolveInstanceResources(t *testing.T) {
 						Sandbox: &computev1alpha.SandboxRuntime{
 							Containers: []computev1alpha.SandboxContainer{
 								{
-									Name:      "app",
-									Image:     "test/image:latest",
+									Name:      testContainerName,
+									Image:     testContainerImage,
 									Resources: makeContainerResources(cpu1, mem512Mi),
 								},
 							},
@@ -2087,13 +2093,13 @@ func TestResolveInstanceResources(t *testing.T) {
 				Spec: computev1alpha.InstanceSpec{
 					Runtime: computev1alpha.InstanceRuntimeSpec{
 						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/d1-standard-2",
+							InstanceType: instanceTypeD1Standard2,
 						},
 						Sandbox: &computev1alpha.SandboxRuntime{
 							Containers: []computev1alpha.SandboxContainer{
 								{
-									Name:  "app",
-									Image: "test/image:latest",
+									Name:  testContainerName,
+									Image: testContainerImage,
 									// No Resources.Limits set — common for UKC workloads.
 								},
 							},
@@ -2158,7 +2164,7 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 			Runtime: computev1alpha.InstanceRuntimeSpec{
 				Resources: computev1alpha.InstanceRuntimeResources{
 					// No Requests, no container Limits — catalog must supply the values.
-					InstanceType: "datumcloud/d1-standard-2",
+					InstanceType: instanceTypeD1Standard2,
 				},
 			},
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},

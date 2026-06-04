@@ -96,6 +96,10 @@ const (
 	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
 )
 
+// instanceTypeD1Standard2 is the platform instance type name for the
+// 1 vCPU / 2 GiB size used as the catalog baseline for quota accounting.
+const instanceTypeD1Standard2 = "datumcloud/d1-standard-2"
+
 // instanceTypeResources holds the vCPU and memory for a named instance type.
 type instanceTypeResources struct {
 	// CPUMillicores is the number of CPU millicores (1000 = 1 vCPU).
@@ -114,7 +118,7 @@ type instanceTypeResources struct {
 // provisioning; that mapping does not define the quota size here.) When new
 // instance types are added, add them here with their vCPU/memory values.
 var instanceTypeCatalog = map[string]instanceTypeResources{
-	"datumcloud/d1-standard-2": {
+	instanceTypeD1Standard2: {
 		CPUMillicores: 1000, // 1 vCPU
 		MemoryMiB:     2048, // 2 GiB
 	},
