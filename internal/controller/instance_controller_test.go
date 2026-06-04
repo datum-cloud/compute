@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1569,4 +1570,49 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 		require.NotNil(t, cond)
 		assert.Equal(t, int64(2), cond.ObservedGeneration, "condition must reflect current generation")
 	})
+}
+
+// TestQuotaPendingRequeueAfter verifies the backing-off safety-net requeue used
+// while an instance's quota claim is still pending: 1s for the first minute, then
+// 15s, then 60s after 5m, then 300s after 10m; and no requeue once granted.
+func TestQuotaPendingRequeueAfter(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	withQuota := func(s metav1.ConditionStatus, transitioned time.Time) *computev1alpha.Instance {
+		return &computev1alpha.Instance{
+			Status: computev1alpha.InstanceStatus{
+				Conditions: []metav1.Condition{{
+					Type:               computev1alpha.InstanceQuotaGranted,
+					Status:             s,
+					Reason:             "PendingEvaluation",
+					LastTransitionTime: metav1.NewTime(transitioned),
+				}},
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+		inst *computev1alpha.Instance
+		now  time.Time
+		want time.Duration
+	}{
+		{"granted -> no requeue", withQuota(metav1.ConditionTrue, base), base.Add(time.Hour), 0},
+		{"no quota condition -> no requeue", &computev1alpha.Instance{}, base, 0},
+		{"just pending -> 1s", withQuota(metav1.ConditionUnknown, base), base.Add(5 * time.Second), quotaPendingRequeueFast},
+		{"59s -> 1s", withQuota(metav1.ConditionUnknown, base), base.Add(59 * time.Second), quotaPendingRequeueFast},
+		{"60s boundary -> 15s", withQuota(metav1.ConditionUnknown, base), base.Add(60 * time.Second), quotaPendingRequeueMedium},
+		{"3m -> 15s", withQuota(metav1.ConditionUnknown, base), base.Add(3 * time.Minute), quotaPendingRequeueMedium},
+		{"5m boundary -> 60s", withQuota(metav1.ConditionUnknown, base), base.Add(5 * time.Minute), quotaPendingRequeueSlow},
+		{"8m -> 60s", withQuota(metav1.ConditionUnknown, base), base.Add(8 * time.Minute), quotaPendingRequeueSlow},
+		{"10m boundary -> 300s", withQuota(metav1.ConditionUnknown, base), base.Add(10 * time.Minute), quotaPendingRequeueIdle},
+		{"1h -> 300s", withQuota(metav1.ConditionUnknown, base), base.Add(time.Hour), quotaPendingRequeueIdle},
+		{"denied(False) still polls", withQuota(metav1.ConditionFalse, base), base.Add(2 * time.Minute), quotaPendingRequeueMedium},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, quotaPendingRequeueAfter(tc.inst, tc.now))
+		})
+	}
 }

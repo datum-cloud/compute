@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -93,6 +94,28 @@ const (
 
 	// reasonNetworkFailedToCreate is the reason code for network creation failure.
 	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
+)
+
+// Quota-pending requeue backoff. The instance controller is normally re-queued by
+// the ResourceClaim watch when a claim is granted, but that grant event lives on
+// the project control plane and can be missed (informer engagement races, watch
+// relist gaps), wedging the instance at QuotaGranted!=True indefinitely. While
+// quota is pending we requeue on a backing-off schedule as a safety net so a
+// missed grant self-heals. The interval lengthens the longer the instance waits:
+//
+//	elapsed < 60s : every 1s   (catch a grant landing almost immediately)
+//	60s – 5m      : every 15s
+//	5m – 10m      : every 60s
+//	>= 10m        : every 300s
+const (
+	quotaPendingRequeueFast   = 1 * time.Second
+	quotaPendingRequeueMedium = 15 * time.Second
+	quotaPendingRequeueSlow   = 60 * time.Second
+	quotaPendingRequeueIdle   = 300 * time.Second
+
+	quotaPendingFastWindow   = 60 * time.Second
+	quotaPendingMediumWindow = 5 * time.Minute
+	quotaPendingSlowWindow   = 10 * time.Minute
 )
 
 // clusterGetter is the subset of mcmanager.Manager used by InstanceReconciler.
@@ -251,7 +274,10 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	// Safety net: while quota is still pending (claim created but not yet
+	// granted), requeue on a backing-off schedule so a missed ResourceClaim
+	// grant event self-heals instead of wedging the instance.
+	return ctrl.Result{RequeueAfter: quotaPendingRequeueAfter(&instance, time.Now())}, nil
 }
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
@@ -317,6 +343,30 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 // the claim watch can map a grant back to the Instance.
 func quotaClaimName(instance *computev1alpha.Instance) string {
 	return instanceQuotaClaimNamePrefix + instance.Name
+}
+
+// quotaPendingRequeueAfter returns a safety-net requeue interval while the
+// instance's quota is not yet granted, backing off the longer it has waited (see
+// the quotaPendingRequeue* constants). It anchors elapsed time on the
+// QuotaGranted condition's last transition (when the instance entered the pending
+// state). It returns 0 when quota is already granted (QuotaGranted=True) or the
+// condition is absent, so a granted/normal instance is not needlessly requeued.
+func quotaPendingRequeueAfter(instance *computev1alpha.Instance, now time.Time) time.Duration {
+	cond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	if cond == nil || cond.Status == metav1.ConditionTrue {
+		return 0
+	}
+	elapsed := now.Sub(cond.LastTransitionTime.Time)
+	switch {
+	case elapsed < quotaPendingFastWindow:
+		return quotaPendingRequeueFast
+	case elapsed < quotaPendingMediumWindow:
+		return quotaPendingRequeueMedium
+	case elapsed < quotaPendingSlowWindow:
+		return quotaPendingRequeueSlow
+	default:
+		return quotaPendingRequeueIdle
+	}
 }
 
 // reconcileQuotaCondition reconciles the ResourceClaim and updates the
