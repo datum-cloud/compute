@@ -175,7 +175,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			},
 		},
 		{
-			name: "instance programmed but not running should wait for running",
+			name: "instance programmed but not available should wait for available",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       testInstanceName,
@@ -191,7 +191,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Message: msgInstanceProgrammed,
 						},
 						{
-							Type:    computev1alpha.InstanceRunning,
+							Type:    computev1alpha.InstanceAvailable,
 							Status:  metav1.ConditionFalse,
 							Reason:  testReasonString,
 							Message: testMessageString,
@@ -225,10 +225,10 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Message: msgInstanceProgrammed,
 						},
 						{
-							Type:    computev1alpha.InstanceRunning,
+							Type:    computev1alpha.InstanceAvailable,
 							Status:  metav1.ConditionTrue,
-							Reason:  computev1alpha.InstanceRunningReasonRunning,
-							Message: msgInstanceRunning,
+							Reason:  computev1alpha.InstanceAvailableReasonAvailable,
+							Message: msgInstanceAvailable,
 						},
 					},
 				},
@@ -237,7 +237,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionTrue,
-				Reason:             computev1alpha.InstanceReadyReasonRunning,
+				Reason:             computev1alpha.InstanceReadyReasonAvailable,
 				Message:            msgInstanceReady,
 				ObservedGeneration: 1,
 			},
@@ -255,7 +255,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 						{
 							Type:               computev1alpha.InstanceReady,
 							Status:             metav1.ConditionTrue,
-							Reason:             computev1alpha.InstanceReadyReasonRunning,
+							Reason:             computev1alpha.InstanceReadyReasonAvailable,
 							Message:            msgInstanceReady,
 							ObservedGeneration: 1,
 							LastTransitionTime: metav1.Now(),
@@ -267,10 +267,10 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Message: msgInstanceProgrammed,
 						},
 						{
-							Type:    computev1alpha.InstanceRunning,
+							Type:    computev1alpha.InstanceAvailable,
 							Status:  metav1.ConditionTrue,
-							Reason:  computev1alpha.InstanceRunningReasonRunning,
-							Message: msgInstanceRunning,
+							Reason:  computev1alpha.InstanceAvailableReasonAvailable,
+							Message: msgInstanceAvailable,
 						},
 					},
 				},
@@ -279,7 +279,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionTrue,
-				Reason:             computev1alpha.InstanceReadyReasonRunning,
+				Reason:             computev1alpha.InstanceReadyReasonAvailable,
 				Message:            msgInstanceReady,
 				ObservedGeneration: 1,
 			},
@@ -352,10 +352,10 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							LastTransitionTime: metav1.Now(),
 						},
 						{
-							Type:               computev1alpha.InstanceRunning,
+							Type:               computev1alpha.InstanceAvailable,
 							Status:             metav1.ConditionTrue,
-							Reason:             computev1alpha.InstanceRunningReasonRunning,
-							Message:            msgInstanceRunning,
+							Reason:             computev1alpha.InstanceAvailableReasonAvailable,
+							Message:            msgInstanceAvailable,
 							LastTransitionTime: metav1.Now(),
 						},
 					},
@@ -394,10 +394,10 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							LastTransitionTime: metav1.Now(),
 						},
 						{
-							Type:               computev1alpha.InstanceRunning,
+							Type:               computev1alpha.InstanceAvailable,
 							Status:             metav1.ConditionTrue,
-							Reason:             computev1alpha.InstanceRunningReasonRunning,
-							Message:            msgInstanceRunning,
+							Reason:             computev1alpha.InstanceAvailableReasonAvailable,
+							Message:            msgInstanceAvailable,
 							LastTransitionTime: metav1.Now(),
 						},
 					},
@@ -407,7 +407,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:    computev1alpha.InstanceReady,
 				Status:  metav1.ConditionTrue,
-				Reason:  computev1alpha.InstanceReadyReasonRunning,
+				Reason:  computev1alpha.InstanceReadyReasonAvailable,
 				Message: msgInstanceReady,
 			},
 		},
@@ -647,7 +647,7 @@ func TestReconcileQuota(t *testing.T) {
 		assert.False(t, hasQuotaGate, "QuotaSchedulingGate must be removed in the same reconcile pass as the status update")
 	})
 
-	t.Run("quota exceeded flow: conditions cascade to block Programmed/Running/Ready", func(t *testing.T) {
+	t.Run("quota exceeded flow: conditions cascade to block Programmed/Available/Ready", func(t *testing.T) {
 		s := newTestScheme(t)
 		instance := makeInstance(s,
 			computev1alpha.SchedulingGate{Name: instancecontrol.NetworkSchedulingGate.String()},
@@ -673,10 +673,10 @@ func TestReconcileQuota(t *testing.T) {
 		assert.Equal(t, metav1.ConditionFalse, programmedCond.Status)
 		assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, programmedCond.Reason)
 
-		runningCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceRunning)
-		require.NotNil(t, runningCond)
-		assert.Equal(t, metav1.ConditionFalse, runningCond.Status)
-		assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, runningCond.Reason)
+		availableCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceAvailable)
+		require.NotNil(t, availableCond)
+		assert.Equal(t, metav1.ConditionFalse, availableCond.Status)
+		assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, availableCond.Reason)
 
 		readyCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceReady)
 		require.NotNil(t, readyCond)

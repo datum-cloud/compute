@@ -88,8 +88,8 @@ const (
 	// msgInstanceProgrammed is the human-readable message for the programmed state.
 	msgInstanceProgrammed = "Instance has been programmed"
 
-	// msgInstanceRunning is the human-readable message for the running state.
-	msgInstanceRunning = "Instance is running"
+	// msgInstanceAvailable is the human-readable message for the available state.
+	msgInstanceAvailable = "Instance is available"
 
 	// reasonNetworkFailedToCreate is the reason code for network creation failure.
 	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
@@ -830,7 +830,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			ObservedGeneration: instance.Generation,
 		})
 		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceRunning,
+			Type:               computev1alpha.InstanceAvailable,
 			Status:             metav1.ConditionFalse,
 			Reason:             computev1alpha.InstanceProgrammedReasonPendingQuota,
 			Message:            msg,
@@ -903,26 +903,26 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 
 	logger.Info("instance is programmed", "instance", instance.Name)
 
-	runningCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceRunning)
-	if runningCondition == nil || runningCondition.Status != metav1.ConditionTrue {
-		logger.Info("instance is not running", "instance", instance.Name)
+	availableCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceAvailable)
+	if availableCondition == nil || availableCondition.Status != metav1.ConditionTrue {
+		logger.Info("instance is not available", "instance", instance.Name)
 
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = pendingReason
-		if runningCondition != nil && runningCondition.Reason != pendingReason {
-			readyCondition.Reason = runningCondition.Reason
+		if availableCondition != nil && availableCondition.Reason != pendingReason {
+			readyCondition.Reason = availableCondition.Reason
 		}
 
-		readyCondition.Message = "Instance is not running"
-		if runningCondition != nil && runningCondition.Status != metav1.ConditionUnknown {
-			readyCondition.Message = runningCondition.Message
+		readyCondition.Message = "Instance is not available"
+		if availableCondition != nil && availableCondition.Status != metav1.ConditionUnknown {
+			readyCondition.Message = availableCondition.Message
 		}
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
 
 	readyCondition.Status = metav1.ConditionTrue
-	readyCondition.Reason = computev1alpha.InstanceReadyReasonRunning
+	readyCondition.Reason = computev1alpha.InstanceReadyReasonAvailable
 	readyCondition.Message = msgInstanceReady
 
 	return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
