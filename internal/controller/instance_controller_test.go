@@ -46,6 +46,9 @@ const (
 	testQuotaAPIGroup          = "quota.miloapis.com"
 	testQuotaResource          = "resourceclaims"
 	kindWorkloadDeploymentTest = "WorkloadDeployment" // mirrors kindWorkloadDeployment
+
+	// testMsgQuotaExceeded is the quota-denied message used across quota tests.
+	testMsgQuotaExceeded = "Quota exceeded for project"
 )
 
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
@@ -345,7 +348,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							Type:               computev1alpha.InstanceQuotaGranted,
 							Status:             metav1.ConditionFalse,
 							Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
-							Message:            "Quota exceeded for project",
+							Message:            testMsgQuotaExceeded,
 							LastTransitionTime: metav1.Now(),
 						},
 						{
@@ -370,7 +373,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 				Type:    computev1alpha.InstanceReady,
 				Status:  metav1.ConditionFalse,
 				Reason:  computev1alpha.InstanceProgrammedReasonPendingQuota,
-				Message: "Quota exceeded for project",
+				Message: testMsgQuotaExceeded,
 			},
 		},
 		{

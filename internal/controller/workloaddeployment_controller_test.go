@@ -17,10 +17,14 @@ import (
 )
 
 const (
-	// wdControllerTestName / wdControllerTestNS are shared fixtures for the
-	// WorkloadDeployment controller unit tests.
+	// wdControllerTestName / wdControllerTestNS / wdControllerTestUID are shared
+	// fixtures for the WorkloadDeployment controller unit tests.
 	wdControllerTestName = "test-wd"
 	wdControllerTestNS   = "default"
+	wdControllerTestUID  = "wd-uid-test"
+
+	// cityCode is the shared CityCode fixture for WorkloadDeployment tests.
+	cityCode = "DFW"
 
 	// testMsgConfigMapNotFound is a representative terminal referenced-data
 	// message used across the Available-rollup unit tests.
@@ -46,14 +50,14 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	// Build a deployment with a minimal template so ComputeHash produces a stable hash.
 	deployment := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-wd",
-			Namespace: "default",
-			UID:       "wd-uid-test",
+			Name:      wdControllerTestName,
+			Namespace: wdControllerTestNS,
+			UID:       wdControllerTestUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      "DFW",
+			CityCode:      cityCode,
 			PlacementName: testDefaultPlacement,
-			WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
 				MinReplicas: 2,
 			},
@@ -74,9 +78,9 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	instanceNilController := computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "instance-nil-controller",
-			Namespace: "default",
+			Namespace: wdControllerTestNS,
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid-test",
+				computev1alpha.WorkloadDeploymentUIDLabel: wdControllerTestUID,
 			},
 		},
 		Status: computev1alpha.InstanceStatus{
@@ -98,9 +102,9 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	instanceWithController := computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "instance-with-controller",
-			Namespace: "default",
+			Namespace: wdControllerTestNS,
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid-test",
+				computev1alpha.WorkloadDeploymentUIDLabel: wdControllerTestUID,
 			},
 		},
 		Status: computev1alpha.InstanceStatus{
@@ -122,9 +126,9 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 	instanceReady := computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "instance-ready",
-			Namespace: "default",
+			Namespace: wdControllerTestNS,
 			Labels: map[string]string{
-				computev1alpha.WorkloadDeploymentUIDLabel: "wd-uid-test",
+				computev1alpha.WorkloadDeploymentUIDLabel: wdControllerTestUID,
 			},
 		},
 		Status: computev1alpha.InstanceStatus{
@@ -188,9 +192,9 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	t.Parallel()
 
 	deployment := &computev1alpha.WorkloadDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-wd", Namespace: "default", UID: "wd-uid-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: wdControllerTestName, Namespace: wdControllerTestNS, UID: wdControllerTestUID},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      "DFW",
+			CityCode:      cityCode,
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: "test-workload"},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
@@ -201,7 +205,7 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	// Spec.Controller intentionally nil — the network gate-clearing path runs
 	// (networkReady=true) and must skip this instance instead of panicking.
 	instanceNilSpecController := computev1alpha.Instance{
-		ObjectMeta: metav1.ObjectMeta{Name: "instance-nil-spec-controller", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "instance-nil-spec-controller", Namespace: wdControllerTestNS},
 	}
 
 	cl := newProjectFakeClient()
