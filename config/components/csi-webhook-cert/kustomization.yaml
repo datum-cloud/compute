@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  # Add the CSI webhook cert volume and volumeMount to the manager Deployment.
+  # The issuer (csi.cert-manager.io/issuer-kind and csi.cert-manager.io/issuer-name)
+  # must be patched in by the consuming overlay or infra repo.
+  - target:
+      kind: Deployment
+      name: compute-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: compute-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                volumeMounts:
+                  - name: webhook-server-tls
+                    mountPath: /tmp/k8s-webhook-server/serving-certs
+                    readOnly: true
+            volumes:
+              - name: webhook-server-tls
+                csi:
+                  driver: csi.cert-manager.io
+                  readOnly: true
+                  volumeAttributes:
+                    csi.cert-manager.io/fs-group: "65532"
+                    csi.cert-manager.io/dns-names: compute-webhook.compute-system.svc,compute-webhook.compute-system.svc.cluster.local

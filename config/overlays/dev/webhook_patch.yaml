@@ -2,23 +2,6 @@
 apiVersion: builtin
 kind: PatchTransformer
 metadata:
-  name: webhook-cert-patch
-patch: |-
-  - op: replace
-    path: /spec/dnsNames
-    value: ["host.docker.internal"]
-  - op: replace
-    path: /spec/secretName
-    value: compute-webhook-cert
-target:
-  kind: Certificate
-  group: cert-manager.io
-  version: v1
-  name: compute-serving-cert
----
-apiVersion: builtin
-kind: PatchTransformer
-metadata:
   name: mutatingwebhook-url-patch
 patch: |-
   - op: move
