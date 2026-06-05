@@ -1,0 +1,123 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: instance-projection
+spec:
+  description: |
+    Verifies that the InstanceProjector watches Instances written back to the
+    Karmada API server and creates corresponding read-only projections in the
+    project namespace on the control-plane cluster.
+
+    Flow:
+    1. Create a WorkloadDeployment → triggers federator → Karmada namespace created.
+    2. Write an Instance to Karmada (simulating a POP-cell InstanceReconciler write-back).
+    3. InstanceProjector detects the Karmada Instance and creates a projection in the
+       project namespace (the Chainsaw test namespace on the control-plane cluster).
+    4. Assert the projection exists with the upstream tracking label and an owner
+       reference to the WorkloadDeployment (for cascading deletion).
+
+    Cluster name label: "cluster-single"
+    The compute operator runs in single-provider mode for this e2e environment,
+    registering the control-plane cluster with the multicluster-runtime manager
+    under the name "single" (see cmd/main.go, wrappedSingleClusterProvider).
+
+  template: true
+
+  steps:
+  - name: create-wd
+    description: Create the WorkloadDeployment to trigger federation and namespace creation.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: wait-for-downstream-namespace
+    description: Wait for the federated WorkloadDeployment to appear in Karmada.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-projector-wd
+
+  - name: write-instance-to-downstream
+    description: |
+      Write an Instance to Karmada simulating InstanceReconciler write-back.
+      Uses explicit control-plane kubeconfig to derive downstreamNS and WD UID.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get workloaddeployment test-projector-wd \
+            --namespace "$NAMESPACE" \
+            -o jsonpath='{.metadata.uid}'
+        outputs:
+        - name: wdUID
+          value: ($stdout)
+    - script:
+        env:
+        - name: KARMADA_NS
+          value: ($downstreamNS)
+        - name: WD_UID
+          value: ($wdUID)
+        content: |
+          kubectl apply -f - <<EOF
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            name: test-projected-instance
+            namespace: ${KARMADA_NS}
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+              meta.datumapis.com/upstream-namespace: ${KARMADA_NS}
+              compute.datumapis.com/workload-deployment-uid: "${WD_UID}"
+          spec:
+            runtime:
+              resources:
+                instanceType: datumcloud/d1-standard-2
+            networkInterfaces:
+            - network:
+                name: test-network
+          EOF
+    cleanup:
+    - script:
+        content: |
+          KARMADA_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          kubectl delete instance test-projected-instance \
+            --namespace "$KARMADA_NS" --ignore-not-found
+
+  - name: assert-projection-in-control-plane
+    description: Assert the InstanceProjector created a projection in the project namespace.
+    try:
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($namespace)
+            name: test-projected-instance
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
