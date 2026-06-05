@@ -11,4 +11,4 @@ roleRef:
   name: compute-leader-election
 subjects:
 - kind: ServiceAccount
-  name: compute
+  name: compute-manager
