@@ -1,0 +1,481 @@
+version: '3'
+
+# ─── Variables ──────────────────────────────────────────────────────────────
+
+vars:
+  # Karmada Helm chart version to install (karmada-charts/karmada)
+  KARMADA_VERSION: v1.16.0
+
+  # karmadactl CLI version for cluster registration
+  KARMADACTL_VERSION: v1.16.0
+
+  # Chainsaw version for e2e testing (kyverno/chainsaw)
+  CHAINSAW_VERSION: v0.2.15
+
+  # Local tool directory (mirrors Makefile convention)
+  LOCALBIN: '{{.ROOT_DIR}}/bin'
+  KARMADACTL: '{{.ROOT_DIR}}/bin/karmadactl'
+  CHAINSAW: '{{.ROOT_DIR}}/bin/chainsaw'
+
+  # Kind cluster names
+  KIND_CONTROL_PLANE: compute-control-plane
+  KIND_POP_DFW: compute-pop-dfw
+  KIND_POP_ORD: compute-pop-ord
+
+  # All cluster names (for CRD installation loops)
+  KIND_ALL_CLUSTERS: '{{.KIND_CONTROL_PLANE}} {{.KIND_POP_DFW}} {{.KIND_POP_ORD}}'
+
+  # Working directory for e2e artefacts (gitignored)
+  E2E_DIR: '{{.ROOT_DIR}}/tmp/e2e'
+  KUBECONFIG_DIR: '{{.ROOT_DIR}}/tmp/e2e/kubeconfigs'
+
+  # Fixed NodePort for the Karmada API server.
+  # The Kind management cluster is created with an extraPortMapping for this port
+  # so it is reachable at https://localhost:32443 from the developer's machine.
+  KARMADA_API_NODEPORT: "32443"
+
+# ─── Tasks ──────────────────────────────────────────────────────────────────
+
+tasks:
+
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  e2e environment lifecycle
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:up:
+    desc: "Create the full local Kind+Karmada e2e environment (idempotent)"
+    cmds:
+      - task: e2e:tools
+      - task: e2e:clusters:create
+      - task: e2e:karmada:install
+      - task: e2e:karmada:configure
+      - task: e2e:karmada:join-clusters
+      - task: e2e:crds:install
+      - cmd: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════╗"
+          echo "║  e2e environment ready                                  ║"
+          echo "╠══════════════════════════════════════════════════════════╣"
+          echo "║  Control plane:  {{.KUBECONFIG_DIR}}/control-plane.yaml"
+          echo "║  Karmada API:    {{.KUBECONFIG_DIR}}/karmada.yaml"
+          echo "║  POP DFW:        {{.KUBECONFIG_DIR}}/pop-dfw.yaml"
+          echo "║  POP ORD:        {{.KUBECONFIG_DIR}}/pop-ord.yaml"
+          echo "╠══════════════════════════════════════════════════════════╣"
+          echo "║  Export for kubectl:                                    ║"
+          echo "║    export KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml"
+          echo "╚══════════════════════════════════════════════════════════╝"
+        silent: false
+
+  e2e:down:
+    desc: "Tear down the local e2e environment"
+    cmds:
+      - kind delete cluster --name {{.KIND_CONTROL_PLANE}} 2>/dev/null || true
+      - kind delete cluster --name {{.KIND_POP_DFW}} 2>/dev/null || true
+      - kind delete cluster --name {{.KIND_POP_ORD}} 2>/dev/null || true
+      - rm -rf {{.E2E_DIR}}
+      - cmd: echo "✓ e2e environment torn down"
+        silent: false
+
+  e2e:test:
+    desc: "Run Chainsaw e2e tests against the local Kind+Karmada environment"
+    deps: [e2e:tools:chainsaw]
+    cmds:
+      - |
+        KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
+        {{.CHAINSAW}} test \
+          --config test/e2e/chainsaw-config.yaml \
+          test/e2e/ \
+          {{.CLI_ARGS}}
+
+  e2e:test:filter:
+    desc: "Run a subset of e2e tests by name regex (e.g. task e2e:test:filter -- --include-test-regex federation)"
+    deps: [e2e:tools:chainsaw]
+    cmds:
+      - |
+        KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
+        {{.CHAINSAW}} test \
+          --config test/e2e/chainsaw-config.yaml \
+          {{.CLI_ARGS}} \
+          test/e2e/
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  Tool installation
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:tools:
+    desc: "Install e2e-specific tooling (karmadactl, chainsaw, helm repo)"
+    cmds:
+      - task: e2e:tools:karmadactl
+      - task: e2e:tools:chainsaw
+      - task: e2e:tools:helm-repo
+
+  e2e:tools:karmadactl:
+    desc: "Download karmadactl {{.KARMADACTL_VERSION}}"
+    cmds:
+      - mkdir -p {{.LOCALBIN}}
+      - |
+        if [ ! -f "{{.KARMADACTL}}" ]; then
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          URL="https://github.com/karmada-io/karmada/releases/download/{{.KARMADACTL_VERSION}}/karmadactl-${OS}-${ARCH}.tgz"
+          echo "Downloading karmadactl {{.KARMADACTL_VERSION}} (${OS}/${ARCH}) from ${URL}..."
+          curl -sSfL "${URL}" | tar -xz -C {{.LOCALBIN}} karmadactl
+          chmod +x {{.KARMADACTL}}
+          echo "karmadactl installed → {{.KARMADACTL}}"
+        else
+          echo "karmadactl already present at {{.KARMADACTL}}"
+        fi
+    status:
+      - test -f {{.KARMADACTL}}
+
+  e2e:tools:chainsaw:
+    desc: "Download chainsaw {{.CHAINSAW_VERSION}}"
+    cmds:
+      - mkdir -p {{.LOCALBIN}}
+      - |
+        if [ ! -f "{{.CHAINSAW}}" ]; then
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          URL="https://github.com/kyverno/chainsaw/releases/download/{{.CHAINSAW_VERSION}}/chainsaw_${OS}_${ARCH}.tar.gz"
+          echo "Downloading chainsaw {{.CHAINSAW_VERSION}} (${OS}/${ARCH}) from ${URL}..."
+          curl -sSfL "${URL}" | tar -xz -C {{.LOCALBIN}} chainsaw
+          chmod +x {{.CHAINSAW}}
+          echo "chainsaw installed → {{.CHAINSAW}}"
+        else
+          echo "chainsaw already present at {{.CHAINSAW}}"
+        fi
+    status:
+      - test -f {{.CHAINSAW}}
+
+  e2e:tools:helm-repo:
+    desc: "Add/update karmada-charts Helm repository"
+    cmds:
+      - |
+        if ! helm repo list 2>/dev/null | grep -q karmada-charts; then
+          helm repo add karmada-charts https://raw.githubusercontent.com/karmada-io/karmada/master/charts
+          echo "Added karmada-charts Helm repository"
+        fi
+        helm repo update karmada-charts
+    status:
+      - helm repo list 2>/dev/null | grep -q karmada-charts
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  Kind cluster management
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:clusters:create:
+    desc: "Create all Kind clusters (idempotent)"
+    cmds:
+      # Management / control-plane cell cluster — needs extraPortMappings for
+      # the Karmada API server NodePort so it is accessible at localhost:32443.
+      - task: _e2e:cluster:create
+        vars:
+          CLUSTER_NAME: "{{.KIND_CONTROL_PLANE}}"
+          KIND_CONFIG: hack/e2e/kind-control-plane.yaml
+      # POP cell clusters — default Kind config is sufficient.
+      - task: _e2e:cluster:create
+        vars:
+          CLUSTER_NAME: "{{.KIND_POP_DFW}}"
+          KIND_CONFIG: ""
+      - task: _e2e:cluster:create
+        vars:
+          CLUSTER_NAME: "{{.KIND_POP_ORD}}"
+          KIND_CONFIG: ""
+      - mkdir -p {{.KUBECONFIG_DIR}}
+      - task: _e2e:kubeconfigs:export
+
+  _e2e:cluster:create:
+    internal: true
+    cmds:
+      - |
+        if kind get clusters 2>/dev/null | grep -qx '{{.CLUSTER_NAME}}'; then
+          echo "Kind cluster '{{.CLUSTER_NAME}}' already exists — skipping"
+        else
+          echo "Creating Kind cluster '{{.CLUSTER_NAME}}'..."
+          CONFIG_FLAG=""
+          if [ -n "{{.KIND_CONFIG}}" ]; then
+            CONFIG_FLAG="--config {{.KIND_CONFIG}}"
+          fi
+          kind create cluster \
+            --name {{.CLUSTER_NAME}} \
+            $CONFIG_FLAG \
+            --wait 90s
+        fi
+
+  _e2e:kubeconfigs:export:
+    internal: true
+    desc: "Export Kind kubeconfigs and create Docker-IP variants for cross-cluster use"
+    cmds:
+      # Standard kubeconfigs (localhost-based, for developer kubectl use)
+      - kind export kubeconfig --name {{.KIND_CONTROL_PLANE}} --kubeconfig {{.KUBECONFIG_DIR}}/control-plane.yaml
+      - kind export kubeconfig --name {{.KIND_POP_DFW}}       --kubeconfig {{.KUBECONFIG_DIR}}/pop-dfw.yaml
+      - kind export kubeconfig --name {{.KIND_POP_ORD}}       --kubeconfig {{.KUBECONFIG_DIR}}/pop-ord.yaml
+      # Docker-IP kubeconfigs (used by Karmada controller, running inside Docker,
+      # to reach POP cell API servers across the kind bridge network)
+      - |
+        hack/e2e/make-internal-kubeconfig.sh \
+          {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+          {{.KUBECONFIG_DIR}}/pop-dfw-internal.yaml \
+          {{.KIND_POP_DFW}}
+      - |
+        hack/e2e/make-internal-kubeconfig.sh \
+          {{.KUBECONFIG_DIR}}/pop-ord.yaml \
+          {{.KUBECONFIG_DIR}}/pop-ord-internal.yaml \
+          {{.KIND_POP_ORD}}
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  Karmada installation
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:karmada:install:
+    desc: "Install Karmada into the management cluster via Helm (idempotent)"
+    cmds:
+      - |
+        if kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            get ns karmada-system &>/dev/null; then
+          echo "Karmada already installed (karmada-system namespace exists)"
+        else
+          echo "Installing Karmada {{.KARMADA_VERSION}} via Helm..."
+          helm install karmada karmada-charts/karmada \
+            --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            --namespace karmada-system \
+            --create-namespace \
+            --version {{.KARMADA_VERSION}} \
+            --set apiServer.serviceType=NodePort \
+            --set apiServer.nodePort={{.KARMADA_API_NODEPORT}} \
+            --wait \
+            --timeout 5m
+          echo "Karmada installed"
+        fi
+      - task: _e2e:karmada:build-kubeconfig
+
+  e2e:karmada:configure:
+    desc: "Apply federation component config to the Karmada API server (idempotent)"
+    cmds:
+      - |
+        echo "Applying federation component to Karmada..."
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
+          -k config/components/federation/
+        echo "Federation component applied"
+
+  _e2e:karmada:build-kubeconfig:
+    internal: true
+    desc: "Extract Karmada kubeconfig from secret and patch server to localhost:{{.KARMADA_API_NODEPORT}}"
+    cmds:
+      - |
+        echo "Building Karmada kubeconfig → {{.KUBECONFIG_DIR}}/karmada.yaml"
+        # Extract raw kubeconfig from the secret the Helm chart creates
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+          get secret karmada-kubeconfig \
+          -n karmada-system \
+          -o jsonpath='{.data.kubeconfig}' \
+          | base64 -d > {{.KUBECONFIG_DIR}}/karmada-raw.yaml
+        # Rewrite the server address to the NodePort exposed on localhost
+        python3 - {{.KUBECONFIG_DIR}}/karmada-raw.yaml {{.KUBECONFIG_DIR}}/karmada.yaml 127.0.0.1 {{.KARMADA_API_NODEPORT}} << 'PYEOF'
+        import sys, yaml
+
+        src, dst, host, port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+        with open(src) as f:
+            cfg = yaml.safe_load(f)
+
+        for cluster in cfg.get('clusters', []):
+            old = cluster['cluster'].get('server', '')
+            cluster['cluster']['server'] = f'https://{host}:{port}'
+            # The cert is for the internal cluster IP, so skip TLS verification.
+            # This is a local dev-only environment.
+            cluster['cluster']['insecure-skip-tls-verify'] = True
+            cluster['cluster'].pop('certificate-authority-data', None)
+            print(f"  karmada server: {old} → https://{host}:{port}", file=sys.stderr)
+
+        with open(dst, 'w') as f:
+            yaml.dump(cfg, f, default_flow_style=False)
+        PYEOF
+        rm {{.KUBECONFIG_DIR}}/karmada-raw.yaml
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  POP cell cluster registration
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:karmada:join-clusters:
+    desc: "Register POP cell clusters with Karmada and apply city-code labels"
+    cmds:
+      - task: _e2e:karmada:join-cluster
+        vars:
+          CLUSTER_NAME: "{{.KIND_POP_DFW}}"
+          CITY_CODE: dfw
+          EXTERNAL_KUBECONFIG: "{{.KUBECONFIG_DIR}}/pop-dfw.yaml"
+          INTERNAL_KUBECONFIG: "{{.KUBECONFIG_DIR}}/pop-dfw-internal.yaml"
+      - task: _e2e:karmada:join-cluster
+        vars:
+          CLUSTER_NAME: "{{.KIND_POP_ORD}}"
+          CITY_CODE: ord
+          EXTERNAL_KUBECONFIG: "{{.KUBECONFIG_DIR}}/pop-ord.yaml"
+          INTERNAL_KUBECONFIG: "{{.KUBECONFIG_DIR}}/pop-ord-internal.yaml"
+
+  _e2e:karmada:join-cluster:
+    internal: true
+    cmds:
+      # ── Register with karmadactl join ──────────────────────────────────
+      # We pass the EXTERNAL kubeconfig (localhost-based) here so karmadactl
+      # can reach the member cluster from this macOS host to set up initial
+      # RBAC. The stored secret is patched below to the Docker-IP variant.
+      - |
+        if kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+            get cluster {{.CLUSTER_NAME}} &>/dev/null; then
+          echo "Cluster '{{.CLUSTER_NAME}}' already registered in Karmada — skipping join"
+        else
+          echo "Joining '{{.CLUSTER_NAME}}' to Karmada..."
+          {{.KARMADACTL}} join {{.CLUSTER_NAME}} \
+            --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+            --cluster-kubeconfig={{.EXTERNAL_KUBECONFIG}} \
+            --cluster-context=kind-{{.CLUSTER_NAME}}
+          echo "Cluster '{{.CLUSTER_NAME}}' registered"
+        fi
+      # ── Patch cluster secret → Docker-IP kubeconfig ───────────────────
+      # The Karmada controller manager runs inside Docker; it cannot use
+      # localhost to reach POP cell API servers. We update the stored secret
+      # with a kubeconfig whose server address uses the Kind container IP so
+      # container-to-container communication works across the kind bridge.
+      - |
+        hack/e2e/patch-cluster-secret.sh \
+          {{.KUBECONFIG_DIR}}/karmada.yaml \
+          {{.CLUSTER_NAME}} \
+          {{.INTERNAL_KUBECONFIG}}
+      # ── Apply city-code label ──────────────────────────────────────────
+      - |
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          label cluster {{.CLUSTER_NAME}} \
+          topology.datum.net/city-code={{.CITY_CODE}} \
+          --overwrite
+        echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/city-code={{.CITY_CODE}}"
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  CRD installation
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:crds:install:
+    desc: "Install compute + NSO CRDs to all clusters"
+    cmds:
+      - task: _e2e:crds:compute
+      - task: _e2e:crds:nso
+
+  _e2e:crds:compute:
+    internal: true
+    desc: "Apply compute CRDs to all clusters and the Karmada API server"
+    cmds:
+      # All three Kind clusters + the Karmada API server get the compute CRDs.
+      # The Karmada API server needs them so it can store and propagate
+      # WorkloadDeployment objects.
+      - |
+        for KC in \
+          {{.KUBECONFIG_DIR}}/control-plane.yaml \
+          {{.KUBECONFIG_DIR}}/karmada.yaml \
+          {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+          {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
+          echo "Installing compute CRDs → $(basename $KC .yaml)..."
+          kubectl --kubeconfig="$KC" apply -k config/base/crd --server-side
+        done
+
+  _e2e:crds:nso:
+    internal: true
+    desc: "Apply NSO CRDs to control-plane and POP cell clusters"
+    cmds:
+      # NSO CRDs (NetworkBinding, SubnetClaim, etc.) are installed on the
+      # control-plane as well as POP cells. The control-plane operator needs them
+      # so that Subnet/SubnetClaim informer watches can start without cache errors,
+      # even though NSO controllers themselves only run on POP cells.
+      - |
+        go mod download go.datum.net/network-services-operator
+        NSO_VERSION=$(go list -m -json go.datum.net/network-services-operator \
+          | python3 -c "import sys, json; print(json.load(sys.stdin)['Version'])")
+        NSO_CRD_PATH="$(go env GOMODCACHE)/go.datum.net/network-services-operator@${NSO_VERSION}/config/crd"
+        echo "NSO CRDs from: ${NSO_CRD_PATH}"
+        for KC in \
+          {{.KUBECONFIG_DIR}}/control-plane.yaml \
+          {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+          {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
+          echo "Installing NSO CRDs → $(basename $KC .yaml)..."
+          kubectl --kubeconfig="$KC" apply -k "${NSO_CRD_PATH}" --server-side
+        done
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  Operator lifecycle (background processes for federation e2e)
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:operator:start:
+    desc: "Start management (control-plane) and cell (pop-dfw) operator instances in the background"
+    cmds:
+      - mkdir -p {{.E2E_DIR}}/logs {{.E2E_DIR}}/pids
+      - |
+        echo "Starting management operator (control-plane)..."
+        KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
+        go run ./cmd/main.go \
+          --karmada-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          --enable-cell-controllers=false \
+          --leader-elect=false \
+          --health-probe-bind-address=:9091 \
+          > {{.E2E_DIR}}/logs/operator-management.log 2>&1 &
+        echo $! > {{.E2E_DIR}}/pids/operator-management.pid
+        echo "Management operator PID: $!"
+      - |
+        echo "Waiting for management operator health check on :9091..."
+        deadline=$((SECONDS + 15))
+        until curl -sf http://localhost:9091/healthz >/dev/null 2>&1; do
+          if [ $SECONDS -ge $deadline ]; then
+            echo "ERROR: management operator did not become healthy within 15s"
+            cat {{.E2E_DIR}}/logs/operator-management.log || true
+            exit 1
+          fi
+          sleep 1
+        done
+        echo "Management operator is healthy"
+      - |
+        echo "Starting cell operator (pop-dfw)..."
+        KUBECONFIG={{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+        go run ./cmd/main.go \
+          --karmada-kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+          --enable-management-controllers=false \
+          --leader-elect=false \
+          --health-probe-bind-address=:9092 \
+          > {{.E2E_DIR}}/logs/operator-cell-dfw.log 2>&1 &
+        echo $! > {{.E2E_DIR}}/pids/operator-cell-dfw.pid
+        echo "Cell operator PID: $!"
+      - |
+        echo "Waiting for cell operator health check on :9092..."
+        deadline=$((SECONDS + 15))
+        until curl -sf http://localhost:9092/healthz >/dev/null 2>&1; do
+          if [ $SECONDS -ge $deadline ]; then
+            echo "ERROR: cell operator did not become healthy within 15s"
+            cat {{.E2E_DIR}}/logs/operator-cell-dfw.log || true
+            exit 1
+          fi
+          sleep 1
+        done
+        echo "Cell operator is healthy"
+
+  e2e:operator:stop:
+    desc: "Stop background operator instances"
+    cmds:
+      - |
+        for PIDFILE in \
+          {{.E2E_DIR}}/pids/operator-management.pid \
+          {{.E2E_DIR}}/pids/operator-cell-dfw.pid; do
+          if [ -f "$PIDFILE" ]; then
+            PID=$(cat "$PIDFILE")
+            if kill -0 "$PID" 2>/dev/null; then
+              echo "Stopping PID $PID ($(basename $PIDFILE .pid))..."
+              kill -TERM "$PID" || true
+            else
+              echo "Process $PID ($(basename $PIDFILE .pid)) is not running"
+            fi
+            rm -f "$PIDFILE"
+          else
+            echo "PID file not found: $PIDFILE"
+          fi
+        done

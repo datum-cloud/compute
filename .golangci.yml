@@ -35,6 +35,16 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # field.ErrorList{} is the idiomatic Kubernetes validation init pattern;
+      # preallocating requires knowing the error count in advance which is not
+      # possible in recursive validation helpers.
+      - linters:
+          - prealloc
+        path: internal/validation/
+      # Test helpers that build slices via append are clearer without prealloc.
+      - linters:
+          - prealloc
+        path: internal/controller/instancecontrol/
     paths:
       - third_party$
       - builtin$
