@@ -15,13 +15,30 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
+// Options controls optional behaviours of the stateful instance control strategy.
+type Options struct {
+	// NetworkingEnabled controls whether the Network scheduling gate is added to
+	// newly created Instances. Set to false when the networking integration is
+	// disabled so that Instances are not blocked waiting for a NetworkBinding.
+	// Defaults to true.
+	NetworkingEnabled bool
+}
+
 // Behavior inspired by https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/statefulset
 // Does not currently implement exact behavior.
 type statefulControl struct {
+	opts Options
 }
 
+// New returns a stateful instance control strategy with networking enabled.
 func New() instancecontrol.Strategy {
-	return &statefulControl{}
+	return NewWithOptions(Options{NetworkingEnabled: true})
+}
+
+// NewWithOptions returns a stateful instance control strategy with the given
+// options.
+func NewWithOptions(opts Options) instancecontrol.Strategy {
+	return &statefulControl{opts: opts}
 }
 
 func (c *statefulControl) GetActions(
@@ -68,15 +85,25 @@ func (c *statefulControl) GetActions(
 				},
 				Spec: deployment.Spec.Template.Spec,
 			}
+			// Set Location best-effort: when Status.Location is nil (no matching
+			// Location object for the city code) Instance.Spec.Location stays nil and
+			// instance creation proceeds normally — this must not block scheduling.
 			desiredInstances[i].Spec.Location = deployment.Status.Location
 
 			// TODO(jreese) consider adding scheduling gates via mutating webhooks
-			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
-				TemplateHash: instanceTemplateHash,
-				SchedulingGates: []v1alpha.SchedulingGate{
+			gates := []v1alpha.SchedulingGate{
+				{Name: instancecontrol.QuotaSchedulingGate.String()},
+			}
+			if c.opts.NetworkingEnabled {
+				// Prepend the Network gate so it is cleared first; quota is
+				// independent and evaluated in parallel by InstanceReconciler.
+				gates = append([]v1alpha.SchedulingGate{
 					{Name: instancecontrol.NetworkSchedulingGate.String()},
-					{Name: instancecontrol.QuotaSchedulingGate.String()},
-				},
+				}, gates...)
+			}
+			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
+				TemplateHash:    instanceTemplateHash,
+				SchedulingGates: gates,
 			}
 
 			addInstanceControllerLabels(desiredInstances[i], getInstanceOrdinal(desiredInstances[i].Name), deployment)
@@ -114,10 +141,37 @@ func (c *statefulControl) GetActions(
 		}
 	}
 
+	// Backfill controller-managed labels on every existing instance, regardless
+	// of Ready state or template hash. This ensures newly-introduced labels
+	// (e.g. city-code, workload-name) are applied to pre-existing instances that
+	// were never touched by a rolling update. The patch is metadata-only and is
+	// emitted outside the ordered rollout decision so it never gates or reorders
+	// instance creation/updates.
+	var patchLabelActions []instancecontrol.Action
+	for _, instance := range desiredInstances {
+		if instance.CreationTimestamp.IsZero() || !instance.DeletionTimestamp.IsZero() {
+			// Skip instances that don't exist yet or are being deleted.
+			continue
+		}
+
+		desiredLabels := desiredControllerLabels(getInstanceOrdinal(instance.Name), deployment)
+		if labelsNeedBackfill(instance.Labels, desiredLabels) {
+			base := instance.DeepCopy()
+			patched := instance.DeepCopy()
+			for k, v := range desiredLabels {
+				if patched.Labels == nil {
+					patched.Labels = make(map[string]string)
+				}
+				patched.Labels[k] = v
+			}
+			patchLabelActions = append(patchLabelActions, instancecontrol.NewPatchLabelsAction(patched, base))
+		}
+	}
+
 	slices.SortFunc(updateActions, descendingOrdinal)
 	slices.SortFunc(deleteActions, descendingOrdinal)
 
-	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(updateActions)+len(deleteActions))
+	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(updateActions)+len(deleteActions)+len(patchLabelActions))
 
 	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
 	case v1alpha.OrderedReadyInstanceManagementPolicyType:
@@ -144,6 +198,11 @@ func (c *statefulControl) GetActions(
 
 	}
 
+	// Label-backfill actions are appended after the rollout ordering/skip logic
+	// so they are never affected by the "skip all but first" rule and never
+	// participate in rollout sequencing.
+	actions = append(actions, patchLabelActions...)
+
 	return actions, nil
 }
 
@@ -152,7 +211,37 @@ func addInstanceControllerLabels(instance *v1alpha.Instance, index int, deployme
 		instance.Labels = map[string]string{}
 	}
 
-	instance.Labels[v1alpha.InstanceIndexLabel] = strconv.Itoa(index)
-	instance.Labels[v1alpha.WorkloadUIDLabel] = string(deployment.Spec.WorkloadRef.UID)
-	instance.Labels[v1alpha.WorkloadDeploymentUIDLabel] = string(deployment.GetUID())
+	for k, v := range desiredControllerLabels(index, deployment) {
+		instance.Labels[k] = v
+	}
+}
+
+// desiredControllerLabels returns the full set of controller-managed labels
+// that every instance should carry. Used both when stamping a new/updated
+// instance and when checking whether an existing instance needs a backfill
+// patch.
+func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) map[string]string {
+	return map[string]string{
+		v1alpha.InstanceIndexLabel:         strconv.Itoa(index),
+		v1alpha.WorkloadUIDLabel:           string(deployment.Spec.WorkloadRef.UID),
+		v1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
+		// Self-describing labels for routing, filtering, and observability.
+		// Backfilled on every reconcile so they stay accurate even for instances
+		// that pre-date the labels or that were not reached by a rolling update.
+		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
+		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
+		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+	}
+}
+
+// labelsNeedBackfill reports whether any of the desired controller-managed
+// label key/value pairs are absent or incorrect on the current instance labels.
+func labelsNeedBackfill(current map[string]string, desired map[string]string) bool {
+	for k, v := range desired {
+		if current[k] != v {
+			return true
+		}
+	}
+	return false
 }
