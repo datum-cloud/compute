@@ -304,7 +304,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 			ObservedGeneration: instance.Generation,
 		})
 		changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               computev1alpha.InstanceRunning,
+			Type:               computev1alpha.InstanceAvailable,
 			Status:             metav1.ConditionFalse,
 			Reason:             computev1alpha.InstanceProgrammedReasonPendingQuota,
 			Message:            msg,
@@ -375,7 +375,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 
 	logger.Info("instance is programmed", "instance", instance.Name)
 
-	runningCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceRunning)
+	runningCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceAvailable)
 	if runningCondition == nil || runningCondition.Status != metav1.ConditionTrue {
 		logger.Info("instance is not running", "instance", instance.Name)
 
@@ -393,7 +393,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	}
 
 	readyCondition.Status = metav1.ConditionTrue
-	readyCondition.Reason = computev1alpha.InstanceReadyReasonRunning
+	readyCondition.Reason = computev1alpha.InstanceReadyReasonAvailable
 	readyCondition.Message = "Instance is ready"
 
 	return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
