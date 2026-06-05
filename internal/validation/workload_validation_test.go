@@ -23,6 +23,15 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+// Test constants for repeated string literals.
+const (
+	testCPUResource        = "cpu"
+	testVolName            = "vol"
+	testDuplicateMountPath = "duplicate-mount-path"
+	testDefaultNamespace   = "default"
+	testCityCodeDFW        = "DFW"
+)
+
 func TestValidateWorkloads(t *testing.T) {
 	scenarios := map[string]struct {
 		workload         *computev1alpha.Workload
@@ -157,7 +166,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									Value:              resource.NewQuantity(50, resource.DecimalSI),
 									AverageValue:       resource.NewQuantity(50, resource.DecimalSI),
@@ -181,7 +190,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									Value: resource.NewQuantity(-1, resource.DecimalSI),
 								},
@@ -202,7 +211,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									AverageValue: resource.NewQuantity(-1, resource.DecimalSI),
 								},
@@ -223,7 +232,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									AverageUtilization: proto.Int32(0),
 								},
@@ -336,16 +345,16 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments = append(
 						w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments,
 						computev1alpha.VolumeAttachment{
-							Name: "vol",
+							Name: testVolName,
 						},
 					)
 					w.Spec.Template.Spec.Volumes = append(w.Spec.Template.Spec.Volumes, computev1alpha.InstanceVolume{
-						Name: "vol",
+						Name: testVolName,
 						VolumeSource: computev1alpha.VolumeSource{
 							Disk: &computev1alpha.DiskTemplateVolumeSource{
 								Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 									Spec: computev1alpha.DiskSpec{
-										Type: "pd-standard",
+										Type: diskTypePDStandard,
 										Resources: &computev1alpha.DiskResourceRequirements{
 											Requests: k8scorev1.ResourceList{
 												k8scorev1.ResourceStorage: resource.MustParse("1Gi"),
@@ -369,16 +378,16 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments = append(
 						w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments,
 						computev1alpha.VolumeAttachment{
-							Name: "vol",
+							Name: testVolName,
 						},
 					)
 					w.Spec.Template.Spec.Volumes = append(w.Spec.Template.Spec.Volumes, computev1alpha.InstanceVolume{
-						Name: "vol",
+						Name: testVolName,
 						VolumeSource: computev1alpha.VolumeSource{
 							Disk: &computev1alpha.DiskTemplateVolumeSource{
 								Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 									Spec: computev1alpha.DiskSpec{
-										Type: "pd-standard",
+										Type: diskTypePDStandard,
 										Resources: &computev1alpha.DiskResourceRequirements{
 											Requests: k8scorev1.ResourceList{
 												k8scorev1.ResourceStorage: resource.MustParse("1Pi"),
@@ -402,16 +411,16 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments = append(
 						w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments,
 						computev1alpha.VolumeAttachment{
-							Name: "vol",
+							Name: testVolName,
 						},
 					)
 					w.Spec.Template.Spec.Volumes = append(w.Spec.Template.Spec.Volumes, computev1alpha.InstanceVolume{
-						Name: "vol",
+						Name: testVolName,
 						VolumeSource: computev1alpha.VolumeSource{
 							Disk: &computev1alpha.DiskTemplateVolumeSource{
 								Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 									Spec: computev1alpha.DiskSpec{
-										Type: "pd-standard",
+										Type: diskTypePDStandard,
 										Resources: &computev1alpha.DiskResourceRequirements{
 											Requests: k8scorev1.ResourceList{
 												k8scorev1.ResourceStorage: resource.MustParse("10.5Gi"),
@@ -436,7 +445,7 @@ func TestValidateWorkloads(t *testing.T) {
 						Disk: &computev1alpha.DiskTemplateVolumeSource{
 							Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 								Spec: computev1alpha.DiskSpec{
-									Type: "pd-standard",
+									Type: diskTypePDStandard,
 									Resources: &computev1alpha.DiskResourceRequirements{
 										Requests: k8scorev1.ResourceList{
 											k8scorev1.ResourceStorage: resource.MustParse("10Gi"),
@@ -473,7 +482,7 @@ func TestValidateWorkloads(t *testing.T) {
 						Disk: &computev1alpha.DiskTemplateVolumeSource{
 							Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 								Spec: computev1alpha.DiskSpec{
-									Type: "pd-standard",
+									Type: diskTypePDStandard,
 									Resources: &computev1alpha.DiskResourceRequirements{
 										Requests: k8scorev1.ResourceList{
 											k8scorev1.ResourceStorage: resource.MustParse("10Gi"),
@@ -490,11 +499,11 @@ func TestValidateWorkloads(t *testing.T) {
 					}
 					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].VolumeAttachments = []computev1alpha.VolumeAttachment{
 						{
-							Name:      "duplicate-mount-path",
+							Name:      testDuplicateMountPath,
 							MountPath: proto.String("/mount1"),
 						},
 						{
-							Name:      "duplicate-mount-path",
+							Name:      testDuplicateMountPath,
 							MountPath: proto.String("/mount1"),
 						},
 						{
@@ -503,7 +512,7 @@ func TestValidateWorkloads(t *testing.T) {
 					}
 					w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
 						{
-							Name:         "duplicate-mount-path",
+							Name:         testDuplicateMountPath,
 							VolumeSource: volumeSource,
 						},
 					}
@@ -540,7 +549,7 @@ func TestValidateWorkloads(t *testing.T) {
 			interceptorFuncs: &interceptor.Funcs{
 				Create: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 					if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
-						if sar.Spec.ResourceAttributes.Name == "default" &&
+						if sar.Spec.ResourceAttributes.Name == testDefaultNamespace &&
 							sar.Spec.ResourceAttributes.Group == networkingv1alpha.GroupVersion.Group &&
 							sar.Spec.ResourceAttributes.Version == networkingv1alpha.GroupVersion.Version &&
 							sar.Spec.ResourceAttributes.Resource == "networks" {
@@ -559,8 +568,8 @@ func TestValidateWorkloads(t *testing.T) {
 	initObjs := []client.Object{
 		&networkingv1alpha.Network{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: "default",
-				Name:      "default",
+				Namespace: testDefaultNamespace,
+				Name:      testDefaultNamespace,
 			},
 		},
 	}
@@ -606,7 +615,7 @@ func TestValidateWorkloads(t *testing.T) {
 		)
 
 		if len(scenario.opts.ValidCityCodes) == 0 {
-			scenario.opts.ValidCityCodes = []string{"DFW"}
+			scenario.opts.ValidCityCodes = []string{testCityCodeDFW}
 		}
 
 		t.Run(name, func(t *testing.T) {
@@ -645,7 +654,7 @@ func MakeSandboxWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload 
 					},
 					Runtime: computev1alpha.InstanceRuntimeSpec{
 						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/d1-standard-2",
+							InstanceType: defaultInstanceType,
 						},
 						Sandbox: &computev1alpha.SandboxRuntime{
 							Containers: []computev1alpha.SandboxContainer{
@@ -661,7 +670,7 @@ func MakeSandboxWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload 
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      "placement1",
-					CityCodes: []string{"DFW"},
+					CityCodes: []string{testCityCodeDFW},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 1,
 					},
@@ -702,7 +711,7 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 					},
 					Runtime: computev1alpha.InstanceRuntimeSpec{
 						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/d1-standard-2",
+							InstanceType: defaultInstanceType,
 						},
 						VirtualMachine: &computev1alpha.VirtualMachineRuntime{
 							VolumeAttachments: []computev1alpha.VolumeAttachment{
@@ -719,10 +728,10 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 								Disk: &computev1alpha.DiskTemplateVolumeSource{
 									Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 										Spec: computev1alpha.DiskSpec{
-											Type: "pd-standard",
+											Type: diskTypePDStandard,
 											Populator: &computev1alpha.DiskPopulator{
 												Image: &computev1alpha.ImageDiskPopulator{
-													Name: "datumcloud/ubuntu-2204-lts",
+													Name: defaultImageName,
 												},
 											},
 										},
@@ -736,7 +745,7 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      "placement1",
-					CityCodes: []string{"DFW"},
+					CityCodes: []string{testCityCodeDFW},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 1,
 					},
