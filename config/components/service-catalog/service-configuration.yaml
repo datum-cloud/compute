@@ -6,6 +6,9 @@ spec:
   serviceRef:
     name: compute
   phase: Published
+  locations:
+    supportedClasses:
+    - datum-managed
   monitoredResourceTypes:
   - type: compute.datumapis.com/Instance
     displayName: Compute Instance
@@ -44,6 +47,26 @@ spec:
     description: Seconds the instance has been in a running state.
     kind: Cumulative
     unit: s
+  - name: compute.datumapis.com/workloads
+    displayName: Compute Workloads
+    description: Number of compute workloads.
+    kind: Gauge
+    unit: '{workload}'
+  - name: compute.datumapis.com/instances
+    displayName: Compute Instances
+    description: Number of compute instances.
+    kind: Gauge
+    unit: '{instance}'
+  - name: compute.datumapis.com/vcpus
+    displayName: Compute vCPUs
+    description: Number of vCPUs allocated across all instances.
+    kind: Gauge
+    unit: '{millicore}'
+  - name: compute.datumapis.com/memory
+    displayName: Compute Memory
+    description: Memory allocated across all instances.
+    kind: Gauge
+    unit: MiB
   billing:
     consumerDestinations:
     - monitoredResourceType: compute.datumapis.com/Instance
@@ -53,13 +76,13 @@ spec:
       - compute.datumapis.com/instance/cpu-allocated
       - compute.datumapis.com/instance/memory-allocated
       - compute.datumapis.com/instance/uptime-seconds
+  quota:
     metricRules:
     - selector:
         apiGroup: compute.datumapis.com
         kind: Workload
       metricCosts:
         compute.datumapis.com/workloads: 1
-  quota:
     limits:
     - name: compute-workloads
       metric: compute.datumapis.com/workloads

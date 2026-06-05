@@ -6,14 +6,12 @@ kind: Kustomization
 namespace: compute-system
 
 resources:
-  - ../../base/crd
   - ../../base/manager
-  - ../../base/webhook
 components:
   - ../../components/leader_election
   - ../../components/controller_rbac
-  - ../../components/resource-metrics
-  - ../../components/high-availability
-  - ../../components/csi-webhook-cert
-  - ../../components/management-controllers
   - ../../components/cell-controllers
+  - ../../components/quota-credentials
+
+patches:
+- path: disable_webhook_patch.yaml

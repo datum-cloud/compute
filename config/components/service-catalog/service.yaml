@@ -9,7 +9,5 @@ spec:
   owner:
     producerProjectRef:
       name: datum-cloud
-  enablementPolicy:
-    mode: GatedByProvider
   phase: Published
   serviceName: compute.datumapis.com

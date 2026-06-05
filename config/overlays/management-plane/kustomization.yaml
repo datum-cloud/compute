@@ -6,7 +6,6 @@ kind: Kustomization
 namespace: compute-system
 
 resources:
-  - ../../base/crd
   - ../../base/manager
   - ../../base/webhook
 components:
@@ -14,6 +13,9 @@ components:
   - ../../components/controller_rbac
   - ../../components/resource-metrics
   - ../../components/high-availability
-  - ../../components/csi-webhook-cert
   - ../../components/management-controllers
-  - ../../components/cell-controllers
+  - ../../components/csi-webhook-cert
+
+patches:
+- path: downstream_kubeconfig_patch.yaml
+- path: discovery_mode_patch.yaml

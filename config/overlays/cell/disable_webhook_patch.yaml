@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compute-config
+data:
+  config.yaml: |
+    apiVersion: apiserver.config.datumapis.com/v1alpha1
+    kind: WorkloadOperator
+    metricsServer:
+      bindAddress: "0"
+    discovery:
+      quotaKubeconfigPath: /etc/quota-credentials/kubeconfig
