@@ -203,7 +203,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Message: "Instance has been programmed",
 						},
 						{
-							Type:    computev1alpha.InstanceRunning,
+							Type:    computev1alpha.InstanceAvailable,
 							Status:  metav1.ConditionFalse,
 							Reason:  "TestReason",
 							Message: "Test message",
@@ -237,9 +237,9 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Message: "Instance has been programmed",
 						},
 						{
-							Type:    computev1alpha.InstanceRunning,
+							Type:    computev1alpha.InstanceAvailable,
 							Status:  metav1.ConditionTrue,
-							Reason:  computev1alpha.InstanceRunningReasonRunning,
+							Reason:  computev1alpha.InstanceAvailableReasonAvailable,
 							Message: "Instance is running",
 						},
 					},
@@ -249,7 +249,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionTrue,
-				Reason:             computev1alpha.InstanceReadyReasonRunning,
+				Reason:             computev1alpha.InstanceReadyReasonAvailable,
 				Message:            "Instance is ready",
 				ObservedGeneration: 1,
 			},
@@ -267,7 +267,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 						{
 							Type:               computev1alpha.InstanceReady,
 							Status:             metav1.ConditionTrue,
-							Reason:             computev1alpha.InstanceReadyReasonRunning,
+							Reason:             computev1alpha.InstanceReadyReasonAvailable,
 							Message:            "Instance is ready",
 							ObservedGeneration: 1,
 							LastTransitionTime: metav1.Now(),
@@ -279,9 +279,9 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 							Message: "Instance has been programmed",
 						},
 						{
-							Type:    computev1alpha.InstanceRunning,
+							Type:    computev1alpha.InstanceAvailable,
 							Status:  metav1.ConditionTrue,
-							Reason:  computev1alpha.InstanceRunningReasonRunning,
+							Reason:  computev1alpha.InstanceAvailableReasonAvailable,
 							Message: "Instance is running",
 						},
 					},
@@ -291,7 +291,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:               computev1alpha.InstanceReady,
 				Status:             metav1.ConditionTrue,
-				Reason:             computev1alpha.InstanceReadyReasonRunning,
+				Reason:             computev1alpha.InstanceReadyReasonAvailable,
 				Message:            "Instance is ready",
 				ObservedGeneration: 1,
 			},
@@ -364,9 +364,9 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							LastTransitionTime: metav1.Now(),
 						},
 						{
-							Type:               computev1alpha.InstanceRunning,
+							Type:               computev1alpha.InstanceAvailable,
 							Status:             metav1.ConditionTrue,
-							Reason:             computev1alpha.InstanceRunningReasonRunning,
+							Reason:             computev1alpha.InstanceAvailableReasonAvailable,
 							Message:            "Instance is running",
 							LastTransitionTime: metav1.Now(),
 						},
@@ -406,9 +406,9 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							LastTransitionTime: metav1.Now(),
 						},
 						{
-							Type:               computev1alpha.InstanceRunning,
+							Type:               computev1alpha.InstanceAvailable,
 							Status:             metav1.ConditionTrue,
-							Reason:             computev1alpha.InstanceRunningReasonRunning,
+							Reason:             computev1alpha.InstanceAvailableReasonAvailable,
 							Message:            "Instance is running",
 							LastTransitionTime: metav1.Now(),
 						},
@@ -419,7 +419,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 			expectedCondition: &metav1.Condition{
 				Type:    computev1alpha.InstanceReady,
 				Status:  metav1.ConditionTrue,
-				Reason:  computev1alpha.InstanceReadyReasonRunning,
+				Reason:  computev1alpha.InstanceReadyReasonAvailable,
 				Message: "Instance is ready",
 			},
 		},
@@ -664,7 +664,7 @@ func TestReconcileQuota(t *testing.T) {
 		assert.Equal(t, metav1.ConditionFalse, programmedCond.Status)
 		assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, programmedCond.Reason)
 
-		runningCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceRunning)
+		runningCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceAvailable)
 		require.NotNil(t, runningCond)
 		assert.Equal(t, metav1.ConditionFalse, runningCond.Status)
 		assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, runningCond.Reason)

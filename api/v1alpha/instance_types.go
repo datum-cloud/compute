@@ -404,8 +404,10 @@ const (
 	// InstanceReady indicates that the instance is ready
 	InstanceReady = "Ready"
 
-	// InstanceRunning indicates that the instance is running
-	InstanceRunning = "Running"
+	// InstanceAvailable indicates that the instance is available. It is True
+	// when the instance is serving and does not assert that a process is
+	// actively running at this instant.
+	InstanceAvailable = "Available"
 
 	// InstanceProgrammed indicates that the instance has been programmed
 	InstanceProgrammed = "Programmed"
@@ -458,20 +460,42 @@ const (
 	// InstanceReadyReasonSchedulingGatesPresent indicates that the instance is not ready because scheduling gates are present.
 	InstanceReadyReasonSchedulingGatesPresent = "SchedulingGatesPresent"
 
-	// InstanceReadyReasonRunning indicates that the instance is running
-	InstanceReadyReasonRunning = "Running"
+	// InstanceReadyReasonAvailable indicates that the instance is available
+	InstanceReadyReasonAvailable = "Available"
 
-	// InstanceRunningReasonStopped indicates that the instance is stopped
-	InstanceRunningReasonStopped = "Stopped"
+	// InstanceReadyReasonImageUnavailable indicates the provider could not pull
+	// the instance image (bad name, missing credentials, registry unreachable).
+	// This matches the reason written by translateWaitingReason in the unikraft
+	// provider when the container enters an image-pull waiting state.
+	InstanceReadyReasonImageUnavailable = "ImageUnavailable"
 
-	// InstanceRunningReasonStarting indicates that the instance is starting
-	InstanceRunningReasonStarting = "Starting"
+	// InstanceReadyReasonInstanceCrashing indicates the instance process started
+	// but is repeatedly exiting and being restarted (CrashLoopBackOff in the
+	// underlying runtime). This is user-actionable: the application itself is
+	// failing, not the platform.
+	InstanceReadyReasonInstanceCrashing = "InstanceCrashing"
 
-	// InstanceRunningReasonStopping indicates that the instance is stopping
-	InstanceRunningReasonStopping = "Stopping"
+	// InstanceReadyReasonConfigurationError indicates the runtime rejected the
+	// instance configuration before the process could start (e.g. invalid env
+	// variable injection, missing device). User must correct the workload spec.
+	InstanceReadyReasonConfigurationError = "ConfigurationError"
 
-	// InstanceRunningReasonRunning indicates that the instance is running
-	InstanceRunningReasonRunning = "Running"
+	// InstanceReadyReasonProvisioning indicates the instance runtime is still
+	// setting up the execution environment (container being created, image being
+	// unpacked). This is a transient, non-actionable state.
+	InstanceReadyReasonProvisioning = "Provisioning"
+
+	// InstanceAvailableReasonStopped indicates that the instance is stopped
+	InstanceAvailableReasonStopped = "Stopped"
+
+	// InstanceAvailableReasonStarting indicates that the instance is starting
+	InstanceAvailableReasonStarting = "Starting"
+
+	// InstanceAvailableReasonStopping indicates that the instance is stopping
+	InstanceAvailableReasonStopping = "Stopping"
+
+	// InstanceAvailableReasonAvailable indicates that the instance is available
+	InstanceAvailableReasonAvailable = "Available"
 
 	// InstanceProgrammedReasonPendingProgramming indicates that the instance has not been programmed
 	InstanceProgrammedReasonPendingProgramming = "PendingProgramming"
@@ -515,7 +539,7 @@ type Instance struct {
 
 	// Status defines the current state of an Instance.
 	//
-	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Running",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"QuotaGranted",status:"Unknown",reason:"PendingEvaluation",message:"Waiting for quota evaluation",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Available",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"QuotaGranted",status:"Unknown",reason:"PendingEvaluation",message:"Waiting for quota evaluation",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
 	Status InstanceStatus `json:"status,omitempty"`
 }
 
