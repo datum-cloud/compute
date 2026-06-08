@@ -131,14 +131,14 @@ func (r *CompanionGCReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err := writer.DeleteConfigMap(ctx, req.Namespace, req.Name); err != nil {
 			return ctrl.Result{}, fmt.Errorf("companion-gc: delete ConfigMap %q: %w", req.Name, err)
 		}
-		if err := writer.DeleteResourceBinding(ctx, req.Namespace, req.Name+"-configmap"); err != nil {
+		if err := writer.DeleteResourceBinding(ctx, req.Namespace, companionRBName(req.Name, kindConfigMap)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("companion-gc: delete ConfigMap RB %q: %w", req.Name, err)
 		}
 	case kindSecret:
 		if err := writer.DeleteSecret(ctx, req.Namespace, req.Name); err != nil {
 			return ctrl.Result{}, fmt.Errorf("companion-gc: delete Secret %q: %w", req.Name, err)
 		}
-		if err := writer.DeleteResourceBinding(ctx, req.Namespace, req.Name+"-secret"); err != nil {
+		if err := writer.DeleteResourceBinding(ctx, req.Namespace, companionRBName(req.Name, kindSecret)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("companion-gc: delete Secret RB %q: %w", req.Name, err)
 		}
 	}

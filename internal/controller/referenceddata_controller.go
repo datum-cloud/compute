@@ -63,6 +63,13 @@ const (
 	// referenceddata.ObjectRef to avoid repeated string literals.
 	kindConfigMap = "ConfigMap"
 	kindSecret    = "Secret"
+
+	// rbSuffixConfigMap and rbSuffixSecret are the companion ResourceBinding name
+	// suffixes. Karmada names namespace-scoped RBs "{objectName}-{kindLowercase}";
+	// companionRBName builds these and companionFromRBName parses them, so the wire
+	// format has one source of truth.
+	rbSuffixConfigMap = "-configmap"
+	rbSuffixSecret    = "-secret"
 )
 
 // companionWriter is the abstraction that the controller uses to materialise
@@ -1162,7 +1169,7 @@ func (r *ReferencedDataController) releaseOneCompanion(
 		// "{companionName}-configmap". IgnoreNotFound because Karmada may have
 		// already cascaded the deletion.
 		if cmDeleted {
-			if err := writer.DeleteResourceBinding(ctx, namespace, companionName+"-configmap"); err != nil {
+			if err := writer.DeleteResourceBinding(ctx, namespace, companionRBName(companionName, kindConfigMap)); err != nil {
 				return fmt.Errorf("referenceddata: delete ResourceBinding for ConfigMap %q: %w", companionName, err)
 			}
 		}
@@ -1205,7 +1212,7 @@ func (r *ReferencedDataController) releaseOneCompanion(
 	// The RB name follows the Karmada binding-controller convention:
 	// "{companionName}-secret".
 	if secretDeleted {
-		if err := writer.DeleteResourceBinding(ctx, namespace, companionName+"-secret"); err != nil {
+		if err := writer.DeleteResourceBinding(ctx, namespace, companionRBName(companionName, kindSecret)); err != nil {
 			return fmt.Errorf("referenceddata: delete ResourceBinding for Secret %q: %w", companionName, err)
 		}
 	}

@@ -127,7 +127,7 @@ func (r *OrphanRBReconciler) isInScope(rb *karmadaworkv1alpha2.ResourceBinding) 
 		return false
 	}
 	name := rb.Name
-	return strings.HasSuffix(name, "-configmap") || strings.HasSuffix(name, "-secret")
+	return strings.HasSuffix(name, rbSuffixConfigMap) || strings.HasSuffix(name, rbSuffixSecret)
 }
 
 // companionFromRBName extracts the companion object name and kind from a
@@ -139,13 +139,22 @@ func (r *OrphanRBReconciler) isInScope(rb *karmadaworkv1alpha2.ResourceBinding) 
 //	"wd-foo-workloaddeployment" → ("", "", false)  // not a companion RB
 func companionFromRBName(rbName string) (companionName, kind string, ok bool) {
 	switch {
-	case strings.HasSuffix(rbName, "-configmap"):
-		return strings.TrimSuffix(rbName, "-configmap"), kindConfigMap, true
-	case strings.HasSuffix(rbName, "-secret"):
-		return strings.TrimSuffix(rbName, "-secret"), kindSecret, true
+	case strings.HasSuffix(rbName, rbSuffixConfigMap):
+		return strings.TrimSuffix(rbName, rbSuffixConfigMap), kindConfigMap, true
+	case strings.HasSuffix(rbName, rbSuffixSecret):
+		return strings.TrimSuffix(rbName, rbSuffixSecret), kindSecret, true
 	default:
 		return "", "", false
 	}
+}
+
+// companionRBName returns the Karmada ResourceBinding name for a companion object
+// of the given kind. It is the inverse of companionFromRBName.
+func companionRBName(objectName, kind string) string {
+	if kind == kindSecret {
+		return objectName + rbSuffixSecret
+	}
+	return objectName + rbSuffixConfigMap
 }
 
 // isOrphaned returns true when the hub companion is fully absent. A companion
@@ -196,7 +205,7 @@ func (r *OrphanRBReconciler) SetupWithManager(mgr manager.Manager) error {
 					return false
 				}
 				name := obj.GetName()
-				return strings.HasSuffix(name, "-configmap") || strings.HasSuffix(name, "-secret")
+				return strings.HasSuffix(name, rbSuffixConfigMap) || strings.HasSuffix(name, rbSuffixSecret)
 			})),
 		).
 		Named("orphan-rb").
