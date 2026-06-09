@@ -59,6 +59,9 @@ A ConfigMap/Secret volume mounts at a path **as a directory**: each data key bec
 > [!IMPORTANT]
 > Inline file mounts are only enabled on the **`base-compat:latest`** runtime with an **erofs** rootfs today. On the default `base:latest` runtime a ConfigMap/Secret volume will not appear inside the instance at all.
 
+> [!WARNING]
+> **File mounts are currently unusable on the booting runtime — prefer env injection.** File mounts require an **erofs** rootfs, but an erofs initrd does **not** boot on `base-compat:latest`: the instance fails with an instant platform assertion `(i0 EXP)` at `0.00ms` with no console logs. The runtime that actually boots (`base-compat:latest` with a **CPIO** rootfs) does not support inline ROM mounts. Until erofs boots on this runtime, inject configuration and secrets as **environment variables** (`configMapKeyRef` / `secretKeyRef`, see [below](#inject-keys-as-environment-variables)), which works on any runtime and any rootfs format.
+
 This is the part to get right. File mounts are delivered into the unikernel as inline read-only ROM devices, and inline ROMs are only enabled on the `base-compat:latest` runtime today. The default `base:latest` runtime (the app-elfloader) does not yet support them — the kernel team is working on enabling inline ROMs for `base` as well, but until then a ConfigMap/Secret volume will simply not appear inside a `base:latest` instance.
 
 Build the image with the `base-compat:latest` runtime and an **erofs** rootfs. The `Kraftfile`:
