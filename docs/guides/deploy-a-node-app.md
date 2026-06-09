@@ -77,8 +77,10 @@ A plain `docker build` OCI image will NOT boot on the runtime. The image must be
 
 The build installs your dependencies in a regular `node` image, then assembles a minimal `FROM scratch` rootfs containing the interpreter, your app, and exactly the shared libraries `node` needs:
 
+The build stage is pinned to `linux/amd64` because the target is x86_64 (`base-compat` is `kraftcloud/x86_64`) and the rootfs copies x86_64 musl libraries. On an arm64 host (Apple Silicon) this cross-builds to x86_64; without the pin the `ld-musl-x86_64.so.1` COPYs fail or a wrong-architecture binary boots.
+
 ```dockerfile
-FROM node:22-alpine AS build
+FROM --platform=linux/amd64 node:22-alpine AS build
 WORKDIR /usr/src
 COPY package*.json ./
 RUN npm install
@@ -116,12 +118,13 @@ runtime: base-compat:latest
 
 rootfs:
   source: ./Dockerfile
-  format: erofs
 
 cmd: ["/usr/bin/node", "/usr/src/server.js"]
 ```
 
 `runtime: base-compat:latest` is the binary-compatibility elfloader runtime that loads the dynamic `node` executable. `rootfs.source: ./Dockerfile` tells `kraft` to build the rootfs from your Dockerfile.
+
+> **Warning — use a CPIO rootfs, not erofs.** The rootfs must be packaged as a **CPIO** initramfs. An **erofs** initrd does NOT boot on `base-compat:latest`: the instance fails with an instant platform assertion `(i0 EXP)` at `0.00ms` and **no console logs** at all. If you see that symptom — an immediate exit with no boot output — your image was packaged as erofs. Omitting `rootfs.format` leaves `kraft` on CPIO; the build command below also passes `--rootfs-type cpio` explicitly.
 
 ### Start a BuildKit daemon
 
@@ -133,18 +136,43 @@ docker run -d --name buildkit --privileged moby/buildkit:latest
 
 ### Build and publish with `kraft cloud deploy --no-start`
 
-Use `kraft` only to build and publish the image — you deploy the running workload with `datumctl compute` in the next step. The `--no-start` (`-S`) flag builds the unikernel package and pushes it to the metro registry **without** starting an instance. It pushes to `index.unikraft.io/datum/<name>`. The `-M` flag sets the memory allocation in MiB and is required.
+Use `kraft` only to build and publish the image — you deploy the running workload with `datumctl compute` in the next step. The `--no-start` (`-S`) flag builds the unikernel package and pushes it to the metro registry **without** starting an instance. The `--rootfs-type cpio` flag packages the rootfs as a CPIO initramfs (an erofs rootfs does not boot — see the warning above). The `-M` flag is a build-time memory hint; it does **not** affect boot success, and the effective runtime memory is set by the Workload `instanceType`, not by `-M`.
 
 ```sh
 export KRAFTKIT_NO_CHECK_UPDATES=true
 
 kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   --buildkit-host docker-container://buildkit \
-  deploy --no-start -M 512 --name hello-node \
+  deploy --no-start --rootfs-type cpio -M 512 --name hello-node \
   --runtime base-compat:latest --rootfs ./Dockerfile .
 ```
 
-After this command completes, your image is available at `index.unikraft.io/datum/hello-node:latest`, ready for Datum compute to deploy.
+After this command completes, your image is ready for Datum compute to deploy.
+
+> **Registry: publish vs. pull.** The build may publish to the metro registry (`index.<metro>.unikraft.cloud/datum/...`) while the cell pulls from `index.unikraft.io/datum/...`. The Workload should reference `index.unikraft.io/datum/<name>:<tag>`; if that reference does not resolve at deploy time, an `unikraft image copy` (or equivalent) may be needed to make the published image available under the `index.unikraft.io` path.
+
+---
+
+## Image size: stay under the initrd boot ceiling
+
+There is an empirical **~150 MiB** ceiling on the initrd (rootfs) for it to boot. Working images land around 125–145 MiB; images over ~570 MiB fail to boot with the same `(i0 EXP)` assertion described above. The `-M` memory flag does **not** raise this ceiling — it is a property of the initrd, not the runtime memory.
+
+The `hello-node` example is tiny, but a real application must keep its rootfs small:
+
+- Bundle the server to a single file (e.g. with [esbuild](https://esbuild.github.io/)) so you do not have to ship `node_modules`.
+- Drop dev and build-only dependencies; copy only the built output into the `FROM scratch` stage, never the source tree or the full `node_modules`.
+- Verify the final image size before deploying; if it approaches the ceiling, slim further.
+
+> The CPIO initramfs rootfs is RAM-backed: it is writable at runtime but **ephemeral** — nothing written at runtime persists across reboots or redeploys.
+
+## Deploying a framework / SSR app
+
+The example ships a single dependency-free `app.js`. A real framework app (Astro, Next.js SSR, etc.) needs a few extra steps:
+
+1. **Run the framework build** (`npm run build`) in the build stage to produce the server bundle plus the client/static assets.
+2. **Ship a small server entrypoint** that serves the static assets *and* invokes the framework's SSR handler.
+3. **Copy only the built output** into the `FROM scratch` rootfs — not the source tree, and not the full `node_modules`. Combined with bundling, this keeps you under the size ceiling above.
+4. **Watch the build toolchain.** A repo's `build` script may invoke a tool that is not present in `node:22-alpine` (for example `bun`). Invoke the toolchain directly, or install it in the build stage, rather than relying on the repo's wrapper script.
 
 ---
 
@@ -210,6 +238,28 @@ datumctl compute deploy hello-node \
 
 Both forms create (or update) the workload. The `--city` flag accepts one or more city codes; `DFW` targets the US Central region.
 
+### Environment variables and secrets
+
+Inject configuration and secrets through the Workload's `env` list, sourcing values from a Secret with `valueFrom.secretKeyRef`. The referenced Secret must **already exist** in the project's `default` namespace; the platform's referenced-data resolver creates a companion and propagates it to the cell.
+
+```yaml
+containers:
+  - name: app
+    image: index.unikraft.io/datum/hello-node:latest
+    env:
+      - name: API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: app-secrets
+            key: api-token
+```
+
+Env values ride on the kernel command line, which has room for a multi-KB value (a PEM certificate fits).
+
+> **Use env-from-secret, not file mounts, on this runtime.** Mounting a Secret or ConfigMap as a file (a volume mount) requires an **erofs** rootfs, and erofs does not boot on `base-compat:latest` (the `(i0 EXP)` failure described above). On the CPIO runtime, inject configuration via `env` / `secretKeyRef`, not file mounts.
+
+**Troubleshooting.** If a Secret-referencing Workload is rejected by the `vworkload` admission webhook with a SubjectAccessReview error, or the companion Secret never appears (the instance reports `MandatorySecretNotFound`), the platform's hub RBAC (compute-manager access to `secrets`/`configmaps`) and the project plane's discovery of the `authorization.k8s.io` API group must be in place. Contact your platform operator.
+
 ---
 
 ## 4. Verify the instance is running
@@ -254,7 +304,7 @@ To deploy a new version, rebuild and publish the image (repeating step 2), then 
 ```sh
 kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   --buildkit-host docker-container://buildkit \
-  deploy --no-start -M 512 --name hello-node \
+  deploy --no-start --rootfs-type cpio -M 512 --name hello-node \
   --runtime base-compat:latest --rootfs ./Dockerfile .
 
 datumctl compute deploy -f workload.yaml -y

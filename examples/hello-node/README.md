@@ -20,7 +20,8 @@ library it links.
 - `Dockerfile` — multi-stage build: an `node:22-alpine` stage installs deps and
   records `ldd node`, then a `FROM scratch` rootfs copies the interpreter and its
   shared libraries (`ld-musl`, `libstdc++`, `libgcc_s`).
-- `Kraftfile` — packages the rootfs on the `base-compat:latest` runtime (`erofs`).
+- `Kraftfile` — packages the rootfs on the `base-compat:latest` runtime as a CPIO
+  initramfs (an `erofs` initrd does not boot on this runtime).
 - `workload.yaml` — the Datum compute Workload manifest.
 
 ## Quick start
@@ -29,7 +30,7 @@ library it links.
 # 1. Build and publish the image (kraft builds + pushes; it does not run it).
 kraft cloud --metro "$UKC_METRO" --token "$UKC_TOKEN" \
   --buildkit-host docker-container://buildkit \
-  deploy --no-start -M 512 --name hello-node \
+  deploy --no-start --rootfs-type cpio -M 512 --name hello-node \
   --runtime base-compat:latest --rootfs ./Dockerfile .
 
 # 2. Deploy on Datum compute.

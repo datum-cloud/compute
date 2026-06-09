@@ -5,10 +5,15 @@
 # by the static-PIE Go/Rust proofs. The rootfs (built from the multi-stage
 # Dockerfile) carries the node interpreter plus every shared library it links.
 #
+# The rootfs MUST be packaged as a CPIO initramfs. An erofs initrd does NOT boot
+# on base-compat:latest -- it triggers an instant platform assertion ((i0 EXP) at
+# 0.00ms, no console logs). Omitting rootfs.format leaves kraft on CPIO; the build
+# command passes --rootfs-type cpio explicitly.
+#
 # Build/push (push-only, do not start):
 #   kraft cloud --metro <metro>/v1 --token <token> \
 #     --buildkit-host docker-container://buildkit \
-#     deploy --no-start -M 512 --name hello-node \
+#     deploy --no-start --rootfs-type cpio -M 512 --name hello-node \
 #     --runtime base-compat:latest --rootfs ./Dockerfile .
 spec: v0.7
 
@@ -18,6 +23,5 @@ runtime: base-compat:latest
 
 rootfs:
   source: ./Dockerfile
-  format: erofs
 
 cmd: ["/usr/bin/node", "/usr/src/server.js"]

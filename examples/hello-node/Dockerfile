@@ -10,7 +10,12 @@
 # records exactly which shared objects the rootfs must carry. The scratch image
 # below has no package manager, so EVERY library node links must be copied
 # explicitly; a missing .so fails the instance at boot with library-not-found.
-FROM node:22-alpine AS build
+#
+# The target is x86_64 (base-compat == kraftcloud/x86_64) and the COPYs below
+# pull x86_64 musl libs, so the build stage is pinned to linux/amd64. On an arm64
+# host (Apple Silicon) this cross-builds to x86_64; without the pin the
+# ld-musl-x86_64.so.1 COPYs fail (or a wrong-arch binary boots).
+FROM --platform=linux/amd64 node:22-alpine AS build
 WORKDIR /usr/src
 COPY package*.json ./
 RUN npm install
