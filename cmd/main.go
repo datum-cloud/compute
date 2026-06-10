@@ -184,10 +184,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 		os.Exit(1)
 	}
-	if err = (&controller.WorkloadDeploymentScheduler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentScheduler")
-		os.Exit(1)
-	}
 	if err = (&controller.InstanceReconciler{}).SetupWithManager(mgr, deploymentCluster); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Instance")
 		os.Exit(1)
