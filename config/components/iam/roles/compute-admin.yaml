@@ -12,4 +12,5 @@ spec:
   includedPermissions:
     - compute.datumapis.com/workloads.create
     - compute.datumapis.com/workloads.update
+    - compute.datumapis.com/workloads.patch
     - compute.datumapis.com/workloads.delete
