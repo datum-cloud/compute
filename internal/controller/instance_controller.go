@@ -90,6 +90,34 @@ const (
 	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
 )
 
+// instanceTypeD1Standard2 is the platform instance type name for the
+// 1 vCPU / 2 GiB size used as the catalog baseline for quota accounting.
+const instanceTypeD1Standard2 = "datumcloud/d1-standard-2"
+
+// instanceTypeResources holds the vCPU and memory for a named instance type.
+type instanceTypeResources struct {
+	// CPUMillicores is the number of CPU millicores (1000 = 1 vCPU).
+	CPUMillicores int64
+	// MemoryMiB is the amount of RAM in mebibytes.
+	MemoryMiB int64
+}
+
+// instanceTypeCatalog maps platform instance type names to their resource
+// dimensions used for quota accounting when the instance spec carries only an
+// instanceType and no explicit container Limits or instance-level Requests.
+//
+// These are the platform-declared quota sizes for the instance type, not a
+// derivation of any infra provider's machine type. (infra-provider-gcp separately
+// maps datumcloud/d1-standard-2 to the GCP n2-standard-2 machine type for VM
+// provisioning; that mapping does not define the quota size here.) When new
+// instance types are added, add them here with their vCPU/memory values.
+var instanceTypeCatalog = map[string]instanceTypeResources{
+	instanceTypeD1Standard2: {
+		CPUMillicores: 1000, // 1 vCPU
+		MemoryMiB:     2048, // 2 GiB
+	},
+}
+
 // Quota-pending requeue backoff. The instance controller is normally re-queued by
 // the ResourceClaim watch when a claim is granted, but that grant event lives on
 // the project control plane and can be missed (informer engagement races, watch
@@ -881,8 +909,24 @@ func (r *InstanceReconciler) classifyCreateError(
 	}, fmt.Errorf("failed creating resource claim: %w", err)
 }
 
+// resolveInstanceResources determines the vCPU and memory amounts to claim
+// for an instance. Explicit sizing always takes precedence over the instance
+// type catalog, so a workload that overrides container limits is accounted at
+// its actual resource footprint rather than the catalog baseline.
+//
+// Precedence order:
+//  1. Sandbox container Limits (sum across all containers) — all containers
+//     must have both cpu and memory Limits for this path to succeed.
+//  2. Instance-level Resources.Requests — both cpu and memory must be present.
+//  3. instanceTypeCatalog lookup by instanceType — used for the common case
+//     where a workload is sized only by instanceType with no explicit limits.
+//
+// Returns (0, 0, false) when none of the above yield a complete sizing, so
+// the caller falls back to claiming only the instance count.
 func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores int64, memMiB int64, resolved bool) {
 	rt := instance.Spec.Runtime
+
+	// Path 1: explicit per-container Limits — most specific, wins if fully set.
 	if rt.Sandbox != nil {
 		var totalCPU resource.Quantity
 		var totalMem resource.Quantity
@@ -901,18 +945,60 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 			totalCPU.Add(cpu)
 			totalMem.Add(mem)
 		}
-		if !allSet || len(rt.Sandbox.Containers) == 0 {
-			return 0, 0, false
+		if allSet && len(rt.Sandbox.Containers) > 0 {
+			return totalCPU.MilliValue(), totalMem.Value() / (1024 * 1024), true
 		}
-		return totalCPU.MilliValue(), totalMem.Value() / (1024 * 1024), true
+		// Containers exist but limits are incomplete — fall through so the
+		// instance-level Requests and instanceType catalog paths can still
+		// yield a sizing.
 	}
 
+	// Path 2: instance-level resource requests.
 	cpu, hasCPU := rt.Resources.Requests[corev1.ResourceCPU]
 	mem, hasMem := rt.Resources.Requests[corev1.ResourceMemory]
-	if !hasCPU || !hasMem {
-		return 0, 0, false
+	if hasCPU && hasMem {
+		return cpu.MilliValue(), mem.Value() / (1024 * 1024), true
 	}
-	return cpu.MilliValue(), mem.Value() / (1024 * 1024), true
+
+	// Path 3: instanceType catalog — handles the typical production case where
+	// instanceType is the only sizing signal and no explicit limits are set.
+	if rt.Resources.InstanceType != "" {
+		if spec, ok := instanceTypeCatalog[rt.Resources.InstanceType]; ok {
+			return spec.CPUMillicores, spec.MemoryMiB, true
+		}
+	}
+
+	return 0, 0, false
+}
+
+// instanceBlockingReasonPriority ranks Instance blocking reasons so the most
+// specific, user-actionable cause wins when several conditions are unsatisfied.
+// Higher numbers are more specific. Reasons absent from the table rank 0.
+//
+//	0 - unknown/default
+//	1 - Provisioning              (transient runtime startup)
+//	3 - PendingQuota              (operator action may be needed)
+//	5 - ImageUnavailable / InstanceCrashing / ConfigurationError
+//	    (hard runtime error, user-actionable)
+//	7 - NetworkFailedToCreate     (hard infra error)
+func instanceBlockingReasonPriority(reason string) int {
+	switch reason {
+	case computev1alpha.InstanceReadyReasonProvisioning:
+		return 1
+	case computev1alpha.InstanceProgrammedReasonPendingQuota:
+		return 3
+	case computev1alpha.InstanceReadyReasonImageUnavailable,
+		computev1alpha.InstanceReadyReasonInstanceCrashing,
+		computev1alpha.InstanceReadyReasonConfigurationError:
+		// Hard runtime errors are user-actionable (wrong image, crashing app, bad
+		// config) and rank highest among non-infra reasons so they are not buried
+		// under transient startup/quota reasons.
+		return 5
+	case reasonNetworkFailedToCreate:
+		return 7
+	default:
+		return 0
+	}
 }
 
 // networkFailureChecker is a function that checks if a network creation failure
@@ -996,16 +1082,88 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	if programmedCondition == nil || programmedCondition.Status != metav1.ConditionTrue {
 		logger.Info("instance is not programmed", "instance", instance.Name)
 
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = computev1alpha.InstanceProgrammedReasonPendingProgramming
-		if programmedCondition != nil && programmedCondition.Reason != pendingReason {
-			readyCondition.Reason = programmedCondition.Reason
+		// Surface the most specific provider sub-condition rather than a generic
+		// "Instance has not been programmed". A provider reason like
+		// ImageUnavailable (set on the Available condition while Programmed is
+		// still Unknown) must surface on Ready with its actionable message.
+		//
+		// Two tiers are tracked:
+		//   - bestKnown: the best candidate from the priority table (ranked 1-7).
+		//   - fallback:  the Programmed condition's own reason/message when it has
+		//                one but it is not in the priority table (e.g. a provider
+		//                writes a custom Programmed reason otherwise unknown to
+		//                this controller). Preserves Programmed.Reason → Ready.Reason
+		//                pass-through behavior.
+		type candidate struct {
+			status   metav1.ConditionStatus
+			reason   string
+			message  string
+			priority int
 		}
 
-		readyCondition.Message = msgNotProgrammed
-		if programmedCondition != nil && programmedCondition.Status != metav1.ConditionUnknown {
-			readyCondition.Message = programmedCondition.Message
+		// Generic default — used only when nothing better is found.
+		fallbackCandidate := candidate{
+			status:   metav1.ConditionFalse,
+			reason:   computev1alpha.InstanceProgrammedReasonPendingProgramming,
+			message:  msgNotProgrammed,
+			priority: -1,
 		}
+		// Promote the Programmed condition's own reason as a fallback when it is
+		// more specific than PendingProgramming/Pending but not in the priority
+		// table. Preserves pass-through for provider-written Programmed reasons.
+		if programmedCondition != nil && programmedCondition.Reason != pendingReason &&
+			programmedCondition.Reason != computev1alpha.InstanceProgrammedReasonPendingProgramming {
+			fallbackCandidate = candidate{
+				status:   programmedCondition.Status,
+				reason:   programmedCondition.Reason,
+				message:  programmedCondition.Message,
+				priority: 0,
+			}
+		}
+
+		best := fallbackCandidate
+		consider := func(status metav1.ConditionStatus, reason, message string) {
+			// A generic "Pending" reason carries no actionable signal; skip it so
+			// it cannot displace an already-set specific reason from the provider.
+			if reason == pendingReason {
+				return
+			}
+			p := instanceBlockingReasonPriority(reason)
+			if p > best.priority {
+				best = candidate{status: status, reason: reason, message: message, priority: p}
+			}
+		}
+
+		// Sub-conditions set by the provider (e.g. Available=Unknown/ImageUnavailable)
+		// may be more specific than the Programmed condition. Consult each one so
+		// the highest-priority reason wins, regardless of which condition carries it.
+		for _, cond := range instance.Status.Conditions {
+			if cond.Status == metav1.ConditionTrue {
+				// Satisfied conditions are not blocking; skip them.
+				continue
+			}
+			switch cond.Type {
+			case computev1alpha.InstanceProgrammed,
+				computev1alpha.InstanceReady,
+				computev1alpha.InstanceQuotaGranted:
+				// InstanceProgrammed is handled below; InstanceReady is being set
+				// now. InstanceQuotaGranted is a gate-level signal evaluated before
+				// this branch is reached — including it here would let a transient
+				// PendingEvaluation reason displace the generic not-programmed
+				// fallback when no provider sub-condition is set yet.
+				continue
+			}
+			consider(cond.Status, cond.Reason, cond.Message)
+		}
+		// Also let the Programmed condition itself compete through the priority table
+		// in case it carries a known reason (e.g. PendingQuota).
+		if programmedCondition != nil {
+			consider(programmedCondition.Status, programmedCondition.Reason, programmedCondition.Message)
+		}
+
+		readyCondition.Status = best.status
+		readyCondition.Reason = best.reason
+		readyCondition.Message = best.message
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
@@ -1016,16 +1174,21 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	if availableCondition == nil || availableCondition.Status != metav1.ConditionTrue {
 		logger.Info("instance is not available", "instance", instance.Name)
 
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = pendingReason
+		// Propagate the Available condition's reason and message directly —
+		// including when the status is Unknown — so provider-set reasons like
+		// ImageUnavailable surface on Ready rather than a generic message.
+		readyStatus := metav1.ConditionFalse
+		readyReason := pendingReason
+		readyMessage := "Instance is not available"
 		if availableCondition != nil && availableCondition.Reason != pendingReason {
-			readyCondition.Reason = availableCondition.Reason
+			readyStatus = availableCondition.Status
+			readyReason = availableCondition.Reason
+			readyMessage = availableCondition.Message
 		}
 
-		readyCondition.Message = "Instance is not available"
-		if availableCondition != nil && availableCondition.Status != metav1.ConditionUnknown {
-			readyCondition.Message = availableCondition.Message
-		}
+		readyCondition.Status = readyStatus
+		readyCondition.Reason = readyReason
+		readyCondition.Message = readyMessage
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
