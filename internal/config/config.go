@@ -229,6 +229,23 @@ type DiscoveryConfig struct {
 	// template when connecting to project control planes. When not provided,
 	// the operator will use the in-cluster config.
 	ProjectKubeconfigPath string `json:"projectKubeconfigPath"`
+
+	// ClusterName is the stable, unique name for this edge cluster. It is
+	// stamped onto ResourceClaim objects so that each edge controller can
+	// distinguish its own claims from those created by other edge controllers
+	// in the same project control planes.
+	//
+	// Required when Mode is "milo". Optional in single mode; defaults to "single".
+	ClusterName string `json:"clusterName"`
+
+	// QuotaKubeconfigPath is the path to the kubeconfig file used when creating
+	// ResourceClaim objects against Milo project control planes. When set it
+	// takes precedence over ProjectKubeconfigPath for quota calls. When both are
+	// unset, quota accounting is disabled.
+	//
+	// Use this field in deployments (mode: single or mode: milo) that need to
+	// talk to api.datum.net for quota enforcement.
+	QuotaKubeconfigPath string `json:"quotaKubeconfigPath"`
 }
 
 func SetDefaults_DiscoveryConfig(obj *DiscoveryConfig) {
@@ -251,6 +268,32 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 	}
 
 	return clientcmd.BuildConfigFromFlags("", c.ProjectKubeconfigPath)
+}
+
+// QuotaRestConfig returns the REST config for quota ResourceClaim management
+// against Milo project control planes. QuotaKubeconfigPath is preferred; if
+// unset, ProjectKubeconfigPath is used as a fallback.
+//
+// Returns (nil, nil) when no credential path is configured at all — this is
+// the intentional opt-out case and the caller should disable quota enforcement.
+//
+// Returns (nil, error) when a credential path IS configured but the file does
+// not exist on disk. This is a misconfiguration (Secret not mounted, wrong
+// path) that must not silently disable enforcement; callers should treat this
+// as a fatal startup error.
+func (c *DiscoveryConfig) QuotaRestConfig() (*rest.Config, error) {
+	path := c.QuotaKubeconfigPath
+	if path == "" {
+		path = c.ProjectKubeconfigPath
+	}
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("quota kubeconfig path %q is configured but file does not exist: "+
+			"ensure the quota credential Secret is mounted correctly", path)
+	}
+	return clientcmd.BuildConfigFromFlags("", path)
 }
 
 func init() {
