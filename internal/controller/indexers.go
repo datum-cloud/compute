@@ -15,7 +15,10 @@ import (
 const (
 	deploymentWorkloadUIDIndex = "deploymentWorkloadUIDIndex"
 	workloadNetworksIndex      = "workloadNetworksIndex"
-	deploymentLocationIndex    = "deploymentLocationIndex"
+	// deploymentCityCodeIndex indexes WorkloadDeployments by their Spec.CityCode
+	// so that SubnetClaim/Subnet watches can efficiently find the deployments
+	// that target the same city as a changed networking resource.
+	deploymentCityCodeIndex = "deploymentCityCodeIndex"
 )
 
 func AddIndexers(ctx context.Context, mgr mcmanager.Manager) error {
@@ -30,32 +33,30 @@ func addWorkloadDeploymentIndexers(ctx context.Context, mgr mcmanager.Manager) e
 		return fmt.Errorf("failed to add workload deployment indexer %q: %w", deploymentWorkloadUIDIndex, err)
 	}
 
-	// Index workload deployments by location
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &computev1alpha.WorkloadDeployment{}, deploymentLocationIndex, deploymentLocationIndexFunc); err != nil {
-		return fmt.Errorf("failed to add workload deployment indexer %q: %w", deploymentLocationIndex, err)
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &computev1alpha.WorkloadDeployment{}, deploymentCityCodeIndex, deploymentCityCodeIndexFunc); err != nil {
+		return fmt.Errorf("failed to add workload deployment indexer %q: %w", deploymentCityCodeIndex, err)
 	}
 
 	return nil
 }
 
 func deploymentWorkloadUIDIndexFunc(o client.Object) []string {
-	return []string{
-		string(o.(*computev1alpha.WorkloadDeployment).Spec.WorkloadRef.UID),
-	}
-}
-
-func deploymentLocationIndexFunc(o client.Object) []string {
-	deployment := o.(*computev1alpha.WorkloadDeployment)
-	if deployment.Status.Location == nil {
+	// Skip deployments without a workload UID: indexing them under the empty
+	// key would make them matchable by a GC query built from a corrupt (empty)
+	// UID, mirroring deploymentCityCodeIndexFunc.
+	uid := string(o.(*computev1alpha.WorkloadDeployment).Spec.WorkloadRef.UID)
+	if uid == "" {
 		return nil
 	}
+	return []string{uid}
+}
 
-	return []string{
-		types.NamespacedName{
-			Namespace: deployment.Status.Location.Namespace,
-			Name:      deployment.Status.Location.Name,
-		}.String(),
+func deploymentCityCodeIndexFunc(o client.Object) []string {
+	deployment := o.(*computev1alpha.WorkloadDeployment)
+	if deployment.Spec.CityCode == "" {
+		return nil
 	}
+	return []string{deployment.Spec.CityCode}
 }
 
 func addWorkloadIndexers(ctx context.Context, mgr mcmanager.Manager) error {
