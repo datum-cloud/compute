@@ -5,6 +5,20 @@ metadata:
   name: compute
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+- apiGroups:
   - compute.datumapis.com
   resources:
   - instances
@@ -36,3 +50,36 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - locations
+  - networkcontexts
+  - subnets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkbindings
+  - subnetclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - quota.miloapis.com
+  resources:
+  - resourceclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch

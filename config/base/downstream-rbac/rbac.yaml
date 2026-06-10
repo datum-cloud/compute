@@ -1,0 +1,35 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-manager
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy.karmada.io"]
+    resources: ["propagationpolicies", "clusterpropagationpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cluster.karmada.io"]
+    resources: ["clusters"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["work.karmada.io"]
+    resources: ["resourcebindings", "clusterresourcebindings"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["config.karmada.io"]
+    resources: ["resourceinterpreterwebhookconfigurations", "resourceinterpretercustomizations"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: compute-manager
+subjects:
+  - kind: User
+    name: system:serviceaccount:compute-system:compute-manager

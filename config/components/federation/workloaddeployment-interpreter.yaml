@@ -1,0 +1,28 @@
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: workloaddeployment
+spec:
+  target:
+    apiVersion: compute.datumapis.com/v1alpha
+    kind: WorkloadDeployment
+  customizations:
+    statusReflection:
+      luaScript: |
+        function ReflectStatus(observedObj)
+          if observedObj.status == nil then
+            return nil
+          end
+          return observedObj.status
+        end
+    statusAggregation:
+      luaScript: |
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if statusItems[1].status ~= nil then
+            desiredObj.status = statusItems[1].status
+          end
+          return desiredObj
+        end

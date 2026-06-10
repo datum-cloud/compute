@@ -26,14 +26,33 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-      - command:
+      - name: manager
+        command:
         - /manager
         args:
-          - --leader-elect
-          - --health-probe-bind-address=:8081
-          - --server-config=/config/config.yaml
+          - --leader-elect=$(LEADER_ELECT)
+          - --health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
+          - --server-config=$(SERVER_CONFIG)
+          - --federation-kubeconfig=$(FEDERATION_KUBECONFIG)
+          - --enable-management-controllers=$(ENABLE_MANAGEMENT_CONTROLLERS)
+          - --enable-cell-controllers=$(ENABLE_CELL_CONTROLLERS)
+          - --feature-gates=$(FEATURE_GATES)
+        env:
+          - name: LEADER_ELECT
+            value: "true"
+          - name: HEALTH_PROBE_BIND_ADDRESS
+            value: ":8081"
+          - name: SERVER_CONFIG
+            value: /config/config.yaml
+          - name: FEDERATION_KUBECONFIG
+            value: ""
+          - name: ENABLE_MANAGEMENT_CONTROLLERS
+            value: "false"
+          - name: ENABLE_CELL_CONTROLLERS
+            value: "false"
+          - name: FEATURE_GATES
+            value: ""
         image: ghcr.io/datum-cloud/compute:latest
-        name: manager
         ports:
         - containerPort: 9443
           name: webhook-server
@@ -66,7 +85,7 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /config
-      serviceAccountName: compute
+      serviceAccountName: compute-manager
       terminationGracePeriodSeconds: 10
       volumes:
       - name: config
