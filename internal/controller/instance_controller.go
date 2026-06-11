@@ -1345,3 +1345,16 @@ func (r *InstanceReconciler) SetupWithManager(
 		).
 		Complete(r)
 }
+
+// isTerminalReferencedDataReason reports whether the given ReferencedData reason
+// is terminal — i.e., the companion will never arrive because the source object
+// is permanently unavailable, not just slow to propagate.
+func isTerminalReferencedDataReason(reason string) bool {
+	switch reason {
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		computev1alpha.ReferencedDataReasonSourceTooLarge:
+		return true
+	}
+	return false
+}
