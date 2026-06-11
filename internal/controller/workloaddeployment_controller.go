@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,9 +18,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -32,6 +35,13 @@ import (
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	instancecontrolstateful "go.datum.net/compute/internal/controller/instancecontrol/stateful"
+)
+
+const (
+	// reasonReplicasAvailable is used in the ReplicasReady condition when replicas
+	// are either available or pending; it has no equivalent in the API constants
+	// package because it is an internal detail of this controller.
+	reasonReplicasAvailable = "ReplicasAvailable"
 )
 
 // WorkloadDeploymentReconciler reconciles a WorkloadDeployment object
@@ -107,6 +117,10 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	logger.Info("reconciling deployment")
 	defer logger.Info("reconcile complete")
 
+	// Snapshot the existing status before any modifications so we can skip the
+	// Status().Update call when nothing changed (see loop-prevention comment below).
+	existingStatus := *deployment.Status.DeepCopy()
+
 	// Collect all instances for this deployment
 	listOpts := client.MatchingLabels{
 		computev1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
@@ -177,7 +191,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		desiredReplicas = 0
 	}
 
-	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
+	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -189,18 +203,26 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	deployment.Status.ReadyReplicas = int32(readyReplicas)
 	deployment.Status.ObservedGeneration = deployment.Generation
 
-	if quotaBlockedReplicas > 0 {
+	switch {
+	case quotaBlockedReplicas > 0:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
 			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
 			Message: fmt.Sprintf("%d of %d desired replicas are pending quota", quotaBlockedReplicas, desiredReplicas),
 		})
-	} else {
+	case referencedDataBlockedReplicas > 0:
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.ReferencedDataReasonAwaitingPropagation,
+			Message: fmt.Sprintf("%d of %d desired replicas are waiting for referenced data companions", referencedDataBlockedReplicas, desiredReplicas),
+		})
+	default:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
 			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
 			Status:  metav1.ConditionTrue,
-			Reason:  "ReplicasAvailable",
+			Reason:  reasonReplicasAvailable,
 			Message: fmt.Sprintf("%d/%d replicas available", readyReplicas, desiredReplicas),
 		})
 	}
@@ -239,11 +261,18 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		})
 	}
 
-	if err := cl.GetClient().Status().Update(ctx, &deployment); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed updating deployment status: %w", err)
+	// Skip the write when the status is unchanged. Without this guard the
+	// reconciler's own Status().Update would always produce a new resourceVersion,
+	// firing another Update event on the WD and creating an infinite reconcile loop
+	// before the predicate on For() was added. The guard is a belt-and-suspenders
+	// complement to the predicate: the predicate prevents re-queuing on own writes,
+	// and this guard avoids the superfluous API call entirely.
+	if !equality.Semantic.DeepEqual(existingStatus, deployment.Status) {
+		if err := cl.GetClient().Status().Update(ctx, &deployment); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed updating deployment status: %w", err)
+		}
+		logger.Info("deployment status updated")
 	}
-
-	logger.Info("deployment status updated")
 
 	return ctrl.Result{}, nil
 }
@@ -254,11 +283,15 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 	deployment *computev1alpha.WorkloadDeployment,
 	instances []computev1alpha.Instance,
 	networkReady bool,
-) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas int, err error) {
+) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas int, err error) {
 	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
 	for _, instance := range instances {
 		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
 			quotaBlockedReplicas++
+		}
+
+		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.ReferencedDataReady, metav1.ConditionFalse) {
+			referencedDataBlockedReplicas++
 		}
 
 		// Spec.Controller is a nilable pointer; guard it before dereferencing the
@@ -273,7 +306,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 					instance.Spec.Controller.SchedulingGates = newGates
 					return nil
 				}); patchErr != nil {
-					return 0, 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
+					return 0, 0, 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
 				}
 			}
 		}
@@ -300,7 +333,69 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 			readyReplicas++
 		}
 	}
-	return currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, nil
+	return currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, nil
+}
+
+// wdReferencedDataChangedPredicate returns a predicate for the WorkloadDeployment
+// For() watch that fires on:
+//   - Any Create, Delete, or Generic event (always enqueue).
+//   - An Update event where metadata.generation changed (spec updated), OR where
+//     the ReferencedDataReady condition's Status, Reason, or Message changed.
+//
+// The predicate intentionally does NOT fire when only the Available or
+// ReplicasReady conditions change, because those are written by this reconciler
+// itself. Without this guard the reconciler's own Status().Update would re-enqueue
+// itself on every run, creating a tight reconcile loop. The equality check before
+// Status().Update is a complementary guard, but the predicate is the primary
+// protection: it prevents re-enqueuing entirely so the workqueue stays quiet between
+// meaningful state transitions.
+//
+// Loop prevention: the ReferencedDataController (the only other writer of the
+// ReferencedDataReady condition) is the intended trigger. When it sets
+// ReferencedDataReady=False/SourceNotFound the predicate passes and this
+// reconciler re-runs, sees the resolver verdict in deployment.Status.Conditions, and
+// promotes Available to ReferencedDataNotReady. Subsequent runs by this reconciler
+// (which write Available but not ReferencedDataReady) are filtered out.
+func wdReferencedDataChangedPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldWD, ok1 := e.ObjectOld.(*computev1alpha.WorkloadDeployment)
+			newWD, ok2 := e.ObjectNew.(*computev1alpha.WorkloadDeployment)
+			if !ok1 || !ok2 {
+				return true // be conservative when type assertion fails
+			}
+			// Spec change: always reconcile.
+			if oldWD.Generation != newWD.Generation {
+				return true
+			}
+			// ReferencedDataReady condition changed: reconcile so Available is
+			// updated to reflect the resolver's verdict.
+			return wdRefDataCondChanged(
+				apimeta.FindStatusCondition(oldWD.Status.Conditions, computev1alpha.ReferencedDataReady),
+				apimeta.FindStatusCondition(newWD.Status.Conditions, computev1alpha.ReferencedDataReady),
+			)
+		},
+		CreateFunc:  func(_ event.CreateEvent) bool { return true },
+		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+		GenericFunc: func(_ event.GenericEvent) bool { return true },
+	}
+}
+
+// wdRefDataCondChanged returns true when the ReferencedDataReady condition's
+// observable fields (Status, Reason, Message) differ between old and new. Presence
+// changes (nil → non-nil or vice versa) are also treated as a change. The
+// LastTransitionTime field is excluded because it changes on every status flip and
+// would defeat the loop-prevention intent of wdReferencedDataChangedPredicate.
+func wdRefDataCondChanged(old, new *metav1.Condition) bool {
+	if (old == nil) != (new == nil) {
+		return true // condition was added or removed
+	}
+	if old == nil {
+		return false // both nil — no change
+	}
+	return old.Status != new.Status ||
+		old.Reason != new.Reason ||
+		old.Message != new.Message
 }
 
 // reconcileNetworks ensures NetworkBindings and SubnetClaims exist for all
@@ -573,7 +668,16 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 	}
 
 	b := mcbuilder.ControllerManagedBy(mgr).
-		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		// The predicate gates re-enqueuing on meaningful WD changes: spec updates
+		// (generation bump) or a ReferencedDataReady condition change written by
+		// ReferencedDataController. Without it, each Status().Update by this
+		// reconciler (writing Available/ReplicasReady) would re-enqueue itself,
+		// creating a tight loop and delaying the ReferencedDataReady signal from
+		// the resolver.
+		For(&computev1alpha.WorkloadDeployment{},
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(wdReferencedDataChangedPredicate()),
+		).
 		Owns(&computev1alpha.Instance{})
 
 	// Only watch networking resources when the networking integration is enabled.
