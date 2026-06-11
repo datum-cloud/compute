@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# All namespaced resources land here. Override via Flux's targetNamespace
+# (or by editing this overlay) to install into a different namespace.
+namespace: compute-system
+
+resources:
+  - ../../base/manager
+components:
+  - ../../components/leader_election
+  - ../../components/controller_rbac
+  - ../../components/cell-controllers
+  - ../../components/quota-credentials
+
+patches:
+- path: disable_webhook_patch.yaml

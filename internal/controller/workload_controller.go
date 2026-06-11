@@ -26,13 +26,17 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-const workloadControllerFinalizer = "compute.datumapis.com/workload-controller"
+const (
+	workloadControllerFinalizer    = "compute.datumapis.com/workload-controller"
+	workloadConditionTypeAvailable = "Available"
+)
 
 // WorkloadReconciler reconciles a Workload object
 type WorkloadReconciler struct {
@@ -118,7 +122,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	if len(notFoundNetworks) > 0 {
 		missingNetworks := strings.Join(notFoundNetworks.UnsortedList(), ", ")
 		changed := apimeta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-			Type:    "Available",
+			Type:    workloadConditionTypeAvailable,
 			Status:  metav1.ConditionFalse,
 			Reason:  "NetworkNotFound",
 			Message: fmt.Sprintf("Unable to find networks: %s", missingNetworks),
@@ -216,6 +220,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	newWorkloadStatus := workload.Status.DeepCopy()
 	totalReplicas := int32(0)
 	totalCurrentReplicas := int32(0)
+	totalUpdatedReplicas := int32(0)
 	totalDesiredReplicas := int32(0)
 	totalReadyReplicas := int32(0)
 	totalDeployments := int32(0)
@@ -247,12 +252,14 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		foundAvailableDeployment := false
 		replicas := int32(0)
 		currentReplicas := int32(0)
+		updatedReplicas := int32(0)
 		desiredReplicas := int32(0)
 		readyReplicas := int32(0)
 		totalDeployments += int32(len(placementDeployments))
 		for _, deployment := range placementDeployments {
 			replicas += deployment.Status.Replicas
 			currentReplicas += deployment.Status.CurrentReplicas
+			updatedReplicas += deployment.Status.UpdatedReplicas
 			desiredReplicas += deployment.Status.DesiredReplicas
 			readyReplicas += deployment.Status.ReadyReplicas
 
@@ -262,11 +269,13 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		}
 		totalReplicas += replicas
 		totalCurrentReplicas += currentReplicas
+		totalUpdatedReplicas += updatedReplicas
 		totalDesiredReplicas += desiredReplicas
 		totalReadyReplicas += readyReplicas
 
 		placementStatus.Replicas = replicas
 		placementStatus.CurrentReplicas = currentReplicas
+		placementStatus.UpdatedReplicas = updatedReplicas
 		placementStatus.DesiredReplicas = desiredReplicas
 		placementStatus.ReadyReplicas = readyReplicas
 
@@ -300,8 +309,10 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	newWorkloadStatus.Deployments = totalDeployments
 	newWorkloadStatus.Replicas = totalReplicas
 	newWorkloadStatus.CurrentReplicas = totalCurrentReplicas
+	newWorkloadStatus.UpdatedReplicas = totalUpdatedReplicas
 	newWorkloadStatus.DesiredReplicas = totalDesiredReplicas
 	newWorkloadStatus.ReadyReplicas = totalReadyReplicas
+	newWorkloadStatus.ObservedGeneration = workload.Generation
 
 	if equality.Semantic.DeepEqual(workload.Status, newWorkloadStatus) {
 		return nil
@@ -383,9 +394,9 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		existingDeployments.Insert(deployment.Name)
 	}
 
-	var locations networkingv1alpha.LocationList
+	var locations networkingv1alpha.LocationBindingList
 	if err := upstreamClient.List(ctx, &locations); err != nil {
-		return nil, nil, fmt.Errorf("failed to list locations: %w", err)
+		return nil, nil, fmt.Errorf("failed to list location bindings: %w", err)
 	}
 
 	if len(locations.Items) == 0 {
@@ -463,7 +474,7 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Workload{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Watches(&networkingv1alpha.Network{}, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		Watches(&networkingv1alpha.Network{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, network client.Object) []mcreconcile.Request {
 				logger := log.FromContext(ctx)
 

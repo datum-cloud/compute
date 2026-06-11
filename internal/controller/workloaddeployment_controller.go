@@ -24,6 +24,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -37,11 +38,23 @@ import (
 type WorkloadDeploymentReconciler struct {
 	mgr        mcmanager.Manager
 	finalizers finalizer.Finalizers
+
+	// NetworkingEnabled controls whether the networking integration with
+	// network-services-operator is active. When false, NetworkBinding creation is
+	// skipped, the Network scheduling gate is never added to Instances (and is
+	// actively removed if present), and the networking step is treated as
+	// immediately ready. Defaults to true.
+	NetworkingEnabled bool
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=locations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnetclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch
 
 func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -76,7 +89,10 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		if err = cl.GetClient().Update(ctx, &deployment); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// The finalizer-add Update is metadata-only and may be filtered by event
+		// predicates or handlers, so requeue explicitly to guarantee the
+		// deployment is reconciled past this point.
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	if !deployment.DeletionTimestamp.IsZero() {
@@ -85,10 +101,6 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 
 	logger.Info("reconciling deployment")
 	defer logger.Info("reconcile complete")
-
-	if deployment.Status.Location == nil {
-		return ctrl.Result{}, nil
-	}
 
 	// Collect all instances for this deployment
 	listOpts := client.MatchingLabels{
@@ -100,7 +112,9 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("failed listing instances: %w", err)
 	}
 
-	instanceControl := instancecontrolstateful.New()
+	instanceControl := instancecontrolstateful.NewWithOptions(instancecontrolstateful.Options{
+		NetworkingEnabled: r.NetworkingEnabled,
+	})
 
 	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, instances.Items)
 	if err != nil {
@@ -122,9 +136,28 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		}
 	}
 
-	networkReady, err := r.reconcileNetworks(ctx, cl.GetClient(), &deployment)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed reconciling networks: %w", err)
+	// When networking is disabled, bypass the entire network provisioning path.
+	// The Network scheduling gate is treated as cleared and no NetworkBindings
+	// are created. This lets Instances reach the runtime on cells where
+	// network-services-operator (VPC) is not yet available.
+	var networkReady bool
+	locationResolved := true
+	if !r.NetworkingEnabled {
+		networkReady = true
+	} else {
+		var resolvedLocation *networkingv1alpha.LocationReference
+		networkReady, resolvedLocation, err = r.reconcileNetworks(ctx, cl.GetClient(), &deployment)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed reconciling networks: %w", err)
+		}
+		// Persist the resolved Location to status so downstream components (e.g.
+		// the stateful instance control strategy) can propagate it to Instances.
+		// When no matching Location exists, resolvedLocation is nil and
+		// Status.Location remains nil — instance creation is not blocked.
+		locationResolved = resolvedLocation != nil
+		if resolvedLocation != nil {
+			deployment.Status.Location = resolvedLocation
+		}
 	}
 
 	// Networks are all ready with subnets ready to use, remove any scheduling
@@ -138,64 +171,73 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		desiredReplicas = 0
 	}
 
-	currentReplicas, readyReplicas, quotaBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
+	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	patchResult, err := controllerutil.CreateOrPatch(ctx, cl.GetClient(), &deployment, func() error {
-		deployment.Status.Replicas = int32(replicas)
-		deployment.Status.CurrentReplicas = int32(currentReplicas)
-		deployment.Status.DesiredReplicas = desiredReplicas
-		deployment.Status.ReadyReplicas = int32(readyReplicas)
+	deployment.Status.Replicas = int32(replicas)
+	deployment.Status.CurrentReplicas = int32(currentReplicas)
+	deployment.Status.UpdatedReplicas = int32(updatedReplicas)
+	deployment.Status.DesiredReplicas = desiredReplicas
+	deployment.Status.ReadyReplicas = int32(readyReplicas)
+	deployment.Status.ObservedGeneration = deployment.Generation
 
-		if quotaBlockedReplicas > 0 {
-			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-				Type:    computev1alpha.WorkloadDeploymentReplicasReady,
-				Status:  metav1.ConditionFalse,
-				Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
-				Message: fmt.Sprintf("%d of %d desired replicas are pending quota", quotaBlockedReplicas, desiredReplicas),
-			})
-		} else {
-			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-				Type:    computev1alpha.WorkloadDeploymentReplicasReady,
-				Status:  metav1.ConditionTrue,
-				Reason:  "ReplicasAvailable",
-				Message: fmt.Sprintf("%d/%d replicas available", readyReplicas, desiredReplicas),
-			})
-		}
+	if quotaBlockedReplicas > 0 {
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
+			Message: fmt.Sprintf("%d of %d desired replicas are pending quota", quotaBlockedReplicas, desiredReplicas),
+		})
+	} else {
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  "ReplicasAvailable",
+			Message: fmt.Sprintf("%d/%d replicas available", readyReplicas, desiredReplicas),
+		})
+	}
 
-		if readyReplicas > 0 {
-			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-				Type:    computev1alpha.WorkloadDeploymentAvailable,
-				Status:  metav1.ConditionTrue,
-				Reason:  "StableInstanceFound",
-				Message: fmt.Sprintf("%d/%d instances are ready", readyReplicas, replicas),
-			})
-		} else if !networkReady {
-			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-				Type:    computev1alpha.WorkloadDeploymentAvailable,
-				Status:  metav1.ConditionFalse,
-				Reason:  "ProvisioningNetwork",
-				Message: "Network is being provisioned",
-			})
-		} else if replicas > 0 {
-			apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
-				Type:    computev1alpha.WorkloadDeploymentAvailable,
-				Status:  metav1.ConditionFalse,
-				Reason:  "ProvisioningInstances",
-				Message: "Instances are being provisioned",
-			})
-		}
+	if readyReplicas > 0 {
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentAvailable,
+			Status:  metav1.ConditionTrue,
+			Reason:  "StableInstanceFound",
+			Message: fmt.Sprintf("%d/%d instances are ready", readyReplicas, replicas),
+		})
+	} else if !locationResolved {
+		// Network provisioning cannot even start without a Location, so surface
+		// the unresolved city rather than the generic provisioning reason — it is
+		// the only user-visible signal while the deployment waits for the city's
+		// Location to be created.
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentAvailable,
+			Status:  metav1.ConditionFalse,
+			Reason:  "NoMatchingLocation",
+			Message: fmt.Sprintf("No Location matches city code %q", deployment.Spec.CityCode),
+		})
+	} else if !networkReady {
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentAvailable,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ProvisioningNetwork",
+			Message: "Network is being provisioned",
+		})
+	} else if replicas > 0 {
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentAvailable,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ProvisioningInstances",
+			Message: "Instances are being provisioned",
+		})
+	}
 
-		return nil
-	})
-
-	if err != nil {
+	if err := cl.GetClient().Status().Update(ctx, &deployment); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed updating deployment status: %w", err)
 	}
 
-	logger.Info("deployment status processed", "operation_result", patchResult)
+	logger.Info("deployment status updated")
 
 	return ctrl.Result{}, nil
 }
@@ -206,14 +248,17 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 	deployment *computev1alpha.WorkloadDeployment,
 	instances []computev1alpha.Instance,
 	networkReady bool,
-) (currentReplicas, readyReplicas, quotaBlockedReplicas int, err error) {
+) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas int, err error) {
 	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
 	for _, instance := range instances {
 		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
 			quotaBlockedReplicas++
 		}
 
-		if networkReady && len(instance.Spec.Controller.SchedulingGates) > 0 {
+		// Spec.Controller is a nilable pointer; guard it before dereferencing the
+		// scheduling gates so an instance without controller state cannot panic
+		// the reconcile (mirrors the Status.Controller guard below).
+		if networkReady && instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) > 0 {
 			newGates := slices.DeleteFunc(instance.Spec.Controller.SchedulingGates, func(gate computev1alpha.SchedulingGate) bool {
 				return gate.Name == instancecontrol.NetworkSchedulingGate.String()
 			})
@@ -222,30 +267,73 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 					instance.Spec.Controller.SchedulingGates = newGates
 					return nil
 				}); patchErr != nil {
-					return 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
+					return 0, 0, 0, 0, fmt.Errorf("failed updating instance: %w", patchErr)
 				}
 			}
 		}
 
-		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
-			if instance.Status.Controller.ObservedTemplateHash == templateHash {
-				currentReplicas++
-			}
+		// An instance is "updated" once it has observed the desired template
+		// revision, regardless of readiness. Counting these (even before they are
+		// Programmed) makes a rolling update / restart observable: UpdatedReplicas
+		// dips below Replicas while the recreated instance comes up, then recovers.
+		// Status.Controller is a pointer the infra provider may not have populated
+		// yet; guard the deref to avoid a panic that would abort the reconcile.
+		onLatestRevision := instance.Status.Controller != nil &&
+			instance.Status.Controller.ObservedTemplateHash == templateHash
+		if onLatestRevision {
+			updatedReplicas++
+		}
+
+		// CurrentReplicas is the Programmed subset of UpdatedReplicas — updated
+		// instances that are ready to serve.
+		if onLatestRevision && apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceProgrammed) {
+			currentReplicas++
 		}
 
 		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceReady) {
 			readyReplicas++
 		}
 	}
-	return currentReplicas, readyReplicas, quotaBlockedReplicas, nil
+	return currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, nil
 }
 
+// reconcileNetworks ensures NetworkBindings and SubnetClaims exist for all
+// network interfaces on the deployment. It returns (networkReady, resolvedLocation, err).
+// resolvedLocation is non-nil when a Location matching the deployment's city code
+// was found; nil otherwise. Instance creation is never gated on resolvedLocation
+// being non-nil — callers must treat a nil location as best-effort only.
 func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 	ctx context.Context,
 	c client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
-) (bool, error) {
+) (bool, *networkingv1alpha.LocationReference, error) {
 	logger := log.FromContext(ctx)
+
+	// Resolve the Location for this deployment's city code. With Karmada
+	// propagation the WorkloadDeployment lands in the cluster that serves the
+	// requested city, so the Location object for that city must exist locally.
+	var locationList networkingv1alpha.LocationList
+	if err := c.List(ctx, &locationList); err != nil {
+		return false, nil, fmt.Errorf("failed to list locations: %w", err)
+	}
+
+	var locationRef *networkingv1alpha.LocationReference
+	for _, loc := range locationList.Items {
+		if cityCode, ok := loc.Spec.Topology["topology.datum.net/city-code"]; ok && cityCode == deployment.Spec.CityCode {
+			locationRef = &networkingv1alpha.LocationReference{
+				Name:      loc.Name,
+				Namespace: loc.Namespace,
+			}
+			break
+		}
+	}
+
+	if locationRef == nil {
+		// Surfaced to users via the Available condition (NoMatchingLocation); the
+		// log is debug-level detail only.
+		logger.V(1).Info("no location found for city code, waiting", "cityCode", deployment.Spec.CityCode)
+		return false, nil, nil
+	}
 
 	// First, ensure we have a NetworkBinding for each interface, and that the
 	// binding is ready before we move on to create SubnetClaims.
@@ -260,7 +348,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 		}
 
 		if err := c.Get(ctx, networkBindingObjectKey, &networkBinding); client.IgnoreNotFound(err) != nil {
-			return false, fmt.Errorf("failed checking for existing network binding: %w", err)
+			return false, nil, fmt.Errorf("failed checking for existing network binding: %w", err)
 		}
 
 		if networkBinding.CreationTimestamp.IsZero() {
@@ -271,16 +359,16 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 				},
 				Spec: networkingv1alpha.NetworkBindingSpec{
 					Network:  networkInterface.Network,
-					Location: *deployment.Status.Location,
+					Location: *locationRef,
 				},
 			}
 
 			if err := controllerutil.SetControllerReference(deployment, &networkBinding, c.Scheme()); err != nil {
-				return false, fmt.Errorf("failed to set controller on network binding: %w", err)
+				return false, nil, fmt.Errorf("failed to set controller on network binding: %w", err)
 			}
 
 			if err := c.Create(ctx, &networkBinding); err != nil {
-				return false, fmt.Errorf("failed creating network binding: %w", err)
+				return false, nil, fmt.Errorf("failed creating network binding: %w", err)
 			}
 		}
 
@@ -293,7 +381,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 
 	if !allNetworkBindingsReady {
 		logger.Info("waiting for network bindings to be ready")
-		return false, nil
+		return false, locationRef, nil
 	}
 
 	// TODO(jreese): Currently this makes a SubnetClaim that will be used by
@@ -312,12 +400,12 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 		}
 
 		if err := c.Get(ctx, networkContextObjectKey, &networkContext); client.IgnoreNotFound(err) != nil {
-			return false, fmt.Errorf("failed checking for existing network context: %w", err)
+			return false, nil, fmt.Errorf("failed checking for existing network context: %w", err)
 		}
 
 		if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
 			logger.Info("waiting for network context to be ready", "network_context", networkContext.Name)
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		var subnetClaims networkingv1alpha.SubnetClaimList
@@ -326,7 +414,7 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 		}
 
 		if err := c.List(ctx, &subnetClaims, listOpts...); err != nil {
-			return false, fmt.Errorf("failed listing subnet claims: %w", err)
+			return false, nil, fmt.Errorf("failed listing subnet claims: %w", err)
 		}
 
 		var subnetClaim networkingv1alpha.SubnetClaim
@@ -347,8 +435,8 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 			}
 
 			// If it's not the same location, don't consider the subnet claim.
-			if claim.Spec.Location.Namespace != deployment.Status.Location.Namespace ||
-				claim.Spec.Location.Name != deployment.Status.Location.Name {
+			if claim.Spec.Location.Namespace != locationRef.Namespace ||
+				claim.Spec.Location.Name != locationRef.Name {
 				continue
 			}
 
@@ -371,28 +459,28 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 					NetworkContext: networkingv1alpha.LocalNetworkContextRef{
 						Name: networkContext.Name,
 					},
-					Location: *deployment.Status.Location,
+					Location: *locationRef,
 				},
 			}
 
 			if err := controllerutil.SetOwnerReference(&networkContext, &subnetClaim, c.Scheme()); err != nil {
-				return false, fmt.Errorf("failed to set controller on subnet claim: %w", err)
+				return false, nil, fmt.Errorf("failed to set controller on subnet claim: %w", err)
 			}
 
 			if err := c.Create(ctx, &subnetClaim); err != nil {
-				return false, fmt.Errorf("failed creating subnet claim: %w", err)
+				return false, nil, fmt.Errorf("failed creating subnet claim: %w", err)
 			}
 
 			logger.Info("created subnet claim", "subnetClaim", subnetClaim.Name)
 
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		logger.Info("found subnet claim", "subnetClaim", subnetClaim.Name)
 
 		if !apimeta.IsStatusConditionTrue(subnetClaim.Status.Conditions, "Ready") {
 			logger.Info("waiting for subnet claim to be ready", "subnetClaim", subnetClaim.Name)
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		var subnet networkingv1alpha.Subnet
@@ -401,19 +489,19 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 			Name:      subnetClaim.Status.SubnetRef.Name,
 		}
 		if err := c.Get(ctx, subnetObjectKey, &subnet); err != nil {
-			return false, fmt.Errorf("failed fetching subnet: %w", err)
+			return false, nil, fmt.Errorf("failed fetching subnet: %w", err)
 		}
 
 		if !apimeta.IsStatusConditionTrue(subnet.Status.Conditions, "Ready") {
 			logger.Info("waiting for subnet to be ready", "subnet", subnet.Name)
-			return false, nil
+			return false, locationRef, nil
 		}
 
 		logger.Info("subnet is ready", "subnet", subnet.Name)
 
 	}
 
-	return true, nil
+	return true, locationRef, nil
 }
 
 var errDeploymentHasInstances = errors.New("deployment has instances")
@@ -468,47 +556,86 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager) e
 	if err := r.finalizers.Register(workloadControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)
 	}
-	return mcbuilder.ControllerManagedBy(mgr).
+
+	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Owns(&computev1alpha.Instance{}).
-		Owns(&networkingv1alpha.NetworkBinding{}).
-		Watches(&networkingv1alpha.SubnetClaim{}, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
-				subnetClaim := o.(*networkingv1alpha.SubnetClaim)
-				return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnetClaim.Spec.Location)
+		Owns(&computev1alpha.Instance{})
+
+	// Only watch networking resources when the networking integration is enabled.
+	// On cells without network-services-operator these watches would log spurious
+	// errors for missing CRDs.
+	if r.NetworkingEnabled {
+		b = b.
+			Owns(&networkingv1alpha.NetworkBinding{}).
+			// A deployment whose city has no Location yet waits without any other
+			// wake-up event: NetworkBindings/SubnetClaims/Subnets only exist after
+			// a Location resolved, and the reconciler does not poll. Watching
+			// Locations re-reconciles the waiting deployments when their city's
+			// Location appears (or its topology changes).
+			Watches(&networkingv1alpha.Location{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
+					location := o.(*networkingv1alpha.Location)
+					return enqueueWorkloadDeploymentsForLocation(ctx, cl.GetClient(), clusterName, location)
+				})
+			}).
+			Watches(&networkingv1alpha.SubnetClaim{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
+					subnetClaim := o.(*networkingv1alpha.SubnetClaim)
+					return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnetClaim.Spec.Location)
+				})
+			}).
+			Watches(&networkingv1alpha.Subnet{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
+					subnet := o.(*networkingv1alpha.Subnet)
+					return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnet.Spec.Location)
+				})
 			})
-		}).
-		Watches(&networkingv1alpha.Subnet{}, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
-				subnet := o.(*networkingv1alpha.Subnet)
-				return enqueueWorkloadDeploymentByLocation(ctx, mgr, clusterName, subnet.Spec.Location)
-			})
-		}).
-		Complete(r)
+	}
+
+	return b.Complete(r)
 }
 
-func enqueueWorkloadDeploymentByLocation(ctx context.Context, mgr mcmanager.Manager, clusterName string, locationRef networkingv1alpha.LocationReference) []mcreconcile.Request {
+// enqueueWorkloadDeploymentByLocation maps an object that carries a
+// LocationReference (SubnetClaim, Subnet) to the WorkloadDeployments targeting
+// the referenced Location's city. The reference must be resolved to the Location
+// object first because only its topology carries the city code.
+func enqueueWorkloadDeploymentByLocation(ctx context.Context, mgr mcmanager.Manager, clusterName multicluster.ClusterName, locationRef networkingv1alpha.LocationReference) []mcreconcile.Request {
 	logger := log.FromContext(ctx)
 
-	cluster, err := mgr.GetCluster(ctx, clusterName)
+	cl, err := mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		logger.Error(err, "failed to get cluster")
 		return nil
 	}
-	clusterClient := cluster.GetClient()
+	clusterClient := cl.GetClient()
 
-	locationName := (types.NamespacedName{
+	var location networkingv1alpha.Location
+	if err := clusterClient.Get(ctx, types.NamespacedName{
 		Namespace: locationRef.Namespace,
 		Name:      locationRef.Name,
-	}).String()
-	listOpts := client.MatchingFields{
-		deploymentLocationIndex: locationName,
+	}, &location); err != nil {
+		logger.Error(err, "failed to get location for enqueue", "location", locationRef)
+		return nil
+	}
+
+	return enqueueWorkloadDeploymentsForLocation(ctx, clusterClient, clusterName, &location)
+}
+
+// enqueueWorkloadDeploymentsForLocation maps a Location to the
+// WorkloadDeployments that target its city, via the deploymentCityCodeIndex.
+func enqueueWorkloadDeploymentsForLocation(ctx context.Context, c client.Client, clusterName multicluster.ClusterName, location *networkingv1alpha.Location) []mcreconcile.Request {
+	logger := log.FromContext(ctx)
+
+	cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
+	if !ok {
+		return nil
 	}
 
 	var workloadDeployments computev1alpha.WorkloadDeploymentList
-
-	if err := clusterClient.List(ctx, &workloadDeployments, listOpts); err != nil {
-		logger.Error(err, "failed to list workloads")
+	if err := c.List(ctx, &workloadDeployments, client.MatchingFields{
+		deploymentCityCodeIndex: cityCode,
+	}); err != nil {
+		logger.Error(err, "failed to list workload deployments")
 		return nil
 	}
 
