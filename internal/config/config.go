@@ -37,6 +37,9 @@ type WorkloadOperator struct {
 
 	Discovery DiscoveryConfig `json:"discovery"`
 
+	// FeatureFlags configures optional management-plane feature gates.
+	FeatureFlags FeatureFlagsConfig `json:"featureFlags,omitempty"`
+
 	// ReferencedData configures the ReferencedDataController.
 	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
 }
@@ -56,6 +59,26 @@ type ReferencedDataConfig struct {
 	// all companion objects for a single WorkloadDeployment.
 	// A value of 0 uses the built-in default of 1 MiB.
 	AggregateLimitBytes int64 `json:"aggregateLimitBytes,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// FeatureFlagsConfig holds management-plane feature gates. All flags default
+// to false (off) unless explicitly enabled, so that new capabilities can be
+// merged and deployed safely before the full feature rollout is complete.
+type FeatureFlagsConfig struct {
+	// EnableReferencedDataGate controls whether new Instances receive the
+	// "ReferencedData" scheduling gate when the workload template references
+	// ConfigMaps or Secrets.
+	//
+	// This gate MUST NOT be enabled until both the cell gate-clearing reconciler
+	// (Phase 2) and the unikraft provider gate-honoring (Phase 3) are confirmed
+	// deployed everywhere. Enabling it prematurely will cause gated instances to
+	// either stall indefinitely (cell not yet clearing) or launch without the
+	// referenced data mounted (provider not yet honoring gates).
+	//
+	// Defaults to false.
+	EnableReferencedDataGate bool `json:"enableReferencedDataGate,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

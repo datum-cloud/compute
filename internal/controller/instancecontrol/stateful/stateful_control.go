@@ -13,6 +13,7 @@ import (
 
 	"go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	"go.datum.net/compute/internal/referenceddata"
 )
 
 // Options controls optional behaviours of the stateful instance control strategy.
@@ -22,6 +23,12 @@ type Options struct {
 	// disabled so that Instances are not blocked waiting for a NetworkBinding.
 	// Defaults to true.
 	NetworkingEnabled bool
+
+	// EnableReferencedDataGate controls whether new Instances receive the
+	// ReferencedData scheduling gate when the workload template references
+	// ConfigMaps or Secrets. Defaults to false. See FeatureFlagsConfig for the
+	// full safety rationale.
+	EnableReferencedDataGate bool
 }
 
 // Behavior inspired by https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/statefulset
@@ -103,6 +110,16 @@ func (c *statefulControl) GetActions(
 					{Name: instancecontrol.NetworkSchedulingGate.String()},
 				}, gates...)
 			}
+
+			// Stamp the ReferencedData gate only when the management-plane feature
+			// flag is on AND the template actually references ConfigMaps or Secrets.
+			// The gate must not be inserted before the cell gate-clearing reconciler
+			// and provider gate-honoring are deployed everywhere — see
+			// FeatureFlagsConfig.EnableReferencedDataGate for the full rationale.
+			if c.opts.EnableReferencedDataGate && referenceddata.TemplateReferencesData(deployment.Spec.Template) {
+				gates = append(gates, v1alpha.SchedulingGate{Name: instancecontrol.ReferencedDataSchedulingGate.String()})
+			}
+
 			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
 				TemplateHash:    instanceTemplateHash,
 				SchedulingGates: gates,

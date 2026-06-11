@@ -273,9 +273,12 @@ func main() {
 	}
 
 	if enableCellControllers {
+		wdOpts := controller.WorkloadDeploymentReconcilerOptions{
+			EnableReferencedDataGate: serverConfig.FeatureFlags.EnableReferencedDataGate,
+		}
 		if err = (&controller.WorkloadDeploymentReconciler{
 			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
-		}).SetupWithManager(mgr); err != nil {
+		}).SetupWithManager(mgr, wdOpts); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 			os.Exit(1)
 		}

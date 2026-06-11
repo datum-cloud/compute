@@ -45,6 +45,11 @@ type WorkloadDeploymentReconciler struct {
 	// actively removed if present), and the networking step is treated as
 	// immediately ready. Defaults to true.
 	NetworkingEnabled bool
+
+	// enableReferencedDataGate mirrors FeatureFlagsConfig.EnableReferencedDataGate.
+	// When true, new Instances whose template references ConfigMaps or Secrets
+	// receive the ReferencedData scheduling gate at creation time.
+	enableReferencedDataGate bool
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;create;update;patch;delete
@@ -113,7 +118,8 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	instanceControl := instancecontrolstateful.NewWithOptions(instancecontrolstateful.Options{
-		NetworkingEnabled: r.NetworkingEnabled,
+		NetworkingEnabled:        r.NetworkingEnabled,
+		EnableReferencedDataGate: r.enableReferencedDataGate,
 	})
 
 	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, instances.Items)
@@ -549,9 +555,18 @@ func (r *WorkloadDeploymentReconciler) Finalize(ctx context.Context, obj client.
 	return finalizer.Result{}, errDeploymentHasInstances
 }
 
+// WorkloadDeploymentReconcilerOptions configures the WorkloadDeploymentReconciler.
+type WorkloadDeploymentReconcilerOptions struct {
+	// EnableReferencedDataGate mirrors FeatureFlagsConfig.EnableReferencedDataGate.
+	EnableReferencedDataGate bool
+}
+
 // SetupWithManager sets up the controller with the Manager.
-func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, opts ...WorkloadDeploymentReconcilerOptions) error {
 	r.mgr = mgr
+	for _, o := range opts {
+		r.enableReferencedDataGate = o.EnableReferencedDataGate
+	}
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(workloadControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)
