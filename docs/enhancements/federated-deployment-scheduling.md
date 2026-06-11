@@ -165,6 +165,8 @@ sequenceDiagram
     CPC->>Project: write Workload.status
 ```
 
+The POP cell steps above are summarized from the federation perspective. How an edge location turns these Instances into running unikernels — Kraftlet picking up each Instance, wiring up host networking, booting the unikernel, and reporting status back — is documented in [Instance Provisioning via Kraftlet](https://github.com/datum-cloud/unikraft-provider/blob/main/docs/enhancements/instance-provisioning.md).
+
 ### Deletion Path
 
 ```mermaid
@@ -241,6 +243,8 @@ A new controller in the Control Plane Cell:
 - Manages `network` scheduling gate removal once NSO signals networks are ready.
 - Updates local `WorkloadDeployment.status` with aggregate replica counts (Karmada aggregates this back natively).
 - **Remove**: `WorkloadDeployment.status.location` (location is now implicit in `spec.cityCode`).
+
+The edge-side path from a created `Instance` to a booted unikernel — host assignment by the Unikraft Provider, networking, and boot via Kraftlet — is covered in [Instance Provisioning via Kraftlet](https://github.com/datum-cloud/unikraft-provider/blob/main/docs/enhancements/instance-provisioning.md).
 
 ### `InstanceReconciler`
 
