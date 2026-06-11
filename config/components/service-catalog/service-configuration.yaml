@@ -62,6 +62,8 @@ spec:
   quota:
     limits:
     - name: compute-workloads
+      displayName: Workloads
+      description: Maximum number of workloads that can be created within a project.
       metric: compute.datumapis.com/workloads
       consumerType:
         apiGroup: resourcemanager.miloapis.com
@@ -69,6 +71,8 @@ spec:
       unit: instance
       defaultLimit: 1000
     - name: compute-instances
+      displayName: Instances
+      description: Maximum number of compute instances that can run within a project.
       metric: compute.datumapis.com/instances
       consumerType:
         apiGroup: resourcemanager.miloapis.com
@@ -76,6 +80,8 @@ spec:
       unit: instance
       defaultLimit: 10
     - name: compute-vcpus
+      displayName: vCPUs
+      description: Maximum total vCPUs (in millicores) allocatable to instances within a project.
       metric: compute.datumapis.com/vcpus
       consumerType:
         apiGroup: resourcemanager.miloapis.com
@@ -83,6 +89,8 @@ spec:
       unit: millicore
       defaultLimit: 40000
     - name: compute-memory
+      displayName: Memory
+      description: Maximum total memory (in MiB) allocatable to instances within a project.
       metric: compute.datumapis.com/memory
       consumerType:
         apiGroup: resourcemanager.miloapis.com
