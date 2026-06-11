@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -42,6 +43,7 @@ import (
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	quotametrics "go.datum.net/compute/internal/quota"
+	"go.datum.net/compute/internal/referenceddata"
 )
 
 const (
@@ -224,6 +226,7 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
+//nolint:gocyclo // conditions are reconciled, persisted, then returned as errors; the ordered pipeline is inherently branchy
 func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
 	logger := log.FromContext(ctx)
 
@@ -283,6 +286,15 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 			"after", quotaReq.String(), "cluster", req.ClusterName.String(), "instance", instance.Name)
 	}
 
+	// Reconcile the ReferencedData condition: diff expected companions against
+	// those present on the cell. The result tells us whether the gate may be
+	// cleared in the spec-patch pass below.
+	refDataResult, requeueAfter, err := r.reconcileReferencedDataCondition(ctx, cl.GetClient(), &instance)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed reconciling referenced data condition: %w", err)
+	}
+	statusChanged = refDataResult.conditionChanged || statusChanged
+
 	// Transient errors from the quota and Ready-condition reconciles are
 	// returned only after any condition change has been persisted, so the
 	// failure reason is visible on the Instance while controller-runtime
@@ -303,8 +315,8 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		}
 		// Return with the quota error (nil or transient) so controller-runtime
 		// requeues with backoff on failures. On the success path (quotaErr==nil)
-		// we fall through to removeQuotaSchedulingGate below instead of returning
-		// early, so the gate is cleared in the same reconcile pass rather than
+		// we fall through to reconcileSchedulingGates below instead of returning
+		// early, so gates are cleared in the same reconcile pass rather than
 		// waiting for a requeue that may never come (ResourceClaim is immutable
 		// and local Instances are not watched).
 		if quotaErr != nil {
@@ -320,7 +332,10 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, quotaErr
 	}
 
-	if err := r.removeQuotaSchedulingGate(ctx, cl.GetClient(), &instance); err != nil {
+	// Spec-patch pass: remove scheduling gates for conditions that are now
+	// persisted as True. Handles both the Quota gate and the ReferencedData gate
+	// in a single patch to avoid duplicate API calls.
+	if err := r.reconcileSchedulingGates(ctx, cl.GetClient(), &instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -333,12 +348,471 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	if quotaReq > 0 {
-		logger.Info("requeuing instance", "after", quotaReq.String(),
+	// Honor both the quota safety-net requeue and the referenced-data resolver
+	// requeue: pick the soonest non-zero deadline so neither pending wait is
+	// dropped.
+	effectiveRequeue := quotaReq
+	if requeueAfter > 0 && (effectiveRequeue == 0 || requeueAfter < effectiveRequeue) {
+		effectiveRequeue = requeueAfter
+	}
+	if effectiveRequeue > 0 {
+		logger.Info("requeuing instance", "after", effectiveRequeue.String(),
 			"cluster", req.ClusterName.String(), "instance", instance.Name)
 	}
 
-	return ctrl.Result{RequeueAfter: quotaReq}, nil
+	return ctrl.Result{RequeueAfter: effectiveRequeue}, nil
+}
+
+// reconcileSchedulingGates removes scheduling gates whose corresponding
+// conditions have been persisted as True. It handles both the Quota gate and
+// the ReferencedData gate in a single patch to avoid duplicate API calls.
+//
+// Both gates are guarded by ObservedGeneration == instance.Generation to
+// prevent a stale True condition from generation N unblocking a generation N+1
+// instance before quota/referenced-data for the new spec has been re-evaluated.
+func (r *InstanceReconciler) reconcileSchedulingGates(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) error {
+	if instance.Spec.Controller == nil || len(instance.Spec.Controller.SchedulingGates) == 0 {
+		return nil
+	}
+
+	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+	refDataCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+
+	newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
+	gatesRemoved := false
+	for _, gate := range instance.Spec.Controller.SchedulingGates {
+		// Guard on ObservedGeneration to prevent a stale True condition from a
+		// prior generation clearing a freshly-stamped gate before the condition
+		// has been re-evaluated at the current generation.
+		removeQuota := gate.Name == instancecontrol.QuotaSchedulingGate.String() &&
+			quotaGrantedCond != nil && quotaGrantedCond.Status == metav1.ConditionTrue &&
+			quotaGrantedCond.ObservedGeneration == instance.Generation
+		removeRefData := gate.Name == instancecontrol.ReferencedDataSchedulingGate.String() &&
+			refDataCond != nil && refDataCond.Status == metav1.ConditionTrue &&
+			refDataCond.ObservedGeneration == instance.Generation
+		if removeQuota || removeRefData {
+			gatesRemoved = true
+			// Observe gate-wait duration and emit event when the ReferencedData
+			// gate clears.
+			if removeRefData {
+				r.observeGateWaitDuration(instance)
+				r.emitReferencedDataClearedEvent(instance)
+			}
+			continue
+		}
+		newGates = append(newGates, gate)
+	}
+	if gatesRemoved {
+		patch := client.MergeFrom(instance.DeepCopy())
+		instance.Spec.Controller.SchedulingGates = newGates
+		if err := cl.Patch(ctx, instance, patch); err != nil {
+			return fmt.Errorf("failed patching scheduling gates: %w", err)
+		}
+	}
+	return nil
+}
+
+// referencedDataResult carries outputs of reconcileReferencedDataCondition.
+type referencedDataResult struct {
+	// conditionChanged is true when the ReferencedDataReady condition was updated.
+	conditionChanged bool
+}
+
+// reconcileReferencedDataCondition checks whether all expected companion
+// ConfigMaps/Secrets are present on the cell for the given instance.
+//
+// It reads the expected-set annotation from the owning WorkloadDeployment,
+// lists labeled companions in the namespace, and computes the diff.
+//
+//   - Annotation absent (resolver not yet finished): Resolving / Unknown, requeueAfter.
+//   - Expected set present but some companions missing: AwaitingPropagation / False.
+//   - All companions present: Ready / True (gate cleared by caller).
+//
+// Returns a requeueAfter duration when the annotation is not yet stamped on the
+// WD, so the instance reconciler retries even without a watch event.
+func (r *InstanceReconciler) reconcileReferencedDataCondition(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) (referencedDataResult, time.Duration, error) {
+	// If the instance does not carry the ReferencedData gate there is nothing to
+	// reconcile here — skip silently.
+	hasGate := false
+	if instance.Spec.Controller != nil {
+		for _, g := range instance.Spec.Controller.SchedulingGates {
+			if g.Name == instancecontrol.ReferencedDataSchedulingGate.String() {
+				hasGate = true
+				break
+			}
+		}
+	}
+	if !hasGate {
+		// Gate already gone — ensure condition is Ready if the gate was just
+		// cleared on a previous pass (idempotent).
+		existing := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+		if existing == nil {
+			// Gate never present; nothing to do.
+			return referencedDataResult{}, 0, nil
+		}
+		if existing.Status == metav1.ConditionTrue {
+			// Already marked ready — nothing to do.
+			return referencedDataResult{}, 0, nil
+		}
+		// Gate is absent but condition is not True. Only self-heal to True when we
+		// can confirm that all companions are actually present — fetching the WD
+		// annotation to validate. If the annotation is absent (resolver hasn't
+		// finished yet) or companions are still missing, leave the condition alone
+		// rather than falsely reporting Ready.
+		wd, err := r.fetchOwnerWorkloadDeployment(ctx, cl, instance)
+		if err != nil {
+			return referencedDataResult{}, 0, err
+		}
+		annoRaw, hasAnno := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
+		if !hasAnno || annoRaw == "" {
+			// Resolver hasn't stamped the annotation yet — cannot confirm readiness.
+			return referencedDataResult{}, 0, nil
+		}
+		var expectedTokens []string
+		if err := json.Unmarshal([]byte(annoRaw), &expectedTokens); err != nil {
+			// Malformed annotation — cannot confirm readiness.
+			return referencedDataResult{}, 0, nil
+		}
+		if len(expectedTokens) > 0 {
+			presentByKindName, err := r.listPresentCompanionsByKindName(ctx, cl, instance.Namespace)
+			if err != nil {
+				return referencedDataResult{}, 0, fmt.Errorf("failed listing companion objects during self-heal check: %w", err)
+			}
+			for _, token := range expectedTokens {
+				if _, ok := presentByKindName[token]; !ok {
+					// At least one companion is missing — do not self-heal to True.
+					return referencedDataResult{}, 0, nil
+				}
+			}
+		}
+		// All companions confirmed present (or none expected) — mark ready.
+		changed := apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               computev1alpha.ReferencedDataReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.ReferencedDataReasonReady,
+			Message:            "All referenced companions are available",
+			ObservedGeneration: instance.Generation,
+		})
+		return referencedDataResult{conditionChanged: changed}, 0, nil
+	}
+
+	// Stamp the gate-start annotation once so we can measure duration later.
+	r.stampGateStartAnnotation(ctx, cl, instance)
+
+	// Fetch the owning WorkloadDeployment to read the expected-set annotation.
+	wd, err := r.fetchOwnerWorkloadDeployment(ctx, cl, instance)
+	if err != nil {
+		return referencedDataResult{}, 0, err
+	}
+
+	// When the resolver has determined a terminal source error (the source object
+	// is missing, unauthorized, or too large), the companion will never arrive.
+	// Promote the terminal error to the Instance condition so it is visible without
+	// a secondary fetch. Returns (changed, true) when a terminal error was found.
+	if changed, terminal := r.applyTerminalErrorFromWD(ctx, wd, instance); terminal {
+		return referencedDataResult{conditionChanged: changed}, 0, nil
+	}
+
+	// Annotation not yet present — the resolver hasn't finished. Signal Resolving
+	// and requeue so we re-check even without a new watch event.
+	annoRaw, hasAnno := wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]
+	if !hasAnno || annoRaw == "" {
+		changed := r.setReferencedDataCondition(instance, metav1.ConditionUnknown,
+			computev1alpha.ReferencedDataReasonResolving,
+			"Waiting for the resolver to finish reading source objects")
+		return referencedDataResult{conditionChanged: changed}, 5 * time.Second, nil
+	}
+
+	// Decode the expected companion tokens (kind-qualified "Kind/name" strings).
+	var expectedTokens []string
+	if err := json.Unmarshal([]byte(annoRaw), &expectedTokens); err != nil {
+		// Malformed annotation — treat like absent; the resolver will fix it.
+		changed := r.setReferencedDataCondition(instance, metav1.ConditionUnknown,
+			computev1alpha.ReferencedDataReasonResolving,
+			"expected-referenced-data annotation is malformed; waiting for resolver")
+		return referencedDataResult{conditionChanged: changed}, 5 * time.Second, nil
+	}
+
+	// No companions expected (WD template has no references) — clear the gate.
+	if len(expectedTokens) == 0 {
+		changed := r.setReferencedDataCondition(instance, metav1.ConditionTrue,
+			computev1alpha.ReferencedDataReasonReady,
+			"No referenced companions required")
+		return referencedDataResult{conditionChanged: changed}, 0, nil
+	}
+
+	// List labeled companions in the instance's namespace, keyed by "Kind/name"
+	// to match the kind-qualified tokens in the annotation.
+	presentByKindName, err := r.listPresentCompanionsByKindName(ctx, cl, instance.Namespace)
+	if err != nil {
+		return referencedDataResult{}, 0, fmt.Errorf("failed listing companion objects: %w", err)
+	}
+
+	// Diff: find which expected companions are missing.
+	// expectedTokens contains "Kind/name" tokens; presentByKindName is keyed the same way.
+	var missing []string
+	for _, token := range expectedTokens {
+		if _, ok := presentByKindName[token]; !ok {
+			missing = append(missing, token)
+		}
+	}
+
+	// Update metrics (aggregated per namespace to avoid high-cardinality per-instance series).
+	present := len(expectedTokens) - len(missing)
+	referenceddata.CompanionsExpected.WithLabelValues(instance.Namespace).Set(float64(len(expectedTokens)))
+	referenceddata.CompanionsPresent.WithLabelValues(instance.Namespace).Set(float64(present))
+
+	if len(missing) > 0 {
+		msg := fmt.Sprintf("Waiting for %d companion(s) to arrive on cell: %s",
+			len(missing), strings.Join(missing, ", "))
+		// Capture the previous reason before the condition is updated, so we can
+		// determine whether the reason has transitioned. We emit a Warning event
+		// only on a reason transition (not on every reconcile where the missing-set
+		// message changes) to avoid event floods.
+		prevCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+		prevReason := ""
+		if prevCond != nil {
+			prevReason = prevCond.Reason
+		}
+		changed := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
+			computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
+		if prevReason != computev1alpha.ReferencedDataReasonAwaitingPropagation {
+			r.emitEvent(instance, corev1.EventTypeWarning,
+				computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
+		}
+		return referencedDataResult{conditionChanged: changed}, 0, nil
+	}
+
+	// All companions present.
+	changed := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionTrue,
+		computev1alpha.ReferencedDataReasonReady,
+		fmt.Sprintf("All %d referenced companion(s) are present on cell", len(expectedTokens)))
+	return referencedDataResult{conditionChanged: changed}, 0, nil
+}
+
+// setReferencedDataCondition sets the ReferencedDataReady condition and returns
+// whether it changed.
+func (r *InstanceReconciler) setReferencedDataCondition(
+	instance *computev1alpha.Instance,
+	status metav1.ConditionStatus,
+	reason, message string,
+) bool {
+	return apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.ReferencedDataReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: instance.Generation,
+	})
+}
+
+// setReferencedDataConditionWithTransition sets the condition and, when it
+// changed, increments the condition-transition metric.
+func (r *InstanceReconciler) setReferencedDataConditionWithTransition(
+	instance *computev1alpha.Instance,
+	status metav1.ConditionStatus,
+	reason, message string,
+) bool {
+	prev := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.ReferencedDataReady)
+	fromReason := "none"
+	if prev != nil {
+		fromReason = prev.Reason
+	}
+	changed := r.setReferencedDataCondition(instance, status, reason, message)
+	if changed && fromReason != reason {
+		referenceddata.ConditionTransitions.WithLabelValues(instance.Namespace, fromReason, reason).Inc()
+	}
+	return changed
+}
+
+// isTerminalReferencedDataReason reports whether the given ReferencedData reason
+// is terminal — i.e., the companion will never arrive because the source object
+// is permanently unavailable, not just slow to propagate.
+func isTerminalReferencedDataReason(reason string) bool {
+	switch reason {
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		computev1alpha.ReferencedDataReasonSourceTooLarge:
+		return true
+	}
+	return false
+}
+
+// applyTerminalErrorFromWD reads the terminal-error signal from the owner WD and,
+// when a valid terminal error is found, sets the Instance's ReferencedDataReady
+// condition. Returns (changed, true) when a terminal error was applied, or
+// (false, false) when there is no terminal error to apply.
+//
+// The signal is read from two places in priority order:
+//  1. ReferencedDataErrorAnnotation on the WD metadata — the primary path in
+//     federation, because Karmada propagates annotations hub→cell but does not
+//     propagate status.conditions in that direction.
+//  2. The WD's ReferencedDataReady status condition — the fallback for
+//     single-cluster deployments or during a controller version upgrade before
+//     the annotation was introduced.
+func (r *InstanceReconciler) applyTerminalErrorFromWD(
+	ctx context.Context,
+	wd *computev1alpha.WorkloadDeployment,
+	instance *computev1alpha.Instance,
+) (changed, terminal bool) {
+	// Path 1: annotation (federation-safe).
+	if termErrRaw := wd.Annotations[computev1alpha.ReferencedDataErrorAnnotation]; termErrRaw != "" {
+		termReason, termMessage, decodeErr := decodeTerminalError(termErrRaw)
+		if decodeErr != nil {
+			log.FromContext(ctx).V(1).Info("malformed referenced-data-error annotation on WD; ignoring",
+				"workloadDeployment", wd.Name, "error", decodeErr)
+		} else if isTerminalReferencedDataReason(termReason) {
+			ch := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
+				termReason, termMessage)
+			return ch, true
+		}
+	}
+
+	// Path 2: status condition fallback (single-cluster).
+	wdCond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	if wdCond != nil && wdCond.Status == metav1.ConditionFalse && isTerminalReferencedDataReason(wdCond.Reason) {
+		ch := r.setReferencedDataConditionWithTransition(instance, metav1.ConditionFalse,
+			wdCond.Reason, wdCond.Message)
+		return ch, true
+	}
+
+	return false, false
+}
+
+// listPresentCompanionsByKindName returns a set keyed by kind-qualified tokens
+// ("Kind/name", e.g. "ConfigMap/app-config") for every companion ConfigMap and
+// Secret present in the given namespace (matched by ReferencedDataLabel). This
+// allows the gate-clearing logic to match the kind-qualified tokens stored in
+// the expected-referenced-data annotation without ambiguity.
+func (r *InstanceReconciler) listPresentCompanionsByKindName(
+	ctx context.Context,
+	cl client.Client,
+	namespace string,
+) (map[string]struct{}, error) {
+	labelSel := client.MatchingLabels{computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue}
+	inNs := client.InNamespace(namespace)
+
+	present := make(map[string]struct{})
+
+	var cmList corev1.ConfigMapList
+	if err := cl.List(ctx, &cmList, inNs, labelSel); err != nil {
+		return nil, fmt.Errorf("list companion ConfigMaps: %w", err)
+	}
+	for _, cm := range cmList.Items {
+		present[referenceddata.CompanionToken(kindConfigMap, cm.Name)] = struct{}{}
+	}
+
+	var secretList corev1.SecretList
+	if err := cl.List(ctx, &secretList, inNs, labelSel); err != nil {
+		return nil, fmt.Errorf("list companion Secrets: %w", err)
+	}
+	for _, s := range secretList.Items {
+		present[referenceddata.CompanionToken(kindSecret, s.Name)] = struct{}{}
+	}
+
+	return present, nil
+}
+
+// fetchOwnerWorkloadDeployment retrieves the WorkloadDeployment that owns the
+// given instance. It is shared by the network-failure check and the
+// referenced-data condition reconciler to avoid duplicate fetches; callers
+// that already hold the WD should not call this a second time.
+func (r *InstanceReconciler) fetchOwnerWorkloadDeployment(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) (*computev1alpha.WorkloadDeployment, error) {
+	ownerRef := metav1.GetControllerOf(instance)
+	if ownerRef == nil {
+		return nil, fmt.Errorf("instance %s/%s has no controller owner reference", instance.Namespace, instance.Name)
+	}
+	var wd computev1alpha.WorkloadDeployment
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: ownerRef.Name}, &wd); err != nil {
+		return nil, fmt.Errorf("failed fetching owning WorkloadDeployment %q: %w", ownerRef.Name, err)
+	}
+	return &wd, nil
+}
+
+// stampGateStartAnnotation records the RFC3339 time at which the ReferencedData
+// gate was first observed. It is a best-effort, no-op if the annotation is
+// already present or the patch fails.
+//
+// The status conditions on instance are preserved across the patch: the fake
+// client (and real API server) does not touch status in a metadata-only Patch,
+// but the controller-runtime fake client zeroes and re-unmarshals instance from
+// the server response, which would lose any in-memory status changes not yet
+// persisted via Status().Update(). We save and restore them explicitly.
+func (r *InstanceReconciler) stampGateStartAnnotation(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) {
+	if instance.Annotations != nil {
+		if _, ok := instance.Annotations[computev1alpha.ReferencedDataGateStartAnnotation]; ok {
+			return
+		}
+	}
+	// Preserve in-memory status so the Patch does not discard conditions that
+	// have been set by earlier reconcile steps but not yet persisted to the
+	// API server via Status().Update().
+	savedStatus := instance.Status.DeepCopy()
+
+	patch := client.MergeFrom(instance.DeepCopy())
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+	instance.Annotations[computev1alpha.ReferencedDataGateStartAnnotation] = time.Now().UTC().Format(time.RFC3339)
+	if err := cl.Patch(ctx, instance, patch); err != nil {
+		log.FromContext(ctx).V(1).Info("could not stamp gate-start annotation (non-fatal)", "error", err)
+	}
+
+	// Restore the in-memory status after the patch overwrites it with the
+	// server-side state.
+	instance.Status = *savedStatus
+}
+
+// observeGateWaitDuration records the gate-wait histogram when the
+// ReferencedData gate is being cleared. It reads the start annotation stamped
+// when the gate was first observed.
+func (r *InstanceReconciler) observeGateWaitDuration(instance *computev1alpha.Instance) {
+	if instance.Annotations == nil {
+		return
+	}
+	startStr, ok := instance.Annotations[computev1alpha.ReferencedDataGateStartAnnotation]
+	if !ok {
+		return
+	}
+	startTime, err := time.Parse(time.RFC3339, startStr)
+	if err != nil {
+		return
+	}
+	elapsed := time.Since(startTime).Seconds()
+	referenceddata.GateWaitDuration.WithLabelValues(instance.Namespace).Observe(elapsed)
+}
+
+// emitReferencedDataClearedEvent records a Normal event on the instance when
+// the ReferencedData gate is cleared.
+func (r *InstanceReconciler) emitReferencedDataClearedEvent(instance *computev1alpha.Instance) {
+	r.emitEvent(instance, corev1.EventTypeNormal,
+		computev1alpha.ReferencedDataReasonReady,
+		"All referenced companion ConfigMaps/Secrets are present; ReferencedData gate cleared")
+}
+
+// emitEvent emits a Kubernetes event if a recorder is available. Guard against
+// a nil recorder so that unit tests that don't wire up a recorder don't panic.
+func (r *InstanceReconciler) emitEvent(obj *computev1alpha.Instance, eventType, reason, message string) {
+	if r.recorder == nil {
+		return
+	}
+	r.recorder.Event(obj, eventType, reason, message)
 }
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
@@ -524,47 +998,6 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 	default: // grantedCondition == nil && claimErr != nil — should not reach here
 		return false, claimErr
 	}
-}
-
-// removeQuotaSchedulingGate removes the quota scheduling gate from the
-// Instance spec once QuotaGranted=True has been persisted to status.
-// It guards on ObservedGeneration to prevent a stale True condition from
-// generation N unblocking a generation N+1 instance before quota for the
-// new spec has been evaluated.
-func (r *InstanceReconciler) removeQuotaSchedulingGate(ctx context.Context, cl client.Client, instance *computev1alpha.Instance) error {
-	quotaGrantedCond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted)
-	if quotaGrantedCond == nil || quotaGrantedCond.Status != metav1.ConditionTrue {
-		return nil
-	}
-	// Stale condition guard: only remove the gate if the condition reflects the
-	// current spec generation. A condition from an older generation means quota
-	// has not yet been evaluated for the current spec.
-	if quotaGrantedCond.ObservedGeneration != instance.Generation {
-		return nil
-	}
-	if instance.Spec.Controller == nil {
-		return nil
-	}
-
-	newGates := make([]computev1alpha.SchedulingGate, 0, len(instance.Spec.Controller.SchedulingGates))
-	gateRemoved := false
-	for _, gate := range instance.Spec.Controller.SchedulingGates {
-		if gate.Name == instancecontrol.QuotaSchedulingGate.String() {
-			gateRemoved = true
-			continue
-		}
-		newGates = append(newGates, gate)
-	}
-	if !gateRemoved {
-		return nil
-	}
-
-	patch := client.MergeFrom(instance.DeepCopy())
-	instance.Spec.Controller.SchedulingGates = newGates
-	if err := cl.Patch(ctx, instance, patch); err != nil {
-		return fmt.Errorf("failed patching quota scheduling gate: %w", err)
-	}
-	return nil
 }
 
 // Finalize removes the downstream write-back Instance when the local Instance is
@@ -1203,17 +1636,8 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 // Rough way to propagate creation errors up to the instance as soon as possible.
 // Lots of room for improvement here.
 func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context, upstreamClient client.Client, instance *computev1alpha.Instance) (failed bool, message string, err error) {
-	workloadDeploymentRef := metav1.GetControllerOf(instance)
-	if workloadDeploymentRef == nil {
-		return false, "", fmt.Errorf("instance is not owned by a workload deployment")
-	}
-
-	var workloadDeployment computev1alpha.WorkloadDeployment
-	workloadDeploymentObjectKey := client.ObjectKey{
-		Namespace: instance.Namespace,
-		Name:      workloadDeploymentRef.Name,
-	}
-	if err := upstreamClient.Get(ctx, workloadDeploymentObjectKey, &workloadDeployment); err != nil {
+	workloadDeployment, err := r.fetchOwnerWorkloadDeployment(ctx, upstreamClient, instance)
+	if err != nil {
 		return false, "", fmt.Errorf("failed fetching workload deployment: %w", err)
 	}
 
@@ -1343,18 +1767,56 @@ func (r *InstanceReconciler) SetupWithManager(
 				return obj.GetLabels()[instanceQuotaClaimSourceLabel] == edgeClusterNameVal
 			})),
 		).
+		// Watch companion ConfigMaps: when one arrives (or is updated) re-queue all
+		// Instances in the namespace so they can attempt gate-clearing.
+		Watches(&corev1.ConfigMap{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != computev1alpha.ReferencedDataLabelValue {
+					return nil
+				}
+				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
+			})
+		}).
+		// Watch companion Secrets for the same reason.
+		Watches(&corev1.Secret{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				if obj.GetLabels()[computev1alpha.ReferencedDataLabel] != computev1alpha.ReferencedDataLabelValue {
+					return nil
+				}
+				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
+			})
+		}).
 		Complete(r)
 }
 
-// isTerminalReferencedDataReason reports whether the given ReferencedData reason
-// is terminal — i.e., the companion will never arrive because the source object
-// is permanently unavailable, not just slow to propagate.
-func isTerminalReferencedDataReason(reason string) bool {
-	switch reason {
-	case computev1alpha.ReferencedDataReasonSourceNotFound,
-		computev1alpha.ReferencedDataReasonSourceUnauthorized,
-		computev1alpha.ReferencedDataReasonSourceTooLarge:
-		return true
+// enqueueInstancesInNamespace returns reconcile requests for every Instance
+// in the given namespace. Companions are shared across all Instances in a
+// namespace, so any gated instance in the namespace should re-check when a
+// companion ConfigMap or Secret arrives.
+func enqueueInstancesInNamespace(
+	ctx context.Context,
+	cl client.Client,
+	clusterName, namespace string,
+) []mcreconcile.Request {
+	logger := log.FromContext(ctx)
+
+	var instanceList computev1alpha.InstanceList
+	if err := cl.List(ctx, &instanceList, client.InNamespace(namespace)); err != nil {
+		logger.Error(err, "failed listing instances for companion watch", "namespace", namespace)
+		return nil
 	}
-	return false
+
+	requests := make([]mcreconcile.Request, 0, len(instanceList.Items))
+	for _, inst := range instanceList.Items {
+		requests = append(requests, mcreconcile.Request{
+			Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: inst.Namespace,
+					Name:      inst.Name,
+				},
+			},
+			ClusterName: multicluster.ClusterName(clusterName),
+		})
+	}
+	return requests
 }

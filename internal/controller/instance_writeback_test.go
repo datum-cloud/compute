@@ -24,14 +24,15 @@ import (
 // ─── write-back test constants ────────────────────────────────────────────────
 
 const (
-	wbTestClusterName    = "edge-cluster"
-	wbTestNamespace      = "ns-proj-uid-1234"
-	wbTestInstanceName   = "inst-0"
-	wbTestWorkloadUID    = "wl-uid-aaaa-bbbb"
-	wbTestWDUID          = "wd-uid-cccc-dddd"
-	wbTestInstanceIndex  = "0"
-	wbTestUpstreamNS     = "proj-namespace"
-	wbTestEncodedCluster = "cluster-" + wbTestClusterName
+	wbTestClusterName        = "edge-cluster"
+	wbTestNamespace          = "ns-proj-uid-1234"
+	wbTestInstanceName       = "inst-0"
+	wbTestWorkloadUID        = "wl-uid-aaaa-bbbb"
+	wbTestWDUID              = "wd-uid-cccc-dddd"
+	wbTestInstanceIndex      = "0"
+	wbTestUpstreamNS         = "proj-namespace"
+	wbTestEncodedCluster     = "cluster-" + wbTestClusterName
+	karmadaManagedLabelValue = "true"
 
 	// The four self-describing labels.
 	wbTestWDName       = "my-workload-deployment"
@@ -162,7 +163,7 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: wbTestEncodedCluster,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   wbTestUpstreamNS,
-				karmadaManagedLabel:                            "true",
+				karmadaManagedLabel:                            karmadaManagedLabelValue,
 			},
 		},
 		Spec: computev1alpha.InstanceSpec{
@@ -198,7 +199,7 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 	assert.Equal(t, wbTestInstanceIndex, updated.Labels[computev1alpha.InstanceIndexLabel])
 
 	// The Karmada-managed label must survive the merge (not be replaced/deleted).
-	assert.Equal(t, "true", updated.Labels[karmadaManagedLabel],
+	assert.Equal(t, karmadaManagedLabelValue, updated.Labels[karmadaManagedLabel],
 		"Karmada-managed label must be preserved after merge; should not be overwritten")
 }
 
@@ -555,7 +556,7 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: wbTestEncodedCluster,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   wbTestUpstreamNS,
-				karmadaManagedLabel:                            "true",
+				karmadaManagedLabel:                            karmadaManagedLabelValue,
 			},
 		},
 		Spec: computev1alpha.InstanceSpec{
@@ -593,6 +594,6 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 		"PlacementNameLabel must be set on update path")
 
 	// Karmada-managed label must survive the merge.
-	assert.Equal(t, "true", updated.Labels[karmadaManagedLabel],
+	assert.Equal(t, karmadaManagedLabelValue, updated.Labels[karmadaManagedLabel],
 		"Karmada-managed label must be preserved after the update merge")
 }

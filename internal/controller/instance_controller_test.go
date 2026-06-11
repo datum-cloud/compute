@@ -47,6 +47,9 @@ const (
 	testQuotaAPIGroup          = "quota.miloapis.com"
 	testQuotaResource          = "resourceclaims"
 	kindWorkloadDeploymentTest = "WorkloadDeployment" // mirrors kindWorkloadDeployment
+
+	// testMsgQuotaExceeded is the quota-denied message used across quota tests.
+	testMsgQuotaExceeded = "Quota exceeded for project"
 )
 
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
@@ -55,6 +58,7 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	require.NoError(t, computev1alpha.AddToScheme(s))
 	require.NoError(t, quotav1alpha1.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
 	return s
 }
 
@@ -345,7 +349,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							Type:               computev1alpha.InstanceQuotaGranted,
 							Status:             metav1.ConditionFalse,
 							Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
-							Message:            "Quota exceeded for project",
+							Message:            testMsgQuotaExceeded,
 							LastTransitionTime: metav1.Now(),
 						},
 						{
@@ -370,7 +374,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 				Type:    computev1alpha.InstanceReady,
 				Status:  metav1.ConditionFalse,
 				Reason:  computev1alpha.InstanceProgrammedReasonPendingQuota,
-				Message: "Quota exceeded for project",
+				Message: testMsgQuotaExceeded,
 			},
 		},
 		{
@@ -824,7 +828,7 @@ func TestReconcileQuota(t *testing.T) {
 // the Quota scheduling gate was never removed from an Instance after quota was
 // granted. The root cause was an early return in the Reconcile function: when
 // reconcileQuotaCondition set QuotaGranted=True (statusChanged=true), the code
-// wrote the status update and returned before reaching removeQuotaSchedulingGate.
+// wrote the status update and returned before reaching reconcileSchedulingGates.
 // Because ResourceClaims are immutable (no further transitions) and local
 // Instances are not watched (WithEngageWithLocalCluster(false)), no requeue ever
 // arrived — leaving the Quota gate stranded in spec.controller.schedulingGates
@@ -1573,7 +1577,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 		// Single reconcile: reconcileQuotaCondition writes QuotaGranted=True with
 		// ObservedGeneration=2 into the in-memory instance, status is persisted,
-		// then removeQuotaSchedulingGate reads the in-memory condition (gen=2 ==
+		// then reconcileSchedulingGates reads the in-memory condition (gen=2 ==
 		// instance.Generation=2) and removes the gate — all in one pass.
 		_, err := r.Reconcile(context.Background(), reconcileReq())
 		require.NoError(t, err)
