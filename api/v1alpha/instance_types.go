@@ -597,6 +597,52 @@ const (
 	InstanceProgrammedReasonProgrammed = "Programmed"
 )
 
+// Reason constants for the top-level readiness conditions (Instance.Ready,
+// WorkloadDeployment.Available, Workload.Available). These are the stable,
+// machine-readable values that clients consume; they appear alongside human-readable
+// messages so a single condition read is sufficient to diagnose a blocking cause.
+const (
+	// WorkloadReasonNetworkNotFound is set on Workload.Available when one or more
+	// networks referenced by network interfaces do not exist.
+	WorkloadReasonNetworkNotFound = "NetworkNotFound"
+
+	// WorkloadDeploymentReasonNoMatchingLocation is set on WorkloadDeployment.Available
+	// while no Location matches the deployment's city code. The message names the
+	// unresolved city; network provisioning cannot start until that Location exists.
+	WorkloadDeploymentReasonNoMatchingLocation = "NoMatchingLocation"
+
+	// WorkloadDeploymentReasonNetworkProvisioning is set on WorkloadDeployment.Available
+	// while the network binding or subnet is still being provisioned.
+	// Replaces the previously-emitted inline literal "ProvisioningNetwork".
+	WorkloadDeploymentReasonNetworkProvisioning = "NetworkProvisioning"
+
+	// WorkloadDeploymentReasonInstancesProvisioning is set on WorkloadDeployment.Available
+	// while instances exist but none are ready yet.
+	// Replaces the previously-emitted inline literal "ProvisioningInstances".
+	WorkloadDeploymentReasonInstancesProvisioning = "InstancesProvisioning"
+
+	// WorkloadDeploymentReasonStableInstanceFound is set on WorkloadDeployment.Available
+	// when at least one ready instance is present.
+	WorkloadDeploymentReasonStableInstanceFound = "StableInstanceFound"
+
+	// WorkloadDeploymentReasonReferencedDataNotReady is set on WorkloadDeployment.Available
+	// and Workload.Available when the worst-blocking sub-condition is a ReferencedData
+	// failure. The message carries the ReferencedDataReady sub-condition's message verbatim.
+	WorkloadDeploymentReasonReferencedDataNotReady = "ReferencedDataNotReady"
+
+	// WorkloadDeploymentReasonQuotaNotGranted is set on WorkloadDeployment.Available and
+	// Workload.Available when quota is blocking one or more instances.
+	WorkloadDeploymentReasonQuotaNotGranted = "QuotaNotGranted"
+
+	// WorkloadReasonNoAvailablePlacements is set on Workload.Available when all
+	// placements report no available deployments. Used as the last-resort default.
+	WorkloadReasonNoAvailablePlacements = "NoAvailablePlacements"
+
+	// WorkloadReasonNoAvailableDeployments is set on a placement's Available
+	// condition when no deployment in that placement is available.
+	WorkloadReasonNoAvailableDeployments = "NoAvailableDeployments"
+)
+
 type InstanceTemplateSpec struct {
 	// Metadata of the instances created from this template
 	//
