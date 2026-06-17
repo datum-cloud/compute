@@ -138,6 +138,16 @@ type SandboxContainer struct {
 	// so replicate the structure here too.
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// List of sources to populate environment variables in the container.
+	// The keys defined within a source must be a C_IDENTIFIER. All invalid
+	// keys will be reported as an event when the container is starting. When a
+	// key exists in multiple sources, the value associated with the last source
+	// will take precedence. Values defined by an Env with a duplicate key will
+	// take precedence.
+	//
+	// +kubebuilder:validation:Optional
+	EnvFrom []EnvFromSource `json:"envFrom,omitempty"`
+
 	// The resource requirements for the container, such as CPU, memory, and GPUs.
 	//
 	// +kubebuilder:validation:Optional
@@ -154,6 +164,54 @@ type SandboxContainer struct {
 	// +listType=map
 	// +listMapKey=name
 	Ports []NamedPort `json:"ports,omitempty"`
+}
+
+// EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+// used as environment variables in a container.
+type EnvFromSource struct {
+	// An optional identifier to prepend to each key in the referenced
+	// ConfigMap or Secret. Must be a valid C_IDENTIFIER.
+	//
+	// +kubebuilder:validation:Optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// The ConfigMap to select from.
+	//
+	// +kubebuilder:validation:Optional
+	ConfigMapRef *ConfigMapEnvSource `json:"configMapRef,omitempty"`
+
+	// The Secret to select from.
+	//
+	// +kubebuilder:validation:Optional
+	SecretRef *SecretEnvSource `json:"secretRef,omitempty"`
+}
+
+// ConfigMapEnvSource selects a ConfigMap to populate the environment variables
+// of a container.
+type ConfigMapEnvSource struct {
+	// Name of the ConfigMap in the same namespace as the Workload.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Specify whether the ConfigMap must be defined.
+	//
+	// +kubebuilder:validation:Optional
+	Optional *bool `json:"optional,omitempty"`
+}
+
+// SecretEnvSource selects a Secret to populate the environment variables
+// of a container.
+type SecretEnvSource struct {
+	// Name of the Secret in the same namespace as the Workload.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Specify whether the Secret must be defined.
+	//
+	// +kubebuilder:validation:Optional
+	Optional *bool `json:"optional,omitempty"`
 }
 
 type ContainerResourceRequirements struct {
@@ -414,6 +472,38 @@ const (
 
 	// InstanceQuotaGranted indicates whether quota has been allocated for the instance
 	InstanceQuotaGranted = "QuotaGranted"
+
+	// ReferencedDataReady indicates whether all ConfigMaps and Secrets referenced
+	// by the workload template have been resolved and delivered to the cell.
+	// This condition is set on both WorkloadDeployment (resolver view) and
+	// Instance (cell view).
+	ReferencedDataReady = "ReferencedDataReady"
+)
+
+const (
+	// ReferencedDataReasonResolving indicates the resolver is in the process of
+	// reading source ConfigMaps/Secrets from the project control plane.
+	ReferencedDataReasonResolving = "Resolving"
+
+	// ReferencedDataReasonAwaitingPropagation indicates the expected companions
+	// have not yet all arrived on the cell.
+	ReferencedDataReasonAwaitingPropagation = "AwaitingPropagation"
+
+	// ReferencedDataReasonSourceNotFound indicates one or more referenced
+	// ConfigMaps or Secrets could not be found in the project namespace.
+	ReferencedDataReasonSourceNotFound = "SourceNotFound"
+
+	// ReferencedDataReasonSourceUnauthorized indicates the management identity
+	// does not have permission to read one or more referenced objects.
+	ReferencedDataReasonSourceUnauthorized = "SourceUnauthorized"
+
+	// ReferencedDataReasonSourceTooLarge indicates one or more referenced objects
+	// exceed the allowed size limit.
+	ReferencedDataReasonSourceTooLarge = "SourceTooLarge"
+
+	// ReferencedDataReasonReady indicates all referenced data has been resolved
+	// and is present on the cell.
+	ReferencedDataReasonReady = "Ready"
 )
 
 const (

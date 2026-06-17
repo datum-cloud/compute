@@ -10,8 +10,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -258,6 +260,23 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 		kd.Labels[cityCodeLabel] = deployment.Spec.CityCode
 		kd.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = deployment.Namespace
 		kd.Spec = deployment.Spec
+		// Propagate controller-managed annotations from the project WD to the
+		// downstream WD. The cell reads the expected-referenced-data annotation
+		// to gate-clear instances; without this copy it would never arrive.
+		// Absence must mirror downstream too: the cell gate treats an absent
+		// annotation as "resolver hasn't run" (wait), distinct from an empty
+		// list ("nothing needed"). The resolver deletes the annotation — along
+		// with the companions — when the template drops all references, so a
+		// stale downstream copy would gate new instances forever on companions
+		// that no longer exist.
+		if anno, ok := deployment.Annotations[computev1alpha.ExpectedReferencedDataAnnotation]; ok {
+			if kd.Annotations == nil {
+				kd.Annotations = make(map[string]string)
+			}
+			kd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation] = anno
+		} else {
+			delete(kd.Annotations, computev1alpha.ExpectedReferencedDataAnnotation)
+		}
 		return nil
 	})
 	if err != nil {
@@ -285,10 +304,17 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 
 	result, err := controllerutil.CreateOrPatch(ctx, r.FederationClient, pp, func() error {
 		pp.Spec = karmadapolicyv1alpha1.PropagationSpec{
-			// Select all WorkloadDeployments in this namespace that carry the
-			// city-code label. Using a label selector (rather than individual
-			// resource names) means that new deployments for this city are
-			// automatically picked up without updating the policy.
+			// Select WorkloadDeployments by city-code label, plus ALL
+			// companion ConfigMaps and Secrets in this namespace that carry the
+			// referenced-data label. The label selector on ConfigMap/Secret is
+			// city-code-agnostic — companions are shared across city codes when
+			// multiple WDs reference the same source. Karmada propagates the
+			// entire set to matching clusters in one policy, so companions
+			// co-arrive with their WorkloadDeployment.
+			//
+			// Using separate ResourceSelectors for each kind (WorkloadDeployment,
+			// ConfigMap, Secret) is the idiomatic Karmada pattern for
+			// multi-kind propagation within a single policy.
 			ResourceSelectors: []karmadapolicyv1alpha1.ResourceSelector{
 				{
 					APIVersion: computev1alpha.GroupVersion.String(),
@@ -296,6 +322,28 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							cityCodeLabel: cityCode,
+						},
+					},
+				},
+				{
+					// Propagate companion ConfigMaps alongside WorkloadDeployments.
+					// The referenced-data label is the only selector needed; there
+					// is no per-city partitioning of companions.
+					APIVersion: corev1.SchemeGroupVersion.String(),
+					Kind:       kindConfigMap,
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
+						},
+					},
+				},
+				{
+					// Propagate companion Secrets alongside WorkloadDeployments.
+					APIVersion: corev1.SchemeGroupVersion.String(),
+					Kind:       kindSecret,
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
 						},
 					},
 				},
@@ -324,8 +372,16 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 }
 
 // syncStatusFromDownstream reads the aggregated status of the WorkloadDeployment
-// from the downstream namespace and writes it back to the project-namespace
+// from the downstream namespace and merges it back into the project-namespace
 // object. It is a no-op when the downstream object does not yet exist.
+//
+// Merge semantics: the resolver (ReferencedDataController) owns the
+// ReferencedDataReady condition and any conditions with SourceNotFound,
+// SourceUnauthorized, or SourceTooLarge reasons. This method preserves those
+// conditions, overwriting only the downstream-owned portion of the status
+// (replica counts, Programmed, Ready, etc.). Without this merge a concurrent
+// federator status sync would overwrite the resolver's condition with whatever
+// (empty or stale) value the downstream WD carries.
 func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	ctx context.Context,
 	projectClient client.Client,
@@ -343,15 +399,40 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 		return fmt.Errorf("failed to get downstream deployment for status sync: %w", err)
 	}
 
-	if equality.Semantic.DeepEqual(deployment.Status, kd.Status) {
+	// Build the merged status: start from downstream, then re-apply the
+	// resolver-owned ReferencedDataReady condition from the project WD so we
+	// never overwrite it with the downstream's copy.
+	merged := kd.Status.DeepCopy()
+	if resolverCond := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady); resolverCond != nil {
+		apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
+	}
+
+	if equality.Semantic.DeepEqual(deployment.Status, *merged) {
 		return nil
 	}
 
-	deployment.Status = kd.Status
-	if err := projectClient.Status().Update(ctx, deployment); err != nil {
-		return fmt.Errorf("failed to write downstream status back to project deployment: %w", err)
-	}
-	return nil
+	// Wrap in RetryOnConflict so a concurrent annotation Patch by the resolver
+	// does not cause a hard error. The status write is idempotent from the
+	// perspective of the downstream fields it carries.
+	key := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := projectClient.Get(ctx, key, deployment); err != nil {
+			return err
+		}
+		// Re-compute merged on each attempt in case the resolver condition changed.
+		merged = kd.Status.DeepCopy()
+		if resolverCond := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady); resolverCond != nil {
+			apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
+		}
+		if equality.Semantic.DeepEqual(deployment.Status, *merged) {
+			return nil
+		}
+		deployment.Status = *merged
+		if err := projectClient.Status().Update(ctx, deployment); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // cleanupPropagationPolicyIfUnused deletes the PropagationPolicy for the given

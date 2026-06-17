@@ -23,4 +23,13 @@ const (
 	// PlacementNameLabel carries the placement name from the Workload that drove
 	// this Instance's deployment, sourced from WorkloadDeploymentSpec.PlacementName.
 	PlacementNameLabel = LabelNamespace + "/placement-name"
+
+	// ReferencedDataLabel is stamped on companion ConfigMaps and Secrets
+	// materialized by the ReferencedDataController, and on WorkloadDeployments
+	// that reference external ConfigMaps or Secrets. Used as a label selector
+	// by the Karmada PropagationPolicy to propagate companions to cells.
+	ReferencedDataLabel = LabelNamespace + "/referenced-data"
+
+	// ReferencedDataLabelValue is the value used for ReferencedDataLabel.
+	ReferencedDataLabelValue = "true"
 )

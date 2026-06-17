@@ -6,6 +6,13 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # The referenced-data controller reads the source ConfigMaps/Secrets a Workload
+  # references and materializes companion copies in the same hub namespace, which
+  # Karmada then propagates to the cell. It owns the companions' full lifecycle,
+  # including ref-count deletion, so it needs create/update/patch/delete here.
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["compute.datumapis.com"]
     resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
