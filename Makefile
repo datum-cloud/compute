@@ -81,6 +81,26 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 	# }
 	# go test ./test/e2e/ -v -ginkgo.v
 
+# WIP: proposed chainsaw-based API-contract e2e harness. Migrated from
+# datum-cloud/infra#3006. Runs live-env chainsaw contract tests against a local
+# kind cluster. Compute-team to confirm chainsaw vs. extending the Go e2e suite.
+KIND_CLUSTER ?= compute-e2e
+TMPDIR ?= /tmp
+
+.PHONY: test-chainsaw
+test-chainsaw: chainsaw ## WIP: run chainsaw API-contract e2e tests against a kind cluster.
+	@command -v kind >/dev/null 2>&1 || { \
+		echo "Kind is not installed. Please install Kind manually."; \
+		exit 1; \
+	}
+	@kind get clusters | grep -q '$(KIND_CLUSTER)' || { \
+		echo "No '$(KIND_CLUSTER)' kind cluster found. Create it before running chainsaw e2e."; \
+		exit 1; \
+	}
+	$(KIND) get kubeconfig --name $(KIND_CLUSTER) > $(TMPDIR)/.kind-$(KIND_CLUSTER).yaml
+	$(CHAINSAW) test ./test/e2e \
+		--cluster $(KIND_CLUSTER)=$(TMPDIR)/.kind-$(KIND_CLUSTER).yaml
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
@@ -171,6 +191,8 @@ DEFAULTER_GEN ?= $(LOCALBIN)/defaulter-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 CRDOC ?= $(LOCALBIN)/crdoc
+KIND ?= $(LOCALBIN)/kind
+CHAINSAW ?= $(LOCALBIN)/chainsaw
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
@@ -181,6 +203,12 @@ GOLANGCI_LINT_VERSION ?= v2.12.2
 
 # renovate: datasource=go depName=fybrik.io/crdoc
 CRDOC_VERSION ?= v0.6.4
+
+# renovate: datasource=go depName=sigs.k8s.io/kind
+KIND_VERSION ?= v0.27.0
+
+# renovate: datasource=go depName=github.com/kyverno/chainsaw
+CHAINSAW_VERSION ?= v0.2.15
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -210,6 +238,16 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 .PHONY: crdoc
 crdoc: ## Download crdoc locally if necessary.
 	$(call go-install-tool,$(CRDOC),fybrik.io/crdoc,$(CRDOC_VERSION))
+
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
+
+.PHONY: chainsaw
+chainsaw: $(CHAINSAW) ## Download chainsaw locally if necessary.
+$(CHAINSAW): $(LOCALBIN)
+	$(call go-install-tool,$(CHAINSAW),github.com/kyverno/chainsaw,$(CHAINSAW_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
