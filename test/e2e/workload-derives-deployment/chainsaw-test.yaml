@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workload-derives-deployment
+spec:
+  cluster: compute-e2e
+  steps:
+    - name: Apply Workload and fixtures
+      try:
+        - apply:
+            timeout: 1m
+            file: location.yaml
+        - apply:
+            timeout: 1m
+            file: network.yaml
+        - apply:
+            timeout: 1m
+            file: workload.yaml
+        - assert:
+            resource:
+              apiVersion: compute.datumapis.com/v1alpha
+              kind: Workload
+              metadata:
+                name: e2e-derived-workload
+
+    - name: Assert WorkloadDeployment is derived per placement
+      try:
+        - wait:
+            apiVersion: compute.datumapis.com/v1alpha
+            kind: WorkloadDeployment
+            name: e2e-derived-workload-central
+            timeout: 3m
+            for:
+              condition:
+                name: Progressing
+                value: 'true'
+        - assert:
+            resource:
+              apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              metadata:
+                name: e2e-derived-workload-central
