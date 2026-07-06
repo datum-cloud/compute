@@ -11,6 +11,7 @@ import (
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	"github.com/KimMachineGun/automemlimit/memlimit"
 	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
@@ -21,6 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -136,6 +138,21 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	// Set GOMEMLIMIT from the container's cgroup memory limit so the Go GC
+	// backpressures before the kernel OOMKills the process. Without this the
+	// runtime is blind to the cgroup limit and lets the heap overshoot during
+	// allocation-heavy startup (concurrent informer/cache sync across project
+	// control planes), which is what OOMKilled compute-manager on rollout (#161).
+	//
+	// This is a no-op when GOMEMLIMIT is already set in the environment or
+	// AUTOMEMLIMIT=off, so an explicit manifest override always wins. Off-cgroup
+	// (e.g. local dev on macOS) the provider errors; we log and continue.
+	if limit, err := memlimit.SetGoMemLimitWithOpts(memlimit.WithRatio(0.9)); err != nil {
+		setupLog.Info("GOMEMLIMIT not set from cgroup; using Go default", "reason", err.Error())
+	} else if limit > 0 {
+		setupLog.Info("GOMEMLIMIT set from cgroup", "bytes", limit)
+	}
+
 	if federationKubeconfig != "" {
 		loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 			&clientcmd.ClientConfigLoadingRules{ExplicitPath: federationKubeconfig},
@@ -193,6 +210,11 @@ func main() {
 
 	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
 		o.Scheme = scheme
+		// Strip managedFields from every cached object. They are pure server-side
+		// apply bookkeeping the controllers never read, and on large/unstructured
+		// objects they dominate the per-object footprint. Dropping them shrinks the
+		// startup cache-sync spike that OOMKilled compute-manager (#161).
+		o.Cache.DefaultTransform = cache.TransformStripManagedFields()
 	})
 	if err != nil {
 		setupLog.Error(err, "failed creating local cluster")
@@ -230,6 +252,7 @@ func main() {
 
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
+		Cache:                   cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
 		Metrics:                 metricsServerOptions,
 		WebhookServer:           webhookServer,
 		HealthProbeBindAddress:  probeAddr,
@@ -405,6 +428,12 @@ func initializeClusterDiscovery(
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
 			Metrics: metricsserver.Options{BindAddress: "0"},
+			Cache: cache.Options{
+				// Unstructured objects carry the full managedFields tree in their
+				// content map, so stripping it here is especially impactful for the
+				// discovery cache (#161).
+				DefaultTransform: cache.TransformStripManagedFields(),
+			},
 			Client: client.Options{
 				Cache: &client.CacheOptions{
 					Unstructured: true,
@@ -419,6 +448,11 @@ func initializeClusterDiscovery(
 			ClusterOptions: []cluster.Option{
 				func(o *cluster.Options) {
 					o.Scheme = scheme
+					// Applied to every per-project cluster cache. These are the
+					// caches that fan in concurrently at startup, so stripping
+					// managedFields here is the largest single lever on the
+					// startup memory spike (#161).
+					o.Cache.DefaultTransform = cache.TransformStripManagedFields()
 				},
 			},
 			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
@@ -486,6 +520,7 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// directly anywhere a watchable federation cluster source is required.
 	federationMgr, err := manager.New(federationRestConfig, manager.Options{
 		Scheme:  scheme,
+		Cache:   cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
 		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
