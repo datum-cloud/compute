@@ -311,6 +311,20 @@ func main() {
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
+
+		// Quota claim writes are REST calls to the owning project's quota API and
+		// need no local CRD, so they run in every mode. The ResourceClaim watch
+		// needs the quota CRD, which lives only on the Milo project control planes,
+		// so it is registered only in management-plane (milo) mode; engaging it in
+		// single/cluster mode would crash the manager against a cell that has no
+		// quota CRD (#171). There, grants are observed via the pending-quota
+		// requeue instead of a live watch.
+		watchProviderClaims := computeWatchProviderClaims(serverConfig.Discovery.Mode)
+		if quotaRestConfig != nil && !watchProviderClaims {
+			setupLog.Info("quota claim writes enabled without a ResourceClaim watch; "+
+				"grants are observed via the pending-quota requeue", "mode", serverConfig.Discovery.Mode)
+		}
+
 		instanceReconciler := &controller.InstanceReconciler{FederationClient: federationClient}
 		err = instanceReconciler.SetupWithManager(
 			mgr,
@@ -319,6 +333,7 @@ func main() {
 			controller.NewSingleModeProjectNamespace(mgr),
 			edgeClusterName,
 			clusterNameForProject,
+			watchProviderClaims,
 		)
 		if err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
@@ -550,4 +565,14 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	}
 
 	return []manager.Runnable{federationMgr}, nil
+}
+
+// computeWatchProviderClaims reports whether the direct ResourceClaim watch
+// should be registered. The watch needs the quota CRD, which lives only on the
+// Milo project control planes, so it is Milo-mode only; registering it in
+// single/cluster mode would crash the manager against a cell that has no quota
+// CRD (#171). This gates the watch only — claim writes (REST calls to the
+// owning project's quota API) run in any mode.
+func computeWatchProviderClaims(mode multiclusterproviders.Provider) bool {
+	return mode == multiclusterproviders.ProviderMilo
 }

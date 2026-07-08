@@ -286,8 +286,10 @@ type DiscoveryConfig struct {
 	// takes precedence over ProjectKubeconfigPath for quota calls. When both are
 	// unset, quota accounting is disabled.
 	//
-	// Use this field in deployments (mode: single or mode: milo) that need to
-	// talk to api.datum.net for quota enforcement.
+	// Setting it enables quota enforcement (claim writes to the owning project's
+	// quota API) in any mode. The live ResourceClaim watch, however, runs only in
+	// management-plane mode; single/cluster deployments observe grants via the
+	// reconcile requeue instead.
 	QuotaKubeconfigPath string `json:"quotaKubeconfigPath"`
 }
 
