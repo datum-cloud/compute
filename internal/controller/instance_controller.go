@@ -1796,6 +1796,30 @@ func (r *InstanceReconciler) resolveClusterNameForProject(projectID string) mult
 	return multicluster.ClusterName(projectID)
 }
 
+// mapClaimToInstanceRequest maps a granted ResourceClaim back to a reconcile
+// request for its owning Instance. The Instance namespace is carried on a label
+// (the claim itself lives in the project's quota namespace) and the Instance
+// name is the claim name with the resource-kind prefix stripped. Returns nil
+// when the namespace label is absent, so a claim not stamped by this controller
+// is ignored.
+func (r *InstanceReconciler) mapClaimToInstanceRequest(claim *quotav1alpha1.ResourceClaim) []mcreconcile.Request {
+	instanceNamespace := claim.GetLabels()[instanceQuotaClaimNamespaceLabel]
+	if instanceNamespace == "" {
+		return nil
+	}
+	return []mcreconcile.Request{
+		{
+			Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: instanceNamespace,
+					Name:      strings.TrimPrefix(claim.Name, instanceQuotaClaimNamePrefix),
+				},
+			},
+			ClusterName: r.resolveClusterNameForProject(claim.Spec.ConsumerRef.Name),
+		},
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 //
 // quotaRestConfig is the REST config used to reach Milo project control planes
@@ -1809,6 +1833,16 @@ func (r *InstanceReconciler) resolveClusterNameForProject(projectID string) mult
 // clusterNameForProject maps a project ID back to the multicluster ClusterName.
 // In Milo mode pass nil (falls back to ClusterName(projectID)). In single-cell
 // mode pass a function that always returns "single".
+//
+// watchProviderClaims registers the direct ResourceClaim watch on provider
+// clusters. It is independent of quotaRestConfig: claim writes (CRUD) run
+// whenever quotaRestConfig is set, in any mode, because they are REST calls to
+// the owning project's quota API and need no local CRD. The watch, however,
+// needs the quota CRD, which lives only on the Milo project control planes, so
+// pass true only in Milo mode. In single/cluster mode pass false (with a non-nil
+// quotaRestConfig): claim writes still work, but no watch is registered, so the
+// manager never engages a ResourceClaim watch against a cell with no quota CRD
+// (#171); grants are observed via the pending-quota requeue.
 func (r *InstanceReconciler) SetupWithManager(
 	mgr mcmanager.Manager,
 	quotaRestConfig *rest.Config,
@@ -1816,6 +1850,7 @@ func (r *InstanceReconciler) SetupWithManager(
 	projectNamespaceForInstance InstanceProjectNamespaceFunc,
 	edgeClusterName string,
 	clusterNameForProject func(projectID string) multicluster.ClusterName,
+	watchProviderClaims bool,
 ) error {
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
@@ -1841,40 +1876,34 @@ func (r *InstanceReconciler) SetupWithManager(
 
 	edgeClusterNameVal := r.edgeClusterName
 
-	return mcbuilder.ControllerManagedBy(mgr).
-		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Watches(
+	b := mcbuilder.ControllerManagedBy(mgr).
+		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+	// The direct ResourceClaim watch resolves the quota.miloapis.com CRD only on
+	// the Milo project control planes, so the caller gates registration on
+	// watchProviderClaims (milo mode only); in single/cluster mode it is never
+	// registered, so the manager can't engage it against a cell that has no quota
+	// CRD (#171). Claim writes are unaffected — they run wherever quotaRestConfig
+	// is set.
+	if watchProviderClaims {
+		b = b.Watches(
 			&quotav1alpha1.ResourceClaim{},
 			func(_ multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(
-					func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-						claim := obj.(*quotav1alpha1.ResourceClaim)
-						// Map the claim back to its owning Instance. The Instance
-						// namespace is carried on a label (the claim itself lives in
-						// the project's quota namespace) and the Instance name is the
-						// claim name with the resource-kind prefix stripped.
-						instanceNamespace := claim.GetLabels()[instanceQuotaClaimNamespaceLabel]
-						if instanceNamespace == "" {
-							return nil
-						}
-						return []mcreconcile.Request{
-							{
-								Request: reconcile.Request{
-									NamespacedName: types.NamespacedName{
-										Namespace: instanceNamespace,
-										Name:      strings.TrimPrefix(claim.Name, instanceQuotaClaimNamePrefix),
-									},
-								},
-								ClusterName: r.resolveClusterNameForProject(claim.Spec.ConsumerRef.Name),
-							},
-						}
+					func(_ context.Context, obj client.Object) []mcreconcile.Request {
+						return r.mapClaimToInstanceRequest(obj.(*quotav1alpha1.ResourceClaim))
 					},
 				)
 			},
+			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 				return obj.GetLabels()[instanceQuotaClaimSourceLabel] == edgeClusterNameVal
 			})),
-		).
+		)
+	}
+
+	return b.
 		// Watch companion ConfigMaps: when one arrives (or is updated) re-queue all
 		// Instances in the namespace so they can attempt gate-clearing.
 		Watches(&corev1.ConfigMap{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
