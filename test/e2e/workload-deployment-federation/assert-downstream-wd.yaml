@@ -1,0 +1,9 @@
+# Assert the WorkloadDeployment exists in Karmada with the city-code label.
+# ($downstreamNS) is substituted by Chainsaw's template engine from the script binding.
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  namespace: ($downstreamNS)
+  name: test-federation-wd
+  labels:
+    topology.datum.net/city-code: dfw

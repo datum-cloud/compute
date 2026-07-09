@@ -1,0 +1,6 @@
+# Asserts that the PropagationPolicy for city dfw exists in the Karmada namespace.
+apiVersion: policy.karmada.io/v1alpha1
+kind: PropagationPolicy
+metadata:
+  namespace: ($downstreamNS)
+  name: workload-deployments-dfw

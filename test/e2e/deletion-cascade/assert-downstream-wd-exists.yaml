@@ -1,0 +1,7 @@
+# Assert the WorkloadDeployment is present in the Karmada API server.
+# Used both to confirm federation succeeded and as the target for the error: check.
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  namespace: ($downstreamNS)
+  name: test-cascade-wd
