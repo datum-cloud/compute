@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ─────────────────────────────────────────────────────────────────────────────
+# e2e cell deploy layer.
+#
+# References the REAL production cell overlay verbatim and applies only the
+# deviations required to run inside a local Kind environment. The cell overlay
+# is deployed unchanged apart from the image source and the quota-credential
+# neutralisation below — in particular FEDERATION_KUBECONFIG stays empty, so the
+# cell controllers run purely against the local cluster where Karmada propagates
+# WorkloadDeployments, exactly as in production.
+# ─────────────────────────────────────────────────────────────────────────────
+
+resources:
+  - ../../../../config/overlays/cell
+
+# Use the locally built image side-loaded into the Kind node (task e2e:image:load)
+# instead of pulling ghcr.io/datum-cloud/compute:latest from a registry.
+images:
+  - name: ghcr.io/datum-cloud/compute
+    newName: compute
+    newTag: e2e-dev
+
+patches:
+  # DEVIATION 1 (required): drop discovery.quotaKubeconfigPath.
+  # See config_patch.yaml for the full rationale.
+  - path: config_patch.yaml
+
+  # DEVIATION 2 (required): force IfNotPresent pulls of the side-loaded image.
+  - path: deployment_patch.yaml
