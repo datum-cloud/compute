@@ -34,10 +34,13 @@ spec:
     asserted here. See README.md for full scope and prerequisites.
 
     Prerequisites:
-    - task e2e:up completed (control-plane + Karmada + pop-dfw + pop-ord)
-    - operators started with featureFlags.enableReferencedDataGate: true
-      (see README.md — NOT the stock task e2e:operator:start)
-    - tmp/e2e/kubeconfigs/downstream.yaml exists (symlink/copy of karmada.yaml)
+    - task e2e:up completed: brings up control-plane + Karmada + pop-dfw + pop-ord
+      and deploys the management and both cell operators in-cluster.
+    - the cell operator runs with featureFlags.enableReferencedDataGate: true; the
+      e2e cell deploy layer sets it (test/e2e/deploy/cell/config_patch.yaml), so
+      no separate operator-start step is needed.
+    - tmp/e2e/kubeconfigs/downstream.yaml exists (the Taskfile writes it as a copy
+      of the Karmada hub kubeconfig).
 
   template: true
 

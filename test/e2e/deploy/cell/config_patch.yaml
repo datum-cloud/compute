@@ -14,6 +14,14 @@
 # Impact: the cell InstanceReconciler skips ResourceClaim creation/quota checks.
 # The federation delivery path under test (WorkloadDeployment → Instance) is
 # unaffected; edge quota enforcement is covered separately.
+#
+# featureFlags.enableReferencedDataGate is turned on because the cell
+# WorkloadDeploymentReconciler is the sole consumer of this flag: it stamps the
+# "ReferencedData" scheduling gate onto Instances whose template references a
+# ConfigMap or Secret, and the cell InstanceReconciler clears the gate once the
+# companions land on the cell. The referenced-data-mounts and
+# referenced-data-delete-cascade suites assert that stamp-then-clear behaviour,
+# so without the flag those suites would observe an Instance that is never gated.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -24,3 +32,5 @@ data:
     kind: WorkloadOperator
     metricsServer:
       bindAddress: "0"
+    featureFlags:
+      enableReferencedDataGate: true

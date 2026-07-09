@@ -26,62 +26,23 @@ against a downstream cluster. See `docs/compute/development/plans/configmap-secr
 
 ## Prerequisites
 
-1. **Clusters running**: `task e2e:up` has completed successfully. The following
-   kubeconfigs must exist under `tmp/e2e/kubeconfigs/`:
-   - `control-plane.yaml`
-   - `karmada.yaml`
-   - `downstream.yaml` — **REQUIRED** by `chainsaw-config.yaml` but written as
-     `karmada.yaml` by the Taskfile. Add a copy step (see Harness Gaps below).
-   - `pop-dfw.yaml`
+**`task e2e:up` has completed successfully.** In the in-cluster harness this one
+target brings up the Kind clusters + Karmada AND deploys the operators from the
+real production overlays (plus the local e2e deviations), so there is no separate
+operator-start step. It produces these kubeconfigs under `tmp/e2e/kubeconfigs/`:
 
-2. **Operators running with `enableReferencedDataGate: true`**: start the management
-   and cell operators using the dedicated task (see below). The stock
-   `task e2e:operator:start` does NOT pass a server config and therefore starts
-   operators with `enableReferencedDataGate: false` — the feature is completely
-   inert without this flag.
+- `control-plane.yaml` — management cluster (also hosts the Karmada hub)
+- `karmada.yaml` — the Karmada hub API server
+- `downstream.yaml` — a copy of `karmada.yaml` the Taskfile writes so
+  `cluster: downstream` steps resolve (referenced by `chainsaw-config.yaml`)
+- `pop-dfw.yaml`, `pop-ord.yaml` — the POP cell clusters
 
-## Running the operators with the feature flag enabled
-
-Use the dedicated Taskfile target that starts both operators with
-`featureFlags.enableReferencedDataGate: true`:
-
-```sh
-task e2e:operator:start:referenced-data
-```
-
-This starts management (`:9091`) and cell (`:9092`) operators with
-`--server-config=hack/e2e/operator-config-referenced-data.yaml` and waits
-for both health checks before returning.
-
-To stop both operators: `task e2e:operator:stop`.
-
-Alternatively, start them manually:
-
-```sh
-# Management operator — control-plane cluster, feature flag on
-KUBECONFIG=tmp/e2e/kubeconfigs/control-plane.yaml \
-go run ./cmd/main.go \
-  --federation-kubeconfig=tmp/e2e/kubeconfigs/karmada.yaml \
-  --enable-management-controllers=true \
-  --enable-cell-controllers=false \
-  --leader-elect=false \
-  --health-probe-bind-address=:9091 \
-  --server-config=hack/e2e/operator-config-referenced-data.yaml \
-  > tmp/e2e/logs/operator-management-refdata.log 2>&1 &
-
-# Cell operator — pop-dfw cluster, feature flag on
-KUBECONFIG=tmp/e2e/kubeconfigs/pop-dfw.yaml \
-go run ./cmd/main.go \
-  --federation-kubeconfig=tmp/e2e/kubeconfigs/karmada.yaml \
-  --enable-management-controllers=false \
-  --enable-cell-controllers=true \
-  --leader-elect=false \
-  --health-probe-bind-address=:9092 \
-  --server-config=hack/e2e/operator-config-referenced-data.yaml \
-  > tmp/e2e/logs/operator-cell-dfw-refdata.log 2>&1 &
-```
-
-Wait for health checks on `:9091` and `:9092` before running the test.
+**The cell operator runs with `enableReferencedDataGate: true`.** The e2e cell
+deploy layer sets it in `test/e2e/deploy/cell/config_patch.yaml`. The flag's sole
+consumer is the cell `WorkloadDeploymentReconciler` (it stamps the `ReferencedData`
+scheduling gate); without it the Instance is never gated and Hop 5 cannot pass.
+The management deploy layer sets the same flag for parity, though it is inert
+there because that overlay enables management controllers only.
 
 ## Running just this scenario
 
@@ -101,19 +62,16 @@ task e2e:test:filter -- --include-test-regex referenced-data-mounts
 
 ## Harness notes
 
-The following items were gaps at the time this test was written and have since
-been fixed in `Taskfile.yaml`:
+This test targets the in-cluster harness, where `task e2e:up` builds the operator
+image, side-loads it into every Kind node, and deploys the management + cell
+operators from the real overlays. Points worth knowing:
 
-1. `_e2e:karmada:build-kubeconfig` now copies `karmada.yaml` →
-   `downstream.yaml`, so `cluster: downstream` steps work out of the box.
-2. `e2e:operator:start` now uses `--federation-kubeconfig` (the correct flag
-   name) for both management and cell operators.
-3. `e2e:operator:start` now passes `--enable-management-controllers=true` to
-   the management operator, enabling the WorkloadDeploymentFederator and
-   InstanceProjector controllers.
-4. `e2e:operator:start:referenced-data` is a dedicated task that starts both
-   operators with the `enableReferencedDataGate` feature flag on.
-5. `e2e:crds:install` now installs Milo quota CRDs to all clusters so the
+1. `_e2e:karmada:build-kubeconfig` copies `karmada.yaml` → `downstream.yaml`, so
+   `cluster: downstream` steps work out of the box.
+2. The `enableReferencedDataGate` feature flag is delivered through the deploy
+   layer (`test/e2e/deploy/{cell,management}/config_patch.yaml`), not a host-side
+   `--server-config`. There is no separate operator-start task to run.
+3. `e2e:crds:install` installs Milo quota CRDs to all clusters so the
    InstanceReconciler's ResourceClaim watches start cleanly.
 
 ## Companion naming convention
