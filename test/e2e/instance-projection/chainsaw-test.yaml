@@ -16,10 +16,13 @@ spec:
     4. Assert the projection exists with the upstream tracking label and an owner
        reference to the WorkloadDeployment (for cascading deletion).
 
-    Cluster name label: "cluster-single"
-    The compute operator runs in single-provider mode for this e2e environment,
-    registering the control-plane cluster with the multicluster-runtime manager
-    under the name "single" (see cmd/main.go, wrappedSingleClusterProvider).
+    Cluster name label: "cluster-single".
+    The management operator runs discovery.mode=single in this environment, which
+    registers the control-plane cluster with the multicluster-runtime manager
+    under the fixed name "single" (cmd/main.go singleClusterName, wired via
+    mcsingle.New). The InstanceProjector decodes the upstream-cluster-name label
+    ("cluster-single" → "single") to pick the project cluster to project into, so
+    the label this test writes onto the hub Instance must encode "single".
 
   template: true
 

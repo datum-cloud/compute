@@ -13,6 +13,14 @@
 #   cert-manager CSI driver, which is not installed in Kind and whose issuer is
 #   supplied by infra rather than the overlay. The e2e suites never create
 #   Workload objects, so the Workload webhook is never exercised.
+#
+# - featureFlags.enableReferencedDataGate mirrors the flag set on the cell so the
+#   two operators share one feature-flag surface, matching the retired host-run
+#   harness which passed the same --server-config flag to both. Its only consumer
+#   is the cell WorkloadDeploymentReconciler, which this management overlay does
+#   not run (it enables management controllers only), so the flag is inert here;
+#   the cell config_patch carries the copy that actually gates Instances. Kept
+#   explicit so the flag does not silently diverge between the two operators.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,3 +33,5 @@ data:
       bindAddress: "0"
     discovery:
       mode: single
+    featureFlags:
+      enableReferencedDataGate: true

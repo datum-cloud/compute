@@ -10,12 +10,22 @@ spec:
 
     Write-back convention (internal/controller/instance_controller.go):
     - The Instance is written to Karmada at the same namespace/name as the POP-cell Instance.
-    - Label meta.datumapis.com/upstream-cluster-name is set to
-      "cluster-<clusterName>" (e.g. "cluster-compute-pop-dfw").
-    - Label meta.datumapis.com/upstream-namespace records the originating namespace.
+    - The identity labels are NOT derived from the cell's own cluster name. The
+      write-back reads them from the hub ns-<uid> namespace, which the management
+      federator stamped: meta.datumapis.com/upstream-cluster-name carries
+      EncodeClusterName of the federating cluster ("single" here → "cluster-single")
+      and meta.datumapis.com/upstream-namespace records the originating namespace.
 
-    Note: this test requires the compute operator (InstanceReconciler) to be running
-    in the DFW POP cell cluster.
+    Note: this test requires the cell InstanceReconciler to be running in the DFW
+    POP cell cluster with federation configured.
+
+    Runtime prerequisite (see verification phase): the write-back path errors
+    unless the hub ns-<uid> namespace carries the two upstream-* labels above and
+    the cell Instance carries the full set of linking labels the stateful control
+    strategy stamps at creation. This suite hand-crafts a bare namespace and a
+    bare Instance, so the write-back may not fire until those labels are seeded
+    (or the Instance is created via a real WorkloadDeployment, as full-federation
+    does).
 
   template: true
 

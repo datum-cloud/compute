@@ -22,9 +22,9 @@ spec:
     the stranded companion and its ResourceBinding are both deleted.
 
     Prerequisites:
-    - task e2e:up completed
-    - operators started with featureFlags.enableReferencedDataGate: true
-      (task e2e:operator:start:referenced-data)
+    - task e2e:up completed (deploys the management + both cell operators in-cluster)
+    - the cell operator runs with featureFlags.enableReferencedDataGate: true, set
+      by the e2e cell deploy layer (test/e2e/deploy/cell/config_patch.yaml)
     - CompanionGCReconciler enabled in the management operator
     - tmp/e2e/kubeconfigs/downstream.yaml exists
 

@@ -18,7 +18,18 @@ spec:
     6. InstanceProjector on control-plane creates a projection of the Instance
        in the project namespace.
 
-    Prerequisites: both operator instances must be running (task e2e:operator:start).
+    Cluster-name label: "cluster-single".
+    The value is NOT the cell's cluster name. The management operator federates
+    the WorkloadDeployment from its local control-plane cluster, which it
+    registers with multicluster-runtime under the name "single" (both operators
+    run discovery.mode=single in this environment, defaulting the cluster name to
+    "single" per cmd/main.go singleClusterName). The federator stamps
+    EncodeClusterName("single") = "cluster-single" onto the hub ns-<uid>
+    namespace; the cell write-back and the projection both copy that namespace
+    label verbatim, so the assertion holds regardless of which cell reconciles.
+
+    Prerequisites: the management + both cell operators are deployed in-cluster
+    (task e2e:up).
 
   template: true
 
