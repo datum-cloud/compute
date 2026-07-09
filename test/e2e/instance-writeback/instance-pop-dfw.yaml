@@ -1,0 +1,15 @@
+# Instance created in the DFW POP cell.
+# ($instanceNS) is the namespace derived from the Chainsaw test namespace UID,
+# matching the ns-<uid> convention so the InstanceProjector can resolve it later.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Instance
+metadata:
+  name: test-writeback-instance
+  namespace: ($instanceNS)
+spec:
+  runtime:
+    resources:
+      instanceType: datumcloud/d1-standard-2
+  networkInterfaces:
+  - network:
+      name: test-network
