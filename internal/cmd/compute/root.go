@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.datum.net/datumctl/plugin"
 
+	"go.datum.net/compute/internal/cmd/compute/access"
 	"go.datum.net/compute/internal/cmd/compute/deploy"
 	"go.datum.net/compute/internal/cmd/compute/destroy"
 	"go.datum.net/compute/internal/cmd/compute/instances"
@@ -18,12 +19,21 @@ import (
 func Command() *cobra.Command {
 	root := plugin.NewRootCmd("compute", "Deploy and manage containerized workloads on Datum Cloud")
 	root.SilenceUsage = true
+	// The activation SDK writes its own user-facing copy (including any "Error:"
+	// prefix) and returns a typed error carrying the exit code; the plugin entry
+	// point prints and maps it. Silence cobra's default error printing so those
+	// messages are not duplicated.
+	root.SilenceErrors = true
 
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		return util.EnsureComputeEntitlement(cmd.Context(), util.ProjectFromCmd(cmd), cmd.InOrStdin(), cmd.ErrOrStderr())
+		if util.GateExempt(cmd) {
+			return nil
+		}
+		return util.RunActivationGate(cmd)
 	}
 
 	root.AddCommand(
+		access.Command(),
 		deploy.Command(),
 		destroy.Command(),
 		instances.Command(),
