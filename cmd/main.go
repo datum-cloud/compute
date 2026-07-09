@@ -116,8 +116,8 @@ func main() {
 	var featureGatesFlag string
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
 		"A set of key=value pairs that describe feature gates for the compute operator. "+
-			"Example: --feature-gates=NetworkingIntegration=false. "+
-			"Available features: NetworkingIntegration (default=true).")
+			"Example: --feature-gates=NetworkingIntegration=true. "+
+			"Available features: NetworkingIntegration (default=false).")
 
 	opts := zap.Options{
 		Development: true,
