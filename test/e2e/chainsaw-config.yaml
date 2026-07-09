@@ -1,0 +1,47 @@
+# Chainsaw global configuration for the compute federation e2e test suite.
+#
+# Prerequisites
+# ─────────────
+# Run `task e2e:up` to create the Kind clusters and populate kubeconfigs under
+# tmp/e2e/kubeconfigs/ before running Chainsaw.
+#
+# Running
+# ───────
+# From the repository root via Taskfile (recommended):
+#
+#   task e2e:test
+#
+# Or directly:
+#
+#   KUBECONFIG=tmp/e2e/kubeconfigs/control-plane.yaml \
+#   chainsaw test --config test/e2e/chainsaw-config.yaml test/e2e/
+#
+# The KUBECONFIG env var sets the "default" cluster (control-plane cell).
+# Additional clusters (downstream, pop-dfw, pop-ord) are declared below and
+# referenced by name in individual test steps via `cluster: downstream` etc.
+#
+# Kubeconfig paths below are relative to the working directory where Chainsaw is
+# invoked (the project root), NOT relative to this config file's location.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: chainsaw
+spec:
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 60s
+    delete: 30s
+    error: 30s
+    exec: 30s
+  clusters:
+    # Downstream control plane. WorkloadDeployments, PropagationPolicies,
+    # and Instance write-backs live here.
+    downstream:
+      kubeconfig: tmp/e2e/kubeconfigs/downstream.yaml
+    # POP DFW cell — downstream member cluster labelled topology.datum.net/city-code=dfw.
+    pop-dfw:
+      kubeconfig: tmp/e2e/kubeconfigs/pop-dfw.yaml
+    # POP ORD cell — downstream member cluster labelled topology.datum.net/city-code=ord.
+    pop-ord:
+      kubeconfig: tmp/e2e/kubeconfigs/pop-ord.yaml
