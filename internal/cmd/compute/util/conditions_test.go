@@ -36,7 +36,7 @@ func TestReadinessBlock(t *testing.T) {
 		{
 			name: "condition True — not blocked",
 			conditions: []metav1.Condition{
-				makeCondition(v1alpha.InstanceReady, "True", "Available", ""),
+				makeCondition(v1alpha.InstanceReady, "True", statusAvailable, ""),
 			},
 			condType:    v1alpha.InstanceReady,
 			wantBlocked: false,
@@ -119,15 +119,15 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 		{
 			name:       "no conditions — Pending, no detail",
 			conditions: nil,
-			wantStatus: "Pending",
+			wantStatus: statusPending,
 			wantDetail: "",
 		},
 		{
 			name: "Ready True — Available",
 			conditions: []metav1.Condition{
-				makeCondition(v1alpha.InstanceReady, "True", "Available", ""),
+				makeCondition(v1alpha.InstanceReady, "True", statusAvailable, ""),
 			},
-			wantStatus: "Available",
+			wantStatus: statusAvailable,
 			wantDetail: "",
 		},
 		{
@@ -159,7 +159,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonPendingProgramming, ""),
 			},
-			wantStatus: "Starting",
+			wantStatus: statusStarting,
 			wantDetail: "",
 		},
 		{
@@ -167,7 +167,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
 			},
-			wantStatus: "Starting",
+			wantStatus: statusStarting,
 			wantDetail: "",
 		},
 		{
@@ -175,7 +175,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
 			},
-			wantStatus: "Starting",
+			wantStatus: statusStarting,
 			wantDetail: "",
 		},
 		{
@@ -183,7 +183,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
 			},
-			wantStatus: "Not available — image unavailable",
+			wantStatus: detailImageUnavailable,
 			wantDetail: "image pull failed: not found",
 		},
 		{
@@ -191,7 +191,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
 			},
-			wantStatus: "Not available — image unavailable",
+			wantStatus: detailImageUnavailable,
 			wantDetail: "image pull failed: not found",
 		},
 		{
@@ -199,7 +199,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
 			},
-			wantStatus: "Not available — instance crashing",
+			wantStatus: detailInstanceCrashing,
 			wantDetail: "exit code 1",
 		},
 		{
@@ -207,7 +207,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
 			},
-			wantStatus: "Not available — instance crashing",
+			wantStatus: detailInstanceCrashing,
 			wantDetail: "exit code 1",
 		},
 		{
@@ -215,7 +215,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
 			},
-			wantStatus: "Not available — configuration error",
+			wantStatus: detailConfigError,
 			wantDetail: "invalid env var name",
 		},
 		{
@@ -223,7 +223,7 @@ func TestInstanceStatusDetail_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
 			},
-			wantStatus: "Not available — configuration error",
+			wantStatus: detailConfigError,
 			wantDetail: "invalid env var name",
 		},
 	}
@@ -252,7 +252,7 @@ func TestInstanceStatus_BlockingReason(t *testing.T) {
 		{
 			name:       "no conditions — Pending",
 			conditions: nil,
-			wantStatus: "Pending",
+			wantStatus: statusPending,
 		},
 		{
 			name: "Ready False / SourceNotFound — Pending (SourceNotFound)",
@@ -273,56 +273,56 @@ func TestInstanceStatus_BlockingReason(t *testing.T) {
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonPendingProgramming, ""),
 			},
-			wantStatus: "Starting",
+			wantStatus: statusStarting,
 		},
 		{
 			name: "Programmed Unknown/ProgrammingInProgress — Starting",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonProgrammingInProgress, ""),
 			},
-			wantStatus: "Starting",
+			wantStatus: statusStarting,
 		},
 		{
 			name: "Programmed False/ImageUnavailable — Failed (image unavailable)",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
 			},
-			wantStatus: "Failed (image unavailable)",
+			wantStatus: statusFailedImageUnavailable,
 		},
 		{
 			name: "Programmed Unknown/ImageUnavailable — Failed (image unavailable)",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonImageUnavailable, "image pull failed: not found"),
 			},
-			wantStatus: "Failed (image unavailable)",
+			wantStatus: statusFailedImageUnavailable,
 		},
 		{
 			name: "Programmed False/InstanceCrashing — Failed (crashing)",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
 			},
-			wantStatus: "Failed (crashing)",
+			wantStatus: statusFailedCrashing,
 		},
 		{
 			name: "Programmed Unknown/InstanceCrashing — Failed (crashing)",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonInstanceCrashing, "exit code 1"),
 			},
-			wantStatus: "Failed (crashing)",
+			wantStatus: statusFailedCrashing,
 		},
 		{
 			name: "Programmed False/ConfigurationError — Failed (configuration error)",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "False", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
 			},
-			wantStatus: "Failed (configuration error)",
+			wantStatus: statusFailedConfigError,
 		},
 		{
 			name: "Programmed Unknown/ConfigurationError — Failed (configuration error)",
 			conditions: []metav1.Condition{
 				makeCondition(v1alpha.InstanceProgrammed, "Unknown", v1alpha.InstanceProgrammedReasonConfigurationError, "invalid env var name"),
 			},
-			wantStatus: "Failed (configuration error)",
+			wantStatus: statusFailedConfigError,
 		},
 	}
 
@@ -367,7 +367,7 @@ func TestWorkloadHealth_BlockingReason(t *testing.T) {
 		{
 			name: "Available True all ready",
 			conditions: []metav1.Condition{
-				makeCondition(v1alpha.WorkloadAvailable, "True", "Available", ""),
+				makeCondition(v1alpha.WorkloadAvailable, "True", statusAvailable, ""),
 			},
 			ready:      2,
 			desired:    2,

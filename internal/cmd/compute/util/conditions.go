@@ -7,6 +7,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// User-facing instance status strings, shared between the list and describe
+// views (and their tests) so the wording stays in one place.
+const (
+	statusAvailable = "Available"
+	statusStarting  = "Starting"
+	statusPending   = "Pending"
+
+	statusFailedImageUnavailable = "Failed (image unavailable)"
+	statusFailedCrashing         = "Failed (crashing)"
+	statusFailedConfigError      = "Failed (configuration error)"
+
+	detailImageUnavailable = "Not available — image unavailable"
+	detailInstanceCrashing = "Not available — instance crashing"
+	detailConfigError      = "Not available — configuration error"
+)
+
 // FindCondition returns the first condition with the given type, or nil.
 func FindCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
 	for i := range conditions {
@@ -47,7 +63,7 @@ func ReadinessBlock(conditions []metav1.Condition, condType string) (reason, mes
 func InstanceStatus(conditions []metav1.Condition) string {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
 	if ready != nil && ready.Status == metav1.ConditionTrue {
-		return "Available"
+		return statusAvailable
 	}
 
 	quota := FindCondition(conditions, v1alpha.InstanceQuotaGranted)
@@ -69,13 +85,13 @@ func InstanceStatus(conditions []metav1.Condition) string {
 	if programmed != nil && programmed.Status != metav1.ConditionTrue {
 		switch programmed.Reason {
 		case v1alpha.InstanceProgrammedReasonImageUnavailable:
-			return "Failed (image unavailable)"
+			return statusFailedImageUnavailable
 		case v1alpha.InstanceProgrammedReasonInstanceCrashing:
-			return "Failed (crashing)"
+			return statusFailedCrashing
 		case v1alpha.InstanceProgrammedReasonConfigurationError:
-			return "Failed (configuration error)"
+			return statusFailedConfigError
 		case v1alpha.InstanceProgrammedReasonPendingProgramming, v1alpha.InstanceProgrammedReasonProgrammingInProgress:
-			return "Starting"
+			return statusStarting
 		}
 	}
 
@@ -87,7 +103,7 @@ func InstanceStatus(conditions []metav1.Condition) string {
 		return "Pending (" + reason + ")"
 	}
 
-	return "Pending"
+	return statusPending
 }
 
 // InstanceStatusDetail returns a status line and optional detail message for describe views.
@@ -103,7 +119,7 @@ func InstanceStatus(conditions []metav1.Condition) string {
 func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string) {
 	ready := FindCondition(conditions, v1alpha.InstanceReady)
 	if ready != nil && ready.Status == metav1.ConditionTrue {
-		return "Available", ""
+		return statusAvailable, ""
 	}
 
 	quota := FindCondition(conditions, v1alpha.InstanceQuotaGranted)
@@ -115,13 +131,13 @@ func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string)
 	if programmed != nil && programmed.Status != metav1.ConditionTrue {
 		switch programmed.Reason {
 		case v1alpha.InstanceProgrammedReasonImageUnavailable:
-			return "Not available — image unavailable", programmed.Message
+			return detailImageUnavailable, programmed.Message
 		case v1alpha.InstanceProgrammedReasonInstanceCrashing:
-			return "Not available — instance crashing", programmed.Message
+			return detailInstanceCrashing, programmed.Message
 		case v1alpha.InstanceProgrammedReasonConfigurationError:
-			return "Not available — configuration error", programmed.Message
+			return detailConfigError, programmed.Message
 		case v1alpha.InstanceProgrammedReasonPendingProgramming, v1alpha.InstanceProgrammedReasonProgrammingInProgress:
-			return "Starting", ""
+			return statusStarting, ""
 		}
 	}
 
@@ -132,7 +148,7 @@ func InstanceStatusDetail(conditions []metav1.Condition) (status, detail string)
 		return "Pending — " + reason, msg
 	}
 
-	return "Pending", ""
+	return statusPending, ""
 }
 
 // WorkloadHealth derives a one-line health summary from workload Available condition + replica counts.

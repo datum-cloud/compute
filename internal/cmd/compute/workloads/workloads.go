@@ -61,6 +61,7 @@ Use the describe subcommand for a unified config + health view of a single workl
 // workloads list
 // -----------------------------------------------------------------------
 
+//nolint:gocyclo // A list command branches over flag parsing, filtering, and several output formats; splitting it would scatter one linear flow.
 func runList(cmd *cobra.Command, _ []string) error {
 	ctx := context.Background()
 	project := util.ProjectFromCmd(cmd)

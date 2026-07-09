@@ -76,6 +76,7 @@ type instanceRow struct {
 	status      string
 }
 
+//nolint:gocyclo // A list command branches over flag parsing, filtering, and several output formats; splitting it would scatter one linear flow.
 func runList(cmd *cobra.Command, opts *listOptions) error {
 	ctx := context.Background()
 	project := util.ProjectFromCmd(cmd)

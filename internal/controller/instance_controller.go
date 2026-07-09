@@ -83,9 +83,6 @@ const (
 )
 
 const (
-	instanceAPIGroup = "compute.datumapis.com"
-	instanceKind     = "Instance"
-
 	instanceNotProgrammedMessage = "Instance has not been programmed"
 	instanceNetworkFailedReason  = "NetworkFailedToCreate"
 	instanceReadyMessage         = "Instance is ready"
