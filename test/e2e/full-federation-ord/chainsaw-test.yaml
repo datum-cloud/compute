@@ -1,0 +1,171 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: full-federation-ord
+spec:
+  description: |
+    Second-cell federation chain test (city code ord → pop-ord).
+
+    The dfw path is covered by full-federation. This suite proves the same chain
+    routes independently to the OTHER cell: an ord-placed WorkloadDeployment must
+    produce PropagationPolicy city-ord (not city-dfw), propagate to pop-ord (not
+    pop-dfw), and create its Instance on pop-ord. Both cells run the same operator
+    image, so this is the coverage that catches city-code routing regressions and
+    a mis-registered second cell.
+
+    1. Create WorkloadDeployment (cityCode: ord) on control-plane.
+    2. WorkloadDeploymentFederator replicates it to Karmada (ns-<uid> namespace)
+       and lazily creates PropagationPolicy city-ord routing to city-code=ord cells.
+    3. Karmada propagates the WD to pop-ord.
+    4. WorkloadDeploymentReconciler on pop-ord creates Instance test-fullfed-ord-wd-0.
+    5. InstanceReconciler on pop-ord writes the Instance back to Karmada with
+       label meta.datumapis.com/upstream-cluster-name: cluster-single.
+    6. InstanceProjector on control-plane projects the Instance into the project
+       namespace.
+
+    Cluster-name label "cluster-single" is the management operator's federating
+    cluster name, not the cell's — see full-federation for the full rationale.
+
+    Prerequisites: the management + both cell operators are deployed in-cluster
+    (task e2e:up).
+
+  template: true
+
+  steps:
+  - name: create-workload-deployment
+    description: Create the ord-placed WorkloadDeployment on the control-plane cluster.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: assert-wd-and-policy-in-downstream
+    description: Assert the WD federated to Karmada and PropagationPolicy city-ord was created for ord.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-fullfed-ord-wd
+            labels:
+              topology.datum.net/city-code: ord
+    - assert:
+        # The federator names the policy city-<cityCode> and routes it to cells
+        # carrying the same city-code label, so ord must land on pop-ord alone.
+        timeout: 30s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($downstreamNS)
+            name: city-ord
+          spec:
+            resourceSelectors:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              labelSelector:
+                matchLabels:
+                  topology.datum.net/city-code: ord
+            placement:
+              clusterAffinity:
+                labelSelector:
+                  matchLabels:
+                    topology.datum.net/city-code: ord
+
+  - name: assert-wd-on-pop-ord
+    description: Assert Karmada propagated the WD to pop-ord and the cell reconciler set status.
+    cluster: pop-ord
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        # Karmada propagation can take longer than a local apply.
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-fullfed-ord-wd
+          status:
+            replicas: 1
+            desiredReplicas: 1
+
+  - name: assert-instance-on-pop-ord
+    description: Assert WorkloadDeploymentReconciler created an Instance on pop-ord.
+    cluster: pop-ord
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-fullfed-ord-wd-0
+          (status.conditions[?type == 'Ready'] | [0]):
+            status: "Unknown"
+
+  - name: assert-instance-writeback-in-downstream
+    description: Assert the pop-ord InstanceReconciler wrote the Instance back to Karmada.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-fullfed-ord-wd-0
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+
+  - name: assert-instance-projected-to-control-plane
+    description: Assert InstanceProjector created a projection on the control-plane.
+    try:
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($namespace)
+            name: test-fullfed-ord-wd-0
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+          (status.conditions[?type == 'Ready'] | [0]):
+            status: "Unknown"
