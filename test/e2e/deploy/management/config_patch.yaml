@@ -1,0 +1,27 @@
+# DEVIATION (required for Kind): overrides the operator config the production
+# management-plane overlay ships (config/overlays/management-plane/discovery_mode_patch.yaml).
+#
+# - discovery.mode: milo → single. Milo discovery enumerates Projects from a Milo
+#   control plane to build per-project clients; the Kind environment has no Milo.
+#   Single-cluster discovery runs the management controllers against the local
+#   control-plane cluster while still federating WorkloadDeployments to Karmada
+#   through FEDERATION_KUBECONFIG (unchanged from the overlay). This matches how
+#   the retired host-run harness drove the management operator.
+#
+# - webhookServer is intentionally omitted, which disables the admission webhook
+#   server. The production overlay serves it with a cert delivered by the
+#   cert-manager CSI driver, which is not installed in Kind and whose issuer is
+#   supplied by infra rather than the overlay. The e2e suites never create
+#   Workload objects, so the Workload webhook is never exercised.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compute-config
+data:
+  config.yaml: |
+    apiVersion: apiserver.config.datumapis.com/v1alpha1
+    kind: WorkloadOperator
+    metricsServer:
+      bindAddress: "0"
+    discovery:
+      mode: single
