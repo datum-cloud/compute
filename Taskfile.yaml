@@ -293,6 +293,22 @@ tasks:
       # nothing to elect, so turning it off breaks the loop and lets the control
       # plane settle. Harmless in a single-replica e2e; not for production HA.
       - task: _e2e:karmada:disable-leader-election
+      # Scale any Karmada deployment that is sitting at zero back up to one. This
+      # makes the target robust to a control plane that was intentionally scaled
+      # down (for example to keep a busy host calm between runs) or left at zero
+      # by a partial install: without this, the Available wait below would block
+      # forever on a deployment that has no desired replicas.
+      - |
+        for d in $(kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            -n karmada-system get deploy -o jsonpath='{.items[*].metadata.name}'); do
+          reps=$(kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            -n karmada-system get deploy "$d" -o jsonpath='{.spec.replicas}')
+          if [ "$reps" = "0" ]; then
+            echo "Scaling Karmada deploy $d back to 1 (was scaled to 0)..."
+            kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+              -n karmada-system scale deploy "$d" --replicas=1
+          fi
+        done
       # Wait on the control-plane deployments regardless of how the install above
       # exited, so a timed-out Helm run still converges before we build the
       # kubeconfig and register cells.
