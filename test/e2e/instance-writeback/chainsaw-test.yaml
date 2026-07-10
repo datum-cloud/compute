@@ -54,10 +54,19 @@ spec:
         - name: INSTANCE_NS
           value: ($instanceNS)
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
-            create namespace "$INSTANCE_NS" \
-            --dry-run=client -o yaml | \
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f -
+          # The cell write-back reads its identity (upstream cluster + project
+          # namespace) from THIS hub namespace's labels, exactly as it would from
+          # the ns-<uid> namespace the federator stamps in the real path. Seed them
+          # so writeBackToUpstream can resolve identity instead of erroring.
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: ${INSTANCE_NS}
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+              meta.datumapis.com/upstream-namespace: ${INSTANCE_NS}
+          EOF
     cleanup:
     - script:
         env:
