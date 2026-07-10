@@ -33,8 +33,11 @@ const (
 	//     proceed to the runtime without a NetworkBinding.
 	//
 	// This flag exists so operators can run compute on edge/lab cells where
-	// VPC/NSO is not yet functional. The default is true (enabled) so that
-	// existing production deployments are unaffected.
+	// VPC/NSO is not yet functional. The default is disabled: cells carry no
+	// networking.datumapis.com CRDs, and registering a watch for an absent CRD
+	// wedges the manager's cache sync and crash-loops it. Deployments that run
+	// network-services-operator opt in with
+	// --feature-gates=NetworkingIntegration=true.
 	//
 	// alpha: v0.1
 	NetworkingIntegration featuregate.Feature = "NetworkingIntegration"
@@ -53,7 +56,7 @@ var FeatureGate featuregate.FeatureGate = MutableFeatureGate
 
 func init() {
 	if err := MutableFeatureGate.Add(map[featuregate.Feature]featuregate.FeatureSpec{
-		NetworkingIntegration: {Default: true, PreRelease: featuregate.Alpha},
+		NetworkingIntegration: {Default: false, PreRelease: featuregate.Alpha},
 	}); err != nil {
 		panic(err)
 	}

@@ -53,7 +53,7 @@ type WorkloadDeploymentReconciler struct {
 	// network-services-operator is active. When false, NetworkBinding creation is
 	// skipped, the Network scheduling gate is never added to Instances (and is
 	// actively removed if present), and the networking step is treated as
-	// immediately ready. Defaults to true.
+	// immediately ready. Defaults to false.
 	NetworkingEnabled bool
 
 	// enableReferencedDataGate mirrors FeatureFlagsConfig.EnableReferencedDataGate.

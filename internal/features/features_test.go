@@ -6,14 +6,14 @@ import (
 	"testing"
 )
 
-// TestNetworkingIntegration_DefaultEnabled verifies that the NetworkingIntegration
-// feature gate defaults to enabled so that existing production deployments are
-// unaffected when the flag is not set.
-func TestNetworkingIntegration_DefaultEnabled(t *testing.T) {
+// TestNetworkingIntegration_DefaultDisabled verifies that the NetworkingIntegration
+// feature gate defaults to disabled so cells, which carry no networking CRDs, come
+// up crash-safe when the flag is not set; deployments running NSO opt in explicitly.
+func TestNetworkingIntegration_DefaultDisabled(t *testing.T) {
 	// Use a fresh gate so this test is independent of any global state mutations.
 	gate := MutableFeatureGate.DeepCopy()
-	if !gate.Enabled(NetworkingIntegration) {
-		t.Error("NetworkingIntegration default = false, want true")
+	if gate.Enabled(NetworkingIntegration) {
+		t.Error("NetworkingIntegration default = true, want false")
 	}
 }
 
