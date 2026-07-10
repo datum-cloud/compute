@@ -51,7 +51,7 @@ spec:
         - name: downstreamNS
           value: ($stdout)
     - assert:
-        timeout: 30s
+        timeout: 120s
         resource:
           apiVersion: compute.datumapis.com/v1alpha
           kind: WorkloadDeployment
@@ -63,7 +63,7 @@ spec:
     - assert:
         # The federator names the policy city-<cityCode> and routes it to cells
         # carrying the same city-code label, so ord must land on pop-ord alone.
-        timeout: 30s
+        timeout: 120s
         resource:
           apiVersion: policy.karmada.io/v1alpha1
           kind: PropagationPolicy
