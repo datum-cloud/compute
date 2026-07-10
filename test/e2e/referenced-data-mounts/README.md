@@ -10,7 +10,7 @@ The test covers Hops 1–5 of the federated delivery chain:
 | Hop | Cluster | What is asserted |
 |-----|---------|-----------------|
 | 1 | control-plane | Source ConfigMap + Secret created in the project namespace |
-| 2 | control-plane | Companion `configmap.app-config` + `secret.app-secret` appear in `ns-{project-uid}` with `compute.datumapis.com/referenced-data: "true"`; WD carries `expected-referenced-data` annotation; WD condition `ReferencedDataReady=True` |
+| 2 | control-plane | Companion `app-config` + `app-secret` appear in `ns-{project-uid}` with `compute.datumapis.com/referenced-data: "true"`; WD carries `expected-referenced-data` annotation; WD condition `ReferencedDataReady=True` |
 | 3 | downstream (Karmada hub) | Companion ConfigMap + Secret present in `ns-{project-uid}` on the hub; WD carries the annotation; `PropagationPolicy city-dfw` has ConfigMap and Secret resource selectors |
 | 4 | pop-dfw (cell) | WD + companions propagated to the cell in `ns-{project-uid}` |
 | 5 | pop-dfw (cell) | Instance `test-refdata-wd-0` exists; `ReferencedData` scheduling gate cleared; `ReferencedDataReady=True` condition set |
@@ -76,11 +76,13 @@ operators from the real overlays. Points worth knowing:
 
 ## Companion naming convention
 
-The `ReferencedDataController` derives companion names deterministically:
+The `ReferencedDataController` derives companion names deterministically. When
+the source name is already a valid DNS subdomain within the length budget, the
+companion keeps that name unchanged (kind is not prefixed):
 
 | Source | Companion name |
 |--------|---------------|
-| `ConfigMap/app-config` | `configmap.app-config` |
-| `Secret/app-secret` | `secret.app-secret` |
+| `ConfigMap/app-config` | `app-config` |
+| `Secret/app-secret` | `app-secret` |
 
 These names are asserted directly in the test steps.
