@@ -39,7 +39,7 @@ spec:
     - the cell operator runs with featureFlags.enableReferencedDataGate: true; the
       e2e cell deploy layer sets it (test/e2e/deploy/cell/config_patch.yaml), so
       no separate operator-start step is needed.
-    - tmp/e2e/kubeconfigs/downstream.yaml exists (the Taskfile writes it as a copy
+    - .test-infra/kubeconfigs/federation/karmada.yaml exists (the Taskfile writes it as a copy
       of the Karmada hub kubeconfig).
 
   template: true
@@ -73,7 +73,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -99,7 +99,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -124,7 +124,7 @@ spec:
     - script:
         # Verify the annotation is present and non-empty.
         content: |
-          ANNO=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          ANNO=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get workloaddeployment test-refdata-wd \
             --namespace "$NAMESPACE" \
             -o jsonpath='{.metadata.annotations.compute\.datumapis\.com/expected-referenced-data}')
@@ -157,7 +157,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -203,7 +203,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -248,7 +248,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -291,7 +291,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -317,7 +317,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -338,10 +338,10 @@ spec:
         # Verify the ReferencedData gate is absent from the Instance spec.
         timeout: 60s
         content: |
-          DOWNSTREAMS_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          DOWNSTREAMS_NS=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}')
-          GATES=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+          GATES=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-pop-dfw.yaml \
             get instance test-refdata-wd-0 \
             --namespace "$DOWNSTREAMS_NS" \
             -o jsonpath='{.spec.schedulingGates[*].name}')

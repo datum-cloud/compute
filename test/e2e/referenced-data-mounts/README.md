@@ -29,13 +29,13 @@ against a downstream cluster. See `docs/compute/development/plans/configmap-secr
 **`task e2e:up` has completed successfully.** In the in-cluster harness this one
 target brings up the Kind clusters + Karmada AND deploys the operators from the
 real production overlays (plus the local e2e deviations), so there is no separate
-operator-start step. It produces these kubeconfigs under `tmp/e2e/kubeconfigs/`:
+operator-start step. The shared test-infra federation foundation writes these
+kubeconfigs under `.test-infra/kubeconfigs/federation/`:
 
-- `control-plane.yaml` — management cluster (also hosts the Karmada hub)
-- `karmada.yaml` — the Karmada hub API server
-- `downstream.yaml` — a copy of `karmada.yaml` the Taskfile writes so
-  `cluster: downstream` steps resolve (referenced by `chainsaw-config.yaml`)
-- `pop-dfw.yaml`, `pop-ord.yaml` — the POP cell clusters
+- `compute-control-plane.yaml` — management cluster (also hosts the Karmada hub)
+- `karmada.yaml` — the Karmada hub API server; `chainsaw-config.yaml` maps the
+  `cluster: downstream` steps directly at this file
+- `compute-pop-dfw.yaml`, `compute-pop-ord.yaml` — the POP cell clusters
 
 **The cell operator runs with `enableReferencedDataGate: true`.** The e2e cell
 deploy layer sets it in `test/e2e/deploy/cell/config_patch.yaml`. The flag's sole
@@ -47,7 +47,7 @@ there because that overlay enables management controllers only.
 ## Running just this scenario
 
 ```sh
-KUBECONFIG=tmp/e2e/kubeconfigs/control-plane.yaml \
+KUBECONFIG=.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
 bin/chainsaw test \
   --config test/e2e/chainsaw-config.yaml \
   --include-test-regex "referenced-data-mounts" \
@@ -66,8 +66,9 @@ This test targets the in-cluster harness, where `task e2e:up` builds the operato
 image, side-loads it into every Kind node, and deploys the management + cell
 operators from the real overlays. Points worth knowing:
 
-1. `_e2e:karmada:build-kubeconfig` copies `karmada.yaml` → `downstream.yaml`, so
-   `cluster: downstream` steps work out of the box.
+1. The federation foundation writes the hub kubeconfig as `karmada.yaml`, and
+   `chainsaw-config.yaml` points the `cluster: downstream` steps straight at it,
+   so those steps work out of the box.
 2. The `enableReferencedDataGate` feature flag is delivered through the deploy
    layer (`test/e2e/deploy/{cell,management}/config_patch.yaml`), not a host-side
    `--server-config`. There is no separate operator-start task to run.

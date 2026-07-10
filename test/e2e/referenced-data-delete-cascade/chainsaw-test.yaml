@@ -21,7 +21,7 @@ spec:
     - task e2e:up completed (deploys the management + both cell operators in-cluster)
     - the cell operator runs with featureFlags.enableReferencedDataGate: true, set
       by the e2e cell deploy layer (test/e2e/deploy/cell/config_patch.yaml)
-    - tmp/e2e/kubeconfigs/downstream.yaml exists
+    - .test-infra/kubeconfigs/federation/karmada.yaml exists
 
   template: true
 
@@ -53,7 +53,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -89,7 +89,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -118,7 +118,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -159,7 +159,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -180,7 +180,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -203,7 +203,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -235,7 +235,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -262,12 +262,12 @@ spec:
         # the cell copy from a still-live Work, this script catches it.
         timeout: 40s
         content: |
-          CELL_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          CELL_NS=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}')
           for i in $(seq 1 6); do
             sleep 5
-            CM=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            CM=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-pop-dfw.yaml \
               get configmap gc-test-config \
               --namespace "$CELL_NS" \
               --ignore-not-found 2>/dev/null)
@@ -275,7 +275,7 @@ spec:
               echo "ERROR: gc-test-config ConfigMap was re-created on cell (Karmada recreate loop!)"
               exit 1
             fi
-            SEC=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            SEC=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-pop-dfw.yaml \
               get secret gc-test-secret \
               --namespace "$CELL_NS" \
               --ignore-not-found 2>/dev/null)
