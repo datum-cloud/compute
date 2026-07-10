@@ -363,6 +363,15 @@ tasks:
           kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
             -n karmada-system delete pod etcd-0 --ignore-not-found
         fi
+      # Relax the Karmada API server's health probes. Under sustained load (e.g.
+      # the chainsaw suites) a transient etcd/DNS blip makes the default 5s/15s
+      # probes fail, and the kubelet SIGKILLs the API server — which cascades to
+      # a crashloop. Wider thresholds let it ride out the blip instead of being
+      # killed. Belt-and-suspenders with the etcd fsync + leader-election tuning.
+      - |
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+          -n karmada-system patch deploy karmada-apiserver --type=strategic \
+          -p '{"spec":{"template":{"spec":{"containers":[{"name":"karmada-apiserver","livenessProbe":{"timeoutSeconds":30,"failureThreshold":30,"periodSeconds":30,"initialDelaySeconds":60},"readinessProbe":{"timeoutSeconds":30,"failureThreshold":30,"periodSeconds":20}}]}}}}'
 
   e2e:karmada:configure:
     desc: "Apply federation component config to the Karmada API server (idempotent)"
