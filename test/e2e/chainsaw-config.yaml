@@ -3,7 +3,7 @@
 # Prerequisites
 # ─────────────
 # Run `task e2e:up` to create the Kind clusters and populate kubeconfigs under
-# tmp/e2e/kubeconfigs/ before running Chainsaw.
+# .test-infra/kubeconfigs/federation/ before running Chainsaw.
 #
 # Running
 # ───────
@@ -13,7 +13,7 @@
 #
 # Or directly:
 #
-#   KUBECONFIG=tmp/e2e/kubeconfigs/control-plane.yaml \
+#   KUBECONFIG=.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
 #   chainsaw test --config test/e2e/chainsaw-config.yaml test/e2e/
 #
 # The KUBECONFIG env var sets the "default" cluster (control-plane cell).
@@ -40,13 +40,13 @@ spec:
     error: 60s
     exec: 30s
   clusters:
-    # Downstream control plane. WorkloadDeployments, PropagationPolicies,
-    # and Instance write-backs live here.
+    # Downstream control plane (the Karmada hub API server). WorkloadDeployments,
+    # PropagationPolicies, and Instance write-backs live here.
     downstream:
-      kubeconfig: tmp/e2e/kubeconfigs/downstream.yaml
+      kubeconfig: .test-infra/kubeconfigs/federation/karmada.yaml
     # POP DFW cell — downstream member cluster labelled topology.datum.net/city-code=dfw.
     pop-dfw:
-      kubeconfig: tmp/e2e/kubeconfigs/pop-dfw.yaml
+      kubeconfig: .test-infra/kubeconfigs/federation/compute-pop-dfw.yaml
     # POP ORD cell — downstream member cluster labelled topology.datum.net/city-code=ord.
     pop-ord:
-      kubeconfig: tmp/e2e/kubeconfigs/pop-ord.yaml
+      kubeconfig: .test-infra/kubeconfigs/federation/compute-pop-ord.yaml
