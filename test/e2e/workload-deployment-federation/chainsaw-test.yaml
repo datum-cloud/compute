@@ -71,12 +71,26 @@ spec:
             namespace: ($downstreamNS)
             name: city-dfw
           spec:
+            # The federator emits three resource selectors, not one: the
+            # WorkloadDeployment plus the always-on ConfigMap and Secret
+            # referenced-data selectors that co-propagate companions to the cell.
+            # Chainsaw matches list length exactly, so all three must be asserted.
             resourceSelectors:
             - apiVersion: compute.datumapis.com/v1alpha
               kind: WorkloadDeployment
               labelSelector:
                 matchLabels:
                   topology.datum.net/city-code: dfw
+            - apiVersion: v1
+              kind: ConfigMap
+              labelSelector:
+                matchLabels:
+                  compute.datumapis.com/referenced-data: "true"
+            - apiVersion: v1
+              kind: Secret
+              labelSelector:
+                matchLabels:
+                  compute.datumapis.com/referenced-data: "true"
             placement:
               clusterAffinity:
                 labelSelector:

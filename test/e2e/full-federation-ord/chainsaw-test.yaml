@@ -71,12 +71,25 @@ spec:
             namespace: ($downstreamNS)
             name: city-ord
           spec:
+            # Three selectors: the WorkloadDeployment plus the always-on ConfigMap
+            # and Secret referenced-data selectors. Chainsaw matches list length
+            # exactly, so all three must be present.
             resourceSelectors:
             - apiVersion: compute.datumapis.com/v1alpha
               kind: WorkloadDeployment
               labelSelector:
                 matchLabels:
                   topology.datum.net/city-code: ord
+            - apiVersion: v1
+              kind: ConfigMap
+              labelSelector:
+                matchLabels:
+                  compute.datumapis.com/referenced-data: "true"
+            - apiVersion: v1
+              kind: Secret
+              labelSelector:
+                matchLabels:
+                  compute.datumapis.com/referenced-data: "true"
             placement:
               clusterAffinity:
                 labelSelector:
