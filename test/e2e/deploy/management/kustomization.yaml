@@ -54,3 +54,20 @@ patches:
     target:
       kind: MutatingWebhookConfiguration
       name: compute-mutating
+
+  # DEVIATION 4 (required): remove the ResourceMetricsPolicy.
+  # config/components/resource-metrics ships a ResourceMetricsPolicy
+  # (resourcemetrics.miloapis.com), whose CRD is owned by a separate
+  # resource-metrics operator that is not installed in Kind (it is not in
+  # compute's module deps). Applying it fails with "no matches for kind
+  # ResourceMetricsPolicy". It is orthogonal to the federation path under test,
+  # so drop it from the deploy set.
+  - patch: |
+      $patch: delete
+      apiVersion: resourcemetrics.miloapis.com/v1alpha1
+      kind: ResourceMetricsPolicy
+      metadata:
+        name: compute-metrics
+    target:
+      kind: ResourceMetricsPolicy
+      name: compute-metrics
