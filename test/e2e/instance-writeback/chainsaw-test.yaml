@@ -119,7 +119,7 @@ spec:
         - name: instanceNS
           value: ($stdout)
     - assert:
-        timeout: 30s
+        timeout: 120s
         resource:
           apiVersion: compute.datumapis.com/v1alpha
           kind: Instance

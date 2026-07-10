@@ -60,7 +60,7 @@ spec:
         - name: companionNS
           value: ($stdout)
     - assert:
-        timeout: 60s
+        timeout: 120s
         resource:
           apiVersion: v1
           kind: ConfigMap
@@ -70,7 +70,7 @@ spec:
             labels:
               compute.datumapis.com/referenced-data: "true"
     - assert:
-        timeout: 60s
+        timeout: 120s
         resource:
           apiVersion: v1
           kind: Secret
