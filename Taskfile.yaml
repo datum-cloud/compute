@@ -342,7 +342,7 @@ tasks:
       - |
         echo "Applying federation component to Karmada..."
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
-          -k config/components/federation/
+          -k config/components/federation/ --server-side --validate=false
         echo "Federation component applied"
 
   _e2e:karmada:build-kubeconfig:
@@ -496,7 +496,7 @@ tasks:
           {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
           {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
           echo "Installing compute CRDs → $(basename $KC .yaml)..."
-          kubectl --kubeconfig="$KC" apply -k config/base/crd --server-side
+          kubectl --kubeconfig="$KC" apply -k config/base/crd --server-side --validate=false
         done
 
   _e2e:crds:nso:
@@ -518,7 +518,7 @@ tasks:
           {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
           {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
           echo "Installing NSO CRDs → $(basename $KC .yaml)..."
-          kubectl --kubeconfig="$KC" apply -k "${NSO_CRD_PATH}" --server-side
+          kubectl --kubeconfig="$KC" apply -k "${NSO_CRD_PATH}" --server-side --validate=false
         done
 
   _e2e:crds:quota:
@@ -540,7 +540,7 @@ tasks:
           {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
           {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
           echo "Installing Milo quota CRDs → $(basename $KC .yaml)..."
-          kubectl --kubeconfig="$KC" apply -k "${QUOTA_CRD_PATH}" --server-side
+          kubectl --kubeconfig="$KC" apply -k "${QUOTA_CRD_PATH}" --server-side --validate=false
         done
 
   # ════════════════════════════════════════════════════════════════════════
@@ -579,7 +579,7 @@ tasks:
       # forbidden error rather than being masked by cluster-admin.
       - |
         echo "Applying hub RBAC (config/base/downstream-rbac) to Karmada..."
-        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply -k config/base/downstream-rbac
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply -k config/base/downstream-rbac --server-side --validate=false
       # ── Karmada-native identity for the management operator ─────────────
       # Production federates the management cluster's projected ServiceAccount
       # token into Karmada (Karmada trusts the host cluster's token issuer). We
@@ -659,7 +659,7 @@ tasks:
     cmds:
       - |
         echo "Deploying management-plane operator → {{.KIND_CONTROL_PLANE}}..."
-        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml apply -k test/e2e/deploy/management --server-side
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml apply -k test/e2e/deploy/management --server-side --validate=false
       - task: _e2e:deploy:wait
         vars:
           KUBECONFIG_FILE: "{{.KUBECONFIG_DIR}}/control-plane.yaml"
@@ -682,7 +682,7 @@ tasks:
     cmds:
       - |
         echo "Deploying cell operator → {{.CLUSTER_NAME}}..."
-        kubectl --kubeconfig={{.KUBECONFIG_FILE}} apply -k test/e2e/deploy/cell --server-side
+        kubectl --kubeconfig={{.KUBECONFIG_FILE}} apply -k test/e2e/deploy/cell --server-side --validate=false
       - task: _e2e:deploy:wait
         vars:
           KUBECONFIG_FILE: "{{.KUBECONFIG_FILE}}"
