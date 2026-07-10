@@ -383,11 +383,21 @@ tasks:
   e2e:karmada:configure:
     desc: "Apply federation component config to the Karmada API server (idempotent)"
     cmds:
+      # Retry the apply: this runs right after the Karmada install, and the
+      # apiserver reached over the NodePort can briefly drop the connection
+      # ("EOF" / API discovery failure) while it settles, which otherwise fails
+      # provisioning on an otherwise-healthy control plane.
       - |
         echo "Applying federation component to Karmada..."
-        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
-          -k config/components/federation/ --server-side --validate=false
-        echo "Federation component applied"
+        for attempt in 1 2 3 4 5 6; do
+          if kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
+              -k config/components/federation/ --server-side --validate=false; then
+            echo "Federation component applied (attempt ${attempt})"; exit 0
+          fi
+          echo "configure attempt ${attempt} failed (Karmada apiserver may still be settling); retrying in 10s..."
+          sleep 10
+        done
+        echo "ERROR: failed to apply federation component after 6 attempts"; exit 1
 
   _e2e:karmada:build-kubeconfig:
     internal: true
@@ -623,7 +633,14 @@ tasks:
       # forbidden error rather than being masked by cluster-admin.
       - |
         echo "Applying hub RBAC (config/base/downstream-rbac) to Karmada..."
-        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply -k config/base/downstream-rbac --server-side --validate=false
+        for attempt in 1 2 3 4 5; do
+          if kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply -k config/base/downstream-rbac --server-side --validate=false; then
+            break
+          fi
+          echo "hub RBAC apply attempt ${attempt} failed (Karmada apiserver over NodePort may be settling); retrying in 8s..."
+          sleep 8
+          if [ "${attempt}" = "5" ]; then echo "ERROR: hub RBAC apply failed after 5 attempts"; exit 1; fi
+        done
       # ── Karmada-native identity for the management operator ─────────────
       # Production federates the management cluster's projected ServiceAccount
       # token into Karmada (Karmada trusts the host cluster's token issuer). We
