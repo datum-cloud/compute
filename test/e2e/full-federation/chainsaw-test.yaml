@@ -122,8 +122,12 @@ spec:
           metadata:
             namespace: ($downstreamNS)
             name: test-full-fed-wd-0
+          # The Instance is blocked before scheduling completes (a scheduling
+          # gate, or no matching Location in the e2e environment), so Ready is
+          # definitively False — not indeterminate. The exact reason is
+          # environment-dependent, so only the status is asserted.
           (status.conditions[?type == 'Ready'] | [0]):
-            status: "Unknown"
+            status: "False"
 
   - name: assert-instance-writeback-in-downstream
     description: Assert InstanceReconciler wrote the Instance back to Karmada.
@@ -161,5 +165,9 @@ spec:
             name: test-full-fed-wd-0
             labels:
               meta.datumapis.com/upstream-cluster-name: cluster-single
+          # The Instance is blocked before scheduling completes (a scheduling
+          # gate, or no matching Location in the e2e environment), so Ready is
+          # definitively False — not indeterminate. The exact reason is
+          # environment-dependent, so only the status is asserted.
           (status.conditions[?type == 'Ready'] | [0]):
-            status: "Unknown"
+            status: "False"
