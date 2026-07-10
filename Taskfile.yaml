@@ -701,6 +701,51 @@ tasks:
           --from-file=downstream-kubeconfig.yaml={{.E2E_DIR}}/downstream-kubeconfig.yaml \
           --dry-run=client -o yaml | kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml apply -f -
         echo "Published compute-downstream-kubeconfig ConfigMap"
+      # ── Cell hub credential (mirrors infra apps/compute-system/edge) ─────
+      # Real cell deployments ALSO get a hub credential: infra's
+      # apps/compute-system/edge/manager-patch.yaml sets FEDERATION_KUBECONFIG and
+      # mounts a client-cert kubeconfig pointed at karmada.prod.env.datum.net.
+      # Without it the cell InstanceReconciler's write-back to the hub no-ops, so
+      # cell-created Instances never reach the hub and the management
+      # InstanceProjector (which reads Instances only from hub write-back copies)
+      # never sees them. We mirror it with the same compute-manager Karmada
+      # identity — but the cell pods live in the OTHER Kind clusters, so they
+      # reach the hub over the control-plane node's docker-bridge IP + Karmada
+      # NodePort rather than the in-cluster Service the management pod uses.
+      - |
+        CP_IP=$(docker inspect {{.KIND_CONTROL_PLANE}}-control-plane \
+          | python3 -c "import sys,json; print(list(json.load(sys.stdin)[0]['NetworkSettings']['Networks'].values())[0]['IPAddress'])")
+        echo "Cell operators reach the Karmada hub via ${CP_IP}:{{.KARMADA_API_NODEPORT}}"
+        TOKEN=$(kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml -n {{.COMPUTE_NAMESPACE}} \
+          create token compute-manager --duration=720h)
+        cat > {{.E2E_DIR}}/cell-federation-kubeconfig.yaml <<EOF
+        apiVersion: v1
+        kind: Config
+        clusters:
+          - name: karmada
+            cluster:
+              server: https://${CP_IP}:{{.KARMADA_API_NODEPORT}}
+              insecure-skip-tls-verify: true
+        users:
+          - name: compute-manager
+            user:
+              token: ${TOKEN}
+        contexts:
+          - name: karmada
+            context:
+              cluster: karmada
+              user: compute-manager
+        current-context: karmada
+        EOF
+        for KC in {{.KUBECONFIG_DIR}}/pop-dfw.yaml {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
+          kubectl --kubeconfig="$KC" create namespace {{.COMPUTE_NAMESPACE}} \
+            --dry-run=client -o yaml | kubectl --kubeconfig="$KC" apply -f - >/dev/null
+          kubectl --kubeconfig="$KC" -n {{.COMPUTE_NAMESPACE}} \
+            create configmap compute-cell-federation-kubeconfig \
+            --from-file=kubeconfig={{.E2E_DIR}}/cell-federation-kubeconfig.yaml \
+            --dry-run=client -o yaml | kubectl --kubeconfig="$KC" apply -f -
+        done
+        echo "Published compute-cell-federation-kubeconfig on both POP cells"
 
   # ════════════════════════════════════════════════════════════════════════
   #  Operator deployment (real kustomize overlays + e2e patches)
