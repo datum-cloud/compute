@@ -68,6 +68,7 @@ rules:
   resources:
   - locations
   - networkcontexts
+  - networks
   - subnets
   verbs:
   - get
