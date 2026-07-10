@@ -45,10 +45,10 @@ spec:
         - name: INSTANCE_NS
           value: ($instanceNS)
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-pop-dfw.yaml \
             create namespace "$INSTANCE_NS" \
             --dry-run=client -o yaml | \
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml apply -f -
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-pop-dfw.yaml apply -f -
     - script:
         env:
         - name: INSTANCE_NS
@@ -58,7 +58,7 @@ spec:
           # namespace) from THIS hub namespace's labels, exactly as it would from
           # the ns-<uid> namespace the federator stamps in the real path. Seed them
           # so writeBackToUpstream can resolve identity instead of erroring.
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/karmada.yaml apply -f - <<EOF
           apiVersion: v1
           kind: Namespace
           metadata:
@@ -73,14 +73,14 @@ spec:
         - name: INSTANCE_NS
           value: ($instanceNS)
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-pop-dfw.yaml \
             delete namespace "$INSTANCE_NS" --ignore-not-found
     - script:
         env:
         - name: INSTANCE_NS
           value: ($instanceNS)
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/karmada.yaml \
             delete namespace "$INSTANCE_NS" --ignore-not-found
 
   - name: create-instance-on-pop-dfw
@@ -89,7 +89,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -100,7 +100,7 @@ spec:
     cleanup:
     - script:
         content: |
-          INSTANCE_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          INSTANCE_NS=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}')
           kubectl delete instance test-writeback-instance \
@@ -112,7 +112,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:

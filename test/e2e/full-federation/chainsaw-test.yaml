@@ -46,7 +46,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -79,7 +79,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -104,7 +104,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -135,7 +135,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:

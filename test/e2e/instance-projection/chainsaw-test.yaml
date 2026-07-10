@@ -39,7 +39,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -65,7 +65,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}'
         outputs:
@@ -73,7 +73,7 @@ spec:
           value: ($stdout)
     - script:
         content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get workloaddeployment test-projector-wd \
             --namespace "$NAMESPACE" \
             -o jsonpath='{.metadata.uid}'
@@ -117,7 +117,7 @@ spec:
     cleanup:
     - script:
         content: |
-          KARMADA_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+          KARMADA_NS=$(kubectl --kubeconfig=../../../.test-infra/kubeconfigs/federation/compute-control-plane.yaml \
             get namespace "$NAMESPACE" \
             -o template='{{printf "ns-%s" .metadata.uid}}')
           kubectl delete instance test-projected-instance \
