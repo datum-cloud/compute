@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -91,6 +91,23 @@ const (
 	// reasonNetworkFailedToCreate is the reason code for network creation failure.
 	reasonNetworkFailedToCreate = "NetworkFailedToCreate"
 )
+
+// Event action strings name the controller operation an event describes. The
+// events.k8s.io API separates the machine-readable action (what the controller
+// was doing, UpperCamelCase) from the reason (the outcome), so the reason
+// constants carry the failure mode while these name the operation.
+const (
+	eventActionResolvingReferencedData = "ResolvingReferencedData"
+	eventActionRemovingSchedulingGate  = "RemovingSchedulingGate"
+	eventActionClaimingQuota           = "ClaimingQuota"
+	eventActionReleasingQuota          = "ReleasingQuota"
+)
+
+// maxEventNoteLen bounds an event note's length. events.k8s.io/v1 rejects notes
+// longer than 1024 characters server-side, and the awaiting-propagation note
+// joins an unbounded list of missing companions, so the note is truncated
+// before emission to keep events from being silently dropped.
+const maxEventNoteLen = 1024
 
 // instanceTypeD1Standard2 is the platform instance type name for the
 // 1 vCPU / 2 GiB size used as the catalog baseline for quota accounting.
@@ -190,7 +207,7 @@ type InstanceReconciler struct {
 	edgeClusterName    string
 	// recorder emits Kubernetes events on the Instance object for quota failure
 	// modes so operators can diagnose issues via `kubectl describe`.
-	recorder record.EventRecorder
+	recorder events.EventRecorder
 	// projectIDForInstance derives the Milo project ID used for quota
 	// ResourceClaim management. In Milo mode it returns string(clusterName); in
 	// single-cell mode it reads the upstream-cluster-name label from the edge
@@ -224,7 +241,7 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/finalizers,verbs=update
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceclaims,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 //nolint:gocyclo // conditions are reconciled, persisted, then returned as errors; the ordered pipeline is inherently branchy
 func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
@@ -588,7 +605,8 @@ func (r *InstanceReconciler) reconcileReferencedDataCondition(
 			computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
 		if prevReason != computev1alpha.ReferencedDataReasonAwaitingPropagation {
 			r.emitEvent(instance, corev1.EventTypeWarning,
-				computev1alpha.ReferencedDataReasonAwaitingPropagation, msg)
+				computev1alpha.ReferencedDataReasonAwaitingPropagation,
+				eventActionResolvingReferencedData, msg)
 		}
 		return referencedDataResult{conditionChanged: changed}, 0, nil
 	}
@@ -902,16 +920,23 @@ func (r *InstanceReconciler) observeGateWaitDuration(instance *computev1alpha.In
 func (r *InstanceReconciler) emitReferencedDataClearedEvent(instance *computev1alpha.Instance) {
 	r.emitEvent(instance, corev1.EventTypeNormal,
 		computev1alpha.ReferencedDataReasonReady,
+		eventActionRemovingSchedulingGate,
 		"All referenced companion ConfigMaps/Secrets are present; ReferencedData gate cleared")
 }
 
 // emitEvent emits a Kubernetes event if a recorder is available. Guard against
 // a nil recorder so that unit tests that don't wire up a recorder don't panic.
-func (r *InstanceReconciler) emitEvent(obj *computev1alpha.Instance, eventType, reason, message string) {
+// The pre-built message is passed as the "%s" argument, never as the note format
+// string itself, because the events API treats the note as a printf format and
+// the quota messages embed backend error text that can contain literal '%'.
+func (r *InstanceReconciler) emitEvent(obj *computev1alpha.Instance, eventType, reason, action, message string) {
 	if r.recorder == nil {
 		return
 	}
-	r.recorder.Event(obj, eventType, reason, message)
+	if len(message) > maxEventNoteLen {
+		message = strings.ToValidUTF8(message[:maxEventNoteLen-3], "") + "..."
+	}
+	r.recorder.Eventf(obj, nil, eventType, reason, action, "%s", message)
 }
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
@@ -936,8 +961,9 @@ func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Cl
 			// claim will count against project budget until Milo's TTL/GC removes it.
 			log.FromContext(ctx).Error(err, "project identity unresolvable during deletion; ResourceClaim may be orphaned — budget leak possible",
 				"instance", instance.Name, "namespace", instance.Namespace)
-			r.recorder.Event(instance, corev1.EventTypeWarning,
+			r.emitEvent(instance, corev1.EventTypeWarning,
 				"QuotaClaimOrphaned",
+				eventActionReleasingQuota,
 				"Skipping ResourceClaim cleanup: project identity could not be resolved; claim may be orphaned in Milo project control plane")
 			quotametrics.ClaimOrphanedTotal.Inc()
 		}
@@ -1055,8 +1081,9 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 			Message:            "ResourceClaim is pending: no AllowanceBucket configured for this project",
 			ObservedGeneration: instance.Generation,
 		})
-		r.recorder.Event(instance, corev1.EventTypeWarning,
+		r.emitEvent(instance, corev1.EventTypeWarning,
 			computev1alpha.InstanceQuotaGrantedReasonNoBudget,
+			eventActionClaimingQuota,
 			"ResourceClaim pending: no AllowanceBucket configured for this project")
 		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonNoBudget).Inc()
 		return changed, claimErr
@@ -1281,8 +1308,8 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		// structured condition + warning event + error return, instead of
 		// silently parking the instance at PendingEvaluation.
 		msg := fmt.Sprintf("Could not resolve project ID: %v", err)
-		r.recorder.Event(instance, corev1.EventTypeWarning,
-			computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable, msg)
+		r.emitEvent(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable, eventActionClaimingQuota, msg)
 		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonProjectIDUnresolvable).Inc()
 		return &metav1.Condition{
 			Type:    computev1alpha.InstanceQuotaGranted,
@@ -1295,8 +1322,8 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 	projectClient, err := r.quotaClientManager.ClientForProject(ctx, projectID, r.scheme)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to build quota client for project %q: %v", projectID, err)
-		r.recorder.Event(instance, corev1.EventTypeWarning,
-			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, msg)
+		r.emitEvent(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, eventActionClaimingQuota, msg)
 		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonBackendUnavailable).Inc()
 		return &metav1.Condition{
 			Type:    computev1alpha.InstanceQuotaGranted,
@@ -1309,8 +1336,8 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 	claimNamespace, err := r.resolveProjectNamespace(ctx, clusterName, instance)
 	if err != nil {
 		msg := fmt.Sprintf("Could not resolve project namespace: %v", err)
-		r.recorder.Event(instance, corev1.EventTypeWarning,
-			computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable, msg)
+		r.emitEvent(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable, eventActionClaimingQuota, msg)
 		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonProjectIDUnresolvable).Inc()
 		return &metav1.Condition{
 			Type:    computev1alpha.InstanceQuotaGranted,
@@ -1381,8 +1408,8 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		}
 		// GET itself failed — treat as backend unavailable.
 		msg := fmt.Sprintf("Quota backend unreachable getting ResourceClaim: %v", err)
-		r.recorder.Event(instance, corev1.EventTypeWarning,
-			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, msg)
+		r.emitEvent(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, eventActionClaimingQuota, msg)
 		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonBackendUnavailable).Inc()
 		return &metav1.Condition{
 			Type:    computev1alpha.InstanceQuotaGranted,
@@ -1431,7 +1458,7 @@ func (r *InstanceReconciler) classifyCreateError(
 		msg = fmt.Sprintf("Quota backend unreachable creating ResourceClaim: %v", err)
 	}
 
-	r.recorder.Event(instance, corev1.EventTypeWarning, reason, msg)
+	r.emitEvent(instance, corev1.EventTypeWarning, reason, eventActionClaimingQuota, msg)
 	quotametrics.EvalFailuresTotal.WithLabelValues(metricLabel).Inc()
 	return &metav1.Condition{
 		Type:    computev1alpha.InstanceQuotaGranted,
@@ -1854,10 +1881,7 @@ func (r *InstanceReconciler) SetupWithManager(
 ) error {
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
-	//nolint:staticcheck // GetEventRecorder (new events API) has an incompatible Eventf
-	// signature (requires related object + action args) that would require migrating
-	// all emit sites. GetEventRecorderFor remains correct; migration is deferred.
-	r.recorder = mgr.GetLocalManager().GetEventRecorderFor("instance-controller")
+	r.recorder = mgr.GetLocalManager().GetEventRecorder("instance-controller")
 	r.edgeClusterName = edgeClusterName
 	r.projectIDForInstance = projectIDForInstance
 	r.projectNamespaceForInstance = projectNamespaceForInstance

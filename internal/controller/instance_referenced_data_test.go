@@ -13,7 +13,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -134,7 +133,7 @@ func makeCompanionSecret(name string) *corev1.Secret {
 func newRefDataReconciler(
 	t *testing.T,
 	projectObjs []client.Object,
-) (*InstanceReconciler, client.Client, *record.FakeRecorder) {
+) (*InstanceReconciler, client.Client, *capturingEventRecorder) {
 	t.Helper()
 	s := newTestScheme(t)
 
@@ -150,7 +149,7 @@ func newRefDataReconciler(
 		},
 	}
 
-	fakeRec := record.NewFakeRecorder(32)
+	fakeRec := newCapturingEventRecorder(32)
 	r := &InstanceReconciler{
 		mgr:      mgr,
 		recorder: fakeRec,
@@ -249,6 +248,11 @@ func TestReferencedDataGateHeldWhenCompanionsMissing(t *testing.T) {
 	default:
 		t.Error("expected a Warning event to be emitted when companions are missing")
 	}
+
+	// The event's machine-readable action names the resolve operation.
+	last := fakeRec.LastRecorded()
+	require.NotNil(t, last)
+	assert.Equal(t, eventActionResolvingReferencedData, last.Action)
 }
 
 // TestReferencedDataGateClearedWhenAllPresent verifies the full happy path:
@@ -469,6 +473,17 @@ drainLoop:
 		}
 	}
 	assert.Equal(t, 1, normalEvents, "expected exactly one Normal/Ready event on gate-clear")
+
+	// The single Normal event names the gate-removal action and Ready reason.
+	var normalRecords []recordedEvent
+	for _, rec := range fakeRec.Recorded() {
+		if rec.EventType == corev1.EventTypeNormal {
+			normalRecords = append(normalRecords, rec)
+		}
+	}
+	require.Len(t, normalRecords, 1)
+	assert.Equal(t, eventActionRemovingSchedulingGate, normalRecords[0].Action)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonReady, normalRecords[0].Reason)
 }
 
 // TestReferencedDataStaleConditionGuard verifies that a stale True condition

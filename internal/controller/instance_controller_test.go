@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -1231,7 +1232,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 	newReconcilerWithInterceptor := func(
 		t *testing.T,
 		funcs interceptor.Funcs,
-		fakeRecorder *record.FakeRecorder,
+		fakeRecorder *capturingEventRecorder,
 	) (*InstanceReconciler, client.Client) {
 		t.Helper()
 		s := newTestScheme(t)
@@ -1279,7 +1280,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 	}
 
 	t.Run("FM-2: backend unreachable sets QuotaBackendUnavailable", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		r, projectClient := newReconcilerWithInterceptor(t, interceptor.Funcs{
 			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
 				return fmt.Errorf("connection refused")
@@ -1306,13 +1307,22 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 		default:
 			t.Error("expected a Warning event for backend unavailable, got none")
 		}
+
+		// The event carries the quota-claim action and references the Instance.
+		// The apiserver rejects an events.k8s.io event with an empty action, so a
+		// silently-empty action would 422-drop in production while passing CI.
+		last := fakeRecorder.LastRecorded()
+		require.NotNil(t, last)
+		assert.Equal(t, eventActionClaimingQuota, last.Action)
+		assert.NotEmpty(t, last.Action)
+		assert.NotNil(t, last.Regarding)
 	})
 
 	// FM-4/FM-5: 404 on Create maps to NamespaceNotFound when the claim namespace
 	// is known (the more common case for project-exists-but-namespace-absent), and
 	// to ProjectNotFound when the namespace itself is empty (project CP path missing).
 	t.Run("FM-5: 404 on Create with known namespace sets QuotaNamespaceNotFound", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		notFoundErr := apierrors.NewNotFound(
 			schema.GroupResource{Group: testQuotaAPIGroup, Resource: testQuotaResource}, "claim")
 		r, projectClient := newReconcilerWithInterceptor(t, interceptor.Funcs{
@@ -1347,7 +1357,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 	})
 
 	t.Run("FM-6: 403 on Create sets QuotaMisconfigured", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		forbiddenErr := apierrors.NewForbidden(
 			schema.GroupResource{Group: testQuotaAPIGroup, Resource: testQuotaResource}, "claim",
 			fmt.Errorf("ResourceRegistration not found"))
@@ -1384,7 +1394,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 	t.Run("FM-7: claim pending with no budget sets QuotaNoBudget", func(t *testing.T) {
 		s := newTestScheme(t)
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 
 		claimName := instanceQuotaClaimNamePrefix + testInstance
 		pendingClaim := &quotav1alpha1.ResourceClaim{
@@ -1492,7 +1502,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 			scheme:             s,
 			quotaClientManager: nil, // explicitly disabled
 			edgeClusterName:    testEdgeClusterName,
-			recorder:           record.NewFakeRecorder(10),
+			recorder:           newCapturingEventRecorder(10),
 			projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
 				return string(cn), nil
 			},
@@ -1516,7 +1526,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 	t.Run("observedGeneration guard: stale True condition does not remove gate for new generation", func(t *testing.T) {
 		s := newTestScheme(t)
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 
 		// Instance at generation 2 with a stale QuotaGranted=True from generation 1.
 		instance := makeInstance()
@@ -1612,7 +1622,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 	t.Run("FM-1: missing identity label sets ProjectIDUnresolvable and errors", func(t *testing.T) {
 		s := newTestScheme(t)
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 
 		projectClient := fake.NewClientBuilder().
 			WithScheme(s).
@@ -1713,7 +1723,7 @@ func TestReconcileDeletionProjectIdentity(t *testing.T) {
 		}
 	}
 
-	newReconciler := func(t *testing.T, projectIDFn InstanceProjectIDFunc, rec record.EventRecorder) (*InstanceReconciler, client.Client, client.Client) {
+	newReconciler := func(t *testing.T, projectIDFn InstanceProjectIDFunc, rec events.EventRecorder) (*InstanceReconciler, client.Client, client.Client) {
 		t.Helper()
 		s := newTestScheme(t)
 		projectClient := fake.NewClientBuilder().
@@ -1752,7 +1762,7 @@ func TestReconcileDeletionProjectIdentity(t *testing.T) {
 	}
 
 	t.Run("unresolvable identity: deletion proceeds, claim cleanup skipped", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		identityErr := fmt.Errorf("edge namespace %q is missing label %q: %w",
 			namespace, downstreamclient.UpstreamOwnerClusterNameLabel, errProjectIdentityUnresolvable)
 		r, projectClient, quotaClient := newReconciler(t,
@@ -1784,10 +1794,15 @@ func TestReconcileDeletionProjectIdentity(t *testing.T) {
 		default:
 			t.Error("expected a QuotaClaimOrphaned event, got none")
 		}
+
+		// The deletion-path event names the quota-release action.
+		last := fakeRecorder.LastRecorded()
+		require.NotNil(t, last)
+		assert.Equal(t, eventActionReleasingQuota, last.Action)
 	})
 
 	t.Run("transient resolution failure: reconcile errors and retries", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		r, projectClient, quotaClient := newReconciler(t,
 			func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
 				return "", fmt.Errorf("connection refused")
@@ -2433,7 +2448,7 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 		projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
 			return string(cn), nil
 		},
-		recorder: &record.FakeRecorder{},
+		recorder: &capturingEventRecorder{},
 	}
 	r.finalizers = finalizer.NewFinalizers()
 	require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
@@ -2771,4 +2786,44 @@ func TestInstanceBlockingReasonPriority(t *testing.T) {
 				"unexpected priority for reason %q", tt.reason)
 		})
 	}
+}
+
+// TestEmitEvent exercises the three load-bearing behaviors of the emitEvent
+// helper directly: the nil-recorder guard, the "%s" indirection that keeps a
+// literal '%' in a message from being format-expanded, and the note truncation
+// that keeps events.k8s.io/v1 from rejecting an oversized note server-side.
+func TestEmitEvent(t *testing.T) {
+	obj := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{Name: "emit-test-instance", Namespace: "default"},
+	}
+
+	t.Run("nil recorder does not panic", func(t *testing.T) {
+		r := &InstanceReconciler{}
+		require.NotPanics(t, func() {
+			r.emitEvent(obj, corev1.EventTypeWarning, "SomeReason", eventActionClaimingQuota, "msg")
+		})
+	})
+
+	t.Run("literal % in message is not format-expanded", func(t *testing.T) {
+		rec := newCapturingEventRecorder(1)
+		r := &InstanceReconciler{recorder: rec}
+		r.emitEvent(obj, corev1.EventTypeWarning, "SomeReason", eventActionClaimingQuota,
+			"connection refused: path %2Fapi got 50% errors")
+		last := rec.LastRecorded()
+		require.NotNil(t, last)
+		assert.Contains(t, last.Note, "%2Fapi")
+		assert.Contains(t, last.Note, "50%")
+		assert.NotContains(t, last.Note, "(MISSING)")
+	})
+
+	t.Run("note truncated at maxEventNoteLen", func(t *testing.T) {
+		rec := newCapturingEventRecorder(1)
+		r := &InstanceReconciler{recorder: rec}
+		r.emitEvent(obj, corev1.EventTypeWarning, "SomeReason", eventActionClaimingQuota,
+			strings.Repeat("x", 2000))
+		last := rec.LastRecorded()
+		require.NotNil(t, last)
+		assert.LessOrEqual(t, len(last.Note), maxEventNoteLen)
+		assert.True(t, strings.HasSuffix(last.Note, "..."))
+	})
 }

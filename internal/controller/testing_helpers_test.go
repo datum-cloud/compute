@@ -5,9 +5,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -98,4 +100,71 @@ func newFakeMCManager(clusterName string, cl cluster.Cluster) *fakeMCManager {
 	return &fakeMCManager{
 		clusters: map[string]cluster.Cluster{clusterName: cl},
 	}
+}
+
+// ─── Capturing events.EventRecorder ───────────────────────────────────────────
+
+// recordedEvent captures every argument the reconciler passes to Eventf so
+// tests can assert on fields the stock events.FakeRecorder discards.
+type recordedEvent struct {
+	Regarding, Related              runtime.Object
+	EventType, Reason, Action, Note string
+}
+
+// capturingEventRecorder is a test double for events.EventRecorder. It emits the
+// byte-identical "Type Reason Note" string on Events (so channel-based
+// assertions match both the old record.FakeRecorder and the new
+// events.FakeRecorder) while also recording the structured fields. The stock
+// events.FakeRecorder drops action/related/regarding, yet the apiserver rejects
+// an events.k8s.io/v1 event with an empty action — so without structured
+// capture an empty-action regression would pass CI and be dropped in production.
+type capturingEventRecorder struct {
+	mu      sync.Mutex
+	Events  chan string
+	records []recordedEvent
+}
+
+var _ events.EventRecorder = (*capturingEventRecorder)(nil)
+
+// newCapturingEventRecorder returns a recorder whose Events channel is buffered
+// to buf entries.
+func newCapturingEventRecorder(buf int) *capturingEventRecorder {
+	return &capturingEventRecorder{Events: make(chan string, buf)}
+}
+
+func (c *capturingEventRecorder) Eventf(regarding, related runtime.Object, eventtype, reason, action, noteFmt string, args ...any) {
+	note := fmt.Sprintf(noteFmt, args...)
+	c.mu.Lock()
+	c.records = append(c.records, recordedEvent{
+		Regarding: regarding,
+		Related:   related,
+		EventType: eventtype,
+		Reason:    reason,
+		Action:    action,
+		Note:      note,
+	})
+	c.mu.Unlock()
+	if c.Events != nil {
+		c.Events <- eventtype + " " + reason + " " + note
+	}
+}
+
+// Recorded returns a copy of the events captured so far.
+func (c *capturingEventRecorder) Recorded() []recordedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]recordedEvent, len(c.records))
+	copy(out, c.records)
+	return out
+}
+
+// LastRecorded returns the most recently captured event, or nil if none.
+func (c *capturingEventRecorder) LastRecorded() *recordedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.records) == 0 {
+		return nil
+	}
+	last := c.records[len(c.records)-1]
+	return &last
 }
