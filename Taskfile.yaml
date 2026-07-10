@@ -203,15 +203,15 @@ tasks:
         vars:
           CLUSTER_NAME: "{{.KIND_CONTROL_PLANE}}"
           KIND_CONFIG: "{{.E2E_DIR}}/kind-control-plane.yaml"
-      # POP cell clusters — default Kind config is sufficient.
+      # POP cell clusters — same busy-host control-plane tuning, no port mapping.
       - task: _e2e:cluster:create
         vars:
           CLUSTER_NAME: "{{.KIND_POP_DFW}}"
-          KIND_CONFIG: ""
+          KIND_CONFIG: hack/e2e/kind-pop.yaml
       - task: _e2e:cluster:create
         vars:
           CLUSTER_NAME: "{{.KIND_POP_ORD}}"
-          KIND_CONFIG: ""
+          KIND_CONFIG: hack/e2e/kind-pop.yaml
       - mkdir -p {{.KUBECONFIG_DIR}}
       - task: _e2e:kubeconfigs:export
 
@@ -293,6 +293,12 @@ tasks:
       # nothing to elect, so turning it off breaks the loop and lets the control
       # plane settle. Harmless in a single-replica e2e; not for production HA.
       - task: _e2e:karmada:disable-leader-election
+      # Disable fsync on the Karmada control plane's own etcd, for the same
+      # throwaway-data reason as the base clusters (see hack/e2e/kind-*.yaml). Its
+      # etcd is a Helm-managed StatefulSet on hostPath storage — co-located with
+      # the base cluster's etcd on one node — so without this its fsync contention
+      # keeps hub writes slow even after the base etcds are tuned.
+      - task: _e2e:karmada:disable-etcd-fsync
       # Scale any Karmada deployment that is sitting at zero back up to one. This
       # makes the target robust to a control plane that was intentionally scaled
       # down (for example to keep a busy host calm between runs) or left at zero
@@ -335,6 +341,28 @@ tasks:
               -p '[{"op":"add","path":"/spec/template/spec/containers/0/command/-","value":"--leader-elect=false"}]'
           fi
         done
+
+  _e2e:karmada:disable-etcd-fsync:
+    internal: true
+    cmds:
+      # Idempotent: only patch + restart if the flag is not already set. The etcd
+      # data lives on a hostPath, so deleting the pod does not lose state (a
+      # StatefulSet does not always roll the pod on a bare command change, hence
+      # the explicit delete).
+      - |
+        current=$(kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+          -n karmada-system get statefulset etcd \
+          -o jsonpath='{.spec.template.spec.containers[0].command}' 2>/dev/null)
+        if echo "$current" | grep -q -- "--unsafe-no-fsync"; then
+          echo "Karmada etcd fsync already disabled"
+        else
+          echo "Disabling fsync on the Karmada etcd..."
+          kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            -n karmada-system patch statefulset etcd --type=json \
+            -p '[{"op":"add","path":"/spec/template/spec/containers/0/command/-","value":"--unsafe-no-fsync=true"}]'
+          kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            -n karmada-system delete pod etcd-0 --ignore-not-found
+        fi
 
   e2e:karmada:configure:
     desc: "Apply federation component config to the Karmada API server (idempotent)"
