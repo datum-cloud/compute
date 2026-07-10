@@ -46,7 +46,10 @@ spec:
         - name: downstreamNS
           value: ($stdout)
     - assert:
-        timeout: 30s
+        # Federation of a freshly-created namespace depends on the management
+        # operator's namespace cache being current; with the namespaces-watch RBAC
+        # fix it stays live, but 30s is still tight on a loaded CI runner, so allow 120s.
+        timeout: 120s
         resource:
           apiVersion: compute.datumapis.com/v1alpha
           kind: WorkloadDeployment

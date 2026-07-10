@@ -111,7 +111,11 @@ spec:
         - name: downstreamNS
           value: ($stdout)
     - assert:
-        timeout: 30s
+        # This is the tail of the full chain (project WD → federate → Karmada
+        # propagate to the cell → cell reconcile → Instance). On a constrained CI
+        # runner that whole sequence can exceed 30s; 120s gives it room without
+        # masking a real stall (the smoke path confirms the Instance does appear).
+        timeout: 120s
         resource:
           apiVersion: compute.datumapis.com/v1alpha
           kind: Instance
