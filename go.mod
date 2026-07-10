@@ -11,7 +11,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
-	go.datum.net/datumctl v0.17.1-0.20260709224821-662c11babc32
+	go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67
 	go.datum.net/network-services-operator v0.21.10-0.20260528021428-b0f2347f5359
 	go.miloapis.com/milo v0.29.3
 	golang.org/x/crypto v0.51.0
@@ -78,7 +78,7 @@ require (
 	github.com/prometheus/procfs v0.17.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.miloapis.com/service-catalog v0.0.0-20260529025310-809b6c6e4d91 // indirect
+	go.miloapis.com/service-catalog v0.3.2-0.20260710002135-ef9a1b2c5b20 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 // indirect
 	go.opentelemetry.io/otel v1.41.0 // indirect
