@@ -105,10 +105,17 @@ tasks:
     desc: "Run Chainsaw e2e tests against the local Kind+Karmada environment"
     deps: [e2e:tools:chainsaw]
     cmds:
+      # --parallel 1 (sequential) on purpose: the federation controllers are a
+      # single manager, and running all suites concurrently floods it — many
+      # WorkloadDeployments federate at once and individual suites' downstream
+      # assertions time out ("resource not found") even though federation works.
+      # Serial keeps the federation path uncontended on a constrained runner.
+      # Override for a faster local run with `task e2e:test -- --parallel N`.
       - |
         KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
         {{.CHAINSAW}} test \
           --config test/e2e/chainsaw-config.yaml \
+          --parallel 1 \
           test/e2e/ \
           {{.CLI_ARGS}}
 
