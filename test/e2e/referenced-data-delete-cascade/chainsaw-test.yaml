@@ -4,28 +4,23 @@ metadata:
   name: referenced-data-delete-cascade
 spec:
   description: |
-    Validates the full delete-cascade for referenced-data companions and the
-    level-triggered companion GC backstop (CompanionGCReconciler).
+    Validates the happy-path delete-cascade for referenced-data companions.
 
-    Two scenarios are validated:
-
-    SCENARIO 1 — HAPPY-PATH CASCADE
     Create a WorkloadDeployment referencing a ConfigMap + Secret. Assert companions
     materialize and propagate to the member cluster. Delete the WD (last referrer).
     Assert the hub companion, its Karmada ResourceBinding, and the member-cluster
     copy are all deleted and stay deleted (no re-create loop).
 
-    SCENARIO 2 — STRANDED COMPANION BACKSTOP
-    Simulate interrupted finalization by creating a referenced-data-labeled
-    companion whose referenced-by annotation points at a non-existent WD.
-    Assert the CompanionGCReconciler reclaims it within the sweep interval:
-    the stranded companion and its ResourceBinding are both deleted.
+    A second scenario — the stranded-companion backstop, where a level-triggered
+    companion GC reclaims a companion whose referenced-by annotation points at a
+    non-existent WorkloadDeployment — is intentionally omitted: that hub-side GC
+    ships in PR #144 (refdata-hub-gc), which was still unmerged when this branch
+    was cut. Restore the scenario once #144 lands.
 
     Prerequisites:
     - task e2e:up completed (deploys the management + both cell operators in-cluster)
     - the cell operator runs with featureFlags.enableReferencedDataGate: true, set
       by the e2e cell deploy layer (test/e2e/deploy/cell/config_patch.yaml)
-    - CompanionGCReconciler enabled in the management operator
     - tmp/e2e/kubeconfigs/downstream.yaml exists
 
   template: true
@@ -53,7 +48,7 @@ spec:
   - name: s1-assert-companions-on-hub
     description: |
       Assert companions materialize in ns-{project-uid} on the Karmada hub
-      with the referenced-data label. The CompanionGCReconciler watches these.
+      with the referenced-data label.
     cluster: downstream
     try:
     - script:
@@ -290,69 +285,3 @@ spec:
             fi
           done
           echo "OK: cell copies absent for 30+ seconds — no recreate loop"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # SCENARIO 2: STRANDED COMPANION BACKSTOP
-  #
-  # Simulate interrupted finalization: inject a labeled companion whose
-  # referenced-by annotation points at a WD that does not exist. The
-  # CompanionGCReconciler must detect and reclaim it.
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - name: s2-inject-stranded-companion
-    description: |
-      Inject a stranded companion ConfigMap directly into the hub namespace.
-      Its referenced-by annotation points at "default/nonexistent-wd" — a WD
-      that does not (and never did) exist. This simulates an interrupted
-      finalization where the controller pod restarted mid-flight.
-    cluster: downstream
-    try:
-    - script:
-        content: |
-          COMPANION_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
-            get namespace "$NAMESPACE" \
-            -o template='{{printf "ns-%s" .metadata.uid}}')
-
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
-            apply -f - <<EOF
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: stranded-companion-cm
-            namespace: ${COMPANION_NS}
-            labels:
-              compute.datumapis.com/referenced-data: "true"
-            annotations:
-              compute.datumapis.com/referenced-by: '["default/nonexistent-wd"]'
-          data:
-            key: stranded-value
-          EOF
-
-          echo "injected stranded companion in ${COMPANION_NS}"
-
-  - name: s2-assert-stranded-companion-reclaimed
-    description: |
-      Assert the CompanionGCReconciler reclaims the stranded companion within
-      the sweep interval (5 minutes). The companion GC reads the referenced-by
-      annotation, checks the hub for "nonexistent-wd" in the same namespace
-      (absent), and deletes the companion + its RB.
-      Timeout is set to 6 minutes to account for the full sweep interval plus
-      propagation lag.
-    cluster: downstream
-    try:
-    - script:
-        content: |
-          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
-            get namespace "$NAMESPACE" \
-            -o template='{{printf "ns-%s" .metadata.uid}}'
-        outputs:
-        - name: companionNS
-          value: ($stdout)
-    - wait:
-        apiVersion: v1
-        kind: ConfigMap
-        namespace: ($companionNS)
-        name: stranded-companion-cm
-        timeout: 360s
-        for:
-          deletion: {}
