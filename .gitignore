@@ -28,3 +28,9 @@ bin/
 
 # Local e2e environment artefacts (Kind kubeconfigs, etc.)
 tmp/
+
+# test-infra federation foundation: its self-clone and the kubeconfigs it writes
+.test-infra/
+
+# Task's remote-taskfile cache (populated with TASK_X_REMOTE_TASKFILES=1)
+.task/
