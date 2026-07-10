@@ -66,7 +66,7 @@ spec:
 
   - name: assert-companion-configmap-on-hub
     description: |
-      Assert the ReferencedDataController materialised companion configmap.app-config
+      Assert the ReferencedDataController materialised companion app-config
       in ns-{project-uid} on the Karmada hub (downstream cluster).
       Companions are written to the hub namespace, NOT the control-plane namespace.
     cluster: downstream
@@ -86,13 +86,13 @@ spec:
           kind: ConfigMap
           metadata:
             namespace: ($companionNS)
-            name: configmap.app-config
+            name: app-config
             labels:
               compute.datumapis.com/referenced-data: "true"
 
   - name: assert-companion-secret-on-hub
     description: |
-      Assert the ReferencedDataController materialised companion secret.app-secret
+      Assert the ReferencedDataController materialised companion app-secret
       in ns-{project-uid} on the Karmada hub (downstream cluster).
       Companions are written to the hub namespace, NOT the control-plane namespace.
     cluster: downstream
@@ -112,7 +112,7 @@ spec:
           kind: Secret
           metadata:
             namespace: ($companionNS)
-            name: secret.app-secret
+            name: app-secret
             labels:
               compute.datumapis.com/referenced-data: "true"
 
@@ -180,7 +180,7 @@ spec:
           kind: ConfigMap
           metadata:
             namespace: ($downstreamNS)
-            name: configmap.app-config
+            name: app-config
             labels:
               compute.datumapis.com/referenced-data: "true"
     - assert:
@@ -191,7 +191,7 @@ spec:
           kind: Secret
           metadata:
             namespace: ($downstreamNS)
-            name: secret.app-secret
+            name: app-secret
             labels:
               compute.datumapis.com/referenced-data: "true"
 
@@ -269,7 +269,7 @@ spec:
           kind: ConfigMap
           metadata:
             namespace: ($downstreamNS)
-            name: configmap.app-config
+            name: app-config
             labels:
               compute.datumapis.com/referenced-data: "true"
     - assert:
@@ -279,7 +279,7 @@ spec:
           kind: Secret
           metadata:
             namespace: ($downstreamNS)
-            name: secret.app-secret
+            name: app-secret
             labels:
               compute.datumapis.com/referenced-data: "true"
 
