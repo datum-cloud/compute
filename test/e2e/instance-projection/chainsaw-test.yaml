@@ -81,9 +81,17 @@ spec:
         env:
         - name: KARMADA_NS
           value: ($downstreamNS)
+        - name: PROJECT_NS
+          value: ($namespace)
         - name: WD_UID
           value: ($wdUID)
         content: |
+          # These labels mirror what the real cell InstanceReconciler stamps on a
+          # write-back copy. The projector resolves the project cluster from
+          # upstream-cluster-name, the project NAMESPACE from upstream-namespace
+          # (the project namespace where the WD lives — NOT the hub ns-<uid>), and
+          # looks up the owning WorkloadDeployment by workload-deployment-name to
+          # build the projection's owner reference.
           kubectl apply -f - <<EOF
           apiVersion: compute.datumapis.com/v1alpha
           kind: Instance
@@ -92,7 +100,8 @@ spec:
             namespace: ${KARMADA_NS}
             labels:
               meta.datumapis.com/upstream-cluster-name: cluster-single
-              meta.datumapis.com/upstream-namespace: ${KARMADA_NS}
+              meta.datumapis.com/upstream-namespace: ${PROJECT_NS}
+              compute.datumapis.com/workload-deployment-name: test-projector-wd
               compute.datumapis.com/workload-deployment-uid: "${WD_UID}"
           spec:
             runtime:
@@ -112,7 +121,11 @@ spec:
             --namespace "$KARMADA_NS" --ignore-not-found
 
   - name: assert-projection-in-control-plane
-    description: Assert the InstanceProjector created a projection in the project namespace.
+    description: |
+      Assert the InstanceProjector created a projection in the project namespace,
+      carrying the upstream tracking label and an owner reference to the
+      WorkloadDeployment (the projector sets this so the projection is
+      garbage-collected with its WD).
     try:
     - assert:
         timeout: 30s
@@ -124,3 +137,7 @@ spec:
             name: test-projected-instance
             labels:
               meta.datumapis.com/upstream-cluster-name: cluster-single
+            ownerReferences:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              name: test-projector-wd
