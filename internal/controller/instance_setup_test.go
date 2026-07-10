@@ -88,6 +88,11 @@ func TestInstanceSetupWithManager_SingleModeNoQuotaCRD(t *testing.T) {
 		false, // watchProviderClaims: the fix — do not engage the ResourceClaim watch on the cell
 	))
 
+	// SetupWithManager must wire the events-API recorder; without this assertion a
+	// refactor dropping the wiring would pass every unit test while silently
+	// stopping event emission in production.
+	require.NotNil(t, r.recorder, "SetupWithManager must wire the events-API recorder")
+
 	// Claim writes (CRUD) are wired in single mode; only the watch is skipped.
 	require.NotNil(t, r.quotaClientManager, "quota client must be wired for claim writes in single mode")
 
