@@ -12,8 +12,12 @@ vars:
   # Chainsaw version for e2e testing (kyverno/chainsaw)
   CHAINSAW_VERSION: v0.2.15
 
-  # Local tool directory (mirrors Makefile convention)
-  LOCALBIN: '{{.ROOT_DIR}}/bin'
+  # Local directory for e2e tooling. Deliberately NOT named LOCALBIN: the
+  # test-infra foundation defines its own LOCALBIN, and a remote include's root
+  # var clobbers a same-named var in this Taskfile — compute's value would be
+  # overwritten by the foundation's REPO_DIR-based path, which is undefined in
+  # this scope and renders as a nil path.
+  E2E_BIN: '{{.ROOT_DIR}}/bin'
   CHAINSAW: '{{.ROOT_DIR}}/bin/chainsaw'
 
   # Kind cluster names. These are also the Karmada member/hub cluster names the
@@ -169,14 +173,14 @@ tasks:
   e2e:tools:chainsaw:
     desc: "Download chainsaw {{.CHAINSAW_VERSION}}"
     cmds:
-      - mkdir -p {{.LOCALBIN}}
+      - mkdir -p {{.E2E_BIN}}
       - |
         if [ ! -f "{{.CHAINSAW}}" ]; then
           OS=$(uname -s | tr '[:upper:]' '[:lower:]')
           ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
           URL="https://github.com/kyverno/chainsaw/releases/download/{{.CHAINSAW_VERSION}}/chainsaw_${OS}_${ARCH}.tar.gz"
           echo "Downloading chainsaw {{.CHAINSAW_VERSION}} (${OS}/${ARCH}) from ${URL}..."
-          curl -sSfL "${URL}" | tar -xz -C {{.LOCALBIN}} chainsaw
+          curl -sSfL "${URL}" | tar -xz -C {{.E2E_BIN}} chainsaw
           chmod +x {{.CHAINSAW}}
           echo "chainsaw installed → {{.CHAINSAW}}"
         else
