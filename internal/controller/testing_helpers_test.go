@@ -17,8 +17,15 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
+
+// gcTestProjectNamespace is the project-plane namespace used across GC and
+// WorkloadDeployment controller tests. "default" matches the annotation key
+// prefix written by the hub-side ReferencedDataController
+// (e.g. "default/mount-pristine-default-dfw").
+const gcTestProjectNamespace = "default"
 
 // ─── Scheme helpers ───────────────────────────────────────────────────────────
 
@@ -32,12 +39,13 @@ func newProjectScheme() *runtime.Scheme {
 }
 
 // newKarmadaScheme builds a runtime.Scheme with the types needed by the Karmada
-// API server (corev1 + compute + karmada policy).
+// API server (corev1 + compute + karmada policy + karmada work ResourceBindings).
 func newKarmadaScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
 	_ = computev1alpha.AddToScheme(s)
 	_ = karmadapolicyv1alpha1.Install(s)
+	_ = karmadaworkv1alpha2.Install(s)
 	return s
 }
 

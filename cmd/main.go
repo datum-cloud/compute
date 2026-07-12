@@ -13,8 +13,10 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	"github.com/KimMachineGun/automemlimit/memlimit"
 	"golang.org/x/sync/errgroup"
+	corev1 "k8s.io/api/core/v1"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -36,6 +38,7 @@ import (
 
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
@@ -81,6 +84,7 @@ func init() {
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaworkv1alpha2.Install(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -528,15 +532,37 @@ func ignoreCanceled(err error) error {
 // InstanceProjector). Called only when management controllers are enabled and
 // a federation REST config is available.
 func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
+	// companionLabelSelector scopes the federation manager's ConfigMap and
+	// Secret informer cache to referenced-data companions only. Without this,
+	// For(&corev1.ConfigMap{}) in CompanionGCReconciler would establish a
+	// cluster-wide ConfigMap+Secret informer that caches every object on the
+	// Karmada hub — the same OOM pattern that killed the cell CompanionGCReconciler.
+	// The label CACHE scope (not the predicate) is the correct OOM guard:
+	// predicates filter events, not cache contents.
+	companionLabelSelector := labels.SelectorFromSet(labels.Set{
+		computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
+	})
+
 	// The federation manager provides a cached, watchable handle to the Karmada
-	// federation control plane. It backs the InstanceProjector's Instance watch
-	// and the WorkloadDeploymentFederator's downstream WorkloadDeployment status
-	// watch. A manager.Manager embeds a cluster.Cluster, so it can be passed
-	// directly anywhere a watchable federation cluster source is required.
+	// federation control plane. It backs the InstanceProjector's Instance watch,
+	// the WorkloadDeploymentFederator's downstream WorkloadDeployment status watch,
+	// and the CompanionGCReconciler. A manager.Manager embeds a cluster.Cluster, so
+	// it can be passed directly anywhere a watchable federation cluster source is
+	// required.
 	federationMgr, err := manager.New(federationRestConfig, manager.Options{
 		Scheme:  scheme,
 		Cache:   cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		Cache: cache.Options{
+			// Scope ConfigMap and Secret informers to referenced-data companions.
+			// CompanionGCReconciler is the only consumer on federationMgr that
+			// reads these types; nothing else (InstanceProjector, OrphanRBReconciler)
+			// needs non-companion CMs or Secrets from the cache.
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.ConfigMap{}: {Label: companionLabelSelector},
+				&corev1.Secret{}:    {Label: companionLabelSelector},
+			},
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("federation manager: %w", err)
@@ -562,6 +588,25 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		MCManager:        mgr,
 	}).SetupWithManager(federationMgr); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
+	}
+
+	// OrphanRBReconciler sweeps Karmada ResourceBindings whose hub companion is
+	// gone, ensuring Works and cell copies are cleaned up even when Karmada's
+	// event-driven cascade misses the companion-deletion event (e.g. PP deleted
+	// before binding-controller reconcile completed). Runs on the hub federation
+	// manager alongside InstanceProjector.
+	if err = controller.SetupOrphanRBWithManager(federationMgr, federationClient); err != nil {
+		return nil, fmt.Errorf("OrphanRBReconciler: %w", err)
+	}
+
+	// CompanionGCReconciler is a level-triggered backstop for stranded hub
+	// companions: labeled ConfigMaps/Secrets whose referenced-by annotation
+	// points at WDs that no longer exist on the hub. On each reconcile it
+	// checks all referrer WDs in the hub namespace; if all are absent the
+	// companion and its ResourceBinding are deleted, driving the Karmada
+	// cascade to clean up Works and cell copies permanently.
+	if err = controller.SetupCompanionGCWithManager(federationMgr, federationClient); err != nil {
+		return nil, fmt.Errorf("CompanionGCReconciler: %w", err)
 	}
 
 	return []manager.Runnable{federationMgr}, nil

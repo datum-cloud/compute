@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/referenceddata"
 	"go.miloapis.com/milo/pkg/downstreamclient"
@@ -62,6 +63,13 @@ const (
 	// referenceddata.ObjectRef to avoid repeated string literals.
 	kindConfigMap = "ConfigMap"
 	kindSecret    = "Secret"
+
+	// rbSuffixConfigMap and rbSuffixSecret are the companion ResourceBinding name
+	// suffixes. Karmada names namespace-scoped RBs "{objectName}-{kindLowercase}";
+	// companionRBName builds these and companionFromRBName parses them, so the wire
+	// format has one source of truth.
+	rbSuffixConfigMap = "-configmap"
+	rbSuffixSecret    = "-secret"
 )
 
 // companionWriter is the abstraction that the controller uses to materialise
@@ -104,6 +112,18 @@ type companionWriter interface {
 
 	// DeleteSecret deletes the companion Secret if it exists.
 	DeleteSecret(ctx context.Context, namespace, name string) error
+
+	// DeleteResourceBinding deletes the Karmada ResourceBinding associated with
+	// a companion object after the companion itself has been deleted. The RB name
+	// follows the Karmada binding-controller convention: "{companionName}-{kind}",
+	// where kind is the lowercase resource kind ("configmap" or "secret").
+	//
+	// Callers MUST pass client.IgnoreNotFound semantics: the RB may already be
+	// gone if Karmada's event-driven cascade ran before this call.
+	//
+	// localCompanionWriter returns nil unconditionally — there is no Karmada hub
+	// in single-cluster mode. downstreamCompanionWriter deletes from the hub.
+	DeleteResourceBinding(ctx context.Context, namespace, rbName string) error
 
 	// GetConfigMap returns the existing companion ConfigMap, or nil if absent.
 	GetConfigMap(ctx context.Context, namespace, name string) (*corev1.ConfigMap, error)
@@ -151,6 +171,12 @@ func (w *localCompanionWriter) DeleteConfigMap(ctx context.Context, namespace, n
 func (w *localCompanionWriter) DeleteSecret(ctx context.Context, namespace, name string) error {
 	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 	return client.IgnoreNotFound(w.cl.Delete(ctx, s))
+}
+
+// DeleteResourceBinding is a no-op for localCompanionWriter: in single-cluster
+// mode there is no Karmada hub and therefore no ResourceBindings to clean up.
+func (w *localCompanionWriter) DeleteResourceBinding(_ context.Context, _, _ string) error {
+	return nil
 }
 
 func (w *localCompanionWriter) GetConfigMap(ctx context.Context, namespace, name string) (*corev1.ConfigMap, error) {
@@ -239,6 +265,25 @@ func (w *downstreamCompanionWriter) DeleteConfigMap(ctx context.Context, _, name
 func (w *downstreamCompanionWriter) DeleteSecret(ctx context.Context, _, name string) error {
 	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: w.downstreamNamespace, Name: name}}
 	return client.IgnoreNotFound(w.hubClient.Delete(ctx, s))
+}
+
+// DeleteResourceBinding deletes the Karmada ResourceBinding for a companion
+// that has just been deleted from the hub. The RB lives in the same downstream
+// namespace as the companion and is named "{companionName}-{kind}" per Karmada's
+// binding-controller convention (e.g. "cm-pristine-configmap").
+//
+// Deleting the RB cascades: binding-controller removes the Work, which drives
+// the execution-controller to remove the cell copy permanently (no Work left to
+// re-create it). client.IgnoreNotFound is applied because Karmada's own
+// event-driven cascade may have already cleaned up the RB.
+func (w *downstreamCompanionWriter) DeleteResourceBinding(ctx context.Context, _, rbName string) error {
+	rb := &karmadaworkv1alpha2.ResourceBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: w.downstreamNamespace,
+			Name:      rbName,
+		},
+	}
+	return client.IgnoreNotFound(w.hubClient.Delete(ctx, rb))
 }
 
 func (w *downstreamCompanionWriter) GetConfigMap(ctx context.Context, _, name string) (*corev1.ConfigMap, error) {
@@ -1065,6 +1110,12 @@ func (r *ReferencedDataController) releaseRemovedCompanions(
 // and the subsequent Update target the same resourceVersion so a concurrent
 // change causes a conflict that drives a re-read and retry.
 //
+// When the ref-count drops to zero and the companion is deleted, the associated
+// Karmada ResourceBinding is also deleted. This short-circuits Karmada's event-
+// driven cascade and ensures the Work is removed regardless of PropagationPolicy
+// state. The RB delete is issued outside the RetryOnConflict loop because it
+// is unconditional once the companion is gone.
+//
 // If the ref-count annotation is unparseable the whole call returns an error
 // (transient). The companion is NOT deleted in that case — it may still be
 // referenced by other WDs whose entries are recorded in the corrupt annotation.
@@ -1079,6 +1130,7 @@ func (r *ReferencedDataController) releaseOneCompanion(
 
 	// Try ConfigMap.
 	var cmExists bool
+	var cmDeleted bool
 	if releaseConfigMap {
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			cm, err := writer.GetConfigMap(ctx, namespace, companionName)
@@ -1095,6 +1147,7 @@ func (r *ReferencedDataController) releaseOneCompanion(
 				return fmt.Errorf("referenceddata: corrupt ref-count on ConfigMap %q: %w", companionName, err)
 			}
 			if len(remaining) == 0 {
+				cmDeleted = true
 				return writer.DeleteConfigMap(ctx, namespace, companionName)
 			}
 			// Build a desired object that carries the updated ref-count. Pass the
@@ -1111,6 +1164,15 @@ func (r *ReferencedDataController) releaseOneCompanion(
 		}
 	}
 	if cmExists {
+		// Delete the Karmada ResourceBinding if the companion was fully removed.
+		// The RB name follows the Karmada binding-controller convention:
+		// "{companionName}-configmap". IgnoreNotFound because Karmada may have
+		// already cascaded the deletion.
+		if cmDeleted {
+			if err := writer.DeleteResourceBinding(ctx, namespace, companionRBName(companionName, kindConfigMap)); err != nil {
+				return fmt.Errorf("referenceddata: delete ResourceBinding for ConfigMap %q: %w", companionName, err)
+			}
+		}
 		return nil
 	}
 
@@ -1119,7 +1181,8 @@ func (r *ReferencedDataController) releaseOneCompanion(
 	}
 
 	// Try Secret.
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	var secretDeleted bool
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		s, err := writer.GetSecret(ctx, namespace, companionName)
 		if err != nil {
 			return fmt.Errorf("get companion Secret %q: %w", companionName, err)
@@ -1132,6 +1195,7 @@ func (r *ReferencedDataController) releaseOneCompanion(
 			return fmt.Errorf("referenceddata: corrupt ref-count on Secret %q: %w", companionName, err)
 		}
 		if len(remaining) == 0 {
+			secretDeleted = true
 			return writer.DeleteSecret(ctx, namespace, companionName)
 		}
 		desired := s.DeepCopy()
@@ -1140,7 +1204,19 @@ func (r *ReferencedDataController) releaseOneCompanion(
 		}
 		desired.Annotations[companionRefCountAnnotation] = encodeRefCount(remaining)
 		return writer.ApplySecret(ctx, s, desired)
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Delete the Karmada ResourceBinding if the companion was fully removed.
+	// The RB name follows the Karmada binding-controller convention:
+	// "{companionName}-secret".
+	if secretDeleted {
+		if err := writer.DeleteResourceBinding(ctx, namespace, companionRBName(companionName, kindSecret)); err != nil {
+			return fmt.Errorf("referenceddata: delete ResourceBinding for Secret %q: %w", companionName, err)
+		}
+	}
+	return nil
 }
 
 // writerFor returns the companionWriter appropriate for the current mode.
