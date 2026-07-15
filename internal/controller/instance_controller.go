@@ -1395,7 +1395,7 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
-			ResourceRef: quotav1alpha1.UnversionedObjectReference{
+			ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 				APIGroup: miloProjectAPIGroup,
 				Kind:     miloProjectKind,
 				Name:     projectID,

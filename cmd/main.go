@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -55,6 +56,8 @@ import (
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	consumerprovider "go.miloapis.com/service-catalog/pkg/multicluster-runtime/consumer"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -89,6 +92,7 @@ func init() {
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
+	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -230,7 +234,7 @@ func main() {
 	}
 
 	runnables, provider, edgeClusterName, discoveryCache, err := initializeClusterDiscovery(
-		serverConfig, deploymentCluster, scheme,
+		serverConfig, deploymentCluster, scheme, quotaRestConfig,
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to initialize cluster discovery")
@@ -276,9 +280,13 @@ func main() {
 	// Service can route a request to any pod. milomulticluster.WithoutAutoStart
 	// hides the Start method so mcmanager does not auto-wire it, and the block
 	// below re-adds it directly, forced into the always-running group.
+	// Wrap the milo provider to hide its ProviderRunnable interface so mcmanager
+	// does not auto-wire Start into the leader-election group. We re-add it
+	// manually as a non-leader-election runnable below (same fix as the old
+	// WithoutAutoStart helper that was removed in milo v0.30.x).
 	mcProvider := provider
-	if p, ok := provider.(*milomulticluster.Provider); ok {
-		mcProvider = milomulticluster.WithoutAutoStart(p)
+	if _, ok := provider.(*milomulticluster.Provider); ok {
+		mcProvider = struct{ multicluster.Provider }{provider}
 	}
 	mgr, err := mcmanager.New(cfg, mcProvider, ctrl.Options{
 		Scheme:                  scheme,
@@ -496,6 +504,7 @@ func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
+	quotaRestConfig *rest.Config,
 ) (
 	runnables []manager.Runnable,
 	provider multicluster.Provider,
@@ -518,50 +527,101 @@ func initializeClusterDiscovery(
 			return nil, nil, "", nil, fmt.Errorf("unable to get discovery rest config: %w", err)
 		}
 
-		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
-		if err != nil {
-			return nil, nil, "", nil, fmt.Errorf("unable to get project rest config: %w", err)
-		}
+		if csp := serverConfig.Discovery.ConsumerScopedProjection; csp != nil {
+			providerProjectConfig, err := consumerprovider.ProjectRestConfig(discoveryRestConfig, csp.ProviderProject)
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to build provider project rest config: %w", err)
+			}
 
-		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
-			Metrics: metricsserver.Options{BindAddress: "0"},
-			Cache: cache.Options{
-				// Unstructured objects carry the full managedFields tree in their
-				// content map, so stripping it here is especially impactful for the
-				// discovery cache (#161).
-				DefaultTransform: cache.TransformStripManagedFields(),
-			},
-			Client: client.Options{
-				Cache: &client.CacheOptions{
-					Unstructured: true,
+			providerMgr, err := manager.New(providerProjectConfig, manager.Options{
+				Scheme:  scheme,
+				Metrics: metricsserver.Options{BindAddress: "0"},
+				Cache:   cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
+			})
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to set up provider project manager: %w", err)
+			}
+
+			var quotaClientManager *quotametrics.ProjectQuotaClientManager
+			if quotaRestConfig != nil {
+				quotaClientManager = quotametrics.New(quotaRestConfig)
+			}
+
+			var federationClient client.Client
+			if federationRestConfig != nil {
+				federationClient, err = client.New(federationRestConfig, client.Options{Scheme: scheme})
+				if err != nil {
+					return nil, nil, "", nil, fmt.Errorf("unable to create federation client for teardown: %w", err)
+				}
+			}
+
+			provider, err = consumerprovider.New(providerMgr, consumerprovider.Options{
+				ServiceNames: csp.ServiceNames,
+				ClusterOptions: []cluster.Option{
+					func(o *cluster.Options) {
+						o.Scheme = scheme
+						o.Cache.DefaultTransform = cache.TransformStripManagedFields()
+					},
 				},
-			},
-		})
-		if err != nil {
-			return nil, nil, "", nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
-		}
-
-		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
-			ClusterOptions: []cluster.Option{
-				func(o *cluster.Options) {
-					o.Scheme = scheme
-					// Applied to every per-project cluster cache. These are the
-					// caches that fan in concurrently at startup, so stripping
-					// managedFields here is the largest single lever on the
-					// startup memory spike (#161).
-					o.Cache.DefaultTransform = cache.TransformStripManagedFields()
+				ManagedResources: []schema.GroupVersionKind{
+					computev1alpha.GroupVersion.WithKind("Instance"),
 				},
-			},
-			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
-			ProjectRestConfig:        projectRestConfig,
-		})
-		if err != nil {
-			return nil, nil, "", nil, fmt.Errorf("unable to create datum project provider: %w", err)
+				Teardowns: []consumerprovider.Teardown{
+					controller.NewComputeTeardown(quotaClientManager, federationClient, scheme),
+				},
+			})
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to create consumer provider: %w", err)
+			}
+
+			runnables = append(runnables, providerMgr)
+		} else {
+			projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to get project rest config: %w", err)
+			}
+
+			discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
+				Metrics: metricsserver.Options{BindAddress: "0"},
+				Cache: cache.Options{
+					// Unstructured objects carry the full managedFields tree in their
+					// content map, so stripping it here is especially impactful for the
+					// discovery cache (#161).
+					DefaultTransform: cache.TransformStripManagedFields(),
+				},
+				Client: client.Options{
+					Cache: &client.CacheOptions{
+						Unstructured: true,
+					},
+				},
+			})
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
+			}
+
+			provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
+				ClusterOptions: []cluster.Option{
+					func(o *cluster.Options) {
+						o.Scheme = scheme
+						// Applied to every per-project cluster cache. These are the
+						// caches that fan in concurrently at startup, so stripping
+						// managedFields here is the largest single lever on the
+						// startup memory spike (#161).
+						o.Cache.DefaultTransform = cache.TransformStripManagedFields()
+					},
+				},
+				InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
+				ProjectRestConfig:        projectRestConfig,
+			})
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to create datum project provider: %w", err)
+			}
+
+			runnables = append(runnables, discoveryManager)
+			discoveryCache = discoveryManager.GetCache()
 		}
 
-		runnables = append(runnables, discoveryManager)
 		edgeClusterName = serverConfig.Discovery.ClusterName
-		discoveryCache = discoveryManager.GetCache()
 
 	// case providers.ProviderKind:
 	// 	provider = mckind.New(mckind.Options{

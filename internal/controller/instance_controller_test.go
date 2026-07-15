@@ -563,7 +563,7 @@ func TestReconcileQuota(t *testing.T) {
 				// Instance. The quota admission plugin validates against the
 				// ResourceRegistration's claimingResources, which only allows
 				// resourcemanager.miloapis.com/Project.
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 					APIGroup: miloProjectAPIGroup,
 					Kind:     miloProjectKind,
 					Name:     clusterName,
@@ -928,7 +928,7 @@ func TestQuotaGateRemovedInSingleReconcile(t *testing.T) {
 					ConsumerRef: quotav1alpha1.ConsumerRef{
 						APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName,
 					},
-					ResourceRef: quotav1alpha1.UnversionedObjectReference{
+					ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 						APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName,
 					},
 					Requests: []quotav1alpha1.ResourceRequest{
@@ -1087,7 +1087,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
-			ResourceRef: quotav1alpha1.UnversionedObjectReference{
+			ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 				APIGroup: miloProjectAPIGroup,
 				Kind:     miloProjectKind,
 				Name:     projectID,
@@ -1408,7 +1408,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 					Kind:     miloProjectKind,
 					Name:     testProject,
 				},
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 					APIGroup: miloProjectAPIGroup,
 					Kind:     miloProjectKind,
 					Name:     testProject,
@@ -1556,7 +1556,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: testNS},
 			Spec: quotav1alpha1.ResourceClaimSpec{
 				ConsumerRef: quotav1alpha1.ConsumerRef{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: testProject},
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: testProject},
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: testProject},
 				Requests:    []quotav1alpha1.ResourceRequest{{ResourceType: quotaResourceTypeInstances, Amount: 1}},
 			},
 			Status: quotav1alpha1.ResourceClaimStatus{
@@ -1720,7 +1720,7 @@ func TestReconcileDeletionProjectIdentity(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace},
 			Spec: quotav1alpha1.ResourceClaimSpec{
 				ConsumerRef: quotav1alpha1.ConsumerRef{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName},
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName},
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName},
 				Requests:    []quotav1alpha1.ResourceRequest{{ResourceType: quotaResourceTypeInstances, Amount: 1}},
 			},
 		}
