@@ -68,7 +68,7 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.miloapis.com/service-catalog v0.3.2-0.20260714150904-6fef50acf28d
+	go.miloapis.com/service-catalog v0.3.2-0.20260716164540-4e9a0970caaa
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect

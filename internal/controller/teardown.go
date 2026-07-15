@@ -81,10 +81,11 @@ func (ct *ComputeTeardown) TeardownConsumer(
 	}
 	for i := range wds.Items {
 		wd := &wds.Items[i]
+		base := wd.DeepCopy()
 		if !controllerutil.RemoveFinalizer(wd, workloadControllerFinalizer) {
 			continue
 		}
-		if err := cl.Update(ctx, wd); client.IgnoreNotFound(err) != nil {
+		if err := cl.Patch(ctx, wd, client.MergeFrom(base)); client.IgnoreNotFound(err) != nil {
 			return fmt.Errorf("stripping WD finalizer for %s/%s: %w", wd.Namespace, wd.Name, err)
 		}
 		logger.V(1).Info("stripped WD finalizer", "name", wd.Name, "namespace", wd.Namespace)
@@ -133,12 +134,13 @@ func (ct *ComputeTeardown) teardownInstance(
 		}
 	}
 
+	base := instance.DeepCopy()
 	c1 := controllerutil.RemoveFinalizer(instance, instanceControllerFinalizer)
 	c2 := controllerutil.RemoveFinalizer(instance, instanceQuotaFinalizer)
 	if !c1 && !c2 {
 		return nil
 	}
-	if err := cl.Update(ctx, instance); client.IgnoreNotFound(err) != nil {
+	if err := cl.Patch(ctx, instance, client.MergeFrom(base)); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("stripping finalizers for %s/%s: %w",
 			instance.Namespace, instance.Name, err)
 	}

@@ -555,7 +555,14 @@ func initializeClusterDiscovery(
 				}
 			}
 
+			rootClient, err := client.New(discoveryRestConfig, client.Options{Scheme: scheme})
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to create root client for service-catalog: %w", err)
+			}
+
 			provider, err = consumerprovider.New(providerMgr, consumerprovider.Options{
+				RootClient:   rootClient,
+				Scheme:       scheme,
 				ServiceNames: csp.ServiceNames,
 				ClusterOptions: []cluster.Option{
 					func(o *cluster.Options) {
