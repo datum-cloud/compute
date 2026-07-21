@@ -325,7 +325,10 @@ func main() {
 				"grants are observed via the pending-quota requeue", "mode", serverConfig.Discovery.Mode)
 		}
 
-		instanceReconciler := &controller.InstanceReconciler{FederationClient: federationClient}
+		instanceReconciler := &controller.InstanceReconciler{
+			FederationClient:  federationClient,
+			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+		}
 		err = instanceReconciler.SetupWithManager(
 			mgr,
 			quotaRestConfig,
