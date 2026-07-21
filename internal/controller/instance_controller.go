@@ -233,7 +233,15 @@ type InstanceReconciler struct {
 	// management cluster) can aggregate status across all POP cells. Set to nil to
 	// disable federation write-back (e.g. in non-federation deployments).
 	FederationClient client.Client
-	finalizers       finalizer.Finalizers
+	// NetworkingEnabled mirrors the NetworkingIntegration feature gate. When false
+	// the reconciler skips the NetworkBinding readiness check: cells without the
+	// networking CRDs installed would otherwise fail every reconcile on a
+	// "no matches for kind NetworkBinding" RESTMapper error, aborting before the
+	// scheduling gates are cleared and wedging the instance in Pending. The
+	// WorkloadDeployment controller honors the same gate for NetworkBinding
+	// creation and the Network scheduling gate.
+	NetworkingEnabled bool
+	finalizers        finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -1771,6 +1779,15 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 // Rough way to propagate creation errors up to the instance as soon as possible.
 // Lots of room for improvement here.
 func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context, upstreamClient client.Client, instance *computev1alpha.Instance) (failed bool, message string, err error) {
+	// When the networking integration is disabled there are no NetworkBindings to
+	// check. The NetworkBinding CRD is not installed on cells that don't run the
+	// networking integration, so this lookup would otherwise fail with a
+	// "no matches for kind NetworkBinding" RESTMapper error and wedge the reconcile
+	// before the scheduling gates are cleared. Report no failure.
+	if !r.NetworkingEnabled {
+		return false, "", nil
+	}
+
 	workloadDeployment, err := r.fetchOwnerWorkloadDeployment(ctx, upstreamClient, instance)
 	if err != nil {
 		return false, "", fmt.Errorf("failed fetching workload deployment: %w", err)

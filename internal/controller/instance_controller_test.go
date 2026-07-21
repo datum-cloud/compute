@@ -679,6 +679,9 @@ func TestReconcileQuota(t *testing.T) {
 		claim := makeClaim(s, metav1.ConditionTrue, quotav1alpha1.ResourceClaimGrantedReason)
 
 		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim})
+		// The network failure checker only runs when the networking integration is
+		// enabled; enable it so this test exercises that path.
+		r.NetworkingEnabled = true
 
 		_, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
 		require.Error(t, err)
@@ -2589,6 +2592,27 @@ func TestReconcileInstanceReadyCondition_ReferencedDataEnrichment(t *testing.T) 
 			assert.Contains(t, cond.Message, tt.wantMsgContains)
 		})
 	}
+}
+
+// TestCheckForNetworkCreationFailure_NetworkingDisabled verifies that when the
+// networking integration is disabled the check is a no-op and never touches the
+// client. On cells that don't run the networking integration the NetworkBinding
+// CRD is absent, so a lookup would fail with a "no matches for kind NetworkBinding"
+// RESTMapper error and wedge the reconcile before scheduling gates are cleared.
+// A nil client here would panic if the method attempted any lookup.
+func TestCheckForNetworkCreationFailure_NetworkingDisabled(t *testing.T) {
+	instance := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			// A network interface would normally drive a NetworkBinding lookup.
+			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{}},
+		},
+	}
+
+	r := &InstanceReconciler{NetworkingEnabled: false}
+	failed, msg, err := r.checkForNetworkCreationFailure(context.Background(), nil, instance)
+	require.NoError(t, err)
+	assert.False(t, failed)
+	assert.Empty(t, msg)
 }
 
 // TestReconcileInstanceReadyCondition_EvaluateAllThenPick verifies that all
