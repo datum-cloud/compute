@@ -4,92 +4,92 @@ metadata:
   labels:
     alert-group: compute
     app.kubernetes.io/name: compute
-    app.kubernetes.io/component: management-controllers
+    app.kubernetes.io/component: controllers
     app.kubernetes.io/managed-by: kustomize
-  name: compute-management-controller-alerts
+  name: compute-controller-alerts
 spec:
   groups:
-    - name: compute-management-controllers.reconcile-storm
+    - name: compute-controllers.reconcile-storm
       rules:
-        # Management controllers (workload, referenced-data,
-        # workload-deployment-federator) re-reconcile idle Workloads in a
-        # self-perpetuating loop: reconciles keep succeeding but produce no work,
-        # so the fingerprint is a high reconcile rate while the workqueue stays
-        # drained. reconcile_errors_total stays flat, so error-based alerts miss
-        # this entirely.
-        - alert: ComputeManagementControllerReconcileStorm
+        # A reconcile storm is a generic controller-runtime pathology: a
+        # controller re-reconciles the same objects in a self-perpetuating loop.
+        # Reconciles keep succeeding, so reconcile_errors_total stays flat and
+        # error-based alerting misses it entirely. The fingerprint is a high
+        # reconcile rate while the workqueue stays drained. Evaluated per
+        # controller across every controller compute-manager reports (job label
+        # scopes to compute-manager; the controller/name label identifies which
+        # one is storming when it fires) so it also covers cell-side controllers
+        # and any controller added later. The drained-queue guard keeps a
+        # legitimately busy controller (deep backlog) from tripping it.
+        - alert: ComputeControllerReconcileStorm
           expr: |
             (
               sum by (controller) (
-                rate(controller_runtime_reconcile_total{
-                  controller=~"workload|referenced-data|workload-deployment-federator"
-                }[5m])
+                rate(controller_runtime_reconcile_total{job="compute-metrics"}[5m])
               ) > 0.5
             )
             and on (controller)
             (
               max by (controller) (
-                max_over_time(workqueue_depth{
-                  name=~"workload|referenced-data|workload-deployment-federator"
-                }[5m])
+                max_over_time(workqueue_depth{job="compute-metrics"}[5m])
               ) < 5
             )
-          for: 10m
+          for: 15m
           labels:
             severity: warning
-            service: compute-management-controllers
+            service: compute-controllers
             namespace: compute-system
             team: compute
           annotations:
             summary: Compute {{ $labels.controller }} controller is reconciling in a hot loop
             description: |
-              The compute management controller "{{ $labels.controller }}" has
-              been reconciling at {{ $value | humanize }}/s (>30/min) for 10
-              minutes while its workqueue has stayed drained. Idle Workloads are
-              being re-reconciled in a self-perpetuating loop, burning
-              control-plane capacity without doing real work.
+              The compute controller "{{ $labels.controller }}" has been
+              reconciling at {{ $value | humanize }}/s (>30/min) for 15 minutes
+              while its workqueue has stayed drained. The same objects are being
+              re-reconciled in a self-perpetuating loop, burning control-plane
+              capacity without doing real work.
 
               Reconciles succeed, so reconcile_errors_total will look healthy.
               Confirm by comparing the reconcile rate against workqueue_depth and
-              the Workload/WorkloadDeployment count, which stay small and stable.
+              the object count for this controller's resource, which stay small
+              and stable during a storm.
 
-              See the runbook for the known root cause (annotation ping-pong
-              between the workload and referenced-data controllers) and
-              remediation.
+              The firing controller label tells you where to look. See the
+              runbook for confirmation queries, known causes, and remediation.
             runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-management-controller-reconcile-storm.md
 
         # Corroborating signal on the same fingerprint from the workqueue side:
-        # a high add rate is what feeds the loop. workqueue metrics label the
-        # controller as "name" rather than "controller".
-        - alert: ComputeManagementControllerWorkqueueAddStorm
+        # a high add rate against a drained queue is what feeds the loop.
+        # workqueue metrics label the controller as "name" rather than
+        # "controller".
+        - alert: ComputeControllerWorkqueueAddStorm
           expr: |
             (
               sum by (name) (
-                rate(workqueue_adds_total{
-                  name=~"workload|referenced-data|workload-deployment-federator"
-                }[5m])
+                rate(workqueue_adds_total{job="compute-metrics"}[5m])
               ) > 0.5
             )
             and on (name)
             (
               max by (name) (
-                max_over_time(workqueue_depth{
-                  name=~"workload|referenced-data|workload-deployment-federator"
-                }[5m])
+                max_over_time(workqueue_depth{job="compute-metrics"}[5m])
               ) < 5
             )
-          for: 10m
+          for: 15m
           labels:
             severity: warning
-            service: compute-management-controllers
+            service: compute-controllers
             namespace: compute-system
             team: compute
           annotations:
             summary: Compute {{ $labels.name }} controller workqueue is churning while drained
             description: |
-              The compute management controller "{{ $labels.name }}" has been
-              enqueuing work at {{ $value | humanize }}/s (>30/min) for 10
-              minutes while its workqueue depth has stayed near zero. Items are
-              being re-added as fast as they drain, which is the enqueue-side
-              signature of the idle-Workload reconcile loop.
+              The compute controller "{{ $labels.name }}" has been enqueuing work
+              at {{ $value | humanize }}/s (>30/min) for 15 minutes while its
+              workqueue depth has stayed near zero. Items are being re-added as
+              fast as they drain, which is the enqueue-side signature of a
+              reconcile loop.
+
+              The firing controller label tells you where to look. See the
+              runbook for confirmation queries, known causes, and remediation.
             runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-management-controller-reconcile-storm.md
