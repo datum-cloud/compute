@@ -159,6 +159,8 @@ go.datum.net/network-services-operator v0.21.10-0.20260528021428-b0f2347f5359 h1
 go.datum.net/network-services-operator v0.21.10-0.20260528021428-b0f2347f5359/go.mod h1:Nr0PsCodkTW31vWVxR9dhAP9w0y+WHUYeyrcRnchcIE=
 go.miloapis.com/milo v0.25.2-0.20260528192736-e4258524ad42 h1:LSHyqLt/jus6iEMvo8pc731L+PyrTHP2bqfMMtHPSWc=
 go.miloapis.com/milo v0.25.2-0.20260528192736-e4258524ad42/go.mod h1:p9O2kk194mvoL8rhqjwb+LWB+GIyY4vQqiTowwibVWo=
+go.miloapis.com/milo v0.25.2-0.20260722145903-390aaae3b21b h1:hmcmcUGBlmaz/pEtdxr0abgazZ1R+lCoQs+ELQh/bhQ=
+go.miloapis.com/milo v0.25.2-0.20260722145903-390aaae3b21b/go.mod h1:p9O2kk194mvoL8rhqjwb+LWB+GIyY4vQqiTowwibVWo=
 go.opentelemetry.io/auto/sdk v1.1.0 h1:cH53jehLUN6UFLY71z+NDOiNJqDdPRaXzTel0sJySYA=
 go.opentelemetry.io/auto/sdk v1.1.0/go.mod h1:3wSPjt5PWp2RhlCcmmOial7AvC4DQqZb7a7wCow3W8A=
 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 h1:Hf9xI/XLML9ElpiHVDNwvqI0hIFlzV8dgIr35kV1kRU=
