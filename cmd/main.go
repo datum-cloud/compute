@@ -466,7 +466,8 @@ func main() {
 		// connection has actually been established. Require real engagement
 		// too, closing the gap the discovery-synced check alone leaves open.
 		if engaged != nil {
-			if err := mgr.AddReadyzCheck("projects-engaged", projectsEngagedCheck(discoveryCache, engaged, serverConfig.Discovery.InternalServiceDiscovery)); err != nil {
+			check := projectsEngagedCheck(discoveryCache, engaged, serverConfig.Discovery.InternalServiceDiscovery)
+			if err := mgr.AddReadyzCheck("projects-engaged", check); err != nil {
 				setupLog.Error(err, "unable to set up project engagement ready check")
 				os.Exit(1)
 			}
@@ -495,7 +496,13 @@ func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider multicluster.Provider, edgeClusterName string, discoveryCache cache.Cache, err error) {
+) (
+	runnables []manager.Runnable,
+	provider multicluster.Provider,
+	edgeClusterName string,
+	discoveryCache cache.Cache,
+	err error,
+) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
@@ -643,7 +650,11 @@ type conditionedObject struct {
 // discovery cache has actually been engaged by the multicluster provider on
 // this pod. This is what the webhook path needs: a project the provider knows
 // about but hasn't finished connecting to would still fail GetCluster.
-func projectsEngagedCheck(discoveryCache cache.Cache, tracker *engageTracker, internalServiceDiscovery bool) healthz.Checker {
+func projectsEngagedCheck(
+	discoveryCache cache.Cache,
+	tracker *engageTracker,
+	internalServiceDiscovery bool,
+) healthz.Checker {
 	gvk := resourcemanagerv1alpha1.GroupVersion.WithKind("Project")
 	readyCondition := "Ready"
 	if internalServiceDiscovery {
