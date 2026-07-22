@@ -1,0 +1,95 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  labels:
+    alert-group: compute
+    app.kubernetes.io/name: compute
+    app.kubernetes.io/component: management-controllers
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-management-controller-alerts
+spec:
+  groups:
+    - name: compute-management-controllers.reconcile-storm
+      rules:
+        # Management controllers (workload, referenced-data,
+        # workload-deployment-federator) re-reconcile idle Workloads in a
+        # self-perpetuating loop: reconciles keep succeeding but produce no work,
+        # so the fingerprint is a high reconcile rate while the workqueue stays
+        # drained. reconcile_errors_total stays flat, so error-based alerts miss
+        # this entirely.
+        - alert: ComputeManagementControllerReconcileStorm
+          expr: |
+            (
+              sum by (controller) (
+                rate(controller_runtime_reconcile_total{
+                  controller=~"workload|referenced-data|workload-deployment-federator"
+                }[5m])
+              ) > 0.5
+            )
+            and on (controller)
+            (
+              max by (controller) (
+                max_over_time(workqueue_depth{
+                  name=~"workload|referenced-data|workload-deployment-federator"
+                }[5m])
+              ) < 5
+            )
+          for: 10m
+          labels:
+            severity: warning
+            service: compute-management-controllers
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: Compute {{ $labels.controller }} controller is reconciling in a hot loop
+            description: |
+              The compute management controller "{{ $labels.controller }}" has
+              been reconciling at {{ $value | humanize }}/s (>30/min) for 10
+              minutes while its workqueue has stayed drained. Idle Workloads are
+              being re-reconciled in a self-perpetuating loop, burning
+              control-plane capacity without doing real work.
+
+              Reconciles succeed, so reconcile_errors_total will look healthy.
+              Confirm by comparing the reconcile rate against workqueue_depth and
+              the Workload/WorkloadDeployment count, which stay small and stable.
+
+              See the runbook for the known root cause (annotation ping-pong
+              between the workload and referenced-data controllers) and
+              remediation.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-management-controller-reconcile-storm.md
+
+        # Corroborating signal on the same fingerprint from the workqueue side:
+        # a high add rate is what feeds the loop. workqueue metrics label the
+        # controller as "name" rather than "controller".
+        - alert: ComputeManagementControllerWorkqueueAddStorm
+          expr: |
+            (
+              sum by (name) (
+                rate(workqueue_adds_total{
+                  name=~"workload|referenced-data|workload-deployment-federator"
+                }[5m])
+              ) > 0.5
+            )
+            and on (name)
+            (
+              max by (name) (
+                max_over_time(workqueue_depth{
+                  name=~"workload|referenced-data|workload-deployment-federator"
+                }[5m])
+              ) < 5
+            )
+          for: 10m
+          labels:
+            severity: warning
+            service: compute-management-controllers
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: Compute {{ $labels.name }} controller workqueue is churning while drained
+            description: |
+              The compute management controller "{{ $labels.name }}" has been
+              enqueuing work at {{ $value | humanize }}/s (>30/min) for 10
+              minutes while its workqueue depth has stayed near zero. Items are
+              being re-added as fast as they drain, which is the enqueue-side
+              signature of the idle-Workload reconcile loop.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-management-controller-reconcile-storm.md
