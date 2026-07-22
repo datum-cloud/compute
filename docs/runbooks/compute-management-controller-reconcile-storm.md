@@ -3,7 +3,6 @@
 **Alerts:** `ComputeControllerReconcileStorm`, `ComputeControllerWorkqueueAddStorm`
 **Severity:** warning
 **Component:** compute controllers (`compute-system/compute-manager`)
-**Related:** [datum-cloud/compute#191](https://github.com/datum-cloud/compute/issues/191) (one known instance), companion fix in #192
 
 ## What this alert means
 
@@ -91,8 +90,8 @@ to focus on the storming controller.
 5. **apiserver write cross-check** — if the relevant apiserver metrics are
    available in the same store, a self-perpetuating loop shows up as a steady
    update/patch rate on the storming controller's resource far above what the
-   object count warrants (during the #191 incident a single WorkloadDeployment
-   was patched several times per second):
+   object count warrants (a single object being patched several times per second
+   is a strong signal):
 
    ```promql
    sum(rate(apiserver_request_total{resource="workloaddeployments",verb=~"update|patch"}[5m]))
@@ -116,29 +115,27 @@ to focus on the storming controller.
 ## Known causes
 
 The root cause is controller-specific — the firing label is your starting point.
-A confirmed example is an **annotation ping-pong** between the `workload` and
-`referenced-data` controllers: each writes an annotation the other treats as a
-change, so each write re-triggers the other's reconcile, which writes again; the
-`workload-deployment-federator` rides the same churn. That specific loop is
-tracked in [#191](https://github.com/datum-cloud/compute/issues/191) with the fix
-in companion PR **#192**.
+One common shape is a **metadata write-fight** between two controllers: each
+writes a piece of metadata (an annotation, label, or status field) that the other
+treats as a change, so each write re-triggers the other's reconcile, which writes
+again. A related shape is a single controller that writes on every reconcile and
+then wakes itself on its own update.
 
 More generally, look for anything that makes a controller re-enqueue its own (or
-a peer's) objects without a real change: writes on every reconcile (status/
-annotation/label churn), watches that fire on self-authored updates, or requeues
-with a near-zero backoff. This alerting/runbook change does not alter controller
-behavior; it only surfaces the pattern.
+a peer's) objects without a real change: writes on every reconcile (status /
+annotation / label churn), watches that fire on self-authored updates, or
+requeues with a near-zero backoff.
 
 ## Remediation
 
 - **Identify the controller** from the firing `controller` / `name` label and use
   the queries above to confirm the drained-queue fingerprint.
-- **If it is the #191 loop:** roll out the controller fix (PR #192). Once merged
-  and deployed, the reconcile and enqueue rates for those controllers drop back
-  to near zero and both alerts clear on their own.
-- **For a newly surfaced controller:** inspect what that controller writes on
-  each reconcile and which watch/requeue re-triggers it; the fix is to stop
-  re-enqueuing on self-authored, no-op changes.
+- **Find what re-triggers it:** inspect what that controller writes on each
+  reconcile and which watch or requeue wakes it again. Look for a metadata
+  write-fight with a competing controller (two controllers editing the same
+  object) or a controller reacting to its own updates. The fix is to stop
+  re-enqueuing on self-authored, no-op changes; once deployed the reconcile and
+  enqueue rates drop back to near zero and both alerts clear on their own.
 - **Immediate mitigation** if the loop is degrading the control plane before a
   fix is available: restart `compute-manager`
   (`kubectl rollout restart deployment/compute-manager -n compute-system`). This
@@ -149,8 +146,8 @@ behavior; it only surfaces the pattern.
 
 If no fix is available and the loop is causing measurable control-plane
 saturation (apiserver latency, `compute-manager` CPU throttling), escalate to the
-compute team. Reference the firing controller and, if it is the known instance,
-[#191](https://github.com/datum-cloud/compute/issues/191) and #192.
+compute team, naming the firing controller and the observed reconcile / enqueue
+rates.
 
 ## Expected steady state (alert cleared)
 
