@@ -16,4 +16,5 @@ components:
   - ../../components/high-availability
   - ../../components/csi-webhook-cert
   - ../../components/management-controllers
+  - ../../components/alerts
   - ../../components/cell-controllers

@@ -7,7 +7,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -15,6 +18,9 @@ import (
 	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -44,7 +50,9 @@ import (
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	infrastructurev1alpha1 "go.miloapis.com/milo/pkg/apis/infrastructure/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	// +kubebuilder:scaffold:imports
@@ -221,7 +229,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	runnables, provider, edgeClusterName, err := initializeClusterDiscovery(
+	runnables, provider, edgeClusterName, discoveryCache, err := initializeClusterDiscovery(
 		serverConfig, deploymentCluster, scheme,
 	)
 	if err != nil {
@@ -250,7 +258,29 @@ func main() {
 		setupLog.Info("webhookServer not configured; admission webhook server disabled")
 	}
 
-	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
+	// mcmanager.Start auto-adds provider.Start as a plain manager.RunnableFunc
+	// when the provider implements multicluster.ProviderRunnable. A Runnable
+	// added that way implements neither NeedLeaderElection, so
+	// controller-runtime's runnable group routes it into the leader-election
+	// group for backwards compatibility (see runnable_group.go). That silently
+	// leader-gates cluster engagement: on every pod but the elected leader,
+	// provider.Start never runs, p.mcAware stays nil forever, and Reconcile
+	// requeues indefinitely without ever engaging a single cluster -- so
+	// GetCluster fails permanently on non-leader replicas, not just during a
+	// startup race (datum-cloud/compute#117).
+	//
+	// Cluster engagement is local, per-pod cache/watch bookkeeping, not
+	// cluster-mutating reconciliation -- the same category of thing as the
+	// manager's own informer cache, which controller-runtime deliberately
+	// never leader-gates. It must run on every replica, since the webhook
+	// Service can route a request to any pod. milomulticluster.WithoutAutoStart
+	// hides the Start method so mcmanager does not auto-wire it, and the block
+	// below re-adds it directly, forced into the always-running group.
+	mcProvider := provider
+	if p, ok := provider.(*milomulticluster.Provider); ok {
+		mcProvider = milomulticluster.WithoutAutoStart(p)
+	}
+	mgr, err := mcmanager.New(cfg, mcProvider, ctrl.Options{
 		Scheme:                  scheme,
 		Cache:                   cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
 		Metrics:                 metricsServerOptions,
@@ -274,6 +304,24 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
+	}
+
+	// Re-add cluster engagement as a runnable that always runs, regardless of
+	// leader-election state (see the comment above the mcmanager.New call).
+	// engageTracker records which clusters actually complete Engage so
+	// readiness can require real engagement rather than only knowing a
+	// project exists.
+	var engaged *engageTracker
+	if providerRunnable, ok := provider.(multicluster.ProviderRunnable); ok {
+		engaged = newEngageTracker(mgr)
+		if err := mgr.GetLocalManager().Add(nonLeaderElectionRunnable{
+			Runnable: manager.RunnableFunc(func(ctx context.Context) error {
+				return providerRunnable.Start(ctx, engaged)
+			}),
+		}); err != nil {
+			setupLog.Error(err, "unable to add cluster provider runnable")
+			os.Exit(1)
+		}
 	}
 
 	if enableManagementControllers {
@@ -400,6 +448,31 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+	// In multi-cluster discovery modes, the webhook resolves project clusters
+	// through discoveryCache's informer. Until that informer completes its
+	// initial sync, the provider hasn't seen the full set of currently-existing
+	// projects and admission requests routed to this pod can be spuriously
+	// denied with "cluster not found" (datum-cloud/compute#117). Gating
+	// readiness on the sync lets the Service withhold this pod's endpoint
+	// until that window has closed.
+	if discoveryCache != nil {
+		if err := mgr.AddReadyzCheck("project-discovery-synced", projectDiscoverySyncedCheck(discoveryCache)); err != nil {
+			setupLog.Error(err, "unable to set up project discovery ready check")
+			os.Exit(1)
+		}
+
+		// A synced discovery informer only proves the provider has seen the
+		// list of currently-ready projects, not that each one's cluster
+		// connection has actually been established. Require real engagement
+		// too, closing the gap the discovery-synced check alone leaves open.
+		if engaged != nil {
+			check := projectsEngagedCheck(discoveryCache, engaged, serverConfig.Discovery.InternalServiceDiscovery)
+			if err := mgr.AddReadyzCheck("projects-engaged", check); err != nil {
+				setupLog.Error(err, "unable to set up project engagement ready check")
+				os.Exit(1)
+			}
+		}
+	}
 
 	g, ctx := errgroup.WithContext(ctx)
 	for _, runnable := range runnables {
@@ -423,7 +496,13 @@ func initializeClusterDiscovery(
 	serverConfig config.WorkloadOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider multicluster.Provider, edgeClusterName string, err error) {
+) (
+	runnables []manager.Runnable,
+	provider multicluster.Provider,
+	edgeClusterName string,
+	discoveryCache cache.Cache,
+	err error,
+) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
@@ -436,12 +515,12 @@ func initializeClusterDiscovery(
 	case multiclusterproviders.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("unable to get discovery rest config: %w", err)
+			return nil, nil, "", nil, fmt.Errorf("unable to get discovery rest config: %w", err)
 		}
 
 		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("unable to get project rest config: %w", err)
+			return nil, nil, "", nil, fmt.Errorf("unable to get project rest config: %w", err)
 		}
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
@@ -459,7 +538,7 @@ func initializeClusterDiscovery(
 			},
 		})
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("unable to set up overall controller manager: %w", err)
+			return nil, nil, "", nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
 		}
 
 		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
@@ -477,11 +556,12 @@ func initializeClusterDiscovery(
 			ProjectRestConfig:        projectRestConfig,
 		})
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("unable to create datum project provider: %w", err)
+			return nil, nil, "", nil, fmt.Errorf("unable to create datum project provider: %w", err)
 		}
 
 		runnables = append(runnables, discoveryManager)
 		edgeClusterName = serverConfig.Discovery.ClusterName
+		discoveryCache = discoveryManager.GetCache()
 
 	// case providers.ProviderKind:
 	// 	provider = mckind.New(mckind.Options{
@@ -493,13 +573,119 @@ func initializeClusterDiscovery(
 	// 	})
 
 	default:
-		return nil, nil, "", fmt.Errorf(
+		return nil, nil, "", nil, fmt.Errorf(
 			"unsupported cluster discovery mode %s",
 			serverConfig.Discovery.Mode,
 		)
 	}
 
-	return runnables, provider, edgeClusterName, nil
+	return runnables, provider, edgeClusterName, discoveryCache, nil
+}
+
+// projectDiscoverySyncedCheck reports ready only once the project discovery
+// cache has completed its initial sync — i.e. the multicluster provider has
+// observed the full set of currently-existing Project (or ProjectControlPlane)
+// objects. Until then, GetCluster lookups for a project this pod hasn't heard
+// about yet would be indistinguishable from a genuinely nonexistent project.
+func projectDiscoverySyncedCheck(c cache.Cache) healthz.Checker {
+	return func(req *http.Request) error {
+		ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+		defer cancel()
+		if !c.WaitForCacheSync(ctx) {
+			return fmt.Errorf("project discovery cache has not completed its initial sync")
+		}
+		return nil
+	}
+}
+
+// nonLeaderElectionRunnable forces a manager.Runnable into controller-runtime's
+// always-running runnable group, regardless of leader-election state.
+type nonLeaderElectionRunnable struct {
+	manager.Runnable
+}
+
+func (nonLeaderElectionRunnable) NeedLeaderElection() bool { return false }
+
+// engageTracker wraps a multicluster.Aware to record which cluster names have
+// completed Engage, so readiness can require actual engagement rather than
+// merely knowing a project exists (datum-cloud/compute#117).
+type engageTracker struct {
+	multicluster.Aware
+
+	mu      sync.RWMutex
+	engaged map[multicluster.ClusterName]struct{}
+}
+
+func newEngageTracker(aware multicluster.Aware) *engageTracker {
+	return &engageTracker{Aware: aware, engaged: map[multicluster.ClusterName]struct{}{}}
+}
+
+func (t *engageTracker) Engage(ctx context.Context, name multicluster.ClusterName, cl cluster.Cluster) error {
+	if err := t.Aware.Engage(ctx, name, cl); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	t.engaged[name] = struct{}{}
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *engageTracker) isEngaged(name multicluster.ClusterName) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	_, ok := t.engaged[name]
+	return ok
+}
+
+// conditionedObject captures just enough of a Project/ProjectControlPlane's
+// shape to read its status conditions off the unstructured discovery cache.
+type conditionedObject struct {
+	Status struct {
+		Conditions []metav1.Condition `json:"conditions"`
+	} `json:"status"`
+}
+
+// projectsEngagedCheck reports ready only once every currently-ready Project
+// (or ProjectControlPlane, under internal service discovery) known to the
+// discovery cache has actually been engaged by the multicluster provider on
+// this pod. This is what the webhook path needs: a project the provider knows
+// about but hasn't finished connecting to would still fail GetCluster.
+func projectsEngagedCheck(
+	discoveryCache cache.Cache,
+	tracker *engageTracker,
+	internalServiceDiscovery bool,
+) healthz.Checker {
+	gvk := resourcemanagerv1alpha1.GroupVersion.WithKind("Project")
+	readyCondition := "Ready"
+	if internalServiceDiscovery {
+		gvk = infrastructurev1alpha1.GroupVersion.WithKind("ProjectControlPlane")
+		readyCondition = "ControlPlaneReady"
+	}
+
+	return func(req *http.Request) error {
+		ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+		defer cancel()
+
+		var list unstructured.UnstructuredList
+		list.SetGroupVersionKind(gvk)
+		if err := discoveryCache.List(ctx, &list); err != nil {
+			return fmt.Errorf("unable to list projects for engagement check: %w", err)
+		}
+
+		for _, item := range list.Items {
+			var obj conditionedObject
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(item.Object, &obj); err != nil {
+				continue
+			}
+			if !apimeta.IsStatusConditionTrue(obj.Status.Conditions, readyCondition) {
+				continue
+			}
+			if name := multicluster.ClusterName(item.GetName()); !tracker.isEngaged(name) {
+				return fmt.Errorf("project %q is ready but not yet engaged", name)
+			}
+		}
+		return nil
+	}
 }
 
 func loadServerConfig(path string) (config.WorkloadOperator, error) {
