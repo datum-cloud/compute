@@ -11,7 +11,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	go.datum.net/network-services-operator v0.21.10-0.20260528021428-b0f2347f5359
-	go.miloapis.com/milo v0.30.3
+	go.miloapis.com/milo v0.31.1
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sync v0.21.0
 	google.golang.org/protobuf v1.36.11
@@ -68,7 +68,7 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.miloapis.com/service-catalog v0.3.2-0.20260716164540-4e9a0970caaa
+	go.miloapis.com/service-catalog v0.3.2-0.20260724130110-b9c74bbaa8b0
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
