@@ -96,3 +96,12 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconsumers
+  - services
+  verbs:
+  - get
+  - list
+  - watch

@@ -16,6 +16,11 @@ import (
 	"go.datum.net/compute/internal/referenceddata"
 )
 
+const (
+	labelServiceKey   = "services.miloapis.com/service-name"
+	labelServiceValue = "compute.datumapis.com"
+)
+
 // Options controls optional behaviours of the stateful instance control strategy.
 type Options struct {
 	// NetworkingEnabled controls whether the Network scheduling gate is added to
@@ -252,6 +257,9 @@ func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) 
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		// Scopes consumer-project cleanup: the consumer provider deletes
+		// resources by this label when a project's ServiceConsumer is revoked.
+		labelServiceKey: labelServiceValue,
 	}
 }
 

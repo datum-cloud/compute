@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,6 +48,27 @@ func TestFreshDeployment(t *testing.T) {
 	assert.Equal(t, "test-fresh-deploy-1", actions[1].Object.GetName())
 	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[1].ActionType())
 	assert.True(t, actions[1].IsSkipped())
+}
+
+// TestFreshDeployment_InstanceHasOwnerReference verifies that Instances produced
+// by GetActions carry a controller owner reference to the WorkloadDeployment.
+// The simplified WD finalizer relies on Kubernetes GC to cascade Instance
+// deletion when a WD is deleted; GC requires this owner reference to be set.
+func TestFreshDeployment_InstanceHasOwnerReference(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+	deployment := getWorkloadDeployment("test-wd", 1)
+
+	actions, err := control.GetActions(ctx, scheme, deployment, nil)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+
+	owners := actions[0].Object.GetOwnerReferences()
+	require.Len(t, owners, 1, "created Instance must carry an owner reference so GC cascades deletion from its WD")
+	assert.Equal(t, deployment.UID, owners[0].UID)
+	assert.Equal(t, deployment.Name, owners[0].Name)
+	require.NotNil(t, owners[0].Controller)
+	assert.True(t, *owners[0].Controller)
 }
 
 // TestUpdateWithAllReadyInstances verifies that a template change on Ready
@@ -439,6 +461,7 @@ func TestLabelBackfill_Idempotent(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		labelServiceKey:                     labelServiceValue,
 	}
 
 	currentInstances := []v1alpha.Instance{*instance}
@@ -512,6 +535,7 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		labelServiceKey:                     labelServiceValue,
 	}
 	instance1 := getInstanceForDeployment(deployment, 1)
 	instance1.Labels = map[string]string{
@@ -522,6 +546,7 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		labelServiceKey:                     labelServiceValue,
 	}
 
 	// Trigger a template change.
@@ -602,6 +627,7 @@ func getInstanceForDeployment(deployment *v1alpha.WorkloadDeployment, ordinal in
 	instance.Labels[v1alpha.CityCodeLabel] = deployment.Spec.CityCode
 	instance.Labels[v1alpha.WorkloadNameLabel] = deployment.Spec.WorkloadRef.Name
 	instance.Labels[v1alpha.PlacementNameLabel] = deployment.Spec.PlacementName
+	instance.Labels[labelServiceKey] = labelServiceValue
 
 	return instance
 }
