@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,6 +61,21 @@ type WorkloadDeploymentReconciler struct {
 	enableReferencedDataGate bool
 }
 
+func effectiveDesiredReplicas(deployment *computev1alpha.WorkloadDeployment) int32 {
+	if !deployment.DeletionTimestamp.IsZero() {
+		return 0
+	}
+	if deployment.Spec.Replicas != nil {
+		return *deployment.Spec.Replicas
+	}
+	return deployment.Spec.ScaleSettings.MinReplicas
+}
+
+func workloadDeploymentPodSelector(deployment *computev1alpha.WorkloadDeployment) string {
+	set := labels.Set{computev1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID())}
+	return set.AsSelector().String()
+}
+
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
@@ -104,6 +120,14 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	if !deployment.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
+	if deployment.Spec.Replicas == nil {
+		base := deployment.DeepCopy()
+		deployment.Spec.Replicas = new(deployment.Spec.ScaleSettings.MinReplicas)
+		if err := cl.GetClient().Patch(ctx, &deployment, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed initializing deployment replicas: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 
 	logger.Info("reconciling deployment")
 	defer logger.Info("reconcile complete")
@@ -116,6 +140,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	listOpts := client.MatchingLabels{
 		computev1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
 	}
+	desiredReplicas := effectiveDesiredReplicas(&deployment)
 
 	var instances computev1alpha.InstanceList
 	if err := cl.GetClient().List(ctx, &instances, listOpts); err != nil {
@@ -127,7 +152,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		EnableReferencedDataGate: r.enableReferencedDataGate,
 	})
 
-	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, instances.Items)
+	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, desiredReplicas, instances.Items)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed getting instance control actions: %w", err)
 	}
@@ -177,10 +202,6 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	// their gates removed.
 
 	replicas := len(instances.Items)
-	desiredReplicas := deployment.Spec.ScaleSettings.MinReplicas
-	if dt := deployment.DeletionTimestamp; !dt.IsZero() {
-		desiredReplicas = 0
-	}
 
 	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
 	if err != nil {
@@ -192,6 +213,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	deployment.Status.UpdatedReplicas = int32(updatedReplicas)
 	deployment.Status.DesiredReplicas = desiredReplicas
 	deployment.Status.ReadyReplicas = int32(readyReplicas)
+	deployment.Status.Selector = workloadDeploymentPodSelector(&deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
 
 	switch {
