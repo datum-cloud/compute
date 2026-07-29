@@ -289,6 +289,14 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, r.reconcileDeletion(ctx, cl.GetClient(), req.ClusterName, &instance)
 	}
 
+	// Honor project suspension: stop all normal provisioning and mark the
+	// instance unavailable. Placement, quota claim, and disk attachments are
+	// intentionally left intact so the instance can restart from disk when
+	// spec.suspended is cleared on reinstatement.
+	if instance.Spec.Suspended {
+		return ctrl.Result{}, r.reconcileSuspendedState(ctx, cl.GetClient(), &instance)
+	}
+
 	if !controllerutil.ContainsFinalizer(&instance, instanceQuotaFinalizer) {
 		controllerutil.AddFinalizer(&instance, instanceQuotaFinalizer)
 		if err := cl.GetClient().Update(ctx, &instance); err != nil {
@@ -945,6 +953,43 @@ func (r *InstanceReconciler) emitEvent(obj *computev1alpha.Instance, eventType, 
 		message = strings.ToValidUTF8(message[:maxEventNoteLen-3], "") + "..."
 	}
 	r.recorder.Eventf(obj, nil, eventType, reason, action, "%s", message)
+}
+
+// reconcileSuspendedState is called when instance.Spec.Suspended is true. It
+// sets Ready=False/Suspended and Available=False/Suspended without touching the
+// instance's placement, quota claim, or disk attachments. Scheduling gates are
+// left in place; quota is not re-evaluated. The only work done here is a status
+// update (if anything changed) and a write-back to the upstream hub so the
+// management plane reflects the suspended state.
+func (r *InstanceReconciler) reconcileSuspendedState(
+	ctx context.Context,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) error {
+	changed := apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.InstanceReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.InstanceReadyReasonSuspended,
+		Message:            "Instance is suspended due to project suspension.",
+		ObservedGeneration: instance.Generation,
+	})
+	changed = apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.InstanceAvailable,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.InstanceAvailableReasonSuspended,
+		Message:            "Instance is suspended and not serving traffic.",
+		ObservedGeneration: instance.Generation,
+	}) || changed
+
+	if changed {
+		if err := cl.Status().Update(ctx, instance); err != nil {
+			return fmt.Errorf("updating instance status for suspension: %w", err)
+		}
+	}
+
+	// Write suspended status back to the federation hub so the management
+	// plane aggregates the correct per-instance state.
+	return r.writeBackToUpstream(ctx, instance)
 }
 
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
