@@ -57,6 +57,7 @@ func (c *statefulControl) GetActions(
 	ctx context.Context,
 	scheme *runtime.Scheme,
 	deployment *v1alpha.WorkloadDeployment,
+	desiredReplicas int32,
 	currentInstances []v1alpha.Instance,
 ) ([]instancecontrol.Action, error) {
 	instanceTemplateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
@@ -75,7 +76,7 @@ func (c *statefulControl) GetActions(
 
 	// Instances that are desired to exist. We do not currently support the
 	// concept of a partition, so will fill the entire slice.
-	desiredInstances := make([]*v1alpha.Instance, deployment.Spec.ScaleSettings.MinReplicas)
+	desiredInstances := make([]*v1alpha.Instance, desiredReplicas)
 
 	for _, instance := range currentInstances {
 		instanceIndex := getInstanceOrdinal(instance.Name)
@@ -88,7 +89,7 @@ func (c *statefulControl) GetActions(
 
 	// It's possible that the incoming currentInstances will have gaps in
 	// instances, so fill them in.
-	for i := range deployment.Spec.ScaleSettings.MinReplicas {
+	for i := range desiredReplicas {
 		if desiredInstances[i] == nil {
 			desiredInstances[i] = &v1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{

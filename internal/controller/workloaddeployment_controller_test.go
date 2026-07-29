@@ -55,6 +55,7 @@ func wdControllerTestDeployment(minReplicas int32) *computev1alpha.WorkloadDeplo
 			CityCode:      wdControllerTestCityCode,
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: wdControllerTestWorkload},
+			Replicas:      new(minReplicas),
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
 				MinReplicas: minReplicas,
 				// Always present in production: the API server defaults the policy
@@ -374,6 +375,62 @@ func TestReconcileInstanceGates_ClearsNetworkSchedulingGate(t *testing.T) {
 	})
 }
 
+func TestEffectiveDesiredReplicas(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mutate    func(*computev1alpha.WorkloadDeployment)
+		wantCount int32
+	}{
+		{
+			name:      "falls back to minReplicas when unset",
+			mutate:    func(deployment *computev1alpha.WorkloadDeployment) { deployment.Spec.Replicas = nil },
+			wantCount: 2,
+		},
+		{
+			name: "uses spec replicas when set",
+			mutate: func(deployment *computev1alpha.WorkloadDeployment) {
+				deployment.Spec.Replicas = new(int32(5))
+			},
+			wantCount: 5,
+		},
+		{
+			name: "deletion scales to zero",
+			mutate: func(deployment *computev1alpha.WorkloadDeployment) {
+				deployment.Spec.Replicas = new(int32(5))
+				now := metav1.Now()
+				deployment.DeletionTimestamp = &now
+			},
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := wdControllerTestDeployment(2)
+			if tt.mutate != nil {
+				tt.mutate(deployment)
+			}
+
+			assert.Equal(t, tt.wantCount, effectiveDesiredReplicas(deployment))
+		})
+	}
+}
+
+func TestWorkloadDeploymentPodSelector(t *testing.T) {
+	t.Parallel()
+
+	deployment := wdControllerTestDeployment(1)
+
+	assert.Equal(t,
+		"compute.datumapis.com/workload-deployment-uid=wd-uid-test",
+		workloadDeploymentPodSelector(deployment),
+	)
+}
+
 // newTestWDReconciler builds a WorkloadDeploymentReconciler wired to a fake
 // project cluster with the controller finalizer pre-registered, mirroring
 // SetupWithManager. Networking is disabled so Reconcile treats the network as
@@ -421,7 +478,7 @@ func TestWorkloadDeploymentReconcile_FinalizerAddRequeues(t *testing.T) {
 
 	// Second reconcile (post-requeue) proceeds past the finalizer branch and
 	// publishes status: ObservedGeneration tracks the deployment generation and
-	// DesiredReplicas reflects scale settings.
+	// DesiredReplicas reflects the effective desired count.
 	result, err = r.Reconcile(context.Background(), req)
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -429,8 +486,59 @@ func TestWorkloadDeploymentReconcile_FinalizerAddRequeues(t *testing.T) {
 	require.NoError(t, cl.Get(context.Background(), req.NamespacedName, &updated))
 	assert.Equal(t, updated.Generation, updated.Status.ObservedGeneration)
 	assert.Equal(t, int32(1), updated.Status.DesiredReplicas)
+	assert.Equal(t, workloadDeploymentPodSelector(&updated), updated.Status.Selector)
 	assert.True(t, apimeta.IsStatusConditionTrue(updated.Status.Conditions, computev1alpha.WorkloadDeploymentReplicasReady),
 		"no instances are quota-blocked, so ReplicasReady must be true")
+}
+
+func TestWorkloadDeploymentReconcile_UsesSpecReplicas(t *testing.T) {
+	t.Parallel()
+
+	deployment := wdControllerTestDeployment(1)
+	deployment.Spec.Replicas = new(int32(3))
+	cl := newProjectFakeClient(deployment)
+	r := newTestWDReconciler(cl)
+	req := mcreconcile.Request{
+		ClusterName: testCluster,
+		Request: ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: wdControllerTestName, Namespace: wdControllerTestNS},
+		},
+	}
+
+	_, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	_, err = r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	var updated computev1alpha.WorkloadDeployment
+	require.NoError(t, cl.Get(context.Background(), req.NamespacedName, &updated))
+	assert.Equal(t, int32(3), updated.Status.DesiredReplicas)
+	assert.Equal(t, workloadDeploymentPodSelector(&updated), updated.Status.Selector)
+}
+
+func TestWorkloadDeploymentReconcile_InitializesReplicas(t *testing.T) {
+	t.Parallel()
+
+	deployment := wdControllerTestDeployment(2)
+	deployment.Spec.Replicas = nil
+	deployment.Finalizers = []string{workloadControllerFinalizer}
+	cl := newProjectFakeClient(deployment)
+	r := newTestWDReconciler(cl)
+	req := mcreconcile.Request{
+		ClusterName: testCluster,
+		Request: ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: wdControllerTestName, Namespace: wdControllerTestNS},
+		},
+	}
+
+	result, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{Requeue: true}, result)
+
+	var updated computev1alpha.WorkloadDeployment
+	require.NoError(t, cl.Get(context.Background(), req.NamespacedName, &updated))
+	require.NotNil(t, updated.Spec.Replicas)
+	assert.Equal(t, int32(2), *updated.Spec.Replicas)
 }
 
 // ─── wdRefDataCondChanged tests ───────────────────────────────────────────────

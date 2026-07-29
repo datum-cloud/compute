@@ -174,6 +174,7 @@ func TestWorkloadDeploymentReconcile_NoMatchingLocation_SetsCondition(t *testing
 		Spec: computev1alpha.WorkloadDeploymentSpec{
 			CityCode:    locTestCityCode,
 			WorkloadRef: computev1alpha.WorkloadReference{Name: "location-test-workload"},
+			Replicas:    new(int32(1)),
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
 				MinReplicas: 1,
 				// Production deployments always carry the kubebuilder-defaulted

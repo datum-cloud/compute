@@ -8,12 +8,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // makeWorkload builds a Workload with the given generation for use in
@@ -77,6 +80,51 @@ func runReconcileWorkloadStatus(t *testing.T, workload *computev1alpha.Workload,
 
 	cond := apimeta.FindStatusCondition(workload.Status.Conditions, workloadConditionTypeAvailable)
 	return cond
+}
+
+func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
+	t.Parallel()
+
+	workload := &computev1alpha.Workload{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-workload",
+			Namespace: testDefaultNamespace,
+			UID:       types.UID("workload-uid"),
+		},
+		Spec: computev1alpha.WorkloadSpec{
+			Placements: []computev1alpha.WorkloadPlacement{
+				{
+					Name:      testDefaultPlacement,
+					CityCodes: []string{"DFW"},
+					ScaleSettings: computev1alpha.HorizontalScaleSettings{
+						MinReplicas: 2,
+					},
+				},
+			},
+		},
+	}
+	location := &networkingv1alpha.LocationBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "dfw"},
+		Spec: networkingv1alpha.LocationBindingSpec{
+			LocationRef: corev1.LocalObjectReference{Name: "dfw"},
+			Topology:    map[string]string{"topology.datum.net/city-code": "DFW"},
+		},
+	}
+
+	s := newNetworkingScheme()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(location).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, orphaned, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Empty(t, orphaned)
+	require.Len(t, desired, 1)
+	require.NotNil(t, desired[0].Spec.Replicas)
+	assert.Equal(t, int32(2), *desired[0].Spec.Replicas)
 }
 
 // TestReconcileWorkloadStatus_AllDeploymentsSameReason verifies that when all
