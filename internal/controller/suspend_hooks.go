@@ -58,35 +58,34 @@ func (cs *ComputeSuspend) SuspendConsumer(
 	serviceNames []string,
 ) error {
 	for _, svcName := range serviceNames {
-		var instances computev1alpha.InstanceList
-		if err := consumerClient.List(ctx, &instances,
+		// Suspend all WorkloadDeployments
+		var wds computev1alpha.WorkloadDeploymentList
+		if err := consumerClient.List(ctx, &wds,
 			client.MatchingLabels{labelServiceName: svcName},
 		); err != nil {
-			return fmt.Errorf("listing instances for service %q: %w", svcName, err)
+			return fmt.Errorf("listing workloaddeployments for service %q: %w", svcName, err)
 		}
-		for i := range instances.Items {
-			inst := &instances.Items[i]
-			if inst.Spec.Suspended {
+		for i := range wds.Items {
+			wd := &wds.Items[i]
+			if wd.Status.Suspended {
 				continue // already suspended — idempotent
 			}
-			base := inst.DeepCopy()
-			inst.Spec.Suspended = true
-			if err := consumerClient.Patch(ctx, inst, client.MergeFrom(base)); err != nil {
-				// Emit before returning so the event is always recorded even if
-				// the caller doesn't inspect the error detail.
+			base := wd.DeepCopy()
+			wd.Status.Suspended = true
+			if err := consumerClient.Status().Patch(ctx, wd, client.MergeFrom(base)); err != nil {
 				if cs.recorder != nil {
-					cs.recorder.Eventf(inst, nil, corev1.EventTypeWarning,
+					cs.recorder.Eventf(wd, nil, corev1.EventTypeWarning,
 						eventReasonPauseFailed, eventActionSuspending,
-						"Failed to suspend instance %s/%s for project %s: %v",
-						inst.Namespace, inst.Name, consumerProject, err)
+						"Failed to suspend workloaddeployment %s/%s for project %s: %v",
+						wd.Namespace, wd.Name, consumerProject, err)
 				}
-				return fmt.Errorf("patching instance %s/%s to suspended: %w",
-					inst.Namespace, inst.Name, err)
+				return fmt.Errorf("patching workloaddeployment %s/%s status to suspended: %w",
+					wd.Namespace, wd.Name, err)
 			}
 			if cs.recorder != nil {
-				cs.recorder.Eventf(inst, nil, corev1.EventTypeNormal,
+				cs.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectPaused, eventActionSuspending,
-					"Instance suspended due to project suspension of %s", consumerProject)
+					"WorkloadDeployment suspended due to project suspension of %s", consumerProject)
 			}
 		}
 	}
@@ -120,34 +119,34 @@ func (cr *ComputeResume) ResumeConsumer(
 	serviceNames []string,
 ) error {
 	for _, svcName := range serviceNames {
-		var instances computev1alpha.InstanceList
-		if err := consumerClient.List(ctx, &instances,
+		// Resume all WorkloadDeployments
+		var wds computev1alpha.WorkloadDeploymentList
+		if err := consumerClient.List(ctx, &wds,
 			client.MatchingLabels{labelServiceName: svcName},
 		); err != nil {
-			return fmt.Errorf("listing instances for service %q: %w", svcName, err)
+			return fmt.Errorf("listing workloaddeployments for service %q: %w", svcName, err)
 		}
-		for i := range instances.Items {
-			inst := &instances.Items[i]
-			if !inst.Spec.Suspended {
+		for i := range wds.Items {
+			wd := &wds.Items[i]
+			if !wd.Status.Suspended {
 				continue // already active — idempotent
 			}
-			base := inst.DeepCopy()
-			inst.Spec.Suspended = false
-			if err := consumerClient.Patch(ctx, inst, client.MergeFrom(base)); err != nil {
-				// Emit before returning so the event is always recorded.
+			base := wd.DeepCopy()
+			wd.Status.Suspended = false
+			if err := consumerClient.Status().Patch(ctx, wd, client.MergeFrom(base)); err != nil {
 				if cr.recorder != nil {
-					cr.recorder.Eventf(inst, nil, corev1.EventTypeWarning,
+					cr.recorder.Eventf(wd, nil, corev1.EventTypeWarning,
 						eventReasonPauseFailed, eventActionResuming,
-						"Failed to resume instance %s/%s for project %s: %v",
-						inst.Namespace, inst.Name, consumerProject, err)
+						"Failed to resume workloaddeployment %s/%s for project %s: %v",
+						wd.Namespace, wd.Name, consumerProject, err)
 				}
-				return fmt.Errorf("patching instance %s/%s to resumed: %w",
-					inst.Namespace, inst.Name, err)
+				return fmt.Errorf("patching workloaddeployment %s/%s status to resumed: %w",
+					wd.Namespace, wd.Name, err)
 			}
 			if cr.recorder != nil {
-				cr.recorder.Eventf(inst, nil, corev1.EventTypeNormal,
+				cr.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectResumed, eventActionResuming,
-					"Instance resumed after project reinstatement of %s", consumerProject)
+					"WorkloadDeployment resumed after project reinstatement of %s", consumerProject)
 			}
 		}
 	}

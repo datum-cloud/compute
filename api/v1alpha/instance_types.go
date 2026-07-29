@@ -37,15 +37,6 @@ type InstanceSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Controller *InstanceController `json:"controller,omitempty"`
-
-	// Suspended, when true, requests that the instance's process be stopped
-	// without releasing its placement, disk attachments, or quota allocation.
-	// The controller stops the running container/VM and marks the instance
-	// unavailable. Setting this to false reinstates the instance, which
-	// restarts from its persisted disk state. In-memory state is not preserved.
-	//
-	// +kubebuilder:validation:Optional
-	Suspended bool `json:"suspended,omitempty"`
 }
 
 type InstanceController struct {
@@ -458,6 +449,13 @@ type InstanceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	Controller *InstanceControllerStatus `json:"controller,omitempty"`
+
+	// Suspended, when true, indicates that the instance's process should be stopped
+	// without releasing its placement, disk attachments, or quota allocation.
+	// The provider controller stops the running container/VM.
+	//
+	// +kubebuilder:validation:Optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 type InstanceControllerStatus struct {

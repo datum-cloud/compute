@@ -256,6 +256,15 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 ) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas int, err error) {
 	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
 	for _, instance := range instances {
+		// Propagate suspension state from deployment to instance.
+		if instance.Status.Suspended != deployment.Status.Suspended {
+			base := instance.DeepCopy()
+			instance.Status.Suspended = deployment.Status.Suspended
+			if err := c.Status().Patch(ctx, &instance, client.MergeFrom(base)); err != nil {
+				return 0, 0, 0, 0, 0, fmt.Errorf("failed propagating suspension state to instance %s: %w", instance.Name, err)
+			}
+		}
+
 		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
 			quotaBlockedReplicas++
 		}

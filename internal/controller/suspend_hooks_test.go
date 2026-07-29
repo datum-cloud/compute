@@ -40,21 +40,25 @@ func TestConformanceSuspendResume(t *testing.T) {
 		instanceName    = "test-instance"
 	)
 
-	// A pre-existing Instance in the consumer project, labelled so the hooks
+	// A pre-existing WorkloadDeployment in the consumer project, labelled so the hooks
 	// can find it.
-	instance := &computev1alpha.Instance{
+	deployment := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      instanceName,
+			Name:      instanceName, // Keep name for simplicity
 			Namespace: instanceNS,
 			Labels: map[string]string{
 				"services.miloapis.com/service-name": serviceName,
 			},
 		},
-		Spec: computev1alpha.InstanceSpec{
-			Runtime: computev1alpha.InstanceRuntimeSpec{
-				Resources: computev1alpha.InstanceRuntimeResources{},
+		Spec: computev1alpha.WorkloadDeploymentSpec{
+			Template: computev1alpha.InstanceTemplateSpec{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{},
+					},
+					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+				},
 			},
-			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
 		},
 	}
 
@@ -75,8 +79,8 @@ func TestConformanceSuspendResume(t *testing.T) {
 
 	consumerClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(instance).
-		WithStatusSubresource(instance).
+		WithObjects(deployment).
+		WithStatusSubresource(deployment).
 		Build()
 
 	providerClient := fake.NewClientBuilder().
@@ -94,7 +98,7 @@ func TestConformanceSuspendResume(t *testing.T) {
 		[]string{serviceName},
 		controller.NewComputeSuspend(nil),
 		controller.NewComputeResume(nil),
-		// No retained objects: the Instance itself is what the hooks operate on
-		// (spec.suspended flips), so it is not a bystander that must stay unchanged.
+		// No retained objects: the WorkloadDeployment itself is what the hooks operate on
+		// (status.suspended flips), so it is not a bystander that must stay unchanged.
 	)
 }

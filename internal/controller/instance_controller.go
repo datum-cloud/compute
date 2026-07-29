@@ -292,8 +292,8 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	// Honor project suspension: stop all normal provisioning and mark the
 	// instance unavailable. Placement, quota claim, and disk attachments are
 	// intentionally left intact so the instance can restart from disk when
-	// spec.suspended is cleared on reinstatement.
-	if instance.Spec.Suspended {
+	// Status.Suspended is cleared on reinstatement.
+	if instance.Status.Suspended {
 		return ctrl.Result{}, r.reconcileSuspendedState(ctx, cl.GetClient(), &instance)
 	}
 
@@ -955,7 +955,7 @@ func (r *InstanceReconciler) emitEvent(obj *computev1alpha.Instance, eventType, 
 	r.recorder.Eventf(obj, nil, eventType, reason, action, "%s", message)
 }
 
-// reconcileSuspendedState is called when instance.Spec.Suspended is true. It
+// reconcileSuspendedState is called when instance.Status.Suspended is true. It
 // sets Ready=False/Suspended and Available=False/Suspended without touching the
 // instance's placement, quota claim, or disk attachments. Scheduling gates are
 // left in place; quota is not re-evaluated. The only work done here is a status

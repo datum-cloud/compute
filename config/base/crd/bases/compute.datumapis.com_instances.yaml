@@ -1036,6 +1036,12 @@ spec:
                       type: object
                   type: object
                 type: array
+              suspended:
+                description: |-
+                  Suspended, when true, indicates that the instance's process should be stopped
+                  without releasing its placement, disk attachments, or quota allocation.
+                  The provider controller stops the running container/VM.
+                type: boolean
             type: object
         type: object
     served: true

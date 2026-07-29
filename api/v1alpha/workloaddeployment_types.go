@@ -71,6 +71,12 @@ type WorkloadDeploymentStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Suspended, when true, requests that all instances managed by this deployment
+	// be stopped without releasing their placement, disk attachments, or quota allocation.
+	//
+	// +kubebuilder:validation:Optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 const (
