@@ -19,7 +19,7 @@
         "title": "Workloads",
         "icon": "server",
         "path": "workloads",
-        "order": 40
+        "order": 80
       },
       "requirements": {
         "permissions": [

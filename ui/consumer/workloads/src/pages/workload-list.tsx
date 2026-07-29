@@ -16,48 +16,132 @@
  *    #1315's own instances table).
  */
 import { CliBanner, SectionCard } from '../components/cli-section';
+import { StatStrip } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { useWorkloads } from '../lib/api';
-import { workloadHealthToBadgeType, type Workload } from '../schema';
+import { workloadHealthToBadgeType, type Workload, type WorkloadHealth } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
-import { RocketIcon, SearchIcon } from 'lucide-react';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@datum-cloud/datum-ui/breadcrumb';
+import { PageTitle } from '@datum-cloud/datum-ui/page-title';
+import { cn } from '@datum-cloud/datum-ui/utils';
+import { formatDistanceToNowStrict } from 'date-fns';
+import { ArrowRightIcon, HomeIcon, RocketIcon, SearchIcon } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 
-function WorkloadRow({ workload, onClick }: { workload: Workload; onClick: () => void }) {
+const HEALTH_DOT_CLASS: Record<WorkloadHealth, string> = {
+  Available: 'bg-green-500',
+  Degraded: 'bg-yellow-500',
+  Unavailable: 'bg-red-500',
+  Unknown: 'bg-muted-foreground',
+};
+
+function FleetSummary({ workloads }: { workloads: Workload[] }) {
+  const readyInstances = workloads.reduce((sum, w) => sum + w.currentReplicas, 0);
+  const desiredInstances = workloads.reduce((sum, w) => sum + w.desiredReplicas, 0);
+  const healthy = workloads.filter((w) => w.health === 'Available').length;
+  const degraded = workloads.filter((w) => w.health === 'Degraded').length;
+  const unavailable = workloads.filter(
+    (w) => w.health === 'Unavailable' || w.health === 'Unknown'
+  ).length;
+
+  const stats: { label: string; value: string; className?: string }[] = [
+    { label: 'Workloads', value: String(workloads.length) },
+    { label: 'Instances', value: `${readyInstances}/${desiredInstances}` },
+    {
+      label: 'Healthy',
+      value: String(healthy),
+      className: healthy > 0 ? 'text-green-600 dark:text-green-500' : undefined,
+    },
+    {
+      label: 'Degraded',
+      value: String(degraded),
+      className: degraded > 0 ? 'text-yellow-600 dark:text-yellow-500' : undefined,
+    },
+    {
+      label: 'Unavailable',
+      value: String(unavailable),
+      className: unavailable > 0 ? 'text-red-600 dark:text-red-500' : undefined,
+    },
+  ];
+
+  return <StatStrip stats={stats} testId="compute-plugin-fleet-summary" />;
+}
+
+function WorkloadCard({ workload, onClick }: { workload: Workload; onClick: () => void }) {
   return (
-    <tr
-      className="border-border hover:bg-muted/50 cursor-pointer border-t transition-colors"
+    <div
+      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-4 rounded-xl border p-5 shadow transition-colors"
       onClick={onClick}
-      data-testid="compute-plugin-workload-row">
-      <td className="px-5 py-3">
-        <span className="font-medium">{workload.name}</span>
-      </td>
-      <td className="px-5 py-3">
-        {workload.image ? (
-          <span className="text-muted-foreground max-w-xs truncate font-mono text-sm">
-            {workload.image}
-          </span>
-        ) : (
-          <span className="text-muted-foreground text-sm">—</span>
-        )}
-      </td>
-      <td className="px-5 py-3">
-        <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
+      data-testid="compute-plugin-workload-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate font-semibold">{workload.name}</h3>
+            {workload.runtimeType && (
+              <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs">
+                {workload.runtimeType}
+              </span>
+            )}
+          </div>
+          {workload.image && (
+            <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
+              {workload.image}
+            </p>
+          )}
+        </div>
+        <Badge type={workloadHealthToBadgeType(workload.health)} theme="light" className="shrink-0">
           {workload.health}
         </Badge>
-      </td>
-      <td className="px-5 py-3 text-sm">
-        {workload.currentReplicas}/{workload.desiredReplicas}
-      </td>
-      <td className="px-5 py-3 text-sm">
-        {workload.placements.length ? (
-          workload.placements.join(', ')
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-      </td>
-      <td className="px-5 py-3 text-sm">{workload.createdAt.toLocaleDateString()}</td>
-    </tr>
+      </div>
+
+      <div className="border-border grid grid-cols-2 gap-3 border-t pt-4">
+        <div>
+          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+            Ready
+          </p>
+          <p className="mt-0.5 text-sm font-medium">
+            {workload.currentReplicas}/{workload.desiredReplicas}
+          </p>
+        </div>
+        <div>
+          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Age</p>
+          <p className="mt-0.5 text-sm font-medium">
+            {formatDistanceToNowStrict(workload.createdAt, { addSuffix: true })}
+          </p>
+        </div>
+      </div>
+
+      {workload.placements.length > 0 && (
+        <div className="border-border flex flex-col gap-1.5 border-t pt-4">
+          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+            Placements
+          </p>
+          {workload.placements.map((placement) => (
+            <div key={placement} className="flex items-center gap-2 text-sm">
+              <span
+                className={cn('size-1.5 shrink-0 rounded-full', HEALTH_DOT_CLASS[workload.health])}
+              />
+              <span>{placement}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="border-border text-muted-foreground flex items-center justify-between border-t pt-3 text-xs">
+        <span>Created {workload.createdAt.toLocaleDateString()}</span>
+        <span className="flex items-center gap-1">
+          View workload
+          <ArrowRightIcon className="size-3" />
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -72,16 +156,33 @@ export default function WorkloadList() {
   // page at `/project/:projectId/services/:serviceSlug/workloads`.
   const basePath = location.pathname.replace(/\/$/, '');
   const workloadHref = (name: string) => `${basePath}/${name}`;
+  const projectHref = projectId ? `/project/${projectId}` : '/';
 
   return (
-    <div data-testid="compute-plugin-workload-list" className="flex flex-col gap-6 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Workloads</h1>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Read-only operational view of your project&apos;s compute workloads. Workloads are
-          created and managed with <code>datumctl</code>.
-        </p>
-      </div>
+    <div data-testid="compute-plugin-workload-list" className="flex flex-col gap-4 p-6">
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink href={projectHref}>
+              <HomeIcon className="size-4" />
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>Workloads</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+
+      <PageTitle
+        title="Workloads"
+        description={
+          <>
+            Read-only operational view of your project&apos;s compute workloads. Workloads are
+            created and managed with <code>datumctl</code>.
+          </>
+        }
+      />
 
       {isLoading && <LoadingSkeleton />}
 
@@ -123,30 +224,20 @@ export default function WorkloadList() {
       )}
 
       {!isLoading && !error && workloads && workloads.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full text-sm" data-testid="compute-plugin-workload-table">
-            <thead>
-              <tr className="border-border border-b">
-                {['Name', 'Image', 'Health', 'Ready', 'Placements', 'Age'].map((h) => (
-                  <th
-                    key={h}
-                    className="text-muted-foreground px-5 py-2.5 text-left text-xs font-medium tracking-wide uppercase">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {workloads.map((workload) => (
-                <WorkloadRow
-                  key={workload.uid || workload.name}
-                  workload={workload}
-                  onClick={() => navigate(workloadHref(workload.name))}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <FleetSummary workloads={workloads} />
+          <div
+            className="grid grid-cols-1 gap-4 lg:grid-cols-2"
+            data-testid="compute-plugin-workload-grid">
+            {workloads.map((workload) => (
+              <WorkloadCard
+                key={workload.uid || workload.name}
+                workload={workload}
+                onClick={() => navigate(workloadHref(workload.name))}
+              />
+            ))}
+          </div>
+        </>
       )}
     </div>
   );

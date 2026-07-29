@@ -17,13 +17,24 @@
  *    `useCopyToClipboard` hook `cli-section.tsx` uses (from
  *    `@datum-cloud/datum-ui/hooks`).
  */
+import { CommandBlock } from '../components/cli-section';
+import { PluginTabs } from '../components/plugin-tabs';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { useInstance } from '../lib/api';
 import { formatUptime, splitSlashValue } from '../lib/format';
 import { instanceStatusToBadgeType, type InstanceCondition } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@datum-cloud/datum-ui/breadcrumb';
 import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
+import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import {
   BoxIcon,
@@ -33,13 +44,17 @@ import {
   CopyIcon,
   CpuIcon,
   GlobeIcon,
+  HomeIcon,
   LinkIcon,
+  SquareTerminalIcon,
   TimerIcon,
   WifiIcon,
   XCircleIcon,
 } from 'lucide-react';
 import { useState } from 'react';
-import { useParams } from 'react-router';
+import { useLocation, useParams } from 'react-router';
+
+const INSTANCE_TABS = ['Overview', 'Metrics', 'Logs', 'Manage', 'Activity'];
 
 function StatCard({
   icon,
@@ -103,13 +118,19 @@ function CopyableText({ value, text, className }: { value: string; text?: string
 }
 
 export default function InstanceDetail() {
-  const { projectId, instanceName } = useParams<{
+  const { projectId, workloadName, instanceName } = useParams<{
     projectId: string;
     workloadName: string;
     instanceName: string;
   }>();
+  const location = useLocation();
 
   const { data: instance, isLoading, error, refetch } = useInstance(projectId, instanceName);
+
+  const basePath = location.pathname.replace(/\/$/, '');
+  const instancesHref = basePath.replace(/\/instances\/[^/]+$/, '');
+  const workloadsHref = instancesHref.replace(/\/[^/]+$/, '');
+  const projectHref = projectId ? `/project/${projectId}` : '/';
 
   if (isLoading) return <LoadingSkeleton />;
 
@@ -131,16 +152,42 @@ export default function InstanceDetail() {
   const firstPort = instance.ports[0];
 
   return (
-    <div data-testid="compute-plugin-instance-detail" className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{instance.name}</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Instance overview</p>
-        </div>
-        <Badge type={instanceStatusToBadgeType(instance.status)} theme="light">
-          {instance.status}
-        </Badge>
-      </div>
+    <div data-testid="compute-plugin-instance-detail" className="flex flex-col gap-4 p-6">
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink href={projectHref}>
+              <HomeIcon className="size-4" />
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbLink href={workloadsHref}>Workloads</BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbLink href={instancesHref}>{workloadName}</BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{instance.name}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+
+      <PageTitle
+        title={instance.name}
+        description={
+          <span className="mt-1 flex items-center gap-2">
+            <Badge type={instanceStatusToBadgeType(instance.status)} theme="light">
+              {instance.status}
+            </Badge>
+            {instance.city && <span className="text-muted-foreground text-xs">{instance.city}</span>}
+          </span>
+        }
+      />
+
+      <PluginTabs tabs={INSTANCE_TABS} testId="compute-plugin-instance-tabs" />
 
       {/* Stat tiles */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -289,6 +336,33 @@ export default function InstanceDetail() {
           </Card>
         </div>
       </div>
+
+      {/* CLI reference */}
+      <Card className="rounded-xl shadow-none">
+        <CardHeader className="flex flex-row items-center gap-2">
+          <SquareTerminalIcon className="text-muted-foreground size-4" />
+          <CardTitle className="text-base font-semibold">datumctl Commands</CardTitle>
+          <span className="text-muted-foreground ml-auto text-xs">CLI</span>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-4 px-5 pt-0 pb-5 sm:grid-cols-2">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-muted-foreground text-xs">Get instance</span>
+            <CommandBlock value={`datumctl compute instances get ${instance.name}`} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-muted-foreground text-xs">Describe instance</span>
+            <CommandBlock value={`datumctl compute instances describe ${instance.name}`} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-muted-foreground text-xs">List instances</span>
+            <CommandBlock value={`datumctl compute instances list --workload=${workloadName ?? ''}`} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-muted-foreground text-xs">Get workload</span>
+            <CommandBlock value={`datumctl compute workloads get ${workloadName ?? ''}`} />
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

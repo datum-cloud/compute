@@ -19,62 +19,80 @@
  *  - Instance row navigation builds the child path from `useLocation()`
  *    instead of the portal's `paths.config.ts` + `getPathWithParams`.
  */
+import { PluginTabs } from '../components/plugin-tabs';
+import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { useWorkload, useWorkloadInstances } from '../lib/api';
 import { formatUptime, splitSlashValue } from '../lib/format';
-import { workloadHealthToBadgeType, type Instance } from '../schema';
+import { instanceStatusToBadgeType, workloadHealthToBadgeType, type Instance } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@datum-cloud/datum-ui/breadcrumb';
 import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
+import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { CopyIcon, HeartPulseIcon, MapPinIcon, ServerIcon } from 'lucide-react';
+import { ArrowRightIcon, HomeIcon } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 
-function StatCard({
-  icon,
-  label,
-  value,
-  sub,
-  highlight,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub?: string;
-  highlight?: boolean;
-}) {
-  return (
-    <Card className="rounded-xl py-0 shadow-none">
-      <div className="flex items-start gap-3 p-4">
-        <div
-          className={cn('mt-0.5 shrink-0', highlight ? 'text-success' : 'text-muted-foreground')}>
-          {icon}
-        </div>
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-            {label}
-          </span>
-          <span className={cn('font-semibold', highlight ? 'text-success' : 'text-foreground')}>
-            {value}
-          </span>
-          {sub && <span className="text-muted-foreground text-xs">{sub}</span>}
-        </div>
-      </div>
-    </Card>
-  );
-}
+const INSTANCE_STATUS_DOT: Record<Instance['status'], string> = {
+  Available: 'bg-green-500',
+  Pending: 'bg-yellow-500',
+  Failed: 'bg-red-500',
+  Unknown: 'bg-muted-foreground',
+};
 
-function InstanceStatusDot({ status }: { status: Instance['status'] }) {
-  const color =
-    status === 'Available'
-      ? 'bg-green-500'
-      : status === 'Failed'
-        ? 'bg-red-500'
-        : 'bg-muted-foreground';
+const WORKLOAD_TABS = ['Overview', 'Deployments', 'Metrics', 'Activity'];
+
+function InstanceCard({ instance, onClick }: { instance: Instance; onClick: () => void }) {
   return (
-    <span className="flex items-center gap-1.5">
-      <span className={cn('size-2 rounded-full', color)} />
-      {status}
-    </span>
+    <div
+      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-3 rounded-xl border p-5 shadow transition-colors"
+      onClick={onClick}
+      data-testid="compute-plugin-instance-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-primary truncate font-mono text-sm font-medium">{instance.name}</p>
+          <p className="text-muted-foreground mt-0.5 text-xs">{instance.city ?? 'Unknown region'}</p>
+        </div>
+        <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="shrink-0">
+          {instance.status}
+        </Badge>
+      </div>
+
+      {(instance.instanceType || instance.ports.length > 0) && (
+        <div className="border-card-border flex flex-wrap gap-1.5 border-t pt-3">
+          {instance.instanceType && (
+            <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs">
+              {instance.instanceType}
+            </span>
+          )}
+          {instance.ports.map((port) => (
+            <span
+              key={port}
+              className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 font-mono text-xs">
+              {port}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="border-card-border text-muted-foreground flex items-center justify-between border-t pt-3 text-xs">
+        <span className="flex items-center gap-1.5">
+          <span className={cn('size-1.5 shrink-0 rounded-full', INSTANCE_STATUS_DOT[instance.status])} />
+          Up {formatUptime(instance.createdAt)}
+        </span>
+        <span className="flex items-center gap-1">
+          View instance
+          <ArrowRightIcon className="size-3" />
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -88,6 +106,8 @@ export default function WorkloadDetail() {
 
   const basePath = location.pathname.replace(/\/$/, '');
   const instanceHref = (name: string) => `${basePath}/instances/${name}`;
+  const workloadsHref = basePath.replace(/\/[^/]+$/, '');
+  const projectHref = projectId ? `/project/${projectId}` : '/';
 
   if (isLoading) return <LoadingSkeleton />;
 
@@ -109,14 +129,7 @@ export default function WorkloadDetail() {
   const allHealthy = totalCount > 0 && healthyCount === totalCount;
 
   const regions = workload.regions ?? [];
-  const { main: resourceShort, sub: resourceProvider } = splitSlashValue(workload.resources ?? '');
-  const replicas =
-    workload.replicasPerRegion !== undefined
-      ? {
-          value: `${workload.desiredReplicas} total`,
-          sub: `${workload.replicasPerRegion} per region`,
-        }
-      : { value: `${workload.desiredReplicas} total`, sub: undefined };
+  const { main: resourceShort } = splitSlashValue(workload.resources ?? '');
 
   const createdFormatted = workload.createdAt
     ? workload.createdAt.toLocaleDateString('en-US', {
@@ -128,156 +141,127 @@ export default function WorkloadDetail() {
       })
     : null;
 
+  const stats: Stat[] = [
+    {
+      label: 'Instances',
+      value: `${healthyCount}/${totalCount}`,
+      className: allHealthy ? 'text-green-600 dark:text-green-500' : undefined,
+    },
+    { label: 'Regions', value: regions.length > 0 ? regions.join(', ') : '—' },
+    ...(workload.resources ? [{ label: 'Resources', value: resourceShort }] : []),
+    {
+      label: 'Replicas',
+      value:
+        workload.replicasPerRegion !== undefined
+          ? `${workload.replicasPerRegion}/region · ${workload.desiredReplicas} total`
+          : `${workload.desiredReplicas} total`,
+    },
+  ];
+
   return (
-    <div data-testid="compute-plugin-workload-detail" className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{workload.name}</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Workload overview</p>
-        </div>
-        <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
-          {workload.health}
-        </Badge>
-      </div>
+    <div data-testid="compute-plugin-workload-detail" className="flex flex-col gap-4 p-6">
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink href={projectHref}>
+              <HomeIcon className="size-4" />
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbLink href={workloadsHref}>Workloads</BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{workload.name}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
 
-      {/* Stat tiles */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
-          icon={<HeartPulseIcon className="size-4" />}
-          label="Health"
-          value={`${healthyCount} / ${totalCount}`}
-          sub="instances healthy"
-          highlight={allHealthy}
-        />
-        <StatCard
-          icon={<MapPinIcon className="size-4" />}
-          label="Region"
-          value={regions.length > 0 ? regions.join(', ') : '—'}
-        />
-        {workload.resources && (
-          <StatCard
-            icon={<ServerIcon className="size-4" />}
-            label="Resources"
-            value={resourceShort}
-            sub={resourceProvider || undefined}
-          />
+      <PageTitle
+        title={workload.name}
+        description="Workload overview"
+        actions={
+          <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
+            {workload.health}
+          </Badge>
+        }
+      />
+
+      <PluginTabs tabs={WORKLOAD_TABS} testId="compute-plugin-workload-tabs" />
+
+      <StatStrip stats={stats} testId="compute-plugin-workload-stats" />
+
+      {/* Configuration */}
+      <Card className="rounded-xl shadow-none">
+        <CardHeader>
+          <CardTitle className="mb-0 pb-0 text-base font-semibold">Configuration</CardTitle>
+        </CardHeader>
+        <CardContent className="px-5 pt-0 pb-5">
+          <dl className="divide-border divide-y text-sm">
+            <div className="flex items-baseline justify-between gap-4 py-2.5">
+              <dt className="text-muted-foreground shrink-0">Resource name</dt>
+              <dd className="min-w-0 truncate text-right font-mono">{workload.name}</dd>
+            </div>
+            {workload.runtimeType && (
+              <div className="flex items-baseline justify-between gap-4 py-2.5">
+                <dt className="text-muted-foreground shrink-0">Runtime</dt>
+                <dd>{workload.runtimeType}</dd>
+              </div>
+            )}
+            {workload.image && (
+              <div className="flex items-baseline justify-between gap-4 py-2.5">
+                <dt className="text-muted-foreground shrink-0">Container image</dt>
+                <dd className="min-w-0 truncate text-right font-mono text-xs">{workload.image}</dd>
+              </div>
+            )}
+            {regions.length > 0 && (
+              <div className="flex items-baseline justify-between gap-4 py-2.5">
+                <dt className="text-muted-foreground shrink-0">Regions</dt>
+                <dd>{regions.join(', ')}</dd>
+              </div>
+            )}
+            {workload.resources && (
+              <div className="flex items-baseline justify-between gap-4 py-2.5">
+                <dt className="text-muted-foreground shrink-0">Resources</dt>
+                <dd className="font-mono text-xs">{workload.resources}</dd>
+              </div>
+            )}
+            <div className="flex items-baseline justify-between gap-4 py-2.5">
+              <dt className="text-muted-foreground shrink-0">Replicas</dt>
+              <dd>
+                {workload.replicasPerRegion !== undefined
+                  ? `${workload.replicasPerRegion} per region · ${workload.desiredReplicas} total`
+                  : `${workload.desiredReplicas} total`}
+              </dd>
+            </div>
+            {createdFormatted && (
+              <div className="flex items-baseline justify-between gap-4 py-2.5">
+                <dt className="text-muted-foreground shrink-0">Created</dt>
+                <dd className="text-right">{createdFormatted}</dd>
+              </div>
+            )}
+          </dl>
+        </CardContent>
+      </Card>
+
+      {/* Instance Locations */}
+      <div className="flex flex-col gap-4">
+
+
+        {instances.length === 0 ? (
+          <p className="text-muted-foreground text-sm">No running instances</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {instances.map((instance) => (
+              <InstanceCard
+                key={instance.uid || instance.name}
+                instance={instance}
+                onClick={() => navigate(instanceHref(instance.name))}
+              />
+            ))}
+          </div>
         )}
-        <StatCard
-          icon={<CopyIcon className="size-4" />}
-          label="Replicas"
-          value={replicas.value}
-          sub={replicas.sub}
-        />
-      </div>
-
-      {/* Two-column layout */}
-      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
-        {/* Configuration */}
-        <Card className="rounded-xl shadow-none">
-          <CardHeader>
-            <CardTitle className="mb-0 pb-0 text-base font-semibold">Configuration</CardTitle>
-          </CardHeader>
-          <CardContent className="px-5 pt-0 pb-5">
-            <dl className="divide-border divide-y text-sm">
-              <div className="flex items-baseline justify-between gap-4 py-2.5">
-                <dt className="text-muted-foreground shrink-0">Resource name</dt>
-                <dd className="min-w-0 truncate text-right font-mono">{workload.name}</dd>
-              </div>
-              {workload.runtimeType && (
-                <div className="flex items-baseline justify-between gap-4 py-2.5">
-                  <dt className="text-muted-foreground shrink-0">Runtime</dt>
-                  <dd>{workload.runtimeType}</dd>
-                </div>
-              )}
-              {workload.image && (
-                <div className="flex items-baseline justify-between gap-4 py-2.5">
-                  <dt className="text-muted-foreground shrink-0">Container image</dt>
-                  <dd className="min-w-0 truncate text-right font-mono text-xs">
-                    {workload.image}
-                  </dd>
-                </div>
-              )}
-              {regions.length > 0 && (
-                <div className="flex items-baseline justify-between gap-4 py-2.5">
-                  <dt className="text-muted-foreground shrink-0">Regions</dt>
-                  <dd>{regions.join(', ')}</dd>
-                </div>
-              )}
-              {workload.resources && (
-                <div className="flex items-baseline justify-between gap-4 py-2.5">
-                  <dt className="text-muted-foreground shrink-0">Resources</dt>
-                  <dd className="font-mono text-xs">{workload.resources}</dd>
-                </div>
-              )}
-              <div className="flex items-baseline justify-between gap-4 py-2.5">
-                <dt className="text-muted-foreground shrink-0">Replicas</dt>
-                <dd>
-                  {workload.replicasPerRegion !== undefined
-                    ? `${workload.replicasPerRegion} per region · ${workload.desiredReplicas} total`
-                    : `${workload.desiredReplicas} total`}
-                </dd>
-              </div>
-              {createdFormatted && (
-                <div className="flex items-baseline justify-between gap-4 py-2.5">
-                  <dt className="text-muted-foreground shrink-0">Created</dt>
-                  <dd className="text-right">{createdFormatted}</dd>
-                </div>
-              )}
-            </dl>
-          </CardContent>
-        </Card>
-
-        {/* Running Instances */}
-        <Card className="rounded-xl shadow-none">
-          <CardHeader className="flex flex-row items-center justify-between px-5 pb-3">
-            <CardTitle className="text-base font-semibold">Running Instances</CardTitle>
-            {instances.length > 0 && (
-              <span className="bg-muted text-muted-foreground rounded-md px-2 py-0.5 text-xs font-medium">
-                {instances.length}
-              </span>
-            )}
-          </CardHeader>
-          <CardContent className="p-0">
-            {instances.length === 0 ? (
-              <p className="text-muted-foreground px-5 pb-5 text-sm">No running instances</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-border border-t">
-                    {['Instance ID', 'Region', 'Status', 'Uptime'].map((h) => (
-                      <th
-                        key={h}
-                        className="text-muted-foreground px-5 py-2.5 text-left text-xs font-medium tracking-wide uppercase">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {instances.map((instance) => (
-                    <tr
-                      key={instance.uid || instance.name}
-                      className="border-border hover:bg-muted/50 cursor-pointer border-t transition-colors"
-                      onClick={() => navigate(instanceHref(instance.name))}>
-                      <td className="px-5 py-3 font-mono text-xs">
-                        <span className="text-primary">{instance.name}</span>
-                      </td>
-                      <td className="px-5 py-3">
-                        {instance.city ?? <span className="text-muted-foreground">—</span>}
-                      </td>
-                      <td className="px-5 py-3">
-                        <InstanceStatusDot status={instance.status} />
-                      </td>
-                      <td className="px-5 py-3">
-                        {instance.createdAt ? formatUptime(instance.createdAt) : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </CardContent>
-        </Card>
       </div>
     </div>
   );
