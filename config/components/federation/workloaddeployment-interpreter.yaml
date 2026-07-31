@@ -7,6 +7,18 @@ spec:
     apiVersion: compute.datumapis.com/v1alpha
     kind: WorkloadDeployment
   customizations:
+    retention:
+      luaScript: |
+        function Retain(desiredObj, observedObj)
+          if observedObj.spec == nil or observedObj.spec.replicas == nil then
+            return desiredObj
+          end
+          if desiredObj.spec == nil then
+            desiredObj.spec = {}
+          end
+          desiredObj.spec.replicas = observedObj.spec.replicas
+          return desiredObj
+        end
     statusReflection:
       luaScript: |
         function ReflectStatus(observedObj)
