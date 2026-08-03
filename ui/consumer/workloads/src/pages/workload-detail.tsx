@@ -20,8 +20,10 @@
  *    instead of the portal's `paths.config.ts` + `getPathWithParams`.
  */
 import { PluginTabs } from '../components/plugin-tabs';
+import { Sparkline } from '../components/sparkline';
 import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
+import { WorldMap } from '../components/world-map';
 import { useWorkload, useWorkloadInstances } from '../lib/api';
 import { formatUptime, splitSlashValue } from '../lib/format';
 import { instanceStatusToBadgeType, workloadHealthToBadgeType, type Instance } from '../schema';
@@ -37,7 +39,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { ArrowRightIcon, HomeIcon } from 'lucide-react';
+import { ArrowRightIcon, HomeIcon, MapPinIcon } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 
 const INSTANCE_STATUS_DOT: Record<Instance['status'], string> = {
@@ -64,6 +66,8 @@ function InstanceCard({ instance, onClick }: { instance: Instance; onClick: () =
           {instance.status}
         </Badge>
       </div>
+
+      <Sparkline seedKey={instance.uid || instance.name} className="h-10 w-full" />
 
       {(instance.instanceType || instance.ports.length > 0) && (
         <div className="border-card-border flex flex-wrap gap-1.5 border-t pt-3">
@@ -193,6 +197,7 @@ export default function WorkloadDetail() {
       <StatStrip stats={stats} testId="compute-plugin-workload-stats" />
 
       {/* Configuration */}
+      {/*
       <Card className="rounded-xl shadow-none">
         <CardHeader>
           <CardTitle className="mb-0 pb-0 text-base font-semibold">Configuration</CardTitle>
@@ -244,10 +249,24 @@ export default function WorkloadDetail() {
           </dl>
         </CardContent>
       </Card>
+      */}
 
       {/* Instance Locations */}
       <div className="flex flex-col gap-4">
-
+        <Card className="rounded-xl shadow-none">
+          <CardContent className="flex flex-col gap-5">
+            <div className="flex items-center gap-2.5">
+              <MapPinIcon className="size-5" />
+              <span className="text-base font-semibold">Instance Locations</span>
+            </div>
+            <p className="text-muted-foreground text-sm">
+              {regions.length > 0
+                ? `Regions where this workload is deployed: ${regions.join(', ')}.`
+                : 'Regions where this workload is deployed.'}
+            </p>
+            <WorldMap className="bg-background aspect-2/1 w-full overflow-hidden rounded-lg border" />
+          </CardContent>
+        </Card>
 
         {instances.length === 0 ? (
           <p className="text-muted-foreground text-sm">No running instances</p>

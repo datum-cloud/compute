@@ -16,6 +16,7 @@
  *    #1315's own instances table).
  */
 import { CliBanner, SectionCard } from '../components/cli-section';
+import { Sparkline } from '../components/sparkline';
 import { StatStrip } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { useWorkloads } from '../lib/api';
@@ -100,6 +101,8 @@ function WorkloadCard({ workload, onClick }: { workload: Workload; onClick: () =
           {workload.health}
         </Badge>
       </div>
+
+      <Sparkline seedKey={workload.uid || workload.name} className="h-12 w-full" />
 
       <div className="border-border grid grid-cols-2 gap-3 border-t pt-4">
         <div>
