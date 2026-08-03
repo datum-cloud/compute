@@ -576,6 +576,12 @@ func initializeClusterDiscovery(
 				Teardowns: []consumerprovider.Teardown{
 					controller.NewComputeTeardown(quotaClientManager, federationClient, scheme),
 				},
+				Suspends: []consumerprovider.Suspend{
+					controller.NewComputeSuspend(providerMgr.GetEventRecorder("compute-suspension")),
+				},
+				Resumes: []consumerprovider.Resume{
+					controller.NewComputeResume(providerMgr.GetEventRecorder("compute-suspension")),
+				},
 			})
 			if err != nil {
 				return nil, nil, "", nil, fmt.Errorf("unable to create consumer provider: %w", err)
