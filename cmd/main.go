@@ -16,6 +16,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	"github.com/KimMachineGun/automemlimit/memlimit"
 	"golang.org/x/sync/errgroup"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -31,6 +32,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -95,6 +97,19 @@ func init() {
 	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
+}
+
+func managedResourceGVKs(s *runtime.Scheme, objs ...client.Object) ([]schema.GroupVersionKind, error) {
+	gvks := make([]schema.GroupVersionKind, 0, len(objs))
+	for _, obj := range objs {
+		gvk, err := apiutil.GVKForObject(obj, s)
+		if err != nil {
+			return nil, err
+		}
+		gvks = append(gvks, gvk)
+	}
+
+	return gvks, nil
 }
 
 //nolint:gocyclo // main wires all controller paths; complexity is inherent to startup sequencing
@@ -361,6 +376,11 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 			os.Exit(1)
 		}
+
+		if err = (&controller.WorkloadDeploymentHPAReconciler{}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeploymentHPA")
+			os.Exit(1)
+		}
 	}
 
 	if enableCellControllers {
@@ -560,6 +580,15 @@ func initializeClusterDiscovery(
 				return nil, nil, "", nil, fmt.Errorf("unable to create root client for service-catalog: %w", err)
 			}
 
+			managedResources, err := managedResourceGVKs(
+				scheme,
+				&computev1alpha.Instance{},
+				&autoscalingv2.HorizontalPodAutoscaler{},
+			)
+			if err != nil {
+				return nil, nil, "", nil, fmt.Errorf("unable to resolve managed resource GVKs: %w", err)
+			}
+
 			provider, err = consumerprovider.New(providerMgr, consumerprovider.Options{
 				RootClient:   rootClient,
 				Scheme:       scheme,
@@ -570,9 +599,7 @@ func initializeClusterDiscovery(
 						o.Cache.DefaultTransform = cache.TransformStripManagedFields()
 					},
 				},
-				ManagedResources: []schema.GroupVersionKind{
-					computev1alpha.GroupVersion.WithKind("Instance"),
-				},
+				ManagedResources: managedResources,
 				Teardowns: []consumerprovider.Teardown{
 					controller.NewComputeTeardown(quotaClientManager, federationClient, scheme),
 				},
