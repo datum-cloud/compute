@@ -71,3 +71,19 @@ patches:
     target:
       kind: ResourceMetricsPolicy
       name: compute-metrics
+
+  # DEVIATION 5 (required): remove the reconcile-storm VMRule.
+  # config/components/alerts ships a VMRule
+  # (operator.victoriametrics.com/v1beta1), whose CRD is owned by the
+  # VictoriaMetrics operator that is not installed in Kind. Applying it fails
+  # with "no matches for kind VMRule". Alerting rules are evaluated by the
+  # metrics stack, not the operator under test, so drop it from the deploy set.
+  - patch: |
+      $patch: delete
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: compute-controller-alerts
+    target:
+      kind: VMRule
+      name: compute-controller-alerts
