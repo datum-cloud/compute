@@ -319,7 +319,8 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 // For() watch that fires on:
 //   - Any Create, Delete, or Generic event (always enqueue).
 //   - An Update event where metadata.generation changed (spec updated), OR where
-//     the ReferencedDataReady condition's Status, Reason, or Message changed.
+//     the ReferencedDataReady condition's Status, Reason, or Message changed, OR
+//     where Status.Suspended changed.
 //
 // The predicate intentionally does NOT fire when only the Available or
 // ReplicasReady conditions change, because those are written by this reconciler
@@ -335,6 +336,12 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 // reconciler re-runs, sees the resolver verdict in deployment.Status.Conditions, and
 // promotes Available to ReferencedDataNotReady. Subsequent runs by this reconciler
 // (which write Available but not ReferencedDataReady) are filtered out.
+//
+// Status.Suspended is written out-of-band by ComputeSuspend/ComputeResume (see
+// suspend_hooks.go) via a Status().Patch that bumps resourceVersion but not
+// Generation, and doesn't touch ReferencedDataReady — so without this explicit
+// check that patch would be invisible to this predicate, and reconcileInstanceGates
+// would never propagate the suspension down to the owned Instances.
 func wdReferencedDataChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -345,6 +352,11 @@ func wdReferencedDataChangedPredicate() predicate.Predicate {
 			}
 			// Spec change: always reconcile.
 			if oldWD.Generation != newWD.Generation {
+				return true
+			}
+			// Suspension state changed: reconcile so the suspend/resume is
+			// propagated down to the owned Instances.
+			if oldWD.Status.Suspended != newWD.Status.Suspended {
 				return true
 			}
 			// ReferencedDataReady condition changed: reconcile so Available is
