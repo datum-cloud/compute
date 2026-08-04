@@ -1,0 +1,25 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chainsaw-hpa
+  namespace: ($namespace)
+  labels:
+    services.miloapis.com/service-name: compute.datumapis.com
+    compute.datumapis.com/workload-deployment-name: chainsaw-hpa
+    compute.datumapis.com/workload-name: chainsaw-workload
+    compute.datumapis.com/placement-name: chainsaw-placement
+    compute.datumapis.com/city-code: DFW
+spec:
+  scaleTargetRef:
+    apiVersion: compute.datumapis.com/v1alpha
+    kind: WorkloadDeployment
+    name: chainsaw-hpa
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75

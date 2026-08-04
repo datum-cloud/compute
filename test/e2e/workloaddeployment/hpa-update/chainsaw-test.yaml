@@ -1,0 +1,20 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workloaddeployment-hpa-update
+spec:
+  steps:
+    - name: create autoscaled WorkloadDeployment
+      try:
+        - apply:
+            file: workloaddeployment.yaml
+        - assert:
+            file: hpa-initial.yaml
+    - name: update autoscaling settings
+      try:
+        - script:
+            content: |
+              kubectl -n "$NAMESPACE" patch workloaddeployment.compute.datumapis.com chainsaw-hpa-update --type=merge \
+                -p='{"spec":{"scaleSettings":{"minReplicas":3,"maxReplicas":12,"metrics":[{"resource":{"name":"memory","target":{"averageValue":"512Mi"}}}]}}}'
+        - assert:
+            file: hpa-updated.yaml

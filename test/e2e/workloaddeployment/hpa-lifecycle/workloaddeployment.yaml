@@ -1,0 +1,32 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  name: chainsaw-hpa
+  namespace: ($namespace)
+spec:
+  workloadRef:
+    name: chainsaw-workload
+    uid: chainsaw-workload-uid
+  placementName: chainsaw-placement
+  cityCode: DFW
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: registry.k8s.io/pause:3.10
+      networkInterfaces:
+        - network:
+            name: default
+  scaleSettings:
+    minReplicas: 2
+    maxReplicas: 10
+    metrics:
+      - resource:
+          name: cpu
+          target:
+            averageUtilization: 75
+    instanceManagementPolicy: OrderedReady

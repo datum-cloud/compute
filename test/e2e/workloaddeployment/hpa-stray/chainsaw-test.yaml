@@ -1,0 +1,24 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workloaddeployment-hpa-stray
+spec:
+  steps:
+    - name: create stray HPA
+      try:
+        - apply:
+            file: stray-hpa.yaml
+    - name: create matching autoscaled WorkloadDeployment
+      try:
+        - apply:
+            file: workloaddeployment.yaml
+        - assert:
+            file: stray-hpa.yaml
+    - name: disable autoscaling
+      try:
+        - script:
+            content: |
+              kubectl -n "$NAMESPACE" patch workloaddeployment.compute.datumapis.com chainsaw-stray --type=json \
+                -p='[{"op":"remove","path":"/spec/scaleSettings/maxReplicas"},{"op":"remove","path":"/spec/scaleSettings/metrics"}]'
+        - assert:
+            file: stray-hpa.yaml

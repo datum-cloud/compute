@@ -1,0 +1,132 @@
+version: '3'
+
+dotenv: ['.env']
+
+includes:
+  # Remote Taskfile from datum-cloud/test-infra. Requires
+  # TASK_X_REMOTE_TASKFILES=1. See: https://taskfile.dev/experiments/remote-taskfiles
+  test-infra:
+    taskfile: https://raw.githubusercontent.com/datum-cloud/test-infra/{{.TEST_INFRA_REPO_REF}}/Taskfile.yml
+    checksum: 1d057f69ef11b9fb7a94bbe7723f50f9508098cb2481f375f38ca5d55533d93e
+    vars:
+      CLUSTER_NAME: '{{.E2E_CLUSTER}}'
+      REPO_REF: '{{.TEST_INFRA_REPO_REF}}'
+      WAIT_TIMEOUT: '{{.WAIT_TIMEOUT}}'
+
+vars:
+  WAIT_TIMEOUT: '300s'
+  TOOL_DIR: '{{.USER_WORKING_DIR}}/bin'
+  IMG_NAME: 'compute'
+  IMG_TAG: 'e2e'
+  IMG: '{{.IMG_NAME}}:{{.IMG_TAG}}'
+  E2E_CLUSTER: 'test-infra'
+  E2E_KUBECONFIG: '.test-infra/kubeconfig'
+  TEST_INFRA_REPO_REF: 'v0.7.1'
+  CHAINSAW_VERSION: 'v0.2.15'
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  dev:build:
+    desc: Build the compute manager container image
+    silent: true
+    cmds:
+      - docker build -t {{.IMG}} .
+
+  e2e:up:
+    desc: Bring up a test-infra Kind cluster with the compute cell controller
+    silent: true
+    env:
+      KUBECONFIG: '{{.E2E_KUBECONFIG}}'
+    cmds:
+      - task: test-infra:cluster-up
+        vars:
+          CLUSTER_NAME: '{{.E2E_CLUSTER}}'
+      - task: dev:build
+      - task: test-infra:kind-load-image
+        vars:
+          CLUSTER_NAME: '{{.E2E_CLUSTER}}'
+          IMAGES: '{{.IMG}}'
+      - task test-infra:kubectl -- apply -k config/base/crd
+      - task test-infra:kubectl -- create namespace compute-system --dry-run=client -o yaml | task test-infra:kubectl -- apply -f -
+      - task test-infra:kubectl -- apply -k config/overlays/cell
+      - |
+        task test-infra:kubectl -- -n compute-system apply -f - <<'EOF'
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: compute-config
+        data:
+          config.yaml: |
+            apiVersion: apiserver.config.datumapis.com/v1alpha1
+            kind: WorkloadOperator
+            metricsServer:
+              bindAddress: "0"
+            discovery: {}
+        EOF
+      - task test-infra:kubectl -- -n compute-system set image deployment/compute-manager manager={{.IMG}}
+      - task test-infra:kubectl -- -n compute-system patch deployment compute-manager --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'
+      - task test-infra:kubectl -- -n compute-system rollout status deployment/compute-manager --timeout=180s
+
+  e2e:
+    desc: Run Chainsaw e2e tests against the isolated Kind cluster
+    silent: true
+    deps:
+      - e2e:preflight
+      - install:chainsaw
+    env:
+      KUBECONFIG: '{{.E2E_KUBECONFIG}}'
+    cmds:
+      - '{{.TOOL_DIR}}/chainsaw test test/e2e --config test/e2e/.chainsaw.yaml'
+
+  install:chainsaw:
+    desc: Install Chainsaw locally
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.TOOL_DIR}}
+        if [ ! -f "{{.TOOL_DIR}}/chainsaw-{{.CHAINSAW_VERSION}}" ]; then
+          GOBIN={{.TOOL_DIR}} go install github.com/kyverno/chainsaw@{{.CHAINSAW_VERSION}}
+          mv {{.TOOL_DIR}}/chainsaw {{.TOOL_DIR}}/chainsaw-{{.CHAINSAW_VERSION}}
+        fi
+        ln -sf {{.TOOL_DIR}}/chainsaw-{{.CHAINSAW_VERSION}} {{.TOOL_DIR}}/chainsaw
+    status:
+      - test -f {{.TOOL_DIR}}/chainsaw-{{.CHAINSAW_VERSION}}
+
+  e2e:preflight:
+    internal: true
+    silent: true
+    env:
+      KUBECONFIG: '{{.E2E_KUBECONFIG}}'
+    cmds:
+      - |
+        if [ ! -f "$KUBECONFIG" ]; then
+          echo "missing e2e kubeconfig at $KUBECONFIG"
+          echo "run: TASK_X_REMOTE_TASKFILES=1 task e2e:up"
+          exit 1
+        fi
+      - |
+        context="$(kubectl config current-context 2>/dev/null || true)"
+        if [ "$context" != "kind-{{.E2E_CLUSTER}}" ]; then
+          echo "e2e kubeconfig points at $context, expected kind-{{.E2E_CLUSTER}}"
+          echo "run: TASK_X_REMOTE_TASKFILES=1 task e2e:up"
+          exit 1
+        fi
+      - |
+        if ! kubectl get crd workloaddeployments.compute.datumapis.com >/dev/null 2>&1; then
+          echo "Compute CRDs are not installed in the e2e cluster"
+          echo "run: TASK_X_REMOTE_TASKFILES=1 task e2e:up"
+          exit 1
+        fi
+      - kubectl -n compute-system rollout status deployment/compute-manager --timeout=30s
+
+  e2e:down:
+    desc: Tear down the e2e test-infra Kind cluster
+    silent: true
+    cmds:
+      - task: test-infra:cluster-down
+        vars:
+          CLUSTER_NAME: '{{.E2E_CLUSTER}}'
