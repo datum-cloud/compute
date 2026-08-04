@@ -200,6 +200,7 @@ func (r *WorkloadDeploymentHPAReconciler) SetupWithManager(mgr mcmanager.Manager
 	r.mgr = mgr
 
 	return mcbuilder.ControllerManagedBy(mgr).
+		Named("workload-deployment-hpa").
 		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
