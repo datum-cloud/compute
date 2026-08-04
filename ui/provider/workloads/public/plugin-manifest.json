@@ -1,0 +1,26 @@
+{
+  "name": "workloads.staff-portal.datumapis.com",
+  "version": "0.2.0",
+  "sdk": {
+    "name": "@datum-cloud/portal-plugin-sdk",
+    "range": "^1.0.0"
+  },
+  "remoteEntry": "remoteEntry.js",
+  "exposedModules": {},
+  "extensions": [
+    {
+      "type": "portal.resource/platform",
+      "properties": {
+        "id": "compute-workload",
+        "type": "workload",
+        "label": "Workload",
+        "icon": "box",
+        "searchTarget": {
+          "group": "compute.datumapis.com",
+          "version": "v1alpha",
+          "kind": "Workload"
+        }
+      }
+    }
+  ]
+}
