@@ -1,4 +1,4 @@
-# Build the manager binary
+# Build binaries
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -17,7 +17,7 @@ COPY go.sum go.sum
 RUN go mod download
 
 # Copy the go source
-COPY cmd/main.go cmd/main.go
+COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 
@@ -37,12 +37,18 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
       -X main.gitTreeState=${GIT_TREE_STATE} \
       -X main.buildDate=${BUILD_DATE}" \
     -o manager cmd/main.go
+RUN --mount=type=cache,target=/go/pkg/mod/ \
+  --mount=type=cache,target="/root/.cache/go-build" \
+  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w" \
+    -o resource-metrics-adapter cmd/resource-metrics-adapter/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/resource-metrics-adapter .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

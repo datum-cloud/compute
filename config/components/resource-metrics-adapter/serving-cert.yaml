@@ -1,0 +1,25 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: compute-resource-metrics-adapter-serving-cert
+  labels:
+    app.kubernetes.io/name: compute-resource-metrics-adapter
+    app.kubernetes.io/part-of: compute
+spec:
+  dnsNames:
+    - compute-resource-metrics-adapter.compute-system.svc
+    - compute-resource-metrics-adapter.compute-system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: compute-resource-metrics-adapter-selfsigned
+  secretName: compute-resource-metrics-adapter-serving-cert
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: compute-resource-metrics-adapter-selfsigned
+  labels:
+    app.kubernetes.io/name: compute-resource-metrics-adapter
+    app.kubernetes.io/part-of: compute
+spec:
+  selfSigned: {}

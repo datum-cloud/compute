@@ -95,6 +95,10 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: build-resource-metrics-adapter
+build-resource-metrics-adapter: fmt vet ## Build resource metrics adapter binary.
+	go build -o bin/resource-metrics-adapter cmd/resource-metrics-adapter/main.go
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go -health-probe-bind-address 0 --server-config ./config/overlays/dev/config.yaml

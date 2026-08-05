@@ -1,0 +1,63 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-resource-metrics-adapter
+  labels:
+    app.kubernetes.io/name: compute-resource-metrics-adapter
+    app.kubernetes.io/part-of: compute
+rules:
+  - apiGroups: [""]
+    resources: [pods, nodes, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: [pods, nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-resource-metrics-adapter
+  labels:
+    app.kubernetes.io/name: compute-resource-metrics-adapter
+    app.kubernetes.io/part-of: compute
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: compute-resource-metrics-adapter
+subjects:
+  - kind: ServiceAccount
+    name: compute-resource-metrics-adapter
+    namespace: compute-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-resource-metrics-adapter-auth-delegator
+  labels:
+    app.kubernetes.io/name: compute-resource-metrics-adapter
+    app.kubernetes.io/part-of: compute
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: compute-resource-metrics-adapter
+    namespace: compute-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: compute-resource-metrics-adapter-authentication-reader
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: compute-resource-metrics-adapter
+    app.kubernetes.io/part-of: compute
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: compute-resource-metrics-adapter
+    namespace: compute-system
