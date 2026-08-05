@@ -6,11 +6,6 @@ latest-milestone: "v0.x"
 
 # Address space consumers can actually ask for
 
-**Status:** Draft
-**Related:** [Federated Deployment Scheduling](federated-deployment-scheduling.md) (how a placement reaches the location that makes the claim)
-
----
-
 - [Summary](#summary)
 - [Motivation](#motivation)
   - [Goals](#goals)
@@ -29,6 +24,7 @@ latest-milestone: "v0.x"
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
 - [Open Questions](#open-questions)
+- [References](#references)
 
 ## Summary
 
@@ -80,8 +76,8 @@ consumption is established.
 
 - **Fabric and infrastructure addressing.** Node loopbacks, routing locators,
   underlay links, and the per-site blocks they come from are platform-internal and
-  have their own plan. They can move onto classes later; nothing here depends on
-  it.
+  are covered by the [fabric addressing plan](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/fabric.md).
+  They can move onto classes later; nothing here depends on it.
 - **Non-address numbering.** AS numbers, forwarding-instance identifiers, and MAC
   assignments are allocatable resources with the same claim semantics, but a class
   as designed here is prefix-shaped. They need a sibling model, not this one.
@@ -227,7 +223,9 @@ Terminology, used consistently:
 - **Allocation**: the record of an address handed out.
 - **Context**: the network and location a claim is made for.
 
-The fields below extend the shipped `IPClass`. Everything already on it —
+The fields below extend the
+[`IPClass` type the IPAM service already ships](https://github.com/milo-os/ipam/blob/main/pkg/apis/ipam/v1alpha1/types.go).
+Everything already on it —
 `provisioner`, `parameters`, `ipFamily`, `strategy`, `allowedPrefixLengths`,
 `defaultPrefixLength`, `reclaimPolicy`, `visibility` — keeps its current meaning.
 
@@ -400,8 +398,9 @@ express "the worst location," which is the number that matters.
 class for each.**
 
 The tempting alternative is one class spanning both families with sizes declared
-per family. It is appealing until checked against the addressing plan, where the
-two families are not the same kind of thing.
+per family. It is appealing until checked against the
+[tenant addressing plan](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/tenant.md),
+where the two families are not the same kind of thing.
 
 A tenant endpoint in IPv6 gets a block carved from **that tenant's own prefix**,
 unique to them, which the instance subdivides. In IPv4 it gets a single address
@@ -442,15 +441,17 @@ report utilization honestly.
 The trade is worth stating plainly: **while the central service is unreachable, no
 new addresses are handed out.** A location cannot start a new instance. It does not
 touch live traffic — existing addresses keep working and routes keep being
-advertised — and it is the same dependency instance creation already has on central
-quota. If it proves to matter, the answer is a small pre-reserved buffer per
-location: a cache, not a second allocator.
+advertised — and it is the same dependency instance creation already has on
+[central quota enforcement](quota-enforcement/README.md). If it proves to matter,
+the answer is a small pre-reserved buffer per location: a cache, not a second
+allocator.
 
 **Claims are made where the work lands.** A consumer declares intent in their
-project; that intent travels to the location the workload is placed at, and the
-network layer there — which knows the location, the network, and the family — turns
-it into a claim. That is why a consumer never writes a location: the system asking
-already is one.
+project; that intent
+[travels to the location the workload is placed at](federated-deployment-scheduling.md),
+and the network layer there — which knows the location, the network, and the
+family — turns it into a claim. That is why a consumer never writes a location: the
+system asking already is one.
 
 Because that system claims on the consumer's behalf, two things must hold. Its
 authority is bounded by the placements actually delivered to it — a claim is valid
@@ -706,12 +707,14 @@ Allocating an address is necessary and nowhere near sufficient. These are the pi
 the design assumes and does not provide. Listing them is the point — a design that
 quietly assumed them would look finished and behave otherwise.
 
-**A network needs one routing identity across every location it reaches**, unique
+**A [network](https://github.com/datum-cloud/network-services-operator/blob/main/api/v1alpha/network_types.go)
+needs one routing identity across every location it reaches**, unique
 platform-wide, or the two halves of a multi-location workload are unrelated networks
 sharing a name. This is the identity scoping route import and export — not the
-per-location forwarding-instance identifier, which is deliberately reused in every
-location and is a much smaller space. Conflating the two would cap the platform at a
-few thousand networks in total rather than per location.
+[per-location forwarding-instance identifier](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/srv6.md),
+which is deliberately reused in every location and is a much smaller space.
+Conflating the two would cap the platform at a few thousand networks in total
+rather than per location.
 
 **A moved instance needs its old route withdrawn before the new one is trusted.**
 Each node advertises with a distinct identity, so a route reflector keeps both
@@ -795,3 +798,32 @@ resolves once it is answered.
 **Where does export policy live?** A class is shared by every consumer that names
 it, so per-consumer export rules cannot live on one. Anything beyond "advertised or
 not" needs a per-holder object the class points at.
+
+## References
+
+**The address space this draws on**
+
+- [Platform addressing plan](https://github.com/datum-cloud/enhancements/tree/main/architecture/design/network/addressing)
+  — the overview tying the three plans below together.
+- [Tenant addressing](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/tenant.md)
+  — the per-network IPv6 prefix and the shared per-location IPv4 range that the
+  example classes carve from, and the reason the two families need separate classes.
+- [Fabric addressing](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/fabric.md)
+  — the platform-internal blocks this design explicitly leaves alone.
+- [SRv6 uSID plan](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/srv6.md)
+  — the forwarding-instance identifier that must not be confused with a network's
+  platform-wide routing identity.
+
+**The systems that hold the pieces**
+
+- [IPAM API types](https://github.com/milo-os/ipam/blob/main/pkg/apis/ipam/v1alpha1/types.go)
+  — `IPClass`, `IPPool`, `IPClaim`, and `IPAllocation` as they exist today, which
+  the class fields here extend.
+- [Network API](https://github.com/datum-cloud/network-services-operator/blob/main/api/v1alpha/network_types.go)
+  — the network a claim is scoped to, and where a network's addressing intent is
+  declared.
+- [Federated Deployment Scheduling](federated-deployment-scheduling.md)
+  — how a placement reaches the location whose network layer makes the claim.
+- [Quota Enforcement](quota-enforcement/README.md)
+  — the existing central dependency in the instance-creation path, and where
+  address space becomes a budgeted unit.
