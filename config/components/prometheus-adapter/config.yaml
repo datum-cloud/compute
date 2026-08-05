@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compute-prometheus-adapter-config
+  namespace: compute-system
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+data:
+  config.yaml: |
+    resourceRules:
+      cpu:
+        containerQuery: |
+          sum by (<<.GroupBy>>) (
+            rate(container_cpu_usage_seconds_total{<<.LabelMatchers>>,container!="",container!="POD"}[2m])
+          )
+        nodeQuery: |
+          sum by (<<.GroupBy>>) (
+            rate(container_cpu_usage_seconds_total{<<.LabelMatchers>>,id="/"}[2m])
+          )
+        resources:
+          overrides:
+            namespace:
+              resource: namespace
+            pod:
+              resource: pod
+            node:
+              resource: node
+        containerLabel: container
+      memory:
+        containerQuery: |
+          sum by (<<.GroupBy>>) (
+            container_memory_working_set_bytes{<<.LabelMatchers>>,container!="",container!="POD"}
+          )
+        nodeQuery: |
+          sum by (<<.GroupBy>>) (
+            container_memory_working_set_bytes{<<.LabelMatchers>>,id="/"}
+          )
+        resources:
+          overrides:
+            namespace:
+              resource: namespace
+            pod:
+              resource: pod
+            node:
+              resource: node
+        containerLabel: container
+      window: 2m
