@@ -79,10 +79,11 @@ consumption is established.
   have no consumer, and are covered by the
   [fabric addressing plan](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/fabric.md).
   They are out of scope for this document, but not for the model it proposes: they
-  are a hierarchy of prefixes identified by sites, nodes, and links, which is what
-  `identity` and `uniqueWithin` are general over. Nothing here needs to change to
-  carry them, and the fields were checked against that plan rather than only
-  against consumer addressing.
+  are a hierarchy of prefixes scoped by sites, nodes, and links — opaque references
+  like any other, and a long-lived claim per node is the same shape as a long-lived
+  claim per workload slot. Nothing here needs to change to carry them, and the
+  design was checked against that plan rather than only against consumer
+  addressing.
 - **Non-address numbering.** AS numbers, forwarding-instance identifiers, and MAC
   assignments are allocatable resources with the same claim semantics, but a class
   as designed here is prefix-shaped. They need a sibling model, not this one.
@@ -231,20 +232,21 @@ is a platform operator authoring classes.
 Terminology, used consistently:
 
 - **Class**: the policy object naming a kind of address space.
-- **Pool**: a block of capacity offering itself to one or more classes.
-- **Claim**: a request for an address of a named class.
+- **Pool**: a block of capacity many claims draw from, offering itself to one or
+  more classes.
+- **Claim**: a long-lived request for an address of a named class, bound to one
+  allocation for as long as it exists.
 - **Allocation**: the record of an address handed out.
 - **Scope**: the references a claim carries, each under a role name — the network
-  and location it is made for, the interface it is for. A class names the roles it
-  needs; the allocator indexes their values without interpreting them.
+  and location it is made for. A class names the roles it needs; the allocator
+  indexes their values without interpreting them.
 
 The fields below extend the
 [`IPClass` type the IPAM service already ships](https://github.com/milo-os/ipam/blob/main/pkg/apis/ipam/v1alpha1/types.go).
 Everything already on it —
 `provisioner`, `parameters`, `ipFamily`, `strategy`, `allowedPrefixLengths`,
-`defaultPrefixLength`, `reclaimPolicy`, `visibility` — keeps its name and its
-values. Only `reclaimPolicy` shifts in meaning, and it narrows: it decides how long
-an allocation waits, while `identity` decides who it waits for.
+`defaultPrefixLength`, `reclaimPolicy`, `visibility` — keeps its name, its values,
+and its meaning.
 
 ```yaml
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -271,18 +273,13 @@ spec:
   # declared ancestry.
   parentClassName: tenant-subnet-ipv6
 
-  # What makes two claims the same allocation. Names the scope references a
-  # claim of this class must carry; one allocation exists per distinct
-  # combination of their values. A second claim presenting the same combination
-  # receives the allocation that already exists rather than a new one.
+  # Nothing here says which allocation a claim gets. An IPClaim binds to one
+  # IPAllocation and an IPAllocation to one IPClaim, exactly as a
+  # PersistentVolumeClaim binds to a PersistentVolume, and the claim object is
+  # the identity. See "What a claim carries".
   #
-  # The values are opaque {apiGroup, kind, name} references. The allocator
-  # indexes them and never interprets them, so a class can be identified by
-  # anything the caller can name.
-  #
-  # Defaults to the claim itself, which is one allocation per claim. Immutable.
-  identity:
-    - interface
+  # A class that other classes carve from sets `poolPer` instead — see
+  # tenant-subnet-ipv6 in the worked example.
 
   # What defines one independent address space. Two allocations may hold the
   # same address if, and only if, they differ in one of these references.
@@ -323,10 +320,11 @@ spec:
   # An aggregate must be originated with a discard route. A class advertising an
   # aggregate it cannot fully resolve blackholes the unallocated space inside it.
 
-  # Whether the allocation outlives the claim that created it. Delete releases
-  # it; Retain keeps it, so the next claim presenting the same identity gets the
-  # same address back. Which claim counts as "the same" is `identity` above —
-  # this field only decides how long the allocation waits for it.
+  # What happens to the allocation when its claim is deleted. Delete releases
+  # the address; Retain keeps it held so it can be handed back deliberately.
+  #
+  # This is not how an address survives a redeploy — a redeploy does not delete
+  # the claim. See "Instance addresses".
   # A claim can override this.
   reclaimPolicy: Delete
 
@@ -342,12 +340,17 @@ how a continent's block contains its locations' ranges and stays summarisable as
 one route. A pool declaring a location is not eligible for a claim from a different
 one, and an unlocated ancestor is never eligible in its child's place.
 
-**Why these are two fields and not one.** They answer different questions about
-the same references. `identity` decides whether a claim gets a *new* allocation or
-an *existing* one. `uniqueWithin` decides whether two allocations may hold the same
-address. A subnet is identified by its network and location, so the second interface
-on that network reuses it; an interface address is identified by the interface, so
-every interface gets its own.
+**How a claim finds its allocation.** It does not look one up. A claim binds to one
+allocation and an allocation to one claim, each recording the other, and the binding
+is made once when the claim is created. This is how a `PersistentVolumeClaim` binds
+to a `PersistentVolume`, and it is worth following closely: storage does not
+reconstruct which volume a claim should get, and neither should this. The claim
+object *is* the identity.
+
+That decides what the class has to say. Nothing on it selects an allocation for a
+claim, because the claim already has one. What remains is what the allocator needs
+in order to hand out an address in the first place — which space it comes from, and
+what it must not collide with.
 
 **What `uniqueWithin` means.** Both endpoint classes in the example below set
 `uniqueWithin: [network]`, and the field is doing different amounts of work in each.
@@ -361,13 +364,24 @@ Setting it wider than the parent requires is safe and wasteful. Setting it narro
 is how two holders end up with one address — which is exactly what IPv4 tenant space
 wants, and what nothing else does.
 
-**What a claim carries.** `identity`, `uniqueWithin`, and parent resolution all key
-off the same references, so the claim carries them by role:
+**What a claim carries.** `uniqueWithin` and parent resolution key off the same
+references, so the claim carries them by role:
 
 ```yaml
 kind: IPClaim
+metadata:
+  # Deterministic, derived from the slot and the interface it is for. This name
+  # is what a replacement instance finds, so it is the durable identity — the
+  # same construction a StatefulSet uses to give a replaced pod its volume back.
+  name: hello-sandbox-americas-us-central-1-0-eth0-ipv4
+  ownerReferences:
+    - kind: NetworkInterface
+      name: …
 spec:
   className: tenant-endpoint-ipv4
+  # Optional. Names a specific address to bind, the way a PersistentVolumeClaim
+  # names a volume. Omitted, the allocator chooses.
+  address: ""
   scope:
     network:
       apiGroup: networking.datumapis.com
@@ -377,27 +391,20 @@ spec:
       apiGroup: networking.datumapis.com
       kind: Location
       name: us-central-1
-    # Names the interface declared on the slot, not the runtime object rebuilt
-    # with each instance — see Instance addresses.
-    interface:
-      apiGroup: compute.datumapis.com
-      kind: NetworkInterface
-      name: …
 ```
 
 None of this is written by a consumer. The network layer at the location supplies
-it, because it is the one thing that knows all of it: it holds the deployment, so it
-knows the location, and it resolved the interface's network reference before
-claiming. The references are immutable — a claim whose network or location changed
-after allocation is incoherent.
+it, because it is the one thing that knows it: it holds the deployment, so it knows
+the location, and it resolved the interface's network reference before claiming.
+The references are immutable — a claim whose network or location changed after
+allocation is incoherent.
 
 Roles are just names a class refers to. The allocator does not know what a network
-is, or a location, or an interface; it knows that `tenant-endpoint-ipv4` is
-identified by whatever arrives under `interface` and unique within whatever arrives
-under `network`. That is what lets a class be identified by something this document
-never mentions — which is how the same model covers infrastructure addressing, where
-the roles are sites, nodes, and links, without any of those concepts entering the
-allocator.
+is, or a location; it knows that `tenant-endpoint-ipv4` is unique within whatever
+arrives under `network`. That is what lets a class be scoped by something this
+document never mentions — which is how the same model covers infrastructure
+addressing, where the roles are sites, nodes, and links, without any of those
+concepts entering the allocator.
 
 A name is enough here, and nobody types an identifier. Every claim is already
 scoped to the project it was made for, and a network name is unique within a
@@ -411,8 +418,8 @@ usually what someone wants and occasionally not. Deciding otherwise means the
 reference carries something stable across recreation rather than a name — worth
 settling before retention ships, since that is where it starts to matter.
 
-A claim that omits a role its class names in `identity` or `uniqueWithin` is
-rejected. It does not fall back to a wider comparison, because a wider comparison
+A claim that omits a role its class names in `uniqueWithin`, or that its parent
+chain needs, is rejected. It does not fall back to a wider comparison, because a wider comparison
 would look correct while refusing addresses the narrow one was meant to allow — and
 the error would surface as unexplained exhaustion rather than a missing field.
 
@@ -420,19 +427,26 @@ the error would surface as unexplained exhaustion rather than a missing field.
 pool offering this class, discards those whose family differs, discards those
 declaring a different location, and picks among the rest by the class's strategy.
 With `parentClassName` set, it projects this claim's scope onto the parent class's
-`identity` and looks for the allocation with those values — for an endpoint claim on
-network `default` in `us-central-1`, the `tenant-subnet-ipv6` allocation identified
-by that network and location.
+`poolPer` and looks for the pool with those values — for an endpoint claim on
+network `default` in `us-central-1`, the `tenant-subnet-ipv6` pool for that network
+and location.
 
-If the parent does not exist, the allocator creates it first, applying the parent
+Note what a parent is. A claim binds an allocation, but the thing many allocations
+carve from is a **pool** — an allocation is what one claim holds, a pool is capacity
+many claims draw from. So a parent class does not hand out addresses; it provisions
+pools, one per distinct combination of its `poolPer` references. That is why
+`poolPer` appears only on classes other classes name as a parent, and why it is not
+a property of claims at all.
+
+If the pool does not exist, the allocator creates it first, applying the parent
 class's configuration. Creation cascades: a claim in a location a network has never
 used creates that location's subnet, and a claim on a new network creates the
 network's prefix too.
 
-**Two concurrency rules the cascade requires.** `identity` is a constraint, not a
+**Two concurrency rules the cascade requires.** `poolPer` is a constraint, not a
 lookup — two simultaneous claims for the same network and location both observe no
-subnet and both try to create one, so it needs a unique index over the identity
-references, with the loser reading the winner's allocation rather than failing.
+subnet pool and both try to create one, so it needs a unique index over the
+`poolPer` references, with the loser reading the winner's pool rather than failing.
 Because the set of references varies by class, that index is over a canonical
 serialization of them rather than a fixed set of columns. And a cascade takes a lock
 at every level, so the levels must
@@ -540,43 +554,46 @@ within it, so tracking is one record per interface rather than one per container
 Three things follow.
 
 **A claim must be able to ask for a specific address.** A claim asks for a size, not
-an address. Handing the same address back to a replacement, and recording an address
-already in use, both need a claim that names one. Without it the retention
-experience above does not work.
+an address. Recording an address already in use, and handing a specific one back
+deliberately, both need a claim that names one — the `address` field above, playing
+the part `volumeName` plays for storage.
 
 **The runtime stops choosing.** An instance's address arrives with its interface
 configuration rather than being invented at boot, and the container platform's own
 address stops standing in for it. That is a change to the runtime contract, not
 just to what the platform records.
 
-**Retention needs two identities, not one.** They pull in opposite directions, and
-conflating them is why an address either cannot survive a redeploy or cannot be
-protected from a late release.
+**The claim outlives the instance.** An address survives a redeploy because nothing
+released it — not because anything reconstructs who used to hold it.
 
-*What the allocation is identified by* has to survive instance replacement,
-because a replacement is the entire point — the new instance must present the same
-identity to get the same address back. Instance names are composed from workload,
-placement, location, and ordinal, so the name is exactly that: it denotes the slot,
-and it is stable across every replacement filling it. This is what the `interface`
-reference in a claim's scope denotes — the interface *declared* on that slot, named
-the same way, and not the runtime object that is rebuilt with each instance. Every
-interface class in this document is identified by it.
+This is how a StatefulSet returns a volume to a replaced pod. The claim is named
+deterministically for the slot, the pod is deleted and recreated, and the claim was
+never touched, so the binding it holds is still the binding. There is no matching
+step to get wrong and no window where the address is loose.
 
-*Who currently holds it* has to change on every replacement, so that a late release
-arriving from the instance that was replaced is rejected rather than honoured. That
-is the instance's unique identifier, recorded on the allocation and checked on
-release.
+So the network layer names an interface's claims from the slot, the interface, and
+the family — all of which are composed from the workload, placement, location, and
+ordinal, and are therefore stable across every replacement filling that slot. A
+replacement finds claims that already exist and already hold addresses. Deleting the
+workload deletes the claims, through ownership, and that is when `reclaimPolicy`
+decides whether the addresses are released or held.
 
-The two are recorded opaquely; nothing about the consumer's type system crosses into
-the allocator. Note the consequence the slot identity carries: a deleted workload and
-a new one under the same name produce identical instance names, so the new one
-inherits the old one's retained addresses. That is the same recreation question a
-network name raises, and it wants the same answer.
+Two consequences worth stating. A late release arriving from an instance that has
+already been replaced is rejected, because the release is checked against the claim
+that currently holds the binding rather than against a remembered holder. And a
+deleted workload recreated under the same name produces identical claim names, so it
+inherits its predecessor's addresses if they were retained — the same recreation
+question a network name raises, wanting the same answer.
 
-Retention also needs an expiry. An address held forever against a location's public
-range takes that range out of service for everyone, so a retained allocation
-carries a lease, keeps consuming its holder's budget while it lives, and can be
-force-released by an operator with an audit record.
+A retained allocation still needs an expiry. An address held against a location's
+public range takes that range out of service for everyone, so it carries a lease,
+keeps consuming its holder's budget while it lives, and can be force-released by an
+operator with an audit record.
+
+The one part of the storage model not to copy is what happens next. A `Retain`
+volume whose claim is deleted becomes `Released` and cannot be bound again until
+someone clears the stale reference by hand. A retained address must return to a
+state something can claim, without an operator in the path.
 
 ### A workload in two locations
 
@@ -590,8 +607,8 @@ Five classes and the pools that back them. Consumers never see these objects; th
 see the names.
 
 ```yaml
-# The tenant chain. A class names the class it carves from; the top of a chain
-# names none and draws from a pool instead.
+# The tenant chain. The first two classes are containers: nothing claims them
+# directly, and each provisions a pool the next class down carves from.
 kind: IPClass
 metadata:
   name: tenant-network-ipv6
@@ -599,8 +616,8 @@ spec:
   ipFamily: IPv6
   # No parentClassName — the top of a chain draws from the pools that offer it,
   # here IPPool/tenant-v6.
-  # One prefix per network.
-  identity:
+  # One pool per network.
+  poolPer:
     - network
   # One space platform-wide.
   uniqueWithin: []
@@ -615,8 +632,9 @@ metadata:
 spec:
   ipFamily: IPv6
   parentClassName: tenant-network-ipv6
-  # One subnet per network, per location.
-  identity:
+  # One pool per network, per location. The second interface on this network in
+  # this location finds the pool the first one caused to be created.
+  poolPer:
     - network
     - location
   uniqueWithin: []
@@ -634,9 +652,7 @@ metadata:
 spec:
   ipFamily: IPv6
   parentClassName: tenant-subnet-ipv6
-  # One block per interface.
-  identity:
-    - interface
+  # No poolPer — claims bind allocations of this class directly, one per claim.
   # The parent /64 is this network's alone, so this is still platform-unique.
   uniqueWithin:
     - network
@@ -658,8 +674,6 @@ spec:
   # IPv4 space to carve, so an endpoint draws straight from the location's shared
   # range. The IPv6 endpoint above sits three levels down its own chain; this one
   # is a chain of one.
-  identity:
-    - interface
   # The shared range makes this a real narrowing — two networks reach the same
   # address and both keep it.
   uniqueWithin:
@@ -678,10 +692,6 @@ spec:
   ipFamily: IPv4
   # Also no parentClassName — public addresses come from the location's public
   # pool, not from anything the network owns.
-  # The declared interface on the slot, so a replacement reclaims it — see
-  # Instance addresses.
-  identity:
-    - interface
   # Routable, so unique everywhere.
   uniqueWithin: []
   allowedPrefixLengths:
@@ -916,14 +926,21 @@ be checked, and it must fail closed.
 - **Class-level utilization maintained during allocation.** Rejected: it makes one
   row every pool of a class contends on, and cannot express the per-location number
   that actually matters.
-- **Fixed enums for scope, in place of `identity` and `uniqueWithin`.** Naming the
-  cases directly — `PerNetwork`, `PerNetworkLocation`, `Platform`, `Network` — reads
-  more plainly and was the first shape of these fields. Rejected on two counts. It
-  needs a new enum value for every kind of thing that can hold an address, so
-  infrastructure addressing would require the allocator to learn what a node and a
-  site are, which the opaque-reference rule exists to prevent. And the enum hid the
-  distinction between the two questions: `PerClaim` and `PerNetwork` look like two
-  settings of one dial, when they are "do not share" and "share on this key".
+- **A class field naming what identifies an allocation.** Two shapes of this were
+  tried: an enum of the cases (`PerClaim`, `PerNetwork`, `PerNetworkLocation`) and
+  then a list of scope references. Both let the allocator re-derive which allocation
+  a claim should get. Rejected because nothing needs to re-derive it — a claim binds
+  an allocation and records it, so the binding is a fact rather than a computation.
+  Storage settled this a decade ago and neither `PersistentVolumeClaim` nor
+  `PersistentVolume` carries such a field. The enum had a second problem: it needed
+  a new value for every kind of thing that can hold an address, which would have put
+  nodes and sites inside the allocator.
+- **Retention by rebinding rather than by not unbinding.** Releasing an address when
+  an instance is deleted and re-matching it when the replacement appears is how the
+  design read before. Rejected: it opens a window where the address is loose, needs
+  a durable identity distinct from the holder to match on, and lands in the state
+  storage calls `Released`, where a retained volume needs manual intervention before
+  anything can bind it again. Keeping the claim is strictly simpler.
 - **Reserved positions as policy rather than allocations.** Rejected: it leaves
   space that is owned by nothing, absent from inventory, and impossible to program,
   which is the specific complaint this document makes about the subnet gateway. It
@@ -945,12 +962,12 @@ resolves once it is answered.
 it, so per-consumer export rules cannot live on one. Anything beyond "advertised or
 not" needs a per-holder object the class points at.
 
-**Is a parent allocation a pool?** This document calls a network's `/48` an
-allocation of `tenant-network-ipv6`; the worked example shows it as
-`IPPool/network-default`, and the shipped API already nests pools through
-`parentPoolRef`. Those want to be one thing — most likely that a pool *is* an
-allocation that has children — but until it is settled there are two hierarchies
-described where there should be one.
+**Should a container class be an `IPClass` at all?** `tenant-network-ipv6` and
+`tenant-subnet-ipv6` are never named by a claim; they exist to provision pools. They
+share most of a class's fields, which is the argument for one kind — but a consumer
+listing classes should not see them, and `poolPer` is meaningless on everything
+else. A separate kind, or a marker on the class, may read better than a field that
+only applies to half of them.
 
 ## References
 
