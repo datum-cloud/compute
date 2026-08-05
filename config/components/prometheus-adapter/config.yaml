@@ -12,11 +12,11 @@ data:
       cpu:
         containerQuery: |
           sum by (<<.GroupBy>>) (
-            rate(container_cpu_usage_seconds_total{<<.LabelMatchers>>,container!="",container!="POD"}[2m])
+            rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,container!=""}[2m])
           )
         nodeQuery: |
           sum by (<<.GroupBy>>) (
-            rate(container_cpu_usage_seconds_total{<<.LabelMatchers>>,id="/"}[2m])
+            rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>}[2m])
           )
         resources:
           overrides:
@@ -30,11 +30,11 @@ data:
       memory:
         containerQuery: |
           sum by (<<.GroupBy>>) (
-            container_memory_working_set_bytes{<<.LabelMatchers>>,container!="",container!="POD"}
+            datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,container!=""}
           )
         nodeQuery: |
           sum by (<<.GroupBy>>) (
-            container_memory_working_set_bytes{<<.LabelMatchers>>,id="/"}
+            datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>}
           )
         resources:
           overrides:

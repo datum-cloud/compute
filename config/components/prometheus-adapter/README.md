@@ -7,10 +7,11 @@ truth for Pod and Node CPU/memory usage.
 This component owns the cluster-wide `v1beta1.metrics.k8s.io` APIService when
 installed. Do not install it alongside another owner of the same APIService.
 
-The adapter expects resource metrics with cAdvisor-compatible names and labels:
+The adapter expects Datum instance resource metrics with Kubernetes identity
+labels:
 
-- `container_cpu_usage_seconds_total{namespace, pod, container, node}`
-- `container_memory_working_set_bytes{namespace, pod, container, node}`
+- `datum_compute_instance_cpu_usage_seconds_total{namespace, pod, container, node}`
+- `datum_compute_instance_memory_working_set_bytes{namespace, pod, container, node}`
 
 Runtime-specific producers, such as Unikraft telemetry, should translate their
 local measurements into that shape before ingestion. The adapter then exposes
