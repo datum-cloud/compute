@@ -122,16 +122,24 @@ spec:
             - name: app
               image: ghcr.io/datum-cloud/hello-unikraft:latest
       networkInterfaces:
-        - network: { name: default }
-          ipFamilies: [IPv6, IPv4]       # dual-stack; IPv6 is primary
-          reclaimPolicy: Retain          # keep the addresses across redeploys
+        - network:
+            name: default
+          # dual-stack; IPv6 is primary
+          ipFamilies:
+            - IPv6
+            - IPv4
+          # keep the addresses across redeploys
+          reclaimPolicy: Retain
           addresses:
-            - class: public-unicast-ipv4 # a class, never an address
-                                         # (omit for ordinary private addressing)
+            # a class, never an address
+            # (omit this whole block for ordinary private addressing)
+            - class: public-unicast-ipv4
   placements:
     - name: default
-      locations: [us-central-1]
-      scaleSettings: { minReplicas: 1 }
+      locations:
+        - us-central-1
+      scaleSettings:
+        minReplicas: 1
 ```
 
 Three lines are new, and none mention a pool, a prefix length, a CIDR, or which
@@ -273,7 +281,8 @@ spec:
   # anything the caller can name.
   #
   # Defaults to the claim itself, which is one allocation per claim. Immutable.
-  identity: [interface]
+  identity:
+    - interface
 
   # What defines one independent address space. Two allocations may hold the
   # same address if, and only if, they differ in one of these references.
@@ -281,11 +290,14 @@ spec:
   #
   # This states the guarantee, and the allocator's search follows from it.
   # Defaults to empty, the strictest. Immutable.
-  uniqueWithin: [network]
+  uniqueWithin:
+    - network
 
   # The sizes a claim of this class may request, and the size used when a claim
   # asks for none. A fixed-size class sets min and max equal.
-  allowedPrefixLengths: { min: 96, max: 96 }
+  allowedPrefixLengths:
+    min: 96
+    max: 96
   defaultPrefixLength: 96
 
   # Positions in the parent this class does not allocate from, counted in units
@@ -357,11 +369,20 @@ kind: IPClaim
 spec:
   className: tenant-endpoint-ipv4
   scope:
-    network:   { apiGroup: networking.datumapis.com, kind: Network,  name: default }
-    location:  { apiGroup: networking.datumapis.com, kind: Location, name: us-central-1 }
+    network:
+      apiGroup: networking.datumapis.com
+      kind: Network
+      name: default
+    location:
+      apiGroup: networking.datumapis.com
+      kind: Location
+      name: us-central-1
     # Names the interface declared on the slot, not the runtime object rebuilt
     # with each instance — see Instance addresses.
-    interface: { apiGroup: compute.datumapis.com,    kind: NetworkInterface, name: … }
+    interface:
+      apiGroup: compute.datumapis.com
+      kind: NetworkInterface
+      name: …
 ```
 
 None of this is written by a consumer. The network layer at the location supplies
@@ -572,68 +593,103 @@ see the names.
 # The tenant chain. A class names the class it carves from; the top of a chain
 # names none and draws from a pool instead.
 kind: IPClass
-metadata: { name: tenant-network-ipv6 }
+metadata:
+  name: tenant-network-ipv6
 spec:
   ipFamily: IPv6
   # No parentClassName — the top of a chain draws from the pools that offer it,
   # here IPPool/tenant-v6.
-  identity: [network]                  # one prefix per network
-  uniqueWithin: []                     # one space platform-wide
-  allowedPrefixLengths: { min: 48, max: 48 }
+  # One prefix per network.
+  identity:
+    - network
+  # One space platform-wide.
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 48
+    max: 48
   reclaimPolicy: Retain
 ---
 kind: IPClass
-metadata: { name: tenant-subnet-ipv6 }
+metadata:
+  name: tenant-subnet-ipv6
 spec:
   ipFamily: IPv6
   parentClassName: tenant-network-ipv6
-  identity: [network, location]        # one subnet per network, per location
+  # One subnet per network, per location.
+  identity:
+    - network
+    - location
   uniqueWithin: []
-  allowedPrefixLengths: { min: 64, max: 64 }
-  reclaimPolicy: Retain                # a location's subnet is never renumbered
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+  # A location's subnet is never renumbered.
+  reclaimPolicy: Retain
 ---
 kind: IPClass
 metadata:
   name: tenant-endpoint-ipv6
-  annotations: { ipam.miloapis.com/is-default-class: "true" }
+  annotations:
+    ipam.miloapis.com/is-default-class: "true"
 spec:
   ipFamily: IPv6
   parentClassName: tenant-subnet-ipv6
-  identity: [interface]                # one block per interface
-  uniqueWithin: [network]              # the parent /64 is this network's alone,
-                                       # so this is still platform-unique
-  allowedPrefixLengths: { min: 96, max: 96 }
-  reservations: { leading: 1 }         # the subnet gateway lives in the first block
+  # One block per interface.
+  identity:
+    - interface
+  # The parent /64 is this network's alone, so this is still platform-unique.
+  uniqueWithin:
+    - network
+  allowedPrefixLengths:
+    min: 96
+    max: 96
+  # The subnet gateway lives in the first block.
+  reservations:
+    leading: 1
 ---
 kind: IPClass
 metadata:
   name: tenant-endpoint-ipv4
-  annotations: { ipam.miloapis.com/is-default-class: "true" }
+  annotations:
+    ipam.miloapis.com/is-default-class: "true"
 spec:
   ipFamily: IPv4
   # No parentClassName, and that is the whole IPv4 story: there is no per-network
   # IPv4 space to carve, so an endpoint draws straight from the location's shared
   # range. The IPv6 endpoint above sits three levels down its own chain; this one
   # is a chain of one.
-  identity: [interface]
-  uniqueWithin: [network]              # the shared range makes this a real
-                                       # narrowing — two networks reach the same
-                                       # address and both keep it
-  allowedPrefixLengths: { min: 32, max: 32 }
-  reservations: { leading: 2, trailing: 2 }
+  identity:
+    - interface
+  # The shared range makes this a real narrowing — two networks reach the same
+  # address and both keep it.
+  uniqueWithin:
+    - network
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  reservations:
+    leading: 2
+    trailing: 2
 ---
 kind: IPClass
-metadata: { name: public-unicast-ipv4 }
+metadata:
+  name: public-unicast-ipv4
 spec:
   ipFamily: IPv4
   # Also no parentClassName — public addresses come from the location's public
   # pool, not from anything the network owns.
-  identity: [interface]                # the declared interface on the slot, so a
-                                       # replacement reclaims it — see Instance
-                                       # addresses
-  uniqueWithin: []                     # routable, so unique everywhere
-  allowedPrefixLengths: { min: 32, max: 32 }
-  routing: { internal: Host, external: Aggregate }
+  # The declared interface on the slot, so a replacement reclaims it — see
+  # Instance addresses.
+  identity:
+    - interface
+  # Routable, so unique everywhere.
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  routing:
+    internal: Host
+    external: Aggregate
   reclaimPolicy: Retain
 ```
 
@@ -662,25 +718,43 @@ Two objects, both written by the consumer:
 
 ```yaml
 kind: Network
-metadata: { name: default }
+metadata:
+  name: default
 spec:
-  ipam: { mode: Auto }
+  ipam:
+    mode: Auto
 ---
 kind: Workload
-metadata: { name: hello-sandbox }
+metadata:
+  name: hello-sandbox
 spec:
   template:
     spec:
-      runtime: { sandbox: { containers: [{ name: app, image: … }] } }
+      runtime:
+        sandbox:
+          containers:
+            - name: app
+              image: …
       networkInterfaces:
-        - network: { name: default }
-          ipFamilies: [IPv6, IPv4]
+        - network:
+            name: default
+          ipFamilies:
+            - IPv6
+            - IPv4
           reclaimPolicy: Retain
           addresses:
             - class: public-unicast-ipv4
   placements:
-    - { name: americas, locations: [us-central-1], scaleSettings: { minReplicas: 2 } }
-    - { name: europe,   locations: [eu-west-1],    scaleSettings: { minReplicas: 2 } }
+    - name: americas
+      locations:
+        - us-central-1
+      scaleSettings:
+        minReplicas: 2
+    - name: europe
+      locations:
+        - eu-west-1
+      scaleSettings:
+        minReplicas: 2
 ```
 
 Three more objects appear in the project that the consumer did not write — their
