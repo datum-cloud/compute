@@ -468,16 +468,23 @@ never advertised, so it carries no routing qualifier.
 the workload runs.
 
 Pushing allocation out to each location, so a location keeps working alone, does not
-pay for itself. Only interfaces claim — an instance assigns its containers from the
-block its interface already holds — so the control plane sees a few claims when an
-instance is created and none while it runs. That is not a rate that needs a local
-allocator.
+pay for itself, because instance churn does not become claim churn. An address is
+claimed once for a slot and stays with it, so replacing, rescheduling, or redeploying
+an instance allocates nothing — the replacement finds a claim that already holds its
+address. Allocation happens when a slot first appears: a new workload, or a scale-up.
+See [Instance addresses](#instance-addresses) for how a slot keeps its address.
 
-The trade is plain: **while the central service is unreachable, no new addresses are
-handed out.** A location cannot start a new instance. Live traffic is untouched —
-existing addresses keep working and routes keep being advertised — and instance
-creation already carries the same dependency on
-[central quota enforcement](quota-enforcement/README.md). If the outage window proves
+That is what keeps the central allocator off the hot path, and it is worth noticing
+that retention pays for itself twice: the mechanism that lets a consumer keep an
+address is the same one that stops instance churn from reaching the allocator.
+
+The trade is narrower than it first looks: **while the central service is unreachable,
+a location cannot allocate for a slot it has never seen.** It can still replace and
+reschedule instances in slots that already hold addresses, which is the path that
+matters during a failure. What pauses is scaling up and deploying something new — the
+same dependency instance creation already has on
+[central quota enforcement](quota-enforcement/README.md). Live traffic is untouched:
+existing addresses keep working and routes keep being advertised. If the pause proves
 to matter, the answer is a small pre-reserved buffer per location: a cache, not a
 second allocator.
 
@@ -838,8 +845,9 @@ that quietly assumed them would look finished and behave otherwise.
 
 ## Drawbacks
 
-- **New allocation stops during a central outage.** Covered above; the mitigation,
-  if measurement justifies it, is a small reserve per location.
+- **Scaling up and new deployments stop during a central outage.** Replacing an
+  instance in an existing slot does not, since its address is already claimed. Covered
+  above; the mitigation, if measurement justifies it, is a small reserve per location.
 - **More concepts.** Consumers gain a name to think about, operators gain a catalog
   to curate. Per-family defaults keep the common path free of both.
 - **A held address is capacity nobody else can use.** That is the price of an address
