@@ -1,0 +1,131 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: instance-writeback
+spec:
+  description: |
+    Verifies that the InstanceReconciler running in a POP-cell cluster writes
+    Instance objects back to the Karmada API server after reconciling the Ready
+    condition for the first time.
+
+    Write-back convention (internal/controller/instance_controller.go):
+    - The Instance is written to Karmada at the same namespace/name as the POP-cell Instance.
+    - The identity labels are NOT derived from the cell's own cluster name. The
+      write-back reads them from the hub ns-<uid> namespace, which the management
+      federator stamped: meta.datumapis.com/upstream-cluster-name carries
+      EncodeClusterName of the federating cluster ("single" here → "cluster-single")
+      and meta.datumapis.com/upstream-namespace records the originating namespace.
+
+    Note: this test requires the cell InstanceReconciler to be running in the DFW
+    POP cell cluster with federation configured.
+
+    Runtime prerequisite (see verification phase): the write-back path errors
+    unless the hub ns-<uid> namespace carries the two upstream-* labels above and
+    the cell Instance carries the full set of linking labels the stateful control
+    strategy stamps at creation. This suite hand-crafts a bare namespace and a
+    bare Instance, so the write-back may not fire until those labels are seeded
+    (or the Instance is created via a real WorkloadDeployment, as full-federation
+    does).
+
+  template: true
+
+  steps:
+  - name: setup-namespaces
+    description: Create the Instance namespace in the DFW POP cell and Karmada.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            create namespace "$INSTANCE_NS" \
+            --dry-run=client -o yaml | \
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml apply -f -
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          # The cell write-back reads its identity (upstream cluster + project
+          # namespace) from THIS hub namespace's labels, exactly as it would from
+          # the ns-<uid> namespace the federator stamps in the real path. Seed them
+          # so writeBackToUpstream can resolve identity instead of erroring.
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: ${INSTANCE_NS}
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+              meta.datumapis.com/upstream-namespace: ${INSTANCE_NS}
+          EOF
+    cleanup:
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            delete namespace "$INSTANCE_NS" --ignore-not-found
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            delete namespace "$INSTANCE_NS" --ignore-not-found
+
+  - name: create-instance-on-pop-dfw
+    description: Create the Instance on the DFW POP cell cluster.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - apply:
+        file: instance-pop-dfw.yaml
+    cleanup:
+    - script:
+        content: |
+          INSTANCE_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          kubectl delete instance test-writeback-instance \
+            --namespace "$INSTANCE_NS" --ignore-not-found
+
+  - name: assert-instance-in-downstream
+    description: Wait for the InstanceReconciler to write back the Instance to Karmada.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($instanceNS)
+            name: test-writeback-instance
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+              meta.datumapis.com/upstream-namespace: ($instanceNS)
