@@ -490,6 +490,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					CityCode:      cityCode,
 					Template:      workload.Spec.Template,
 					ScaleSettings: placement.ScaleSettings,
+					Replicas:      new(placement.ScaleSettings.MinReplicas),
 				},
 			})
 		}

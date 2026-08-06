@@ -78,6 +78,12 @@ spec:
               placementName:
                 description: The placement in the workload which is driving a deployment
                 type: string
+              replicas:
+                description: |-
+                  Replicas is the current desired replica target for this deployment. When
+                  unset, the deployment reconciles to scaleSettings.minReplicas.
+                format: int32
+                type: integer
               scaleSettings:
                 description: Scale settings such as minimum and maximum replica counts.
                 properties:
@@ -1173,6 +1179,10 @@ spec:
                 description: The number of instances created
                 format: int32
                 type: integer
+              selector:
+                description: Selector is the label selector that identifies Pods backing
+                  this deployment.
+                type: string
               suspended:
                 description: |-
                   Suspended, when true, requests that all instances managed by this deployment
@@ -1197,4 +1207,8 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        labelSelectorPath: .status.selector
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
       status: {}
