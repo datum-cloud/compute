@@ -127,7 +127,8 @@ spec:
           ipFamilies:
             - IPv6
             - IPv4
-          # keep the addresses across redeploys
+          # hold the addresses when this scales down, so they come back
+          # (a redeploy keeps them either way)
           reclaimPolicy: Retain
           addresses:
             # a class, never an address
@@ -468,15 +469,16 @@ never advertised, so it carries no routing qualifier.
 the workload runs.
 
 Pushing allocation out to each location, so a location keeps working alone, does not
-pay for itself, because instance churn does not become claim churn. An address is
-claimed once for a slot and stays with it, so replacing, rescheduling, or redeploying
-an instance allocates nothing — the replacement finds a claim that already holds its
-address. Allocation happens when a slot first appears: a new workload, or a scale-up.
-See [Instance addresses](#instance-addresses) for how a slot keeps its address.
+pay for itself, because most instance churn does not become claim churn. An address is
+claimed for a slot rather than for the instance filling it, so replacing, rescheduling,
+and redeploying allocate nothing — the replacement finds a claim that already holds its
+address. Allocation happens when a slot appears that has no claim: a new workload, a
+scale-up, or a slot returning after a scale-down released its address. `Retain` removes
+that last case, holding the address for the slot that comes back. See
+[Instance addresses](#instance-addresses) for what a slot keeps and when.
 
-That is what keeps the central allocator off the hot path, and it is worth noticing
-that retention pays for itself twice: the mechanism that lets a consumer keep an
-address is the same one that stops instance churn from reaching the allocator.
+Retention pays for itself twice, then: the mechanism that lets a consumer keep an
+address is the same one that keeps churn away from the allocator.
 
 The trade is narrower than it first looks: **while the central service is unreachable,
 a location cannot allocate for a slot it has never seen.** It can still replace and
@@ -538,17 +540,23 @@ window leaves the address loose.
 So the network layer names an interface's claims from the slot, the interface, and the
 family, all of which compose from the workload, placement, location, and ordinal and
 are stable across every replacement filling that slot. A replacement finds claims that
-already exist and already hold addresses. Deleting the workload deletes the claims
-through ownership, and `reclaimPolicy` then decides whether the addresses are released
-or held.
+already exist and already hold addresses.
+
+A claim ends when its slot does. Deleting the workload deletes its claims through
+ownership, and so does a scale-down, for every slot it removes. `reclaimPolicy` then
+decides what becomes of those addresses: `Delete` releases them, so scaling back up
+allocates different ones; `Retain` holds them, so the restored slot reclaims what it
+had. **An address survives a redeploy on its own, but surviving a scale-down takes
+`Retain`.**
 
 Two consequences follow:
 
 - **A late release from an already-replaced instance is rejected.** The release is
   checked against the claim that currently holds the binding, not against a
   remembered holder.
-- **A deleted workload recreated under the same name produces identical claim
-  names.** It inherits its predecessor's retained addresses — the same recreation
+- **Anything recreated under the same name inherits what that name held.** A slot
+  restored by a scale-up and a workload recreated after deletion both produce
+  identical claim names, so both reclaim retained addresses — the same recreation
   question a network name raises, wanting the same answer.
 
 A retained allocation still needs an expiry, because an address held against a
