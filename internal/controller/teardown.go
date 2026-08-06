@@ -23,6 +23,11 @@ import (
 // consumer project carries this label so disengage can target them by service.
 const labelServiceName = "services.miloapis.com/service-name"
 
+// labelServiceNameValue is this operator's canonical service name, the value
+// paired with labelServiceName on every resource the compute operator scopes
+// suspend/resume/teardown by (WorkloadDeployment, Instance).
+const labelServiceNameValue = "compute.datumapis.com"
+
 // ComputeTeardown implements consumer.Teardown. It is invoked after the
 // consumer provider has cancelled the per-cluster context and marked labeled
 // Instances for deletion via ManagedResources. It handles the parts a
