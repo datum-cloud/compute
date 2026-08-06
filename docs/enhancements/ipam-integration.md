@@ -468,9 +468,10 @@ never advertised, so it carries no routing qualifier.
 the workload runs.
 
 Pushing allocation out to each location, so a location keeps working alone, does not
-pay for itself. The high-volume cases that would justify it are not ours: pod
-addresses belong to container networking, and what remains is a few addresses per
-interface at instance-creation rate.
+pay for itself. Only interfaces claim — an instance assigns its containers from the
+block its interface already holds — so the control plane sees a few claims when an
+instance is created and none while it runs. That is not a rate that needs a local
+allocator.
 
 The trade is plain: **while the central service is unreachable, no new addresses are
 handed out.** A location cannot start a new instance. Live traffic is untouched —
