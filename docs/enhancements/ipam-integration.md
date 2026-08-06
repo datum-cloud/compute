@@ -434,26 +434,22 @@ Chain depth is capped and cycles are rejected at class-write time, not at claim 
 
 **Class health is computed, never stored.** A class reports whether any pool backs it
 and how full its worst location is, both as aggregates over pool status read at query
-time. Neither is a counter maintained during allocation, deliberately: a class-level
-counter would be one row every pool of that class contends on, turning independent
-claims in different locations into a queue and destroying the per-pool locking the
-service depends on. A counter also cannot express "the worst location," which is the
-number that matters.
+time. A counter maintained during allocation would serialize independent claims in
+different locations behind one row, and could not express "the worst location" anyway.
 
 ### Address families
 
 **A class is single-family. The interface asks for families; the platform picks a
 class for each.**
 
-The tempting alternative is one class spanning both families with sizes declared per
-family. It holds up until it meets the
-[tenant addressing plan](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/tenant.md).
-A tenant endpoint in IPv6 gets a block carved from **that tenant's own prefix**,
-unique to them, which the instance subdivides. In IPv4 it gets a single address from a
-**location-wide range every tenant reuses**, with no sub-block, because IPv4 scarcity
-makes per-tenant uniqueness impossible at scale. Different parent, different uniqueness
-rule, different hierarchy — two classes serving one interface, not one class with two
-sizes.
+In the
+[tenant addressing plan](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/tenant.md),
+the two families are not the same kind of thing. A tenant endpoint in IPv6 gets a
+block carved from **that tenant's own prefix**, unique to them, which the instance
+subdivides. In IPv4 it gets a single address from a **location-wide range every tenant
+reuses**, with no sub-block, because IPv4 scarcity makes per-tenant uniqueness
+impossible at scale. Different parent, different uniqueness rule, different hierarchy
+— so one class spanning both families would be one object describing two things.
 
 So the interface names families and each family resolves to a class. Where the consumer
 names no class — the common case — the platform's default for that family applies.
@@ -471,14 +467,10 @@ never advertised, so it carries no routing qualifier.
 **Every address comes from one central allocator**, whatever its class and wherever
 the workload runs.
 
-The tempting alternative pushes allocation out to each location so it keeps working
-alone. It does not pay for itself. The high-volume cases that seem to need it are not
-ours, because pod addresses belong to container networking; what remains is a few
-addresses per interface at instance-creation rate. A copy per location would mean a
-database at every location, two versions of the truth, and a reconciliation problem
-nobody has scoped. It would also give up the platform-wide inventory that motivates
-the work — the only way to answer "who has this address," enforce quota on the real
-resource, and report utilization honestly.
+Pushing allocation out to each location, so a location keeps working alone, does not
+pay for itself. The high-volume cases that would justify it are not ours: pod
+addresses belong to container networking, and what remains is a few addresses per
+interface at instance-creation rate.
 
 The trade is plain: **while the central service is unreachable, no new addresses are
 handed out.** A location cannot start a new instance. Live traffic is untouched —
