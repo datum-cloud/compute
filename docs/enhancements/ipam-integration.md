@@ -849,54 +849,40 @@ subnet. The subnet belongs to the network, and other workloads on it draw from i
 
 ## What this depends on
 
-Allocating an address is necessary and nowhere near sufficient. The pieces below are
-what the design assumes and does not provide. Listing them is the point: a design
+Allocating an address is necessary and nowhere near sufficient. The design assumes
+each of the following and provides none of them. Listing them is the point: a design
 that quietly assumed them would look finished and behave otherwise.
 
-**A [network](https://github.com/datum-cloud/network-services-operator/blob/main/api/v1alpha/network_types.go)
-needs one routing identity across every location it reaches**, unique platform-wide.
-Otherwise the two halves of a multi-location workload are unrelated networks sharing
-a name. This identity scopes route import and export. It is not the
-[per-location forwarding-instance identifier](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/srv6.md),
-which is deliberately reused in every location and draws on a much smaller space.
-Conflating the two would cap the platform at a few thousand networks in total rather
-than per location.
-
-**A moved instance needs its old route withdrawn before the new one is trusted.**
-Each node advertises with a distinct identity, so a route reflector keeps both
-advertisements when an instance moves and traffic splits between the two nodes.
-Retention makes the split worse by keeping the address valid across the move. The
-routes need a sequence number so the newer advertisement demonstrably wins.
-
-**Endpoint reachability has a per-node cost quadratic in network size.** Reaching a
-remote endpoint installs per-endpoint state on every node that talks to it, and
-nothing reclaims that state. This is the real ceiling, far below any address-space
-limit, and it needs a stated budget and a cap on endpoints per network per node.
-
-**Subnets need programming, not just allocation.** A location's subnet appearing on
-first use writes a record and nothing more; nothing provisions the gateway, the
-forwarding instance, or the route-table entry. That gap is why the interface reports
-`Allocated` and `Programmed` separately.
-
-**The gateway still needs programming.** Reservations give the gateway an owner, put
-it in inventory, and give path-MTU discovery a source address inside the network — but
-allocating a gateway does not configure it. Without a gateway that answers, oversized
-packets are dropped silently: handshakes succeed and large transfers hang.
-
-**An endpoint's block is only reachable at its first address.** Distribution flattens
-the block to a single address, so an address self-assigned inside the block works
-locally and nowhere else. Until distribution preserves the block, "assigns within it"
-is aspirational.
-
-**Public addresses need a path to the instance** — advertisement, in-location steering
-to the node holding the address, and translation — and that path must move when the
-instance is rescheduled. A released public address also needs a quarantine before
-reissue: no route changes when the address goes to someone else, but DNS caches,
-customer allowlists, and reputation data all still point the old way.
-
-**Consuming a class must be a privilege.** Once consumers name classes instead of
-pools, the class name is the only authorization boundary left. Naming a class must be
-checked, and the check must fail closed.
+- **A [network](https://github.com/datum-cloud/network-services-operator/blob/main/api/v1alpha/network_types.go)
+  needs one routing identity across every location it reaches**, unique
+  platform-wide, or the two halves of a multi-location workload are unrelated
+  networks sharing a name. This identity scopes route import and export. It is not
+  the [per-location forwarding-instance identifier](https://github.com/datum-cloud/enhancements/blob/main/architecture/design/network/addressing/srv6.md),
+  which is deliberately reused in every location; conflating the two would cap the
+  platform at a few thousand networks in total rather than per location.
+- **A moved instance needs its old route withdrawn before the new one is trusted.**
+  A route reflector keeps both advertisements and traffic splits between the two
+  nodes. Retention makes the split worse by keeping the address valid across the
+  move. The routes need a sequence number so the newer advertisement wins.
+- **Endpoint reachability costs per-node state quadratic in network size**, and
+  nothing reclaims it. This is the real ceiling, far below any address-space limit,
+  and it needs a stated budget and a cap on endpoints per network per node.
+- **Subnets and their gateways need programming, not just allocation.** A location's
+  subnet appearing on first use writes a record and nothing more; nothing provisions
+  the gateway, the forwarding instance, or the route-table entry. That gap is why the
+  interface reports `Allocated` and `Programmed` separately. Without a gateway that
+  answers, oversized packets are dropped silently: handshakes succeed and large
+  transfers hang.
+- **An endpoint's block is only reachable at its first address.** Distribution
+  flattens the block to a single address, so "assigns within it" stays aspirational
+  until distribution preserves the block.
+- **Public addresses need a path to the instance** — advertisement, in-location
+  steering, and translation — and that path must move when the instance is
+  rescheduled. A released public address also needs a quarantine before reissue:
+  DNS caches, customer allowlists, and reputation data all still point the old way.
+- **Consuming a class must be a privilege.** Once consumers name classes instead of
+  pools, the class name is the only authorization boundary left. The check must fail
+  closed.
 
 ## Drawbacks
 
