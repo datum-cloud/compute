@@ -22,7 +22,7 @@ details on the goals of this project.
 
 ## Documentation
 
-Documentation will be available at [docs.datum.net](https://docs.datum.net/)
+Documentation will be available at [datum.net/docs](https://www.datum.net/docs)
 shortly.
 
 ## Getting Started
