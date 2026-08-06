@@ -468,7 +468,8 @@ never advertised, so it carries no routing qualifier.
 
 ### Where the address comes from
 
-**One allocator, in the middle, for everything.** Not a copy per location.
+**Every address comes from one central allocator**, whatever its class and wherever
+the workload runs.
 
 The tempting alternative pushes allocation out to each location so it keeps working
 alone. It does not pay for itself. The high-volume cases that seem to need it are not
