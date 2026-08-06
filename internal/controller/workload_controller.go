@@ -479,6 +479,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					Name:      deploymentName,
 					Labels: map[string]string{
 						computev1alpha.WorkloadUIDLabel: string(workload.UID),
+						labelServiceName:                labelServiceNameValue,
 					},
 				},
 				Spec: computev1alpha.WorkloadDeploymentSpec{
