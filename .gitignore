@@ -28,3 +28,5 @@ bin/
 
 # Local e2e environment artefacts (Kind kubeconfigs, etc.)
 tmp/
+.test-infra/
+.task/

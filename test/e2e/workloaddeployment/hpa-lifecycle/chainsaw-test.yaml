@@ -1,0 +1,21 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workloaddeployment-hpa-lifecycle
+spec:
+  steps:
+    - name: create autoscaled WorkloadDeployment
+      try:
+        - apply:
+            file: workloaddeployment.yaml
+        - assert:
+            file: hpa.yaml
+    - name: disable autoscaling
+      try:
+        - script:
+            content: |
+              kubectl -n "$NAMESPACE" patch workloaddeployment.compute.datumapis.com chainsaw-hpa --type=json \
+                -p='[{"op":"remove","path":"/spec/scaleSettings/maxReplicas"},{"op":"remove","path":"/spec/scaleSettings/metrics"}]'
+        - script:
+            content: |
+              kubectl -n "$NAMESPACE" wait --for=delete horizontalpodautoscaler.autoscaling/chainsaw-hpa --timeout=60s

@@ -1,0 +1,15 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chainsaw-hpa-update
+  namespace: ($namespace)
+spec:
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: AverageValue
+          averageValue: 512Mi

@@ -1,5 +1,8 @@
 name: E2E Tests
 
+env:
+  TASK_X_REMOTE_TASKFILES: 1
+
 on:
   push:
   pull_request:
@@ -17,6 +20,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+
       - name: Install the latest version of kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
@@ -26,10 +32,5 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
-      - name: Create kind cluster
-        run: kind create cluster
-
       - name: Running Test e2e
-        run: |
-          go mod tidy
-          make test-e2e
+        run: make test-e2e
