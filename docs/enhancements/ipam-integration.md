@@ -332,19 +332,19 @@ So nothing on the class selects an allocation, because the claim already has one
 class carries only what the allocator needs to hand out an address in the first place:
 which space it comes from, and what it must not collide with.
 
-**What `uniqueWithin` means.** Both endpoint classes in the example below set
-`uniqueWithin: [network]`, and the field does different amounts of work in each. An
-IPv6 endpoint is carved from a `/64` belonging to one network and no other, so the
-parent already separates the space and the result is unique platform-wide regardless.
-An IPv4 endpoint is carved from a range every network in the location shares, so the
-setting is load-bearing: two networks reach the same address and both keep it.
+**How much `uniqueWithin` does depends on the parent.** Both endpoint classes in the
+example below set `uniqueWithin: [network]`. An IPv6 endpoint is carved from a `/64`
+belonging to one network and no other, so the parent already separates the space and
+the result is unique platform-wide regardless. An IPv4 endpoint is carved from a range
+every network in the location shares, so the setting is load-bearing: two networks
+reach the same address and both keep it.
 
-Setting `uniqueWithin` wider than the parent requires is safe and wasteful. Setting
-it narrower is how two holders end up with one address, which IPv4 tenant space wants
-and nothing else does.
+Setting it wider than the parent requires is safe and wasteful. Setting it narrower is
+how two holders end up with one address, which IPv4 tenant space wants and nothing
+else does.
 
-**What a claim carries.** `uniqueWithin` and parent resolution key off the same
-references, so the claim carries them by role:
+**A claim carries its scope references by role**, since `uniqueWithin` and parent
+resolution key off the same ones:
 
 ```yaml
 kind: IPClaim
@@ -403,9 +403,9 @@ With `parentClassName` set, it projects this claim's scope onto the parent class
 network `default` in `us-central-1`, the `tenant-subnet-ipv6` pool for that network
 and location.
 
-Note what a parent is. A parent class does not hand out addresses; it provisions
-pools, one per distinct combination of its `poolPer` references. That is why `poolPer`
-appears only on classes named as a parent, and why it is not a property of claims.
+A parent class does not hand out addresses. It provisions pools, one per distinct
+combination of its `poolPer` references, which is why `poolPer` appears only on
+classes named as a parent and is not a property of claims.
 
 If the pool does not exist, the allocator creates it first, applying the parent
 class's configuration. Creation cascades: a claim in a location a network has never
@@ -480,8 +480,8 @@ nobody has scoped. It would also give up the platform-wide inventory that motiva
 the work — the only way to answer "who has this address," enforce quota on the real
 resource, and report utilization honestly.
 
-State the trade plainly: **while the central service is unreachable, no new addresses
-are handed out.** A location cannot start a new instance. Live traffic is untouched —
+The trade is plain: **while the central service is unreachable, no new addresses are
+handed out.** A location cannot start a new instance. Live traffic is untouched —
 existing addresses keep working and routes keep being advertised — and instance
 creation already carries the same dependency on
 [central quota enforcement](quota-enforcement/README.md). If the outage window proves
@@ -512,18 +512,19 @@ if at all. An address chosen that way cannot be held across a redeploy or counte
 against a budget. Reversing the order — **the platform decides the address, and the
 runtime is told** — turns an address into something a consumer can ask for and keep.
 
-This is more tractable on the platform's own compute than against a third party.
-Every address in play is space the platform already owns, so no external allocator
-needs reconciling and the platform never records an address it did not issue.
+This reversal is easier on the platform's own compute than it would be against a third
+party. Every address in play is space the platform already owns, so no external
+allocator needs reconciling and the platform never records an address it did not
+issue.
 
 The unit is the interface, not the address: an interface gets a block and assigns
 within it, so tracking costs one record per interface rather than one per container.
 
 Three things follow.
 
-**A claim must be able to ask for a specific address.** A claim normally asks for a
-size. Two cases need one that names an address: recording an address already in use,
-and handing a specific address back deliberately.
+**A claim must be able to name a specific address.** A claim normally asks only for a
+size, but two cases need one that names an address: recording an address already in
+use, and handing a specific address back deliberately.
 
 **The runtime stops choosing.** An instance's address arrives with its interface
 configuration rather than being invented at boot. That is a change to the runtime
