@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
@@ -57,6 +58,8 @@ func (cs *ComputeSuspend) SuspendConsumer(
 	consumerClient client.Client,
 	serviceNames []string,
 ) error {
+	logger := log.FromContext(ctx)
+	logger.Info("SuspendConsumer hook invoked", "consumerProject", consumerProject, "serviceNames", serviceNames)
 	for _, svcName := range serviceNames {
 		// Suspend all WorkloadDeployments
 		var wds computev1alpha.WorkloadDeploymentList
@@ -65,6 +68,7 @@ func (cs *ComputeSuspend) SuspendConsumer(
 		); err != nil {
 			return fmt.Errorf("listing workloaddeployments for service %q: %w", svcName, err)
 		}
+		logger.Info("found workloaddeployments to suspend", "consumerProject", consumerProject, "service", svcName, "count", len(wds.Items))
 		for i := range wds.Items {
 			wd := &wds.Items[i]
 			if wd.Status.Suspended {
@@ -82,6 +86,7 @@ func (cs *ComputeSuspend) SuspendConsumer(
 				return fmt.Errorf("patching workloaddeployment %s/%s status to suspended: %w",
 					wd.Namespace, wd.Name, err)
 			}
+			logger.Info("workloaddeployment suspended", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
 			if cs.recorder != nil {
 				cs.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectPaused, eventActionSuspending,
@@ -118,6 +123,8 @@ func (cr *ComputeResume) ResumeConsumer(
 	consumerClient client.Client,
 	serviceNames []string,
 ) error {
+	logger := log.FromContext(ctx)
+	logger.Info("ResumeConsumer hook invoked", "consumerProject", consumerProject, "serviceNames", serviceNames)
 	for _, svcName := range serviceNames {
 		// Resume all WorkloadDeployments
 		var wds computev1alpha.WorkloadDeploymentList
@@ -126,6 +133,7 @@ func (cr *ComputeResume) ResumeConsumer(
 		); err != nil {
 			return fmt.Errorf("listing workloaddeployments for service %q: %w", svcName, err)
 		}
+		logger.Info("found workloaddeployments to resume", "consumerProject", consumerProject, "service", svcName, "count", len(wds.Items))
 		for i := range wds.Items {
 			wd := &wds.Items[i]
 			if !wd.Status.Suspended {
@@ -143,6 +151,7 @@ func (cr *ComputeResume) ResumeConsumer(
 				return fmt.Errorf("patching workloaddeployment %s/%s status to resumed: %w",
 					wd.Namespace, wd.Name, err)
 			}
+			logger.Info("workloaddeployment resumed", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
 			if cr.recorder != nil {
 				cr.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectResumed, eventActionResuming,
