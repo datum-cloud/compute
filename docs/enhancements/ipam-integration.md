@@ -254,8 +254,8 @@ spec:
   # declared ancestry.
   parentClassName: tenant-subnet-ipv6
 
-  # Nothing here says which allocation a claim gets; see "How a claim finds its
-  # allocation". A class that other classes carve from sets `poolPer` instead —
+  # Nothing here says which allocation a claim gets — a claim binds one when it
+  # is created. A class that other classes carve from sets `poolPer` instead;
   # see tenant-subnet-ipv6 in the worked example.
 
   # What defines one independent address space. Two allocations may hold the
@@ -321,12 +321,12 @@ spec:
 - `parentPoolName` lets pools nest, so a continent's block contains its locations'
   ranges and stays summarisable as one route.
 
-**How a claim finds its allocation.** It does not look one up. A claim binds to one
-allocation and an allocation to one claim, each recording the other, and the binding
-is made once when the claim is created — exactly as a `PersistentVolumeClaim` binds
-to a `PersistentVolume`. Storage does not reconstruct which volume a claim should
-get, and neither should this: the claim object *is* the identity. Its optional
-`address` field plays the part `volumeName` plays for storage.
+**A claim binds its allocation once, when the claim is created.** From then on the
+claim and the allocation each record the other, exactly as a `PersistentVolumeClaim`
+binds to a `PersistentVolume`. Nothing recomputes the pairing afterwards: storage does
+not reconstruct which volume a claim should get, and neither should this — the claim
+object *is* the identity. A claim's optional `address` field plays the part
+`volumeName` plays for storage.
 
 So nothing on the class selects an allocation, because the claim already has one. The
 class carries only what the allocator needs to hand out an address in the first place:
