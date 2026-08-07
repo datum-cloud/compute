@@ -185,7 +185,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	// reconcileInstanceGates propagates it to owned Instances below, is what
 	// lets the request actually take effect and lets the resulting status
 	// reach the hub.
-	deployment.Status.Suspended = deployment.Annotations[computev1alpha.SuspendedAnnotation] == "true"
+	deployment.Status.Suspended = deployment.Annotations[computev1alpha.SuspendedAnnotation] == suspendedAnnotationTrue
 
 	replicas := len(instances.Items)
 	desiredReplicas := deployment.Spec.ScaleSettings.MinReplicas

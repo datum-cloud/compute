@@ -30,6 +30,10 @@ const (
 
 	eventActionSuspending = "Suspending"
 	eventActionResuming   = "Resuming"
+
+	// suspendedAnnotationTrue is the SuspendedAnnotation value that requests
+	// suspension. Any other value, or absence of the annotation, means resumed.
+	suspendedAnnotationTrue = "true"
 )
 
 // ComputeSuspend implements consumer.Suspend. It requests that every
@@ -80,14 +84,14 @@ func (cs *ComputeSuspend) SuspendConsumer(
 		logger.Info("found workloaddeployments to suspend", "consumerProject", consumerProject, "service", svcName, "count", len(wds.Items))
 		for i := range wds.Items {
 			wd := &wds.Items[i]
-			if wd.Annotations[computev1alpha.SuspendedAnnotation] == "true" {
+			if wd.Annotations[computev1alpha.SuspendedAnnotation] == suspendedAnnotationTrue {
 				continue // already requested — idempotent
 			}
 			base := wd.DeepCopy()
 			if wd.Annotations == nil {
 				wd.Annotations = make(map[string]string)
 			}
-			wd.Annotations[computev1alpha.SuspendedAnnotation] = "true"
+			wd.Annotations[computev1alpha.SuspendedAnnotation] = suspendedAnnotationTrue
 			if err := consumerClient.Patch(ctx, wd, client.MergeFrom(base)); err != nil {
 				if cs.recorder != nil {
 					cs.recorder.Eventf(wd, nil, corev1.EventTypeWarning,
@@ -151,7 +155,7 @@ func (cr *ComputeResume) ResumeConsumer(
 		logger.Info("found workloaddeployments to resume", "consumerProject", consumerProject, "service", svcName, "count", len(wds.Items))
 		for i := range wds.Items {
 			wd := &wds.Items[i]
-			if wd.Annotations[computev1alpha.SuspendedAnnotation] != "true" {
+			if wd.Annotations[computev1alpha.SuspendedAnnotation] != suspendedAnnotationTrue {
 				continue // already active — idempotent
 			}
 			base := wd.DeepCopy()
