@@ -277,6 +277,18 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 		} else {
 			delete(kd.Annotations, computev1alpha.ExpectedReferencedDataAnnotation)
 		}
+		// Propagate the suspend request so the cell can act on it: Status is
+		// never pushed hub->cell (only pulled cell->hub in
+		// syncStatusFromDownstream), so SuspendedAnnotation is the only channel
+		// the ComputeSuspend/ComputeResume hooks have to reach the cell.
+		if anno, ok := deployment.Annotations[computev1alpha.SuspendedAnnotation]; ok {
+			if kd.Annotations == nil {
+				kd.Annotations = make(map[string]string)
+			}
+			kd.Annotations[computev1alpha.SuspendedAnnotation] = anno
+		} else {
+			delete(kd.Annotations, computev1alpha.SuspendedAnnotation)
+		}
 		return nil
 	})
 	if err != nil {

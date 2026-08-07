@@ -3,10 +3,12 @@
 package controller_test
 
 import (
+	"context"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -101,4 +103,61 @@ func TestConformanceSuspendResume(t *testing.T) {
 		// No retained objects: the WorkloadDeployment itself is what the hooks operate on
 		// (status.suspended flips), so it is not a bystander that must stay unchanged.
 	)
+}
+
+// TestSuspendResumeSetsWorkloadDeploymentAnnotation verifies the actual
+// mechanism ComputeSuspend/ComputeResume use to request suspension: the
+// SuspendedAnnotation on the target WorkloadDeployment, not Status.Suspended
+// directly. A prior version of this hook wrote Status.Suspended directly,
+// which WorkloadDeploymentFederator's syncStatusFromDownstream silently
+// reverted on the next reconcile because Status is never propagated hub->cell
+// (see SuspendedAnnotation's doc comment) — a bug the generic conformance
+// test above cannot catch because it only asserts on ServiceConsumer's Paused
+// condition, not on the compute-specific field the hook actually writes.
+func TestSuspendResumeSetsWorkloadDeploymentAnnotation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := computev1alpha.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding computev1alpha scheme: %v", err)
+	}
+
+	const serviceName = "compute.miloapis.com"
+	deployment := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-instance",
+			Namespace: "default",
+			Labels: map[string]string{
+				"services.miloapis.com/service-name": serviceName,
+			},
+		},
+	}
+
+	consumerClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(deployment).
+		WithStatusSubresource(deployment).
+		Build()
+
+	ctx := context.Background()
+	key := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
+
+	if err := controller.NewComputeSuspend(nil).SuspendConsumer(ctx, "test-project", consumerClient, []string{serviceName}); err != nil {
+		t.Fatalf("SuspendConsumer: %v", err)
+	}
+	var got computev1alpha.WorkloadDeployment
+	if err := consumerClient.Get(ctx, key, &got); err != nil {
+		t.Fatalf("get after suspend: %v", err)
+	}
+	if got.Annotations[computev1alpha.SuspendedAnnotation] != "true" {
+		t.Fatalf("SuspendedAnnotation = %q, want %q", got.Annotations[computev1alpha.SuspendedAnnotation], "true")
+	}
+
+	if err := controller.NewComputeResume(nil).ResumeConsumer(ctx, "test-project", consumerClient, []string{serviceName}); err != nil {
+		t.Fatalf("ResumeConsumer: %v", err)
+	}
+	if err := consumerClient.Get(ctx, key, &got); err != nil {
+		t.Fatalf("get after resume: %v", err)
+	}
+	if _, ok := got.Annotations[computev1alpha.SuspendedAnnotation]; ok {
+		t.Fatalf("SuspendedAnnotation still present after resume: %q", got.Annotations[computev1alpha.SuspendedAnnotation])
+	}
 }
