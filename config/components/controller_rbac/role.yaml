@@ -24,7 +24,6 @@ rules:
   verbs:
   - get
   - list
-  - watch
 - apiGroups:
   - compute.datumapis.com
   resources:
@@ -69,7 +68,6 @@ rules:
   resources:
   - locations
   - networkcontexts
-  - networks
   - subnets
   verbs:
   - get
