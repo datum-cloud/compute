@@ -76,7 +76,16 @@ func (cs *ComputeSuspend) SuspendConsumer(
 			}
 			base := wd.DeepCopy()
 			wd.Status.Suspended = true
-			if err := consumerClient.Status().Patch(ctx, wd, client.MergeFrom(base)); err != nil {
+			patch := client.MergeFrom(base)
+			prePatchResourceVersion := wd.ResourceVersion
+			if diff, diffErr := patch.Data(wd); diffErr == nil {
+				logger.Info("suspend patch computed", "consumerProject", consumerProject,
+					"workloadDeployment", client.ObjectKeyFromObject(wd), "patchBytes", string(diff))
+			} else {
+				logger.Error(diffErr, "failed computing suspend patch diff", "consumerProject", consumerProject,
+					"workloadDeployment", client.ObjectKeyFromObject(wd))
+			}
+			if err := consumerClient.Status().Patch(ctx, wd, patch); err != nil {
 				if cs.recorder != nil {
 					cs.recorder.Eventf(wd, nil, corev1.EventTypeWarning,
 						eventReasonPauseFailed, eventActionSuspending,
@@ -86,7 +95,10 @@ func (cs *ComputeSuspend) SuspendConsumer(
 				return fmt.Errorf("patching workloaddeployment %s/%s status to suspended: %w",
 					wd.Namespace, wd.Name, err)
 			}
-			logger.Info("workloaddeployment suspended", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
+			logger.Info("workloaddeployment suspended", "consumerProject", consumerProject,
+				"workloadDeployment", client.ObjectKeyFromObject(wd),
+				"prePatchResourceVersion", prePatchResourceVersion, "postPatchResourceVersion", wd.ResourceVersion,
+				"postPatchSuspended", wd.Status.Suspended)
 			if cs.recorder != nil {
 				cs.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectPaused, eventActionSuspending,
@@ -141,7 +153,16 @@ func (cr *ComputeResume) ResumeConsumer(
 			}
 			base := wd.DeepCopy()
 			wd.Status.Suspended = false
-			if err := consumerClient.Status().Patch(ctx, wd, client.MergeFrom(base)); err != nil {
+			patch := client.MergeFrom(base)
+			prePatchResourceVersion := wd.ResourceVersion
+			if diff, diffErr := patch.Data(wd); diffErr == nil {
+				logger.Info("resume patch computed", "consumerProject", consumerProject,
+					"workloadDeployment", client.ObjectKeyFromObject(wd), "patchBytes", string(diff))
+			} else {
+				logger.Error(diffErr, "failed computing resume patch diff", "consumerProject", consumerProject,
+					"workloadDeployment", client.ObjectKeyFromObject(wd))
+			}
+			if err := consumerClient.Status().Patch(ctx, wd, patch); err != nil {
 				if cr.recorder != nil {
 					cr.recorder.Eventf(wd, nil, corev1.EventTypeWarning,
 						eventReasonPauseFailed, eventActionResuming,
@@ -151,7 +172,10 @@ func (cr *ComputeResume) ResumeConsumer(
 				return fmt.Errorf("patching workloaddeployment %s/%s status to resumed: %w",
 					wd.Namespace, wd.Name, err)
 			}
-			logger.Info("workloaddeployment resumed", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
+			logger.Info("workloaddeployment resumed", "consumerProject", consumerProject,
+				"workloadDeployment", client.ObjectKeyFromObject(wd),
+				"prePatchResourceVersion", prePatchResourceVersion, "postPatchResourceVersion", wd.ResourceVersion,
+				"postPatchSuspended", wd.Status.Suspended)
 			if cr.recorder != nil {
 				cr.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectResumed, eventActionResuming,
