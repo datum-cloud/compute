@@ -20,20 +20,40 @@ const workloadConditionSchema = z.object({
   observedGeneration: z.number().optional(),
 });
 
+export const workloadPlacementRegionSchema = z.object({
+  name: z.string(),
+  cityCodes: z.array(z.string()).default([]),
+  readyReplicas: z.number(),
+  desiredReplicas: z.number(),
+  health: z.enum(['Available', 'Degraded', 'Unavailable', 'Unknown']),
+});
+
+export type WorkloadPlacementRegion = z.infer<typeof workloadPlacementRegionSchema>;
+
 export const workloadResourceSchema = z.object({
   uid: z.string(),
   name: z.string(),
   namespace: z.string().optional(),
   resourceVersion: z.string().optional(),
   createdAt: z.coerce.date(),
+  /** Latest status condition transition, when present — used for “Updated … ago”. */
+  updatedAt: z.coerce.date().optional(),
   image: z.string().optional(),
   health: z.enum(['Available', 'Degraded', 'Unavailable', 'Unknown']),
+  /** Programmed replicas (latest template applied) — not the same as ready. */
   currentReplicas: z.number(),
+  /** Ready-to-serve replicas — prefer this for health counts. */
+  readyReplicas: z.number(),
   desiredReplicas: z.number(),
+  /** Placement names (legacy list consumers). */
   placements: z.array(z.string()),
+  /** Spec + status joined for region rows on the home cards. */
+  placementRegions: z.array(workloadPlacementRegionSchema).default([]),
   conditions: z.array(workloadConditionSchema).default([]),
   // Detail/overview fields
   runtimeType: z.string().optional(),
+  tags: z.array(z.string()).default([]),
+  ports: z.array(z.string()).default([]),
   regions: z.array(z.string()).default([]),
   resources: z.string().optional(),
   replicasPerRegion: z.number().optional(),
@@ -90,6 +110,10 @@ export const instanceResourceSchema = z.object({
   city: z.string().optional(),
   placement: z.string().optional(),
   instanceType: z.string().optional(),
+  /** Allocated CPU — from requests, or resolved from instanceType catalog (e.g. "1"). */
+  cpu: z.string().optional(),
+  /** Allocated memory — from requests, or resolved from instanceType catalog (e.g. "2Gi"). */
+  memory: z.string().optional(),
   image: z.string().optional(),
   ports: z.array(z.string()).default([]),
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),

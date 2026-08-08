@@ -4,27 +4,34 @@
  * `runDetailLoader`/`runListLoader` RBAC gate + `EmptyContent` for this) —
  * written fresh here since a plugin has no server loader. See `lib/api.ts`'s
  * `ApiError` for how a 403 response reaches these.
+ *
+ * `LoadingSkeleton` is content-only — pages must keep breadcrumbs / titles /
+ * tabs mounted and only swap the data region for this skeleton. Never wrap
+ * the whole page.
  */
 import { ApiError } from '../lib/api';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { LockIcon, ServerCrashIcon } from 'lucide-react';
 
+/** Content-area placeholder only (fleet strip + cards). No page chrome. */
 export function LoadingSkeleton() {
   return (
-    <div data-testid="compute-plugin-loading" className="flex flex-col gap-3 p-6">
-      <Skeleton className="h-8 w-64" />
-      <Skeleton className="h-24 w-full" />
-      <Skeleton className="h-24 w-full" />
+    <div data-testid="compute-plugin-loading" className="flex flex-col gap-4">
+      <Skeleton className="h-14 w-full rounded-xl" />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Skeleton className="h-44 w-full rounded-xl" />
+        <Skeleton className="h-44 w-full rounded-xl" />
+      </div>
     </div>
   );
 }
 
 export function RestrictedState({ message }: { message: string }) {
   return (
-    <div data-testid="compute-plugin-restricted" className="flex flex-col gap-4 p-6">
-      <Card className="max-w-md rounded-xl shadow-none">
-        <CardContent className="flex flex-col items-start gap-3 p-6">
+    <div data-testid="compute-plugin-restricted" className="flex flex-col gap-4">
+      <Card className="max-w-md">
+        <CardContent className="flex flex-col items-start gap-3">
           <LockIcon className="text-muted-foreground size-6" />
           <div>
             <p className="font-semibold">Access restricted</p>
@@ -40,9 +47,9 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
   const message = error instanceof Error ? error.message : 'An unknown error occurred';
 
   return (
-    <div data-testid="compute-plugin-error" className="flex flex-col gap-4 p-6">
-      <Card className="max-w-md rounded-xl shadow-none">
-        <CardContent className="flex flex-col items-start gap-3 p-6">
+    <div data-testid="compute-plugin-error" className="flex flex-col gap-4">
+      <Card className="max-w-md">
+        <CardContent className="flex flex-col items-start gap-3">
           <ServerCrashIcon className="text-destructive size-6" />
           <div>
             <p className="font-semibold">Failed to load</p>
@@ -62,7 +69,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
 
 /**
  * Renders the restricted state for a 403 `ApiError`, otherwise the generic
- * error state. Call at the top of a page once `error` is truthy.
+ * error state. Call once `error` is truthy — keep page chrome outside.
  */
 export function ErrorOrRestrictedState({
   error,

@@ -2,31 +2,26 @@
  * `portal.page/project` extension at `workloads/:workloadName`, exposed as
  * `WorkloadDetail`.
  *
- * Ported from cloud-portal PR #1315's
- * `app/routes/project/detail/compute/workloads/detail/index.tsx` (Overview
- * tab) with its embedded instance list from
- * `.../workloads/detail/instances/index.tsx`'s sibling table in the workload
- * overview. Per the plugin's scope, only the Overview tab is ported — the
- * Activity/Metrics/Settings tabs from PR #1315 are intentionally not
- * included in v1.
+ * Layout follows cloud-portal native overview pages (dense 2-col cards +
+ * full-width sections) and the workloads mockup (stat strip, locations map,
+ * instance cards). Telemetry slots show Coming soon.
  *
- * Rewritten for the plugin runtime:
- *  - `useWorkload`/`useWorkloadInstances` poll `/api/proxy/…` (see
- *    `lib/api.ts`) instead of PR #1315's generated-SDK service +
- *    `useResourceWatch`/`useGuardedRouteData`.
- *  - No server loader — loading/error/restricted states are handled inline
- *    instead of via `defineResourceRoute`/`runDetailLoader`.
- *  - Instance row navigation builds the child path from `useLocation()`
- *    instead of the portal's `paths.config.ts` + `getPathWithParams`.
+ * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
+ * inside the plugin (that double-stacks chrome vs native pages).
  */
 import { PluginTabs } from '../components/plugin-tabs';
-import { Sparkline } from '../components/sparkline';
+import { DetailList, StatusBadge } from '../components/detail-list';
 import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { WorldMap } from '../components/world-map';
 import { useWorkload, useWorkloadInstances } from '../lib/api';
-import { formatUptime, splitSlashValue } from '../lib/format';
-import { instanceStatusToBadgeType, workloadHealthToBadgeType, type Instance } from '../schema';
+import { splitSlashValue } from '../lib/format';
+import {
+  instanceStatusToBadgeType,
+  workloadHealthToBadgeType,
+  type Instance,
+  type Workload,
+} from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
 import {
   Breadcrumb,
@@ -36,67 +31,196 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
-import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
+import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { ArrowRightIcon, HomeIcon, MapPinIcon } from 'lucide-react';
+import { formatDistanceToNowStrict } from 'date-fns';
+import {
+  ArrowRightIcon,
+  HomeIcon,
+  MapPinIcon,
+  Settings2Icon,
+  SquareLibraryIcon,
+} from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 
-const INSTANCE_STATUS_DOT: Record<Instance['status'], string> = {
-  Available: 'bg-green-500',
-  Pending: 'bg-yellow-500',
-  Failed: 'bg-red-500',
-  Unknown: 'bg-muted-foreground',
-};
+const COMING_SOON = 'Coming soon';
 
 const WORKLOAD_TABS = ['Overview', 'Deployments', 'Metrics', 'Activity'];
+
+function InstanceMetricCell({
+  label,
+  value,
+  placeholder,
+}: {
+  label: string;
+  value?: string;
+  placeholder?: boolean;
+}) {
+  return (
+    <div>
+      <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</p>
+      <p
+        className={cn(
+          'mt-0.5 text-xs font-medium sm:text-sm',
+          placeholder && 'text-muted-foreground font-normal'
+        )}>
+        {value ?? COMING_SOON}
+      </p>
+    </div>
+  );
+}
 
 function InstanceCard({ instance, onClick }: { instance: Instance; onClick: () => void }) {
   return (
     <div
-      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-3 rounded-xl border p-5 shadow transition-colors"
+      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-4 rounded-xl border p-4 shadow transition-colors sm:p-5"
       onClick={onClick}
       data-testid="compute-plugin-instance-card">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="min-w-0">
-          <p className="text-primary truncate font-mono text-sm font-medium">{instance.name}</p>
+          <p className="truncate font-mono text-sm font-medium">{instance.name}</p>
           <p className="text-muted-foreground mt-0.5 text-xs">{instance.city ?? 'Unknown region'}</p>
         </div>
-        <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="shrink-0">
+        <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="w-fit shrink-0">
           {instance.status}
         </Badge>
       </div>
 
-      <Sparkline seedKey={instance.uid || instance.name} className="h-10 w-full" />
+      <div
+        className="border-border bg-muted/40 text-muted-foreground flex h-10 items-center justify-center rounded-md border border-dashed text-xs"
+        data-testid="compute-plugin-instance-metrics-placeholder">
+        {COMING_SOON}
+      </div>
 
-      {(instance.instanceType || instance.ports.length > 0) && (
-        <div className="border-card-border flex flex-wrap gap-1.5 border-t pt-3">
-          {instance.instanceType && (
-            <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs">
-              {instance.instanceType}
-            </span>
-          )}
-          {instance.ports.map((port) => (
-            <span
-              key={port}
-              className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 font-mono text-xs">
-              {port}
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="border-border grid grid-cols-3 gap-2 border-t pt-4 sm:gap-3">
+        <InstanceMetricCell label="CPU" placeholder />
+        <InstanceMetricCell label="Memory" placeholder />
+        <InstanceMetricCell label="Requests" placeholder />
+      </div>
 
-      <div className="border-card-border text-muted-foreground flex items-center justify-between border-t pt-3 text-xs">
-        <span className="flex items-center gap-1.5">
-          <span className={cn('size-1.5 shrink-0 rounded-full', INSTANCE_STATUS_DOT[instance.status])} />
-          Up {formatUptime(instance.createdAt)}
-        </span>
+      <div className="border-border text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs">
+        <span>Updated {formatDistanceToNowStrict(instance.createdAt, { addSuffix: true })}</span>
         <span className="flex items-center gap-1">
-          View instance
+          View
           <ArrowRightIcon className="size-3" />
         </span>
       </div>
     </div>
+  );
+}
+
+function GeneralCard({
+  workload,
+  healthyCount,
+  totalCount,
+}: {
+  workload: Workload;
+  healthyCount: number;
+  totalCount: number;
+}) {
+  return (
+    <Card
+      className="h-full w-full gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
+      data-testid="compute-plugin-workload-general">
+      <CardContent className="p-0 sm:px-6 sm:pb-4">
+        <div className="mb-4 flex items-center gap-2.5">
+          <SquareLibraryIcon className="text-muted-foreground size-5 stroke-2" />
+          <span className="text-base font-semibold">General</span>
+        </div>
+        <DetailList
+          items={[
+            {
+              label: 'Status',
+              content: (
+                <StatusBadge type={workloadHealthToBadgeType(workload.health)}>
+                  {workload.health}
+                </StatusBadge>
+              ),
+            },
+            {
+              label: 'Resource Name',
+              content: <span className="font-mono text-sm">{workload.name}</span>,
+            },
+            {
+              label: 'Instances',
+              content: `${healthyCount}/${totalCount}`,
+            },
+            {
+              label: 'Created At',
+              content: workload.createdAt.toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false,
+              }),
+            },
+          ]}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ConfigurationCard({ workload }: { workload: Workload }) {
+  const { main: resourceShort } = splitSlashValue(workload.resources ?? '');
+
+  return (
+    <Card
+      className="h-full w-full gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
+      data-testid="compute-plugin-workload-configuration">
+      <CardContent className="p-0 sm:px-6 sm:pb-4">
+        <div className="mb-4 flex items-center gap-2.5">
+          <Settings2Icon className="text-muted-foreground size-5 stroke-2" />
+          <span className="text-base font-semibold">Configuration</span>
+        </div>
+        <DetailList
+          items={[
+            {
+              label: 'Runtime',
+              content: workload.runtimeType ?? (
+                <span className="text-muted-foreground">{COMING_SOON}</span>
+              ),
+            },
+            {
+              label: 'Image',
+              content: workload.image ? (
+                <span className="block max-w-full truncate font-mono text-xs" title={workload.image}>
+                  {workload.image}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{COMING_SOON}</span>
+              ),
+            },
+            {
+              label: 'Resources',
+              content: resourceShort || workload.resources || (
+                <span className="text-muted-foreground">{COMING_SOON}</span>
+              ),
+            },
+            {
+              label: 'Replicas',
+              content:
+                workload.replicasPerRegion !== undefined
+                  ? `${workload.replicasPerRegion}/region · ${workload.desiredReplicas} total`
+                  : `${workload.desiredReplicas} total`,
+            },
+            {
+              label: 'Regions',
+              content:
+                workload.regions.length > 0 ? (
+                  workload.regions.join(', ')
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                ),
+            },
+          ]}
+        />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -112,60 +236,58 @@ export default function WorkloadDetail() {
   const instanceHref = (name: string) => `${basePath}/instances/${name}`;
   const workloadsHref = basePath.replace(/\/[^/]+$/, '');
   const projectHref = projectId ? `/project/${projectId}` : '/';
+  const titleName = workload?.name ?? workloadName ?? 'Workload';
 
-  if (isLoading) return <LoadingSkeleton />;
-
-  if (error || !workload) {
-    return (
-      <ErrorOrRestrictedState
-        error={error}
-        restrictedMessage="You don't have permission to view this workload."
-        onRetry={() => void refetch()}
-      />
-    );
-  }
-
-  // Health counts — prefer live instance data, fall back to replica counts.
-  const healthyCount = instances.length
-    ? instances.filter((i) => i.status === 'Available').length
-    : workload.currentReplicas;
-  const totalCount = instances.length || workload.desiredReplicas;
+  const healthyCount = workload
+    ? instances.length
+      ? instances.filter((i) => i.status === 'Available').length
+      : workload.readyReplicas
+    : 0;
+  const totalCount = workload ? instances.length || workload.desiredReplicas : 0;
   const allHealthy = totalCount > 0 && healthyCount === totalCount;
 
-  const regions = workload.regions ?? [];
-  const { main: resourceShort } = splitSlashValue(workload.resources ?? '');
+  const regions = workload?.regions ?? [];
 
-  const createdFormatted = workload.createdAt
-    ? workload.createdAt.toLocaleDateString('en-US', {
-        month: 'long',
-        day: 'numeric',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
+  const stats: Stat[] | null = workload
+    ? [
+        {
+          label: 'Instances',
+          value: `${healthyCount}/${totalCount}`,
+          className: allHealthy ? 'text-green-600 dark:text-green-500' : undefined,
+        },
+        {
+          label: 'Available',
+          value: `${healthyCount} / ${totalCount}`,
+          className:
+            healthyCount < totalCount
+              ? 'text-yellow-600 dark:text-yellow-500'
+              : allHealthy
+                ? 'text-green-600 dark:text-green-500'
+                : undefined,
+        },
+        { label: 'Regions', value: String(regions.length) },
+        {
+          label: 'Requests',
+          value: COMING_SOON,
+          className: 'text-muted-foreground text-sm font-medium',
+        },
+        {
+          label: 'Avg CPU',
+          value: COMING_SOON,
+          className: 'text-muted-foreground text-sm font-medium',
+        },
+        {
+          label: 'Avg Memory',
+          value: COMING_SOON,
+          className: 'text-muted-foreground text-sm font-medium',
+        },
+      ]
     : null;
 
-  const stats: Stat[] = [
-    {
-      label: 'Instances',
-      value: `${healthyCount}/${totalCount}`,
-      className: allHealthy ? 'text-green-600 dark:text-green-500' : undefined,
-    },
-    { label: 'Regions', value: regions.length > 0 ? regions.join(', ') : '—' },
-    ...(workload.resources ? [{ label: 'Resources', value: resourceShort }] : []),
-    {
-      label: 'Replicas',
-      value:
-        workload.replicasPerRegion !== undefined
-          ? `${workload.replicasPerRegion}/region · ${workload.desiredReplicas} total`
-          : `${workload.desiredReplicas} total`,
-    },
-  ];
-
   return (
-    <div data-testid="compute-plugin-workload-detail" className="flex flex-col gap-4 p-6">
-      <Breadcrumb>
-        <BreadcrumbList>
+    <div data-testid="compute-plugin-workload-detail" className="flex min-w-0 flex-col gap-6">
+      <Breadcrumb className="min-w-0 overflow-x-auto">
+        <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
             <BreadcrumbLink href={projectHref}>
               <HomeIcon className="size-4" />
@@ -176,112 +298,83 @@ export default function WorkloadDetail() {
             <BreadcrumbLink href={workloadsHref}>Workloads</BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbPage>{workload.name}</BreadcrumbPage>
+          <BreadcrumbItem className="min-w-0">
+            <BreadcrumbPage className="truncate">{titleName}</BreadcrumbPage>
           </BreadcrumbItem>
         </BreadcrumbList>
       </Breadcrumb>
 
       <PageTitle
-        title={workload.name}
+        title={titleName}
+        titleClassName="break-all sm:break-normal"
+        className="flex-col items-start gap-3 sm:flex-row sm:items-center"
         description="Workload overview"
         actions={
-          <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
-            {workload.health}
-          </Badge>
+          workload ? (
+            <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
+              {workload.health}
+            </Badge>
+          ) : undefined
         }
       />
 
       <PluginTabs tabs={WORKLOAD_TABS} testId="compute-plugin-workload-tabs" />
 
-      <StatStrip stats={stats} testId="compute-plugin-workload-stats" />
+      {isLoading && <LoadingSkeleton />}
 
-      {/* Configuration */}
-      {/*
-      <Card className="rounded-xl shadow-none">
-        <CardHeader>
-          <CardTitle className="mb-0 pb-0 text-base font-semibold">Configuration</CardTitle>
-        </CardHeader>
-        <CardContent className="px-5 pt-0 pb-5">
-          <dl className="divide-border divide-y text-sm">
-            <div className="flex items-baseline justify-between gap-4 py-2.5">
-              <dt className="text-muted-foreground shrink-0">Resource name</dt>
-              <dd className="min-w-0 truncate text-right font-mono">{workload.name}</dd>
-            </div>
-            {workload.runtimeType && (
-              <div className="flex items-baseline justify-between gap-4 py-2.5">
-                <dt className="text-muted-foreground shrink-0">Runtime</dt>
-                <dd>{workload.runtimeType}</dd>
-              </div>
-            )}
-            {workload.image && (
-              <div className="flex items-baseline justify-between gap-4 py-2.5">
-                <dt className="text-muted-foreground shrink-0">Container image</dt>
-                <dd className="min-w-0 truncate text-right font-mono text-xs">{workload.image}</dd>
-              </div>
-            )}
-            {regions.length > 0 && (
-              <div className="flex items-baseline justify-between gap-4 py-2.5">
-                <dt className="text-muted-foreground shrink-0">Regions</dt>
-                <dd>{regions.join(', ')}</dd>
-              </div>
-            )}
-            {workload.resources && (
-              <div className="flex items-baseline justify-between gap-4 py-2.5">
-                <dt className="text-muted-foreground shrink-0">Resources</dt>
-                <dd className="font-mono text-xs">{workload.resources}</dd>
-              </div>
-            )}
-            <div className="flex items-baseline justify-between gap-4 py-2.5">
-              <dt className="text-muted-foreground shrink-0">Replicas</dt>
-              <dd>
-                {workload.replicasPerRegion !== undefined
-                  ? `${workload.replicasPerRegion} per region · ${workload.desiredReplicas} total`
-                  : `${workload.desiredReplicas} total`}
-              </dd>
-            </div>
-            {createdFormatted && (
-              <div className="flex items-baseline justify-between gap-4 py-2.5">
-                <dt className="text-muted-foreground shrink-0">Created</dt>
-                <dd className="text-right">{createdFormatted}</dd>
-              </div>
-            )}
-          </dl>
-        </CardContent>
-      </Card>
-      */}
+      {!isLoading && (error || !workload) && (
+        <ErrorOrRestrictedState
+          error={error}
+          restrictedMessage="You don't have permission to view this workload."
+          onRetry={() => void refetch()}
+        />
+      )}
 
-      {/* Instance Locations */}
-      <div className="flex flex-col gap-4">
-        <Card className="rounded-xl shadow-none">
-          <CardContent className="flex flex-col gap-5">
-            <div className="flex items-center gap-2.5">
-              <MapPinIcon className="size-5" />
-              <span className="text-base font-semibold">Instance Locations</span>
-            </div>
-            <p className="text-muted-foreground text-sm">
-              {regions.length > 0
-                ? `Regions where this workload is deployed: ${regions.join(', ')}.`
-                : 'Regions where this workload is deployed.'}
-            </p>
-            <WorldMap className="bg-background aspect-2/1 w-full overflow-hidden rounded-lg border" />
-          </CardContent>
-        </Card>
+      {!isLoading && !error && workload && stats && (
+        <>
+          <StatStrip stats={stats} testId="compute-plugin-workload-stats" />
 
-        {instances.length === 0 ? (
-          <p className="text-muted-foreground text-sm">No running instances</p>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {instances.map((instance) => (
-              <InstanceCard
-                key={instance.uid || instance.name}
-                instance={instance}
-                onClick={() => navigate(instanceHref(instance.name))}
-              />
-            ))}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <GeneralCard
+              workload={workload}
+              healthyCount={healthyCount}
+              totalCount={totalCount}
+            />
+            <ConfigurationCard workload={workload} />
           </div>
-        )}
-      </div>
+
+          <Card
+            className="w-full overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
+            data-testid="compute-plugin-workload-locations">
+            <CardContent className="flex flex-col gap-4 p-0 sm:px-6 sm:pb-4">
+              <div className="flex items-center gap-2.5">
+                <MapPinIcon className="text-muted-foreground size-5 stroke-2" />
+                <span className="text-base font-semibold">Instance Locations</span>
+              </div>
+              <p className="text-muted-foreground text-sm">
+                {regions.length > 0
+                  ? `Regions where this workload is deployed: ${regions.join(', ')}.`
+                  : 'Regions where this workload is deployed.'}
+              </p>
+              <WorldMap className="bg-background aspect-[16/9] w-full overflow-hidden rounded-lg border sm:aspect-[2.5/1]" />
+            </CardContent>
+          </Card>
+
+          {instances.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No running instances</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {instances.map((instance) => (
+                <InstanceCard
+                  key={instance.uid || instance.name}
+                  instance={instance}
+                  onClick={() => navigate(instanceHref(instance.name))}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

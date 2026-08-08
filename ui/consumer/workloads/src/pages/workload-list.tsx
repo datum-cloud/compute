@@ -1,27 +1,21 @@
 /**
  * `portal.page/project` extension at `workloads`, exposed as `WorkloadList`.
  *
- * Ported from cloud-portal PR #1315's
- * `app/routes/project/detail/compute/workloads/index.tsx`. Rewritten for the
- * plugin runtime:
- *  - `useWorkloads` now polls `/api/proxy/…` directly (see `lib/api.ts`)
- *    instead of PR #1315's generated-SDK service + `useResourceWatch`.
- *  - No server loader — table rows come straight from the query; loading /
- *    error / restricted / empty states are handled inline instead of via
- *    `defineResourceRoute`/`runListLoader`.
- *  - Row navigation uses a plain relative `Link`/`useNavigate` instead of the
- *    portal's `paths.config.ts` + `getPathWithParams`.
- *  - The portal's internal `Table` component isn't available to plugins, so
- *    this renders a plain semantic `<table>` (matching the shape of PR
- *    #1315's own instances table).
+ * Home layout matches the workloads wireframe: fleet summary strip + 2-column
+ * cards with regions. Real compute API fields fill operational slots;
+ * telemetry (Requests, Avg CPU) shows muted "Coming soon".
  */
-import { CliBanner, SectionCard } from '../components/cli-section';
-import { Sparkline } from '../components/sparkline';
-import { StatStrip } from '../components/stat-strip';
-import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
-import { useWorkloads } from '../lib/api';
-import { workloadHealthToBadgeType, type Workload, type WorkloadHealth } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
+import { CliBanner, SectionCard } from "../components/cli-section";
+import { StatStrip } from "../components/stat-strip";
+import { ErrorOrRestrictedState, LoadingSkeleton } from "../components/states";
+import { useWorkloads } from "../lib/api";
+import {
+  workloadHealthToBadgeType,
+  type Workload,
+  type WorkloadHealth,
+  type WorkloadPlacementRegion,
+} from "../schema";
+import { Badge } from "@datum-cloud/datum-ui/badge";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -29,116 +23,214 @@ import {
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
-} from '@datum-cloud/datum-ui/breadcrumb';
-import { PageTitle } from '@datum-cloud/datum-ui/page-title';
-import { cn } from '@datum-cloud/datum-ui/utils';
-import { formatDistanceToNowStrict } from 'date-fns';
-import { ArrowRightIcon, HomeIcon, RocketIcon, SearchIcon } from 'lucide-react';
-import { useLocation, useNavigate, useParams } from 'react-router';
+} from "@datum-cloud/datum-ui/breadcrumb";
+import { PageTitle } from "@datum-cloud/datum-ui/page-title";
+import { cn } from "@datum-cloud/datum-ui/utils";
+import { formatDistanceToNowStrict } from "date-fns";
+import { ArrowRightIcon, HomeIcon, RocketIcon, SearchIcon } from "lucide-react";
+import { useLocation, useNavigate, useParams } from "react-router";
+
+const COMING_SOON = "Coming soon";
 
 const HEALTH_DOT_CLASS: Record<WorkloadHealth, string> = {
-  Available: 'bg-green-500',
-  Degraded: 'bg-yellow-500',
-  Unavailable: 'bg-red-500',
-  Unknown: 'bg-muted-foreground',
+  Available: "bg-green-500",
+  Degraded: "bg-yellow-500",
+  Unavailable: "bg-red-500",
+  Unknown: "bg-muted-foreground",
 };
 
+function statusLabel(workload: Workload): string {
+  if (workload.health === "Available") {
+    const ready = workload.readyReplicas;
+    const desired = workload.desiredReplicas;
+    if (desired > 0 && ready === desired) return "All healthy";
+    return "Healthy";
+  }
+  if (workload.health === "Degraded") {
+    const notReady = Math.max(
+      0,
+      workload.desiredReplicas - workload.readyReplicas,
+    );
+    if (notReady === 1) return "1 degraded";
+    if (notReady > 1) return `${notReady} degraded`;
+    return "Degraded";
+  }
+  if (workload.health === "Unavailable") return "Unavailable";
+  return "Unknown";
+}
+
+function regionLabel(region: WorkloadPlacementRegion): string {
+  if (region.cityCodes.length > 0) return region.cityCodes.join(", ");
+  return region.name;
+}
+
 function FleetSummary({ workloads }: { workloads: Workload[] }) {
-  const readyInstances = workloads.reduce((sum, w) => sum + w.currentReplicas, 0);
-  const desiredInstances = workloads.reduce((sum, w) => sum + w.desiredReplicas, 0);
-  const healthy = workloads.filter((w) => w.health === 'Available').length;
-  const degraded = workloads.filter((w) => w.health === 'Degraded').length;
-  const unavailable = workloads.filter(
-    (w) => w.health === 'Unavailable' || w.health === 'Unknown'
+  const readyInstances = workloads.reduce((sum, w) => sum + w.readyReplicas, 0);
+  const desiredInstances = workloads.reduce(
+    (sum, w) => sum + w.desiredReplicas,
+    0,
+  );
+  const healthy = workloads.filter((w) => w.health === "Available").length;
+  const degraded = workloads.filter((w) => w.health === "Degraded").length;
+  const errored = workloads.filter(
+    (w) => w.health === "Unavailable" || w.health === "Unknown",
   ).length;
 
   const stats: { label: string; value: string; className?: string }[] = [
-    { label: 'Workloads', value: String(workloads.length) },
-    { label: 'Instances', value: `${readyInstances}/${desiredInstances}` },
+    { label: "Workloads", value: String(workloads.length) },
     {
-      label: 'Healthy',
+      label: "Instances",
+      value:
+        desiredInstances > 0
+          ? `${readyInstances} / ${desiredInstances}`
+          : String(readyInstances),
+    },
+    {
+      label: "Healthy",
       value: String(healthy),
-      className: healthy > 0 ? 'text-green-600 dark:text-green-500' : undefined,
+      className: healthy > 0 ? "text-green-600 dark:text-green-500" : undefined,
     },
     {
-      label: 'Degraded',
+      label: "Degraded",
       value: String(degraded),
-      className: degraded > 0 ? 'text-yellow-600 dark:text-yellow-500' : undefined,
+      className:
+        degraded > 0 ? "text-yellow-600 dark:text-yellow-500" : undefined,
     },
     {
-      label: 'Unavailable',
-      value: String(unavailable),
-      className: unavailable > 0 ? 'text-red-600 dark:text-red-500' : undefined,
+      label: "Errored",
+      value: String(errored),
+      className: errored > 0 ? "text-red-600 dark:text-red-500" : undefined,
+    },
+    {
+      label: "Requests",
+      value: COMING_SOON,
+      className: "text-muted-foreground text-sm font-medium",
     },
   ];
 
   return <StatStrip stats={stats} testId="compute-plugin-fleet-summary" />;
 }
 
-function WorkloadCard({ workload, onClick }: { workload: Workload; onClick: () => void }) {
+function MetricCell({
+  label,
+  value,
+  placeholder,
+}: {
+  label: string;
+  value?: string;
+  placeholder?: boolean;
+}) {
+  return (
+    <div>
+      <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+        {label}
+      </p>
+      <p
+        className={cn(
+          "mt-0.5 text-xs font-medium sm:text-sm",
+          placeholder && "text-muted-foreground font-normal",
+        )}
+      >
+        {value ?? COMING_SOON}
+      </p>
+    </div>
+  );
+}
+
+function WorkloadCard({
+  workload,
+  onClick,
+}: {
+  workload: Workload;
+  onClick: () => void;
+}) {
+  const updatedAt = workload.updatedAt ?? workload.createdAt;
+  const tags =
+    workload.tags.length > 0
+      ? workload.tags
+      : workload.runtimeType
+        ? [workload.runtimeType]
+        : [];
+
   return (
     <div
-      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-4 rounded-xl border p-5 shadow transition-colors"
+      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-4 rounded-xl border p-4 shadow transition-colors sm:p-5"
       onClick={onClick}
-      data-testid="compute-plugin-workload-card">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate font-semibold">{workload.name}</h3>
-            {workload.runtimeType && (
-              <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs">
-                {workload.runtimeType}
-              </span>
-            )}
-          </div>
-          {workload.image && (
-            <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
-              {workload.image}
-            </p>
+      data-testid="compute-plugin-workload-card"
+    >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <h3 className="truncate font-semibold">{workload.name}</h3>
+          {tags.length > 0 && (
+            <span className="text-muted-foreground shrink-0 text-xs">
+              {tags.join(" · ")}
+            </span>
           )}
         </div>
-        <Badge type={workloadHealthToBadgeType(workload.health)} theme="light" className="shrink-0">
-          {workload.health}
-        </Badge>
-      </div>
-
-      <Sparkline seedKey={workload.uid || workload.name} className="h-12 w-full" />
-
-      <div className="border-border grid grid-cols-2 gap-3 border-t pt-4">
-        <div>
-          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-            Ready
-          </p>
-          <p className="mt-0.5 text-sm font-medium">
-            {workload.currentReplicas}/{workload.desiredReplicas}
-          </p>
-        </div>
-        <div>
-          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Age</p>
-          <p className="mt-0.5 text-sm font-medium">
-            {formatDistanceToNowStrict(workload.createdAt, { addSuffix: true })}
-          </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <span
+            className={cn(
+              "size-2 rounded-full",
+              HEALTH_DOT_CLASS[workload.health],
+            )}
+          />
+          <Badge
+            type={workloadHealthToBadgeType(workload.health)}
+            theme="light"
+          >
+            {statusLabel(workload)}
+          </Badge>
         </div>
       </div>
 
-      {workload.placements.length > 0 && (
+      <div
+        className="border-border bg-muted/40 text-muted-foreground flex h-12 items-center justify-center rounded-md border border-dashed text-xs"
+        data-testid="compute-plugin-workload-metrics-placeholder"
+      >
+        {COMING_SOON}
+      </div>
+
+      <div className="border-border grid grid-cols-3 gap-2 border-t pt-4 sm:gap-3">
+        <MetricCell
+          label="Instances"
+          value={`${workload.readyReplicas} / ${workload.desiredReplicas}`}
+        />
+        <MetricCell label="Requests" placeholder />
+        <MetricCell label="Avg CPU" placeholder />
+      </div>
+
+      {workload.placementRegions.length > 0 && (
         <div className="border-border flex flex-col gap-1.5 border-t pt-4">
           <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-            Placements
+            Regions
           </p>
-          {workload.placements.map((placement) => (
-            <div key={placement} className="flex items-center gap-2 text-sm">
-              <span
-                className={cn('size-1.5 shrink-0 rounded-full', HEALTH_DOT_CLASS[workload.health])}
-              />
-              <span>{placement}</span>
+          {workload.placementRegions.map((region) => (
+            <div
+              key={region.name}
+              className="flex items-center justify-between gap-2 text-sm"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    HEALTH_DOT_CLASS[region.health],
+                  )}
+                  aria-label={region.health}
+                />
+                <span className="truncate">{regionLabel(region)}</span>
+              </div>
+              <span className="text-muted-foreground shrink-0 text-xs">
+                {region.readyReplicas} / {region.desiredReplicas} healthy
+              </span>
             </div>
           ))}
         </div>
       )}
 
-      <div className="border-border text-muted-foreground flex items-center justify-between border-t pt-3 text-xs">
-        <span>Created {workload.createdAt.toLocaleDateString()}</span>
+      <div className="border-border text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs">
+        <span>
+          Updated {formatDistanceToNowStrict(updatedAt, { addSuffix: true })}
+        </span>
         <span className="flex items-center gap-1">
           View workload
           <ArrowRightIcon className="size-3" />
@@ -152,19 +244,27 @@ export default function WorkloadList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const { data: workloads, isLoading, error, refetch } = useWorkloads(projectId);
+  const {
+    data: workloads,
+    isLoading,
+    error,
+    refetch,
+  } = useWorkloads(projectId);
 
   // Build the child route path from the current URL rather than the portal's
   // internal `paths.config.ts` (unavailable to plugins) — the host mounts this
   // page at `/project/:projectId/services/:serviceSlug/workloads`.
-  const basePath = location.pathname.replace(/\/$/, '');
+  const basePath = location.pathname.replace(/\/$/, "");
   const workloadHref = (name: string) => `${basePath}/${name}`;
-  const projectHref = projectId ? `/project/${projectId}` : '/';
+  const projectHref = projectId ? `/project/${projectId}` : "/";
 
   return (
-    <div data-testid="compute-plugin-workload-list" className="flex flex-col gap-4 p-6">
-      <Breadcrumb>
-        <BreadcrumbList>
+    <div
+      data-testid="compute-plugin-workload-list"
+      className="flex min-w-0 flex-col gap-6"
+    >
+      <Breadcrumb className="min-w-0 overflow-x-auto">
+        <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
             <BreadcrumbLink href={projectHref}>
               <HomeIcon className="size-4" />
@@ -179,12 +279,7 @@ export default function WorkloadList() {
 
       <PageTitle
         title="Workloads"
-        description={
-          <>
-            Read-only operational view of your project&apos;s compute workloads. Workloads are
-            created and managed with <code>datumctl</code>.
-          </>
-        }
+        description="Groups of compute instances deployed across regions"
       />
 
       {isLoading && <LoadingSkeleton />}
@@ -198,7 +293,10 @@ export default function WorkloadList() {
       )}
 
       {!isLoading && !error && (workloads?.length ?? 0) === 0 && (
-        <div className="flex flex-col gap-6" data-testid="compute-plugin-workload-empty">
+        <div
+          className="flex flex-col gap-6"
+          data-testid="compute-plugin-workload-empty"
+        >
           <CliBanner
             title="Deploy workloads with datumctl"
             description="Workloads are created and managed using the Datum CLI. Install datumctl, write a manifest, and deploy — workloads you create will appear here automatically."
@@ -209,8 +307,8 @@ export default function WorkloadList() {
               title="Deploy a workload"
               description="Create a workload manifest and deploy it to your project. The dashboard will reflect the new workload within seconds."
               commands={[
-                'datumctl compute deploy -f workload.yaml',
-                `datumctl compute deploy --project=${projectId ?? ''} -f workload.yaml`,
+                "datumctl compute deploy -f workload.yaml",
+                `datumctl compute deploy --project=${projectId ?? ""} -f workload.yaml`,
               ]}
             />
             <SectionCard
@@ -218,8 +316,8 @@ export default function WorkloadList() {
               title="List & inspect workloads"
               description="Confirm your workload deployed successfully and inspect its current health and placement status."
               commands={[
-                'datumctl compute workloads list',
-                'datumctl compute workloads describe <name>',
+                "datumctl compute workloads list",
+                "datumctl compute workloads describe <name>",
               ]}
             />
           </div>
@@ -231,7 +329,8 @@ export default function WorkloadList() {
           <FleetSummary workloads={workloads} />
           <div
             className="grid grid-cols-1 gap-4 lg:grid-cols-2"
-            data-testid="compute-plugin-workload-grid">
+            data-testid="compute-plugin-workload-grid"
+          >
             {workloads.map((workload) => (
               <WorkloadCard
                 key={workload.uid || workload.name}

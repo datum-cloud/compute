@@ -15,6 +15,7 @@ import type {
   InstanceStatusValue,
   Workload,
   WorkloadHealth,
+  WorkloadPlacementRegion,
 } from './schema';
 
 // ── Shared ───────────────────────────────────────────────────────────────
@@ -70,6 +71,16 @@ interface RawWorkloadPlacement {
   scaleSettings?: { minReplicas?: number; maxReplicas?: number };
 }
 
+interface RawWorkloadPlacementStatus {
+  name?: string;
+  conditions?: RawCondition[];
+  replicas?: number;
+  currentReplicas?: number;
+  updatedReplicas?: number;
+  desiredReplicas?: number;
+  readyReplicas?: number;
+}
+
 export interface RawWorkload {
   metadata?: RawObjectMeta;
   spec?: {
@@ -84,6 +95,7 @@ export interface RawWorkload {
     updatedReplicas?: number;
     desiredReplicas?: number;
     readyReplicas?: number;
+    placements?: RawWorkloadPlacementStatus[];
   };
 }
 
@@ -131,25 +143,106 @@ function deriveReplicasPerRegion(placements: RawWorkloadPlacement[]): number | u
   return mins.every((m) => m === first) ? first : undefined;
 }
 
+function derivePorts(runtime?: RawRuntime): string[] {
+  const containers = runtime?.sandbox?.containers ?? [];
+  return containers.flatMap((c) =>
+    (c.ports ?? []).map((p) => `${p.port}/${p.protocol ?? 'TCP'}`)
+  );
+}
+
+/** Card chips: runtime kind + first port protocol when present. */
+function deriveTags(runtime?: RawRuntime): string[] {
+  const tags: string[] = [];
+  if (runtime?.sandbox) tags.push('Container sandbox');
+  else if (runtime?.virtualMachine) tags.push('Virtual machine');
+
+  const firstPort = runtime?.sandbox?.containers?.[0]?.ports?.[0];
+  if (firstPort?.protocol) tags.push(firstPort.protocol);
+  else if (firstPort?.port !== undefined) tags.push('TCP');
+
+  return tags;
+}
+
+function deriveUpdatedAt(
+  conditions: RawCondition[],
+  createdAt: Date
+): Date | undefined {
+  let latest: Date | undefined;
+  for (const c of conditions) {
+    if (!c.lastTransitionTime) continue;
+    const t = new Date(c.lastTransitionTime);
+    if (Number.isNaN(t.getTime())) continue;
+    if (!latest || t > latest) latest = t;
+  }
+  // Prefer a condition transition when it differs from create time.
+  if (latest && latest.getTime() !== createdAt.getTime()) return latest;
+  return latest ?? undefined;
+}
+
+function toPlacementRegions(
+  placements: RawWorkloadPlacement[],
+  statusPlacements: RawWorkloadPlacementStatus[]
+): WorkloadPlacementRegion[] {
+  const statusByName = new Map(
+    statusPlacements
+      .filter((s): s is RawWorkloadPlacementStatus & { name: string } => !!s.name)
+      .map((s) => [s.name, s])
+  );
+
+  return placements.map((p) => {
+    const status = statusByName.get(p.name);
+    const desired = status?.desiredReplicas ?? p.scaleSettings?.minReplicas ?? 0;
+    const ready = status?.readyReplicas ?? 0;
+    const fromConditions = deriveWorkloadHealth(status?.conditions ?? []);
+    // When placement conditions are absent, infer from ready/desired so the
+    // region status dot still reflects health (green / yellow / red).
+    const health =
+      fromConditions !== 'Unknown'
+        ? fromConditions
+        : desired > 0 && ready >= desired
+          ? 'Available'
+          : ready > 0
+            ? 'Degraded'
+            : desired > 0
+              ? 'Unavailable'
+              : 'Unknown';
+
+    return {
+      name: p.name,
+      cityCodes: p.cityCodes ?? [],
+      readyReplicas: ready,
+      desiredReplicas: desired,
+      health,
+    };
+  });
+}
+
 export function toWorkload(raw: RawWorkload): Workload {
   const conditions = raw.status?.conditions ?? [];
   const placements = raw.spec?.placements ?? [];
   const runtime = raw.spec?.template?.spec?.runtime;
+  const createdAt = raw.metadata?.creationTimestamp
+    ? new Date(raw.metadata.creationTimestamp)
+    : new Date();
+  const ports = derivePorts(runtime);
 
   return {
     uid: raw.metadata?.uid ?? '',
     name: raw.metadata?.name ?? '',
     namespace: raw.metadata?.namespace,
     resourceVersion: raw.metadata?.resourceVersion,
-    createdAt: raw.metadata?.creationTimestamp
-      ? new Date(raw.metadata.creationTimestamp)
-      : new Date(),
+    createdAt,
+    updatedAt: deriveUpdatedAt(conditions, createdAt),
     image: runtime?.sandbox?.containers?.[0]?.image,
     health: deriveWorkloadHealth(conditions),
     currentReplicas: raw.status?.currentReplicas ?? 0,
+    readyReplicas: raw.status?.readyReplicas ?? 0,
     desiredReplicas: raw.status?.desiredReplicas ?? 0,
     placements: placements.map((p) => p.name),
+    placementRegions: toPlacementRegions(placements, raw.status?.placements ?? []),
     runtimeType: runtime ? (runtime.sandbox ? 'Container sandbox' : 'Virtual machine') : undefined,
+    tags: deriveTags(runtime),
+    ports,
     regions: Array.from(new Set(placements.flatMap((p) => p.cityCodes ?? []))),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),
@@ -200,11 +293,47 @@ function deriveInstanceStatus(conditions: RawCondition[]): InstanceStatusValue {
   return 'Pending';
 }
 
+/**
+ * Platform instance-type catalog — mirrors `instanceTypeCatalog` in
+ * `internal/controller/instance_controller.go`. Most instances only set
+ * `instanceType` (no explicit requests); the controller resolves size from
+ * this catalog for quota. We do the same for display.
+ */
+const INSTANCE_TYPE_CATALOG: Record<string, { cpu: string; memory: string }> = {
+  'datumcloud/d1-standard-2': { cpu: '1', memory: '2Gi' },
+  'd1-standard-2': { cpu: '1', memory: '2Gi' },
+};
+
+/** Resolves allocated CPU/memory: explicit requests, else instance-type catalog. */
+function resolveInstanceResources(runtime?: RawRuntime): {
+  cpu?: string;
+  memory?: string;
+} {
+  const requests = runtime?.resources?.requests ?? {};
+  const cpu = requests.cpu;
+  const memory = requests.memory;
+  if (cpu !== undefined && memory !== undefined) {
+    return { cpu, memory };
+  }
+
+  const instanceType = runtime?.resources?.instanceType;
+  if (instanceType && INSTANCE_TYPE_CATALOG[instanceType]) {
+    const catalog = INSTANCE_TYPE_CATALOG[instanceType];
+    return {
+      cpu: cpu ?? catalog.cpu,
+      memory: memory ?? catalog.memory,
+    };
+  }
+
+  return { cpu, memory };
+}
+
 export function toInstance(raw: RawInstance): Instance {
   const labels = raw.metadata?.labels ?? {};
   const assignments = raw.status?.networkInterfaces?.[0]?.assignments;
   const container = raw.spec?.runtime?.sandbox?.containers?.[0];
   const conditions = raw.status?.conditions ?? [];
+  const { cpu, memory } = resolveInstanceResources(raw.spec?.runtime);
 
   return {
     uid: raw.metadata?.uid ?? '',
@@ -218,6 +347,8 @@ export function toInstance(raw: RawInstance): Instance {
     city: labels[INSTANCE_LABELS.cityCode],
     placement: labels[INSTANCE_LABELS.placementName],
     instanceType: raw.spec?.runtime?.resources?.instanceType,
+    cpu,
+    memory,
     image: container?.image,
     ports: (container?.ports ?? []).map((p) => `${p.port}/${p.protocol ?? 'TCP'}`),
     status: deriveInstanceStatus(conditions),
