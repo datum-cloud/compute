@@ -693,6 +693,23 @@ func TestWDPredicate_ReplicasReadyOnlyChange(t *testing.T) {
 		"predicate must drop update when only ReplicasReady changed")
 }
 
+// TestWDPredicate_SuspendedChanged verifies that the predicate passes when
+// Status.Suspended flips. ComputeSuspend/ComputeResume (suspend_hooks.go) write
+// this field via a Status().Patch that bumps resourceVersion but not Generation
+// and does not touch ReferencedDataReady — without this check the predicate
+// would drop the update and reconcileInstanceGates would never propagate the
+// suspension down to the owned Instances.
+func TestWDPredicate_SuspendedChanged(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+
+	oldWD, newWD := makeWDPair(1)
+	newWD.Status.Suspended = true
+
+	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
+	assert.True(t, pred.Update(e),
+		"predicate must pass when Status.Suspended changes")
+}
+
 // TestWDPredicate_CreateAlwaysPasses verifies that Create events always trigger
 // the reconciler regardless of conditions.
 func TestWDPredicate_CreateAlwaysPasses(t *testing.T) {

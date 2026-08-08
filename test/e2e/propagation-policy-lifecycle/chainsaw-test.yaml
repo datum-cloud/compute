@@ -1,0 +1,133 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: propagation-policy-lifecycle
+spec:
+  description: |
+    Verifies the PropagationPolicy lifecycle managed by the WorkloadDeploymentFederator:
+
+    - A PropagationPolicy (city-dfw) is lazily created when the first WorkloadDeployment
+      for city code "dfw" is federated to Karmada.
+    - The PropagationPolicy is RETAINED while at least one WorkloadDeployment for
+      that city code remains in the Karmada namespace.
+    - The PropagationPolicy is DELETED when the last deployment for the city is removed.
+
+    The test creates two WDs (wd-alpha, wd-beta) both targeting cityCode=dfw, verifies
+    the PP appears, deletes wd-alpha and asserts the PP is still present, then deletes
+    wd-beta and waits for the PP to disappear.
+
+  template: true
+
+  steps:
+  - name: create-deployments
+    description: Create two WorkloadDeployments targeting dfw on the control-plane.
+    try:
+    - apply:
+        file: workload-deployment-alpha.yaml
+    - apply:
+        file: workload-deployment-beta.yaml
+
+  - name: assert-policy-created
+    description: |
+      Assert both WDs are federated to Karmada and the PropagationPolicy exists.
+      Both WDs must be present in Karmada before proceeding to the deletion steps;
+      otherwise wd-alpha's finalizer could see an empty Karmada list and prematurely
+      delete the PP before wd-beta has been federated.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: wd-alpha
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: wd-beta
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($downstreamNS)
+            name: city-dfw
+
+  - name: delete-alpha
+    description: Delete wd-alpha; wd-beta still targets dfw so the PP must be retained.
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          namespace: ($namespace)
+          name: wd-alpha
+
+  - name: assert-policy-retained
+    description: Assert the PropagationPolicy is still present after wd-alpha is deleted.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - sleep:
+        duration: 8s
+    - assert:
+        timeout: 5s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($downstreamNS)
+            name: city-dfw
+
+  - name: delete-beta
+    description: Delete wd-beta (the last WD for city dfw).
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          namespace: ($namespace)
+          name: wd-beta
+
+  - name: assert-policy-deleted
+    description: Wait for the PropagationPolicy to be removed once no WDs remain.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - wait:
+        apiVersion: policy.karmada.io/v1alpha1
+        kind: PropagationPolicy
+        namespace: ($downstreamNS)
+        name: city-dfw
+        timeout: 30s
+        for:
+          deletion: {}

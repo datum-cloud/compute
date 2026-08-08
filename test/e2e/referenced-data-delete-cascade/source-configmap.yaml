@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gc-test-config
+  # namespace injected by Chainsaw from ($namespace)
+data:
+  config.yaml: "env=test"

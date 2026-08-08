@@ -291,6 +291,31 @@ type DiscoveryConfig struct {
 	// management-plane mode; single/cluster deployments observe grants via the
 	// reconcile requeue instead.
 	QuotaKubeconfigPath string `json:"quotaKubeconfigPath"`
+
+	// ConsumerScopedProjection, when non-nil, restricts project engagement to
+	// projects with an active ServiceConsumer for one of the listed services.
+	// When nil, the operator engages all ready projects (mode: milo default).
+	// Requires Mode: milo.
+	ConsumerScopedProjection *ConsumerScopedProjectionConfig `json:"consumerScopedProjection,omitempty"`
+}
+
+// ConsumerScopedProjectionConfig gates project engagement on an active
+// ServiceConsumer. The operator watches the provider project for
+// ServiceConsumer objects; it engages a consumer project only while it holds
+// at least one Active consumer for one of the listed service names, and
+// tears down the projected resources when that last consumer is revoked.
+//
+// +k8s:deepcopy-gen=true
+type ConsumerScopedProjectionConfig struct {
+	// ProviderProject is the Milo project that hosts the ServiceConsumer
+	// objects for this service (e.g. "compute-provider"). The operator
+	// connects to this project's control plane to watch consumers.
+	ProviderProject string `json:"providerProject"`
+
+	// ServiceNames is the set of canonical service names this operator owns
+	// (e.g. ["compute.datumapis.com"]). Only ServiceConsumers whose resolved
+	// canonical name is in this set are counted toward project engagement.
+	ServiceNames []string `json:"serviceNames"`
 }
 
 func SetDefaults_DiscoveryConfig(obj *DiscoveryConfig) {

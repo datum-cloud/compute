@@ -1,0 +1,28 @@
+# Instance created in the DFW POP cell.
+# ($instanceNS) is the namespace derived from the Chainsaw test namespace UID,
+# matching the ns-<uid> convention so the InstanceProjector can resolve it later.
+#
+# The linking labels below mirror what the stateful control strategy stamps on a
+# real cell Instance at creation. The write-back path requires all of them to be
+# present and non-empty before it will copy the Instance upstream; a real Instance
+# always carries them, so a hand-crafted one must too.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Instance
+metadata:
+  name: test-writeback-instance
+  namespace: ($instanceNS)
+  labels:
+    compute.datumapis.com/workload-uid: "00000000-0000-0000-0000-000000000001"
+    compute.datumapis.com/workload-deployment-uid: "00000000-0000-0000-0000-000000000002"
+    compute.datumapis.com/instance-index: "0"
+    compute.datumapis.com/workload-deployment-name: test-writeback-wd
+    compute.datumapis.com/city-code: dfw
+    compute.datumapis.com/workload-name: test-workload
+    compute.datumapis.com/placement-name: default
+spec:
+  runtime:
+    resources:
+      instanceType: datumcloud/d1-standard-2
+  networkInterfaces:
+  - network:
+      name: test-network

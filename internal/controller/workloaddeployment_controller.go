@@ -4,7 +4,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 
@@ -13,7 +12,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -91,14 +89,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 
 	finalizationResult, err := r.finalizers.Finalize(ctx, &deployment)
 	if err != nil {
-		if v, ok := err.(kerrors.Aggregate); ok && v.Is(errDeploymentHasInstances) {
-			// Don't produce an error in this case and let the watch on deployments
-			// result in another reconcile schedule.
-			logger.Info("deployment still has instances, waiting until removal")
-			return ctrl.Result{}, nil
-		} else {
-			return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
-		}
+		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
 	if finalizationResult.Updated {
 		if err = cl.GetClient().Update(ctx, &deployment); err != nil {
@@ -265,6 +256,15 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 ) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas int, err error) {
 	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
 	for _, instance := range instances {
+		// Propagate suspension state from deployment to instance.
+		if instance.Status.Suspended != deployment.Status.Suspended {
+			base := instance.DeepCopy()
+			instance.Status.Suspended = deployment.Status.Suspended
+			if err := c.Status().Patch(ctx, &instance, client.MergeFrom(base)); err != nil {
+				return 0, 0, 0, 0, 0, fmt.Errorf("failed propagating suspension state to instance %s: %w", instance.Name, err)
+			}
+		}
+
 		if apimeta.IsStatusConditionPresentAndEqual(instance.Status.Conditions, computev1alpha.InstanceQuotaGranted, metav1.ConditionFalse) {
 			quotaBlockedReplicas++
 		}
@@ -319,7 +319,8 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 // For() watch that fires on:
 //   - Any Create, Delete, or Generic event (always enqueue).
 //   - An Update event where metadata.generation changed (spec updated), OR where
-//     the ReferencedDataReady condition's Status, Reason, or Message changed.
+//     the ReferencedDataReady condition's Status, Reason, or Message changed, OR
+//     where Status.Suspended changed.
 //
 // The predicate intentionally does NOT fire when only the Available or
 // ReplicasReady conditions change, because those are written by this reconciler
@@ -335,6 +336,12 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 // reconciler re-runs, sees the resolver verdict in deployment.Status.Conditions, and
 // promotes Available to ReferencedDataNotReady. Subsequent runs by this reconciler
 // (which write Available but not ReferencedDataReady) are filtered out.
+//
+// Status.Suspended is written out-of-band by ComputeSuspend/ComputeResume (see
+// suspend_hooks.go) via a Status().Patch that bumps resourceVersion but not
+// Generation, and doesn't touch ReferencedDataReady — so without this explicit
+// check that patch would be invisible to this predicate, and reconcileInstanceGates
+// would never propagate the suspension down to the owned Instances.
 func wdReferencedDataChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -345,6 +352,11 @@ func wdReferencedDataChangedPredicate() predicate.Predicate {
 			}
 			// Spec change: always reconcile.
 			if oldWD.Generation != newWD.Generation {
+				return true
+			}
+			// Suspension state changed: reconcile so the suspend/resume is
+			// propagated down to the owned Instances.
+			if oldWD.Status.Suspended != newWD.Status.Suspended {
 				return true
 			}
 			// ReferencedDataReady condition changed: reconcile so Available is
@@ -725,49 +737,10 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworks(
 	return true, locationRef, nil
 }
 
-var errDeploymentHasInstances = errors.New("deployment has instances")
-
-func (r *WorkloadDeploymentReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	clusterName, ok := mccontext.ClusterFrom(ctx)
-	if !ok {
-		return finalizer.Result{}, fmt.Errorf("cluster name not found in context")
-	}
-
-	cl, err := r.mgr.GetCluster(ctx, clusterName)
-	if err != nil {
-		return finalizer.Result{}, err
-	}
-
-	var instanceList computev1alpha.InstanceList
-	listOpts := []client.ListOption{
-		client.InNamespace(obj.GetNamespace()),
-		client.MatchingLabels{
-			computev1alpha.WorkloadDeploymentUIDLabel: string(obj.GetUID()),
-		},
-	}
-
-	if err := cl.GetClient().List(ctx, &instanceList, listOpts...); err != nil {
-		return finalizer.Result{}, fmt.Errorf("failed listing instances: %w", err)
-	}
-
-	if len(instanceList.Items) == 0 {
-		log.FromContext(ctx).Info("instances have been removed")
-		return finalizer.Result{}, nil
-	}
-
-	// All instances need to be deleted before the deployment may be deleted
-	for _, instance := range instanceList.Items {
-		if instance.DeletionTimestamp.IsZero() {
-			if err := cl.GetClient().Delete(ctx, &instance); client.IgnoreNotFound(err) != nil {
-				return finalizer.Result{}, fmt.Errorf("failed deleting instance: %w", err)
-			}
-		}
-	}
-
-	// Really don't like using errors for communication here. I think we'd need
-	// to move away from the finalizer helper to ensure we can wait on child
-	// resources to be gone before allowing the finalizer to be removed.
-	return finalizer.Result{}, errDeploymentHasInstances
+func (r *WorkloadDeploymentReconciler) Finalize(_ context.Context, _ client.Object) (finalizer.Result, error) {
+	// Instance cascade is handled by Kubernetes GC via owner references set at
+	// Instance creation time. No explicit deletion is needed here.
+	return finalizer.Result{}, nil
 }
 
 // WorkloadDeploymentReconcilerOptions configures the WorkloadDeploymentReconciler.

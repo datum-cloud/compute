@@ -449,6 +449,13 @@ type InstanceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	Controller *InstanceControllerStatus `json:"controller,omitempty"`
+
+	// Suspended, when true, indicates that the instance's process should be stopped
+	// without releasing its placement, disk attachments, or quota allocation.
+	// The provider controller stops the running container/VM.
+	//
+	// +kubebuilder:validation:Optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 type InstanceControllerStatus struct {
@@ -586,6 +593,15 @@ const (
 
 	// InstanceAvailableReasonAvailable indicates that the instance is available
 	InstanceAvailableReasonAvailable = "Available"
+
+	// InstanceReadyReasonSuspended indicates the instance is intentionally
+	// stopped due to project suspension. Its placement, disk, and quota
+	// allocation are retained; the process will restart from disk on reinstatement.
+	InstanceReadyReasonSuspended = "Suspended"
+
+	// InstanceAvailableReasonSuspended indicates the instance is suspended
+	// and is not currently serving traffic.
+	InstanceAvailableReasonSuspended = "Suspended"
 
 	// InstanceProgrammedReasonPendingProgramming indicates that the instance has not been programmed
 	InstanceProgrammedReasonPendingProgramming = "PendingProgramming"

@@ -1173,6 +1173,11 @@ spec:
                 description: The number of instances created
                 format: int32
                 type: integer
+              suspended:
+                description: |-
+                  Suspended, when true, requests that all instances managed by this deployment
+                  be stopped without releasing their placement, disk attachments, or quota allocation.
+                type: boolean
               updatedReplicas:
                 description: |-
                   The number of instances updated to the latest template revision, i.e.

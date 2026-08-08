@@ -1,0 +1,13 @@
+# DEVIATION (required for Kind): imagePullPolicy: IfNotPresent — the dev image is
+# side-loaded into the Kind node (task e2e:image:load); never attempt a registry
+# pull.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          imagePullPolicy: IfNotPresent

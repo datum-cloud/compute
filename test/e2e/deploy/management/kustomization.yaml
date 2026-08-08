@@ -1,0 +1,89 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ─────────────────────────────────────────────────────────────────────────────
+# e2e management-plane deploy layer.
+#
+# References the REAL production management-plane overlay verbatim and applies
+# only the deviations required to run inside a local Kind environment (no Milo
+# control plane, no cert-manager, no image registry). Every deviation is
+# annotated below with the reason it exists so drift from production stays
+# visible. Exercising the real overlay + real hub RBAC is the point of #149.
+# ─────────────────────────────────────────────────────────────────────────────
+
+resources:
+  - ../../../../config/overlays/management-plane
+
+# Use the locally built image side-loaded into the Kind node (task e2e:image:load)
+# instead of pulling ghcr.io/datum-cloud/compute:latest from a registry.
+images:
+  - name: ghcr.io/datum-cloud/compute
+    newName: compute
+    newTag: e2e-dev
+
+patches:
+  # DEVIATION 1 (required): discovery.mode milo → single, webhook server off.
+  # See config_patch.yaml for the full rationale.
+  - path: config_patch.yaml
+
+  # DEVIATION 2 (required): drop the cert-manager CSI serving-cert volume and
+  # force IfNotPresent pulls. See deployment_patch.yaml.
+  - path: deployment_patch.yaml
+
+  # DEVIATION 3 (required): remove the admission webhook configurations.
+  # The webhook server is disabled (DEVIATION 1) because no serving cert is
+  # available in Kind, so these failurePolicy=Fail configurations would reject
+  # every Workload write. The e2e suites create WorkloadDeployments, never
+  # Workloads, so nothing here is exercised; removing the configs keeps the
+  # cluster clean rather than leaving them dangling against a dead endpoint.
+  - patch: |
+      $patch: delete
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingWebhookConfiguration
+      metadata:
+        name: compute-validating
+    target:
+      kind: ValidatingWebhookConfiguration
+      name: compute-validating
+  - patch: |
+      $patch: delete
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: MutatingWebhookConfiguration
+      metadata:
+        name: compute-mutating
+    target:
+      kind: MutatingWebhookConfiguration
+      name: compute-mutating
+
+  # DEVIATION 4 (required): remove the ResourceMetricsPolicy.
+  # config/components/resource-metrics ships a ResourceMetricsPolicy
+  # (resourcemetrics.miloapis.com), whose CRD is owned by a separate
+  # resource-metrics operator that is not installed in Kind (it is not in
+  # compute's module deps). Applying it fails with "no matches for kind
+  # ResourceMetricsPolicy". It is orthogonal to the federation path under test,
+  # so drop it from the deploy set.
+  - patch: |
+      $patch: delete
+      apiVersion: resourcemetrics.miloapis.com/v1alpha1
+      kind: ResourceMetricsPolicy
+      metadata:
+        name: compute-metrics
+    target:
+      kind: ResourceMetricsPolicy
+      name: compute-metrics
+
+  # DEVIATION 5 (required): remove the reconcile-storm VMRule.
+  # config/components/alerts ships a VMRule
+  # (operator.victoriametrics.com/v1beta1), whose CRD is owned by the
+  # VictoriaMetrics operator that is not installed in Kind. Applying it fails
+  # with "no matches for kind VMRule". Alerting rules are evaluated by the
+  # metrics stack, not the operator under test, so drop it from the deploy set.
+  - patch: |
+      $patch: delete
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: compute-controller-alerts
+    target:
+      kind: VMRule
+      name: compute-controller-alerts

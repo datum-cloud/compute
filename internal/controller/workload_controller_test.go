@@ -200,6 +200,54 @@ func TestReconcileWorkloadStatus_ObservedGeneration(t *testing.T) {
 		"Available condition ObservedGeneration must equal workload.Generation")
 }
 
+// TestMergeDeploymentMetadata_PreservesForeignAnnotation verifies that merging
+// the controller-owned desired metadata onto an existing WorkloadDeployment
+// writes the desired keys while preserving peer-owned metadata — in particular
+// the referenced-data controller's expected-referenced-data annotation. A blind
+// map overwrite here strips that annotation and drives the reconcile hot-loop
+// described in issue #191, so this test fails if the merge is regressed to an
+// overwrite.
+func TestMergeDeploymentMetadata_PreservesForeignAnnotation(t *testing.T) {
+	const foreignVal = `["ConfigMap/app-config"]`
+
+	// The live object as it exists after the referenced-data controller has
+	// stamped its annotation and Karmada has stamped a bookkeeping label.
+	existing := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "wd-1",
+			Namespace: testDefaultNamespace,
+			Labels: map[string]string{
+				"work.karmada.io/managed": "true",
+			},
+			Annotations: map[string]string{
+				computev1alpha.ExpectedReferencedDataAnnotation: foreignVal,
+			},
+		},
+	}
+
+	// The desired object the workload controller builds carries only its own
+	// ownership label and no annotations.
+	desired := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				computev1alpha.WorkloadUIDLabel: "workload-uid-123",
+			},
+		},
+	}
+
+	mergeDeploymentMetadata(existing, desired)
+
+	// Desired controller-owned key is written.
+	assert.Equal(t, "workload-uid-123", existing.Labels[computev1alpha.WorkloadUIDLabel],
+		"desired WorkloadUIDLabel must be written")
+
+	// Peer-owned annotation and label survive.
+	assert.Equal(t, foreignVal, existing.Annotations[computev1alpha.ExpectedReferencedDataAnnotation],
+		"expected-referenced-data annotation must be preserved across merge")
+	assert.Equal(t, "true", existing.Labels["work.karmada.io/managed"],
+		"federation-hub bookkeeping label must be preserved across merge")
+}
+
 // TestWorkloadBlockingReasonPriority exhaustively verifies every entry in the
 // workloadBlockingReasonPriority switch statement.
 func TestWorkloadBlockingReasonPriority(t *testing.T) {

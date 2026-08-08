@@ -189,8 +189,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 				logger.Info("updating deployment", "deployment_name", deployment.Name)
 			}
 
-			deployment.Annotations = desiredDeployment.Annotations
-			deployment.Labels = desiredDeployment.Labels
+			mergeDeploymentMetadata(deployment, &desiredDeployment)
 
 			// TODO(jreese) consider how this plays well with autoscaling
 			deployment.Spec = desiredDeployment.Spec
@@ -480,6 +479,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					Name:      deploymentName,
 					Labels: map[string]string{
 						computev1alpha.WorkloadUIDLabel: string(workload.UID),
+						labelServiceName:                labelServiceNameValue,
 					},
 				},
 				Spec: computev1alpha.WorkloadDeploymentSpec{
@@ -506,6 +506,19 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 	}
 
 	return desired, orphaned, nil
+}
+
+// mergeDeploymentMetadata copies the controller-owned labels and annotations
+// from desired onto deployment without discarding peer-owned keys. Only the
+// spec is fully owned by this controller; metadata is shared with the
+// referenced-data controller (which stamps the expected-referenced-data
+// annotation) and the federation hub (which stamps propagation bookkeeping).
+// A wholesale map replacement here would strip those keys, and because both
+// controllers watch the same WorkloadDeployment, each write re-triggered the
+// other in an annotation ping-pong that hot-looped otherwise-idle deployments.
+func mergeDeploymentMetadata(deployment, desired *computev1alpha.WorkloadDeployment) {
+	mergeLabels(deployment, desired.Labels)
+	mergeAnnotations(deployment, desired.Annotations)
 }
 
 // SetupWithManager sets up the controller with the Manager.
