@@ -694,11 +694,9 @@ func TestWDPredicate_ReplicasReadyOnlyChange(t *testing.T) {
 }
 
 // TestWDPredicate_SuspendedChanged verifies that the predicate passes when
-// Status.Suspended flips. ComputeSuspend/ComputeResume (suspend_hooks.go) write
-// this field via a Status().Patch that bumps resourceVersion but not Generation
-// and does not touch ReferencedDataReady — without this check the predicate
-// would drop the update and reconcileInstanceGates would never propagate the
-// suspension down to the owned Instances.
+// Status.Suspended flips. This reconciler is the sole writer of that field
+// (derived from SuspendedAnnotation, see Reconcile), and this check lets a
+// slow-to-engage cell's own follow-up write still converge.
 func TestWDPredicate_SuspendedChanged(t *testing.T) {
 	pred := wdReferencedDataChangedPredicate()
 
@@ -708,6 +706,27 @@ func TestWDPredicate_SuspendedChanged(t *testing.T) {
 	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
 	assert.True(t, pred.Update(e),
 		"predicate must pass when Status.Suspended changes")
+}
+
+// TestWDPredicate_SuspendedAnnotationChanged verifies that the predicate
+// passes when SuspendedAnnotation flips. ComputeSuspend/ComputeResume
+// (suspend_hooks.go) write this annotation hub-side, which
+// WorkloadDeploymentFederator propagates onto this cell's copy via Karmada —
+// a metadata-only change (same Generation, Status.Suspended not yet derived
+// from it) that would otherwise be invisible to this predicate, leaving
+// Reconcile never triggered to translate the request into Status.Suspended.
+func TestWDPredicate_SuspendedAnnotationChanged(t *testing.T) {
+	pred := wdReferencedDataChangedPredicate()
+
+	oldWD, newWD := makeWDPair(1)
+	if newWD.Annotations == nil {
+		newWD.Annotations = make(map[string]string)
+	}
+	newWD.Annotations[computev1alpha.SuspendedAnnotation] = "true"
+
+	e := event.UpdateEvent{ObjectOld: oldWD, ObjectNew: newWD}
+	assert.True(t, pred.Update(e),
+		"predicate must pass when SuspendedAnnotation changes")
 }
 
 // TestWDPredicate_CreateAlwaysPasses verifies that Create events always trigger
