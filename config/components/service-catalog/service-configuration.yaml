@@ -6,6 +6,24 @@ spec:
   serviceRef:
     name: compute
   phase: Published
+  # Consumer-side portal plugin (cloud-portal): a read-only workloads
+  # dashboard, hosted by ui/consumer/workloads/config/ (see that directory's
+  # README/Dockerfile). Staging-only for now — cloud-portal's platform
+  # registry source and this ServiceConfiguration are both currently only
+  # exercised in staging.
+  #
+  # KNOWN GAP: this component is applied identically to every environment's
+  # milo control plane (no per-env patch touches it today), so the staging
+  # baseURL below also lands on production's control plane. Low-risk short
+  # term since production's cloud-portal has no platform registry source
+  # wired up yet, but real per-environment parametrization (mirroring
+  # deployment-control-plane/{staging,production}/patches/) is still owed.
+  userInterface:
+    consumer:
+      assets:
+        baseURL: https://compute-workloads-plugin.staging.env.datum.net
+      visibility:
+        entitlement: None
   locations:
     supportedClasses:
     - datum-managed

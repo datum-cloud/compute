@@ -30,3 +30,29 @@ jobs:
       image-name: ghcr.io/datum-cloud/compute
       image-overlays: config/base/manager
     secrets: inherit
+
+  publish-workloads-plugin-image:
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
+    with:
+      image-name: compute-workloads-plugin
+      context: ui/consumer/workloads
+      dockerfile-path: ui/consumer/workloads/Dockerfile
+    secrets: inherit
+
+  publish-workloads-plugin-kustomize:
+    needs: publish-workloads-plugin-image
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
+    with:
+      bundle-name: ghcr.io/datum-cloud/compute-workloads-plugin-kustomize
+      bundle-path: ui/consumer/workloads/config
+      image-name: ghcr.io/datum-cloud/compute-workloads-plugin
+      image-overlays: ui/consumer/workloads/config
+    secrets: inherit
