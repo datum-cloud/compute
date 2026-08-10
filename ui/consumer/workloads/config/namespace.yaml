@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: compute-workloads-plugin
-  labels:
-    app.kubernetes.io/instance: compute-workloads-plugin
-    app.kubernetes.io/part-of: datum-cloud
