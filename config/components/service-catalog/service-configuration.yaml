@@ -16,35 +16,16 @@ spec:
   # override needed, unlike an earlier draft of this that used a public,
   # staging-specific hostname).
   #
-  # caBundle is the datum-control-plane-ca (the CA the CSI-issued server
-  # cert on the plugin's Deployment chains to — see
-  # config/components/consumer-ui-plugin/deployment.yaml), so cloud-portal's
-  # fetch trusts it without disabling TLS verification.
+  # No caBundle needed: the plugin's CSI-issued server cert chains to
+  # datum-control-plane-ca, which cloud-portal's Bun runtime already trusts
+  # platform-wide via NODE_EXTRA_CA_CERTS (set in both its staging and
+  # production Deployment env, pointing at the same datum-control-plane-
+  # trust-bundle ConfigMap). withCaBundle() is a no-op when caBundle is
+  # unset, so the fetch just falls through to that existing trust.
   userInterface:
     consumer:
       assets:
-        baseURL: https://compute-workloads-plugin.compute-system.svc.cluster.local
-        caBundle: |
-          -----BEGIN CERTIFICATE-----
-          MIIDLjCCAhagAwIBAgIRAO8S41o2npvtiISxlQ+q17MwDQYJKoZIhvcNAQELBQAw
-          ITEfMB0GA1UEAxMWZGF0dW0tY29udHJvbC1wbGFuZS1jYTAeFw0yNTA2MTgyMzUy
-          MjJaFw0zNTA2MTYyMzUyMjJaMCExHzAdBgNVBAMTFmRhdHVtLWNvbnRyb2wtcGxh
-          bmUtY2EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCpGxSdZB5twXQb
-          EzePn5AJgXP8ctuhTc+lqGwL95qPxfOml8YcUIIRNgX8csqgylxQu2OV/g00urfi
-          qpvXeSmdXXxmrftG/wgLvtwiqLS2NUC5J8Q+sJpCAUYcqpz9rGa6rTl0Bvtx0GSN
-          SgiVQTUdTsCQ5S5LJ3MnBmVmZDWK5VCLykvPv3lprUJ8MdNwvVj5Vnoxlrw9cC92
-          /w5llDF8phqRaKV3N2F9p4ZjeEkc0+NKozqPBX+vsQqqmOAZDxUdupYQCXY5Cnwi
-          bEFy6MELVz87yn1uM3+x2dy0qRolJS47Qjl/6IVhp2FwsguDGZgIEam8YpvaI+1d
-          mxU8QzBJAgMBAAGjYTBfMA4GA1UdDwEB/wQEAwICBDAdBgNVHSUEFjAUBggrBgEF
-          BQcDAQYIKwYBBQUHAwIwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUr+azm3ah
-          S2Miv2MhmNJsXGP5EGcwDQYJKoZIhvcNAQELBQADggEBAIN9nimC9Nux0xT3nEHa
-          MnGRMR/84ypdXv/07lofjcKwvxhOTRQyu9bAEkWQgAcgyB2DaPgwiqzz6l1lXfV4
-          XTnwI8RL790gtFJrYmOeFc4J2FoyTUry8mzXKAhATkvoDEipOV2XRPwy+tNZftnC
-          uW77THH3gCvNzJLlnYBE7gsksl1JkaLQ2olF09cjs4DjHacgHKejiNzKLdrG10db
-          iSfZPoSvN8N2gS63c07tKBcMHjn6OH20jYwdnQ4ROezmQJpjYSTmr2SFBnXVO+UD
-          6nPricP6GFYdJKnJMBODDp1EYGdM9nO8I3WI+GVP9BReU1M5l6ciGQV5sSuQ51OX
-          8KQ=
-          -----END CERTIFICATE-----
+        baseURL: https://compute-consumer-ui-plugin.compute-system.svc.cluster.local
       visibility:
         entitlement: None
   locations:

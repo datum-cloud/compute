@@ -37,14 +37,14 @@ jobs:
   # imagePullPolicy: Always; this is a static asset server, not a
   # GitOps-tracked control-plane binary, so immutable per-commit tag
   # pinning isn't worth a custom bundle-publish step here.
-  publish-workloads-plugin-image:
+  publish-consumer-ui-plugin-image:
     permissions:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@a39a3b1772cda084b55e4504a48f39b4309a644b # v1.20.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.20.0
     with:
-      image-name: compute-workloads-plugin
+      image-name: compute-consumer-ui-plugin
       context: ui/consumer/workloads
       dockerfile-path: ui/consumer/workloads/Dockerfile
     secrets: inherit

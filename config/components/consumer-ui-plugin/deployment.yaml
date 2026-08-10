@@ -2,17 +2,17 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app.kubernetes.io/instance: compute-workloads-plugin
-    app.kubernetes.io/name: compute-workloads-plugin
-  name: compute-workloads-plugin
+    app.kubernetes.io/instance: compute-consumer-ui-plugin
+    app.kubernetes.io/name: compute-consumer-ui-plugin
+  name: compute-consumer-ui-plugin
 spec:
   replicas: 2
   revisionHistoryLimit: 5
   selector:
     matchLabels:
       app.kubernetes.io/component: frontend
-      app.kubernetes.io/instance: compute-workloads-plugin
-      app.kubernetes.io/name: compute-workloads-plugin
+      app.kubernetes.io/instance: compute-consumer-ui-plugin
+      app.kubernetes.io/name: compute-consumer-ui-plugin
   strategy:
     rollingUpdate:
       maxSurge: 1
@@ -22,17 +22,17 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/component: frontend
-        app.kubernetes.io/instance: compute-workloads-plugin
-        app.kubernetes.io/name: compute-workloads-plugin
+        app.kubernetes.io/instance: compute-consumer-ui-plugin
+        app.kubernetes.io/name: compute-consumer-ui-plugin
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101
-        runAsGroup: 101
-        fsGroup: 101
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
-        - name: compute-workloads-plugin
-          image: ghcr.io/datum-cloud/compute-workloads-plugin:latest
+        - name: compute-consumer-ui-plugin
+          image: ghcr.io/datum-cloud/compute-consumer-ui-plugin:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8443
@@ -54,12 +54,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            - name: nginx-cache
-              mountPath: /var/cache/nginx
-            - name: nginx-run
-              mountPath: /var/run
             - name: tls
-              mountPath: /etc/nginx/tls
+              mountPath: /etc/tls
               readOnly: true
           livenessProbe:
             httpGet:
@@ -78,17 +74,13 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        - name: nginx-cache
-          emptyDir: {}
-        - name: nginx-run
-          emptyDir: {}
         - name: tls
           csi:
             driver: csi.cert-manager.io
             readOnly: true
             volumeAttributes:
-              csi.cert-manager.io/dns-names: compute-workloads-plugin.compute-system.svc.cluster.local
-              csi.cert-manager.io/fs-group: "101"
+              csi.cert-manager.io/dns-names: compute-consumer-ui-plugin.compute-system.svc.cluster.local
+              csi.cert-manager.io/fs-group: "1000"
               csi.cert-manager.io/issuer-kind: ClusterIssuer
               csi.cert-manager.io/issuer-name: datum-control-plane
               csi.cert-manager.io/key-usages: server auth
