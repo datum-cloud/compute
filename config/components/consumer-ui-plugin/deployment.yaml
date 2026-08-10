@@ -35,8 +35,8 @@ spec:
           image: ghcr.io/datum-cloud/compute-workloads-plugin:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080
-              name: http
+            - containerPort: 8443
+              name: https
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
@@ -58,16 +58,21 @@ spec:
               mountPath: /var/cache/nginx
             - name: nginx-run
               mountPath: /var/run
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /plugin-manifest.json
-              port: http
+              port: https
+              scheme: HTTPS
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /plugin-manifest.json
-              port: http
+              port: https
+              scheme: HTTPS
             initialDelaySeconds: 5
             periodSeconds: 10
       volumes:
@@ -77,6 +82,16 @@ spec:
           emptyDir: {}
         - name: nginx-run
           emptyDir: {}
+        - name: tls
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/dns-names: compute-workloads-plugin.compute-system.svc.cluster.local
+              csi.cert-manager.io/fs-group: "101"
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/issuer-name: datum-control-plane
+              csi.cert-manager.io/key-usages: server auth
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       terminationGracePeriodSeconds: 30

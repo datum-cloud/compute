@@ -7,21 +7,44 @@ spec:
     name: compute
   phase: Published
   # Consumer-side portal plugin (cloud-portal): a read-only workloads
-  # dashboard, hosted by ui/consumer/workloads/config/ (see that directory's
-  # README/Dockerfile). Staging-only for now — cloud-portal's platform
-  # registry source and this ServiceConfiguration are both currently only
-  # exercised in staging.
+  # dashboard. Hosted internally only — config/components/consumer-ui-plugin
+  # (folded into compute-manager's own Deployment set), never fronted by a
+  # public Gateway/HTTPRoute. cloud-portal's server is the only caller, over
+  # this in-cluster Service DNS name; the browser never talks to a plugin
+  # origin directly. Cluster-local DNS means this same value is correct in
+  # every environment the compute-manager component deploys to (no per-env
+  # override needed, unlike an earlier draft of this that used a public,
+  # staging-specific hostname).
   #
-  # KNOWN GAP: this component is applied identically to every environment's
-  # milo control plane (no per-env patch touches it today), so the staging
-  # baseURL below also lands on production's control plane. Low-risk short
-  # term since production's cloud-portal has no platform registry source
-  # wired up yet, but real per-environment parametrization (mirroring
-  # deployment-control-plane/{staging,production}/patches/) is still owed.
+  # caBundle is the datum-control-plane-ca (the CA the CSI-issued server
+  # cert on the plugin's Deployment chains to — see
+  # config/components/consumer-ui-plugin/deployment.yaml), so cloud-portal's
+  # fetch trusts it without disabling TLS verification.
   userInterface:
     consumer:
       assets:
-        baseURL: https://compute-workloads-plugin.staging.env.datum.net
+        baseURL: https://compute-workloads-plugin.compute-system.svc.cluster.local
+        caBundle: |
+          -----BEGIN CERTIFICATE-----
+          MIIDLjCCAhagAwIBAgIRAO8S41o2npvtiISxlQ+q17MwDQYJKoZIhvcNAQELBQAw
+          ITEfMB0GA1UEAxMWZGF0dW0tY29udHJvbC1wbGFuZS1jYTAeFw0yNTA2MTgyMzUy
+          MjJaFw0zNTA2MTYyMzUyMjJaMCExHzAdBgNVBAMTFmRhdHVtLWNvbnRyb2wtcGxh
+          bmUtY2EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCpGxSdZB5twXQb
+          EzePn5AJgXP8ctuhTc+lqGwL95qPxfOml8YcUIIRNgX8csqgylxQu2OV/g00urfi
+          qpvXeSmdXXxmrftG/wgLvtwiqLS2NUC5J8Q+sJpCAUYcqpz9rGa6rTl0Bvtx0GSN
+          SgiVQTUdTsCQ5S5LJ3MnBmVmZDWK5VCLykvPv3lprUJ8MdNwvVj5Vnoxlrw9cC92
+          /w5llDF8phqRaKV3N2F9p4ZjeEkc0+NKozqPBX+vsQqqmOAZDxUdupYQCXY5Cnwi
+          bEFy6MELVz87yn1uM3+x2dy0qRolJS47Qjl/6IVhp2FwsguDGZgIEam8YpvaI+1d
+          mxU8QzBJAgMBAAGjYTBfMA4GA1UdDwEB/wQEAwICBDAdBgNVHSUEFjAUBggrBgEF
+          BQcDAQYIKwYBBQUHAwIwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUr+azm3ah
+          S2Miv2MhmNJsXGP5EGcwDQYJKoZIhvcNAQELBQADggEBAIN9nimC9Nux0xT3nEHa
+          MnGRMR/84ypdXv/07lofjcKwvxhOTRQyu9bAEkWQgAcgyB2DaPgwiqzz6l1lXfV4
+          XTnwI8RL790gtFJrYmOeFc4J2FoyTUry8mzXKAhATkvoDEipOV2XRPwy+tNZftnC
+          uW77THH3gCvNzJLlnYBE7gsksl1JkaLQ2olF09cjs4DjHacgHKejiNzKLdrG10db
+          iSfZPoSvN8N2gS63c07tKBcMHjn6OH20jYwdnQ4ROezmQJpjYSTmr2SFBnXVO+UD
+          6nPricP6GFYdJKnJMBODDp1EYGdM9nO8I3WI+GVP9BReU1M5l6ciGQV5sSuQ51OX
+          8KQ=
+          -----END CERTIFICATE-----
       visibility:
         entitlement: None
   locations:

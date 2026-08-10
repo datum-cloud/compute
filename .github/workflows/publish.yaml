@@ -31,28 +31,20 @@ jobs:
       image-overlays: config/base/manager
     secrets: inherit
 
+  # Deployed as a Component (config/components/consumer-ui-plugin) folded
+  # into compute-manager's own kustomize bundle/Flux Kustomization — no
+  # separate bundle for this image. The Deployment references :latest with
+  # imagePullPolicy: Always; this is a static asset server, not a
+  # GitOps-tracked control-plane binary, so immutable per-commit tag
+  # pinning isn't worth a custom bundle-publish step here.
   publish-workloads-plugin-image:
     permissions:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@a39a3b1772cda084b55e4504a48f39b4309a644b # v1.20.0
     with:
       image-name: compute-workloads-plugin
       context: ui/consumer/workloads
       dockerfile-path: ui/consumer/workloads/Dockerfile
-    secrets: inherit
-
-  publish-workloads-plugin-kustomize:
-    needs: publish-workloads-plugin-image
-    permissions:
-      id-token: write
-      contents: read
-      packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
-    with:
-      bundle-name: ghcr.io/datum-cloud/compute-workloads-plugin-kustomize
-      bundle-path: ui/consumer/workloads/config
-      image-name: ghcr.io/datum-cloud/compute-workloads-plugin
-      image-overlays: ui/consumer/workloads/config
     secrets: inherit
