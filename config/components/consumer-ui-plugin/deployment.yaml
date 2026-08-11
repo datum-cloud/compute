@@ -32,7 +32,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: compute-consumer-ui-plugin
-          image: ghcr.io/datum-cloud/compute-consumer-ui-plugin:v0.0.0-main
+          image: ghcr.io/datum-cloud/compute-consumer-ui-plugin:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8443

@@ -50,6 +50,6 @@ jobs:
       bundle-name: ghcr.io/datum-cloud/compute-kustomize
       bundle-path: config
       images: |
-        - { path: config/base/manager, name: ghcr.io/datum-cloud/compute }
+        - { path: config/base/manager, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
         - { path: config/components/consumer-ui-plugin, name: ghcr.io/datum-cloud/compute-consumer-ui-plugin, tag: "${{ needs.publish-consumer-ui-plugin-image.outputs.tag }}" }
     secrets: inherit
