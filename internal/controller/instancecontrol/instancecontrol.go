@@ -19,6 +19,7 @@ type Strategy interface {
 		ctx context.Context,
 		scheme *runtime.Scheme,
 		deployment *v1alpha.WorkloadDeployment,
+		desiredReplicas int32,
 		currentInstances []v1alpha.Instance,
 	) ([]Action, error)
 }

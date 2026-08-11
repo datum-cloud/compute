@@ -160,6 +160,16 @@ Scale settings such as minimum and maximum replica counts.
         </tr>
     </thead>
     <tbody><tr>
+        <td><b>instanceManagementPolicy</b></td>
+        <td>string</td>
+        <td>
+          Controls how instances are managed during scale up and down, as well as
+during maintenance events.<br/>
+          <br/>
+            <i>Default</i>: OrderedReady<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
         <td><b>minReplicas</b></td>
         <td>integer</td>
         <td>
@@ -360,10 +370,25 @@ Describes the desired configuration of an instance
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#workloadspectemplatespeccontroller">controller</a></b></td>
+        <td>object</td>
+        <td>
+          Controller contains settings driven by the controller managing the instance.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloadspectemplatespeclocation">location</a></b></td>
+        <td>object</td>
+        <td>
+          The location which the instance has been scheduled to<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloadspectemplatespecvolumesindex">volumes</a></b></td>
         <td>[]object</td>
         <td>
-          <br/>
+          Volumes that must be available to attach to an instance's containers or
+Virtual Machine.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -799,12 +824,48 @@ used by the instance.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>args</b></td>
+        <td>[]string</td>
+        <td>
+          Arguments to the entrypoint, overriding the image's CMD. Combined with
+Command: when Command is also set the resulting invocation is
+append(Command, Args...).  When only Args is set it overrides CMD while
+preserving the image's ENTRYPOINT.
+
+If neither Command nor Args is set, the image's own ENTRYPOINT and CMD
+are used unchanged.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>command</b></td>
+        <td>[]string</td>
+        <td>
+          Entrypoint array to run in the container image, overriding the image's
+ENTRYPOINT. Each element is a separate token, not a shell command — to run a
+shell command use: ["sh", "-c", "my command"].
+
+If not provided, the container image's own ENTRYPOINT is used.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloadspectemplatespecruntimesandboxcontainersindexenvindex">env</a></b></td>
         <td>[]object</td>
         <td>
           List of environment variables to set in the container.
 
 so replicate the structure here too.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloadspectemplatespecruntimesandboxcontainersindexenvfromindex">envFrom</a></b></td>
+        <td>[]object</td>
+        <td>
+          List of sources to populate environment variables in the container.
+The keys defined within a source must be a C_IDENTIFIER. All invalid
+keys will be reported as an event when the container is starting. When a
+key exists in multiple sources, the value associated with the last source
+will take precedence. Values defined by an Env with a duplicate key will
+take precedence.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -852,7 +913,8 @@ EnvVar represents an environment variable present in a Container.
         <td><b>name</b></td>
         <td>string</td>
         <td>
-          Name of the environment variable. Must be a C_IDENTIFIER.<br/>
+          Name of the environment variable.
+May consist of any printable ASCII characters except '='.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -910,6 +972,14 @@ Source for the environment variable's value. Cannot be used if value is not empt
         <td>
           Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
 spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloadspectemplatespecruntimesandboxcontainersindexenvindexvaluefromfilekeyref">fileKeyRef</a></b></td>
+        <td>object</td>
+        <td>
+          FileKeyRef selects a key of the env file.
+Requires the EnvFiles feature gate to be enabled.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1013,6 +1083,66 @@ spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podI
 </table>
 
 
+### Workload.spec.template.spec.runtime.sandbox.containers[index].env[index].valueFrom.fileKeyRef
+<sup><sup>[↩ Parent](#workloadspectemplatespecruntimesandboxcontainersindexenvindexvaluefrom)</sup></sup>
+
+
+
+FileKeyRef selects a key of the env file.
+Requires the EnvFiles feature gate to be enabled.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>key</b></td>
+        <td>string</td>
+        <td>
+          The key within the env file. An invalid key will prevent the pod from starting.
+The keys defined within a source may consist of any printable ASCII characters except '='.
+During Alpha stage of the EnvFiles feature gate, the key size is limited to 128 characters.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>path</b></td>
+        <td>string</td>
+        <td>
+          The path within the volume from which to select the file.
+Must be relative and may not contain the '..' path or start with '..'.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>volumeName</b></td>
+        <td>string</td>
+        <td>
+          The name of the volume mount containing the env file.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>optional</b></td>
+        <td>boolean</td>
+        <td>
+          Specify whether the file or its key must be defined. If the file or key
+does not exist, then the env var is not published.
+If optional is set to true and the specified key does not exist,
+the environment variable will not be set in the Pod's containers.
+
+If optional is set to false and the specified key does not exist,
+an error will be returned during Pod creation.<br/>
+          <br/>
+            <i>Default</i>: false<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
 ### Workload.spec.template.spec.runtime.sandbox.containers[index].env[index].valueFrom.resourceFieldRef
 <sup><sup>[↩ Parent](#workloadspectemplatespecruntimesandboxcontainersindexenvindexvaluefrom)</sup></sup>
 
@@ -1096,6 +1226,117 @@ More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/nam
         <td>boolean</td>
         <td>
           Specify whether the Secret or its key must be defined<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.template.spec.runtime.sandbox.containers[index].envFrom[index]
+<sup><sup>[↩ Parent](#workloadspectemplatespecruntimesandboxcontainersindex)</sup></sup>
+
+
+
+EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+used as environment variables in a container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#workloadspectemplatespecruntimesandboxcontainersindexenvfromindexconfigmapref">configMapRef</a></b></td>
+        <td>object</td>
+        <td>
+          The ConfigMap to select from.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>prefix</b></td>
+        <td>string</td>
+        <td>
+          An optional identifier to prepend to each key in the referenced
+ConfigMap or Secret. Must be a valid C_IDENTIFIER.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloadspectemplatespecruntimesandboxcontainersindexenvfromindexsecretref">secretRef</a></b></td>
+        <td>object</td>
+        <td>
+          The Secret to select from.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.template.spec.runtime.sandbox.containers[index].envFrom[index].configMapRef
+<sup><sup>[↩ Parent](#workloadspectemplatespecruntimesandboxcontainersindexenvfromindex)</sup></sup>
+
+
+
+The ConfigMap to select from.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the ConfigMap in the same namespace as the Workload.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>optional</b></td>
+        <td>boolean</td>
+        <td>
+          Specify whether the ConfigMap must be defined.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.template.spec.runtime.sandbox.containers[index].envFrom[index].secretRef
+<sup><sup>[↩ Parent](#workloadspectemplatespecruntimesandboxcontainersindexenvfromindex)</sup></sup>
+
+
+
+The Secret to select from.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the Secret in the same namespace as the Workload.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>optional</b></td>
+        <td>boolean</td>
+        <td>
+          Specify whether the Secret must be defined.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -1366,6 +1607,102 @@ to be annotated on the boot image, such as cloud-init.<br/>
 If not specified, this field defaults to TCP.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.template.spec.controller
+<sup><sup>[↩ Parent](#workloadspectemplatespec)</sup></sup>
+
+
+
+Controller contains settings driven by the controller managing the instance.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>templateHash</b></td>
+        <td>string</td>
+        <td>
+          TemplateHash is the hash of the instance template applied for this instance.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#workloadspectemplatespeccontrollerschedulinggatesindex">schedulingGates</a></b></td>
+        <td>[]object</td>
+        <td>
+          SchedulingGates is a list of gates that must be satisfied before the
+instance can be scheduled.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.template.spec.controller.schedulingGates[index]
+<sup><sup>[↩ Parent](#workloadspectemplatespeccontroller)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the gate.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.template.spec.location
+<sup><sup>[↩ Parent](#workloadspectemplatespec)</sup></sup>
+
+
+
+The location which the instance has been scheduled to
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of a datum location<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>namespace</b></td>
+        <td>string</td>
+        <td>
+          Namespace for the datum location<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -2022,8 +2359,17 @@ WorkloadStatus defines the observed state of Workload
         <td><b>currentReplicas</b></td>
         <td>integer</td>
         <td>
-          The number of instances created by a placement and have the latest
-workload generation settings applied.<br/>
+          The number of instances which have the latest workload settings applied
+and are programmed (a subset of UpdatedReplicas that are ready to serve).<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>deployments</b></td>
+        <td>integer</td>
+        <td>
+          The number of deployments that currently exist<br/>
           <br/>
             <i>Format</i>: int32<br/>
         </td>
@@ -2032,7 +2378,16 @@ workload generation settings applied.<br/>
         <td><b>desiredReplicas</b></td>
         <td>integer</td>
         <td>
-          The desired number of instances to be managed by a placement.<br/>
+          The desired number of instances<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>readyReplicas</b></td>
+        <td>integer</td>
+        <td>
+          The number of instances which are ready.<br/>
           <br/>
             <i>Format</i>: int32<br/>
         </td>
@@ -2041,7 +2396,19 @@ workload generation settings applied.<br/>
         <td><b>replicas</b></td>
         <td>integer</td>
         <td>
-          The number of instances created by a placement<br/>
+          The number of instances that currently exist<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>updatedReplicas</b></td>
+        <td>integer</td>
+        <td>
+          The number of instances updated to the latest template revision (their
+observed template hash matches the desired template), regardless of
+readiness. Lags Replicas during a rolling update or restart, then catches
+back up — making an in-progress roll observable.<br/>
           <br/>
             <i>Format</i>: int32<br/>
         </td>
@@ -2059,6 +2426,15 @@ Known condition types are: "Available", "Progressing"<br/>
         <td>object</td>
         <td>
           The status of the workload gateway if configured.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>observedGeneration</b></td>
+        <td>integer</td>
+        <td>
+          The most recent generation observed by the workload controller.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -2536,8 +2912,8 @@ RouteGroupKind indicates the group and kind of a Route resource.
         <td><b>currentReplicas</b></td>
         <td>integer</td>
         <td>
-          The number of instances created by a placement and have the latest
-workload generation settings applied.<br/>
+          The number of instances which have the latest workload settings applied
+and are programmed (a subset of UpdatedReplicas that are ready to serve).<br/>
           <br/>
             <i>Format</i>: int32<br/>
         </td>
@@ -2546,7 +2922,7 @@ workload generation settings applied.<br/>
         <td><b>desiredReplicas</b></td>
         <td>integer</td>
         <td>
-          The desired number of instances to be managed by a placement.<br/>
+          The desired number of instances<br/>
           <br/>
             <i>Format</i>: int32<br/>
         </td>
@@ -2559,10 +2935,29 @@ workload generation settings applied.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>readyReplicas</b></td>
+        <td>integer</td>
+        <td>
+          The number of instances which are ready.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
         <td><b>replicas</b></td>
         <td>integer</td>
         <td>
-          The number of instances created by a placement<br/>
+          The number of instances that currently exist<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>updatedReplicas</b></td>
+        <td>integer</td>
+        <td>
+          The number of instances updated to the latest template revision, regardless
+of readiness. Lags Replicas during a rolling update or restart.<br/>
           <br/>
             <i>Format</i>: int32<br/>
         </td>

@@ -56,6 +56,9 @@ func NewComputeTeardown(
 	}
 }
 
+// +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
+
 // TeardownConsumer implements consumer.Teardown.
 func (ct *ComputeTeardown) TeardownConsumer(
 	ctx context.Context,
