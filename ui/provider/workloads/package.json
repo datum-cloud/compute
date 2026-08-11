@@ -1,0 +1,16 @@
+{
+  "name": "@datum-cloud/workloads-provider-plugin",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Workloads resource-type plugin: declares a portal.resource/platform extension so staff-portal's /customers/resources page can list compute Workloads across every project via Milo's search index. No page/nav/component — the host does the query and rendering itself.",
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite preview",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@module-federation/vite": "^1.16.16",
+    "vite": "^7.3.5"
+  }
+}
