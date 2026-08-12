@@ -1,8 +1,7 @@
 # Prometheus Adapter Resource Metrics
 
-Experimental `metrics.k8s.io` implementation backed by Prometheus Adapter.
-Enable only in clusters where Prometheus or VictoriaMetrics is the source of
-truth for Pod and Node CPU/memory usage.
+`metrics.k8s.io` implementation backed by Prometheus Adapter. Edge clusters use
+this component to serve compute resource metrics from edge-local VictoriaMetrics.
 
 This component owns the cluster-wide `v1beta1.metrics.k8s.io` APIService when
 installed. Do not install it alongside another owner of the same APIService.
@@ -13,14 +12,14 @@ labels:
 - `datum_compute_instance_cpu_usage_seconds_total{namespace, pod, container, node}`
 - `datum_compute_instance_memory_working_set_bytes{namespace, pod, container, node}`
 
-Runtime-specific producers, such as Unikraft telemetry, should translate their
-local measurements into that shape before ingestion. The adapter then exposes
-those samples through the standard Kubernetes Resource Metrics API used by HPA.
+Runtime-specific producers, such as Unikraft telemetry, provide raw resource
+measurements that infra records into this shape before the adapter queries them.
+The adapter then exposes those samples through the standard Kubernetes Resource
+Metrics API used by HPA.
 
 Infrastructure overlays must patch before enabling this component:
 
-- `PROMETHEUS_URL` should point at the local Prometheus or VictoriaMetrics query
-  endpoint.
+- `PROMETHEUS_URL` should point at the edge-local VictoriaMetrics query endpoint.
 - `Certificate.spec.issuerRef` should point at the cluster's serving certificate
   issuer. The default value is a placeholder `ClusterIssuer` named
   `placeholder-issuer`.
