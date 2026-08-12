@@ -1,0 +1,21 @@
+@startuml architecture-context
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+!include https://raw.githubusercontent.com/datum-cloud/enhancements/main/enhancements/datum-theme.puml
+
+Person(customer, "Customer", "Runs compute workloads; billed for what they use")
+
+System(billing, "Billing Platform", "Turns measured usage into invoices")
+
+System_Boundary(compute, "Compute") {
+    Container(instances, "Instances", "Virtual machines / workloads running on behalf of the customer")
+    Container(controller, "Instance Controller", "Knows when an instance is running and records how long it ran", "Measures vCPU + memory usage per project")
+}
+
+Rel_U(customer, compute, "Runs workloads")
+Rel_D(instances, controller, "Is observed while running")
+Rel_R(controller, billing, "Reports measured usage")
+Rel_U(billing, customer, "Invoices based on usage")
+
+SHOW_LEGEND()
+@enduml
