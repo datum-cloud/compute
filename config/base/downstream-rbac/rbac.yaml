@@ -19,11 +19,6 @@ rules:
   - apiGroups: ["policy.karmada.io"]
     resources: ["propagationpolicies", "clusterpropagationpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # The projector reports each quarantine verdict once as an event on the hub
-  # object it concerns, so an operator can see it with `kubectl describe`.
-  - apiGroups: ["", "events.k8s.io"]
-    resources: ["events"]
-    verbs: ["create", "patch"]
   - apiGroups: ["cluster.karmada.io"]
     resources: ["clusters"]
     verbs: ["get", "list", "watch"]

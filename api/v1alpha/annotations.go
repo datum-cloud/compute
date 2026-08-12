@@ -37,27 +37,6 @@ const (
 	// instead.
 	FederationNamespaceAnnotation = AnnotationNamespace + "/federation-namespace"
 
-	// QuarantineReasonAnnotation marks a federation-hub object that the
-	// InstanceProjector cannot project, in a state no retry can change. Its value
-	// is one of the terminal reasons in internal/federation. The projector
-	// reports a quarantined object once and then skips it, so the object no
-	// longer counts against the projector's reconcile error ratio.
-	QuarantineReasonAnnotation = AnnotationNamespace + "/quarantine-reason"
-
-	// QuarantineMessageAnnotation explains in plain text why the object was
-	// quarantined.
-	QuarantineMessageAnnotation = AnnotationNamespace + "/quarantine-message"
-
-	// QuarantineFingerprintAnnotation records a digest of the object state the
-	// quarantine was based on. The projector evaluates the object again whenever
-	// the digest stops matching, so repairing that state, such as restoring a
-	// missing identity label, retries the object immediately.
-	QuarantineFingerprintAnnotation = AnnotationNamespace + "/quarantine-fingerprint"
-
-	// QuarantinedAtAnnotation records when the object was quarantined, as an
-	// RFC3339 timestamp.
-	QuarantinedAtAnnotation = AnnotationNamespace + "/quarantined-at"
-
 	// ReferencedDataErrorAnnotation is stamped on a WorkloadDeployment by the
 	// ReferencedDataController when a terminal source error occurs (SourceNotFound,
 	// SourceUnauthorized, or SourceTooLarge). Its value is a JSON object with
