@@ -17,9 +17,9 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// TestWriteBackToUpstream_OwnerGated_NoHubDeployment asserts the rule that stops
-// active manufacture: with no hub WorkloadDeployment there is no copy, and the
-// absence is the correct steady state rather than an error to retry.
+// TestWriteBackToUpstream_OwnerGated_NoHubDeployment asserts that write-back
+// creates no copy when the hub WorkloadDeployment is absent, and treats that
+// absence as the correct steady state rather than an error to retry.
 func TestWriteBackToUpstream_OwnerGated_NoHubDeployment(t *testing.T) {
 	t.Parallel()
 

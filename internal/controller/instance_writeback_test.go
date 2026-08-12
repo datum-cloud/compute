@@ -40,9 +40,9 @@ const (
 	wbTestWorkloadName = "my-workload"
 	wbTestPlacement    = "us-central"
 
-	// wbTestHubWDUID is the hub WorkloadDeployment's own UID — the only UID the
-	// hub garbage collector can act on, and the one the write-back copy's
-	// controller reference must carry.
+	// wbTestHubWDUID is the hub WorkloadDeployment's own UID. It is the only UID
+	// the hub garbage collector can act on, so the write-back copy's controller
+	// reference must carry it.
 	wbTestHubWDUID = "hub-wd-uid-eeee-ffff"
 )
 
@@ -98,7 +98,7 @@ func wbTestDownstreamNS() *corev1.Namespace {
 }
 
 // wbTestHubDeployment returns the hub WorkloadDeployment that owns the
-// write-back copies of wbTestCellInstance. Write-back is gated on it existing.
+// write-back copies of wbTestCellInstance. Write-back requires it to exist.
 func wbTestHubDeployment() *computev1alpha.WorkloadDeployment {
 	return &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{

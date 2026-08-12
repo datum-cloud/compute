@@ -83,10 +83,10 @@ type WorkloadDeploymentFederator struct {
 	// informer resync. When nil (e.g. in unit tests), the downstream watch is
 	// skipped and the controller falls back to watching only the VCP WD.
 	FederationCluster cluster.Cluster
-	// FederationConfigured records whether this deployment federates at all. It
-	// is a startup fact (a federation kubeconfig was supplied) and is what lets
-	// the finalizer tell "nothing to remove" from "the client that should exist
-	// is missing".
+	// FederationConfigured reports whether this deployment federates at all,
+	// based on whether a federation kubeconfig was supplied at startup. The
+	// finalizer uses it to tell "nothing to remove" apart from "the client that
+	// should exist is missing".
 	FederationConfigured bool
 	finalizers           finalizer.Finalizers
 }
@@ -156,10 +156,10 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, err
 	}
 
-	// Record the hub namespace on the project object before anything is written
-	// into it, so finalization can always find what to remove without a second
-	// lookup. Stamped first: an annotation recorded after the hub write could
-	// name a namespace that finalization then fails to clean up.
+	// Record the hub namespace on the project object before writing anything into
+	// that namespace, so finalization can always find what to remove. Stamping it
+	// afterwards risks a restart between the two writes, which would leave a hub
+	// copy that finalization cannot locate.
 	if err := r.recordFederationNamespace(ctx, cl.GetClient(), &deployment, downstreamNS); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -186,11 +186,12 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 // Finalize removes the downstream WorkloadDeployment and, if no other
 // deployments with the same city code remain in the downstream namespace, deletes
 // the PropagationPolicy as well.
-// A finalizer that returns success without doing its work leaks the hub
-// deployment and everything propagated from it, so the nil-client case is split
-// by configuration: a deployment that never federates has nothing to remove,
-// while a missing client where federation is configured is a wiring fault that
-// must hold the finalizer (datum-cloud/compute#218).
+//
+// A finalizer that reports success without doing its work leaks the hub
+// deployment and everything propagated from it, so the nil-client case depends
+// on configuration. A deployment that never federates has nothing to remove. A
+// missing client where federation is configured is a wiring fault, so hold the
+// finalizer (datum-cloud/compute#218).
 func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	if r.FederationClient == nil {
 		if !r.FederationConfigured {
@@ -219,10 +220,9 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 
 	// Prefer the namespace recorded on the object itself. Live resolution reads
 	// the project namespace, an object this controller neither owns nor keeps
-	// alive; if it were ever removed first, finalization would fail on every
-	// attempt and the hub deployment — the root of the hub ownership tree —
-	// would be stranded with nothing left able to delete it. The recorded value
-	// removes that dependency entirely.
+	// alive. If that namespace were removed first, finalization would fail on
+	// every attempt and strand the hub deployment, which is the root of the hub
+	// ownership tree. The recorded value removes that dependency.
 	downstreamNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
 	if downstreamNS == "" {
 		// Federated before the annotation existed: resolve it the original way.
@@ -252,8 +252,8 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 }
 
 // recordFederationNamespace stamps the resolved hub namespace onto the project
-// WorkloadDeployment. It patches only when the value would change, so it adds no
-// write traffic to the steady state.
+// WorkloadDeployment. It patches only when the value changes, so it adds no
+// write traffic in the steady state.
 func (r *WorkloadDeploymentFederator) recordFederationNamespace(
 	ctx context.Context,
 	projectClient client.Client,
@@ -555,8 +555,8 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 		return fmt.Errorf("failed to register federator finalizer: %w", err)
 	}
 
-	// Federation state is a startup fact; stating it once here keeps Reconcile
-	// from restating it on every event.
+	// Federation state is fixed at startup. Log it once here so Reconcile does
+	// not repeat it on every event.
 	if r.FederationClient == nil {
 		mgr.GetLocalManager().GetLogger().Info(
 			"federation disabled: no federation client configured",

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package federation holds observability for the federation plane's ownership
-// invariants: hub write-back Instances are owned by their hub WorkloadDeployment
-// and are never created without it. Nothing here drives a cleanup process — the
-// single gauge below reports objects that contradict those invariants, so a
-// contradiction is a diagnosable ticket rather than a permanent reconcile-error
-// ratio.
+// invariants: every hub write-back Instance is owned by its hub
+// WorkloadDeployment, and no copy is created without that owner.
+//
+// Nothing here cleans anything up. The gauge below counts objects that
+// contradict those invariants, so a contradiction becomes a ticket to
+// investigate rather than a permanent reconcile-error ratio.
 package federation
 
 import (
@@ -29,15 +30,15 @@ const (
 
 	// QuarantineReasonDeploymentAbsent marks a hub Instance that outlived the
 	// project WorkloadDeployment it belongs to. Hub ownership and owner-gated
-	// write-back are supposed to make that impossible, so a non-zero series here
-	// is an invariant violation to investigate, not a queue of work.
+	// write-back make that impossible, so any value here is an invariant
+	// violation to investigate, not a queue of work.
 	QuarantineReasonDeploymentAbsent = "deployment_absent"
 )
 
-// QuarantinedObjects latches at the number of hub objects the projector has
-// given up on, by terminal reason. It stays non-zero for as long as the objects
-// exist, which is what makes a broken invariant alertable as a ticket rather
-// than as a reconcile-error outage.
+// QuarantinedObjects counts the hub objects the projector has given up on, by
+// terminal reason. The count stays non-zero for as long as those objects exist,
+// which makes a broken invariant alertable as a ticket rather than as a
+// reconcile-error outage.
 var QuarantinedObjects = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "compute_federation_quarantined_objects",
 	Help: "Hub objects the projector has quarantined, by terminal reason.",

@@ -32,9 +32,9 @@ import (
 
 const (
 	// defaultProjectionGracePeriod bounds how long an absent project
-	// WorkloadDeployment is treated as an ordering race. Projection can legitimately
-	// run before the project WD exists, so early absence is retryable; past this
-	// window the absence is a fact about the project plane, not a race.
+	// WorkloadDeployment counts as an ordering race. Projection can legitimately
+	// run before the project WD exists, so early absence is retryable. After this
+	// window, the absence is a fact about the project plane rather than a race.
 	defaultProjectionGracePeriod = 15 * time.Minute
 
 	// eventActionQuarantining names the controller operation a quarantine event
@@ -56,15 +56,15 @@ const (
 // removed from the project cluster.
 //
 // The projector never deletes anything. It decides only whether it can project,
-// and classifies why not: a retryable state keeps today's error and backoff,
-// while a terminal state is reported once and quarantined.
+// and classifies why not. A retryable state keeps the usual error and backoff. A
+// terminal state is reported once and quarantined.
 //
-// Quarantine is a defensive assertion, not a cleanup mechanism. Hub objects are
-// owned by their hub WorkloadDeployment and write-back is owner-gated, so a hub
-// Instance the projector can never resolve means one of those invariants has
-// broken. That must be loud and diagnosable — an event, an error-level log and a
-// latched gauge — without pinning the reconcile error ratio at 100% and paging
-// as an outage for a condition no retry can clear.
+// Quarantine is a safety check, not a cleanup mechanism. Hub objects are owned
+// by their hub WorkloadDeployment and write-back is owner-gated, so a hub
+// Instance the projector can never resolve means one of those invariants broke.
+// An event, an error-level log, and a latched gauge make that visible without
+// pinning the reconcile error ratio at 100%, which would page as an outage for a
+// condition no retry can clear.
 //
 // The controller is registered with a standard manager.Manager pointed at the
 // upstream Karmada control plane — NOT the multicluster-runtime manager — so
@@ -82,15 +82,15 @@ type InstanceProjector struct {
 	// an ordering race. Zero selects defaultProjectionGracePeriod.
 	GracePeriod time.Duration
 
-	// Recorder emits the single quarantine event per object. Optional; when nil
-	// the quarantine is reported in the log and metrics only.
+	// Recorder emits one quarantine event per object. Optional; when nil, the
+	// quarantine is reported in the log and metrics only.
 	Recorder events.EventRecorder
 
 	quarantined *quarantineTracker
 }
 
-// terminalOutcome is a projection failure no retry can change. It is reported
-// once and the object is quarantined.
+// terminalOutcome describes a projection failure no retry can change. The
+// projector reports it once and quarantines the object.
 type terminalOutcome struct {
 	// reason is the metric/annotation label for the failure class.
 	reason string
@@ -116,15 +116,16 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("failed getting upstream instance: %w", err)
 	}
 
-	// An object on its way out needs neither projection nor classification.
+	// An object that is being deleted needs neither projection nor
+	// classification.
 	if !downstreamInstance.DeletionTimestamp.IsZero() {
 		r.tracker().forget(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
-	// A quarantine holds only for the exact state that produced it. Once the
-	// object changes such that the fingerprint no longer matches, the verdict is
-	// discarded and the object is evaluated from scratch.
+	// A quarantine applies only to the exact state that produced it. When the
+	// object changes and the fingerprint stops matching, discard the quarantine
+	// and evaluate the object again.
 	if reason, held := r.heldQuarantine(&downstreamInstance); held {
 		r.tracker().hold(req.NamespacedName, reason)
 		logger.V(1).Info("skipping quarantined instance", "reason", reason)
@@ -149,8 +150,9 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-// project performs the projection, returning a terminal outcome for a state no
-// retry can change, an error for a retryable one, and (nil, nil) on success.
+// project projects the instance into its project cluster. It returns a terminal
+// outcome for a state no retry can change, an error for a retryable one, and
+// (nil, nil) on success.
 //
 //nolint:gocyclo // the classification is a flat sequence of identity checks; splitting it would hide the taxonomy
 func (r *InstanceProjector) project(
@@ -158,10 +160,10 @@ func (r *InstanceProjector) project(
 	logger logr.Logger,
 	downstreamInstance *computev1alpha.Instance,
 ) (*terminalOutcome, error) {
-	// Federation-plane Instances exist exclusively as write-back copies, and the
-	// InstanceReconciler stamps both upstream-owner labels atomically when it
-	// writes the copy. A missing label therefore cannot appear later: no retry
-	// can produce it, and no controller can determine what the object is.
+	// Federation-plane Instances exist only as write-back copies, and the
+	// InstanceReconciler stamps both upstream-owner labels when it writes the
+	// copy. A missing label cannot appear later, so no retry can supply it and no
+	// controller can tell what the object is.
 	encodedClusterName := downstreamInstance.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
 	if encodedClusterName == "" {
 		return &terminalOutcome{
@@ -171,9 +173,9 @@ func (r *InstanceProjector) project(
 		}, nil
 	}
 
-	// One derivation of the project cluster key is shared with the federator: the
-	// label encodes the full "org/project" path, while the multicluster provider
-	// keys clusters by bare project name.
+	// Derive the project cluster key the same way the federator does. The label
+	// encodes the full "org/project" path, while the multicluster provider keys
+	// clusters by bare project name.
 	clusterName := projectClusterNameFromLabel(encodedClusterName)
 	if clusterName == "" {
 		return &terminalOutcome{
@@ -183,9 +185,8 @@ func (r *InstanceProjector) project(
 		}, nil
 	}
 
-	// Both upstream-owner labels are stamped together with non-empty values, so
-	// a cluster label without a namespace label is the same never-self-healing
-	// invariant violation.
+	// Both upstream-owner labels are stamped together with non-empty values, so a
+	// cluster label without a namespace label is the same invariant violation.
 	targetNamespace := downstreamInstance.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 	if targetNamespace == "" {
 		return &terminalOutcome{
@@ -195,11 +196,11 @@ func (r *InstanceProjector) project(
 		}, nil
 	}
 
-	// The owning WorkloadDeployment is resolved by NAME in the project cluster.
-	// Core invariant: the ownerReference MUST be built from a project-cluster
-	// object obtained via projectClient.Get — never from any edge/Karmada
-	// identity. The WD name is stable across all planes and is carried by
-	// WorkloadDeploymentNameLabel, stamped by the edge stateful control strategy.
+	// Resolve the owning WorkloadDeployment by NAME in the project cluster. Core
+	// invariant: build the ownerReference from a project-cluster object fetched
+	// with projectClient.Get, never from an edge or Karmada identity. The WD name
+	// is stable across all planes and is carried by WorkloadDeploymentNameLabel,
+	// stamped by the edge stateful control strategy.
 	wdName := downstreamInstance.Labels[computev1alpha.WorkloadDeploymentNameLabel]
 	if wdName == "" {
 		return &terminalOutcome{
@@ -209,11 +210,11 @@ func (r *InstanceProjector) project(
 		}, nil
 	}
 
-	// An unresolvable project cluster is always retryable: engagement is
+	// An unresolvable project cluster is always retryable. Engagement is
 	// asynchronous, and a project that is really gone takes its hub objects with
-	// it, because the federator finalizer removes the hub WorkloadDeployment
-	// before the project control plane finishes deleting, and the hub garbage
-	// collector reclaims every write-back copy it owns.
+	// it: the federator finalizer removes the hub WorkloadDeployment before the
+	// project control plane finishes deleting, and the hub garbage collector then
+	// reclaims every write-back copy it owns.
 	projectCluster, err := r.MCManager.GetCluster(ctx, multicluster.ClusterName(clusterName))
 	if err != nil {
 		return nil, fmt.Errorf("failed getting project cluster %q: %w", clusterName, err)
@@ -226,10 +227,10 @@ func (r *InstanceProjector) project(
 	var ownerWD computev1alpha.WorkloadDeployment
 	if err := projectClient.Get(ctx, client.ObjectKey{Namespace: targetNamespace, Name: wdName}, &ownerWD); err != nil {
 		if apierrors.IsNotFound(err) {
-			// An ownerless projection is never created. Early in an object's life
-			// the absence is an ordering race the retry resolves; past the grace
-			// window it is a fact about the project plane, and retrying forever
-			// only converts a leak into a permanent error ratio.
+			// Never create an ownerless projection. Early in an object's life, an
+			// absent WD is an ordering race that the retry resolves. Past the grace
+			// window it is a fact about the project plane, and retrying forever only
+			// turns a leak into a permanent error ratio.
 			if r.withinGracePeriod(downstreamInstance) {
 				return nil, fmt.Errorf("workload deployment %q not found in project cluster %q for instance %s/%s",
 					wdName, clusterName, downstreamInstance.Namespace, downstreamInstance.Name)
@@ -284,21 +285,20 @@ func (r *InstanceProjector) project(
 }
 
 // withinGracePeriod reports whether the object is young enough that an absent
-// project WorkloadDeployment is still explicable as a creation-ordering race.
+// project WorkloadDeployment could still be a creation-ordering race.
 func (r *InstanceProjector) withinGracePeriod(obj client.Object) bool {
 	grace := r.GracePeriod
 	if grace <= 0 {
 		grace = defaultProjectionGracePeriod
 	}
 	created := obj.GetCreationTimestamp().Time
-	// An object whose age cannot be read is treated as young: quarantine is a
-	// verdict, and a verdict is never drawn from a fact that could not be
-	// established.
+	// Treat an object with no readable age as young. Never quarantine based on a
+	// fact that could not be established.
 	return created.IsZero() || time.Since(created) < grace
 }
 
-// quarantine records the terminal verdict on the object, reports it exactly once
-// in the log and as an event, and latches the quarantine gauge.
+// quarantine records the terminal outcome on the object, reports it once in the
+// log and as an event, and latches the quarantine gauge.
 func (r *InstanceProjector) quarantine(
 	ctx context.Context,
 	logger logr.Logger,
@@ -321,8 +321,8 @@ func (r *InstanceProjector) quarantine(
 			instance.Namespace, instance.Name, err)
 	}
 
-	// Reported once, at error level, because a quarantine always means either a
-	// compute stamping bug or an object only a human can explain.
+	// Report once, at error level: a quarantine means either a compute stamping
+	// bug or an object only a human can explain.
 	logger.Error(nil, "quarantined federation-plane instance; it will not be retried",
 		"reason", outcome.reason, "message", outcome.message)
 	if r.Recorder != nil {
@@ -333,8 +333,8 @@ func (r *InstanceProjector) quarantine(
 	return nil
 }
 
-// heldQuarantine reports the reason an object is currently quarantined, and
-// whether the quarantine still applies to the object's live state.
+// heldQuarantine reports why an object is quarantined and whether that
+// quarantine still applies to the object's live state.
 func (r *InstanceProjector) heldQuarantine(instance *computev1alpha.Instance) (string, bool) {
 	reason := instance.Annotations[computev1alpha.QuarantineReasonAnnotation]
 	if reason == "" {
@@ -372,9 +372,9 @@ func (r *InstanceProjector) tracker() *quarantineTracker {
 	return r.quarantined
 }
 
-// quarantineFingerprint digests the object state a quarantine verdict was drawn
-// from: the identity labels and nothing else. Repairing a label changes the
-// digest and invalidates the verdict; ordinary status churn does not.
+// quarantineFingerprint digests the object state a quarantine is based on: the
+// identity labels and nothing else. Repairing a label changes the digest and
+// invalidates the quarantine. Ordinary status churn does not.
 func quarantineFingerprint(instance *computev1alpha.Instance) string {
 	keys := []string{
 		downstreamclient.UpstreamOwnerClusterNameLabel,
@@ -408,8 +408,8 @@ func quarantineEventReason(reason string) string {
 }
 
 // quarantineTracker keeps the quarantine gauge in step with the set of objects
-// currently held, so the gauge latches for as long as the objects exist rather
-// than counting reconciles.
+// currently held, so the gauge counts how many objects are quarantined rather
+// than how many reconciles hit one.
 type quarantineTracker struct {
 	mu    sync.Mutex
 	byKey map[types.NamespacedName]string

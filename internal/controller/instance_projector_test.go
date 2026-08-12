@@ -223,8 +223,8 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 		},
 		{
 			// A write-back copy that cannot identify its WorkloadDeployment can
-			// never be projected: the label is stamped atomically at creation, so
-			// no retry produces it. Report once, quarantine, stop.
+			// never be projected. The label is stamped when the copy is created, so
+			// no retry supplies it later. Report it once and quarantine it.
 			name: "WD name label absent — quarantined, no projection",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
 				computev1alpha.WorkloadDeploymentNameLabel: "",
@@ -254,8 +254,8 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 		},
 		{
 			// The write-back stamps both upstream-owner labels together, so a
-			// cluster label without a namespace label is the same never-self-healing
-			// invariant violation.
+			// cluster label without a namespace label is the same invariant
+			// violation.
 			name: "missing upstream-namespace label — quarantined",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
 				// Override: remove the upstream namespace label.

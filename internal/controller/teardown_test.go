@@ -19,7 +19,7 @@ import (
 const teardownServiceName = "compute.datumapis.com"
 
 // teardownProjectInstance builds a project-plane Instance carrying both compute
-// finalizers, as one written by the cell would appear to teardown.
+// finalizers, matching what teardown sees for an Instance written by a cell.
 func teardownProjectInstance(name string) *computev1alpha.Instance {
 	return &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{

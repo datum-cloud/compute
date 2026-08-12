@@ -32,22 +32,22 @@ const labelServiceNameValue = "compute.datumapis.com"
 
 // ComputeTeardown implements consumer.Teardown. It is invoked after the
 // consumer provider has cancelled the per-cluster context and marked labeled
-// Instances for deletion via ManagedResources. Its job is to finish the work the
+// Instances for deletion via ManagedResources. It finishes the work the
 // per-object finalizers would have done, now that the controllers that own those
-// finalizers will no longer reconcile this project.
+// finalizers no longer reconcile this project.
 //
-// Teardown must never release a finalizer it has not first honoured. A finalizer
-// removed without its work done is indistinguishable, from the outside, from
-// work that succeeded — and on the federation plane it strands the hub objects
-// the finalizer existed to remove (datum-cloud/compute#218). So each finalizer
-// released here is released by the same code path that just completed its work,
-// and any failure aborts teardown so the provider retries it.
+// Teardown must never release a finalizer whose work it has not completed. From
+// the outside, a finalizer removed early looks the same as work that succeeded,
+// and on the federation plane it strands the hub objects the finalizer existed
+// to remove (datum-cloud/compute#218). So the same code path that completes the
+// work releases the finalizer, and any failure aborts teardown for the provider
+// to retry.
 //
-// WorkloadDeployments are deliberately untouched. Their hub copy is removed by
-// the federator's finalizer along the ordinary deletion path, which the project
-// control plane guarantees runs — project deletion waits for the project's
-// resources to be deleted first. Short-circuiting that finalizer here would
-// reintroduce exactly the bypass this type is documented not to take.
+// Teardown leaves WorkloadDeployments alone. The federator's finalizer removes
+// their hub copy along the ordinary deletion path, which the project control
+// plane guarantees runs: project deletion waits for the project's resources to
+// be deleted first. Short-circuiting that finalizer here would reintroduce the
+// bypass this type exists to avoid.
 type ComputeTeardown struct {
 	// nil when quota enforcement is disabled
 	quotaClientManager *quotametrics.ProjectQuotaClientManager
@@ -139,14 +139,13 @@ func (ct *ComputeTeardown) teardownInstance(
 	return nil
 }
 
-// deleteWriteBackInstance removes the hub write-back copy of a project Instance
-// — the work the instance-controller finalizer does — before that finalizer is
-// released.
+// deleteWriteBackInstance removes the hub write-back copy of a project Instance.
+// This is the work the instance-controller finalizer does, completed here before
+// that finalizer is released.
 //
-// The copy does not live in the project namespace: it lives in the hub namespace
-// that the project namespace maps to. Resolving that mapping is what makes the
-// delete target the object that actually exists; keying it by the project
-// namespace silently finds nothing and leaves the copy behind.
+// The copy does not live in the project namespace. It lives in the hub namespace
+// that the project namespace maps to, so resolve that mapping first. Keying the
+// delete by the project namespace finds nothing and leaves the copy behind.
 func (ct *ComputeTeardown) deleteWriteBackInstance(
 	ctx context.Context,
 	consumerProject string,

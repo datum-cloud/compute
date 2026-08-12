@@ -46,7 +46,7 @@ func TestInstanceProjector_QuarantineReportedOnce(t *testing.T) {
 
 	_, err := projector.Reconcile(context.Background(), projectorRequest())
 	require.NoError(t, err, "a terminal state is reported, not retried")
-	assert.Len(t, recorder.Recorded(), 1, "exactly one event on the first verdict")
+	assert.Len(t, recorder.Recorded(), 1, "exactly one event on the first quarantine")
 	assert.Equal(t, 1, projector.tracker().count(), "the quarantine gauge latches")
 
 	// Every later reconcile is a quiet skip.
@@ -59,7 +59,7 @@ func TestInstanceProjector_QuarantineReportedOnce(t *testing.T) {
 }
 
 // TestInstanceProjector_QuarantineInvalidatedByRepair asserts an operator who
-// repairs the state that produced the verdict gets an immediate retry.
+// repairs the state that caused the quarantine gets an immediate retry.
 func TestInstanceProjector_QuarantineInvalidatedByRepair(t *testing.T) {
 	t.Parallel()
 
@@ -91,13 +91,13 @@ func TestInstanceProjector_QuarantineInvalidatedByRepair(t *testing.T) {
 	var repaired computev1alpha.Instance
 	require.NoError(t, karmadaClient.Get(context.Background(), projectorRequest().NamespacedName, &repaired))
 	assert.Empty(t, repaired.Annotations[computev1alpha.QuarantineReasonAnnotation],
-		"a stale verdict is discarded, not carried")
+		"a stale quarantine is discarded, not carried")
 	assert.Equal(t, 0, projector.tracker().count(), "the gauge follows the live set")
 }
 
 // TestInstanceProjector_MissingDeploymentIsRetryableWithinGrace asserts an
 // absent project WorkloadDeployment stays a retryable ordering race while the
-// object is young, keeping today's error-and-backoff behaviour.
+// object is young, keeping the usual error and backoff.
 func TestInstanceProjector_MissingDeploymentIsRetryableWithinGrace(t *testing.T) {
 	t.Parallel()
 
@@ -161,15 +161,15 @@ func TestInstanceProjector_TerminatingObjectSkipped(t *testing.T) {
 
 	_, err := projector.Reconcile(context.Background(), projectorRequest())
 	require.NoError(t, err)
-	assert.Empty(t, recorder.Recorded(), "a terminating object needs no verdict")
+	assert.Empty(t, recorder.Recorded(), "a terminating object is never classified")
 }
 
 // TestInstanceProjector_UnresolvableClusterStaysRetryable asserts that a
-// project cluster the manager cannot resolve is never a terminal verdict.
-// Engagement is asynchronous, and a project that is genuinely gone takes its
-// hub objects with it — the federator finalizer removes the hub deployment and
-// the hub garbage collector reclaims every copy it owns — so this reconcile has
-// nothing to conclude and simply retries.
+// project cluster the manager cannot resolve is never terminal. Engagement is
+// asynchronous, and a project that is genuinely gone takes its hub objects with
+// it: the federator finalizer removes the hub deployment and the hub garbage
+// collector reclaims every copy it owns. So this reconcile has nothing to
+// conclude and simply retries.
 func TestInstanceProjector_UnresolvableClusterStaysRetryable(t *testing.T) {
 	t.Parallel()
 
@@ -195,7 +195,7 @@ func TestInstanceProjector_UnresolvableClusterStaysRetryable(t *testing.T) {
 }
 
 // TestQuarantineFingerprint_TracksIdentityOnly asserts the fingerprint follows
-// the state a verdict is drawn from and ignores unrelated churn.
+// the state a quarantine is based on and ignores unrelated churn.
 func TestQuarantineFingerprint_TracksIdentityOnly(t *testing.T) {
 	t.Parallel()
 
@@ -205,10 +205,10 @@ func TestQuarantineFingerprint_TracksIdentityOnly(t *testing.T) {
 	same.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}
 
 	assert.Equal(t, quarantineFingerprint(base), quarantineFingerprint(same),
-		"status churn must not invalidate a verdict")
+		"status churn must not invalidate a quarantine")
 
 	changed := base.DeepCopy()
 	changed.Labels[computev1alpha.WorkloadDeploymentNameLabel] = "repaired"
 	assert.NotEqual(t, quarantineFingerprint(base), quarantineFingerprint(changed),
-		"repairing an identity label must invalidate a verdict")
+		"repairing an identity label must invalidate a quarantine")
 }

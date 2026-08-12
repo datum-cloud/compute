@@ -241,11 +241,11 @@ type InstanceReconciler struct {
 	// WorkloadDeployment controller honors the same gate for NetworkBinding
 	// creation and the Network scheduling gate.
 	NetworkingEnabled bool
-	// FederationConfigured records whether this deployment federates at all. It
-	// is a startup fact (a federation kubeconfig was supplied), and it is what
-	// distinguishes "nothing to clean up" from "the client that should exist is
-	// missing" inside the finalizer, which must never release without doing its
-	// work.
+	// FederationConfigured reports whether this deployment federates at all,
+	// based on whether a federation kubeconfig was supplied at startup. The
+	// finalizer must never release without doing its work, so it uses this to
+	// tell "nothing to clean up" apart from "the client that should exist is
+	// missing".
 	FederationConfigured bool
 	finalizers           finalizer.Finalizers
 }
@@ -1188,11 +1188,11 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 // Finalize removes the downstream write-back Instance when the local Instance is
 // deleted.
 //
-// A finalizer that returns success without doing its work leaks silently, so the
-// nil-client case is split by configuration rather than absorbed: a deployment
-// that never federates has nothing to clean up, while a missing client on a
-// deployment that does federate is a wiring fault that must hold the finalizer
-// rather than release it (datum-cloud/compute#218).
+// A finalizer that reports success without doing its work leaks silently, so
+// the nil-client case depends on configuration. A deployment that never
+// federates has nothing to clean up. A missing client on a deployment that does
+// federate is a wiring fault, so hold the finalizer instead of releasing it
+// (datum-cloud/compute#218).
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	if r.FederationClient == nil {
 		if !r.FederationConfigured {
@@ -1279,13 +1279,13 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 			instance.Namespace, instance.Name, strings.Join(missingLabels, ", "))
 	}
 
-	// The hub WorkloadDeployment is the in-cluster owner of every write-back copy
-	// derived from it: same hub cluster, same hub namespace, hub-native UID. Its
-	// absence is the correct steady state for a deployment whose propagation has
-	// been withdrawn — the cell is being torn down and nothing should recreate
-	// its copies — so write-back stops here and reports no error. Creating a copy
-	// without that owner is what lets a stranded hub deployment regenerate hub
-	// Instances forever (datum-cloud/compute#218).
+	// The hub WorkloadDeployment owns every write-back copy derived from it: same
+	// hub cluster, same hub namespace, hub-native UID. Its absence is the correct
+	// steady state for a deployment whose propagation was withdrawn, because the
+	// cell is being torn down and nothing should recreate its copies. Write-back
+	// stops here and reports no error. Creating a copy without that owner is what
+	// lets a stranded hub deployment regenerate hub Instances forever
+	// (datum-cloud/compute#218).
 	hubDeploymentName := instance.Labels[computev1alpha.WorkloadDeploymentNameLabel]
 	hubDeployment := &computev1alpha.WorkloadDeployment{}
 	hubDeploymentKey := client.ObjectKey{Namespace: instance.Namespace, Name: hubDeploymentName}
@@ -1318,9 +1318,9 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		Spec: instance.Spec,
 	}
 
-	// An ordinary in-cluster controller reference: owner and copy share the hub
-	// cluster and namespace, so the hub's garbage collector reclaims every copy
-	// when the deployment is removed, with no cross-plane cascade and no
+	// Owner and copy share the hub cluster and namespace, so this is an ordinary
+	// in-cluster controller reference. The hub's garbage collector reclaims every
+	// copy when the deployment is removed, with no cross-plane cascade and no
 	// dependence on the cell-side finalizer running.
 	if err := controllerutil.SetControllerReference(hubDeployment, writeBack, federationScheme(r.scheme)); err != nil {
 		return fmt.Errorf("failed setting hub owner reference on write-back instance: %w", err)
@@ -1356,8 +1356,8 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 	}
 
 	// Copies created before hub-local ownership existed carry no controller
-	// reference, so the update path adopts them rather than waiting for a
-	// recreate that owner-gated write-back will never perform.
+	// reference. Adopt them here, because owner-gated write-back never recreates
+	// a copy that already exists.
 	ownerChanged, err := reconcileHubOwnerReference(hubDeployment, existing, federationScheme(r.scheme))
 	if err != nil {
 		return err
@@ -2016,9 +2016,9 @@ func (r *InstanceReconciler) SetupWithManager(
 		return fmt.Errorf("failed to register finalizer: %w", err)
 	}
 
-	// Federation state is a startup fact. Stating it once here keeps the
-	// write-back and finalizer paths from restating it on every reconcile, and
-	// makes a deployment that silently never federates visible in the logs.
+	// Federation state is fixed at startup. Log it once here so the write-back
+	// and finalizer paths do not repeat it on every reconcile, and so a
+	// deployment that never federates is visible in the logs.
 	if r.FederationClient == nil {
 		mgr.GetLocalManager().GetLogger().Info(
 			"federation write-back disabled: no federation client configured",

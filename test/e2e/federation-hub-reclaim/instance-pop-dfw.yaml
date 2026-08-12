@@ -1,11 +1,11 @@
-# Cell Instance in the DFW POP cell, hand-crafted the way instance-writeback
-# builds one: the linking labels below are exactly what the stateful control
-# strategy stamps on a real cell Instance at creation, and the write-back path
-# refuses to copy an Instance that is missing any of them.
+# Cell Instance in the DFW POP cell, built the way instance-writeback builds one.
+# The linking labels below are what the stateful control strategy stamps on a
+# real cell Instance at creation, and write-back refuses to copy an Instance that
+# is missing any of them.
 #
-# Hand-crafting the cell side (rather than federating a WorkloadDeployment) is
-# deliberate: it keeps the cell Instance alive and continuously reconciled after
-# the hub WorkloadDeployment is deleted, which is the only way to observe that
+# This suite creates the cell Instance directly instead of federating a
+# WorkloadDeployment. That keeps the cell Instance alive and reconciling after
+# the hub WorkloadDeployment is deleted, which is the only way to show that
 # write-back is owner-gated rather than merely idle.
 apiVersion: compute.datumapis.com/v1alpha
 kind: Instance

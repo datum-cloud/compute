@@ -26,30 +26,32 @@ const (
 	// for the compute_referenced_data_gate_wait_seconds histogram.
 	ReferencedDataGateStartAnnotation = AnnotationNamespace + "/referenced-data-gate-start"
 
-	// FederationNamespaceAnnotation records, on a project WorkloadDeployment,
-	// the federation-hub namespace its hub copy was written to. It is stamped at
-	// federation time so that finalization — which must remove the hub copy
-	// before the project object may go away — is self-contained: it reads only
-	// the object being finalized, never a separate upstream object whose
-	// lifetime it does not control. Objects federated before this annotation
-	// existed fall back to resolving the namespace live.
+	// FederationNamespaceAnnotation records the federation-hub namespace that a
+	// project WorkloadDeployment's hub copy was written to. The federator stamps
+	// it when it federates the deployment.
+	//
+	// Finalization must remove the hub copy before the project object can go
+	// away. Reading the namespace from the object being finalized keeps that step
+	// from depending on a separate object with its own lifetime. Deployments
+	// federated before this annotation existed resolve the namespace live
+	// instead.
 	FederationNamespaceAnnotation = AnnotationNamespace + "/federation-namespace"
 
-	// QuarantineReasonAnnotation is stamped on a federation-hub object by the
-	// InstanceProjector when it reaches a state no retry can change. Its value is
-	// the terminal reason (see internal/federation metric reasons). A quarantined
-	// object is reported once and then skipped, so it can no longer pin the
-	// projector's reconcile error ratio.
+	// QuarantineReasonAnnotation marks a federation-hub object that the
+	// InstanceProjector cannot project, in a state no retry can change. Its value
+	// is one of the terminal reasons in internal/federation. The projector
+	// reports a quarantined object once and then skips it, so the object no
+	// longer counts against the projector's reconcile error ratio.
 	QuarantineReasonAnnotation = AnnotationNamespace + "/quarantine-reason"
 
-	// QuarantineMessageAnnotation carries the human-readable explanation that
-	// accompanied the quarantine decision.
+	// QuarantineMessageAnnotation explains in plain text why the object was
+	// quarantined.
 	QuarantineMessageAnnotation = AnnotationNamespace + "/quarantine-message"
 
-	// QuarantineFingerprintAnnotation records a digest of the object state that
-	// produced the quarantine. The projector re-evaluates from scratch whenever
-	// the digest of the live object stops matching, so repairing the state an
-	// operator can repair (a missing identity label) yields an immediate retry.
+	// QuarantineFingerprintAnnotation records a digest of the object state the
+	// quarantine was based on. The projector evaluates the object again whenever
+	// the digest stops matching, so repairing that state, such as restoring a
+	// missing identity label, retries the object immediately.
 	QuarantineFingerprintAnnotation = AnnotationNamespace + "/quarantine-fingerprint"
 
 	// QuarantinedAtAnnotation records when the object was quarantined, as an
