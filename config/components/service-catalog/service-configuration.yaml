@@ -22,12 +22,24 @@ spec:
   # production Deployment env, pointing at the same datum-control-plane-
   # trust-bundle ConfigMap). withCaBundle() is a no-op when caBundle is
   # unset, so the fetch just falls through to that existing trust.
+  # Provider-side portal plugin (staff-portal): registers Workload into the
+  # /customers/resources merged list via a data-only portal.resource/platform
+  # extension (no page code — staff-portal itself runs the search query).
+  # Same internal-only hosting story as the consumer plugin above; no
+  # visibility block — the ProviderPortalPlugin CRD has none, since
+  # staff-portal has no per-project entitlement concept. Same NODE_EXTRA_CA_CERTS
+  # reasoning as the consumer plugin — staff-portal's Deployment already
+  # trusts datum-control-plane-ca platform-wide, so no caBundle needed here
+  # either.
   userInterface:
     consumer:
       assets:
         baseURL: https://compute-consumer-ui-plugin.compute-system.svc.cluster.local
       visibility:
         entitlement: None
+    provider:
+      assets:
+        baseURL: https://compute-provider-ui-plugin.compute-system.svc.cluster.local
   locations:
     supportedClasses:
     - datum-managed
