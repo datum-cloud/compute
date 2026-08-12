@@ -119,10 +119,33 @@ jobs:
             kubectl --kubeconfig="$cfg" get events -A --sort-by=.lastTimestamp    > "$out/events.txt"  2>&1
             kubectl --kubeconfig="$cfg" -n compute-system describe deploy compute-manager \
               > "$out/compute-manager-describe.txt" 2>&1
-            kubectl --kubeconfig="$cfg" -n compute-system logs deploy/compute-manager \
-              --all-containers --tail=-1              > "$out/compute-manager.log"          2>&1
-            kubectl --kubeconfig="$cfg" -n compute-system logs deploy/compute-manager \
-              --all-containers --previous --tail=-1   > "$out/compute-manager-previous.log" 2>&1
+
+            # Per-POD logs, not `logs deploy/...`. That form picks one arbitrary
+            # replica, and with leader election the interesting log is almost
+            # always the OTHER one: a non-leader only ever reports that it is
+            # still trying to acquire the lease, so a run can look silent while
+            # the leader is failing loudly.
+            for pod in $(kubectl --kubeconfig="$cfg" -n compute-system get pods \
+                -l app.kubernetes.io/name=compute -o name 2>/dev/null); do
+              name="${pod##*/}"
+              kubectl --kubeconfig="$cfg" -n compute-system logs "$pod" \
+                --all-containers --tail=-1            > "$out/$name.log"          2>&1
+              kubectl --kubeconfig="$cfg" -n compute-system logs "$pod" \
+                --all-containers --previous --tail=-1 > "$out/$name-previous.log" 2>&1
+            done
+
+            # Which replica actually held the lease, so the logs above can be
+            # read in the right order.
+            kubectl --kubeconfig="$cfg" -n compute-system get leases -o yaml \
+              > "$out/leases.yaml" 2>&1
+
+            # A controller whose informer is denied never syncs its cache, and
+            # controller-runtime then blocks every controller on that manager
+            # from starting — the pod stays Ready and reconciles nothing. The
+            # effective permissions are the fastest way to see that.
+            kubectl --kubeconfig="$cfg" auth can-i --list \
+              --as=system:serviceaccount:compute-system:compute-manager \
+              > "$out/compute-manager-permissions.txt" 2>&1
           done
 
           # Karmada control-plane pods + component logs (they live in the
