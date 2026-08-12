@@ -17,16 +17,39 @@ jobs:
       platforms: linux/amd64,linux/arm64
     secrets: inherit
 
-  publish-kustomize-bundles:
-    needs: publish-container-image
+  # Deployed as a Component (config/components/consumer-ui-plugin) folded
+  # into compute-manager's own kustomize bundle/Flux Kustomization — no
+  # separate bundle for this image.
+  publish-consumer-ui-plugin-image:
     permissions:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.20.0
+    with:
+      image-name: compute-consumer-ui-plugin
+      context: ui/consumer/workloads
+      dockerfile-path: ui/consumer/workloads/Dockerfile
+    secrets: inherit
+
+  # Stamps both compute's own apiserver image (config/base/manager) and the
+  # consumer-ui-plugin's image (config/components/consumer-ui-plugin) into
+  # one compute-kustomize bundle publish. The `images:` input (v1.20.0+)
+  # supports multiple {path, name, tag} entries in one invocation — the
+  # single image-name/image-overlays inputs it replaces can only stamp one
+  # image across N paths, which can't express "two different images, two
+  # different paths" at all.
+  publish-kustomize-bundles:
+    needs: [publish-container-image, publish-consumer-ui-plugin-image]
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.20.0
     with:
       bundle-name: ghcr.io/datum-cloud/compute-kustomize
       bundle-path: config
-      image-name: ghcr.io/datum-cloud/compute
-      image-overlays: config/base/manager
+      images: |
+        - { path: config/base/manager, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
+        - { path: config/components/consumer-ui-plugin, name: ghcr.io/datum-cloud/compute-consumer-ui-plugin, tag: "${{ needs.publish-consumer-ui-plugin-image.outputs.tag }}" }
     secrets: inherit

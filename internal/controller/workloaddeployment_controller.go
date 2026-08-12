@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,6 +61,21 @@ type WorkloadDeploymentReconciler struct {
 	enableReferencedDataGate bool
 }
 
+func effectiveDesiredReplicas(deployment *computev1alpha.WorkloadDeployment) int32 {
+	if !deployment.DeletionTimestamp.IsZero() {
+		return 0
+	}
+	if deployment.Spec.Replicas != nil {
+		return *deployment.Spec.Replicas
+	}
+	return deployment.Spec.ScaleSettings.MinReplicas
+}
+
+func workloadDeploymentPodSelector(deployment *computev1alpha.WorkloadDeployment) string {
+	set := labels.Set{computev1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID())}
+	return set.AsSelector().String()
+}
+
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
@@ -104,6 +120,14 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	if !deployment.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
+	if deployment.Spec.Replicas == nil {
+		base := deployment.DeepCopy()
+		deployment.Spec.Replicas = new(deployment.Spec.ScaleSettings.MinReplicas)
+		if err := cl.GetClient().Patch(ctx, &deployment, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed initializing deployment replicas: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 
 	logger.Info("reconciling deployment")
 	defer logger.Info("reconcile complete")
@@ -116,6 +140,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	listOpts := client.MatchingLabels{
 		computev1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
 	}
+	desiredReplicas := effectiveDesiredReplicas(&deployment)
 
 	var instances computev1alpha.InstanceList
 	if err := cl.GetClient().List(ctx, &instances, listOpts); err != nil {
@@ -127,7 +152,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		EnableReferencedDataGate: r.enableReferencedDataGate,
 	})
 
-	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, instances.Items)
+	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, desiredReplicas, instances.Items)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed getting instance control actions: %w", err)
 	}
@@ -176,11 +201,18 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	// will result in this reconciler being processed again, so will properly have
 	// their gates removed.
 
+	// Translate the suspend/resume request carried on SuspendedAnnotation
+	// (written hub-side by the ComputeSuspend/ComputeResume consumer hooks and
+	// propagated here by WorkloadDeploymentFederator) into Status.Suspended.
+	// This cell is the authoritative writer of Status.Suspended: Karmada only
+	// aggregates status cell->hub, so a hub-side write to this field is
+	// silently reverted by the next aggregation. Writing it here, before
+	// reconcileInstanceGates propagates it to owned Instances below, is what
+	// lets the request actually take effect and lets the resulting status
+	// reach the hub.
+	deployment.Status.Suspended = deployment.Annotations[computev1alpha.SuspendedAnnotation] == suspendedAnnotationTrue
+
 	replicas := len(instances.Items)
-	desiredReplicas := deployment.Spec.ScaleSettings.MinReplicas
-	if dt := deployment.DeletionTimestamp; !dt.IsZero() {
-		desiredReplicas = 0
-	}
 
 	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas, err := r.reconcileInstanceGates(ctx, cl.GetClient(), &deployment, instances.Items, networkReady)
 	if err != nil {
@@ -192,6 +224,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	deployment.Status.UpdatedReplicas = int32(updatedReplicas)
 	deployment.Status.DesiredReplicas = desiredReplicas
 	deployment.Status.ReadyReplicas = int32(readyReplicas)
+	deployment.Status.Selector = workloadDeploymentPodSelector(&deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
 
 	switch {
@@ -337,11 +370,15 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 // promotes Available to ReferencedDataNotReady. Subsequent runs by this reconciler
 // (which write Available but not ReferencedDataReady) are filtered out.
 //
-// Status.Suspended is written out-of-band by ComputeSuspend/ComputeResume (see
-// suspend_hooks.go) via a Status().Patch that bumps resourceVersion but not
-// Generation, and doesn't touch ReferencedDataReady — so without this explicit
-// check that patch would be invisible to this predicate, and reconcileInstanceGates
-// would never propagate the suspension down to the owned Instances.
+// SuspendedAnnotation is written out-of-band: hub-side by ComputeSuspend/
+// ComputeResume (see suspend_hooks.go), then propagated onto this cell's copy
+// by WorkloadDeploymentFederator via Karmada. That's a metadata-only change —
+// same Generation, and Status.Suspended hasn't been derived from it yet — so
+// without this explicit check the annotation change would be invisible to
+// this predicate, and Reconcile would never run to translate it into
+// Status.Suspended in the first place. The Status.Suspended check below
+// additionally catches this reconciler's own follow-up write of that
+// translation, so a slow-to-engage cell still converges.
 func wdReferencedDataChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -352,6 +389,11 @@ func wdReferencedDataChangedPredicate() predicate.Predicate {
 			}
 			// Spec change: always reconcile.
 			if oldWD.Generation != newWD.Generation {
+				return true
+			}
+			// Suspend/resume request changed: reconcile so it's translated into
+			// Status.Suspended and propagated down to the owned Instances.
+			if oldWD.Annotations[computev1alpha.SuspendedAnnotation] != newWD.Annotations[computev1alpha.SuspendedAnnotation] {
 				return true
 			}
 			// Suspension state changed: reconcile so the suspend/resume is

@@ -1,13 +1,44 @@
 name: E2E Tests
 
+# In-cluster federation e2e (issue #149).
+#
+# Stands up the full local topology the Taskfile harness builds — three Kind
+# clusters (one management/control-plane hosting Karmada, two POP cells) with the
+# real production kustomize overlays and hub RBAC — then runs the Chainsaw
+# suites against it. This exercises the operators as deployed pods authenticating
+# to Karmada as a non-admin identity, not as an in-process test binary.
+
 on:
   push:
+    branches: [main]
   pull_request:
+
+# Cancel a superseded run on the same ref. The e2e job is expensive (three Kind
+# clusters + a Karmada control plane), so we don't want stale pushes burning a
+# runner. Unlike the cheaper test/lint workflows this only triggers on PRs and
+# main pushes rather than every branch push, for the same cost reason.
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test-e2e:
     name: Run on Ubuntu
+    # ubuntu-latest is 4 vCPU / 16 GB. The harness is deliberately engineered for
+    # a constrained/busy host — single-replica Karmada, leader election disabled,
+    # generous 10m component waits, join retries — so this fits without a larger
+    # (paid) runner. If real runs show OOM or repeated timeouts, switch to a
+    # larger hosted runner label (e.g. ubuntu-latest-8-cores); that carries a
+    # billing implication, hence starting on the free tier.
     runs-on: ubuntu-latest
+    # Env standup can spend up to ~20m if both Karmada waits approach their 10m
+    # ceilings on a slow runner; deploy ~5m; the Chainsaw suites ~15m (the
+    # referenced-data GC-sweep suite alone floors around 6m). 50m leaves headroom
+    # over the ~35m expected without letting a genuinely hung run idle too long.
+    timeout-minutes: 50
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -17,19 +48,106 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install the latest version of kind
+      # go-task drives the entire harness (task e2e:env:up / e2e:deploy /
+      # e2e:test). The action publishes major refs as branches (v1/v2/v3); the
+      # version input pins the go-task binary itself. repo-token avoids GitHub
+      # API rate limiting when the action resolves the release.
+      - name: Install go-task
+        uses: arduino/setup-task@v3
+        with:
+          version: 3.52.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Kind is not preinstalled on the runner. Docker, kubectl, and helm already
+      # are (ubuntu-24.04 image); karmadactl and chainsaw are fetched into ./bin
+      # by the task tooling. Pinned for reproducibility.
+      - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          curl -sSfLo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
+          kind version
 
-      - name: Verify kind installation
-        run: kind version
-
-      - name: Create kind cluster
-        run: kind create cluster
-
-      - name: Running Test e2e
+      # The Karmada kubeconfig rewrite step (_e2e:karmada:build-kubeconfig) shells
+      # out to python3 + PyYAML. It is normally present on the runner image; guard
+      # the case where it is not without tripping over PEP 668.
+      - name: Ensure PyYAML
         run: |
-          go mod tidy
-          make test-e2e
+          if ! python3 -c "import yaml" 2>/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y python3-yaml
+          fi
+
+      # Split into env / deploy / test so a failure lands on the phase that broke
+      # rather than a single opaque "task e2e:up" step. e2e:env:up == e2e:up minus
+      # the deploy; the two together are exactly what e2e:up runs.
+      - name: Provision Kind + Karmada environment
+        run: task e2e:env:up
+
+      - name: Build image and deploy operators
+        run: task e2e:deploy
+
+      - name: Run Chainsaw e2e suites
+        run: task e2e:test
+
+      # Always capture what the clusters looked like when a step failed. The
+      # runner is ephemeral so teardown is unnecessary; diagnostics are the only
+      # thing worth keeping.
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          set +e
+          DIAG=tmp/e2e/diagnostics
+          KDIR=tmp/e2e/kubeconfigs
+          mkdir -p "$DIAG"
+
+          # Host / kind level: container state plus a full per-cluster export
+          # (kubelet, containerd, and every pod log).
+          kind get clusters                 > "$DIAG/kind-clusters.txt"  2>&1
+          docker ps -a                       > "$DIAG/docker-ps.txt"      2>&1
+          for c in compute-control-plane compute-pop-dfw compute-pop-ord; do
+            kind export logs "$DIAG/kind-$c" --name "$c" 2>&1 | tail -n 2
+          done
+
+          # Per-cluster Kubernetes state + the compute-manager operator logs
+          # (current and previous, all containers) from every plane.
+          for kc in control-plane pop-dfw pop-ord karmada; do
+            cfg="$KDIR/$kc.yaml"
+            [ -f "$cfg" ] || continue
+            out="$DIAG/$kc"; mkdir -p "$out"
+            kubectl --kubeconfig="$cfg" get pods -A -o wide                       > "$out/pods.txt"    2>&1
+            kubectl --kubeconfig="$cfg" get events -A --sort-by=.lastTimestamp    > "$out/events.txt"  2>&1
+            kubectl --kubeconfig="$cfg" -n compute-system describe deploy compute-manager \
+              > "$out/compute-manager-describe.txt" 2>&1
+            kubectl --kubeconfig="$cfg" -n compute-system logs deploy/compute-manager \
+              --all-containers --tail=-1              > "$out/compute-manager.log"          2>&1
+            kubectl --kubeconfig="$cfg" -n compute-system logs deploy/compute-manager \
+              --all-containers --previous --tail=-1   > "$out/compute-manager-previous.log" 2>&1
+          done
+
+          # Karmada control-plane pods + component logs (they live in the
+          # management cluster) and the federation view from the Karmada API.
+          if [ -f "$KDIR/control-plane.yaml" ]; then
+            kubectl --kubeconfig="$KDIR/control-plane.yaml" -n karmada-system get pods -o wide \
+              > "$DIAG/karmada-pods.txt" 2>&1
+            for d in karmada-apiserver karmada-controller-manager karmada-scheduler; do
+              kubectl --kubeconfig="$KDIR/control-plane.yaml" -n karmada-system logs deploy/$d \
+                --tail=-1 > "$DIAG/karmada-$d.log" 2>&1
+            done
+          fi
+          if [ -f "$KDIR/karmada.yaml" ]; then
+            kubectl --kubeconfig="$KDIR/karmada.yaml" get clusters -o wide \
+              > "$DIAG/karmada-clusters.txt" 2>&1
+            kubectl --kubeconfig="$KDIR/karmada.yaml" get workloaddeployments -A -o wide \
+              > "$DIAG/karmada-workloaddeployments.txt" 2>&1
+          fi
+          echo "Diagnostics collected under $DIAG"
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diagnostics
+          path: tmp/e2e/diagnostics
+          retention-days: 7
+          if-no-files-found: warn

@@ -1,0 +1,352 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: referenced-data-mounts
+spec:
+  description: |
+    Validates the FEDERATED DELIVERY path for referenced ConfigMap and Secret data.
+
+    This test exercises the cross-plane chain introduced by the referenced-data
+    feature (feat/configmap-secret-mounts-federated):
+
+    [Hop 1] Source ConfigMap and Secret are created in the project namespace
+            (control-plane, Chainsaw default cluster).
+
+    [Hop 2] WorkloadDeployment is created; ReferencedDataController materialises
+            companion objects in ns-{project-uid} on the Karmada hub (downstream)
+            and stamps the expected-referenced-data annotation on the WD.
+            Companions are NOT written to the control-plane cluster.
+
+    [Hop 3] Karmada hub holds the companion ConfigMap + Secret in ns-{project-uid},
+            propagated by the always-on label selector in the city-dfw
+            PropagationPolicy (which includes ConfigMap and Secret selectors).
+
+    [Hop 4] Karmada propagates the WD + companions to pop-dfw.
+            Companions appear in ns-{project-uid} on the cell alongside the WD.
+
+    [Hop 5] WorkloadDeploymentReconciler on pop-dfw creates Instance test-refdata-wd-0
+            with the ReferencedData scheduling gate (feature flag on).
+            InstanceReconciler clears the gate once companions are present and sets
+            ReferencedDataReady=True on the Instance.
+
+    Scope: cross-plane DELIVERY up to the Instance gate-cleared state.
+    Actual env-var and file mounting is the provider+kubelet layer and is NOT
+    asserted here. See README.md for full scope and prerequisites.
+
+    Prerequisites:
+    - task e2e:up completed: brings up control-plane + Karmada + pop-dfw + pop-ord
+      and deploys the management and both cell operators in-cluster.
+    - the cell operator runs with featureFlags.enableReferencedDataGate: true; the
+      e2e cell deploy layer sets it (test/e2e/deploy/cell/config_patch.yaml), so
+      no separate operator-start step is needed.
+    - tmp/e2e/kubeconfigs/downstream.yaml exists (the Taskfile writes it as a copy
+      of the Karmada hub kubeconfig).
+
+  template: true
+
+  steps:
+
+  # ─── Hop 1: create source data ─────────────────────────────────────────────
+
+  - name: create-source-data
+    description: Create the source ConfigMap and Secret in the project namespace.
+    try:
+    - apply:
+        file: source-configmap.yaml
+    - apply:
+        file: source-secret.yaml
+
+  # ─── Hop 2: create WD; assert companion materialisation on Karmada hub ─────
+
+  - name: create-workload-deployment
+    description: Create the WorkloadDeployment referencing the source ConfigMap and Secret.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: assert-companion-configmap-on-hub
+    description: |
+      Assert the ReferencedDataController materialised companion app-config
+      in ns-{project-uid} on the Karmada hub (downstream cluster).
+      Companions are written to the hub namespace, NOT the control-plane namespace.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($companionNS)
+            name: app-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  - name: assert-companion-secret-on-hub
+    description: |
+      Assert the ReferencedDataController materialised companion app-secret
+      in ns-{project-uid} on the Karmada hub (downstream cluster).
+      Companions are written to the hub namespace, NOT the control-plane namespace.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($companionNS)
+            name: app-secret
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  - name: assert-wd-annotation-and-condition-on-control-plane
+    description: |
+      Assert the WD carries the expected-referenced-data annotation and has
+      ReferencedDataReady=True condition set by the ReferencedDataController.
+    try:
+    - script:
+        # Verify the annotation is present and non-empty.
+        content: |
+          ANNO=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get workloaddeployment test-refdata-wd \
+            --namespace "$NAMESPACE" \
+            -o jsonpath='{.metadata.annotations.compute\.datumapis\.com/expected-referenced-data}')
+          if [ -z "$ANNO" ] || [ "$ANNO" = "[]" ]; then
+            echo "ERROR: expected-referenced-data annotation is missing or empty: '$ANNO'"
+            exit 1
+          fi
+          echo "annotation: $ANNO"
+        timeout: 60s
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-refdata-wd
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+
+  # ─── Hop 3: assert companions on the Karmada hub (downstream) ──────────────
+
+  - name: assert-wd-and-companions-on-hub
+    description: |
+      Assert the Karmada hub (downstream cluster) holds the WD with the
+      expected-referenced-data annotation and the companion ConfigMap + Secret
+      in ns-{project-uid}.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        # WD federated to Karmada with the expected-referenced-data annotation forwarded
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-refdata-wd
+    - assert:
+        # Companion ConfigMap on Karmada hub
+        timeout: 30s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($downstreamNS)
+            name: app-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+    - assert:
+        # Companion Secret on Karmada hub
+        timeout: 30s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: app-secret
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  - name: assert-propagation-policy-has-companion-selectors
+    description: |
+      Assert the PropagationPolicy city-dfw on the hub includes ConfigMap and
+      Secret resource selectors so companions co-propagate with the WD.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($downstreamNS)
+            name: city-dfw
+          spec:
+            resourceSelectors:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              namespace: ($downstreamNS)
+              labelSelector:
+                matchLabels:
+                  topology.datum.net/city-code: dfw
+            - apiVersion: v1
+              kind: ConfigMap
+              namespace: ($downstreamNS)
+              labelSelector:
+                matchLabels:
+                  compute.datumapis.com/referenced-data: "true"
+            - apiVersion: v1
+              kind: Secret
+              namespace: ($downstreamNS)
+              labelSelector:
+                matchLabels:
+                  compute.datumapis.com/referenced-data: "true"
+
+  # ─── Hop 4: assert companions propagated to pop-dfw cell ───────────────────
+
+  - name: assert-wd-and-companions-on-cell
+    description: |
+      Assert Karmada propagated the WD and companion ConfigMap + Secret to
+      pop-dfw. All three objects must appear in ns-{project-uid} on the cell.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-refdata-wd
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($downstreamNS)
+            name: app-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: app-secret
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  # ─── Hop 5: assert Instance gate cleared on pop-dfw ────────────────────────
+
+  - name: assert-instance-exists-on-cell
+    description: Assert the WorkloadDeploymentReconciler created Instance test-refdata-wd-0.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-refdata-wd-0
+
+  - name: assert-referenced-data-gate-cleared
+    description: |
+      Assert the ReferencedData scheduling gate is removed from the Instance and
+      the ReferencedDataReady=True condition is set by the InstanceReconciler.
+      The gate is stamped when the Instance is created (feature flag on) and
+      cleared once the cell InstanceReconciler confirms all expected companions
+      are present in ns-{project-uid}.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-refdata-wd-0
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+    - script:
+        # Verify the ReferencedData gate is absent from the Instance spec.
+        timeout: 60s
+        content: |
+          DOWNSTREAMS_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          GATES=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            get instance test-refdata-wd-0 \
+            --namespace "$DOWNSTREAMS_NS" \
+            -o jsonpath='{.spec.schedulingGates[*].name}')
+          if echo "$GATES" | grep -qw "ReferencedData"; then
+            echo "ERROR: ReferencedData gate still present in schedulingGates: '$GATES'"
+            exit 1
+          fi
+          echo "ReferencedData gate cleared. Remaining gates: '$GATES'"

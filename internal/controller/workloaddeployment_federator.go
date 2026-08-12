@@ -88,7 +88,7 @@ type WorkloadDeploymentFederator struct {
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	if r.FederationClient == nil {
@@ -276,6 +276,18 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 			kd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation] = anno
 		} else {
 			delete(kd.Annotations, computev1alpha.ExpectedReferencedDataAnnotation)
+		}
+		// Propagate the suspend request so the cell can act on it: Status is
+		// never pushed hub->cell (only pulled cell->hub in
+		// syncStatusFromDownstream), so SuspendedAnnotation is the only channel
+		// the ComputeSuspend/ComputeResume hooks have to reach the cell.
+		if anno, ok := deployment.Annotations[computev1alpha.SuspendedAnnotation]; ok {
+			if kd.Annotations == nil {
+				kd.Annotations = make(map[string]string)
+			}
+			kd.Annotations[computev1alpha.SuspendedAnnotation] = anno
+		} else {
+			delete(kd.Annotations, computev1alpha.SuspendedAnnotation)
 		}
 		return nil
 	})

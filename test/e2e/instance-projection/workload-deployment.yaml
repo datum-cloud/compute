@@ -1,0 +1,21 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  name: test-projector-wd
+spec:
+  cityCode: dfw
+  placementName: default
+  workloadRef:
+    name: test-workload
+    uid: "00000000-0000-0000-0000-000000000001"
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+      networkInterfaces:
+      - network:
+          name: test-network
+
+  scaleSettings:
+    minReplicas: 1

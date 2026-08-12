@@ -22,7 +22,7 @@ details on the goals of this project.
 
 ## Documentation
 
-Documentation will be available at [docs.datum.net](https://docs.datum.net/)
+Documentation will be available at [datum.net/docs](https://www.datum.net/docs)
 shortly.
 
 ## Getting Started
@@ -95,3 +95,4 @@ make undeploy
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
 More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+

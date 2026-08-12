@@ -24,6 +24,7 @@ rules:
   verbs:
   - get
   - list
+  - watch
 - apiGroups:
   - compute.datumapis.com
   resources:
@@ -68,6 +69,7 @@ rules:
   resources:
   - locations
   - networkcontexts
+  - networks
   - subnets
   verbs:
   - get
@@ -93,6 +95,15 @@ rules:
   verbs:
   - create
   - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconsumers
+  - services
+  verbs:
   - get
   - list
   - watch

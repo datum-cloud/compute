@@ -1,0 +1,33 @@
+{
+  "name": "@datum-cloud/compute-portal-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Compute service Portal Plugin: read-only workload/instance operational dashboard, a Module Federation remote reading data exclusively through the portal's Milo control-plane proxy. Workload creation stays in datumctl (CLI-first).",
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite preview",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@datum-cloud/datum-ui": "^1.7.1",
+    "@tanstack/react-query": "5.101.0",
+    "lucide-react": "^1.21.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "react-router": "7.18.0",
+    "sonner": "^2.0.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@module-federation/vite": "^1.16.16",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.5"
+  }
+}
