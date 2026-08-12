@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: compute-provider-ui-plugin
+    app.kubernetes.io/name: compute-provider-ui-plugin
+  name: compute-provider-ui-plugin
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+  selector:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/instance: compute-provider-ui-plugin
+    app.kubernetes.io/name: compute-provider-ui-plugin

@@ -85,12 +85,12 @@ version — accepted for v1.
 
 ## This is its own project
 
-`ui/consumer/workloads/` has its **own** `package.json` and lockfile,
+`ui/consumer/` has its **own** `package.json` and lockfile,
 independent of the rest of this repo. It never touches the repo's Makefile,
 CI, or other root files. Install and run it in isolation:
 
 ```bash
-cd ui/consumer/workloads
+cd ui/consumer
 bun install
 bun run dev        # Vite dev server (:7778, HMR) — standalone/direct
 bun run preview    # built dist/ served (:7778) — proxy-safe
@@ -139,7 +139,7 @@ The host provides `react`, `react-dom`, `react-router`, and
 ## File layout
 
 ```
-ui/consumer/workloads/
+ui/consumer/
   vite.config.ts          MF container "workload.compute.datumapis.com"
   public/plugin-manifest.json
   src/
