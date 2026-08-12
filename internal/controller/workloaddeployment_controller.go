@@ -66,6 +66,9 @@ type WorkloadDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
+// The Network watch is required by the management-mode WorkloadReconciler; it
+// is declared here so generation reproduces the grant rather than dropping it.
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnetclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch
 
