@@ -57,4 +57,21 @@ const (
 	// ReferencedDataReady flips True), so the absence of the annotation means
 	// either no error or the error has cleared.
 	ReferencedDataErrorAnnotation = AnnotationNamespace + "/referenced-data-error"
+
+	// SuspendedAnnotation is set on a project-namespace WorkloadDeployment by the
+	// ComputeSuspend/ComputeResume consumer hooks to request that the cell stop
+	// (or resume) the instances it manages, in response to a project suspension
+	// signal. Its value is the string "true" or "false".
+	//
+	// This is an annotation rather than a direct Status.Suspended write for the
+	// same federation-boundary reason as ReferencedDataErrorAnnotation, but in
+	// the opposite direction: Karmada propagates metadata.annotations hub→cell,
+	// but the hub's WorkloadDeploymentFederator does not propagate Status
+	// hub→cell either — it only ever pulls the cell's aggregated status back up
+	// (syncStatusFromDownstream). A hub-side Status.Suspended write is therefore
+	// invisible to the cell and gets silently overwritten by the next status
+	// sync from downstream. The cell's own WorkloadDeploymentReconciler reads
+	// this annotation on its local copy and sets Status.Suspended itself, which
+	// then aggregates back up to the hub normally.
+	SuspendedAnnotation = AnnotationNamespace + "/suspended"
 )

@@ -30,23 +30,36 @@ const (
 
 	eventActionSuspending = "Suspending"
 	eventActionResuming   = "Resuming"
+
+	// suspendedAnnotationTrue is the SuspendedAnnotation value that requests
+	// suspension. Any other value, or absence of the annotation, means resumed.
+	suspendedAnnotationTrue = "true"
 )
 
-// ComputeSuspend implements consumer.Suspend. It sets spec.suspended=true on
-// every Instance owned by the suspended consumer project, scoped by the
-// services.miloapis.com/service-name label. It is idempotent: instances that
-// are already suspended are skipped.
+// ComputeSuspend implements consumer.Suspend. It requests that every
+// WorkloadDeployment owned by the suspended consumer project stop its
+// instances, scoped by the services.miloapis.com/service-name label. It is
+// idempotent: deployments already carrying the request are skipped.
 //
-// On success it emits a ProjectPaused event on each affected Instance.
-// On any patch failure it emits a PauseFailed Warning event on that Instance
-// and returns the error immediately so the service-catalog provider retries
-// with backoff. No teardown or deletion is ever attempted.
+// The request is made via SuspendedAnnotation rather than a direct
+// Status.Suspended write. Status.Suspended is aggregated hub-side from the
+// cell's own status (WorkloadDeploymentFederator.syncStatusFromDownstream),
+// which overwrites any hub-side write to it on the next sync — a direct write
+// here would be silently reverted. The annotation rides the same
+// metadata.annotations channel Karmada propagates hub→cell, so the cell's own
+// WorkloadDeploymentReconciler can read it and set Status.Suspended locally,
+// where it is the authoritative writer.
+//
+// On success it emits a ProjectPaused event on each affected WorkloadDeployment.
+// On any patch failure it emits a PauseFailed Warning event on that
+// WorkloadDeployment and returns the error immediately so the service-catalog
+// provider retries with backoff. No teardown or deletion is ever attempted.
 type ComputeSuspend struct {
 	recorder events.EventRecorder
 }
 
 // NewComputeSuspend creates a ComputeSuspend. recorder is used to emit
-// ProjectPaused / PauseFailed events on affected Instance objects.
+// ProjectPaused / PauseFailed events on affected WorkloadDeployment objects.
 func NewComputeSuspend(recorder events.EventRecorder) *ComputeSuspend {
 	return &ComputeSuspend{recorder: recorder}
 }
@@ -71,47 +84,53 @@ func (cs *ComputeSuspend) SuspendConsumer(
 		logger.Info("found workloaddeployments to suspend", "consumerProject", consumerProject, "service", svcName, "count", len(wds.Items))
 		for i := range wds.Items {
 			wd := &wds.Items[i]
-			if wd.Status.Suspended {
-				continue // already suspended — idempotent
+			if wd.Annotations[computev1alpha.SuspendedAnnotation] == suspendedAnnotationTrue {
+				continue // already requested — idempotent
 			}
 			base := wd.DeepCopy()
-			wd.Status.Suspended = true
-			if err := consumerClient.Status().Patch(ctx, wd, client.MergeFrom(base)); err != nil {
+			if wd.Annotations == nil {
+				wd.Annotations = make(map[string]string)
+			}
+			wd.Annotations[computev1alpha.SuspendedAnnotation] = suspendedAnnotationTrue
+			if err := consumerClient.Patch(ctx, wd, client.MergeFrom(base)); err != nil {
 				if cs.recorder != nil {
 					cs.recorder.Eventf(wd, nil, corev1.EventTypeWarning,
 						eventReasonPauseFailed, eventActionSuspending,
 						"Failed to suspend workloaddeployment %s/%s for project %s: %v",
 						wd.Namespace, wd.Name, consumerProject, err)
 				}
-				return fmt.Errorf("patching workloaddeployment %s/%s status to suspended: %w",
+				return fmt.Errorf("patching workloaddeployment %s/%s suspended annotation: %w",
 					wd.Namespace, wd.Name, err)
 			}
-			logger.Info("workloaddeployment suspended", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
+			logger.Info("workloaddeployment suspend requested", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
 			if cs.recorder != nil {
 				cs.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectPaused, eventActionSuspending,
-					"WorkloadDeployment suspended due to project suspension of %s", consumerProject)
+					"WorkloadDeployment suspend requested due to project suspension of %s", consumerProject)
 			}
 		}
 	}
 	return nil
 }
 
-// ComputeResume implements consumer.Resume. It clears spec.suspended on every
-// Instance owned by the reinstated consumer project, scoped by the
-// services.miloapis.com/service-name label. It is idempotent: instances that
-// are already active are skipped.
+// ComputeResume implements consumer.Resume. It clears the suspend request on
+// every WorkloadDeployment owned by the reinstated consumer project, scoped
+// by the services.miloapis.com/service-name label. It is idempotent:
+// deployments not currently carrying the request are skipped.
 //
-// On success it emits a ProjectResumed event on each affected Instance.
-// On any patch failure it emits a PauseFailed Warning event on that Instance
-// and returns the error immediately so the service-catalog provider retries
-// with backoff. No teardown or deletion is ever attempted.
+// See ComputeSuspend's doc comment for why this writes SuspendedAnnotation
+// instead of Status.Suspended directly.
+//
+// On success it emits a ProjectResumed event on each affected WorkloadDeployment.
+// On any patch failure it emits a PauseFailed Warning event on that
+// WorkloadDeployment and returns the error immediately so the service-catalog
+// provider retries with backoff. No teardown or deletion is ever attempted.
 type ComputeResume struct {
 	recorder events.EventRecorder
 }
 
 // NewComputeResume creates a ComputeResume. recorder is used to emit
-// ProjectResumed / PauseFailed events on affected Instance objects.
+// ProjectResumed / PauseFailed events on affected WorkloadDeployment objects.
 func NewComputeResume(recorder events.EventRecorder) *ComputeResume {
 	return &ComputeResume{recorder: recorder}
 }
@@ -136,26 +155,26 @@ func (cr *ComputeResume) ResumeConsumer(
 		logger.Info("found workloaddeployments to resume", "consumerProject", consumerProject, "service", svcName, "count", len(wds.Items))
 		for i := range wds.Items {
 			wd := &wds.Items[i]
-			if !wd.Status.Suspended {
+			if wd.Annotations[computev1alpha.SuspendedAnnotation] != suspendedAnnotationTrue {
 				continue // already active — idempotent
 			}
 			base := wd.DeepCopy()
-			wd.Status.Suspended = false
-			if err := consumerClient.Status().Patch(ctx, wd, client.MergeFrom(base)); err != nil {
+			delete(wd.Annotations, computev1alpha.SuspendedAnnotation)
+			if err := consumerClient.Patch(ctx, wd, client.MergeFrom(base)); err != nil {
 				if cr.recorder != nil {
 					cr.recorder.Eventf(wd, nil, corev1.EventTypeWarning,
 						eventReasonPauseFailed, eventActionResuming,
 						"Failed to resume workloaddeployment %s/%s for project %s: %v",
 						wd.Namespace, wd.Name, consumerProject, err)
 				}
-				return fmt.Errorf("patching workloaddeployment %s/%s status to resumed: %w",
+				return fmt.Errorf("patching workloaddeployment %s/%s suspended annotation: %w",
 					wd.Namespace, wd.Name, err)
 			}
-			logger.Info("workloaddeployment resumed", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
+			logger.Info("workloaddeployment resume requested", "consumerProject", consumerProject, "workloadDeployment", client.ObjectKeyFromObject(wd))
 			if cr.recorder != nil {
 				cr.recorder.Eventf(wd, nil, corev1.EventTypeNormal,
 					eventReasonProjectResumed, eventActionResuming,
-					"WorkloadDeployment resumed after project reinstatement of %s", consumerProject)
+					"WorkloadDeployment resume requested after project reinstatement of %s", consumerProject)
 			}
 		}
 	}

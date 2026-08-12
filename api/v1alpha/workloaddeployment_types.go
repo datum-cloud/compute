@@ -33,6 +33,12 @@ type WorkloadDeploymentSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	ScaleSettings HorizontalScaleSettings `json:"scaleSettings"`
+
+	// Replicas is the current desired replica target for this deployment. When
+	// unset, the deployment reconciles to scaleSettings.minReplicas.
+	//
+	// +kubebuilder:validation:Optional
+	Replicas *int32 `json:"replicas,omitempty"`
 }
 
 // WorkloadDeploymentStatus defines the observed state of WorkloadDeployment
@@ -65,6 +71,11 @@ type WorkloadDeploymentStatus struct {
 	// The number of instances which are ready.
 	ReadyReplicas int32 `json:"readyReplicas"`
 
+	// Selector is the label selector that identifies Pods backing this deployment.
+	//
+	// +kubebuilder:validation:Optional
+	Selector string `json:"selector,omitempty"`
+
 	// The most recent generation observed by the deployment controller. When
 	// this matches metadata.generation, the controller has reconciled the
 	// latest spec (e.g. a restart request).
@@ -90,6 +101,7 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // WorkloadDeployment is the Schema for the workloaddeployments API

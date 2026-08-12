@@ -48,6 +48,7 @@ type WorkloadReconciler struct {
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -491,6 +492,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					CityCode:      cityCode,
 					Template:      workload.Spec.Template,
 					ScaleSettings: placement.ScaleSettings,
+					Replicas:      new(placement.ScaleSettings.MinReplicas),
 				},
 			})
 		}

@@ -6,6 +6,40 @@ spec:
   serviceRef:
     name: compute
   phase: Published
+  # Consumer-side portal plugin (cloud-portal): a read-only workloads
+  # dashboard. Hosted internally only — config/components/consumer-ui-plugin
+  # (folded into compute-manager's own Deployment set), never fronted by a
+  # public Gateway/HTTPRoute. cloud-portal's server is the only caller, over
+  # this in-cluster Service DNS name; the browser never talks to a plugin
+  # origin directly. Cluster-local DNS means this same value is correct in
+  # every environment the compute-manager component deploys to (no per-env
+  # override needed, unlike an earlier draft of this that used a public,
+  # staging-specific hostname).
+  #
+  # No caBundle needed: the plugin's CSI-issued server cert chains to
+  # datum-control-plane-ca, which cloud-portal's Bun runtime already trusts
+  # platform-wide via NODE_EXTRA_CA_CERTS (set in both its staging and
+  # production Deployment env, pointing at the same datum-control-plane-
+  # trust-bundle ConfigMap). withCaBundle() is a no-op when caBundle is
+  # unset, so the fetch just falls through to that existing trust.
+  # Provider-side portal plugin (staff-portal): registers Workload into the
+  # /customers/resources merged list via a data-only portal.resource/platform
+  # extension (no page code — staff-portal itself runs the search query).
+  # Same internal-only hosting story as the consumer plugin above; no
+  # visibility block — the ProviderPortalPlugin CRD has none, since
+  # staff-portal has no per-project entitlement concept. Same NODE_EXTRA_CA_CERTS
+  # reasoning as the consumer plugin — staff-portal's Deployment already
+  # trusts datum-control-plane-ca platform-wide, so no caBundle needed here
+  # either.
+  userInterface:
+    consumer:
+      assets:
+        baseURL: https://compute-consumer-ui-plugin.compute-system.svc.cluster.local
+      visibility:
+        entitlement: None
+    provider:
+      assets:
+        baseURL: https://compute-provider-ui-plugin.compute-system.svc.cluster.local
   locations:
     supportedClasses:
     - datum-managed
