@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/federation"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -174,6 +175,10 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 
 		// wantErr controls whether the reconcile should return an error.
 		wantErr bool
+
+		// wantQuarantineReason is the terminal reason the object must be
+		// quarantined with. Empty means the object must not be quarantined.
+		wantQuarantineReason string
 	}{
 		{
 			name:            "happy path — instance projected with owner reference",
@@ -217,22 +222,22 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			wantErr:        true,
 		},
 		{
-			// A write-back copy that cannot identify its WorkloadDeployment
-			// violates the stamping invariant — the projector must return an
-			// error rather than silently drop the projection.
-			name: "WD name label absent — error, no projection",
+			// A write-back copy that cannot identify its WorkloadDeployment can
+			// never be projected: the label is stamped atomically at creation, so
+			// no retry produces it. Report once, quarantine, stop.
+			name: "WD name label absent — quarantined, no projection",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
 				computev1alpha.WorkloadDeploymentNameLabel: "",
 			}),
-			projectObjs:    []client.Object{projTestProjectNS()},
-			wantProjection: false,
-			wantErr:        true,
+			projectObjs:          []client.Object{projTestProjectNS()},
+			wantProjection:       false,
+			wantQuarantineReason: federation.QuarantineReasonMissingDeploymentName,
 		},
 		{
 			// Federation-plane Instances are exclusively write-back copies and the
 			// write-back stamps both upstream-owner labels atomically, so a missing
 			// cluster label is a stamping-invariant violation, not a foreign object.
-			name: "missing upstream-cluster-name label — error",
+			name: "missing upstream-cluster-name label — quarantined as unidentifiable",
 			karmadaInstance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      projTestInstanceName,
@@ -243,23 +248,22 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 					},
 				},
 			},
-			projectObjs:    []client.Object{projTestProjectNS()},
-			wantProjection: false,
-			wantErr:        true,
+			projectObjs:          []client.Object{projTestProjectNS()},
+			wantProjection:       false,
+			wantQuarantineReason: federation.QuarantineReasonUnidentifiable,
 		},
 		{
 			// The write-back stamps both upstream-owner labels together, so a
-			// cluster label without a namespace label is an invariant violation
-			// that never self-heals — the projector must return an error rather
-			// than requeue at a flat rate.
-			name: "missing upstream-namespace label — error",
+			// cluster label without a namespace label is the same never-self-healing
+			// invariant violation.
+			name: "missing upstream-namespace label — quarantined",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
 				// Override: remove the upstream namespace label.
 				downstreamclient.UpstreamOwnerNamespaceLabel: "",
 			}),
-			projectObjs:    []client.Object{projTestProjectNS()},
-			wantProjection: false,
-			wantErr:        true,
+			projectObjs:          []client.Object{projTestProjectNS()},
+			wantProjection:       false,
+			wantQuarantineReason: federation.QuarantineReasonMissingNamespaceLabel,
 		},
 		{
 			name:            "karmada instance not found — no-op",
@@ -319,9 +323,21 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, ctrl.Result{}, result)
 
 			ctx := context.Background()
+
+			if tt.wantQuarantineReason != "" {
+				var quarantined computev1alpha.Instance
+				require.NoError(t, karmadaClient.Get(ctx, req.NamespacedName, &quarantined))
+				assert.Equal(t, tt.wantQuarantineReason,
+					quarantined.Annotations[computev1alpha.QuarantineReasonAnnotation],
+					"hub object must record the terminal reason")
+				assert.NotEmpty(t, quarantined.Annotations[computev1alpha.QuarantineFingerprintAnnotation],
+					"quarantine must record the fingerprint that invalidates it")
+			}
+			if tt.wantProjection {
+				assert.Equal(t, ctrl.Result{}, result)
+			}
 
 			// Check whether a projected Instance exists in the project namespace.
 			var projection computev1alpha.Instance

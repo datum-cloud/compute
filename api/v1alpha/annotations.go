@@ -35,6 +35,27 @@ const (
 	// existed fall back to resolving the namespace live.
 	FederationNamespaceAnnotation = AnnotationNamespace + "/federation-namespace"
 
+	// QuarantineReasonAnnotation is stamped on a federation-hub object by the
+	// InstanceProjector when it reaches a state no retry can change. Its value is
+	// the terminal reason (see internal/federation metric reasons). A quarantined
+	// object is reported once and then skipped, so it can no longer pin the
+	// projector's reconcile error ratio.
+	QuarantineReasonAnnotation = AnnotationNamespace + "/quarantine-reason"
+
+	// QuarantineMessageAnnotation carries the human-readable explanation that
+	// accompanied the quarantine decision.
+	QuarantineMessageAnnotation = AnnotationNamespace + "/quarantine-message"
+
+	// QuarantineFingerprintAnnotation records a digest of the object state that
+	// produced the quarantine. The projector re-evaluates from scratch whenever
+	// the digest of the live object stops matching, so repairing the state an
+	// operator can repair (a missing identity label) yields an immediate retry.
+	QuarantineFingerprintAnnotation = AnnotationNamespace + "/quarantine-fingerprint"
+
+	// QuarantinedAtAnnotation records when the object was quarantined, as an
+	// RFC3339 timestamp.
+	QuarantinedAtAnnotation = AnnotationNamespace + "/quarantined-at"
+
 	// ReferencedDataErrorAnnotation is stamped on a WorkloadDeployment by the
 	// ReferencedDataController when a terminal source error occurs (SourceNotFound,
 	// SourceUnauthorized, or SourceTooLarge). Its value is a JSON object with
