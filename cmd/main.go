@@ -382,8 +382,9 @@ func main() {
 		}
 
 		instanceReconciler := &controller.InstanceReconciler{
-			FederationClient:  federationClient,
-			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+			FederationClient:     federationClient,
+			FederationConfigured: federationRestConfig != nil,
+			NetworkingEnabled:    features.FeatureGate.Enabled(features.NetworkingIntegration),
 		}
 		err = instanceReconciler.SetupWithManager(
 			mgr,
@@ -809,8 +810,9 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// aggregated downstream by Karmada is mirrored back to the project WD
 	// immediately instead of on the next informer resync.
 	federator := &controller.WorkloadDeploymentFederator{
-		FederationClient:  federationClient,
-		FederationCluster: federationMgr,
+		FederationClient:     federationClient,
+		FederationCluster:    federationMgr,
+		FederationConfigured: true,
 	}
 	if err := federator.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)

@@ -241,7 +241,13 @@ type InstanceReconciler struct {
 	// WorkloadDeployment controller honors the same gate for NetworkBinding
 	// creation and the Network scheduling gate.
 	NetworkingEnabled bool
-	finalizers        finalizer.Finalizers
+	// FederationConfigured records whether this deployment federates at all. It
+	// is a startup fact (a federation kubeconfig was supplied), and it is what
+	// distinguishes "nothing to clean up" from "the client that should exist is
+	// missing" inside the finalizer, which must never release without doing its
+	// work.
+	FederationConfigured bool
+	finalizers           finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -1180,10 +1186,21 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 }
 
 // Finalize removes the downstream write-back Instance when the local Instance is
-// deleted. It is a no-op when downstream federation is disabled.
+// deleted.
+//
+// A finalizer that returns success without doing its work leaks silently, so the
+// nil-client case is split by configuration rather than absorbed: a deployment
+// that never federates has nothing to clean up, while a missing client on a
+// deployment that does federate is a wiring fault that must hold the finalizer
+// rather than release it (datum-cloud/compute#218).
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	if r.FederationClient == nil {
-		return finalizer.Result{}, nil
+		if !r.FederationConfigured {
+			return finalizer.Result{}, nil
+		}
+		return finalizer.Result{}, errors.New(
+			"federation is configured for this deployment but no federation client is wired; " +
+				"refusing to release the instance finalizer without deleting the hub write-back copy")
 	}
 
 	instance := obj.(*computev1alpha.Instance)
@@ -1211,6 +1228,8 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 	if r.FederationClient == nil {
 		return nil
 	}
+
+	logger := log.FromContext(ctx)
 
 	// Read the upstream project namespace name and encoded cluster name from
 	// the federation-plane namespace. The federator stamps both labels
@@ -1260,6 +1279,26 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 			instance.Namespace, instance.Name, strings.Join(missingLabels, ", "))
 	}
 
+	// The hub WorkloadDeployment is the in-cluster owner of every write-back copy
+	// derived from it: same hub cluster, same hub namespace, hub-native UID. Its
+	// absence is the correct steady state for a deployment whose propagation has
+	// been withdrawn — the cell is being torn down and nothing should recreate
+	// its copies — so write-back stops here and reports no error. Creating a copy
+	// without that owner is what lets a stranded hub deployment regenerate hub
+	// Instances forever (datum-cloud/compute#218).
+	hubDeploymentName := instance.Labels[computev1alpha.WorkloadDeploymentNameLabel]
+	hubDeployment := &computev1alpha.WorkloadDeployment{}
+	hubDeploymentKey := client.ObjectKey{Namespace: instance.Namespace, Name: hubDeploymentName}
+	if err := r.FederationClient.Get(ctx, hubDeploymentKey, hubDeployment); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("skipping write-back: the hub WorkloadDeployment that would own the copy does not exist",
+				"hubWorkloadDeployment", hubDeploymentKey.String())
+			return nil
+		}
+		return fmt.Errorf("failed getting hub workload deployment %q for write-back ownership: %w",
+			hubDeploymentKey.String(), err)
+	}
+
 	writeBack := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      instance.Name,
@@ -1277,6 +1316,14 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 			},
 		},
 		Spec: instance.Spec,
+	}
+
+	// An ordinary in-cluster controller reference: owner and copy share the hub
+	// cluster and namespace, so the hub's garbage collector reclaims every copy
+	// when the deployment is removed, with no cross-plane cascade and no
+	// dependence on the cell-side finalizer running.
+	if err := controllerutil.SetControllerReference(hubDeployment, writeBack, federationScheme(r.scheme)); err != nil {
+		return fmt.Errorf("failed setting hub owner reference on write-back instance: %w", err)
 	}
 
 	existing := &computev1alpha.Instance{}
@@ -1308,7 +1355,16 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		ownedLabels[k] = existing.Labels[k]
 	}
 
-	if !apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
+	// Copies created before hub-local ownership existed carry no controller
+	// reference, so the update path adopts them rather than waiting for a
+	// recreate that owner-gated write-back will never perform.
+	ownerChanged, err := reconcileHubOwnerReference(hubDeployment, existing, federationScheme(r.scheme))
+	if err != nil {
+		return err
+	}
+
+	if ownerChanged ||
+		!apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
 		!apiequality.Semantic.DeepEqual(ownedLabels, writeBack.Labels) {
 		existing.Spec = instance.Spec
 		// Merge writeBack.Labels into existing.Labels. Only keys owned by
@@ -1958,6 +2014,15 @@ func (r *InstanceReconciler) SetupWithManager(
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(instanceControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)
+	}
+
+	// Federation state is a startup fact. Stating it once here keeps the
+	// write-back and finalizer paths from restating it on every reconcile, and
+	// makes a deployment that silently never federates visible in the logs.
+	if r.FederationClient == nil {
+		mgr.GetLocalManager().GetLogger().Info(
+			"federation write-back disabled: no federation client configured",
+			"federationConfigured", r.FederationConfigured)
 	}
 
 	edgeClusterNameVal := r.edgeClusterName
