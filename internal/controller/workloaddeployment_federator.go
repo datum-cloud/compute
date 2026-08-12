@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -82,7 +83,12 @@ type WorkloadDeploymentFederator struct {
 	// informer resync. When nil (e.g. in unit tests), the downstream watch is
 	// skipped and the controller falls back to watching only the VCP WD.
 	FederationCluster cluster.Cluster
-	finalizers        finalizer.Finalizers
+	// FederationConfigured records whether this deployment federates at all. It
+	// is a startup fact (a federation kubeconfig was supplied) and is what lets
+	// the finalizer tell "nothing to remove" from "the client that should exist
+	// is missing".
+	FederationConfigured bool
+	finalizers           finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;update;patch
@@ -150,6 +156,14 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, err
 	}
 
+	// Record the hub namespace on the project object before anything is written
+	// into it, so finalization can always find what to remove without a second
+	// lookup. Stamped first: an annotation recorded after the hub write could
+	// name a namespace that finalization then fails to clean up.
+	if err := r.recordFederationNamespace(ctx, cl.GetClient(), &deployment, downstreamNS); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Upsert the WorkloadDeployment in the downstream control plane via the
 	// strategy client so any future Create calls also go through
 	// ensureDownstreamNamespace automatically.
@@ -172,9 +186,19 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 // Finalize removes the downstream WorkloadDeployment and, if no other
 // deployments with the same city code remain in the downstream namespace, deletes
 // the PropagationPolicy as well.
+// A finalizer that returns success without doing its work leaks the hub
+// deployment and everything propagated from it, so the nil-client case is split
+// by configuration: a deployment that never federates has nothing to remove,
+// while a missing client where federation is configured is a wiring fault that
+// must hold the finalizer (datum-cloud/compute#218).
 func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	if r.FederationClient == nil {
-		return finalizer.Result{}, nil
+		if !r.FederationConfigured {
+			return finalizer.Result{}, nil
+		}
+		return finalizer.Result{}, errors.New(
+			"federation is configured for this deployment but no federation client is wired; " +
+				"refusing to release the federator finalizer without removing the hub WorkloadDeployment")
 	}
 
 	deployment := obj.(*computev1alpha.WorkloadDeployment)
@@ -193,10 +217,20 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 		return finalizer.Result{}, err
 	}
 
-	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.FederationClient)
-	downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
-	if err != nil {
-		return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)
+	// Prefer the namespace recorded on the object itself. Live resolution reads
+	// the project namespace, an object this controller neither owns nor keeps
+	// alive; if it were ever removed first, finalization would fail on every
+	// attempt and the hub deployment — the root of the hub ownership tree —
+	// would be stranded with nothing left able to delete it. The recorded value
+	// removes that dependency entirely.
+	downstreamNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
+	if downstreamNS == "" {
+		// Federated before the annotation existed: resolve it the original way.
+		strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.FederationClient)
+		downstreamNS, err = strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
+		if err != nil {
+			return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)
+		}
 	}
 
 	kd := &computev1alpha.WorkloadDeployment{
@@ -215,6 +249,31 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	}
 
 	return finalizer.Result{}, nil
+}
+
+// recordFederationNamespace stamps the resolved hub namespace onto the project
+// WorkloadDeployment. It patches only when the value would change, so it adds no
+// write traffic to the steady state.
+func (r *WorkloadDeploymentFederator) recordFederationNamespace(
+	ctx context.Context,
+	projectClient client.Client,
+	deployment *computev1alpha.WorkloadDeployment,
+	downstreamNS string,
+) error {
+	if deployment.Annotations[computev1alpha.FederationNamespaceAnnotation] == downstreamNS {
+		return nil
+	}
+
+	patch := client.MergeFrom(deployment.DeepCopy())
+	if deployment.Annotations == nil {
+		deployment.Annotations = map[string]string{}
+	}
+	deployment.Annotations[computev1alpha.FederationNamespaceAnnotation] = downstreamNS
+	if err := projectClient.Patch(ctx, deployment, patch); err != nil {
+		return fmt.Errorf("failed recording federation namespace %q on %s/%s: %w",
+			downstreamNS, deployment.Namespace, deployment.Name, err)
+	}
+	return nil
 }
 
 // ensureDownstreamNamespace creates or updates the downstream namespace, stamping
@@ -494,6 +553,14 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(federatorFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register federator finalizer: %w", err)
+	}
+
+	// Federation state is a startup fact; stating it once here keeps Reconcile
+	// from restating it on every event.
+	if r.FederationClient == nil {
+		mgr.GetLocalManager().GetLogger().Info(
+			"federation disabled: no federation client configured",
+			"federationConfigured", r.FederationConfigured)
 	}
 
 	b := mcbuilder.ControllerManagedBy(mgr).

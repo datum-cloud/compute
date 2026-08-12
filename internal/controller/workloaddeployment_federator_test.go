@@ -685,3 +685,101 @@ func TestWorkloadDeploymentFederator_Finalize_DirectCall(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Updated)
 }
+
+// TestWorkloadDeploymentFederator_RecordsFederationNamespace asserts the hub
+// namespace is stamped on the project object during federation. That record is
+// what makes finalization self-contained: the object being finalized carries
+// everything needed to remove its hub copy.
+func TestWorkloadDeploymentFederator_RecordsFederationNamespace(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer)
+	projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+	karmadaClient := newKarmadaFakeClient()
+	r := newTestFederator(projectClient, karmadaClient)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var federated computev1alpha.WorkloadDeployment
+	require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{
+		Namespace: testProjNS, Name: testWDName,
+	}, &federated))
+	assert.Equal(t, testKarmadaNSStr, federated.Annotations[computev1alpha.FederationNamespaceAnnotation])
+}
+
+// TestWorkloadDeploymentFederator_FinalizeIsSelfContained asserts finalization
+// removes the hub deployment using only the record on the object itself.
+//
+// The hub deployment is the root of the hub ownership tree and nothing on the
+// hub owns it, so this finalizer is the only thing that can remove it. Making it
+// depend on a read of the project namespace — an object this controller neither
+// owns nor keeps alive — would mean an ordering surprise could wedge it forever
+// and strand the hub deployment with everything underneath it.
+func TestWorkloadDeploymentFederator_FinalizeIsSelfContained(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	wd.Annotations = map[string]string{
+		computev1alpha.FederationNamespaceAnnotation: testKarmadaNSStr,
+	}
+
+	hubWD := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testWDName,
+			Namespace: testKarmadaNSStr,
+			Labels:    map[string]string{cityCodeLabel: testCityCodeLAX},
+		},
+		Spec: wd.Spec,
+	}
+
+	// The project namespace is deliberately absent: live resolution would fail.
+	projectClient := newProjectFakeClient(wd)
+	karmadaClient := newKarmadaFakeClient(hubWD)
+	r := newTestFederator(projectClient, karmadaClient)
+
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	result, err := r.Finalize(ctx, wd)
+	require.NoError(t, err, "finalization must not depend on the project namespace")
+	assert.False(t, result.Updated)
+
+	var gone computev1alpha.WorkloadDeployment
+	err = karmadaClient.Get(ctx, types.NamespacedName{Namespace: testKarmadaNSStr, Name: testWDName}, &gone)
+	assert.True(t, apierrors.IsNotFound(err), "the hub deployment must be removed")
+}
+
+// TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable asserts the
+// finalizer is held, not released, when neither the record nor live resolution
+// can name the hub namespace. Releasing here would strand the hub deployment.
+func TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	projectClient := newProjectFakeClient(wd)
+	karmadaClient := newKarmadaFakeClient()
+	r := newTestFederator(projectClient, karmadaClient)
+
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	_, err := r.Finalize(ctx, wd)
+	require.Error(t, err, "an unresolvable hub namespace must hold the finalizer")
+}
+
+// TestWorkloadDeploymentFederator_FinalizeWithoutFederationClient asserts the
+// nil-client case is split by startup configuration. A deployment that never
+// federates has nothing to remove; a missing client where federation IS
+// configured is a wiring fault, and releasing the finalizer there would leak the
+// hub deployment and everything propagated from it.
+func TestWorkloadDeploymentFederator_FinalizeWithoutFederationClient(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+
+	notFederating := &WorkloadDeploymentFederator{}
+	_, err := notFederating.Finalize(ctx, wd)
+	require.NoError(t, err, "a deployment that never federates has nothing to remove")
+
+	misconfigured := &WorkloadDeploymentFederator{FederationConfigured: true}
+	_, err = misconfigured.Finalize(ctx, wd)
+	require.Error(t, err, "a missing client on a federating deployment must hold the finalizer")
+}
