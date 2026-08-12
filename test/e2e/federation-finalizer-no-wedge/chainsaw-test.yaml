@@ -1,0 +1,207 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: federation-finalizer-no-wedge
+spec:
+  description: |
+    The federation finalizer must be self-contained: able to complete from the
+    object it is attached to, without reading anything whose lifetime it does not
+    control.
+
+    A finalizer that cannot complete is worse than no finalizer. It blocks the
+    deletion the customer asked for, and it holds the hub deployment — the root
+    of the hub ownership tree — alive along with every copy underneath it. The
+    old finalizer resolved the hub namespace by reading the PROJECT namespace at
+    finalization time, so a project namespace that had already gone away turned a
+    tidy teardown into a permanent wedge.
+
+    The fix records the hub namespace on the project WorkloadDeployment when it
+    federates, and finalization reads it from there.
+
+    HONEST SCOPE: a genuinely vanished project namespace cannot be constructed in
+    a single cluster — Kubernetes will not let the namespace finish terminating
+    while the WorkloadDeployment inside it still holds a finalizer, which is the
+    ordering that makes the wedge unobservable from here rather than the property
+    that prevents it. What this suite can assert, and does, is the pair that makes
+    the property true: the hub namespace really is recorded on the object before
+    deletion begins, and deleting the whole project namespace completes cleanly
+    with the hub copy removed and the finalizer released, rather than wedging in
+    Terminating. The multi-cluster case where the project plane is gone entirely
+    is covered by the recorded annotation being the only input finalization uses.
+
+  template: true
+
+  steps:
+  - name: create-project-namespace-and-deployment
+    description: |
+      A namespace this suite owns, rather than Chainsaw's own: the test deletes
+      it mid-run, which Chainsaw's namespace lifecycle would otherwise collide
+      with.
+    try:
+    - script:
+        content: |
+          set -eu
+          VICTIM_NS="${NAMESPACE}-victim"
+          kubectl create namespace "$VICTIM_NS" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f - <<EOF
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            name: test-no-wedge-wd
+            namespace: ${VICTIM_NS}
+          spec:
+            cityCode: dfw
+            placementName: default
+            workloadRef:
+              name: test-workload
+              uid: "00000000-0000-0000-0000-000000000001"
+            template:
+              spec:
+                runtime:
+                  resources:
+                    instanceType: datumcloud/d1-standard-2
+                networkInterfaces:
+                - network:
+                    name: test-network
+            scaleSettings:
+              minReplicas: 1
+          EOF
+    cleanup:
+    # Best-effort: the suite deletes this namespace itself. This only matters when
+    # the suite failed before reaching that step, and must never block on a wedge
+    # it was written to detect.
+    - script:
+        content: |
+          kubectl delete namespace "${NAMESPACE}-victim" --ignore-not-found --wait=false
+
+  - name: assert-the-hub-namespace-is-recorded
+    description: |
+      The annotation is the sole input finalization has left once the project
+      namespace is going away. It must be on the object BEFORE the deletion
+      starts, so it is asserted here rather than inferred afterwards.
+    try:
+    - script:
+        content: |
+          printf '%s-victim' "$NAMESPACE"
+        outputs:
+        - name: victimNS
+          value: ($stdout)
+    - script:
+        content: |
+          kubectl get namespace "${NAMESPACE}-victim" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($victimNS)
+            name: test-no-wedge-wd
+            annotations:
+              compute.datumapis.com/federation-namespace: ($hubNS)
+            # Other controllers add finalizers to the same object, so this asserts
+            # presence rather than the exact list.
+            (contains(finalizers, 'compute.datumapis.com/federator')): true
+
+  - name: wait-for-the-hub-copy
+    description: |
+      Deleting a namespace whose hub copy never existed would prove nothing about
+      the finalizer's ability to remove one.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "${NAMESPACE}-victim" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($hubNS)
+            name: test-no-wedge-wd
+
+  - name: delete-the-project-namespace
+    description: |
+      Delete the namespace, not the WorkloadDeployment: this is the shape in which
+      a project goes away, and it puts the finalizer under a terminating parent.
+    try:
+    - script:
+        content: |
+          set -eu
+          kubectl delete namespace "${NAMESPACE}-victim" --wait=false
+
+  - name: assert-the-namespace-leaves-terminating
+    description: |
+      A namespace cannot finish terminating while an object inside it still holds
+      a finalizer, so the namespace disappearing IS the observable statement that
+      the federator released its finalizer — and it only releases it after the hub
+      copy is gone. A wedge shows up here as a namespace stuck in Terminating.
+    try:
+    - script:
+        timeout: 300s
+        content: |
+          set -eu
+          VICTIM_NS="${NAMESPACE}-victim"
+          for _ in $(seq 1 100); do
+            if ! kubectl get namespace "$VICTIM_NS" >/dev/null 2>&1; then
+              echo "project namespace terminated cleanly"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "project namespace is wedged in Terminating:" >&2
+          kubectl get namespace "$VICTIM_NS" -o yaml >&2
+          kubectl -n "$VICTIM_NS" get workloaddeployments -o yaml >&2 || true
+          exit 1
+
+  - name: assert-the-hub-copy-was-removed
+    description: |
+      The finalizer's actual work. Releasing it without this having happened would
+      strand the hub deployment with nothing left able to delete it.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          # Read from the hub: the project namespace this was derived from no
+          # longer exists, so its UID can only be recovered from the label the
+          # federator stamped on the hub namespace.
+          set -eu
+          HUB_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            get namespaces \
+            -l meta.datumapis.com/upstream-namespace="${NAMESPACE}-victim" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$HUB_NS" ]; then
+            echo "no hub namespace is labelled for ${NAMESPACE}-victim" >&2
+            exit 1
+          fi
+          printf '%s' "$HUB_NS"
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: WorkloadDeployment
+        namespace: ($hubNS)
+        name: test-no-wedge-wd
+        timeout: 240s
+        for:
+          deletion: {}
+    cleanup:
+    # Selected by label rather than by a binding: the binding only exists if this
+    # step's first operation succeeded, and cleanup has to run even when it did not.
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            delete namespaces \
+            -l meta.datumapis.com/upstream-namespace="${NAMESPACE}-victim" \
+            --ignore-not-found --wait=false
