@@ -28,8 +28,8 @@ jobs:
     uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.20.0
     with:
       image-name: compute-consumer-ui-plugin
-      context: ui/consumer/workloads
-      dockerfile-path: ui/consumer/workloads/Dockerfile
+      context: ui/consumer
+      dockerfile-path: ui/consumer/Dockerfile
     secrets: inherit
 
   # Deployed as a Component (config/components/provider-ui-plugin) folded
@@ -44,8 +44,8 @@ jobs:
     uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.20.0
     with:
       image-name: compute-provider-ui-plugin
-      context: ui/provider/workloads
-      dockerfile-path: ui/provider/workloads/Dockerfile
+      context: ui/provider
+      dockerfile-path: ui/provider/Dockerfile
     secrets: inherit
 
   # Stamps compute's own apiserver image (config/base/manager) and both UI
