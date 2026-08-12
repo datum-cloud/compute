@@ -225,7 +225,8 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	// ownership tree. The recorded value removes that dependency.
 	downstreamNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
 	if downstreamNS == "" {
-		// Federated before the annotation existed: resolve it the original way.
+		// Federated before the annotation existed, so fall back to live
+		// resolution and accept the dependency this branch exists to avoid.
 		strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.FederationClient)
 		downstreamNS, err = strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 		if err != nil {

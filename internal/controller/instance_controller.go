@@ -1318,10 +1318,9 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		Spec: instance.Spec,
 	}
 
-	// Owner and copy share the hub cluster and namespace, so this is an ordinary
-	// in-cluster controller reference. The hub's garbage collector reclaims every
-	// copy when the deployment is removed, with no cross-plane cascade and no
-	// dependence on the cell-side finalizer running.
+	// The hub's garbage collector reclaims every copy when the deployment is
+	// removed, with no cross-plane cascade and no dependence on the cell-side
+	// finalizer running.
 	if err := controllerutil.SetControllerReference(hubDeployment, writeBack, federationScheme(r.scheme)); err != nil {
 		return fmt.Errorf("failed setting hub owner reference on write-back instance: %w", err)
 	}

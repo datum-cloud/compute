@@ -711,11 +711,9 @@ func TestWorkloadDeploymentFederator_RecordsFederationNamespace(t *testing.T) {
 // TestWorkloadDeploymentFederator_FinalizeIsSelfContained asserts finalization
 // removes the hub deployment using only the record on the object itself.
 //
-// The hub deployment is the root of the hub ownership tree and nothing on the
-// hub owns it, so this finalizer is the only thing that can remove it. Making it
-// depend on a read of the project namespace — an object this controller neither
-// owns nor keeps alive — would mean an ordering surprise could wedge it forever
-// and strand the hub deployment with everything underneath it.
+// Nothing on the hub owns the hub deployment, so this finalizer is the only
+// thing that can remove it. The project namespace is left out of the fixture to
+// prove the path no longer depends on it.
 func TestWorkloadDeploymentFederator_FinalizeIsSelfContained(t *testing.T) {
 	t.Parallel()
 

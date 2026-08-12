@@ -392,7 +392,9 @@ func quarantineFingerprint(instance *computev1alpha.Instance) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// quarantineEventReason renders a metric reason as a Kubernetes event reason.
+// quarantineEventReason adapts a metric reason to the CamelCase convention
+// Kubernetes event reasons follow, so one constant serves both without an
+// operator having to match two spellings of the same failure.
 func quarantineEventReason(reason string) string {
 	parts := strings.Split(reason, "_")
 	var b strings.Builder

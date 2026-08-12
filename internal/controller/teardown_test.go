@@ -35,10 +35,8 @@ func teardownProjectInstance(name string) *computev1alpha.Instance {
 // honours the instance-controller finalizer instead of stripping it: the hub
 // write-back copy is gone before the finalizer that guards it is released.
 //
-// The copy lives in the hub namespace the project namespace maps to, never in
-// the project namespace, so a delete keyed by the project namespace silently
-// finds nothing and leaves the copy behind — a released finalizer with its work
-// undone, which is exactly the bypass this path must not take.
+// The copy is placed in the mapped hub namespace so the test fails if the delete
+// is keyed by the project namespace, which finds nothing and passes silently.
 func TestComputeTeardown_DeletesHubCopyBeforeReleasingFinalizer(t *testing.T) {
 	t.Parallel()
 

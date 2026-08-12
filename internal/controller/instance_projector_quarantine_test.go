@@ -165,11 +165,9 @@ func TestInstanceProjector_TerminatingObjectSkipped(t *testing.T) {
 }
 
 // TestInstanceProjector_UnresolvableClusterStaysRetryable asserts that a
-// project cluster the manager cannot resolve is never terminal. Engagement is
-// asynchronous, and a project that is genuinely gone takes its hub objects with
-// it: the federator finalizer removes the hub deployment and the hub garbage
-// collector reclaims every copy it owns. So this reconcile has nothing to
-// conclude and simply retries.
+// project cluster the manager cannot resolve is never terminal, because
+// engagement is asynchronous and a project that is genuinely gone reclaims its
+// own hub objects.
 func TestInstanceProjector_UnresolvableClusterStaysRetryable(t *testing.T) {
 	t.Parallel()
 
