@@ -68,7 +68,7 @@ func newClaimTestInstance(name string, interfaces ...computev1alpha.InstanceNetw
 			CreationTimestamp: metav1.Now(),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: computev1alpha.GroupVersion.String(),
-				Kind:       "WorkloadDeployment",
+				Kind:       kindWorkloadDeployment,
 				Name:       claimTestDeployment,
 				UID:        "claim-test-wd-uid",
 				Controller: new(true),

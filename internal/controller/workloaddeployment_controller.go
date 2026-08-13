@@ -819,7 +819,7 @@ func enqueueWorkloadDeploymentForClaim(ctx context.Context, c client.Client, clu
 	}
 
 	instanceOwner := metav1.GetControllerOf(&instance)
-	if instanceOwner == nil || instanceOwner.Kind != "WorkloadDeployment" {
+	if instanceOwner == nil || instanceOwner.Kind != kindWorkloadDeployment {
 		return nil
 	}
 
