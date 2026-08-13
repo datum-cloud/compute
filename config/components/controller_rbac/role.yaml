@@ -80,9 +80,8 @@ rules:
   - networking.datumapis.com
   resources:
   - locations
-  - networkcontexts
+  - networkinterfaces
   - networks
-  - subnets
   verbs:
   - get
   - list
@@ -90,8 +89,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
-  - networkbindings
-  - subnetclaims
+  - networkinterfaceclaims
   verbs:
   - create
   - delete

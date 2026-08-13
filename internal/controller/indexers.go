@@ -17,8 +17,8 @@ const (
 	deploymentWorkloadUIDIndex = "deploymentWorkloadUIDIndex"
 	workloadNetworksIndex      = "workloadNetworksIndex"
 	// deploymentCityCodeIndex indexes WorkloadDeployments by their Spec.CityCode
-	// so that SubnetClaim/Subnet watches can efficiently find the deployments
-	// that target the same city as a changed networking resource.
+	// so that the Location watch can efficiently find the deployments targeting
+	// the city a changed Location serves.
 	deploymentCityCodeIndex = "deploymentCityCodeIndex"
 
 	deploymentLocationIndex = "deploymentLocationIndex"

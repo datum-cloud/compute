@@ -170,8 +170,29 @@ func validateInstanceNetworkInterfaces(
 		allErrs = append(allErrs, field.Required(fieldPath, "must define at least one network interface"))
 	}
 
+	// An interface's name is what its claim, and therefore its addresses, is
+	// keyed by, so two interfaces of the same instance may not share one.
+	interfaceNames := sets.Set[string]{}
+
 	for i, networkInterface := range networkInterfaces {
 		indexPath := fieldPath.Index(i)
+
+		nameField := indexPath.Child("name")
+		// An empty name is defaulted by the API server, so only a value that was
+		// explicitly provided is checked here.
+		if len(networkInterface.Name) > 0 {
+			for _, msg := range apimachineryvalidation.NameIsDNSLabel(networkInterface.Name, false) {
+				allErrs = append(allErrs, field.Invalid(nameField, networkInterface.Name, msg))
+			}
+
+			if interfaceNames.Has(networkInterface.Name) {
+				allErrs = append(allErrs, field.Duplicate(nameField, networkInterface.Name))
+			} else {
+				interfaceNames.Insert(networkInterface.Name)
+			}
+		}
+
+		allErrs = append(allErrs, validateInstanceNetworkInterfaceAddresses(networkInterface.Addresses, indexPath.Child("addresses"))...)
 
 		networkField := indexPath.Child("network")
 		networkNameField := networkField.Child("name")
@@ -217,6 +238,40 @@ func validateInstanceNetworkInterfaces(
 	// See https://cloud.google.com/vpc/docs/create-use-multiple-interfaces
 	// See https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
 	//	- docs on networkInterfaces[].network
+
+	return allErrs
+}
+
+// validateInstanceNetworkInterfaceAddresses validates the extra addresses an
+// interface asks for by IPAM class. A class names a kind of address, so the
+// same class twice on one interface is a request the platform cannot satisfy
+// distinctly.
+func validateInstanceNetworkInterfaceAddresses(
+	addresses []computev1alpha.InstanceNetworkInterfaceAddressRequest,
+	fieldPath *field.Path,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	classes := sets.Set[string]{}
+
+	for i, address := range addresses {
+		classField := fieldPath.Index(i).Child("class")
+
+		if len(address.Class) == 0 {
+			allErrs = append(allErrs, field.Required(classField, ""))
+			continue
+		}
+
+		for _, msg := range apimachineryvalidation.NameIsDNSLabel(address.Class, false) {
+			allErrs = append(allErrs, field.Invalid(classField, address.Class, msg))
+		}
+
+		if classes.Has(address.Class) {
+			allErrs = append(allErrs, field.Duplicate(classField, address.Class))
+		} else {
+			classes.Insert(address.Class)
+		}
+	}
 
 	return allErrs
 }

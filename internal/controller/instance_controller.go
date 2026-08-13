@@ -234,11 +234,11 @@ type InstanceReconciler struct {
 	// disable federation write-back (e.g. in non-federation deployments).
 	FederationClient client.Client
 	// NetworkingEnabled mirrors the NetworkingIntegration feature gate. When false
-	// the reconciler skips the NetworkBinding readiness check: cells without the
-	// networking CRDs installed would otherwise fail every reconcile on a
-	// "no matches for kind NetworkBinding" RESTMapper error, aborting before the
-	// scheduling gates are cleared and wedging the instance in Pending. The
-	// WorkloadDeployment controller honors the same gate for NetworkBinding
+	// the reconciler neither reads interface claims nor publishes their addresses:
+	// cells without the networking CRDs installed would otherwise fail every
+	// reconcile on a "no matches for kind NetworkInterfaceClaim" RESTMapper error,
+	// aborting before the scheduling gates are cleared and wedging the instance in
+	// Pending. The WorkloadDeployment controller honors the same gate for claim
 	// creation and the Network scheduling gate.
 	NetworkingEnabled bool
 	finalizers        finalizer.Finalizers
@@ -248,6 +248,8 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/finalizers,verbs=update
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceclaims,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -328,11 +330,21 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	}
 	statusChanged = refDataResult.conditionChanged || statusChanged
 
+	// Publish the addresses the instance's interface claims hold. This runs
+	// before the Ready condition so a claim rejection reported there is visible
+	// alongside the per-interface conditions that explain it. Its error is held
+	// like the ones below, so whatever was learned is persisted first.
+	interfacesChanged, interfacesErr := r.reconcileNetworkInterfaceStatus(ctx, cl.GetClient(), &instance)
+	statusChanged = interfacesChanged || statusChanged
+
 	// Transient errors from the quota and Ready-condition reconciles are
 	// returned only after any condition change has been persisted, so the
 	// failure reason is visible on the Instance while controller-runtime
 	// requeues with backoff.
 	readyChanged, readyErr := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
+	if readyErr == nil && interfacesErr != nil {
+		readyErr = fmt.Errorf("failed reconciling network interface status: %w", interfacesErr)
+	}
 
 	if statusChanged || readyChanged {
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
@@ -1855,41 +1867,96 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 	return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 }
 
-// Rough way to propagate creation errors up to the instance as soon as possible.
-// Lots of room for improvement here.
-func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context, upstreamClient client.Client, instance *computev1alpha.Instance) (failed bool, message string, err error) {
-	// When the networking integration is disabled there are no NetworkBindings to
-	// check. The NetworkBinding CRD is not installed on cells that don't run the
-	// networking integration, so this lookup would otherwise fail with a
-	// "no matches for kind NetworkBinding" RESTMapper error and wedge the reconcile
-	// before the scheduling gates are cleared. Report no failure.
+// checkForNetworkCreationFailure reports whether any of the instance's interface
+// claims has been refused, so the reason reaches the user on Ready rather than
+// leaving the instance gated with no explanation.
+//
+// The claim's own reason and message are passed through verbatim. NSO refuses a
+// claim with a reason naming the cause — NetworkNotFound, AddressPoolExhausted,
+// RetainedAddressConflict and the like — and those are written to be read by
+// whoever has to act on them.
+func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context, clusterClient client.Client, instance *computev1alpha.Instance) (failed bool, message string, err error) {
+	// The claim CRD is not installed on cells that don't run the networking
+	// integration, so this lookup would otherwise fail with a "no matches for
+	// kind NetworkInterfaceClaim" RESTMapper error and wedge the reconcile before
+	// the scheduling gates are cleared. Report no failure.
 	if !r.NetworkingEnabled {
 		return false, "", nil
 	}
 
-	workloadDeployment, err := r.fetchOwnerWorkloadDeployment(ctx, upstreamClient, instance)
-	if err != nil {
-		return false, "", fmt.Errorf("failed fetching workload deployment: %w", err)
-	}
+	for _, networkInterface := range instance.Spec.NetworkInterfaces {
+		interfaceName := instanceInterfaceName(networkInterface)
 
-	for i := range instance.Spec.NetworkInterfaces {
-		var networkBinding networkingv1alpha.NetworkBinding
-		networkBindingObjectKey := client.ObjectKey{
-			Namespace: workloadDeployment.Namespace,
-			Name:      fmt.Sprintf("%s-net-%d", workloadDeployment.Name, i),
+		var claim networkingv1alpha.NetworkInterfaceClaim
+		key := client.ObjectKey{
+			Namespace: instance.Namespace,
+			Name:      networkInterfaceClaimName(instance.Name, interfaceName),
+		}
+		if err := clusterClient.Get(ctx, key, &claim); err != nil {
+			if apierrors.IsNotFound(err) {
+				// The deployment reconciler has not created it yet; that is a wait,
+				// not a failure.
+				continue
+			}
+			return false, "", fmt.Errorf("failed fetching network interface claim: %w", err)
 		}
 
-		if err := upstreamClient.Get(ctx, networkBindingObjectKey, &networkBinding); client.IgnoreNotFound(err) != nil {
-			return false, "", fmt.Errorf("failed checking for existing network binding: %w", err)
-		}
-
-		condition := apimeta.FindStatusCondition(networkBinding.Status.Conditions, networkingv1alpha.NetworkBindingReady)
-		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == "NetworkFailedToCreate" {
-			return true, condition.Message, nil
+		if reason, claimMessage := networkInterfaceClaimRejection(&claim); reason != "" {
+			return true, fmt.Sprintf("Interface %q: %s: %s", interfaceName, reason, claimMessage), nil
 		}
 	}
 
 	return false, "", nil
+}
+
+// reconcileNetworkInterfaceStatus publishes the addresses the instance's
+// interface claims hold onto the instance status, so a client reads one object
+// instead of following a claim per interface. The claim is the source of truth
+// for these addresses; the status is a copy of it.
+//
+// Returns whether the status changed. The caller persists it.
+func (r *InstanceReconciler) reconcileNetworkInterfaceStatus(
+	ctx context.Context,
+	clusterClient client.Client,
+	instance *computev1alpha.Instance,
+) (bool, error) {
+	if !r.NetworkingEnabled {
+		return false, nil
+	}
+
+	// Left nil rather than empty so an instance with no interfaces compares equal
+	// to its own published status instead of rewriting it on every pass.
+	var interfaces []computev1alpha.InstanceNetworkInterfaceStatus
+
+	for _, networkInterface := range instance.Spec.NetworkInterfaces {
+		interfaceName := instanceInterfaceName(networkInterface)
+
+		var claim networkingv1alpha.NetworkInterfaceClaim
+		key := client.ObjectKey{
+			Namespace: instance.Namespace,
+			Name:      networkInterfaceClaimName(instance.Name, interfaceName),
+		}
+		err := clusterClient.Get(ctx, key, &claim)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return false, fmt.Errorf("failed fetching network interface claim: %w", err)
+		}
+
+		if apierrors.IsNotFound(err) {
+			// Report the interface by name while its claim is still being created,
+			// so the shape of the status matches the spec from the start.
+			interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, nil))
+			continue
+		}
+
+		interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, &claim))
+	}
+
+	if apiequality.Semantic.DeepEqual(instance.Status.NetworkInterfaces, interfaces) {
+		return false, nil
+	}
+
+	instance.Status.NetworkInterfaces = interfaces
+	return true, nil
 }
 
 // resolveProjectID delegates to projectIDForInstance; when nil it falls back
@@ -2005,6 +2072,13 @@ func (r *InstanceReconciler) SetupWithManager(
 
 	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+	// A claim binding and allocating is what fills in the instance's addresses,
+	// and no instance event follows it. Registered only with the networking
+	// integration on, because the claim CRD is absent on cells without it.
+	if r.NetworkingEnabled {
+		b = b.Owns(&networkingv1alpha.NetworkInterfaceClaim{}, mcbuilder.WithEngageWithLocalCluster(false))
+	}
 
 	// The direct ResourceClaim watch resolves the quota.miloapis.com CRD only on
 	// the Milo project control planes, so the caller gates registration on

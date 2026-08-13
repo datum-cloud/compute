@@ -85,7 +85,7 @@ func (r *WorkloadDeploymentHPAReconciler) Reconcile(ctx context.Context, req mcr
 		hpa.Spec = autoscalingv2.HorizontalPodAutoscalerSpec{
 			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 				APIVersion: computev1alpha.GroupVersion.String(),
-				Kind:       "WorkloadDeployment",
+				Kind:       kindWorkloadDeployment,
 				Name:       deployment.Name,
 			},
 			MinReplicas: new(deployment.Spec.ScaleSettings.MinReplicas),

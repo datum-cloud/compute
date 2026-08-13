@@ -27,8 +27,8 @@ import (
 // the networking integration disabled the WorkloadDeployment reconciler starts
 // cleanly on an edge cell that carries no networking.datumapis.com CRDs. The only
 // registered cluster is the local cell; a build that left networking enabled would
-// register the NetworkBinding/Location/SubnetClaim/Subnet watches and crash during
-// cache sync with no matches for those kinds.
+// register the NetworkInterfaceClaim/Location watches and crash during cache sync
+// with no matches for those kinds.
 func TestWorkloadDeploymentSetupWithManager_CellModeNoNetworkingCRD(t *testing.T) {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true), zap.WriteTo(os.Stderr)))
 

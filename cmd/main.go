@@ -348,7 +348,9 @@ func main() {
 	}
 
 	if enableManagementControllers {
-		if err = (&controller.WorkloadReconciler{}).SetupWithManager(mgr); err != nil {
+		if err = (&controller.WorkloadReconciler{
+			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Workload")
 			os.Exit(1)
 		}

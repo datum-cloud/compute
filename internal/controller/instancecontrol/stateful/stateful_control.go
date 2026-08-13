@@ -25,7 +25,7 @@ const (
 type Options struct {
 	// NetworkingEnabled controls whether the Network scheduling gate is added to
 	// newly created Instances. Set to false when the networking integration is
-	// disabled so that Instances are not blocked waiting for a NetworkBinding.
+	// disabled so that Instances are not blocked waiting for their addresses.
 	// Defaults to true.
 	NetworkingEnabled bool
 
