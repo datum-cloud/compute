@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
@@ -98,55 +97,4 @@ func TestWriteBackToUpstream_AdoptsExistingCopy(t *testing.T) {
 		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName}, &adopted))
 	require.Len(t, adopted.OwnerReferences, 1)
 	assert.Equal(t, types.UID(wbTestHubWDUID), adopted.OwnerReferences[0].UID)
-}
-
-// TestInstanceFinalize_HoldsWhenFederationConfiguredWithoutClient asserts the
-// finalizer never releases without doing its work: a configured deployment with
-// no client is a wiring fault, not a no-op.
-func TestInstanceFinalize_HoldsWhenFederationConfiguredWithoutClient(t *testing.T) {
-	t.Parallel()
-
-	r := &InstanceReconciler{FederationConfigured: true}
-
-	_, err := r.Finalize(context.Background(), wbTestCellInstance())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "refusing to release")
-}
-
-// TestInstanceFinalize_NoFederationConfigured asserts the one legitimate case —
-// a deployment that never federates — still releases cleanly.
-func TestInstanceFinalize_NoFederationConfigured(t *testing.T) {
-	t.Parallel()
-
-	r := &InstanceReconciler{}
-
-	result, err := r.Finalize(context.Background(), wbTestCellInstance())
-	require.NoError(t, err)
-	assert.False(t, result.Updated)
-}
-
-// TestFederatorFinalize_HoldsWhenFederationConfiguredWithoutClient asserts the
-// federator's finalizer applies the same rule to the hub WorkloadDeployment.
-func TestFederatorFinalize_HoldsWhenFederationConfiguredWithoutClient(t *testing.T) {
-	t.Parallel()
-
-	r := &WorkloadDeploymentFederator{FederationConfigured: true}
-
-	ctx := mccontext.WithCluster(context.Background(), testCluster)
-	_, err := r.Finalize(ctx, testWorkloadDeployment(withFinalizer))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "refusing to release")
-}
-
-// TestFederatorFinalize_NoFederationConfigured asserts a never-federating
-// deployment releases cleanly.
-func TestFederatorFinalize_NoFederationConfigured(t *testing.T) {
-	t.Parallel()
-
-	r := &WorkloadDeploymentFederator{}
-
-	ctx := mccontext.WithCluster(context.Background(), testCluster)
-	result, err := r.Finalize(ctx, testWorkloadDeployment(withFinalizer))
-	require.NoError(t, err)
-	assert.False(t, result.Updated)
 }

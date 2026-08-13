@@ -761,23 +761,3 @@ func TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable(t *testing.T)
 	_, err := r.Finalize(ctx, wd)
 	require.Error(t, err, "an unresolvable hub namespace must hold the finalizer")
 }
-
-// TestWorkloadDeploymentFederator_FinalizeWithoutFederationClient asserts the
-// nil-client case is split by startup configuration. A deployment that never
-// federates has nothing to remove; a missing client where federation IS
-// configured is a wiring fault, and releasing the finalizer there would leak the
-// hub deployment and everything propagated from it.
-func TestWorkloadDeploymentFederator_FinalizeWithoutFederationClient(t *testing.T) {
-	t.Parallel()
-
-	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
-	ctx := mccontext.WithCluster(context.Background(), testCluster)
-
-	notFederating := &WorkloadDeploymentFederator{}
-	_, err := notFederating.Finalize(ctx, wd)
-	require.NoError(t, err, "a deployment that never federates has nothing to remove")
-
-	misconfigured := &WorkloadDeploymentFederator{FederationConfigured: true}
-	_, err = misconfigured.Finalize(ctx, wd)
-	require.Error(t, err, "a missing client on a federating deployment must hold the finalizer")
-}

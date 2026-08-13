@@ -4,7 +4,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -83,12 +82,7 @@ type WorkloadDeploymentFederator struct {
 	// informer resync. When nil (e.g. in unit tests), the downstream watch is
 	// skipped and the controller falls back to watching only the VCP WD.
 	FederationCluster cluster.Cluster
-	// FederationConfigured reports whether this deployment federates at all,
-	// based on whether a federation kubeconfig was supplied at startup. The
-	// finalizer uses it to tell "nothing to remove" apart from "the client that
-	// should exist is missing".
-	FederationConfigured bool
-	finalizers           finalizer.Finalizers
+	finalizers        finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;update;patch
@@ -97,10 +91,6 @@ type WorkloadDeploymentFederator struct {
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	if r.FederationClient == nil {
-		return ctrl.Result{}, nil
-	}
-
 	logger := log.FromContext(ctx)
 
 	// An empty cluster name resolves to the local host management cluster, which
@@ -186,22 +176,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 // Finalize removes the downstream WorkloadDeployment and, if no other
 // deployments with the same city code remain in the downstream namespace, deletes
 // the PropagationPolicy as well.
-//
-// A finalizer that reports success without doing its work leaks the hub
-// deployment and everything propagated from it, so the nil-client case depends
-// on configuration. A deployment that never federates has nothing to remove. A
-// missing client where federation is configured is a wiring fault, so hold the
-// finalizer (datum-cloud/compute#218).
 func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	if r.FederationClient == nil {
-		if !r.FederationConfigured {
-			return finalizer.Result{}, nil
-		}
-		return finalizer.Result{}, errors.New(
-			"federation is configured for this deployment but no federation client is wired; " +
-				"refusing to release the federator finalizer without removing the hub WorkloadDeployment")
-	}
-
 	deployment := obj.(*computev1alpha.WorkloadDeployment)
 	logger := log.FromContext(ctx).WithValues(
 		"deployment", deployment.Name,
@@ -568,12 +543,11 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 		return fmt.Errorf("failed to register federator finalizer: %w", err)
 	}
 
-	// Federation state is fixed at startup. Log it once here so Reconcile does
-	// not repeat it on every event.
+	// This finalizer is the only thing that can remove a hub WorkloadDeployment,
+	// so a federator without a client would release finalizers it cannot honour.
+	// Fail at startup instead.
 	if r.FederationClient == nil {
-		mgr.GetLocalManager().GetLogger().Info(
-			"federation disabled: no federation client configured",
-			"federationConfigured", r.FederationConfigured)
+		return fmt.Errorf("workload deployment federator requires a federation client")
 	}
 
 	b := mcbuilder.ControllerManagedBy(mgr).

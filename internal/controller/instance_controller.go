@@ -241,13 +241,7 @@ type InstanceReconciler struct {
 	// WorkloadDeployment controller honors the same gate for NetworkBinding
 	// creation and the Network scheduling gate.
 	NetworkingEnabled bool
-	// FederationConfigured reports whether this deployment federates at all,
-	// based on whether a federation kubeconfig was supplied at startup. The
-	// finalizer must never release without doing its work, so it uses this to
-	// tell "nothing to clean up" apart from "the client that should exist is
-	// missing".
-	FederationConfigured bool
-	finalizers           finalizer.Finalizers
+	finalizers        finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -1187,22 +1181,7 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 
 // Finalize removes the downstream write-back Instance when the local Instance is
 // deleted.
-//
-// A finalizer that reports success without doing its work leaks silently, so
-// the nil-client case depends on configuration. A deployment that never
-// federates has nothing to clean up. A missing client on a deployment that does
-// federate is a wiring fault, so hold the finalizer instead of releasing it
-// (datum-cloud/compute#218).
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	if r.FederationClient == nil {
-		if !r.FederationConfigured {
-			return finalizer.Result{}, nil
-		}
-		return finalizer.Result{}, errors.New(
-			"federation is configured for this deployment but no federation client is wired; " +
-				"refusing to release the instance finalizer without deleting the hub write-back copy")
-	}
-
 	instance := obj.(*computev1alpha.Instance)
 
 	downstreamInstance := &computev1alpha.Instance{}
@@ -2015,13 +1994,11 @@ func (r *InstanceReconciler) SetupWithManager(
 		return fmt.Errorf("failed to register finalizer: %w", err)
 	}
 
-	// Federation state is fixed at startup. Log it once here so the write-back
-	// and finalizer paths do not repeat it on every reconcile, and so a
-	// deployment that never federates is visible in the logs.
+	// Write-back is the only path that makes a cell Instance visible upstream, so
+	// a cell without a federation client would run silently doing nothing useful.
+	// Fail at startup rather than letting the finalizer discover it later.
 	if r.FederationClient == nil {
-		mgr.GetLocalManager().GetLogger().Info(
-			"federation write-back disabled: no federation client configured",
-			"federationConfigured", r.FederationConfigured)
+		return fmt.Errorf("instance reconciler requires a federation client")
 	}
 
 	edgeClusterNameVal := r.edgeClusterName
