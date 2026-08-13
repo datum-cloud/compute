@@ -1,0 +1,72 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-prometheus-adapter-resource-reader
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+rules:
+  - apiGroups: [""]
+    resources: [nodes, pods, namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-prometheus-adapter-resource-reader
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: compute-prometheus-adapter-resource-reader
+subjects:
+  - kind: ServiceAccount
+    name: compute-prometheus-adapter
+    namespace: compute-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-prometheus-adapter-auth-delegator
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: compute-prometheus-adapter
+    namespace: compute-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-prometheus-adapter-authentication-reader
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [extension-apiserver-authentication]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-prometheus-adapter-authentication-reader
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: compute-prometheus-adapter-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: compute-prometheus-adapter
+    namespace: compute-system
