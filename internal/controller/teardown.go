@@ -8,7 +8,9 @@ import (
 	"fmt"
 
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -30,10 +32,22 @@ const labelServiceNameValue = "compute.datumapis.com"
 
 // ComputeTeardown implements consumer.Teardown. It is invoked after the
 // consumer provider has cancelled the per-cluster context and marked labeled
-// Instances for deletion via ManagedResources. It handles the parts a
-// label-scoped delete cannot: releasing ResourceClaims, removing write-back
-// Instances from the federation hub, and stripping finalizers so Kubernetes
-// can complete the deletions.
+// Instances for deletion via ManagedResources. It finishes the work the
+// per-object finalizers would have done, now that the controllers that own those
+// finalizers no longer reconcile this project.
+//
+// Teardown must never release a finalizer whose work it has not completed. From
+// the outside, a finalizer removed early looks the same as work that succeeded,
+// and on the federation plane it strands the hub objects the finalizer existed
+// to remove (datum-cloud/compute#218). So the same code path that completes the
+// work releases the finalizer, and any failure aborts teardown for the provider
+// to retry.
+//
+// Teardown leaves WorkloadDeployments alone. The federator's finalizer removes
+// their hub copy along the ordinary deletion path, which the project control
+// plane guarantees runs: project deletion waits for the project's resources to
+// be deleted first. Short-circuiting that finalizer here would reintroduce the
+// bypass this type exists to avoid.
 type ComputeTeardown struct {
 	// nil when quota enforcement is disabled
 	quotaClientManager *quotametrics.ProjectQuotaClientManager
@@ -80,25 +94,7 @@ func (ct *ComputeTeardown) TeardownConsumer(
 		}
 	}
 
-	// WDs are not labeled (projected by Karmada, not by the compute operator),
-	// so list all of them. Stripping the compute-owned finalizer unblocks GC
-	// once Karmada un-propagates them.
-	var wds computev1alpha.WorkloadDeploymentList
-	if err := cl.List(ctx, &wds); err != nil {
-		return fmt.Errorf("listing workload deployments: %w", err)
-	}
-	for i := range wds.Items {
-		wd := &wds.Items[i]
-		base := wd.DeepCopy()
-		if !controllerutil.RemoveFinalizer(wd, workloadControllerFinalizer) {
-			continue
-		}
-		if err := cl.Patch(ctx, wd, client.MergeFrom(base)); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("stripping WD finalizer for %s/%s: %w", wd.Namespace, wd.Name, err)
-		}
-		logger.V(1).Info("stripped WD finalizer", "name", wd.Name, "namespace", wd.Namespace)
-	}
-
+	logger.V(1).Info("consumer teardown complete")
 	return nil
 }
 
@@ -110,17 +106,8 @@ func (ct *ComputeTeardown) teardownInstance(
 ) error {
 	if controllerutil.ContainsFinalizer(instance, instanceControllerFinalizer) {
 		if ct.federationClient != nil {
-			downstream := &computev1alpha.Instance{}
-			err := ct.federationClient.Get(ctx, client.ObjectKeyFromObject(instance), downstream)
-			if err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("getting write-back instance %s/%s: %w",
-					instance.Namespace, instance.Name, err)
-			}
-			if err == nil {
-				if err := ct.federationClient.Delete(ctx, downstream); client.IgnoreNotFound(err) != nil {
-					return fmt.Errorf("deleting write-back instance %s/%s: %w",
-						instance.Namespace, instance.Name, err)
-				}
+			if err := ct.deleteWriteBackInstance(ctx, consumerProject, cl, instance); err != nil {
+				return err
 			}
 		}
 	}
@@ -151,6 +138,35 @@ func (ct *ComputeTeardown) teardownInstance(
 	if err := cl.Patch(ctx, instance, client.MergeFrom(base)); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("stripping finalizers for %s/%s: %w",
 			instance.Namespace, instance.Name, err)
+	}
+	return nil
+}
+
+// deleteWriteBackInstance removes the hub write-back copy of a project Instance.
+// This is the work the instance-controller finalizer does, completed here before
+// that finalizer is released.
+//
+// The copy does not live in the project namespace. It lives in the hub namespace
+// that the project namespace maps to, so resolve that mapping first. Keying the
+// delete by the project namespace finds nothing and leaves the copy behind.
+func (ct *ComputeTeardown) deleteWriteBackInstance(
+	ctx context.Context,
+	consumerProject string,
+	cl client.Client,
+	instance *computev1alpha.Instance,
+) error {
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(consumerProject, cl, ct.federationClient)
+	hubNamespace, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, instance.Namespace)
+	if err != nil {
+		return fmt.Errorf("resolving hub namespace for instance %s/%s: %w",
+			instance.Namespace, instance.Name, err)
+	}
+
+	writeBack := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{Namespace: hubNamespace, Name: instance.Name},
+	}
+	if err := ct.federationClient.Delete(ctx, writeBack); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("deleting write-back instance %s/%s: %w", hubNamespace, instance.Name, err)
 	}
 	return nil
 }

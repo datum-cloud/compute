@@ -39,6 +39,11 @@ const (
 	wbTestCityCode     = "DFW"
 	wbTestWorkloadName = "my-workload"
 	wbTestPlacement    = "us-central"
+
+	// wbTestHubWDUID is the hub WorkloadDeployment's own UID. It is the only UID
+	// the hub garbage collector can act on, so the write-back copy's controller
+	// reference must carry it.
+	wbTestHubWDUID = "hub-wd-uid-eeee-ffff"
 )
 
 // wbTestCellInstance builds a cell-side Instance with all seven owned labels
@@ -92,11 +97,24 @@ func wbTestDownstreamNS() *corev1.Namespace {
 	}
 }
 
+// wbTestHubDeployment returns the hub WorkloadDeployment that owns the
+// write-back copies of wbTestCellInstance. Write-back requires it to exist.
+func wbTestHubDeployment() *computev1alpha.WorkloadDeployment {
+	return &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      wbTestWDName,
+			Namespace: wbTestNamespace,
+			UID:       types.UID(wbTestHubWDUID),
+		},
+	}
+}
+
 // newWriteBackReconciler wires an InstanceReconciler whose FederationClient is set
 // to federationClient and whose local cluster has a single cell instance.
 func newWriteBackReconciler(federationClient client.Client) *InstanceReconciler {
 	return &InstanceReconciler{
 		FederationClient: federationClient,
+		scheme:           newKarmadaScheme(),
 	}
 }
 
@@ -112,7 +130,7 @@ func TestWriteBackToUpstream_CreatePath_AllLabels(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -176,7 +194,7 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -234,7 +252,7 @@ func TestWriteBackToUpstream_LabelChangeTriggerUpdate(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -269,7 +287,7 @@ func TestWriteBackToUpstream_MissingLinkingLabels_Error(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -342,7 +360,7 @@ func TestWriteBackToUpstream_MissingLinkingLabels_NoUpdate(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -381,7 +399,7 @@ func TestWriteBackToUpstream_MissingSelfDescribingLabel_Error(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -482,7 +500,7 @@ func TestWriteBackToUpstream_NamespaceGetFailure_Error(t *testing.T) {
 	getFailure := errors.New("federation API unavailable")
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(newKarmadaScheme()).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -516,7 +534,7 @@ func TestWriteBackToUpstream_FourNewLabels_CreatePath(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -569,7 +587,7 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 

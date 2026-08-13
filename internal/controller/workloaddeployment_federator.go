@@ -91,10 +91,6 @@ type WorkloadDeploymentFederator struct {
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	if r.FederationClient == nil {
-		return ctrl.Result{}, nil
-	}
-
 	logger := log.FromContext(ctx)
 
 	// An empty cluster name resolves to the local host management cluster, which
@@ -150,6 +146,14 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, err
 	}
 
+	// Record the hub namespace on the project object before writing anything into
+	// that namespace, so finalization can always find what to remove. Stamping it
+	// afterwards risks a restart between the two writes, which would leave a hub
+	// copy that finalization cannot locate.
+	if err := r.recordFederationNamespace(ctx, cl.GetClient(), &deployment, downstreamNS); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Upsert the WorkloadDeployment in the downstream control plane via the
 	// strategy client so any future Create calls also go through
 	// ensureDownstreamNamespace automatically.
@@ -173,10 +177,6 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 // deployments with the same city code remain in the downstream namespace, deletes
 // the PropagationPolicy as well.
 func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	if r.FederationClient == nil {
-		return finalizer.Result{}, nil
-	}
-
 	deployment := obj.(*computev1alpha.WorkloadDeployment)
 	logger := log.FromContext(ctx).WithValues(
 		"deployment", deployment.Name,
@@ -193,10 +193,20 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 		return finalizer.Result{}, err
 	}
 
-	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.FederationClient)
-	downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
-	if err != nil {
-		return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)
+	// Prefer the namespace recorded on the object itself. Live resolution reads
+	// the project namespace, an object this controller neither owns nor keeps
+	// alive. If that namespace were removed first, finalization would fail on
+	// every attempt and strand the hub deployment, which is the root of the hub
+	// ownership tree. The recorded value removes that dependency.
+	downstreamNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
+	if downstreamNS == "" {
+		// Federated before the annotation existed, so fall back to live
+		// resolution and accept the dependency this branch exists to avoid.
+		strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.FederationClient)
+		downstreamNS, err = strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
+		if err != nil {
+			return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)
+		}
 	}
 
 	kd := &computev1alpha.WorkloadDeployment{
@@ -215,6 +225,31 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	}
 
 	return finalizer.Result{}, nil
+}
+
+// recordFederationNamespace stamps the resolved hub namespace onto the project
+// WorkloadDeployment. It patches only when the value changes, so it adds no
+// write traffic in the steady state.
+func (r *WorkloadDeploymentFederator) recordFederationNamespace(
+	ctx context.Context,
+	projectClient client.Client,
+	deployment *computev1alpha.WorkloadDeployment,
+	downstreamNS string,
+) error {
+	if deployment.Annotations[computev1alpha.FederationNamespaceAnnotation] == downstreamNS {
+		return nil
+	}
+
+	patch := client.MergeFrom(deployment.DeepCopy())
+	if deployment.Annotations == nil {
+		deployment.Annotations = map[string]string{}
+	}
+	deployment.Annotations[computev1alpha.FederationNamespaceAnnotation] = downstreamNS
+	if err := projectClient.Patch(ctx, deployment, patch); err != nil {
+		return fmt.Errorf("failed recording federation namespace %q on %s/%s: %w",
+			downstreamNS, deployment.Namespace, deployment.Name, err)
+	}
+	return nil
 }
 
 // ensureDownstreamNamespace creates or updates the downstream namespace, stamping
@@ -506,6 +541,13 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(federatorFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register federator finalizer: %w", err)
+	}
+
+	// This finalizer is the only thing that can remove a hub WorkloadDeployment,
+	// so a federator without a client would release finalizers it cannot honour.
+	// Fail at startup instead.
+	if r.FederationClient == nil {
+		return fmt.Errorf("workload deployment federator requires a federation client")
 	}
 
 	b := mcbuilder.ControllerManagedBy(mgr).

@@ -217,9 +217,8 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			wantErr:        true,
 		},
 		{
-			// A write-back copy that cannot identify its WorkloadDeployment
-			// violates the stamping invariant — the projector must return an
-			// error rather than silently drop the projection.
+			// A write-back copy always carries its WorkloadDeployment name; the
+			// label is stamped when the copy is created.
 			name: "WD name label absent — error, no projection",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
 				computev1alpha.WorkloadDeploymentNameLabel: "",
@@ -232,7 +231,7 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			// Federation-plane Instances are exclusively write-back copies and the
 			// write-back stamps both upstream-owner labels atomically, so a missing
 			// cluster label is a stamping-invariant violation, not a foreign object.
-			name: "missing upstream-cluster-name label — error",
+			name: "missing upstream-cluster-name label — error, no projection",
 			karmadaInstance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      projTestInstanceName,
@@ -249,10 +248,9 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 		},
 		{
 			// The write-back stamps both upstream-owner labels together, so a
-			// cluster label without a namespace label is an invariant violation
-			// that never self-heals — the projector must return an error rather
-			// than requeue at a flat rate.
-			name: "missing upstream-namespace label — error",
+			// cluster label without a namespace label is the same invariant
+			// violation.
+			name: "missing upstream-namespace label — error, no projection",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
 				// Override: remove the upstream namespace label.
 				downstreamclient.UpstreamOwnerNamespaceLabel: "",
@@ -319,9 +317,12 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, ctrl.Result{}, result)
 
 			ctx := context.Background()
+
+			if tt.wantProjection {
+				assert.Equal(t, ctrl.Result{}, result)
+			}
 
 			// Check whether a projected Instance exists in the project namespace.
 			var projection computev1alpha.Instance

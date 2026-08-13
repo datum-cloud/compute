@@ -77,7 +77,9 @@ func TestInstanceSetupWithManager_SingleModeNoQuotaCRD(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	r := &InstanceReconciler{}
+	// A cell always runs with federation, so mirror that here: SetupWithManager
+	// requires the client that write-back and finalization depend on.
+	r := &InstanceReconciler{FederationClient: newKarmadaFakeClient()}
 	require.NoError(t, r.SetupWithManager(
 		mgr,
 		cfg, // quotaRestConfig set: claim writes are wired even in single mode

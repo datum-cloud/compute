@@ -26,6 +26,17 @@ const (
 	// for the compute_referenced_data_gate_wait_seconds histogram.
 	ReferencedDataGateStartAnnotation = AnnotationNamespace + "/referenced-data-gate-start"
 
+	// FederationNamespaceAnnotation records the federation-hub namespace that a
+	// project WorkloadDeployment's hub copy was written to. The federator stamps
+	// it when it federates the deployment.
+	//
+	// Finalization must remove the hub copy before the project object can go
+	// away. Reading the namespace from the object being finalized keeps that step
+	// from depending on a separate object with its own lifetime. Deployments
+	// federated before this annotation existed resolve the namespace live
+	// instead.
+	FederationNamespaceAnnotation = AnnotationNamespace + "/federation-namespace"
+
 	// ReferencedDataErrorAnnotation is stamped on a WorkloadDeployment by the
 	// ReferencedDataController when a terminal source error occurs (SourceNotFound,
 	// SourceUnauthorized, or SourceTooLarge). Its value is a JSON object with

@@ -1180,12 +1180,8 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 }
 
 // Finalize removes the downstream write-back Instance when the local Instance is
-// deleted. It is a no-op when downstream federation is disabled.
+// deleted.
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	if r.FederationClient == nil {
-		return finalizer.Result{}, nil
-	}
-
 	instance := obj.(*computev1alpha.Instance)
 
 	downstreamInstance := &computev1alpha.Instance{}
@@ -1211,6 +1207,8 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 	if r.FederationClient == nil {
 		return nil
 	}
+
+	logger := log.FromContext(ctx)
 
 	// Read the upstream project namespace name and encoded cluster name from
 	// the federation-plane namespace. The federator stamps both labels
@@ -1260,6 +1258,26 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 			instance.Namespace, instance.Name, strings.Join(missingLabels, ", "))
 	}
 
+	// The hub WorkloadDeployment owns every write-back copy derived from it: same
+	// hub cluster, same hub namespace, hub-native UID. Its absence is the correct
+	// steady state for a deployment whose propagation was withdrawn, because the
+	// cell is being torn down and nothing should recreate its copies. Write-back
+	// stops here and reports no error. Creating a copy without that owner is what
+	// lets a stranded hub deployment regenerate hub Instances forever
+	// (datum-cloud/compute#218).
+	hubDeploymentName := instance.Labels[computev1alpha.WorkloadDeploymentNameLabel]
+	hubDeployment := &computev1alpha.WorkloadDeployment{}
+	hubDeploymentKey := client.ObjectKey{Namespace: instance.Namespace, Name: hubDeploymentName}
+	if err := r.FederationClient.Get(ctx, hubDeploymentKey, hubDeployment); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("skipping write-back: the hub WorkloadDeployment that would own the copy does not exist",
+				"hubWorkloadDeployment", hubDeploymentKey.String())
+			return nil
+		}
+		return fmt.Errorf("failed getting hub workload deployment %q for write-back ownership: %w",
+			hubDeploymentKey.String(), err)
+	}
+
 	writeBack := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      instance.Name,
@@ -1277,6 +1295,13 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 			},
 		},
 		Spec: instance.Spec,
+	}
+
+	// The hub's garbage collector reclaims every copy when the deployment is
+	// removed, with no cross-plane cascade and no dependence on the cell-side
+	// finalizer running.
+	if err := controllerutil.SetControllerReference(hubDeployment, writeBack, federationScheme(r.scheme)); err != nil {
+		return fmt.Errorf("failed setting hub owner reference on write-back instance: %w", err)
 	}
 
 	existing := &computev1alpha.Instance{}
@@ -1308,7 +1333,16 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		ownedLabels[k] = existing.Labels[k]
 	}
 
-	if !apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
+	// Copies created before hub-local ownership existed carry no controller
+	// reference. Adopt them here, because owner-gated write-back never recreates
+	// a copy that already exists.
+	ownerChanged, err := reconcileHubOwnerReference(hubDeployment, existing, federationScheme(r.scheme))
+	if err != nil {
+		return err
+	}
+
+	if ownerChanged ||
+		!apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
 		!apiequality.Semantic.DeepEqual(ownedLabels, writeBack.Labels) {
 		existing.Spec = instance.Spec
 		// Merge writeBack.Labels into existing.Labels. Only keys owned by
@@ -1958,6 +1992,13 @@ func (r *InstanceReconciler) SetupWithManager(
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(instanceControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)
+	}
+
+	// Write-back is the only path that makes a cell Instance visible upstream, so
+	// a cell without a federation client would run silently doing nothing useful.
+	// Fail at startup rather than letting the finalizer discover it later.
+	if r.FederationClient == nil {
+		return fmt.Errorf("instance reconciler requires a federation client")
 	}
 
 	edgeClusterNameVal := r.edgeClusterName

@@ -19,13 +19,14 @@ spec:
     Note: this test requires the cell InstanceReconciler to be running in the DFW
     POP cell cluster with federation configured.
 
-    Runtime prerequisite (see verification phase): the write-back path errors
+    Runtime prerequisites (see the setup phase): the write-back path errors
     unless the hub ns-<uid> namespace carries the two upstream-* labels above and
     the cell Instance carries the full set of linking labels the stateful control
-    strategy stamps at creation. This suite hand-crafts a bare namespace and a
-    bare Instance, so the write-back may not fire until those labels are seeded
-    (or the Instance is created via a real WorkloadDeployment, as full-federation
-    does).
+    strategy stamps at creation. It is also owner-gated: the hub
+    WorkloadDeployment named by the Instance must exist, because it becomes the
+    in-cluster owner of the copy, and no hub deployment means no copy at all
+    (datum-cloud/compute#218). This suite hand-crafts all three, where
+    full-federation gets them from a real WorkloadDeployment.
 
   template: true
 
@@ -83,6 +84,47 @@ spec:
           kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
             delete namespace "$INSTANCE_NS" --ignore-not-found
 
+  - name: seed-hub-workload-deployment
+    description: |
+      Create the hub WorkloadDeployment that owns the write-back copy. Write-back
+      is gated on it: without it the cell correctly writes nothing.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            name: test-writeback-wd
+            namespace: ${INSTANCE_NS}
+          spec:
+            cityCode: dfw
+            placementName: default
+            workloadRef:
+              name: test-workload
+              uid: "00000000-0000-0000-0000-000000000001"
+            template:
+              spec:
+                runtime:
+                  resources:
+                    instanceType: datumcloud/d1-standard-2
+                networkInterfaces:
+                - network:
+                    name: test-network
+            scaleSettings:
+              minReplicas: 1
+          EOF
+
   - name: create-instance-on-pop-dfw
     description: Create the Instance on the DFW POP cell cluster.
     cluster: pop-dfw
@@ -129,3 +171,8 @@ spec:
             labels:
               meta.datumapis.com/upstream-cluster-name: cluster-single
               meta.datumapis.com/upstream-namespace: ($instanceNS)
+            # The copy is owned by the hub WorkloadDeployment it names, so the
+            # hub garbage collector reclaims it when that deployment goes away.
+            (ownerReferences[?kind == 'WorkloadDeployment'] | [0]):
+              name: test-writeback-wd
+              controller: true

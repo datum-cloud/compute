@@ -33,6 +33,11 @@ import (
 // so that it is garbage-collected via cascading deletion when the deployment is
 // removed from the project cluster.
 //
+// The projector never deletes anything. Reclamation belongs to hub ownership:
+// hub Instances are owned by their hub WorkloadDeployment, and write-back is
+// owner-gated, so an object the projector cannot resolve is not something for it
+// to clean up.
+//
 // The controller is registered with a standard manager.Manager pointed at the
 // upstream Karmada control plane — NOT the multicluster-runtime manager — so
 // informer watches are scoped to the upstream control plane.
@@ -63,12 +68,17 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("failed getting upstream instance: %w", err)
 	}
 
-	// Federation-plane Instances exist exclusively as write-back copies, and
-	// the InstanceReconciler stamps both upstream-owner labels atomically when
-	// it writes the copy — "not ours" cannot occur. A missing cluster label is
-	// a stamping-invariant violation that never self-heals, so surface it as an
-	// error for backoff and visibility rather than silently dropping the
-	// projection.
+	// An object on its way out has nothing to project, and its projection is
+	// reclaimed by the owner reference rather than by this controller.
+	if !downstreamInstance.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	// Federation-plane Instances exist exclusively as write-back copies, and the
+	// InstanceReconciler stamps both upstream-owner labels atomically when it
+	// writes the copy — "not ours" cannot occur. A missing cluster label is a
+	// stamping-invariant violation, so surface it as an error for backoff and
+	// visibility rather than silently dropping the projection.
 	encodedClusterName := downstreamInstance.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
 	if encodedClusterName == "" {
 		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s is missing the %s label; cannot resolve the project cluster",
@@ -76,22 +86,18 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			downstreamclient.UpstreamOwnerClusterNameLabel)
 	}
 
-	// The encoded form is "cluster-<name>" with "/" replaced by "_".
-	clusterName := DecodeClusterName(encodedClusterName)
-
-	projectCluster, err := r.MCManager.GetCluster(ctx, multicluster.ClusterName(clusterName))
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed getting project cluster %q: %w", clusterName, err)
+	// Derive the project cluster key the same way the federator does. The label
+	// encodes the full "org/project" path, while the multicluster provider keys
+	// clusters by bare project name.
+	clusterName := projectClusterNameFromLabel(encodedClusterName)
+	if clusterName == "" {
+		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s carries an undecodable %s label (%q)",
+			downstreamInstance.Namespace, downstreamInstance.Name,
+			downstreamclient.UpstreamOwnerClusterNameLabel, encodedClusterName)
 	}
-	projectClient := projectCluster.GetClient()
 
-	// The InstanceReconciler stamps UpstreamOwnerNamespaceLabel with the project
-	// namespace name (read from the upstream Karmada namespace label set by the federator),
-	// so we can resolve the target namespace directly without scanning. Both
-	// upstream-owner labels are stamped together with non-empty values, so a
-	// cluster label without a namespace label is an invariant violation that
-	// never self-heals — surface it as an error for backoff and visibility
-	// rather than requeueing at a flat rate.
+	// Both upstream-owner labels are stamped together with non-empty values, so a
+	// cluster label without a namespace label is the same invariant violation.
 	targetNamespace := downstreamInstance.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 	if targetNamespace == "" {
 		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s carries %s but is missing the %s label; cannot resolve the project namespace",
@@ -99,22 +105,22 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			downstreamclient.UpstreamOwnerClusterNameLabel, downstreamclient.UpstreamOwnerNamespaceLabel)
 	}
 
-	// Resolve the owning WorkloadDeployment by NAME in the project cluster.
-	// Core invariant: the ownerReference MUST be built from a project-cluster
-	// object obtained via projectClient.Get — never from any edge/Karmada
-	// identity. The WD name is stable across all planes (project cluster,
-	// Karmada, edge) and is the correct cross-plane identifier, carried by
-	// WorkloadDeploymentNameLabel (stamped by the edge stateful control
-	// strategy).
+	// Resolve the owning WorkloadDeployment by NAME in the project cluster. Core
+	// invariant: build the ownerReference from a project-cluster object fetched
+	// with projectClient.Get, never from an edge or Karmada identity. The WD name
+	// is stable across all planes and is carried by WorkloadDeploymentNameLabel,
+	// stamped by the edge stateful control strategy.
 	wdName := downstreamInstance.Labels[computev1alpha.WorkloadDeploymentNameLabel]
 	if wdName == "" {
-		// A write-back copy that cannot identify its WorkloadDeployment violates
-		// the same stamping invariant as the labels above — surface it as an
-		// error for backoff and visibility instead of silently dropping the
-		// projection.
 		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s is missing the %s label; cannot resolve its WorkloadDeployment",
 			downstreamInstance.Namespace, downstreamInstance.Name, computev1alpha.WorkloadDeploymentNameLabel)
 	}
+
+	projectCluster, err := r.MCManager.GetCluster(ctx, multicluster.ClusterName(clusterName))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed getting project cluster %q: %w", clusterName, err)
+	}
+	projectClient := projectCluster.GetClient()
 
 	// Fetch the project-cluster WD directly by name. The returned object carries
 	// the project-cluster metadata.uid — the only UID that GC in the project
@@ -123,11 +129,10 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := projectClient.Get(ctx, client.ObjectKey{Namespace: targetNamespace, Name: wdName}, &ownerWD); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Never create an ownerless projection. The controller only watches
-			// Instances, so no event fires when the WD appears — returning an
-			// error retries with backoff and surfaces the wait in error metrics.
-			// A transient ordering race (Instance projected before
-			// WorkloadReconciler created the project WD) resolves on retry; a
-			// deleted WD ends the retries once its write-back copies are gone.
+			// Instances, so no event fires when the WD appears — returning an error
+			// retries with backoff. A hub Instance cannot outlive its project
+			// deployment, so this is a creation-ordering race that the retry
+			// resolves.
 			return ctrl.Result{}, fmt.Errorf("workload deployment %q not found in project cluster %q for instance %s/%s",
 				wdName, clusterName, downstreamInstance.Namespace, downstreamInstance.Name)
 		}
@@ -164,7 +169,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	logger.Info("reconciled Instance projection", "operation", operationResult, "namespace", targetNamespace, "cluster", clusterName)
 
-	// 7. Sync status — status is a separate subresource.
+	// Status is a separate subresource.
 	projection.Status = downstreamInstance.Status
 	if err := projectClient.Status().Update(ctx, projection); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("failed updating Instance projection status: %w", err)

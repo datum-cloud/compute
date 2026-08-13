@@ -1,0 +1,267 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: federation-hub-reclaim
+spec:
+  description: |
+    The hub reclaims its own write-back copies, and never manufactures a copy it
+    could not reclaim.
+
+    Two invariants, asserted against a hub whose write-back copies are being
+    produced live by a real cell operator:
+
+    1. Deleting the hub WorkloadDeployment ALONE removes the write-back Instances
+       derived from it. Nothing is asked to clean up: the copy carries an ordinary
+       in-cluster controller reference to that deployment, so the hub apiserver's
+       garbage collector reclaims it. This is the property that makes a stranded
+       hub Instance impossible even with every compute controller stopped.
+
+    2. With the owner gone, no new copy appears — even though the cell Instance
+       still exists and is still being reconciled. Write-back refuses to create a
+       copy it cannot attach to a hub owner, which is what closes the loop the
+       #218 workaround kept losing to: hand-deleting a hub Instance used to be
+       futile because a surviving hub deployment kept regenerating it.
+
+    The cell side is hand-crafted rather than federated, following the
+    instance-writeback idiom, precisely so the cell Instance OUTLIVES the hub
+    deployment. Federating one instead would tear the cell Instance down with the
+    propagation, and invariant 2 would then pass vacuously — nothing would have
+    been trying to write back.
+
+  template: true
+
+  steps:
+  - name: setup-namespaces
+    description: |
+      Create the hub namespace with the identity labels the federator stamps, and
+      its counterpart on the cell. Write-back reads its upstream identity from
+      these labels and errors without them.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            create namespace "$INSTANCE_NS" \
+            --dry-run=client -o yaml | \
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml apply -f -
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: ${INSTANCE_NS}
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+              meta.datumapis.com/upstream-namespace: ${INSTANCE_NS}
+          EOF
+    cleanup:
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            delete namespace "$INSTANCE_NS" --ignore-not-found --wait=false
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            delete namespace "$INSTANCE_NS" --ignore-not-found --wait=false
+
+  - name: seed-hub-workload-deployment
+    description: |
+      Create the hub WorkloadDeployment that will own the write-back copy. It is
+      the root of the hub ownership tree this suite later removes.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - script:
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            name: test-hub-reclaim-wd
+            namespace: ${INSTANCE_NS}
+          spec:
+            cityCode: dfw
+            placementName: default
+            workloadRef:
+              name: test-workload
+              uid: "00000000-0000-0000-0000-000000000001"
+            template:
+              spec:
+                runtime:
+                  resources:
+                    instanceType: datumcloud/d1-standard-2
+                networkInterfaces:
+                - network:
+                    name: test-network
+            scaleSettings:
+              minReplicas: 1
+          EOF
+
+  - name: create-cell-instance
+    description: Create the cell Instance whose write-back copy is under test.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - apply:
+        file: instance-pop-dfw.yaml
+    cleanup:
+    - script:
+        content: |
+          INSTANCE_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          kubectl delete instance test-hub-reclaim-wd-0 \
+            --namespace "$INSTANCE_NS" --ignore-not-found --wait=false
+
+  - name: assert-writeback-is-owned
+    description: |
+      The copy must exist and must be owned by the hub deployment. Everything
+      after this step depends on that owner reference being real, so it is
+      asserted field by field rather than by mere existence.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($instanceNS)
+            name: test-hub-reclaim-wd-0
+            (ownerReferences[?kind == 'WorkloadDeployment'] | [0]):
+              apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              name: test-hub-reclaim-wd
+              controller: true
+              blockOwnerDeletion: true
+
+  - name: delete-the-hub-deployment-alone
+    description: |
+      Remove only the owner, on the hub, with every controller left running. No
+      compute code is asked to delete the copy — the hub apiserver is.
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - script:
+        timeout: 180s
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          set -eu
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            -n "$INSTANCE_NS" delete workloaddeployment test-hub-reclaim-wd --wait=true
+
+  - name: assert-hub-gc-reclaimed-the-copy
+    description: |
+      Invariant 1. The hub garbage collector's discovery and dependency-graph
+      passes are periodic, so this is given far more room than an event-driven
+      reconcile would need; a real regression shows up as the copy never going
+      away, not as it going away slowly.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: Instance
+        namespace: ($instanceNS)
+        name: test-hub-reclaim-wd-0
+        timeout: 300s
+        for:
+          deletion: {}
+
+  - name: assert-no-copy-is-manufactured-without-an-owner
+    description: |
+      Invariant 2. The cell Instance is still there and still being reconciled,
+      so the cell has every opportunity to write a copy back. It must not: a copy
+      created without a hub owner would be unreclaimable, which is the exact
+      shape of the objects #218 stranded.
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: instanceNS
+          value: ($stdout)
+    - script:
+        timeout: 180s
+        env:
+        - name: INSTANCE_NS
+          value: ($instanceNS)
+        content: |
+          set -eu
+          CELL=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml
+          HUB=../../../tmp/e2e/kubeconfigs/downstream.yaml
+
+          # If the cell Instance were gone, nothing would be attempting write-back
+          # and the absence asserted below would prove nothing.
+          kubectl --kubeconfig=$CELL -n "$INSTANCE_NS" get instance test-hub-reclaim-wd-0 >/dev/null
+
+          # Comfortably longer than the cell InstanceReconciler's requeue period,
+          # so several reconciles of the surviving cell Instance are observed.
+          for _ in $(seq 1 20); do
+            if kubectl --kubeconfig=$HUB -n "$INSTANCE_NS" \
+                 get instance test-hub-reclaim-wd-0 >/dev/null 2>&1; then
+              echo "a hub write-back copy was created with no hub WorkloadDeployment to own it" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "no unowned write-back copy was manufactured"
