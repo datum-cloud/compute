@@ -227,6 +227,9 @@ spec:
 
                           Keyed by interface name so an interface keeps its identity, and therefore
                           its addresses, across updates to the rest of the list.
+
+                          Limited to a single interface until the data plane can attach more than
+                          one to an instance.
                         items:
                           description: |-
                             InstanceNetworkInterface describes one interface an instance needs. The
@@ -452,7 +455,7 @@ spec:
                               or cleared after creation
                             rule: has(self.addresses) == has(oldSelf.addresses) &&
                               (!has(self.addresses) || self.addresses == oldSelf.addresses)
-                        maxItems: 8
+                        maxItems: 1
                         minItems: 1
                         type: array
                         x-kubernetes-list-map-keys:

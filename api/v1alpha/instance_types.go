@@ -19,9 +19,12 @@ type InstanceSpec struct {
 	// Keyed by interface name so an interface keeps its identity, and therefore
 	// its addresses, across updates to the rest of the list.
 	//
+	// Limited to a single interface until the data plane can attach more than
+	// one to an instance.
+	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:MaxItems=1
 	// +listType=map
 	// +listMapKey=name
 	NetworkInterfaces []InstanceNetworkInterface `json:"networkInterfaces,omitempty"`
