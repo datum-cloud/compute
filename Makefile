@@ -61,8 +61,18 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
+test: manifests generate fmt vet envtest interpreter-test ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+.PHONY: interpreter-test
+interpreter-test: karmadactl ## Validate Karmada resource interpreter customizations.
+	$(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --check
+	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
+	if ! grep -q "replicas: 5" <<<"$$out"; then \
+	  printf '%s\n' "$$out"; \
+	  printf '%s\n' "expected retained WorkloadDeployment replicas to be 5"; \
+	  exit 1; \
+	fi
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
@@ -169,6 +179,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 DEFAULTER_GEN ?= $(LOCALBIN)/defaulter-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
+KARMADACTL ?= $(LOCALBIN)/karmadactl
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 CRDOC ?= $(LOCALBIN)/crdoc
 
@@ -177,6 +188,7 @@ KUSTOMIZE_VERSION ?= v5.5.0
 CONTROLLER_TOOLS_VERSION ?= v0.16.4
 DEFAULTER_GEN_VERSION ?= v0.32.3
 ENVTEST_VERSION ?= release-0.19
+KARMADA_VERSION ?= v1.18.1
 GOLANGCI_LINT_VERSION ?= v2.12.2
 
 # renovate: datasource=go depName=fybrik.io/crdoc
@@ -201,6 +213,11 @@ $(DEFAULTER_GEN): $(LOCALBIN)
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+.PHONY: karmadactl
+karmadactl: $(KARMADACTL) ## Download karmadactl locally if necessary.
+$(KARMADACTL): $(LOCALBIN)
+	$(call go-install-tool,$(KARMADACTL),github.com/karmada-io/karmada/cmd/karmadactl,$(KARMADA_VERSION))
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.

@@ -1,0 +1,14 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  name: test-wd
+  namespace: default
+spec:
+  workloadRef:
+    name: test
+  placementName: default
+  cityCode: DFW
+  template: {}
+  scaleSettings:
+    minReplicas: 1
+  replicas: 5
