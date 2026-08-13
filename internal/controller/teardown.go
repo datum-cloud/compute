@@ -20,10 +20,14 @@ import (
 	quotametrics "go.datum.net/compute/internal/quota"
 )
 
-// labelServiceName is the label key the consumer provider uses to scope
-// deactivation cleanup. Every Instance the compute operator creates in a
-// consumer project carries this label so disengage can target them by service.
-const labelServiceName = "services.miloapis.com/service-name"
+// labelServiceName and labelServiceValue are the label key and value the
+// consumer provider uses to scope deactivation cleanup. Every resource the
+// compute operator creates in a consumer project carries this label so disengage
+// can target them by service.
+const (
+	labelServiceName  = "services.miloapis.com/service-name"
+	labelServiceValue = "compute.datumapis.com"
+)
 
 // labelServiceNameValue is this operator's canonical service name, the value
 // paired with labelServiceName on every resource the compute operator scopes

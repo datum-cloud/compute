@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
@@ -26,6 +27,7 @@ import (
 // cluster (corev1 + compute).
 func newProjectScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
+	_ = autoscalingv2.AddToScheme(s)
 	_ = corev1.AddToScheme(s)
 	_ = computev1alpha.AddToScheme(s)
 	return s
