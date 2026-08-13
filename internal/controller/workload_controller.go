@@ -43,6 +43,12 @@ const (
 type WorkloadReconciler struct {
 	mgr        mcmanager.Manager
 	finalizers finalizer.Finalizers
+
+	// NetworkingEnabled mirrors the NetworkingIntegration feature gate. When
+	// false the Network watch is not registered: the networking CRDs are absent
+	// on control planes without the integration, and engaging a watch against a
+	// missing kind wedges the manager.
+	NetworkingEnabled bool
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads,verbs=get;list;watch;create;update;patch;delete
@@ -532,9 +538,15 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		return fmt.Errorf("failed to register finalizer: %w", err)
 	}
 
-	return mcbuilder.ControllerManagedBy(mgr).
+	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Workload{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Owns(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Owns(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+	if !r.NetworkingEnabled {
+		return b.Complete(r)
+	}
+
+	return b.
 		Watches(&networkingv1alpha.Network{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, network client.Object) []mcreconcile.Request {
 				logger := log.FromContext(ctx)

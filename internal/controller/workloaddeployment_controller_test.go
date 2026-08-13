@@ -162,7 +162,7 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 		instanceReady,
 	}
 
-	// Use a fake client. networkReady=false avoids the gate-patch path that
+	// Use a fake client. An empty readiness map avoids the gate-patch path that
 	// would call CreateOrPatch, so the client is not exercised here.
 	cl := newProjectFakeClient()
 	r := &WorkloadDeploymentReconciler{}
@@ -173,7 +173,7 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 		cl,
 		deployment,
 		instances,
-		false, // networkReady=false: skip gate-patch path
+		nil, // no instance holds its addresses: skip gate-patch path
 	)
 
 	require.NoError(t, err)
@@ -194,8 +194,8 @@ func TestReconcileInstanceGates_NilController_DoesNotPanic(t *testing.T) {
 // TestReconcileInstanceGates_NilSpecController_DoesNotPanic is a regression test
 // for a nil-deref in reconcileInstanceGates: Spec.Controller is a nilable
 // pointer, and the network gate-clearing path dereferenced
-// instance.Spec.Controller.SchedulingGates without a nil guard. When
-// networkReady is true and an instance has no controller spec, the unguarded
+// instance.Spec.Controller.SchedulingGates without a nil guard. When the
+// instance's claims are satisfied and it has no controller spec, the unguarded
 // deref panicked the reconcile. This must not panic.
 func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	t.Parallel()
@@ -212,7 +212,8 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	}
 
 	// Spec.Controller intentionally nil — the network gate-clearing path runs
-	// (networkReady=true) and must skip this instance instead of panicking.
+	// (the instance is reported network-ready) and must skip this instance
+	// instead of panicking.
 	instanceNilSpecController := computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{Name: "instance-nil-spec-controller", Namespace: wdControllerTestNS},
 	}
@@ -226,7 +227,7 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 			cl,
 			deployment,
 			[]computev1alpha.Instance{instanceNilSpecController},
-			true, // networkReady=true exercises the Spec.Controller deref path
+			map[string]bool{instanceNilSpecController.Name: true}, // exercises the Spec.Controller deref path
 		)
 		require.NoError(t, err)
 	})
@@ -295,7 +296,7 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 		cl,
 		deployment,
 		[]computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceQuotaBlocked},
-		false,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -339,7 +340,7 @@ func TestReconcileInstanceGates_ClearsNetworkSchedulingGate(t *testing.T) {
 			cl,
 			deployment,
 			[]computev1alpha.Instance{*instance},
-			true,
+			map[string]bool{instance.Name: true},
 		)
 		require.NoError(t, err)
 
@@ -363,7 +364,7 @@ func TestReconcileInstanceGates_ClearsNetworkSchedulingGate(t *testing.T) {
 			cl,
 			deployment,
 			[]computev1alpha.Instance{*instance},
-			false,
+			nil,
 		)
 		require.NoError(t, err)
 

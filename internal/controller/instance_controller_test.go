@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -28,6 +29,8 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	"go.datum.net/compute/internal/quota"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
@@ -586,15 +589,18 @@ func TestReconcileQuota(t *testing.T) {
 		}
 	}
 
-	newReconciler := func(t *testing.T, projectObjs []client.Object, quotaObjs []client.Object) (*InstanceReconciler, client.Client, client.Client) {
+	newReconciler := func(t *testing.T, projectObjs []client.Object, quotaObjs []client.Object, projectInterceptors ...interceptor.Funcs) (*InstanceReconciler, client.Client, client.Client) {
 		t.Helper()
 		s := newTestScheme(t)
 
-		projectClient := fake.NewClientBuilder().
+		projectBuilder := fake.NewClientBuilder().
 			WithScheme(s).
 			WithObjects(projectObjs...).
-			WithStatusSubresource(&computev1alpha.Instance{}).
-			Build()
+			WithStatusSubresource(&computev1alpha.Instance{})
+		for _, funcs := range projectInterceptors {
+			projectBuilder = projectBuilder.WithInterceptorFuncs(funcs)
+		}
+		projectClient := projectBuilder.Build()
 
 		quotaClient := fake.NewClientBuilder().
 			WithScheme(s).
@@ -670,15 +676,27 @@ func TestReconcileQuota(t *testing.T) {
 	t.Run("ready-condition reconcile error: quota condition persisted before the error returns", func(t *testing.T) {
 		s := newTestScheme(t)
 		// A scheduling gate keeps the Ready-condition reconcile on the network
-		// failure checker path, and the missing owner reference makes that
-		// checker fail.
+		// failure checker path, and an interface whose claim cannot be read makes
+		// that checker fail.
 		instance := makeInstance(s,
 			computev1alpha.SchedulingGate{Name: instancecontrol.QuotaSchedulingGate.String()},
 		)
-		instance.OwnerReferences = nil
+		instance.Spec.NetworkInterfaces = []computev1alpha.InstanceNetworkInterface{{
+			Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+			Name:    defaultInterfaceName,
+		}}
 		claim := makeClaim(s, metav1.ConditionTrue, quotav1alpha1.ResourceClaimGrantedReason)
 
-		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim})
+		failClaimReads := interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*networkingv1alpha.NetworkInterfaceClaim); ok {
+					return errors.New("network interface claim read failed")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}
+
+		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim}, failClaimReads)
 		// The network failure checker only runs when the networking integration is
 		// enabled; enable it so this test exercises that path.
 		r.NetworkingEnabled = true
@@ -2596,14 +2614,15 @@ func TestReconcileInstanceReadyCondition_ReferencedDataEnrichment(t *testing.T) 
 
 // TestCheckForNetworkCreationFailure_NetworkingDisabled verifies that when the
 // networking integration is disabled the check is a no-op and never touches the
-// client. On cells that don't run the networking integration the NetworkBinding
-// CRD is absent, so a lookup would fail with a "no matches for kind NetworkBinding"
-// RESTMapper error and wedge the reconcile before scheduling gates are cleared.
+// client. On cells that don't run the networking integration the claim CRD is
+// absent, so a lookup would fail with a "no matches for kind
+// NetworkInterfaceClaim" RESTMapper error and wedge the reconcile before
+// scheduling gates are cleared.
 // A nil client here would panic if the method attempted any lookup.
 func TestCheckForNetworkCreationFailure_NetworkingDisabled(t *testing.T) {
 	instance := &computev1alpha.Instance{
 		Spec: computev1alpha.InstanceSpec{
-			// A network interface would normally drive a NetworkBinding lookup.
+			// A network interface would normally drive a claim lookup.
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{}},
 		},
 	}

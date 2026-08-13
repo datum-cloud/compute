@@ -22,15 +22,15 @@ import (
 
 const (
 	// NetworkingIntegration controls whether the compute operator integrates with
-	// the network-services-operator (VPC) for NetworkBinding provisioning and the
+	// the network-services-operator (VPC) for interface addressing and the
 	// Network scheduling gate on Instances.
 	//
 	// When disabled:
-	//   - No NetworkBinding objects are created.
+	//   - No NetworkInterfaceClaim objects are created, and none are read.
 	//   - The Network scheduling gate is not added to newly created Instances.
 	//   - Any existing Network scheduling gate is actively removed.
 	//   - The networking step is treated as immediately ready so Instances
-	//     proceed to the runtime without a NetworkBinding.
+	//     proceed to the runtime without addresses of their own.
 	//
 	// This flag exists so operators can run compute on edge/lab cells where
 	// VPC/NSO is not yet functional. The default is disabled: cells carry no

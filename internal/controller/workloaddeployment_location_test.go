@@ -62,14 +62,11 @@ func newTestLocation(name, cityCode string) *networkingv1alpha.Location {
 	}
 }
 
-// TestReconcileNetworks_PersistsLocation_WhenLocationFound verifies that when a
+// TestResolveLocation_PersistsLocation_WhenLocationFound verifies that when a
 // Location object matching the deployment's city code exists in the cluster, the
-// resolved LocationReference is returned by reconcileNetworks and can be persisted
-// to deployment.Status.Location. Instance creation must not be blocked — the
-// function returns networkReady=false only because no NetworkInterfaces exist on
-// the deployment in this scenario (short-circuit before bindings), not because
-// Location was absent.
-func TestReconcileNetworks_PersistsLocation_WhenLocationFound(t *testing.T) {
+// resolved LocationReference is returned and can be persisted to
+// deployment.Status.Location.
+func TestResolveLocation_PersistsLocation_WhenLocationFound(t *testing.T) {
 	t.Parallel()
 
 	const locationName = "loc-dfw-1"
@@ -83,13 +80,11 @@ func TestReconcileNetworks_PersistsLocation_WhenLocationFound(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-wd", Namespace: locTestWDNamespace},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
 			CityCode: locTestCityCode,
-			// No NetworkInterfaces — the function returns false,locationRef,nil
-			// after the location is found but before bindings are checked.
 		},
 	}
 
 	r := &WorkloadDeploymentReconciler{}
-	_, resolvedLocation, err := r.reconcileNetworks(context.Background(), cl, deployment)
+	resolvedLocation, err := r.resolveLocation(context.Background(), cl, deployment)
 
 	require.NoError(t, err)
 	require.NotNil(t, resolvedLocation,
@@ -103,12 +98,11 @@ func TestReconcileNetworks_PersistsLocation_WhenLocationFound(t *testing.T) {
 		"Status.Location.Name must match the resolved Location object name")
 }
 
-// TestReconcileNetworks_ReturnsNilLocation_WhenNoLocationFound verifies that
-// when no Location object in the cluster matches the deployment's city code,
-// reconcileNetworks returns (false, nil, nil) — no error and no resolved
-// location. The caller must treat nil location as best-effort and must NOT block
-// instance creation.
-func TestReconcileNetworks_ReturnsNilLocation_WhenNoLocationFound(t *testing.T) {
+// TestResolveLocation_ReturnsNilLocation_WhenNoLocationFound verifies that when
+// no Location object in the cluster matches the deployment's city code, the
+// resolver returns (nil, nil) — no error and no resolved location. The caller
+// must treat a nil location as best-effort and must NOT block instance creation.
+func TestResolveLocation_ReturnsNilLocation_WhenNoLocationFound(t *testing.T) {
 	t.Parallel()
 
 	s := newNetworkingScheme()
@@ -124,10 +118,9 @@ func TestReconcileNetworks_ReturnsNilLocation_WhenNoLocationFound(t *testing.T) 
 	}
 
 	r := &WorkloadDeploymentReconciler{}
-	networkReady, resolvedLocation, err := r.reconcileNetworks(context.Background(), cl, deployment)
+	resolvedLocation, err := r.resolveLocation(context.Background(), cl, deployment)
 
 	require.NoError(t, err, "missing location must not cause an error")
-	assert.False(t, networkReady, "network is not ready when no location is found")
 	assert.Nil(t, resolvedLocation,
 		"resolved location must be nil when no matching Location object exists")
 
