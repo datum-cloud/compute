@@ -19,6 +19,7 @@ import (
 
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // ─── Scheme helpers ───────────────────────────────────────────────────────────
@@ -34,11 +35,12 @@ func newProjectScheme() *runtime.Scheme {
 }
 
 // newKarmadaScheme builds a runtime.Scheme with the types needed by the Karmada
-// API server (corev1 + compute + karmada policy).
+// API server (corev1 + compute + networking + karmada policy).
 func newKarmadaScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
 	_ = computev1alpha.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
 	_ = karmadapolicyv1alpha1.Install(s)
 	return s
 }
