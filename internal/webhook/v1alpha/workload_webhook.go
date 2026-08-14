@@ -96,7 +96,7 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 
 	validCityCodes := sets.Set[string]{}
 	for _, location := range locations.Items {
-		cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
+		cityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
 		if ok {
 			validCityCodes.Insert(cityCode)
 		}
@@ -141,7 +141,7 @@ func (r *workloadWebhook) ValidateUpdate(ctx context.Context, _ *computev1alpha.
 
 	validCityCodes := sets.Set[string]{}
 	for _, location := range locations.Items {
-		cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
+		cityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
 		if ok {
 			validCityCodes.Insert(cityCode)
 		}

@@ -900,7 +900,7 @@ func TestWDAvailableCondition_ReferencedDataSourceNotFound(t *testing.T) {
 	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
 		computev1alpha.ReferencedDataReasonSourceNotFound, msg)
 
-	cond := selectWDBlockingCondition(deployment, true, true, 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -919,7 +919,7 @@ func TestWDAvailableCondition_QuotaNotGranted(t *testing.T) {
 	)
 	deployment := makeWDForAvailTest(gen, metav1.ConditionTrue, computev1alpha.ReferencedDataReasonReady, "all present")
 
-	cond := selectWDBlockingCondition(deployment, true, true, 2, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 2, 0, replicas, desiredReplicas)
 
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, cond.Reason)
@@ -940,7 +940,7 @@ func TestWDAvailableCondition_ReferencedDataWinsOverQuota(t *testing.T) {
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		`ConfigMap "X" not found in namespace "default"`)
 
-	cond := selectWDBlockingCondition(deployment, true, true, 1, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 1, replicas, desiredReplicas)
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"ReferencedDataNotReady (priority 4) must beat QuotaNotGranted (priority 3)")
@@ -961,7 +961,7 @@ func TestWDAvailableCondition_NetworkProvisioningVsReferencedData(t *testing.T) 
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		`ConfigMap "X" not found`)
 
-	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, true, 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"ReferencedDataNotReady (priority 4) must beat NetworkProvisioning (priority 2)")
@@ -1004,7 +1004,7 @@ func TestWDAvailableCondition_ObservedGeneration(t *testing.T) {
 	const gen = int64(42)
 	deployment := makeWDForAvailTest(gen, "", "", "")
 
-	cond := selectWDBlockingCondition(deployment, true, true, 0, 0, 0, 1)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, 0, 1)
 
 	assert.Equal(t, gen, cond.ObservedGeneration, "ObservedGeneration must match deployment generation")
 	// Verify the condition is also reachable via apimeta.FindStatusCondition (field
@@ -1062,7 +1062,7 @@ func TestWDAvailableCondition_AnnotationSourceNotFound(t *testing.T) {
 	)
 	deployment := makeWDWithAnnotation(gen, annot)
 
-	cond := selectWDBlockingCondition(deployment, true, true, 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -1100,7 +1100,7 @@ func TestWDAvailableCondition_AnnotationAndConditionBothPresent(t *testing.T) {
 		},
 	}
 
-	cond := selectWDBlockingCondition(deployment, true, true, 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
 
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	// Both paths arrive at the same terminal reason; the winner is stable regardless
@@ -1125,7 +1125,7 @@ func TestWDAvailableCondition_AnnotationWinsOverQuota(t *testing.T) {
 	deployment := makeWDWithAnnotation(gen, annot)
 
 	// quotaBlockedReplicas=1 would normally surface QuotaNotGranted (priority 3).
-	cond := selectWDBlockingCondition(deployment, true, true, 1, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 0, replicas, desiredReplicas)
 
 	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
 		"SourceNotFound (priority 5) must beat QuotaNotGranted (priority 3)")
@@ -1143,7 +1143,7 @@ func TestWDAvailableCondition_NoAnnotationPropagationLag(t *testing.T) {
 	// No annotation, no ReferencedDataReady condition: companions still propagating.
 	deployment := makeWDForAvailTest(gen, "", "", "")
 
-	cond := selectWDBlockingCondition(deployment, true, true, 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"propagation-lag path must still fire when annotation is absent")
@@ -1160,7 +1160,7 @@ func TestWDAvailableCondition_AnnotationEmptyString(t *testing.T) {
 	)
 	deployment := makeWDWithAnnotation(gen, "")
 
-	cond := selectWDBlockingCondition(deployment, true, true, 0, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas)
 
 	// No real blockers; falls through to InstancesProvisioning.
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason)
@@ -1178,7 +1178,7 @@ func TestWDAvailableCondition_AnnotationMalformedJSON(t *testing.T) {
 	deployment := makeWDWithAnnotation(gen, "not-valid-json{{")
 
 	// Should not panic; malformed annotation is skipped.
-	cond := selectWDBlockingCondition(deployment, true, true, 0, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas)
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
 		"malformed annotation must be silently ignored; fallback to InstancesProvisioning")
