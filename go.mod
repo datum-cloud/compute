@@ -14,7 +14,7 @@ require (
 	// (v0.25.5) predates NetworkInterfaceClaim (#360), ServingLocation (#372),
 	// and per-location networks (#373); re-pin to a tagged release before
 	// compute cuts a release.
-	go.datum.net/network-services-operator v0.25.6-0.20260814125050-f3a972d9da33
+	go.datum.net/network-services-operator v0.25.6-0.20260814143848-d6cb0e7329c5
 	go.miloapis.com/milo v0.32.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0
