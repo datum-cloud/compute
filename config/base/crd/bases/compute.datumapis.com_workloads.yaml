@@ -214,12 +214,8 @@ spec:
                           name:
                             description: Name of a datum location
                             type: string
-                          namespace:
-                            description: Namespace for the datum location
-                            type: string
                         required:
                         - name
-                        - namespace
                         type: object
                       networkInterfaces:
                         description: |-

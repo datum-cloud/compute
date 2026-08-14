@@ -96,8 +96,6 @@ func TestResolveLocation_ExactlyOneServingLocation(t *testing.T) {
 	require.NotNil(t, result.reference,
 		"the cell's single serving location must resolve")
 	assert.Equal(t, locationName, result.reference.Name)
-	assert.Empty(t, result.reference.Namespace,
-		"Location is cluster scoped, so the reference carries no namespace")
 	assert.Empty(t, result.reason, "a resolved location reports no blocking reason")
 	assert.False(t, result.blocked)
 }

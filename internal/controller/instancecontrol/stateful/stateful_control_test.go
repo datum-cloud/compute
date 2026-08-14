@@ -338,8 +338,7 @@ func TestInstanceLocation_SetWhenDeploymentStatusLocationPresent(t *testing.T) {
 
 	deployment := getWorkloadDeployment("test-location-set", 1)
 	deployment.Status.Location = &networkingv1alpha.LocationReference{
-		Name:      "loc-dfw-1",
-		Namespace: "networking-system",
+		Name: "loc-dfw-1",
 	}
 
 	var currentInstances []v1alpha.Instance
@@ -353,7 +352,6 @@ func TestInstanceLocation_SetWhenDeploymentStatusLocationPresent(t *testing.T) {
 	assert.NotNil(t, instance.Spec.Location,
 		"Spec.Location must be set when deployment.Status.Location is non-nil")
 	assert.Equal(t, "loc-dfw-1", instance.Spec.Location.Name)
-	assert.Equal(t, "networking-system", instance.Spec.Location.Namespace)
 }
 
 // TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent verifies that when

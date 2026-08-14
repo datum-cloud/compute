@@ -85,12 +85,8 @@ func deploymentLocationIndexFunc(o client.Object) []string {
 		return nil
 	}
 
-	return []string{
-		types.NamespacedName{
-			Namespace: deployment.Status.Location.Namespace,
-			Name:      deployment.Status.Location.Name,
-		}.String(),
-	}
+	// Locations are cluster-scoped, so the name alone identifies one.
+	return []string{deployment.Status.Location.Name}
 }
 
 func addWorkloadIndexers(ctx context.Context, mgr mcmanager.Manager) error {
