@@ -158,7 +158,8 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	// Upsert the WorkloadDeployment in the downstream control plane via the
 	// strategy client so any future Create calls also go through
 	// ensureDownstreamNamespace automatically.
-	if err := r.upsertDownstreamDeployment(ctx, strategy.GetClient(), &deployment, downstreamNS); err != nil {
+	hubDeployment, err := r.upsertDownstreamDeployment(ctx, strategy.GetClient(), &deployment, downstreamNS)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -166,7 +167,15 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, err
 	}
 
-	if err := r.syncStatusFromDownstream(ctx, cl.GetClient(), &deployment, downstreamNS); err != nil {
+	// Ask for the deployment's network to be present where it runs. This follows
+	// the hub deployment because the location it is placed in is only known from
+	// the status the cell aggregates back onto it.
+	binding, err := r.ensureNetworkBinding(ctx, hubDeployment)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.syncStatusFromDownstream(ctx, cl.GetClient(), &deployment, downstreamNS, binding); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -276,12 +285,16 @@ func (r *WorkloadDeploymentFederator) ensureDownstreamNamespace(ctx context.Cont
 // upsertDownstreamDeployment creates or updates the WorkloadDeployment in the
 // downstream namespace via the provided client (expected to be strategy.GetClient()
 // so the downstream namespace is created with upstream tracking labels).
+//
+// It returns the downstream object as it now stands, which is what anything
+// hanging off the hub deployment — its UID for an owner reference, its
+// aggregated status for the location it landed in — has to be built from.
 func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 	ctx context.Context,
 	downstreamClient client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
 	downstreamNS string,
-) error {
+) (*computev1alpha.WorkloadDeployment, error) {
 	kd := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deployment.Name,
@@ -328,11 +341,11 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("failed to upsert downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
+		return nil, fmt.Errorf("failed to upsert downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
 	}
 
 	log.FromContext(ctx).Info("upserted downstream deployment", "result", result, "downstreamNamespace", downstreamNS)
-	return nil
+	return kd, nil
 }
 
 // ensurePropagationPolicy creates or updates a PropagationPolicy in the downstream
@@ -435,6 +448,7 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	projectClient client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
 	downstreamNS string,
+	binding *networkingv1alpha.NetworkBinding,
 ) error {
 	var kd computev1alpha.WorkloadDeployment
 	if err := r.FederationClient.Get(ctx, types.NamespacedName{
@@ -454,6 +468,7 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	if resolverCond := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady); resolverCond != nil {
 		apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
 	}
+	applyNetworkBindingRefusal(merged, binding, deployment.Generation)
 
 	if equality.Semantic.DeepEqual(deployment.Status, *merged) {
 		return nil
@@ -472,6 +487,7 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 		if resolverCond := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.ReferencedDataReady); resolverCond != nil {
 			apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
 		}
+		applyNetworkBindingRefusal(merged, binding, deployment.Generation)
 		if equality.Semantic.DeepEqual(deployment.Status, *merged) {
 			return nil
 		}
@@ -574,6 +590,19 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 			r.FederationCluster,
 			&computev1alpha.WorkloadDeployment{},
 			preserveClusterName,
+		))
+
+		// Watch the NetworkBindings this controller writes, so what NSO says
+		// about a declared presence reaches the deployment's own status without
+		// waiting for a resync, and so a recreate after a location change is
+		// driven by the old binding disappearing.
+		preserveOnBinding := func(_ multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[*networkingv1alpha.NetworkBinding, mcreconcile.Request] {
+			return mchandler.TypedEnqueueRequestsFromMapFuncWithClusterPreservation(r.mapNetworkBindingToRequest)
+		}
+		b = b.WatchesRawSource(milosource.MustNewClusterSource(
+			r.FederationCluster,
+			&networkingv1alpha.NetworkBinding{},
+			preserveOnBinding,
 		))
 	}
 
