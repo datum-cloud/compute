@@ -517,13 +517,20 @@ tasks:
           {{.KUBECONFIG_DIR}}/karmada.yaml \
           {{.CLUSTER_NAME}} \
           {{.INTERNAL_KUBECONFIG}}
-      # ── Apply city-code label ──────────────────────────────────────────
+      # ── Apply cluster labels ───────────────────────────────────────────
+      # city-code is what compute's federator places deployments by.
+      #
+      # infra.datum.net/gateways=enabled is what NSO's propagation policy selects
+      # on, and every cell in infra carries it. Without it that policy matches no
+      # cluster and propagates nothing — silently, with no error and no event —
+      # so a NetworkContext would never reach a POP cell here.
       - |
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
           label cluster {{.CLUSTER_NAME}} \
           topology.datum.net/city-code={{.CITY_CODE}} \
+          infra.datum.net/gateways=enabled \
           --overwrite
-        echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/city-code={{.CITY_CODE}}"
+        echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/city-code={{.CITY_CODE}} and infra.datum.net/gateways=enabled"
 
   # ════════════════════════════════════════════════════════════════════════
   #  CRD installation
@@ -535,6 +542,8 @@ tasks:
       - task: _e2e:crds:compute
       - task: _e2e:crds:nso
       - task: _e2e:crds:quota
+      # Depends on _e2e:crds:nso having registered the kinds it selects.
+      - task: _e2e:federation:nso-policy
 
   _e2e:crds:compute:
     internal: true
@@ -555,12 +564,17 @@ tasks:
 
   _e2e:crds:nso:
     internal: true
-    desc: "Apply NSO CRDs to control-plane and POP cell clusters"
+    desc: "Apply NSO CRDs to all clusters and the Karmada API server"
     cmds:
       # NSO CRDs (NetworkBinding, SubnetClaim, etc.) are installed on the
       # control-plane as well as POP cells. The control-plane operator needs them
       # so that Subnet/SubnetClaim informer watches can start without cache errors,
       # even though NSO controllers themselves only run on POP cells.
+      #
+      # The Karmada API server needs them too. A network's presence in a location
+      # is a NetworkContext that is written on the hub and propagated to the cells
+      # serving that location, so without these CRDs the hub cannot store one and
+      # nothing reaches a cell.
       - |
         go mod download go.datum.net/network-services-operator
         NSO_VERSION=$(go list -m -json go.datum.net/network-services-operator \
@@ -569,11 +583,37 @@ tasks:
         echo "NSO CRDs from: ${NSO_CRD_PATH}"
         for KC in \
           {{.KUBECONFIG_DIR}}/control-plane.yaml \
+          {{.KUBECONFIG_DIR}}/karmada.yaml \
           {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
           {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
           echo "Installing NSO CRDs → $(basename $KC .yaml)..."
           kubectl --kubeconfig="$KC" apply -k "${NSO_CRD_PATH}" --server-side --validate=false
         done
+
+  _e2e:federation:nso-policy:
+    internal: true
+    desc: "Apply NSO's federation propagation policy to the Karmada API server"
+    cmds:
+      # NSO ships the policy that carries its own resources to cells. Applying the
+      # real file, rather than a compute-authored stand-in, is what makes a local
+      # NetworkContext-reaches-a-cell test meaningful: it exercises the same
+      # selectors production uses.
+      #
+      # config/federation has no kustomization.yaml, and resourceinterpreters.yaml
+      # only aggregates Gateway API status, so apply just the policy.
+      #
+      # This runs after _e2e:crds:nso so the selected kinds are discoverable when
+      # Karmada's resource detector picks the policy up. Selectors for kinds this
+      # environment does not install (Gateway API, Envoy Gateway, cert-manager,
+      # external-dns) simply never match.
+      - |
+        NSO_VERSION=$(go list -m -json go.datum.net/network-services-operator \
+          | python3 -c "import sys, json; print(json.load(sys.stdin)['Version'])")
+        NSO_FEDERATION_PATH="$(go env GOMODCACHE)/go.datum.net/network-services-operator@${NSO_VERSION}/config/federation"
+        echo "NSO federation policy from: ${NSO_FEDERATION_PATH}"
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
+          -f "${NSO_FEDERATION_PATH}/clusterpropagationpolicy.yaml" \
+          --server-side --validate=false
 
   _e2e:crds:quota:
     internal: true
