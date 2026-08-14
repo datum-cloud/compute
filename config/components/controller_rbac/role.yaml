@@ -79,16 +79,6 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
-  - locations
-  - networkinterfaces
-  - networks
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - networking.datumapis.com
-  resources:
   - networkinterfaceclaims
   verbs:
   - create
@@ -97,6 +87,16 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkinterfaces
+  - networks
+  - servinglocations
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - quota.miloapis.com

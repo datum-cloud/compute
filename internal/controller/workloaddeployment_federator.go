@@ -30,6 +30,7 @@ import (
 
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 	milosource "go.miloapis.com/milo/pkg/multicluster-runtime/source"
 )
@@ -45,7 +46,7 @@ const (
 	// and is used by PropagationPolicy selectors to route them to the correct
 	// POP-cell clusters. Downstream Cluster objects are expected to carry this
 	// label with their city-code value.
-	cityCodeLabel = "topology.datum.net/city-code"
+	cityCodeLabel = networkingv1alpha.TopologyCityCodeKey
 
 	kindWorkloadDeployment = "WorkloadDeployment"
 )

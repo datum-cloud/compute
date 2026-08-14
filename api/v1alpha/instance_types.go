@@ -838,9 +838,22 @@ const (
 	WorkloadReasonNetworkNotFound = "NetworkNotFound"
 
 	// WorkloadDeploymentReasonNoMatchingLocation is set on WorkloadDeployment.Available
-	// while no Location matches the deployment's city code. The message names the
-	// unresolved city; network provisioning cannot start until that Location exists.
+	// while the cell has not been told which location it serves, so the deployment
+	// cannot be given one. The value is kept for compatibility with clients that
+	// already match on it.
 	WorkloadDeploymentReasonNoMatchingLocation = "NoMatchingLocation"
+
+	// WorkloadDeploymentReasonAmbiguousServingLocation is set on
+	// WorkloadDeployment.Available when more than one location has been delivered
+	// to the cell. The cell will not guess which one it serves, so the deployment
+	// waits until the platform resolves the conflict.
+	WorkloadDeploymentReasonAmbiguousServingLocation = "AmbiguousServingLocation"
+
+	// WorkloadDeploymentReasonCityCodeMismatch is set on
+	// WorkloadDeployment.Available when the deployment asks for one city and the
+	// cell serves another. It means the deployment was placed on the wrong cell,
+	// which is a platform fault rather than anything the user can correct.
+	WorkloadDeploymentReasonCityCodeMismatch = "CityCodeMismatch"
 
 	// WorkloadDeploymentReasonNetworkProvisioning is set on WorkloadDeployment.Available
 	// while the network binding or subnet is still being provisioned.
