@@ -2,14 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Workloads resource-type plugin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workloads provider plugin — standalone preview</title>
   </head>
   <body>
     <!--
-      Placeholder only — Vite's build requires an HTML entry point, but this
-      plugin has no page/component to preview (see README.md: it's a
-      manifest-only plugin). staff-portal never loads this page; it only
-      fetches /plugin-manifest.json and /remoteEntry.js.
+      Standalone dev harness. Humans can open http://localhost:5199/ to preview
+      the Workload detail page in isolation. staff-portal never loads this
+      page — it only fetches /plugin-manifest.json and /remoteEntry.js. This
+      harness exists purely so the page can be eyeballed without the full
+      staff-portal (data calls 404 without the proxy — expected).
     -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
