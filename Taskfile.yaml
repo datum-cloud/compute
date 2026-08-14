@@ -410,29 +410,18 @@ tasks:
           get secret karmada-kubeconfig \
           -n karmada-system \
           -o jsonpath='{.data.kubeconfig}' \
-          | base64 -d > {{.KUBECONFIG_DIR}}/karmada-raw.yaml
-        # Rewrite the server address to the NodePort exposed on localhost
-        python3 - {{.KUBECONFIG_DIR}}/karmada-raw.yaml {{.KUBECONFIG_DIR}}/karmada.yaml 127.0.0.1 {{.KARMADA_API_NODEPORT}} << 'PYEOF'
-        import sys, yaml
-
-        src, dst, host, port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-
-        with open(src) as f:
-            cfg = yaml.safe_load(f)
-
-        for cluster in cfg.get('clusters', []):
-            old = cluster['cluster'].get('server', '')
-            cluster['cluster']['server'] = f'https://{host}:{port}'
-            # The cert is for the internal cluster IP, so skip TLS verification.
-            # This is a local dev-only environment.
-            cluster['cluster']['insecure-skip-tls-verify'] = True
-            cluster['cluster'].pop('certificate-authority-data', None)
-            print(f"  karmada server: {old} → https://{host}:{port}", file=sys.stderr)
-
-        with open(dst, 'w') as f:
-            yaml.dump(cfg, f, default_flow_style=False)
-        PYEOF
-        rm {{.KUBECONFIG_DIR}}/karmada-raw.yaml
+          | base64 -d > {{.KUBECONFIG_DIR}}/karmada.yaml
+        # Rewrite the server address to the NodePort exposed on localhost. The
+        # embedded cert is for the internal cluster IP, so verification has to be
+        # dropped as well; --insecure-skip-tls-verify also clears the embedded CA.
+        # This is a local dev-only environment.
+        for CLUSTER in $(kubectl config get-clusters --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml | tail -n +2); do
+          echo "  karmada server: ${CLUSTER} → https://127.0.0.1:{{.KARMADA_API_NODEPORT}}"
+          kubectl config set-cluster "${CLUSTER}" \
+            --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
+            --server=https://127.0.0.1:{{.KARMADA_API_NODEPORT}} \
+            --insecure-skip-tls-verify=true
+        done
       # Copy karmada.yaml → downstream.yaml so Chainsaw tests that declare
       # cluster: downstream can load it (chainsaw-config.yaml references this path).
       - cp {{.KUBECONFIG_DIR}}/karmada.yaml {{.KUBECONFIG_DIR}}/downstream.yaml
@@ -577,8 +566,7 @@ tasks:
       # nothing reaches a cell.
       - |
         go mod download go.datum.net/network-services-operator
-        NSO_VERSION=$(go list -m -json go.datum.net/network-services-operator \
-          | python3 -c "import sys, json; print(json.load(sys.stdin)['Version'])")
+        NSO_VERSION=$(go list -m -f '{{`{{.Version}}`}}' go.datum.net/network-services-operator)
         NSO_CRD_PATH="$(go env GOMODCACHE)/go.datum.net/network-services-operator@${NSO_VERSION}/config/crd"
         echo "NSO CRDs from: ${NSO_CRD_PATH}"
         for KC in \
@@ -607,8 +595,7 @@ tasks:
       # environment does not install (Gateway API, Envoy Gateway, cert-manager,
       # external-dns) simply never match.
       - |
-        NSO_VERSION=$(go list -m -json go.datum.net/network-services-operator \
-          | python3 -c "import sys, json; print(json.load(sys.stdin)['Version'])")
+        NSO_VERSION=$(go list -m -f '{{`{{.Version}}`}}' go.datum.net/network-services-operator)
         NSO_FEDERATION_PATH="$(go env GOMODCACHE)/go.datum.net/network-services-operator@${NSO_VERSION}/config/federation"
         echo "NSO federation policy from: ${NSO_FEDERATION_PATH}"
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
@@ -624,8 +611,7 @@ tasks:
       # against project Milo control planes without cache startup errors.
       - |
         go mod download go.miloapis.com/milo
-        MILO_VERSION=$(go list -m -json go.miloapis.com/milo \
-          | python3 -c "import sys, json; print(json.load(sys.stdin)['Version'])")
+        MILO_VERSION=$(go list -m -f '{{`{{.Version}}`}}' go.miloapis.com/milo)
         QUOTA_CRD_PATH="$(go env GOMODCACHE)/go.miloapis.com/milo@${MILO_VERSION}/config/crd/bases/quota"
         echo "Milo quota CRDs from: ${QUOTA_CRD_PATH}"
         for KC in \
@@ -754,7 +740,7 @@ tasks:
       # NodePort rather than the in-cluster Service the management pod uses.
       - |
         CP_IP=$(docker inspect {{.KIND_CONTROL_PLANE}}-control-plane \
-          | python3 -c "import sys,json; print(list(json.load(sys.stdin)[0]['NetworkSettings']['Networks'].values())[0]['IPAddress'])")
+          -f '{{`{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}`}}' | head -n1)
         echo "Cell operators reach the Karmada hub via ${CP_IP}:{{.KARMADA_API_NODEPORT}}"
         TOKEN=$(kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml -n {{.COMPUTE_NAMESPACE}} \
           create token compute-manager --duration=720h)
