@@ -79,33 +79,67 @@ export function SectionCard({
   );
 }
 
-/** Banner pointing users at the datumctl CLI docs — shown wherever a resource is CLI-managed only. */
-export function CliBanner({ title, description }: { title: string; description: string }) {
+/**
+ * Shared shell for the plugin's full-width banners: icon + title/description
+ * on the left, an actions slot on the right. Used by `CliBanner` below and by
+ * `ComputeEnablementBanner` (compute-enablement-banner.tsx) so the two share
+ * one place to adjust spacing/colors/responsive behavior instead of drifting
+ * apart as separately hand-rolled markup.
+ */
+export function Banner({
+  icon,
+  title,
+  description,
+  actions,
+  testId,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  actions: React.ReactNode;
+  testId?: string;
+}) {
   return (
-    <div className="bg-primary/5 border-primary/20 flex flex-col gap-4 rounded-xl border p-4 sm:flex-row sm:items-center">
-      <SquareTerminalIcon className="text-primary size-8 shrink-0" />
+    <div
+      className="bg-primary/5 border-primary/20 flex flex-col gap-4 rounded-xl border p-4 sm:flex-row sm:items-center"
+      data-testid={testId}>
+      {icon}
       <div className="min-w-0 flex-1">
         <p className="text-primary font-semibold">{title}</p>
         <p className="text-muted-foreground text-sm">{description}</p>
       </div>
-      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-        <a
-          href="https://docs.datum.net/cli/install"
-          target="_blank"
-          rel="noreferrer"
-          className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors">
-          <DownloadIcon className="size-4" />
-          Install CLI
-        </a>
-        <a
-          href="https://docs.datum.net/cli"
-          target="_blank"
-          rel="noreferrer"
-          className="border-border hover:bg-muted inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors">
-          <BookOpenIcon className="size-4" />
-          CLI Docs
-        </a>
-      </div>
+      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">{actions}</div>
     </div>
+  );
+}
+
+/** Banner pointing users at the datumctl CLI docs — shown wherever a resource is CLI-managed only. */
+export function CliBanner({ title, description }: { title: string; description: string }) {
+  return (
+    <Banner
+      icon={<SquareTerminalIcon className="text-primary size-8 shrink-0" />}
+      title={title}
+      description={description}
+      actions={
+        <>
+          <a
+            href="https://docs.datum.net/cli/install"
+            target="_blank"
+            rel="noreferrer"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors">
+            <DownloadIcon className="size-4" />
+            Install CLI
+          </a>
+          <a
+            href="https://docs.datum.net/cli"
+            target="_blank"
+            rel="noreferrer"
+            className="border-border hover:bg-muted inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors">
+            <BookOpenIcon className="size-4" />
+            CLI Docs
+          </a>
+        </>
+      }
+    />
   );
 }
