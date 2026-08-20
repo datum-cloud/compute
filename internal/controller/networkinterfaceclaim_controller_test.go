@@ -368,3 +368,52 @@ func TestCheckForNetworkCreationFailure_SurfacesClaimRejection(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, failed)
 }
+
+// TestInstancePublishesTheBoundNetworkInterface pins the reference a provider
+// follows. Without it a provider has to rebuild the claim name from compute's
+// own convention, which is private and changes without notice.
+func TestInstancePublishesTheBoundNetworkInterface(t *testing.T) {
+	t.Parallel()
+
+	instance := newClaimTestInstance(claimTestDeployment+"-0",
+		computev1alpha.InstanceNetworkInterface{
+			Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+			Name:    defaultInterfaceName,
+		})
+
+	claim := &networkingv1alpha.NetworkInterfaceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: instance.Name + "-eth0", Namespace: claimTestNamespace},
+		Status: networkingv1alpha.NetworkInterfaceClaimStatus{
+			NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: "nic-4f2a9c1e"},
+			Addresses: []networkingv1alpha.NetworkInterfaceAddress{
+				{Family: networkingv1alpha.IPv4Protocol, Address: claimTestAddressCIDR, Primary: true},
+			},
+			Conditions: []metav1.Condition{
+				claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
+				claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newClaimTestScheme()).
+		WithObjects(instance, claim).
+		Build()
+
+	r := &InstanceReconciler{NetworkingEnabled: true}
+	changed, err := r.reconcileNetworkInterfaceStatus(context.Background(), cl, instance)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	require.Len(t, instance.Status.NetworkInterfaces, 1)
+	published := instance.Status.NetworkInterfaces[0]
+	require.NotNil(t, published.NetworkInterfaceRef,
+		"a provider reads the interface through this reference")
+	assert.Equal(t, "nic-4f2a9c1e", published.NetworkInterfaceRef.Name)
+
+	// An unbound claim publishes no reference rather than an empty one.
+	unbound := instanceNetworkInterfaceStatus(defaultInterfaceName,
+		&networkingv1alpha.NetworkInterfaceClaim{})
+	assert.Nil(t, unbound.NetworkInterfaceRef)
+	assert.Nil(t, instanceNetworkInterfaceStatus(defaultInterfaceName, nil).NetworkInterfaceRef)
+}

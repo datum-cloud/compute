@@ -129,6 +129,11 @@ func instanceNetworkInterfaceStatus(
 		return status
 	}
 
+	// Published so a provider reads the interface without deriving the claim name.
+	if ref := claim.Status.NetworkInterfaceRef; ref != nil {
+		status.NetworkInterfaceRef = ref.DeepCopy()
+	}
+
 	for _, address := range claim.Status.Addresses {
 		status.Addresses = append(status.Addresses, computev1alpha.InstanceNetworkInterfaceAddress{
 			Family:  address.Family,
