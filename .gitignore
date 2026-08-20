@@ -32,3 +32,11 @@ tmp/
 # UI consumer/provider plugins (own package.json/build per plugin)
 ui/**/node_modules/
 ui/**/dist/
+
+# GoReleaser build output
+dist/
+
+# Local datumctl plugin build binary
+/datumctl-compute
+
+sample-compute-build/

@@ -45,6 +45,10 @@ linters:
       - linters:
           - prealloc
         path: internal/controller/instancecontrol/
+      # CLI output helpers (fmt.Fprintf to stdout) have no actionable error.
+      - linters:
+          - errcheck
+        path: internal/cmd/.*
     paths:
       - third_party$
       - builtin$
