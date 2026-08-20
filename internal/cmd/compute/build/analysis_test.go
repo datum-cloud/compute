@@ -350,15 +350,33 @@ func TestHasExactPath(t *testing.T) {
 }
 
 func TestSymlinkPathAliasesResolveDirectorySymlink(t *testing.T) {
-	paths := map[string]struct{}{
-		"lib64":                          {},
-		"usr/lib64/ld-linux-x86-64.so.2": {},
+	tests := []struct {
+		name     string
+		paths    map[string]struct{}
+		symlinks map[string]string
+		want     []string
+	}{
+		{name: "single directory symlink",
+			paths: map[string]struct{}{
+				"lib64":                          {},
+				"usr/lib64/ld-linux-x86-64.so.2": {},
+			},
+			symlinks: map[string]string{"lib64": "usr/lib64"},
+			want:     []string{"/lib64/ld-linux-x86-64.so.2"}},
+		{name: "chained directory symlinks",
+			paths:    map[string]struct{}{"a": {}, "b": {}, "realdir/file": {}},
+			symlinks: map[string]string{"a": "b", "b": "realdir"},
+			want:     []string{"/b/file", "/a/file"}},
 	}
-	symlinks := map[string]string{"lib64": "usr/lib64"}
-	addSymlinkPathAliases(paths, symlinks)
-
-	if !hasExactPath("/lib64/ld-linux-x86-64.so.2", paths) {
-		t.Fatalf("expected loader under symlinked /lib64 to be found, paths: %#v", paths)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addSymlinkPathAliases(tt.paths, tt.symlinks)
+			for _, want := range tt.want {
+				if !hasExactPath(want, tt.paths) {
+					t.Fatalf("expected %s to be found, paths: %#v", want, tt.paths)
+				}
+			}
+		})
 	}
 }
 

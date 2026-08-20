@@ -3,8 +3,10 @@ package build
 import (
 	"archive/tar"
 	"io"
+	"maps"
 	"os"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -146,25 +148,30 @@ func addSymlinkPathAliases(paths map[string]struct{}, symlinks map[string]string
 	if len(symlinks) == 0 {
 		return
 	}
-	for range len(symlinks) + 1 {
-		added := false
-		for link, target := range symlinks {
-			target = resolveSymlinkTarget(link, target)
-			for path := range paths {
-				alias, ok := symlinkAliasPath(link, target, path)
-				if !ok {
-					continue
-				}
-				if _, exists := paths[alias]; exists {
-					continue
-				}
-				paths[alias] = struct{}{}
-				added = true
+	sorted := slices.Sorted(maps.Keys(paths))
+
+	var aliases []string
+	for link := range symlinks {
+		target := resolvePathThroughSymlinks(link, symlinks)
+		if target == "" || target == link {
+			continue
+		}
+		i, _ := slices.BinarySearch(sorted, target)
+		for ; i < len(sorted); i++ {
+			p := sorted[i]
+			if p == target {
+				aliases = append(aliases, link)
+				continue
 			}
+			if rest, ok := strings.CutPrefix(p, target+"/"); ok {
+				aliases = append(aliases, strings.TrimSuffix(link, "/")+"/"+rest)
+				continue
+			}
+			break
 		}
-		if !added {
-			return
-		}
+	}
+	for _, alias := range aliases {
+		paths[alias] = struct{}{}
 	}
 }
 
@@ -177,20 +184,6 @@ func resolveSymlinkTarget(link, target string) string {
 		return after
 	}
 	return normalizeTarPath(path.Join(path.Dir("/"+link), target))
-}
-
-func symlinkAliasPath(link, target, path string) (string, bool) {
-	if target == "" || path == link {
-		return "", false
-	}
-	if path == target {
-		return link, true
-	}
-	prefix := strings.TrimSuffix(target, "/") + "/"
-	if after, ok := strings.CutPrefix(path, prefix); ok {
-		return strings.TrimSuffix(link, "/") + "/" + after, true
-	}
-	return "", false
 }
 
 func candidateEntrypointPaths(entrypoint string) map[string]struct{} {
