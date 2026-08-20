@@ -5,15 +5,12 @@ const (
 
 	WorkloadUIDLabel           = LabelNamespace + "/workload-uid"
 	WorkloadDeploymentUIDLabel = LabelNamespace + "/workload-deployment-uid"
-	// WorkloadDeploymentNameLabel carries the WorkloadDeployment name on each
-	// Instance. Unlike WorkloadDeploymentUIDLabel — which carries the
-	// edge/Karmada UID and therefore differs across federation planes —
-	// WorkloadDeploymentNameLabel is identical in the project cluster, Karmada,
-	// and on the edge, making it safe for cross-plane owner-ref resolution and
-	// CLI lookup.
-	WorkloadDeploymentNameLabel = LabelNamespace + "/workload-deployment-name"
 
 	InstanceIndexLabel = LabelNamespace + "/instance-index"
+
+	// WorkloadDeploymentNameLabel carries the name of the WorkloadDeployment
+	// that owns an Instance. Stamped at creation and kept current on updates.
+	WorkloadDeploymentNameLabel = LabelNamespace + "/workload-deployment-name"
 
 	// CityCodeLabel carries the city code of the WorkloadDeployment that owns
 	// an Instance, matching WorkloadDeploymentSpec.CityCode.
@@ -26,4 +23,13 @@ const (
 	// PlacementNameLabel carries the placement name from the Workload that drove
 	// this Instance's deployment, sourced from WorkloadDeploymentSpec.PlacementName.
 	PlacementNameLabel = LabelNamespace + "/placement-name"
+
+	// ReferencedDataLabel is stamped on companion ConfigMaps and Secrets
+	// materialized by the ReferencedDataController, and on WorkloadDeployments
+	// that reference external ConfigMaps or Secrets. Used as a label selector
+	// by the Karmada PropagationPolicy to propagate companions to cells.
+	ReferencedDataLabel = LabelNamespace + "/referenced-data"
+
+	// ReferencedDataLabelValue is the value used for ReferencedDataLabel.
+	ReferencedDataLabelValue = "true"
 )

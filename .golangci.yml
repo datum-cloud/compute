@@ -41,10 +41,11 @@ linters:
       - linters:
           - prealloc
         path: internal/validation/
-      # Test helpers that build slices via append are clearer without prealloc.
+      # Append-built slices in this package are clearer without prealloc.
       - linters:
           - prealloc
         path: internal/controller/instancecontrol/
+      # CLI output helpers (fmt.Fprintf to stdout) have no actionable error.
       - linters:
           - errcheck
         path: internal/cmd/.*

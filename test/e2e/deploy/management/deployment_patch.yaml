@@ -1,0 +1,27 @@
+# DEVIATION (required for Kind):
+#   1. imagePullPolicy: IfNotPresent — the dev image is side-loaded into the Kind
+#      node (task e2e:image:load); never attempt a registry pull.
+#   2. Back the webhook-server-tls volume with an emptyDir instead of the
+#      cert-manager CSI driver (csi.cert-manager.io) injected by
+#      config/components/csi-webhook-cert. That driver is not installed in Kind,
+#      so the CSI volume would fail to mount and the pod would never start. The
+#      webhook server itself is disabled in config_patch.yaml, so the serving
+#      cert is never read — an empty directory at the mount path is enough to let
+#      the pod boot. We override only the volume source (csi -> emptyDir) and
+#      leave the container's volumeMounts untouched: a strategic-merge
+#      "$patch: delete" on a single volumeMount drops the whole list, which would
+#      also unmount the federation kubeconfig and config volumes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          imagePullPolicy: IfNotPresent
+      volumes:
+        - name: webhook-server-tls
+          csi: null
+          emptyDir: {}

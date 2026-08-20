@@ -165,18 +165,12 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 		// projectObjs are pre-populated in the project cluster fake client.
 		projectObjs []client.Object
 
-		// request overrides the default projectorRequest() when set.
-		request *ctrl.Request
-
 		// wantProjection controls whether a projected Instance should appear.
 		wantProjection bool
 
 		// wantOwnerRef controls whether the projected Instance should have an
 		// owner reference pointing to the project WorkloadDeployment.
 		wantOwnerRef bool
-
-		// wantRequeue controls whether the reconcile result should request a requeue.
-		wantRequeue bool
 
 		// wantErr controls whether the reconcile should return an error.
 		wantErr bool
@@ -208,67 +202,36 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			wantOwnerRef:   true,
 		},
 		{
-			// Fallback: when WorkloadDeploymentNameLabel is absent (Instances created
-			// before the label was introduced), the projector derives the WD name from
-			// the Instance name by stripping the trailing "-<ordinal>" suffix.
-			// Instance name "my-wd-0" → WD name "my-wd".
-			name: "WD name label absent, fallback name extraction from instance name — owner ref attached",
-			karmadaInstance: projTestKarmadaInstance(map[string]string{
-				// Remove the name label to exercise the fallback path.
-				computev1alpha.WorkloadDeploymentNameLabel: "",
-			}),
-			projectObjs: []client.Object{
-				projTestProjectNS(),
-				projTestWorkloadDeployment(),
-			},
-			wantProjection: true,
-			wantOwnerRef:   true,
-		},
-		{
-			// NotFound requeue: when the project WD does not yet exist (transient
-			// ordering race — Instance projected before WorkloadReconciler created
-			// the project WD), the projector must requeue and NOT create an ownerless
-			// projection. A projection must never be created without an owner reference.
-			name:            "project WD not found — requeue, no ownerless projection created",
+			// When the project WD does not yet exist (transient ordering race —
+			// Instance projected before WorkloadReconciler created the project WD)
+			// the projector must return an error and NOT create an ownerless
+			// projection: its only watch is the Instance, so nothing fires when
+			// the WD appears — error backoff is the retry mechanism.
+			name:            "project WD not found — error, no ownerless projection created",
 			karmadaInstance: projTestKarmadaInstance(nil),
 			projectObjs: []client.Object{
 				projTestProjectNS(),
 				// No WorkloadDeployment — simulates the transient ordering race.
 			},
 			wantProjection: false,
-			wantRequeue:    true,
+			wantErr:        true,
 		},
 		{
-			// Unresolvable WD name: both the label is absent and the Instance name has
-			// no numeric suffix to strip (unrecognised naming format). The projector
-			// should skip without error — no projection created, no requeue.
-			// The instance name "inst-no-ordinal" has no trailing numeric segment.
-			name: "WD name label absent and instance name yields no resolvable WD — skip, no projection",
-			karmadaInstance: &computev1alpha.Instance{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "inst-no-ordinal",
-					Namespace: projTestKarmadaNS,
-					Labels: map[string]string{
-						downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
-						downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
-						// No WorkloadDeploymentNameLabel — no label, no numeric suffix.
-						computev1alpha.WorkloadUIDLabel:   projTestWorkloadUID,
-						computev1alpha.InstanceIndexLabel: projTestInstanceIndex,
-					},
-				},
-			},
-			request: &ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      "inst-no-ordinal",
-					Namespace: projTestKarmadaNS,
-				},
-			},
+			// A write-back copy always carries its WorkloadDeployment name; the
+			// label is stamped when the copy is created.
+			name: "WD name label absent — error, no projection",
+			karmadaInstance: projTestKarmadaInstance(map[string]string{
+				computev1alpha.WorkloadDeploymentNameLabel: "",
+			}),
 			projectObjs:    []client.Object{projTestProjectNS()},
 			wantProjection: false,
-			wantRequeue:    false,
+			wantErr:        true,
 		},
 		{
-			name: "missing upstream-cluster-name label — skipped, no projection",
+			// Federation-plane Instances are exclusively write-back copies and the
+			// write-back stamps both upstream-owner labels atomically, so a missing
+			// cluster label is a stamping-invariant violation, not a foreign object.
+			name: "missing upstream-cluster-name label — error, no projection",
 			karmadaInstance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      projTestInstanceName,
@@ -281,16 +244,20 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			},
 			projectObjs:    []client.Object{projTestProjectNS()},
 			wantProjection: false,
+			wantErr:        true,
 		},
 		{
-			name: "missing upstream-namespace label — requeue",
+			// The write-back stamps both upstream-owner labels together, so a
+			// cluster label without a namespace label is the same invariant
+			// violation.
+			name: "missing upstream-namespace label — error, no projection",
 			karmadaInstance: projTestKarmadaInstance(map[string]string{
 				// Override: remove the upstream namespace label.
 				downstreamclient.UpstreamOwnerNamespaceLabel: "",
 			}),
 			projectObjs:    []client.Object{projTestProjectNS()},
 			wantProjection: false,
-			wantRequeue:    true,
+			wantErr:        true,
 		},
 		{
 			name:            "karmada instance not found — no-op",
@@ -317,14 +284,12 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Build Karmada client.
 			var karmadaObjs []client.Object
 			if tt.karmadaInstance != nil {
 				karmadaObjs = append(karmadaObjs, tt.karmadaInstance)
 			}
 			karmadaClient := newKarmadaFakeClient(karmadaObjs...)
 
-			// Build project client.
 			projectClient := fake.NewClientBuilder().
 				WithScheme(newProjectScheme()).
 				WithObjects(tt.projectObjs...).
@@ -334,24 +299,30 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			r := newTestProjector(karmadaClient, projectClient)
 
 			req := projectorRequest()
-			if tt.request != nil {
-				req = *tt.request
-			}
 			result, err := r.Reconcile(context.Background(), req)
 
 			if tt.wantErr {
 				require.Error(t, err)
+				assert.Zero(t, result.RequeueAfter,
+					"errors rely on controller backoff, not a flat requeue")
+				// No error path may leave a projection behind — in particular,
+				// an ownerless projection must never be created.
+				var projection computev1alpha.Instance
+				getErr := projectClient.Get(context.Background(), types.NamespacedName{
+					Name:      req.Name,
+					Namespace: projTestProjNS,
+				}, &projection)
+				assert.True(t, isNotFound(getErr),
+					"expected no projection in project namespace on error, but found one (or unexpected error: %v)", getErr)
 				return
 			}
 			require.NoError(t, err)
 
-			if tt.wantRequeue {
-				assert.NotZero(t, result.RequeueAfter, "expected RequeueAfter to be set")
-			} else {
+			ctx := context.Background()
+
+			if tt.wantProjection {
 				assert.Equal(t, ctrl.Result{}, result)
 			}
-
-			ctx := context.Background()
 
 			// Check whether a projected Instance exists in the project namespace.
 			var projection computev1alpha.Instance
@@ -397,7 +368,6 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 					"InstanceIndexLabel must be propagated to the projection")
 			}
 
-			// Owner reference check.
 			if tt.wantOwnerRef {
 				require.NotEmpty(t, projection.OwnerReferences,
 					"projected instance should have an owner reference to the WorkloadDeployment")
@@ -413,7 +383,7 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 					"owner reference name should match the WorkloadDeployment name")
 			} else {
 				assert.Empty(t, projection.OwnerReferences,
-					"projected instance should have no owner reference when WD not found")
+					"projected instance should have no owner reference")
 			}
 		})
 	}
@@ -480,13 +450,12 @@ func TestInstanceProjector_NamespaceResolution(t *testing.T) {
 		&projection))
 }
 
-// isNotFound returns true when err is a Kubernetes not-found error or is nil
-// (object not found means Get returned NotFound, not that err is nil).
+// isNotFound returns true only when err is a Kubernetes not-found error; a nil
+// error means the object exists and returns false.
 // Used to distinguish "no projection created" from "projection exists but Get failed".
 func isNotFound(err error) bool {
 	if err == nil {
 		return false // object exists — not the "not found" case
 	}
-	// Import apierrors to check — we already have it via the fake client package.
 	return client.IgnoreNotFound(err) == nil
 }

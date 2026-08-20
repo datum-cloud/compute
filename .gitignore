@@ -29,6 +29,10 @@ bin/
 # Local e2e environment artefacts (Kind kubeconfigs, etc.)
 tmp/
 
+# UI consumer/provider plugins (own package.json/build per plugin)
+ui/**/node_modules/
+ui/**/dist/
+
 # GoReleaser build output
 dist/
 

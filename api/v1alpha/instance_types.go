@@ -16,8 +16,17 @@ type InstanceSpec struct {
 
 	// Network interface configuration.
 	//
+	// Keyed by interface name so an interface keeps its identity, and therefore
+	// its addresses, across updates to the rest of the list.
+	//
+	// Limited to a single interface until the data plane can attach more than
+	// one to an instance.
+	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=1
+	// +listType=map
+	// +listMapKey=name
 	NetworkInterfaces []InstanceNetworkInterface `json:"networkInterfaces,omitempty"`
 
 	// Volumes that must be available to attach to an instance's containers or
@@ -138,6 +147,16 @@ type SandboxContainer struct {
 	// so replicate the structure here too.
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// List of sources to populate environment variables in the container.
+	// The keys defined within a source must be a C_IDENTIFIER. All invalid
+	// keys will be reported as an event when the container is starting. When a
+	// key exists in multiple sources, the value associated with the last source
+	// will take precedence. Values defined by an Env with a duplicate key will
+	// take precedence.
+	//
+	// +kubebuilder:validation:Optional
+	EnvFrom []EnvFromSource `json:"envFrom,omitempty"`
+
 	// The resource requirements for the container, such as CPU, memory, and GPUs.
 	//
 	// +kubebuilder:validation:Optional
@@ -154,6 +173,54 @@ type SandboxContainer struct {
 	// +listType=map
 	// +listMapKey=name
 	Ports []NamedPort `json:"ports,omitempty"`
+}
+
+// EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+// used as environment variables in a container.
+type EnvFromSource struct {
+	// An optional identifier to prepend to each key in the referenced
+	// ConfigMap or Secret. Must be a valid C_IDENTIFIER.
+	//
+	// +kubebuilder:validation:Optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// The ConfigMap to select from.
+	//
+	// +kubebuilder:validation:Optional
+	ConfigMapRef *ConfigMapEnvSource `json:"configMapRef,omitempty"`
+
+	// The Secret to select from.
+	//
+	// +kubebuilder:validation:Optional
+	SecretRef *SecretEnvSource `json:"secretRef,omitempty"`
+}
+
+// ConfigMapEnvSource selects a ConfigMap to populate the environment variables
+// of a container.
+type ConfigMapEnvSource struct {
+	// Name of the ConfigMap in the same namespace as the Workload.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Specify whether the ConfigMap must be defined.
+	//
+	// +kubebuilder:validation:Optional
+	Optional *bool `json:"optional,omitempty"`
+}
+
+// SecretEnvSource selects a Secret to populate the environment variables
+// of a container.
+type SecretEnvSource struct {
+	// Name of the Secret in the same namespace as the Workload.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Specify whether the Secret must be defined.
+	//
+	// +kubebuilder:validation:Optional
+	Optional *bool `json:"optional,omitempty"`
 }
 
 type ContainerResourceRequirements struct {
@@ -237,11 +304,83 @@ type InstanceRuntimeResources struct {
 	Requests corev1.ResourceList `json:"requests,omitempty"`
 }
 
+// InstanceNetworkInterface describes one interface an instance needs. The
+// fields beyond `network` and `networkPolicy` are copied verbatim onto the
+// NetworkInterfaceClaim created for each instance slot, so they carry the same
+// meaning, defaults, and immutability the claim API defines.
+//
+// The location an interface is claimed in is implicit: the claim is created in
+// the control plane serving the instance, which is already location scoped.
+//
+// +kubebuilder:validation:XValidation:message="addresses is immutable and cannot be set, changed, or cleared after creation",rule="has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses)"
 type InstanceNetworkInterface struct {
 	// The network to attach the network interface to.
 	//
 	// +kubebuilder:validation:Required
 	Network networkingv1alpha.NetworkRef `json:"network"`
+
+	// The name of the interface, such as eth0 or eth1. It is both the device
+	// name the guest operating system sees and the suffix of the interface
+	// claim's name, which is what keeps an interface's addresses with the
+	// instance slot across replacement.
+	//
+	// Immutable, because the guest is configured against it and the claim is
+	// named after it.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=15
+	// +kubebuilder:default="eth0"
+	// +kubebuilder:validation:XValidation:message="name is immutable and cannot be changed after creation",rule="self == oldSelf"
+	Name string `json:"name,omitempty"`
+
+	// The address families the interface must carry, in priority order. List
+	// [IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+	// interface's primary address, which is the one reported as the instance's
+	// network IP.
+	//
+	// Every family listed must be satisfiable or the interface is never
+	// published, so asking for a family the network does not carry fails rather
+	// than yielding a partially addressed interface.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:default={IPv6}
+	// +kubebuilder:validation:XValidation:message="Each address family may be requested at most once",rule="self.all(f, self.exists_one(g, g == f))"
+	// +kubebuilder:validation:XValidation:message="ipFamilies is immutable and cannot be changed after creation",rule="self == oldSelf"
+	IPFamilies []networkingv1alpha.IPFamily `json:"ipFamilies,omitempty"`
+
+	// Requests for addresses beyond the ones the interface holds inside its
+	// network, such as a public IPv4 address in front of a private one. Each is
+	// reported in the interface's `externalAddresses` status.
+	//
+	// Omit this field for ordinary private addressing, which is the common case.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:XValidation:message="Each address class may be requested at most once",rule="self.all(a, self.exists_one(b, b.class == a.class))"
+	Addresses []InstanceNetworkInterfaceAddressRequest `json:"addresses,omitempty"`
+
+	// What becomes of the interface, and its addresses, when the instance slot
+	// it serves goes away.
+	//
+	// Delete returns the addresses to IPAM, so an instance recreated later comes
+	// back on different addresses. Retain keeps them reserved, and billable, so a
+	// later instance filling the same slot returns to the same addresses. Choose
+	// Retain when an address is published in DNS, allowed through a firewall, or
+	// otherwise depended on from outside.
+	//
+	// Both policies keep the addresses for as long as the slot exists, including
+	// across instance replacement. They differ only on scale-down and deletion.
+	//
+	// Immutable. An address keeps the policy it was allocated under.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="Delete"
+	// +kubebuilder:validation:XValidation:message="reclaimPolicy is immutable and cannot be changed after creation",rule="self == oldSelf"
+	ReclaimPolicy networkingv1alpha.NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
 
 	// Interface specific network policy.
 	//
@@ -254,16 +393,136 @@ type InstanceNetworkInterface struct {
 	NetworkPolicy *InstanceNetworkInterfaceNetworkPolicy `json:"networkPolicy,omitempty"`
 }
 
+// InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+// the interface holds inside its network.
+type InstanceNetworkInterfaceAddressRequest struct {
+	// The IPAM class to allocate from, such as public-ipv4.
+	//
+	// A class names a kind of address, and the platform decides which pool and
+	// prefix length serve it. A class never names a pool, a prefix length, or a
+	// CIDR, so a class cannot be used to ask for a particular address.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Class string `json:"class"`
+}
+
 type InstanceNetworkInterfaceStatus struct {
+	// The name of the interface this entry reports on, matching the name in the
+	// instance's spec.
+	//
+	// +kubebuilder:validation:Optional
+	Name string `json:"name,omitempty"`
+
+	// The addresses the interface holds inside its network, each with its prefix
+	// length and, once the location has a subnet, its gateway.
+	//
+	// +kubebuilder:validation:Optional
+	Addresses []InstanceNetworkInterfaceAddress `json:"addresses,omitempty"`
+
+	// The addresses the interface is reachable at from outside its network, one
+	// per class requested in the spec. Each is a bare address with no prefix
+	// length.
+	//
+	// +kubebuilder:validation:Optional
+	ExternalAddresses []InstanceNetworkInterfaceExternalAddress `json:"externalAddresses,omitempty"`
+
+	// The observations of this interface's current state. Known condition types
+	// are "Allocated" and "Programmed".
+	//
+	// +kubebuilder:validation:Optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Single address projections of the fields above, kept for clients that read
+	// one address per interface.
+	//
+	// +kubebuilder:validation:Optional
 	Assignments InstanceNetworkInterfaceAssignmentsStatus `json:"assignments,omitempty"`
 }
 
+// InstanceNetworkInterfaceAddress is an address the interface holds inside its
+// network. These are configured on the NIC itself, and always carry a prefix
+// length.
+type InstanceNetworkInterfaceAddress struct {
+	// The address family of this entry.
+	//
+	// +kubebuilder:validation:Required
+	Family networkingv1alpha.IPFamily `json:"family"`
+
+	// The address the interface holds, in CIDR notation, such as 10.128.0.2/32
+	// or 2001:db8:a001::1/128.
+	//
+	// For IPv6 this may be a block delegated to the interface rather than a
+	// single address, such as 2001:db8:a001::/96. The interface owns the whole
+	// block and assigns within it.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+
+	// The next hop the interface routes through for this family, such as
+	// 10.128.0.1. It is empty until the subnet backing the network in this
+	// location exists.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=45
+	Gateway string `json:"gateway,omitempty"`
+
+	// Marks the address projected into `assignments.networkIP`.
+	//
+	// Exactly one address is primary for the interface as a whole, not one per
+	// family. It is the address of the first family listed in `ipFamilies`.
+	//
+	// +kubebuilder:validation:Optional
+	Primary bool `json:"primary,omitempty"`
+
+	// The IPAM class this address was allocated from, such as private-ipv6. It
+	// is empty for addresses requested by family rather than by class.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=63
+	Class string `json:"class,omitempty"`
+}
+
+// InstanceNetworkInterfaceExternalAddress is an address reachable from outside
+// the network, mapped onto an address the interface holds inside it. A public
+// IPv4 address in front of a private address is the usual case.
+//
+// Unlike an interface address, it is a bare address with no prefix length,
+// because nothing configures it on the NIC.
+type InstanceNetworkInterfaceExternalAddress struct {
+	// The address family of this entry.
+	//
+	// +kubebuilder:validation:Required
+	Family networkingv1alpha.IPFamily `json:"family"`
+
+	// The externally reachable address, such as 203.0.113.10. It carries no
+	// prefix length.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+
+	// The IPAM class this address was allocated from, such as public-ipv4. It
+	// matches a class requested in the interface's `addresses`.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Class string `json:"class"`
+}
+
 type InstanceNetworkInterfaceAssignmentsStatus struct {
-	// The IP address assigned as the primary IP from the attached network.
+	// The IP address assigned as the primary IP from the attached network. It is
+	// a projection of the primary entry in the interface's `addresses`.
 	NetworkIP *string `json:"networkIP,omitempty"`
 
 	// The external IP address used for the interface. A one to one NAT will be
-	// performed for this address with the interface's network IP.
+	// performed for this address with the interface's network IP. It is a
+	// projection of the first entry in the interface's `externalAddresses`.
 	ExternalIP *string `json:"externalIP,omitempty"`
 }
 
@@ -391,6 +650,13 @@ type InstanceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	Controller *InstanceControllerStatus `json:"controller,omitempty"`
+
+	// Suspended, when true, indicates that the instance's process should be stopped
+	// without releasing its placement, disk attachments, or quota allocation.
+	// The provider controller stops the running container/VM.
+	//
+	// +kubebuilder:validation:Optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 type InstanceControllerStatus struct {
@@ -405,8 +671,8 @@ const (
 	InstanceReady = "Ready"
 
 	// InstanceAvailable indicates that the instance is available. It is True
-	// while the instance is serving (including when scaled to zero); it does
-	// not assert that a process is actively running at this instant.
+	// when the instance is serving and does not assert that a process is
+	// actively running at this instant.
 	InstanceAvailable = "Available"
 
 	// InstanceProgrammed indicates that the instance has been programmed
@@ -414,6 +680,52 @@ const (
 
 	// InstanceQuotaGranted indicates whether quota has been allocated for the instance
 	InstanceQuotaGranted = "QuotaGranted"
+
+	// ReferencedDataReady indicates whether all ConfigMaps and Secrets referenced
+	// by the workload template have been resolved and delivered to the cell.
+	// This condition is set on both WorkloadDeployment (resolver view) and
+	// Instance (cell view).
+	ReferencedDataReady = "ReferencedDataReady"
+)
+
+// Condition types reported per network interface in
+// InstanceNetworkInterfaceStatus.Conditions. They mirror the conditions the
+// networking API reports on an interface claim, so a client reads the
+// instance's interface rather than following the reference.
+const (
+	// InstanceNetworkInterfaceAllocated indicates that every requested address
+	// family, and every requested class, holds an address.
+	InstanceNetworkInterfaceAllocated = "Allocated"
+
+	// InstanceNetworkInterfaceProgrammed indicates that the data plane carries
+	// the interface's addresses. Traffic flows only once this is true.
+	InstanceNetworkInterfaceProgrammed = "Programmed"
+)
+
+const (
+	// ReferencedDataReasonResolving indicates the resolver is in the process of
+	// reading source ConfigMaps/Secrets from the project control plane.
+	ReferencedDataReasonResolving = "Resolving"
+
+	// ReferencedDataReasonAwaitingPropagation indicates the expected companions
+	// have not yet all arrived on the cell.
+	ReferencedDataReasonAwaitingPropagation = "AwaitingPropagation"
+
+	// ReferencedDataReasonSourceNotFound indicates one or more referenced
+	// ConfigMaps or Secrets could not be found in the project namespace.
+	ReferencedDataReasonSourceNotFound = "SourceNotFound"
+
+	// ReferencedDataReasonSourceUnauthorized indicates the management identity
+	// does not have permission to read one or more referenced objects.
+	ReferencedDataReasonSourceUnauthorized = "SourceUnauthorized"
+
+	// ReferencedDataReasonSourceTooLarge indicates one or more referenced objects
+	// exceed the allowed size limit.
+	ReferencedDataReasonSourceTooLarge = "SourceTooLarge"
+
+	// ReferencedDataReasonReady indicates all referenced data has been resolved
+	// and is present on the cell.
+	ReferencedDataReasonReady = "Ready"
 )
 
 const (
@@ -463,6 +775,28 @@ const (
 	// InstanceReadyReasonAvailable indicates that the instance is available
 	InstanceReadyReasonAvailable = "Available"
 
+	// InstanceReadyReasonImageUnavailable indicates the provider could not pull
+	// the instance image (bad name, missing credentials, registry unreachable).
+	// This matches the reason written by translateWaitingReason in the unikraft
+	// provider when the container enters an image-pull waiting state.
+	InstanceReadyReasonImageUnavailable = "ImageUnavailable"
+
+	// InstanceReadyReasonInstanceCrashing indicates the instance process started
+	// but is repeatedly exiting and being restarted (CrashLoopBackOff in the
+	// underlying runtime). This is user-actionable: the application itself is
+	// failing, not the platform.
+	InstanceReadyReasonInstanceCrashing = "InstanceCrashing"
+
+	// InstanceReadyReasonConfigurationError indicates the runtime rejected the
+	// instance configuration before the process could start (e.g. invalid env
+	// variable injection, missing device). User must correct the workload spec.
+	InstanceReadyReasonConfigurationError = "ConfigurationError"
+
+	// InstanceReadyReasonProvisioning indicates the instance runtime is still
+	// setting up the execution environment (container being created, image being
+	// unpacked). This is a transient, non-actionable state.
+	InstanceReadyReasonProvisioning = "Provisioning"
+
 	// InstanceAvailableReasonStopped indicates that the instance is stopped
 	InstanceAvailableReasonStopped = "Stopped"
 
@@ -474,6 +808,15 @@ const (
 
 	// InstanceAvailableReasonAvailable indicates that the instance is available
 	InstanceAvailableReasonAvailable = "Available"
+
+	// InstanceReadyReasonSuspended indicates the instance is intentionally
+	// stopped due to project suspension. Its placement, disk, and quota
+	// allocation are retained; the process will restart from disk on reinstatement.
+	InstanceReadyReasonSuspended = "Suspended"
+
+	// InstanceAvailableReasonSuspended indicates the instance is suspended
+	// and is not currently serving traffic.
+	InstanceAvailableReasonSuspended = "Suspended"
 
 	// InstanceProgrammedReasonPendingProgramming indicates that the instance has not been programmed
 	InstanceProgrammedReasonPendingProgramming = "PendingProgramming"
@@ -498,6 +841,65 @@ const (
 	// start due to a bad configuration. Set by the infrastructure provider.
 	// User action required: fix the workload configuration.
 	InstanceProgrammedReasonConfigurationError = "ConfigurationError"
+)
+
+// Reason constants for the top-level readiness conditions (Instance.Ready,
+// WorkloadDeployment.Available, Workload.Available). These are the stable,
+// machine-readable values that clients consume; they appear alongside human-readable
+// messages so a single condition read is sufficient to diagnose a blocking cause.
+const (
+	// WorkloadReasonNetworkNotFound is set on Workload.Available when one or more
+	// networks referenced by network interfaces do not exist.
+	WorkloadReasonNetworkNotFound = "NetworkNotFound"
+
+	// WorkloadDeploymentReasonNoMatchingLocation is set on WorkloadDeployment.Available
+	// while the cell has not been told which location it serves, so the deployment
+	// cannot be given one. The value is kept for compatibility with clients that
+	// already match on it.
+	WorkloadDeploymentReasonNoMatchingLocation = "NoMatchingLocation"
+
+	// WorkloadDeploymentReasonAmbiguousServingLocation is set on
+	// WorkloadDeployment.Available when more than one location has been delivered
+	// to the cell. The cell will not guess which one it serves, so the deployment
+	// waits until the platform resolves the conflict.
+	WorkloadDeploymentReasonAmbiguousServingLocation = "AmbiguousServingLocation"
+
+	// WorkloadDeploymentReasonCityCodeMismatch is set on
+	// WorkloadDeployment.Available when the deployment asks for one city and the
+	// cell serves another. It means the deployment was placed on the wrong cell,
+	// which is a platform fault rather than anything the user can correct.
+	WorkloadDeploymentReasonCityCodeMismatch = "CityCodeMismatch"
+
+	// WorkloadDeploymentReasonNetworkProvisioning is set on WorkloadDeployment.Available
+	// while the network binding or subnet is still being provisioned.
+	// Replaces the previously-emitted inline literal "ProvisioningNetwork".
+	WorkloadDeploymentReasonNetworkProvisioning = "NetworkProvisioning"
+
+	// WorkloadDeploymentReasonInstancesProvisioning is set on WorkloadDeployment.Available
+	// while instances exist but none are ready yet.
+	// Replaces the previously-emitted inline literal "ProvisioningInstances".
+	WorkloadDeploymentReasonInstancesProvisioning = "InstancesProvisioning"
+
+	// WorkloadDeploymentReasonStableInstanceFound is set on WorkloadDeployment.Available
+	// when at least one ready instance is present.
+	WorkloadDeploymentReasonStableInstanceFound = "StableInstanceFound"
+
+	// WorkloadDeploymentReasonReferencedDataNotReady is set on WorkloadDeployment.Available
+	// and Workload.Available when the worst-blocking sub-condition is a ReferencedData
+	// failure. The message carries the ReferencedDataReady sub-condition's message verbatim.
+	WorkloadDeploymentReasonReferencedDataNotReady = "ReferencedDataNotReady"
+
+	// WorkloadDeploymentReasonQuotaNotGranted is set on WorkloadDeployment.Available and
+	// Workload.Available when quota is blocking one or more instances.
+	WorkloadDeploymentReasonQuotaNotGranted = "QuotaNotGranted"
+
+	// WorkloadReasonNoAvailablePlacements is set on Workload.Available when all
+	// placements report no available deployments. Used as the last-resort default.
+	WorkloadReasonNoAvailablePlacements = "NoAvailablePlacements"
+
+	// WorkloadReasonNoAvailableDeployments is set on a placement's Available
+	// condition when no deployment in that placement is available.
+	WorkloadReasonNoAvailableDeployments = "NoAvailableDeployments"
 )
 
 type InstanceTemplateSpec struct {

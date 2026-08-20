@@ -37,7 +37,7 @@ spec:
     - jsonPath: .status.desiredReplicas
       name: Desired
       type: string
-    - jsonPath: .status.currentReplicas
+    - jsonPath: .status.updatedReplicas
       name: Up-to-date
       type: string
     name: v1alpha
@@ -214,17 +214,104 @@ spec:
                           name:
                             description: Name of a datum location
                             type: string
-                          namespace:
-                            description: Namespace for the datum location
-                            type: string
                         required:
                         - name
-                        - namespace
                         type: object
                       networkInterfaces:
-                        description: Network interface configuration.
+                        description: |-
+                          Network interface configuration.
+
+                          Keyed by interface name so an interface keeps its identity, and therefore
+                          its addresses, across updates to the rest of the list.
+
+                          Limited to a single interface until the data plane can attach more than
+                          one to an instance.
                         items:
+                          description: |-
+                            InstanceNetworkInterface describes one interface an instance needs. The
+                            fields beyond `network` and `networkPolicy` are copied verbatim onto the
+                            NetworkInterfaceClaim created for each instance slot, so they carry the same
+                            meaning, defaults, and immutability the claim API defines.
+
+                            The location an interface is claimed in is implicit: the claim is created in
+                            the control plane serving the instance, which is already location scoped.
                           properties:
+                            addresses:
+                              description: |-
+                                Requests for addresses beyond the ones the interface holds inside its
+                                network, such as a public IPv4 address in front of a private one. Each is
+                                reported in the interface's `externalAddresses` status.
+
+                                Omit this field for ordinary private addressing, which is the common case.
+                              items:
+                                description: |-
+                                  InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+                                  the interface holds inside its network.
+                                properties:
+                                  class:
+                                    description: |-
+                                      The IPAM class to allocate from, such as public-ipv4.
+
+                                      A class names a kind of address, and the platform decides which pool and
+                                      prefix length serve it. A class never names a pool, a prefix length, or a
+                                      CIDR, so a class cannot be used to ask for a particular address.
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - class
+                                type: object
+                              maxItems: 4
+                              minItems: 1
+                              type: array
+                              x-kubernetes-validations:
+                              - message: Each address class may be requested at most
+                                  once
+                                rule: self.all(a, self.exists_one(b, b.class == a.class))
+                            ipFamilies:
+                              default:
+                              - IPv6
+                              description: |-
+                                The address families the interface must carry, in priority order. List
+                                [IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+                                interface's primary address, which is the one reported as the instance's
+                                network IP.
+
+                                Every family listed must be satisfiable or the interface is never
+                                published, so asking for a family the network does not carry fails rather
+                                than yielding a partially addressed interface.
+                              items:
+                                enum:
+                                - IPv4
+                                - IPv6
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-validations:
+                              - message: Each address family may be requested at most
+                                  once
+                                rule: self.all(f, self.exists_one(g, g == f))
+                              - message: ipFamilies is immutable and cannot be changed
+                                  after creation
+                                rule: self == oldSelf
+                            name:
+                              default: eth0
+                              description: |-
+                                The name of the interface, such as eth0 or eth1. It is both the device
+                                name the guest operating system sees and the suffix of the interface
+                                claim's name, which is what keeps an interface's addresses with the
+                                instance slot across replacement.
+
+                                Immutable, because the guest is configured against it and the claim is
+                                named after it.
+                              maxLength: 15
+                              minLength: 1
+                              type: string
+                              x-kubernetes-validations:
+                              - message: name is immutable and cannot be changed after
+                                  creation
+                                rule: self == oldSelf
                             network:
                               description: The network to attach the network interface
                                 to.
@@ -332,11 +419,44 @@ spec:
                                     type: object
                                   type: array
                               type: object
+                            reclaimPolicy:
+                              default: Delete
+                              description: |-
+                                What becomes of the interface, and its addresses, when the instance slot
+                                it serves goes away.
+
+                                Delete returns the addresses to IPAM, so an instance recreated later comes
+                                back on different addresses. Retain keeps them reserved, and billable, so a
+                                later instance filling the same slot returns to the same addresses. Choose
+                                Retain when an address is published in DNS, allowed through a firewall, or
+                                otherwise depended on from outside.
+
+                                Both policies keep the addresses for as long as the slot exists, including
+                                across instance replacement. They differ only on scale-down and deletion.
+
+                                Immutable. An address keeps the policy it was allocated under.
+                              enum:
+                              - Delete
+                              - Retain
+                              type: string
+                              x-kubernetes-validations:
+                              - message: reclaimPolicy is immutable and cannot be
+                                  changed after creation
+                                rule: self == oldSelf
                           required:
                           - network
                           type: object
+                          x-kubernetes-validations:
+                          - message: addresses is immutable and cannot be set, changed,
+                              or cleared after creation
+                            rule: has(self.addresses) == has(oldSelf.addresses) &&
+                              (!has(self.addresses) || self.addresses == oldSelf.addresses)
+                        maxItems: 1
                         minItems: 1
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       runtime:
                         description: The runtime type of the instance, such as a container
                           sandbox or a VM.
@@ -579,6 +699,54 @@ spec:
                                       x-kubernetes-list-map-keys:
                                       - name
                                       x-kubernetes-list-type: map
+                                    envFrom:
+                                      description: |-
+                                        List of sources to populate environment variables in the container.
+                                        The keys defined within a source must be a C_IDENTIFIER. All invalid
+                                        keys will be reported as an event when the container is starting. When a
+                                        key exists in multiple sources, the value associated with the last source
+                                        will take precedence. Values defined by an Env with a duplicate key will
+                                        take precedence.
+                                      items:
+                                        description: |-
+                                          EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+                                          used as environment variables in a container.
+                                        properties:
+                                          configMapRef:
+                                            description: The ConfigMap to select from.
+                                            properties:
+                                              name:
+                                                description: Name of the ConfigMap
+                                                  in the same namespace as the Workload.
+                                                type: string
+                                              optional:
+                                                description: Specify whether the ConfigMap
+                                                  must be defined.
+                                                type: boolean
+                                            required:
+                                            - name
+                                            type: object
+                                          prefix:
+                                            description: |-
+                                              An optional identifier to prepend to each key in the referenced
+                                              ConfigMap or Secret. Must be a valid C_IDENTIFIER.
+                                            type: string
+                                          secretRef:
+                                            description: The Secret to select from.
+                                            properties:
+                                              name:
+                                                description: Name of the Secret in
+                                                  the same namespace as the Workload.
+                                                type: string
+                                              optional:
+                                                description: Specify whether the Secret
+                                                  must be defined.
+                                                type: boolean
+                                            required:
+                                            - name
+                                            type: object
+                                        type: object
+                                      type: array
                                     image:
                                       description: The fully qualified container image
                                         name.
@@ -1081,8 +1249,9 @@ spec:
                   type: object
                 type: array
               currentReplicas:
-                description: The number of instances which have the latest workload
-                  settings applied.
+                description: |-
+                  The number of instances which have the latest workload settings applied
+                  and are programmed (a subset of UpdatedReplicas that are ready to serve).
                 format: int32
                 type: integer
               deployments:
@@ -1139,6 +1308,21 @@ spec:
                           true'
                     maxItems: 16
                     type: array
+                    x-kubernetes-list-type: atomic
+                  attachedListenerSets:
+                    description: |-
+                      AttachedListenerSets represents the total number of ListenerSets that have been
+                      successfully attached to this Gateway.
+
+                      A ListenerSet is successfully attached to a Gateway when all the following conditions are met:
+                      - The ListenerSet is selected by the Gateway's AllowedListeners field
+                      - The ListenerSet has a valid ParentRef selecting the Gateway
+                      - The ListenerSet's status has the condition "Accepted: true"
+
+                      Uses for this field include troubleshooting AttachedListenerSets attachment and
+                      measuring blast radius/impact of changes to a Gateway.
+                    format: int32
+                    type: integer
                   conditions:
                     default:
                     - lastTransitionTime: "1970-01-01T00:00:00Z"
@@ -1164,6 +1348,34 @@ spec:
                       * "Accepted"
                       * "Programmed"
                       * "Ready"
+
+                      <gateway:util:excludeFromCRD>
+                      Notes for implementors:
+
+                      Conditions are a listType `map`, which means that they function like a
+                      map with a key of the `type` field _in the k8s apiserver_.
+
+                      This means that implementations must obey some rules when updating this
+                      section.
+
+                      * Implementations MUST perform a read-modify-write cycle on this field
+                        before modifying it. That is, when modifying this field, implementations
+                        must be confident they have fetched the most recent version of this field,
+                        and ensure that changes they make are on that recent version.
+                      * Implementations MUST NOT remove or reorder Conditions that they are not
+                        directly responsible for. For example, if an implementation sees a Condition
+                        with type `special.io/SomeField`, it MUST NOT remove, change or update that
+                        Condition.
+                      * Implementations MUST always _merge_ changes into Conditions of the same Type,
+                        rather than creating more than one Condition of the same Type.
+                      * Implementations MUST always update the `observedGeneration` field of the
+                        Condition to the `metadata.generation` of the Gateway at the time of update creation.
+                      * If the `observedGeneration` of a Condition is _greater than_ the value the
+                        implementation knows about, then it MUST NOT perform the update on that Condition,
+                        but must wait for a future reconciliation and status update. (The assumption is that
+                        the implementation's copy of the object is stale and an update will be re-triggered
+                        if relevant.)
+                      </gateway:util:excludeFromCRD>
                     items:
                       description: Condition contains details for one aspect of the
                         current state of this API Resource.
@@ -1245,16 +1457,48 @@ spec:
                             attachment semantics can be found in the documentation on the various
                             Route kinds ParentRefs fields). Listener or Route status does not impact
                             successful attachment, i.e. the AttachedRoutes field count MUST be set
-                            for Listeners with condition Accepted: false and MUST count successfully
-                            attached Routes that may themselves have Accepted: false conditions.
+                            for Listeners, even if the Accepted condition of an individual Listener is set
+                            to "False". The AttachedRoutes number represents the number of Routes with
+                            the Accepted condition set to "True" that have been attached to this Listener.
+                            Routes with any other value for the Accepted condition MUST NOT be included
+                            in this count.
 
                             Uses for this field include troubleshooting Route attachment and
                             measuring blast radius/impact of changes to a Listener.
                           format: int32
                           type: integer
                         conditions:
-                          description: Conditions describe the current condition of
-                            this listener.
+                          description: |-
+                            Conditions describe the current condition of this listener.
+
+                            <gateway:util:excludeFromCRD>
+                            Notes for implementors:
+
+                            Conditions are a listType `map`, which means that they function like a
+                            map with a key of the `type` field _in the k8s apiserver_.
+
+                            This means that implementations must obey some rules when updating this
+                            section.
+
+                            * Implementations MUST perform a read-modify-write cycle on this field
+                              before modifying it. That is, when modifying this field, implementations
+                              must be confident they have fetched the most recent version of this field,
+                              and ensure that changes they make are on that recent version.
+                            * Implementations MUST NOT remove or reorder Conditions that they are not
+                              directly responsible for. For example, if an implementation sees a Condition
+                              with type `special.io/SomeField`, it MUST NOT remove, change or update that
+                              Condition.
+                            * Implementations MUST always _merge_ changes into Conditions of the same Type,
+                              rather than creating more than one Condition of the same Type.
+                            * Implementations MUST always update the `observedGeneration` field of the
+                              Condition to the `metadata.generation` of the Gateway at the time of update creation.
+                            * If the `observedGeneration` of a Condition is _greater than_ the value the
+                              implementation knows about, then it MUST NOT perform the update on that Condition,
+                              but must wait for a future reconciliation and status update. (The assumption is that
+                              the implementation's copy of the object is stale and an update will be re-triggered
+                              if relevant.)
+
+                            </gateway:util:excludeFromCRD>
                           items:
                             description: Condition contains details for one aspect
                               of the current state of this API Resource.
@@ -1326,7 +1570,7 @@ spec:
                         supportedKinds:
                           description: |-
                             SupportedKinds is the list indicating the Kinds supported by this
-                            listener. This MUST represent the kinds an implementation supports for
+                            listener. This MUST represent the kinds supported by an implementation for
                             that Listener configuration.
 
                             If kinds are specified in Spec that are not supported, they MUST NOT
@@ -1355,11 +1599,11 @@ spec:
                             type: object
                           maxItems: 8
                           type: array
+                          x-kubernetes-list-type: atomic
                       required:
                       - attachedRoutes
                       - conditions
                       - name
-                      - supportedKinds
                       type: object
                     maxItems: 64
                     type: array
@@ -1367,6 +1611,10 @@ spec:
                     - name
                     x-kubernetes-list-type: map
                 type: object
+              observedGeneration:
+                description: The most recent generation observed by the workload controller.
+                format: int64
+                type: integer
               placements:
                 description: The current status of placemetns in a workload.
                 items:
@@ -1432,8 +1680,9 @@ spec:
                         type: object
                       type: array
                     currentReplicas:
-                      description: The number of instances which have the latest workload
-                        settings applied.
+                      description: |-
+                        The number of instances which have the latest workload settings applied
+                        and are programmed (a subset of UpdatedReplicas that are ready to serve).
                       format: int32
                       type: integer
                     desiredReplicas:
@@ -1451,12 +1700,19 @@ spec:
                       description: The number of instances that currently exist
                       format: int32
                       type: integer
+                    updatedReplicas:
+                      description: |-
+                        The number of instances updated to the latest template revision, regardless
+                        of readiness. Lags Replicas during a rolling update or restart.
+                      format: int32
+                      type: integer
                   required:
                   - currentReplicas
                   - desiredReplicas
                   - name
                   - readyReplicas
                   - replicas
+                  - updatedReplicas
                   type: object
                 type: array
               readyReplicas:
@@ -1467,12 +1723,21 @@ spec:
                 description: The number of instances that currently exist
                 format: int32
                 type: integer
+              updatedReplicas:
+                description: |-
+                  The number of instances updated to the latest template revision (their
+                  observed template hash matches the desired template), regardless of
+                  readiness. Lags Replicas during a rolling update or restart, then catches
+                  back up — making an in-progress roll observable.
+                format: int32
+                type: integer
             required:
             - currentReplicas
             - deployments
             - desiredReplicas
             - readyReplicas
             - replicas
+            - updatedReplicas
             type: object
         required:
         - spec

@@ -18,7 +18,7 @@ import (
 //   https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/validation/validation.go
 
 func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
-	allErrs := make(field.ErrorList, 0, 4)
+	allErrs := field.ErrorList{}
 
 	// allErrs = append(allErrs, validateWorkloadMetadata(w)...)
 	allErrs = append(allErrs, validateWorkloadSpec(w.Spec, opts)...)
@@ -35,7 +35,7 @@ type WorkloadValidationOptions struct {
 }
 
 func validateWorkloadSpec(spec computev1alpha.WorkloadSpec, opts WorkloadValidationOptions) field.ErrorList {
-	allErrs := make(field.ErrorList, 0, 4)
+	allErrs := field.ErrorList{}
 
 	specPath := field.NewPath("spec")
 
@@ -111,7 +111,7 @@ func validateScaleSettings(placement computev1alpha.HorizontalScaleSettings, fie
 }
 
 func validateScaleSettingMetrics(metrics []computev1alpha.MetricSpec, fieldPath *field.Path) field.ErrorList {
-	allErrs := make(field.ErrorList, 0, len(metrics))
+	allErrs := field.ErrorList{}
 
 	for i, m := range metrics {
 		metricField := fieldPath.Index(i)

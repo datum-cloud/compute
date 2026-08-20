@@ -4,65 +4,46 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"sync"
+	"errors"
 	"testing"
 
-	"github.com/go-logr/logr"
-	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
-// ─── Log capture helper ───────────────────────────────────────────────────────
-
-// logEntry holds a single captured log line (message + formatted key-value pairs).
-type logEntry struct {
-	msg string
-	kvs string // funcr renders key-value pairs as a single string
-}
-
-// captureLogger returns a logr.Logger backed by an in-memory sink and a pointer
-// to the slice of captured entries. Thread-safe; safe to call from parallel tests.
-func captureLogger() (logr.Logger, *[]logEntry) {
-	var mu sync.Mutex
-	var entries []logEntry
-	logger := funcr.New(func(prefix, args string) {
-		mu.Lock()
-		defer mu.Unlock()
-		entries = append(entries, logEntry{msg: prefix, kvs: args})
-	}, funcr.Options{})
-	return logger, &entries
-}
-
 // ─── write-back test constants ────────────────────────────────────────────────
 
 const (
-	wbTestClusterName    = "edge-cluster"
-	wbTestNamespace      = "ns-proj-uid-1234"
-	wbTestInstanceName   = "inst-0"
-	wbTestWorkloadUID    = "wl-uid-aaaa-bbbb"
-	wbTestWDUID          = "wd-uid-cccc-dddd"
-	wbTestInstanceIndex  = "0"
-	wbTestUpstreamNS     = "proj-namespace"
-	wbTestEncodedCluster = "cluster-" + wbTestClusterName
+	wbTestClusterName        = "edge-cluster"
+	wbTestNamespace          = "ns-proj-uid-1234"
+	wbTestInstanceName       = "inst-0"
+	wbTestWorkloadUID        = "wl-uid-aaaa-bbbb"
+	wbTestWDUID              = "wd-uid-cccc-dddd"
+	wbTestInstanceIndex      = "0"
+	wbTestUpstreamNS         = "proj-namespace"
+	wbTestEncodedCluster     = "cluster-" + wbTestClusterName
+	karmadaManagedLabelValue = "true"
 
-	// Four new self-describing labels.
+	// The four self-describing labels.
 	wbTestWDName       = "my-workload-deployment"
 	wbTestCityCode     = "DFW"
 	wbTestWorkloadName = "my-workload"
 	wbTestPlacement    = "us-central"
+
+	// wbTestHubWDUID is the hub WorkloadDeployment's own UID. It is the only UID
+	// the hub garbage collector can act on, so the write-back copy's controller
+	// reference must carry it.
+	wbTestHubWDUID = "hub-wd-uid-eeee-ffff"
 )
 
 // wbTestCellInstance builds a cell-side Instance with all seven owned labels
@@ -116,17 +97,30 @@ func wbTestDownstreamNS() *corev1.Namespace {
 	}
 }
 
+// wbTestHubDeployment returns the hub WorkloadDeployment that owns the
+// write-back copies of wbTestCellInstance. Write-back requires it to exist.
+func wbTestHubDeployment() *computev1alpha.WorkloadDeployment {
+	return &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      wbTestWDName,
+			Namespace: wbTestNamespace,
+			UID:       types.UID(wbTestHubWDUID),
+		},
+	}
+}
+
 // newWriteBackReconciler wires an InstanceReconciler whose FederationClient is set
 // to federationClient and whose local cluster has a single cell instance.
 func newWriteBackReconciler(federationClient client.Client) *InstanceReconciler {
 	return &InstanceReconciler{
 		FederationClient: federationClient,
+		scheme:           newKarmadaScheme(),
 	}
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-// TestWriteBackToUpstream_CreatePath_AllLabels (Case A) verifies that the first
+// TestWriteBackToUpstream_CreatePath_AllLabels verifies that the first
 // write-back to an empty Karmada control plane creates an Instance with all five
 // expected labels (two routing + three linking) and also writes the cell-side
 // status via Status().Update.
@@ -136,14 +130,14 @@ func TestWriteBackToUpstream_CreatePath_AllLabels(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
 	r := newWriteBackReconciler(upstreamClient)
 	cellInstance := wbTestCellInstance()
 
-	err := r.writeBackToUpstream(context.Background(), multicluster.ClusterName(wbTestClusterName), cellInstance)
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
 	require.NoError(t, err)
 
 	// Verify the created Karmada Instance carries all five expected labels.
@@ -170,7 +164,7 @@ func TestWriteBackToUpstream_CreatePath_AllLabels(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, created.Status.Conditions[0].Status)
 }
 
-// TestWriteBackToUpstream_UpdatePath_LabelMerge (Case B) verifies that an
+// TestWriteBackToUpstream_UpdatePath_LabelMerge verifies that an
 // existing Karmada Instance with a Karmada-managed label retains that label
 // after the update path runs, while all five owned labels are written correctly.
 func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
@@ -178,8 +172,8 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 
 	karmadaManagedLabel := "karmada.io/managed"
 
-	// Pre-populate the Karmada control plane with an Instance that has the old
-	// two-label map plus a simulated Karmada-managed label.
+	// Pre-populate the Karmada control plane with a pre-existing Instance
+	// carrying only the two linking labels plus a simulated Karmada-managed label.
 	existingKarmadaInstance := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      wbTestInstanceName,
@@ -187,7 +181,7 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: wbTestEncodedCluster,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   wbTestUpstreamNS,
-				karmadaManagedLabel:                            "true",
+				karmadaManagedLabel:                            karmadaManagedLabelValue,
 			},
 		},
 		Spec: computev1alpha.InstanceSpec{
@@ -200,14 +194,14 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
 	r := newWriteBackReconciler(upstreamClient)
 	cellInstance := wbTestCellInstance()
 
-	err := r.writeBackToUpstream(context.Background(), multicluster.ClusterName(wbTestClusterName), cellInstance)
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
 	require.NoError(t, err)
 
 	var updated computev1alpha.Instance
@@ -223,11 +217,11 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 	assert.Equal(t, wbTestInstanceIndex, updated.Labels[computev1alpha.InstanceIndexLabel])
 
 	// The Karmada-managed label must survive the merge (not be replaced/deleted).
-	assert.Equal(t, "true", updated.Labels[karmadaManagedLabel],
+	assert.Equal(t, karmadaManagedLabelValue, updated.Labels[karmadaManagedLabel],
 		"Karmada-managed label must be preserved after merge; should not be overwritten")
 }
 
-// TestWriteBackToUpstream_LabelChangeTriggerUpdate (Case C) verifies that
+// TestWriteBackToUpstream_LabelChangeTriggerUpdate verifies that
 // a changed linking label on the cell instance causes the Karmada object to
 // be updated with the new value.
 func TestWriteBackToUpstream_LabelChangeTriggerUpdate(t *testing.T) {
@@ -258,7 +252,7 @@ func TestWriteBackToUpstream_LabelChangeTriggerUpdate(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
@@ -268,7 +262,7 @@ func TestWriteBackToUpstream_LabelChangeTriggerUpdate(t *testing.T) {
 	cellInstance := wbTestCellInstance()
 	cellInstance.Labels[computev1alpha.WorkloadUIDLabel] = newWorkloadUID
 
-	err := r.writeBackToUpstream(context.Background(), multicluster.ClusterName(wbTestClusterName), cellInstance)
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
 	require.NoError(t, err)
 
 	var updated computev1alpha.Instance
@@ -280,25 +274,27 @@ func TestWriteBackToUpstream_LabelChangeTriggerUpdate(t *testing.T) {
 		"WorkloadUIDLabel change on the cell instance must be reflected in the Karmada object")
 }
 
-// TestWriteBackToUpstream_EmptyLinkingLabels_NonFatal (Case D) verifies that
-// writeBackToUpstream completes without error when the cell-side Instance has
-// no linking labels (e.g. during an early reconcile before
-// addInstanceControllerLabels has run). The created Karmada object will carry
-// empty string values for the three linking labels, and the RC-2 warning log
-// must fire listing all three missing label keys.
-func TestWriteBackToUpstream_EmptyLinkingLabels_NonFatal(t *testing.T) {
+// TestWriteBackToUpstream_MissingLinkingLabels_Error verifies that
+// writeBackToUpstream refuses to create an upstream copy when the cell-side
+// Instance lacks the linking labels (e.g. before the stateful control
+// strategy's backfill has converged it). The error must name every missing
+// label so the wait is diagnosable, and no upstream object may be created —
+// an Instance with empty identity labels could never be linked back to its
+// owners.
+func TestWriteBackToUpstream_MissingLinkingLabels_Error(t *testing.T) {
 	t.Parallel()
 
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
 	r := newWriteBackReconciler(upstreamClient)
 
-	// Instance with nil Labels — simulates an early reconcile with no linking labels.
+	// Instance with nil Labels — simulates an early reconcile before the
+	// linking labels are stamped.
 	cellInstance := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      wbTestInstanceName,
@@ -311,52 +307,225 @@ func TestWriteBackToUpstream_EmptyLinkingLabels_NonFatal(t *testing.T) {
 		},
 	}
 
-	// Inject a capturing logger so we can assert the RC-2 warning fires.
-	capLogger, entries := captureLogger()
-	ctx := log.IntoContext(context.Background(), capLogger)
-
-	// Must not return an error — empty labels are non-fatal.
-	err := r.writeBackToUpstream(ctx, multicluster.ClusterName(wbTestClusterName), cellInstance)
-	require.NoError(t, err)
-
-	// The Karmada object should exist with empty string values for the linking labels.
-	var created computev1alpha.Instance
-	require.NoError(t, upstreamClient.Get(context.Background(),
-		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
-		&created))
-
-	assert.Equal(t, "", created.Labels[computev1alpha.WorkloadUIDLabel],
-		"WorkloadUIDLabel should be empty string when not set on cell instance")
-	assert.Equal(t, "", created.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
-		"WorkloadDeploymentUIDLabel should be empty string when not set on cell instance")
-	assert.Equal(t, "", created.Labels[computev1alpha.InstanceIndexLabel],
-		"InstanceIndexLabel should be empty string when not set on cell instance")
-
-	// Assert the RC-2 warning was emitted and named all three missing label keys.
-	// funcr encodes both the message and key-value pairs into the args string;
-	// we search across the full rendered output for each required substring.
-	warnMsg := "instance is missing linking labels for write-back"
-	allRendered := func() string {
-		parts := make([]string, len(*entries))
-		for i, e := range *entries {
-			parts[i] = fmt.Sprintf("%s %s", e.msg, e.kvs)
-		}
-		return strings.Join(parts, "\n")
-	}()
-
-	assert.True(t, strings.Contains(allRendered, warnMsg),
-		"expected RC-2 warning %q to be logged; got:\n%s", warnMsg, allRendered)
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
+	require.Error(t, err)
 	for _, key := range []string{
 		computev1alpha.WorkloadUIDLabel,
 		computev1alpha.WorkloadDeploymentUIDLabel,
 		computev1alpha.InstanceIndexLabel,
+		computev1alpha.WorkloadDeploymentNameLabel,
+		computev1alpha.CityCodeLabel,
+		computev1alpha.WorkloadNameLabel,
+		computev1alpha.PlacementNameLabel,
 	} {
-		assert.True(t, strings.Contains(allRendered, key),
-			"expected missing label key %q to appear in warning log; got:\n%s", key, allRendered)
+		assert.Contains(t, err.Error(), key,
+			"error must name missing label %q", key)
+	}
+
+	// No upstream Instance may be created with empty identity labels.
+	var created computev1alpha.Instance
+	getErr := upstreamClient.Get(context.Background(),
+		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
+		&created)
+	assert.True(t, apierrors.IsNotFound(getErr),
+		"no upstream write-back copy may be created when linking labels are missing (got err: %v)", getErr)
+}
+
+// TestWriteBackToUpstream_MissingLinkingLabels_NoUpdate verifies that an
+// existing upstream copy is left untouched when the cell-side Instance has
+// lost its linking labels: the write-back must error out before the update
+// path can overwrite the previously written identity with empty values.
+func TestWriteBackToUpstream_MissingLinkingLabels_NoUpdate(t *testing.T) {
+	t.Parallel()
+
+	existingKarmadaInstance := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      wbTestInstanceName,
+			Namespace: wbTestNamespace,
+			Labels: map[string]string{
+				downstreamclient.UpstreamOwnerClusterNameLabel: wbTestEncodedCluster,
+				downstreamclient.UpstreamOwnerNamespaceLabel:   wbTestUpstreamNS,
+				computev1alpha.WorkloadUIDLabel:                wbTestWorkloadUID,
+				computev1alpha.WorkloadDeploymentUIDLabel:      wbTestWDUID,
+				computev1alpha.InstanceIndexLabel:              wbTestInstanceIndex,
+			},
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
+			},
+		},
+	}
+
+	s := newKarmadaScheme()
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		Build()
+
+	r := newWriteBackReconciler(upstreamClient)
+
+	// Cell instance lost its labels (only the index label remains).
+	cellInstance := wbTestCellInstance()
+	delete(cellInstance.Labels, computev1alpha.WorkloadUIDLabel)
+	delete(cellInstance.Labels, computev1alpha.WorkloadDeploymentUIDLabel)
+
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), computev1alpha.WorkloadUIDLabel)
+	assert.Contains(t, err.Error(), computev1alpha.WorkloadDeploymentUIDLabel)
+	assert.NotContains(t, err.Error(), computev1alpha.InstanceIndexLabel,
+		"a present label must not be reported missing")
+
+	// The existing upstream copy must keep its previously written identity.
+	var existing computev1alpha.Instance
+	require.NoError(t, upstreamClient.Get(context.Background(),
+		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
+		&existing))
+	assert.Equal(t, wbTestWorkloadUID, existing.Labels[computev1alpha.WorkloadUIDLabel],
+		"existing WorkloadUIDLabel must not be overwritten with an empty value")
+	assert.Equal(t, wbTestWDUID, existing.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
+		"existing WorkloadDeploymentUIDLabel must not be overwritten with an empty value")
+}
+
+// TestWriteBackToUpstream_MissingSelfDescribingLabel_Error verifies that the
+// self-describing labels are required, not best-effort: a cell Instance
+// missing only WorkloadDeploymentNameLabel must fail write-back with an error
+// naming exactly that label, and no upstream copy may be created.
+func TestWriteBackToUpstream_MissingSelfDescribingLabel_Error(t *testing.T) {
+	t.Parallel()
+
+	s := newKarmadaScheme()
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		Build()
+
+	r := newWriteBackReconciler(upstreamClient)
+
+	cellInstance := wbTestCellInstance()
+	delete(cellInstance.Labels, computev1alpha.WorkloadDeploymentNameLabel)
+
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), computev1alpha.WorkloadDeploymentNameLabel,
+		"error must name the missing label")
+	assert.NotContains(t, err.Error(), computev1alpha.CityCodeLabel,
+		"a present label must not be reported missing")
+
+	var created computev1alpha.Instance
+	getErr := upstreamClient.Get(context.Background(),
+		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
+		&created)
+	assert.True(t, apierrors.IsNotFound(getErr),
+		"no upstream write-back copy may be created when a required label is missing (got err: %v)", getErr)
+}
+
+// TestWriteBackToUpstream_NamespaceIdentity_Errors verifies that the
+// federation-plane namespace is the strict source of upstream identity:
+// a missing namespace or a namespace lacking either upstream-owner label must
+// fail the write-back with an error naming the namespace (and label), and no
+// upstream copy may be created — there are no fallback identity values.
+func TestWriteBackToUpstream_NamespaceIdentity_Errors(t *testing.T) {
+	t.Parallel()
+
+	nsWithoutLabel := func(missing string) *corev1.Namespace {
+		ns := wbTestDownstreamNS()
+		delete(ns.Labels, missing)
+		return ns
+	}
+
+	tests := []struct {
+		name string
+		// ns is the federation-plane namespace; nil means it does not exist.
+		ns *corev1.Namespace
+		// wantInError must all appear in the returned error.
+		wantInError []string
+	}{
+		{
+			name:        "namespace missing — error, no copy",
+			ns:          nil,
+			wantInError: []string{wbTestNamespace},
+		},
+		{
+			name:        "namespace lacks upstream-namespace label — error names namespace and label",
+			ns:          nsWithoutLabel(downstreamclient.UpstreamOwnerNamespaceLabel),
+			wantInError: []string{wbTestNamespace, downstreamclient.UpstreamOwnerNamespaceLabel},
+		},
+		{
+			name:        "namespace lacks upstream-cluster-name label — error names namespace and label",
+			ns:          nsWithoutLabel(downstreamclient.UpstreamOwnerClusterNameLabel),
+			wantInError: []string{wbTestNamespace, downstreamclient.UpstreamOwnerClusterNameLabel},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := fake.NewClientBuilder().
+				WithScheme(newKarmadaScheme()).
+				WithStatusSubresource(&computev1alpha.Instance{})
+			if tt.ns != nil {
+				builder = builder.WithObjects(tt.ns)
+			}
+			upstreamClient := builder.Build()
+
+			r := newWriteBackReconciler(upstreamClient)
+
+			err := r.writeBackToUpstream(context.Background(), wbTestCellInstance())
+			require.Error(t, err)
+			for _, want := range tt.wantInError {
+				assert.Contains(t, err.Error(), want)
+			}
+
+			var created computev1alpha.Instance
+			getErr := upstreamClient.Get(context.Background(),
+				types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
+				&created)
+			assert.True(t, apierrors.IsNotFound(getErr),
+				"no upstream write-back copy may be created when upstream identity is unresolvable (got err: %v)", getErr)
+		})
 	}
 }
 
-// TestWriteBackToUpstream_FourNewLabels_CreatePath verifies that all four new
+// TestWriteBackToUpstream_NamespaceGetFailure_Error verifies that a transient
+// failure reading the federation-plane namespace aborts the write-back instead
+// of proceeding with derived identity values.
+func TestWriteBackToUpstream_NamespaceGetFailure_Error(t *testing.T) {
+	t.Parallel()
+
+	getFailure := errors.New("federation API unavailable")
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(newKarmadaScheme()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.Namespace); ok {
+					return getFailure
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := newWriteBackReconciler(upstreamClient)
+
+	err := r.writeBackToUpstream(context.Background(), wbTestCellInstance())
+	require.ErrorIs(t, err, getFailure)
+
+	var created computev1alpha.Instance
+	getErr := upstreamClient.Get(context.Background(),
+		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
+		&created)
+	assert.True(t, apierrors.IsNotFound(getErr),
+		"no upstream write-back copy may be created when the namespace read fails (got err: %v)", getErr)
+}
+
+// TestWriteBackToUpstream_FourNewLabels_CreatePath verifies that the four
 // self-describing labels (WorkloadDeploymentName, CityCode, WorkloadName,
 // PlacementName) are written to the Karmada object on the create path.
 func TestWriteBackToUpstream_FourNewLabels_CreatePath(t *testing.T) {
@@ -365,14 +534,14 @@ func TestWriteBackToUpstream_FourNewLabels_CreatePath(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS()).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
 	r := newWriteBackReconciler(upstreamClient)
 	cellInstance := wbTestCellInstance()
 
-	err := r.writeBackToUpstream(context.Background(), multicluster.ClusterName(wbTestClusterName), cellInstance)
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
 	require.NoError(t, err)
 
 	var created computev1alpha.Instance
@@ -390,7 +559,7 @@ func TestWriteBackToUpstream_FourNewLabels_CreatePath(t *testing.T) {
 		"PlacementNameLabel must propagate to Karmada object")
 }
 
-// TestWriteBackToUpstream_FourNewLabels_UpdatePath verifies that all four new
+// TestWriteBackToUpstream_FourNewLabels_UpdatePath verifies that the four
 // self-describing labels are written on the update path and existing Karmada-
 // managed labels on the downstream object are preserved.
 func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
@@ -405,7 +574,7 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: wbTestEncodedCluster,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   wbTestUpstreamNS,
-				karmadaManagedLabel:                            "true",
+				karmadaManagedLabel:                            karmadaManagedLabelValue,
 			},
 		},
 		Spec: computev1alpha.InstanceSpec{
@@ -418,14 +587,14 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 	s := newKarmadaScheme()
 	upstreamClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(wbTestDownstreamNS(), existingKarmadaInstance).
+		WithObjects(wbTestDownstreamNS(), wbTestHubDeployment(), existingKarmadaInstance).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 
 	r := newWriteBackReconciler(upstreamClient)
 	cellInstance := wbTestCellInstance()
 
-	err := r.writeBackToUpstream(context.Background(), multicluster.ClusterName(wbTestClusterName), cellInstance)
+	err := r.writeBackToUpstream(context.Background(), cellInstance)
 	require.NoError(t, err)
 
 	var updated computev1alpha.Instance
@@ -443,6 +612,6 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 		"PlacementNameLabel must be set on update path")
 
 	// Karmada-managed label must survive the merge.
-	assert.Equal(t, "true", updated.Labels[karmadaManagedLabel],
+	assert.Equal(t, karmadaManagedLabelValue, updated.Labels[karmadaManagedLabel],
 		"Karmada-managed label must be preserved after the update merge")
 }

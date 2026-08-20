@@ -33,6 +33,12 @@ type WorkloadDeploymentSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	ScaleSettings HorizontalScaleSettings `json:"scaleSettings"`
+
+	// Replicas is the current desired replica target for this deployment. When
+	// unset, the deployment reconciles to scaleSettings.minReplicas.
+	//
+	// +kubebuilder:validation:Optional
+	Replicas *int32 `json:"replicas,omitempty"`
 }
 
 // WorkloadDeploymentStatus defines the observed state of WorkloadDeployment
@@ -53,8 +59,8 @@ type WorkloadDeploymentStatus struct {
 	// and are programmed (a subset of UpdatedReplicas that are ready to serve).
 	CurrentReplicas int32 `json:"currentReplicas"`
 
-	// The number of instances updated to the latest template revision (their
-	// observed template hash matches the desired template), regardless of
+	// The number of instances updated to the latest template revision, i.e.
+	// whose observed template hash matches the desired template, regardless of
 	// readiness. Lags Replicas during a rolling update or restart, then catches
 	// back up — making an in-progress roll observable.
 	UpdatedReplicas int32 `json:"updatedReplicas"`
@@ -65,12 +71,23 @@ type WorkloadDeploymentStatus struct {
 	// The number of instances which are ready.
 	ReadyReplicas int32 `json:"readyReplicas"`
 
+	// Selector is the label selector that identifies Pods backing this deployment.
+	//
+	// +kubebuilder:validation:Optional
+	Selector string `json:"selector,omitempty"`
+
 	// The most recent generation observed by the deployment controller. When
 	// this matches metadata.generation, the controller has reconciled the
 	// latest spec (e.g. a restart request).
 	//
 	// +kubebuilder:validation:Optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Suspended, when true, requests that all instances managed by this deployment
+	// be stopped without releasing their placement, disk attachments, or quota allocation.
+	//
+	// +kubebuilder:validation:Optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 const (
@@ -84,6 +101,7 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // WorkloadDeployment is the Schema for the workloaddeployments API
@@ -93,7 +111,7 @@ const (
 // +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.status.replicas`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Desired",type=string,JSONPath=`.status.desiredReplicas`
-// +kubebuilder:printcolumn:name="Up-to-date",type=string,JSONPath=`.status.currentReplicas`
+// +kubebuilder:printcolumn:name="Up-to-date",type=string,JSONPath=`.status.updatedReplicas`
 // +kubebuilder:printcolumn:name="Location Namespace",type=string,JSONPath=`.status.location.namespace`,priority=1
 // +kubebuilder:printcolumn:name="Location Name",type=string,JSONPath=`.status.location.name`,priority=1
 type WorkloadDeployment struct {

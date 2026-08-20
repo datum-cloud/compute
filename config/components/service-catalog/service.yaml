@@ -6,8 +6,13 @@ spec:
   description: |
     Low-latency virtual machine workloads with CPU and memory resources billed by consumption.
   displayName: Compute
+  dependencies:
+    - serviceRef:
+        name: networking-datumapis-com
   owner:
     producerProjectRef:
       name: datum-cloud
+  enablementPolicy:
+    mode: GatedByProvider
   phase: Published
   serviceName: compute.datumapis.com

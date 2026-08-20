@@ -18,7 +18,18 @@ spec:
     6. InstanceProjector on control-plane creates a projection of the Instance
        in the project namespace.
 
-    Prerequisites: both operator instances must be running (task e2e:operator:start).
+    Cluster-name label: "cluster-single".
+    The value is NOT the cell's cluster name. The management operator federates
+    the WorkloadDeployment from its local control-plane cluster, which it
+    registers with multicluster-runtime under the name "single" (both operators
+    run discovery.mode=single in this environment, defaulting the cluster name to
+    "single" per cmd/main.go singleClusterName). The federator stamps
+    EncodeClusterName("single") = "cluster-single" onto the hub ns-<uid>
+    namespace; the cell write-back and the projection both copy that namespace
+    label verbatim, so the assertion holds regardless of which cell reconciles.
+
+    Prerequisites: the management + both cell operators are deployed in-cluster
+    (task e2e:up).
 
   template: true
 
@@ -100,15 +111,23 @@ spec:
         - name: downstreamNS
           value: ($stdout)
     - assert:
-        timeout: 30s
+        # This is the tail of the full chain (project WD → federate → Karmada
+        # propagate to the cell → cell reconcile → Instance). On a constrained CI
+        # runner that whole sequence can exceed 30s; 120s gives it room without
+        # masking a real stall (the smoke path confirms the Instance does appear).
+        timeout: 120s
         resource:
           apiVersion: compute.datumapis.com/v1alpha
           kind: Instance
           metadata:
             namespace: ($downstreamNS)
             name: test-full-fed-wd-0
+          # The Instance is blocked before scheduling completes (a scheduling
+          # gate, or no matching Location in the e2e environment), so Ready is
+          # definitively False — not indeterminate. The exact reason is
+          # environment-dependent, so only the status is asserted.
           (status.conditions[?type == 'Ready'] | [0]):
-            status: "Unknown"
+            status: "False"
 
   - name: assert-instance-writeback-in-downstream
     description: Assert InstanceReconciler wrote the Instance back to Karmada.
@@ -146,5 +165,9 @@ spec:
             name: test-full-fed-wd-0
             labels:
               meta.datumapis.com/upstream-cluster-name: cluster-single
+          # The Instance is blocked before scheduling completes (a scheduling
+          # gate, or no matching Location in the e2e environment), so Ready is
+          # definitively False — not indeterminate. The exact reason is
+          # environment-dependent, so only the status is asserted.
           (status.conditions[?type == 'Ready'] | [0]):
-            status: "Unknown"
+            status: "False"

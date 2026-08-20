@@ -36,6 +36,49 @@ type WorkloadOperator struct {
 	WebhookServer *WebhookServerConfig `json:"webhookServer,omitempty"`
 
 	Discovery DiscoveryConfig `json:"discovery"`
+
+	// FeatureFlags configures optional management-plane feature gates.
+	FeatureFlags FeatureFlagsConfig `json:"featureFlags,omitempty"`
+
+	// ReferencedData configures the ReferencedDataController.
+	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// ReferencedDataConfig holds size-limit knobs for the ReferencedDataController.
+// Both limits default to zero, which causes the controller to use its built-in
+// defaults (256 KiB per object, 1 MiB aggregate per WorkloadDeployment).
+type ReferencedDataConfig struct {
+	// PerObjectLimitBytes is the maximum allowed byte size for a single
+	// companion ConfigMap or Secret (sum of all Data + BinaryData values).
+	// A value of 0 uses the built-in default of 256 KiB.
+	PerObjectLimitBytes int64 `json:"perObjectLimitBytes,omitempty"`
+
+	// AggregateLimitBytes is the maximum allowed aggregate byte size across
+	// all companion objects for a single WorkloadDeployment.
+	// A value of 0 uses the built-in default of 1 MiB.
+	AggregateLimitBytes int64 `json:"aggregateLimitBytes,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// FeatureFlagsConfig holds management-plane feature gates. All flags default
+// to false (off) unless explicitly enabled, so that new capabilities can be
+// merged and deployed safely before the full feature rollout is complete.
+type FeatureFlagsConfig struct {
+	// EnableReferencedDataGate controls whether new Instances receive the
+	// "ReferencedData" scheduling gate when the workload template references
+	// ConfigMaps or Secrets.
+	//
+	// This gate MUST NOT be enabled until both the cell gate-clearing reconciler
+	// (Phase 2) and the unikraft provider gate-honoring (Phase 3) are confirmed
+	// deployed everywhere. Enabling it prematurely will cause gated instances to
+	// either stall indefinitely (cell not yet clearing) or launch without the
+	// referenced data mounted (provider not yet honoring gates).
+	//
+	// Defaults to false.
+	EnableReferencedDataGate bool `json:"enableReferencedDataGate,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -243,9 +286,36 @@ type DiscoveryConfig struct {
 	// takes precedence over ProjectKubeconfigPath for quota calls. When both are
 	// unset, quota accounting is disabled.
 	//
-	// Use this field in deployments (mode: single or mode: milo) that need to
-	// talk to api.datum.net for quota enforcement.
+	// Setting it enables quota enforcement (claim writes to the owning project's
+	// quota API) in any mode. The live ResourceClaim watch, however, runs only in
+	// management-plane mode; single/cluster deployments observe grants via the
+	// reconcile requeue instead.
 	QuotaKubeconfigPath string `json:"quotaKubeconfigPath"`
+
+	// ConsumerScopedProjection, when non-nil, restricts project engagement to
+	// projects with an active ServiceConsumer for one of the listed services.
+	// When nil, the operator engages all ready projects (mode: milo default).
+	// Requires Mode: milo.
+	ConsumerScopedProjection *ConsumerScopedProjectionConfig `json:"consumerScopedProjection,omitempty"`
+}
+
+// ConsumerScopedProjectionConfig gates project engagement on an active
+// ServiceConsumer. The operator watches the provider project for
+// ServiceConsumer objects; it engages a consumer project only while it holds
+// at least one Active consumer for one of the listed service names, and
+// tears down the projected resources when that last consumer is revoked.
+//
+// +k8s:deepcopy-gen=true
+type ConsumerScopedProjectionConfig struct {
+	// ProviderProject is the Milo project that hosts the ServiceConsumer
+	// objects for this service (e.g. "compute-provider"). The operator
+	// connects to this project's control plane to watch consumers.
+	ProviderProject string `json:"providerProject"`
+
+	// ServiceNames is the set of canonical service names this operator owns
+	// (e.g. ["compute.datumapis.com"]). Only ServiceConsumers whose resolved
+	// canonical name is in this set are counted toward project engagement.
+	ServiceNames []string `json:"serviceNames"`
 }
 
 func SetDefaults_DiscoveryConfig(obj *DiscoveryConfig) {
@@ -287,13 +357,9 @@ func (c *DiscoveryConfig) QuotaRestConfig() (*rest.Config, error) {
 		path = c.ProjectKubeconfigPath
 	}
 	if path == "" {
-		// No credential path configured: intentional opt-out. Caller logs and
-		// disables enforcement.
 		return nil, nil
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// Path explicitly configured but file absent: operator intended enforcement
-		// but the credential is missing (unmounted Secret, wrong path). Fail loud.
 		return nil, fmt.Errorf("quota kubeconfig path %q is configured but file does not exist: "+
 			"ensure the quota credential Secret is mounted correctly", path)
 	}

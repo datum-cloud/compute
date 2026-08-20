@@ -74,7 +74,6 @@ func TestQuotaRestConfig_NilWhenNoPath(t *testing.T) {
 
 // TestQuotaRestConfig_ErrorWhenPathMissing verifies that explicitly setting a
 // kubeconfig path that does not exist on disk returns a non-nil error (fail-loud).
-// This reverses the old da63916 behavior of silently returning (nil, nil).
 func TestQuotaRestConfig_ErrorWhenPathMissing(t *testing.T) {
 	cfg := &DiscoveryConfig{
 		QuotaKubeconfigPath: "/nonexistent/path/quota.kubeconfig",

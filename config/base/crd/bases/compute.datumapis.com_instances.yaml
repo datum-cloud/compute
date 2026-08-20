@@ -97,17 +97,101 @@ spec:
                   name:
                     description: Name of a datum location
                     type: string
-                  namespace:
-                    description: Namespace for the datum location
-                    type: string
                 required:
                 - name
-                - namespace
                 type: object
               networkInterfaces:
-                description: Network interface configuration.
+                description: |-
+                  Network interface configuration.
+
+                  Keyed by interface name so an interface keeps its identity, and therefore
+                  its addresses, across updates to the rest of the list.
+
+                  Limited to a single interface until the data plane can attach more than
+                  one to an instance.
                 items:
+                  description: |-
+                    InstanceNetworkInterface describes one interface an instance needs. The
+                    fields beyond `network` and `networkPolicy` are copied verbatim onto the
+                    NetworkInterfaceClaim created for each instance slot, so they carry the same
+                    meaning, defaults, and immutability the claim API defines.
+
+                    The location an interface is claimed in is implicit: the claim is created in
+                    the control plane serving the instance, which is already location scoped.
                   properties:
+                    addresses:
+                      description: |-
+                        Requests for addresses beyond the ones the interface holds inside its
+                        network, such as a public IPv4 address in front of a private one. Each is
+                        reported in the interface's `externalAddresses` status.
+
+                        Omit this field for ordinary private addressing, which is the common case.
+                      items:
+                        description: |-
+                          InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+                          the interface holds inside its network.
+                        properties:
+                          class:
+                            description: |-
+                              The IPAM class to allocate from, such as public-ipv4.
+
+                              A class names a kind of address, and the platform decides which pool and
+                              prefix length serve it. A class never names a pool, a prefix length, or a
+                              CIDR, so a class cannot be used to ask for a particular address.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                        required:
+                        - class
+                        type: object
+                      maxItems: 4
+                      minItems: 1
+                      type: array
+                      x-kubernetes-validations:
+                      - message: Each address class may be requested at most once
+                        rule: self.all(a, self.exists_one(b, b.class == a.class))
+                    ipFamilies:
+                      default:
+                      - IPv6
+                      description: |-
+                        The address families the interface must carry, in priority order. List
+                        [IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+                        interface's primary address, which is the one reported as the instance's
+                        network IP.
+
+                        Every family listed must be satisfiable or the interface is never
+                        published, so asking for a family the network does not carry fails rather
+                        than yielding a partially addressed interface.
+                      items:
+                        enum:
+                        - IPv4
+                        - IPv6
+                        type: string
+                      maxItems: 2
+                      minItems: 1
+                      type: array
+                      x-kubernetes-validations:
+                      - message: Each address family may be requested at most once
+                        rule: self.all(f, self.exists_one(g, g == f))
+                      - message: ipFamilies is immutable and cannot be changed after
+                          creation
+                        rule: self == oldSelf
+                    name:
+                      default: eth0
+                      description: |-
+                        The name of the interface, such as eth0 or eth1. It is both the device
+                        name the guest operating system sees and the suffix of the interface
+                        claim's name, which is what keeps an interface's addresses with the
+                        instance slot across replacement.
+
+                        Immutable, because the guest is configured against it and the claim is
+                        named after it.
+                      maxLength: 15
+                      minLength: 1
+                      type: string
+                      x-kubernetes-validations:
+                      - message: name is immutable and cannot be changed after creation
+                        rule: self == oldSelf
                     network:
                       description: The network to attach the network interface to.
                       properties:
@@ -214,11 +298,44 @@ spec:
                             type: object
                           type: array
                       type: object
+                    reclaimPolicy:
+                      default: Delete
+                      description: |-
+                        What becomes of the interface, and its addresses, when the instance slot
+                        it serves goes away.
+
+                        Delete returns the addresses to IPAM, so an instance recreated later comes
+                        back on different addresses. Retain keeps them reserved, and billable, so a
+                        later instance filling the same slot returns to the same addresses. Choose
+                        Retain when an address is published in DNS, allowed through a firewall, or
+                        otherwise depended on from outside.
+
+                        Both policies keep the addresses for as long as the slot exists, including
+                        across instance replacement. They differ only on scale-down and deletion.
+
+                        Immutable. An address keeps the policy it was allocated under.
+                      enum:
+                      - Delete
+                      - Retain
+                      type: string
+                      x-kubernetes-validations:
+                      - message: reclaimPolicy is immutable and cannot be changed
+                          after creation
+                        rule: self == oldSelf
                   required:
                   - network
                   type: object
+                  x-kubernetes-validations:
+                  - message: addresses is immutable and cannot be set, changed, or
+                      cleared after creation
+                    rule: has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses)
+                      || self.addresses == oldSelf.addresses)
+                maxItems: 1
                 minItems: 1
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               runtime:
                 description: The runtime type of the instance, such as a container
                   sandbox or a VM.
@@ -455,6 +572,54 @@ spec:
                               x-kubernetes-list-map-keys:
                               - name
                               x-kubernetes-list-type: map
+                            envFrom:
+                              description: |-
+                                List of sources to populate environment variables in the container.
+                                The keys defined within a source must be a C_IDENTIFIER. All invalid
+                                keys will be reported as an event when the container is starting. When a
+                                key exists in multiple sources, the value associated with the last source
+                                will take precedence. Values defined by an Env with a duplicate key will
+                                take precedence.
+                              items:
+                                description: |-
+                                  EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+                                  used as environment variables in a container.
+                                properties:
+                                  configMapRef:
+                                    description: The ConfigMap to select from.
+                                    properties:
+                                      name:
+                                        description: Name of the ConfigMap in the
+                                          same namespace as the Workload.
+                                        type: string
+                                      optional:
+                                        description: Specify whether the ConfigMap
+                                          must be defined.
+                                        type: boolean
+                                    required:
+                                    - name
+                                    type: object
+                                  prefix:
+                                    description: |-
+                                      An optional identifier to prepend to each key in the referenced
+                                      ConfigMap or Secret. Must be a valid C_IDENTIFIER.
+                                    type: string
+                                  secretRef:
+                                    description: The Secret to select from.
+                                    properties:
+                                      name:
+                                        description: Name of the Secret in the same
+                                          namespace as the Workload.
+                                        type: string
+                                      optional:
+                                        description: Specify whether the Secret must
+                                          be defined.
+                                        type: boolean
+                                    required:
+                                    - name
+                                    type: object
+                                type: object
+                              type: array
                             image:
                               description: The fully qualified container image name.
                               type: string
@@ -974,20 +1139,188 @@ spec:
                 description: Network interface information
                 items:
                   properties:
+                    addresses:
+                      description: |-
+                        The addresses the interface holds inside its network, each with its prefix
+                        length and, once the location has a subnet, its gateway.
+                      items:
+                        description: |-
+                          InstanceNetworkInterfaceAddress is an address the interface holds inside its
+                          network. These are configured on the NIC itself, and always carry a prefix
+                          length.
+                        properties:
+                          address:
+                            description: |-
+                              The address the interface holds, in CIDR notation, such as 10.128.0.2/32
+                              or 2001:db8:a001::1/128.
+
+                              For IPv6 this may be a block delegated to the interface rather than a
+                              single address, such as 2001:db8:a001::/96. The interface owns the whole
+                              block and assigns within it.
+                            maxLength: 45
+                            minLength: 1
+                            type: string
+                          class:
+                            description: |-
+                              The IPAM class this address was allocated from, such as private-ipv6. It
+                              is empty for addresses requested by family rather than by class.
+                            maxLength: 63
+                            type: string
+                          family:
+                            description: The address family of this entry.
+                            enum:
+                            - IPv4
+                            - IPv6
+                            type: string
+                          gateway:
+                            description: |-
+                              The next hop the interface routes through for this family, such as
+                              10.128.0.1. It is empty until the subnet backing the network in this
+                              location exists.
+                            maxLength: 45
+                            type: string
+                          primary:
+                            description: |-
+                              Marks the address projected into `assignments.networkIP`.
+
+                              Exactly one address is primary for the interface as a whole, not one per
+                              family. It is the address of the first family listed in `ipFamilies`.
+                            type: boolean
+                        required:
+                        - address
+                        - family
+                        type: object
+                      type: array
                     assignments:
+                      description: |-
+                        Single address projections of the fields above, kept for clients that read
+                        one address per interface.
                       properties:
                         externalIP:
                           description: |-
                             The external IP address used for the interface. A one to one NAT will be
-                            performed for this address with the interface's network IP.
+                            performed for this address with the interface's network IP. It is a
+                            projection of the first entry in the interface's `externalAddresses`.
                           type: string
                         networkIP:
-                          description: The IP address assigned as the primary IP from
-                            the attached network.
+                          description: |-
+                            The IP address assigned as the primary IP from the attached network. It is
+                            a projection of the primary entry in the interface's `addresses`.
                           type: string
                       type: object
+                    conditions:
+                      description: |-
+                        The observations of this interface's current state. Known condition types
+                        are "Allocated" and "Programmed".
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      type: array
+                    externalAddresses:
+                      description: |-
+                        The addresses the interface is reachable at from outside its network, one
+                        per class requested in the spec. Each is a bare address with no prefix
+                        length.
+                      items:
+                        description: |-
+                          InstanceNetworkInterfaceExternalAddress is an address reachable from outside
+                          the network, mapped onto an address the interface holds inside it. A public
+                          IPv4 address in front of a private address is the usual case.
+
+                          Unlike an interface address, it is a bare address with no prefix length,
+                          because nothing configures it on the NIC.
+                        properties:
+                          address:
+                            description: |-
+                              The externally reachable address, such as 203.0.113.10. It carries no
+                              prefix length.
+                            maxLength: 45
+                            minLength: 1
+                            type: string
+                          class:
+                            description: |-
+                              The IPAM class this address was allocated from, such as public-ipv4. It
+                              matches a class requested in the interface's `addresses`.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                          family:
+                            description: The address family of this entry.
+                            enum:
+                            - IPv4
+                            - IPv6
+                            type: string
+                        required:
+                        - address
+                        - class
+                        - family
+                        type: object
+                      type: array
+                    name:
+                      description: |-
+                        The name of the interface this entry reports on, matching the name in the
+                        instance's spec.
+                      type: string
                   type: object
                 type: array
+              suspended:
+                description: |-
+                  Suspended, when true, indicates that the instance's process should be stopped
+                  without releasing its placement, disk attachments, or quota allocation.
+                  The provider controller stops the running container/VM.
+                type: boolean
             type: object
         type: object
     served: true

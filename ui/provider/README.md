@@ -1,0 +1,77 @@
+# Workloads resource-type plugin
+
+Compute-authored UI meant for a host other than cloud-portal — as opposed to
+[`ui/consumer`](../consumer), which holds compute's own cloud-portal-facing
+plugin(s). This directory *is* the plugin (no further nesting): a Module
+Federation remote loaded by `staff-portal`'s plugin host
+(`app/modules/plugins/` there, ported from cloud-portal's
+[Portal Plugin System](https://github.com/datum-cloud/cloud-portal/blob/main/docs/enhancements/portal-plugin-system.md)),
+declaring three extensions:
+
+- **`portal.resource/platform`** — a data-only extension: label, icon, and the
+  `search.miloapis.com` target GVK for compute Workloads
+  (`compute.datumapis.com`). staff-portal runs the search itself — with the
+  *viewing staff user's own* credentials — and lists Workloads as a Type
+  filter option on `/customers/resources`, across every project. See
+  `staff-portal/app/modules/plugins/types.ts`'s `ResourcePlatformExtension`
+  for the full design and its trust-boundary reasoning.
+- **`portal.page/project`** (`WorkloadList`, `src/pages/workload-list.tsx`,
+  path `""` — the mount's index) — every Workload in one project, linking
+  into `WorkloadDetail` below. Reached from staff-portal's own project detail
+  nav (a native "Compute › Workloads" tab pointing at the plugin mount).
+- **`portal.page/project`** (`WorkloadDetail`, `src/pages/workload-detail.tsx`,
+  path `:workloadName`) — the actual support view for a single Workload,
+  reached either from `WorkloadList` or by clicking a Workload row on
+  `/customers/resources`.
+
+Both pages are mounted under
+`/customers/projects/:projectName/plugins/<slug>/…` by staff-portal's
+project-scoped plugin mount — `projectName` reaches them via `useParams()`
+resolving the ancestor route match (shared react-router singleton, no extra
+plumbing), and `:workloadName` (on the detail page only) from that
+extension's own declared `path`.
+
+## The support view
+
+Built for a staff member fielding "why isn't my workload starting" / "what's
+wrong with this workload" from a customer, not for general browsing —
+Overview and Instances surface raw conditions (type/status/reason/message),
+placements, network assignments, and scheduling gates, not just a coarse
+health enum. Events/Logs/Metrics are honest "Coming Soon" placeholders (no
+data source wired up for any of the three yet); YAML dumps the raw resource
+(minus `metadata.managedFields`) as an escape hatch. All data is read client-side, polled via
+`refetchInterval` (`src/lib/api.ts`) through staff-portal's own same-origin
+proxy — no new credential, no plugin-owned backend.
+
+## Local dev
+
+```
+bun install
+bun run build
+bun run preview   # built dist/ served at :5199
+bun run dev       # standalone preview harness at :5199, direct (no proxy)
+```
+
+### Serve `dev` or `preview`?
+
+staff-portal loads plugin assets through its **same-origin asset proxy**
+(`/api/plugins/workloads/…`), never directly from `:5199`. `dev` (Vite, HMR)
+emits a remote entry with host-absolute chunk URLs that 404 once proxied;
+`preview` (built) is proxy-relative and safe. Use `dev` only for the
+standalone harness at `http://localhost:5199/` (direct, no proxy — data
+calls 404 there since there's no staff-portal proxy to reach); use
+`build && preview` whenever staff-portal will load the plugin.
+
+To register it with a local staff-portal:
+
+```
+bun run build && bun run preview
+```
+
+```
+# in staff-portal
+PORTAL_PLUGINS=workloads=http://localhost:5199
+```
+
+then load `/customers/resources` in staff-portal, check "Workload" appears in
+the Type filter, and click a Workload row to reach the support view.

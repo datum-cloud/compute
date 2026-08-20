@@ -1,0 +1,25 @@
+# Kind cluster configuration for the compute-pop-* cell clusters.
+#
+# Same control-plane tuning as the management cluster (see kind-control-plane.yaml
+# for the rationale): etcd runs without fsync and the single-instance scheduler
+# and controller-manager run without leader election, so the cell control planes
+# stay stable on a busy host instead of crash-looping on lease-renewal timeouts.
+# kind renders its kubeadm config as v1beta3, so extraArgs are maps here.
+#
+# Unlike the management cluster, POP cells need no extraPortMappings.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+kubeadmConfigPatches:
+  - |
+    apiVersion: kubeadm.k8s.io/v1beta3
+    kind: ClusterConfiguration
+    etcd:
+      local:
+        extraArgs:
+          unsafe-no-fsync: "true"
+    controllerManager:
+      extraArgs:
+        leader-elect: "false"
+    scheduler:
+      extraArgs:
+        leader-elect: "false"

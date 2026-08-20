@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,13 +30,13 @@ func init() {
 
 func TestFreshDeployment(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := NewWithOptions(Options{})
 
 	deployment := getWorkloadDeployment("test-fresh-deploy", 2)
 
 	// No instances
 	var currentInstances []v1alpha.Instance
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 2)
@@ -49,39 +50,80 @@ func TestFreshDeployment(t *testing.T) {
 	assert.True(t, actions[1].IsSkipped())
 }
 
+func TestFreshDeployment_UsesDesiredReplicasInput(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+
+	deployment := getWorkloadDeployment("test-fresh-deploy", 1)
+
+	actions, err := control.GetActions(ctx, scheme, deployment, 3, nil)
+
+	assert.NoError(t, err)
+	assert.Len(t, actions, 3)
+	assert.Equal(t, "test-fresh-deploy-0", actions[0].Object.GetName())
+	assert.Equal(t, "test-fresh-deploy-1", actions[1].Object.GetName())
+	assert.Equal(t, "test-fresh-deploy-2", actions[2].Object.GetName())
+}
+
+// TestFreshDeployment_InstanceHasOwnerReference verifies that Instances produced
+// by GetActions carry a controller owner reference to the WorkloadDeployment.
+// The simplified WD finalizer relies on Kubernetes GC to cascade Instance
+// deletion when a WD is deleted; GC requires this owner reference to be set.
+func TestFreshDeployment_InstanceHasOwnerReference(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+	deployment := getWorkloadDeployment("test-wd", 1)
+
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, nil)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+
+	owners := actions[0].Object.GetOwnerReferences()
+	require.Len(t, owners, 1, "created Instance must carry an owner reference so GC cascades deletion from its WD")
+	assert.Equal(t, deployment.UID, owners[0].UID)
+	assert.Equal(t, deployment.Name, owners[0].Name)
+	require.NotNil(t, owners[0].Controller)
+	assert.True(t, *owners[0].Controller)
+}
+
+// TestUpdateWithAllReadyInstances verifies that a template change on Ready
+// instances rolls them by delete+recreate (not an in-place update), ordered
+// highest-ordinal-first with only the first action active. An in-place update
+// would never roll the backing pod, since the unikraft provider bakes the pod
+// at creation time and ignores spec changes on an existing pod.
 func TestUpdateWithAllReadyInstances(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := NewWithOptions(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 2)
 
-	currentInstances := make([]v1alpha.Instance, 0, 2)
+	var currentInstances []v1alpha.Instance
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 1))
 
 	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "test-image-update"
 
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 2)
 
 	assert.Equal(t, "test-deploy-1", actions[0].Object.GetName())
-	assert.Equal(t, instancecontrol.ActionTypeUpdate, actions[0].ActionType())
+	assert.Equal(t, instancecontrol.ActionTypeDelete, actions[0].ActionType())
 	assert.False(t, actions[0].IsSkipped())
 
 	assert.Equal(t, "test-deploy-0", actions[1].Object.GetName())
-	assert.Equal(t, instancecontrol.ActionTypeUpdate, actions[1].ActionType())
+	assert.Equal(t, instancecontrol.ActionTypeDelete, actions[1].ActionType())
 	assert.True(t, actions[1].IsSkipped())
 }
 
 func TestScaleUpWithNotReadyInstance(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := NewWithOptions(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 3)
 
-	currentInstances := make([]v1alpha.Instance, 0, 2)
+	var currentInstances []v1alpha.Instance
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 
 	notReadyInstance := getInstanceForDeployment(deployment, 1)
@@ -91,7 +133,7 @@ func TestScaleUpWithNotReadyInstance(t *testing.T) {
 	})
 	currentInstances = append(currentInstances, *notReadyInstance)
 
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 2)
@@ -107,18 +149,18 @@ func TestScaleUpWithNotReadyInstance(t *testing.T) {
 
 func TestScaleUpWithDeletingReadyInstance(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := NewWithOptions(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 3)
 
-	currentInstances := make([]v1alpha.Instance, 0, 2)
+	var currentInstances []v1alpha.Instance
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 
 	deletingInstance := getInstanceForDeployment(deployment, 1)
 	deletingInstance.DeletionTimestamp = ptr.To(metav1.Now())
 	currentInstances = append(currentInstances, *deletingInstance)
 
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 2)
@@ -134,15 +176,15 @@ func TestScaleUpWithDeletingReadyInstance(t *testing.T) {
 
 func TestScaleDownWithAllReadyInstances(t *testing.T) {
 	ctx := context.Background()
-	control := New()
+	control := NewWithOptions(Options{})
 
 	deployment := getWorkloadDeployment("test-deploy", 1)
 
-	currentInstances := make([]v1alpha.Instance, 0, 2)
+	var currentInstances []v1alpha.Instance
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 1))
 
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 1)
@@ -162,7 +204,7 @@ func TestNetworkingEnabledAddsNetworkGate(t *testing.T) {
 	deployment := getWorkloadDeployment("test-deploy-net-on", 1)
 
 	var currentInstances []v1alpha.Instance
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 1)
@@ -193,7 +235,7 @@ func TestNetworkingDisabledOmitsNetworkGate(t *testing.T) {
 	deployment := getWorkloadDeployment("test-deploy-net-off", 1)
 
 	var currentInstances []v1alpha.Instance
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 1)
@@ -215,7 +257,7 @@ func TestNetworkingDisabledOmitsNetworkGate(t *testing.T) {
 
 // Add more test functions below for different scenarios.
 
-// TestInstanceLabels_FourNewLabelsStamped verifies that all four new
+// TestInstanceLabels_FourNewLabelsStamped verifies that all four
 // self-describing labels are stamped on newly created Instances, with values
 // sourced from the WorkloadDeployment spec.
 func TestInstanceLabels_FourNewLabelsStamped(t *testing.T) {
@@ -225,7 +267,7 @@ func TestInstanceLabels_FourNewLabelsStamped(t *testing.T) {
 	deployment := getWorkloadDeployment("test-labels-deploy", 1)
 
 	var currentInstances []v1alpha.Instance
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 1)
@@ -244,38 +286,48 @@ func TestInstanceLabels_FourNewLabelsStamped(t *testing.T) {
 		"PlacementNameLabel must equal deployment.Spec.PlacementName")
 }
 
-// TestInstanceLabels_PropagatedOnUpdate verifies that when an existing instance
-// is updated (rolling update path), the four new labels are refreshed from the
-// deployment so they remain accurate after spec changes.
-func TestInstanceLabels_PropagatedOnUpdate(t *testing.T) {
+// TestInstanceLabels_RefreshedOnRecreate verifies that when a template change
+// rolls an instance, the recreated instance carries the four self-describing
+// labels sourced from the WorkloadDeployment. A template change deletes the
+// drifted instance and recreates it via the create path on the following
+// reconcile, which stamps the labels.
+func TestInstanceLabels_RefreshedOnRecreate(t *testing.T) {
 	ctx := context.Background()
 	control := New()
 
 	deployment := getWorkloadDeployment("test-labels-update", 1)
 
-	// Build a ready existing instance.
+	// A ready existing instance on the old template hash.
 	currentInstances := []v1alpha.Instance{*getInstanceForDeployment(deployment, 0)}
 
-	// Trigger a rolling update by changing the image.
+	// Trigger a roll by changing the image.
 	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "updated-image"
 
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
-
+	// First reconcile: the drifted instance is deleted (recreate), not updated.
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 	assert.NoError(t, err)
 	assert.Len(t, actions, 1)
-	assert.Equal(t, instancecontrol.ActionTypeUpdate, actions[0].ActionType())
+	assert.Equal(t, instancecontrol.ActionTypeDelete, actions[0].ActionType())
+	assert.Equal(t, "test-labels-update-0", actions[0].Object.GetName())
+
+	// Next reconcile, after the old instance has been fully deleted and is gone:
+	// the empty slot is refilled by the create path, which stamps the labels.
+	actions, err = control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, nil)
+	assert.NoError(t, err)
+	assert.Len(t, actions, 1)
+	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[0].ActionType())
 
 	instance, ok := actions[0].Object.(*v1alpha.Instance)
 	assert.True(t, ok)
 
 	assert.Equal(t, deployment.GetName(), instance.Labels[v1alpha.WorkloadDeploymentNameLabel],
-		"WorkloadDeploymentNameLabel must be refreshed on update")
+		"WorkloadDeploymentNameLabel must be set on the recreated instance")
 	assert.Equal(t, deployment.Spec.CityCode, instance.Labels[v1alpha.CityCodeLabel],
-		"CityCodeLabel must be refreshed on update")
+		"CityCodeLabel must be set on the recreated instance")
 	assert.Equal(t, deployment.Spec.WorkloadRef.Name, instance.Labels[v1alpha.WorkloadNameLabel],
-		"WorkloadNameLabel must be refreshed on update")
+		"WorkloadNameLabel must be set on the recreated instance")
 	assert.Equal(t, deployment.Spec.PlacementName, instance.Labels[v1alpha.PlacementNameLabel],
-		"PlacementNameLabel must be refreshed on update")
+		"PlacementNameLabel must be set on the recreated instance")
 }
 
 // TestInstanceLocation_SetWhenDeploymentStatusLocationPresent verifies that when
@@ -286,12 +338,11 @@ func TestInstanceLocation_SetWhenDeploymentStatusLocationPresent(t *testing.T) {
 
 	deployment := getWorkloadDeployment("test-location-set", 1)
 	deployment.Status.Location = &networkingv1alpha.LocationReference{
-		Name:      "loc-dfw-1",
-		Namespace: "networking-system",
+		Name: "loc-dfw-1",
 	}
 
 	var currentInstances []v1alpha.Instance
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 	assert.Len(t, actions, 1)
@@ -301,7 +352,6 @@ func TestInstanceLocation_SetWhenDeploymentStatusLocationPresent(t *testing.T) {
 	assert.NotNil(t, instance.Spec.Location,
 		"Spec.Location must be set when deployment.Status.Location is non-nil")
 	assert.Equal(t, "loc-dfw-1", instance.Spec.Location.Name)
-	assert.Equal(t, "networking-system", instance.Spec.Location.Namespace)
 }
 
 // TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent verifies that when
@@ -316,7 +366,7 @@ func TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent(t *testing.T) {
 	// deployment.Status.Location is intentionally not set (nil)
 
 	var currentInstances []v1alpha.Instance
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err, "instance creation must succeed even when Status.Location is nil")
 	assert.Len(t, actions, 1, "exactly one create action must be produced")
@@ -331,7 +381,7 @@ func TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent(t *testing.T) {
 
 // TestLabelBackfill_NotReadyMatchingHash verifies that a not-Ready instance
 // with an unchanged template hash receives a PatchLabels action when it is
-// missing controller-managed labels. The action must not be a rollout Update,
+// missing controller-managed labels. The action must not be a rollout recreate,
 // must not alter spec/template, and must not block subsequent instances.
 func TestLabelBackfill_NotReadyMatchingHash(t *testing.T) {
 	ctx := context.Background()
@@ -356,20 +406,20 @@ func TestLabelBackfill_NotReadyMatchingHash(t *testing.T) {
 	// Instance 1: needs to be created (nil in desiredInstances), so we only provide instance0.
 	currentInstances := []v1alpha.Instance{*instance0}
 
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 
 	// Collect actions by type.
-	var waitActions, createActions, updateActions, patchActions []instancecontrol.Action
+	var waitActions, createActions, recreateActions, patchActions []instancecontrol.Action
 	for _, a := range actions {
 		switch a.ActionType() {
 		case instancecontrol.ActionTypeWait:
 			waitActions = append(waitActions, a)
 		case instancecontrol.ActionTypeCreate:
 			createActions = append(createActions, a)
-		case instancecontrol.ActionTypeUpdate:
-			updateActions = append(updateActions, a)
+		case instancecontrol.ActionTypeDelete:
+			recreateActions = append(recreateActions, a)
 		case instancecontrol.ActionTypePatchLabels:
 			patchActions = append(patchActions, a)
 		}
@@ -383,8 +433,8 @@ func TestLabelBackfill_NotReadyMatchingHash(t *testing.T) {
 	assert.Len(t, createActions, 1, "instance-1 create action must be present")
 	assert.True(t, createActions[0].IsSkipped(), "create for instance-1 must be skipped while instance-0 is waiting")
 
-	// No template Update actions must be produced.
-	assert.Empty(t, updateActions, "no template Update must be produced for a matching-hash instance")
+	// No rollout recreate actions must be produced.
+	assert.Empty(t, recreateActions, "no rollout recreate must be produced for a matching-hash instance")
 
 	// A PatchLabels action must be produced for instance-0.
 	assert.Len(t, patchActions, 1, "exactly one PatchLabels action for the label-drifted instance")
@@ -424,10 +474,11 @@ func TestLabelBackfill_Idempotent(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		labelServiceKey:                     labelServiceValue,
 	}
 
 	currentInstances := []v1alpha.Instance{*instance}
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 
@@ -439,7 +490,7 @@ func TestLabelBackfill_Idempotent(t *testing.T) {
 
 // TestLabelBackfill_ReadyInstanceCorrected verifies that a Ready instance with
 // correct template hash but drifted labels receives a PatchLabels action
-// without triggering a template rollout Update.
+// without triggering a rollout recreate.
 func TestLabelBackfill_ReadyInstanceCorrected(t *testing.T) {
 	ctx := context.Background()
 	control := New()
@@ -452,22 +503,22 @@ func TestLabelBackfill_ReadyInstanceCorrected(t *testing.T) {
 	delete(instance.Labels, v1alpha.CityCodeLabel)
 
 	currentInstances := []v1alpha.Instance{*instance}
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 
-	var updateActions, patchActions []instancecontrol.Action
+	var recreateActions, patchActions []instancecontrol.Action
 	for _, a := range actions {
 		switch a.ActionType() {
-		case instancecontrol.ActionTypeUpdate:
-			updateActions = append(updateActions, a)
+		case instancecontrol.ActionTypeDelete:
+			recreateActions = append(recreateActions, a)
 		case instancecontrol.ActionTypePatchLabels:
 			patchActions = append(patchActions, a)
 		}
 	}
 
-	// No template Update must be produced — template hash matches.
-	assert.Empty(t, updateActions, "no template Update must be produced for a matching-hash ready instance")
+	// No rollout recreate must be produced — template hash matches.
+	assert.Empty(t, recreateActions, "no rollout recreate must be produced for a matching-hash ready instance")
 
 	// A PatchLabels action must be produced.
 	assert.Len(t, patchActions, 1, "PatchLabels action must be produced for the label-drifted ready instance")
@@ -478,8 +529,9 @@ func TestLabelBackfill_ReadyInstanceCorrected(t *testing.T) {
 }
 
 // TestLabelBackfill_DoesNotAffectRollingUpdate verifies that a genuine template
-// change on a Ready instance still produces a normal ordered Update action and
-// that the PatchLabels path does not interfere with or duplicate it.
+// change on a Ready instance still produces the normal ordered roll (a recreate
+// Delete per instance) and that the PatchLabels path does not interfere with or
+// duplicate it.
 func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 	ctx := context.Background()
 	control := New()
@@ -496,6 +548,7 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		labelServiceKey:                     labelServiceValue,
 	}
 	instance1 := getInstanceForDeployment(deployment, 1)
 	instance1.Labels = map[string]string{
@@ -506,33 +559,34 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		labelServiceKey:                     labelServiceValue,
 	}
 
 	// Trigger a template change.
 	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "rolling-update-image"
 
 	currentInstances := []v1alpha.Instance{*instance0, *instance1}
-	actions, err := control.GetActions(ctx, scheme, deployment, currentInstances)
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
 	assert.NoError(t, err)
 
-	var updateActions, patchActions []instancecontrol.Action
+	var recreateActions, patchActions []instancecontrol.Action
 	for _, a := range actions {
 		switch a.ActionType() {
-		case instancecontrol.ActionTypeUpdate:
-			updateActions = append(updateActions, a)
+		case instancecontrol.ActionTypeDelete:
+			recreateActions = append(recreateActions, a)
 		case instancecontrol.ActionTypePatchLabels:
 			patchActions = append(patchActions, a)
 		}
 	}
 
-	// Two Update actions expected (one per instance), ordered highest-to-lowest.
-	assert.Len(t, updateActions, 2, "both instances must produce Update actions on template change")
-	assert.Equal(t, "test-backfill-rolling-1", updateActions[0].Object.GetName(),
-		"Update actions must be ordered highest ordinal first")
-	assert.Equal(t, "test-backfill-rolling-0", updateActions[1].Object.GetName())
-	assert.False(t, updateActions[0].IsSkipped(), "first Update must be active")
-	assert.True(t, updateActions[1].IsSkipped(), "second Update must be skipped (ordered rollout)")
+	// Two recreate (Delete) actions expected (one per instance), ordered highest-to-lowest.
+	assert.Len(t, recreateActions, 2, "both instances must produce recreate actions on template change")
+	assert.Equal(t, "test-backfill-rolling-1", recreateActions[0].Object.GetName(),
+		"recreate actions must be ordered highest ordinal first")
+	assert.Equal(t, "test-backfill-rolling-0", recreateActions[1].Object.GetName())
+	assert.False(t, recreateActions[0].IsSkipped(), "first recreate must be active")
+	assert.True(t, recreateActions[1].IsSkipped(), "second recreate must be skipped (ordered rollout)")
 
 	// No PatchLabels — all labels are already correct.
 	assert.Empty(t, patchActions, "no PatchLabels when all labels are already correct")
@@ -586,6 +640,7 @@ func getInstanceForDeployment(deployment *v1alpha.WorkloadDeployment, ordinal in
 	instance.Labels[v1alpha.CityCodeLabel] = deployment.Spec.CityCode
 	instance.Labels[v1alpha.WorkloadNameLabel] = deployment.Spec.WorkloadRef.Name
 	instance.Labels[v1alpha.PlacementNameLabel] = deployment.Spec.PlacementName
+	instance.Labels[labelServiceKey] = labelServiceValue
 
 	return instance
 }

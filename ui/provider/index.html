@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workloads provider plugin — standalone preview</title>
+  </head>
+  <body>
+    <!--
+      Standalone dev harness. Humans can open http://localhost:5199/ to preview
+      the Workload detail page in isolation. staff-portal never loads this
+      page — it only fetches /plugin-manifest.json and /remoteEntry.js. This
+      harness exists purely so the page can be eyeballed without the full
+      staff-portal (data calls 404 without the proxy — expected).
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

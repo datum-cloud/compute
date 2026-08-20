@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -38,18 +39,22 @@ const (
 	workloadConditionTypeAvailable = "Available"
 )
 
-// conditionAvailable is the condition type used to indicate resource availability.
-const conditionAvailable = "Available"
-
 // WorkloadReconciler reconciles a Workload object
 type WorkloadReconciler struct {
 	mgr        mcmanager.Manager
 	finalizers finalizer.Finalizers
+
+	// NetworkingEnabled mirrors the NetworkingIntegration feature gate. When
+	// false the Network watch is not registered: the networking CRDs are absent
+	// on control planes without the integration, and engaging a watch against a
+	// missing kind wedges the manager.
+	NetworkingEnabled bool
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -127,7 +132,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		changed := apimeta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
 			Type:    workloadConditionTypeAvailable,
 			Status:  metav1.ConditionFalse,
-			Reason:  "NetworkNotFound",
+			Reason:  computev1alpha.WorkloadReasonNetworkNotFound,
 			Message: fmt.Sprintf("Unable to find networks: %s", missingNetworks),
 		})
 
@@ -191,8 +196,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 				logger.Info("updating deployment", "deployment_name", deployment.Name)
 			}
 
-			deployment.Annotations = desiredDeployment.Annotations
-			deployment.Labels = desiredDeployment.Labels
+			mergeDeploymentMetadata(deployment, &desiredDeployment)
 
 			// TODO(jreese) consider how this plays well with autoscaling
 			deployment.Spec = desiredDeployment.Spec
@@ -223,15 +227,34 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	newWorkloadStatus := workload.Status.DeepCopy()
 	totalReplicas := int32(0)
 	totalCurrentReplicas := int32(0)
+	totalUpdatedReplicas := int32(0)
 	totalDesiredReplicas := int32(0)
 	totalReadyReplicas := int32(0)
 	totalDeployments := int32(0)
 
 	availablePlacementFound := false
 
+	// worstReason / worstMessage track the highest-priority blocking reason seen
+	// across all non-available deployments. When at least one deployment is
+	// available the workload is available regardless, so these are only used in
+	// the not-available path.
+	worstReason := computev1alpha.WorkloadReasonNoAvailablePlacements
+	worstMessage := "No available placements were found for the workload"
+	worstPriority := workloadBlockingReasonPriority(worstReason)
+
 	// Reconcile placement status
 	newWorkloadStatus.Placements = []computev1alpha.WorkloadPlacementStatus{}
-	for placementName, placementDeployments := range placementDeployments {
+
+	// Sort placement names for deterministic iteration so that equal-priority
+	// deployments in different placements are compared in a stable order.
+	placementNames := make([]string, 0, len(placementDeployments))
+	for name := range placementDeployments {
+		placementNames = append(placementNames, name)
+	}
+	sort.Strings(placementNames)
+
+	for _, placementName := range placementNames {
+		placementDeployments := placementDeployments[placementName]
 		placementStatus := computev1alpha.WorkloadPlacementStatus{
 			Name: placementName,
 		}
@@ -245,35 +268,60 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		}
 
 		placementAvailableCondition := metav1.Condition{
-			Type:    conditionAvailable,
+			Type:    workloadConditionTypeAvailable,
 			Status:  metav1.ConditionFalse,
-			Reason:  "NoAvailableDeployments",
+			Reason:  computev1alpha.WorkloadReasonNoAvailableDeployments,
 			Message: "No available deployments were found for the placement",
 		}
 
 		foundAvailableDeployment := false
 		replicas := int32(0)
 		currentReplicas := int32(0)
+		updatedReplicas := int32(0)
 		desiredReplicas := int32(0)
 		readyReplicas := int32(0)
 		totalDeployments += int32(len(placementDeployments))
-		for _, deployment := range placementDeployments {
+
+		// Sort deployments by name within each placement so the tie-break between
+		// equal-priority blockers is deterministic.
+		sortedDeployments := make([]computev1alpha.WorkloadDeployment, len(placementDeployments))
+		copy(sortedDeployments, placementDeployments)
+		sort.Slice(sortedDeployments, func(i, j int) bool {
+			return sortedDeployments[i].Name < sortedDeployments[j].Name
+		})
+
+		for _, deployment := range sortedDeployments {
 			replicas += deployment.Status.Replicas
 			currentReplicas += deployment.Status.CurrentReplicas
+			updatedReplicas += deployment.Status.UpdatedReplicas
 			desiredReplicas += deployment.Status.DesiredReplicas
 			readyReplicas += deployment.Status.ReadyReplicas
 
-			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, conditionAvailable) {
+			if apimeta.IsStatusConditionTrue(deployment.Status.Conditions, workloadConditionTypeAvailable) {
 				foundAvailableDeployment = true
+				continue
+			}
+
+			// Propagate the worst blocking reason upward from non-available deployments.
+			availCond := apimeta.FindStatusCondition(deployment.Status.Conditions, workloadConditionTypeAvailable)
+			if availCond != nil {
+				p := workloadBlockingReasonPriority(availCond.Reason)
+				if p > worstPriority {
+					worstPriority = p
+					worstReason = availCond.Reason
+					worstMessage = availCond.Message
+				}
 			}
 		}
 		totalReplicas += replicas
 		totalCurrentReplicas += currentReplicas
+		totalUpdatedReplicas += updatedReplicas
 		totalDesiredReplicas += desiredReplicas
 		totalReadyReplicas += readyReplicas
 
 		placementStatus.Replicas = replicas
 		placementStatus.CurrentReplicas = currentReplicas
+		placementStatus.UpdatedReplicas = updatedReplicas
 		placementStatus.DesiredReplicas = desiredReplicas
 		placementStatus.ReadyReplicas = readyReplicas
 
@@ -289,17 +337,23 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 		newWorkloadStatus.Placements = append(newWorkloadStatus.Placements, placementStatus)
 	}
 
-	availableCondition := metav1.Condition{
-		Type:    conditionAvailable,
-		Status:  metav1.ConditionFalse,
-		Reason:  "NoAvailablePlacements",
-		Message: "No available placements were found for the workload",
-	}
-
+	var availableCondition metav1.Condition
 	if availablePlacementFound {
-		availableCondition.Status = metav1.ConditionTrue
-		availableCondition.Reason = "AvailablePlacementFound"
-		availableCondition.Message = "At least one available placement was found"
+		availableCondition = metav1.Condition{
+			Type:               workloadConditionTypeAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AvailablePlacementFound",
+			Message:            "At least one available placement was found",
+			ObservedGeneration: workload.Generation,
+		}
+	} else {
+		availableCondition = metav1.Condition{
+			Type:               workloadConditionTypeAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             worstReason,
+			Message:            worstMessage,
+			ObservedGeneration: workload.Generation,
+		}
 	}
 
 	apimeta.SetStatusCondition(&newWorkloadStatus.Conditions, availableCondition)
@@ -307,8 +361,10 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	newWorkloadStatus.Deployments = totalDeployments
 	newWorkloadStatus.Replicas = totalReplicas
 	newWorkloadStatus.CurrentReplicas = totalCurrentReplicas
+	newWorkloadStatus.UpdatedReplicas = totalUpdatedReplicas
 	newWorkloadStatus.DesiredReplicas = totalDesiredReplicas
 	newWorkloadStatus.ReadyReplicas = totalReadyReplicas
+	newWorkloadStatus.ObservedGeneration = workload.Generation
 
 	if equality.Semantic.DeepEqual(workload.Status, newWorkloadStatus) {
 		return nil
@@ -404,7 +460,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		for _, cityCode := range placement.CityCodes {
 			foundLocation := false
 			for _, location := range locations.Items {
-				locationCityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
+				locationCityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
 				if ok && cityCode == locationCityCode {
 					foundLocation = true
 					break
@@ -430,6 +486,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					Name:      deploymentName,
 					Labels: map[string]string{
 						computev1alpha.WorkloadUIDLabel: string(workload.UID),
+						labelServiceName:                labelServiceNameValue,
 					},
 				},
 				Spec: computev1alpha.WorkloadDeploymentSpec{
@@ -441,6 +498,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					CityCode:      cityCode,
 					Template:      workload.Spec.Template,
 					ScaleSettings: placement.ScaleSettings,
+					Replicas:      new(placement.ScaleSettings.MinReplicas),
 				},
 			})
 		}
@@ -458,6 +516,19 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 	return desired, orphaned, nil
 }
 
+// mergeDeploymentMetadata copies the controller-owned labels and annotations
+// from desired onto deployment without discarding peer-owned keys. Only the
+// spec is fully owned by this controller; metadata is shared with the
+// referenced-data controller (which stamps the expected-referenced-data
+// annotation) and the federation hub (which stamps propagation bookkeeping).
+// A wholesale map replacement here would strip those keys, and because both
+// controllers watch the same WorkloadDeployment, each write re-triggered the
+// other in an annotation ping-pong that hot-looped otherwise-idle deployments.
+func mergeDeploymentMetadata(deployment, desired *computev1alpha.WorkloadDeployment) {
+	mergeLabels(deployment, desired.Labels)
+	mergeAnnotations(deployment, desired.Annotations)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
@@ -467,9 +538,15 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		return fmt.Errorf("failed to register finalizer: %w", err)
 	}
 
-	return mcbuilder.ControllerManagedBy(mgr).
+	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Workload{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Owns(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Owns(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+	if !r.NetworkingEnabled {
+		return b.Complete(r)
+	}
+
+	return b.
 		Watches(&networkingv1alpha.Network{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, network client.Object) []mcreconcile.Request {
 				logger := log.FromContext(ctx)
@@ -509,4 +586,46 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			})
 		}).
 		Complete(r)
+}
+
+// workloadBlockingReasonPriority returns the relative priority of a blocking
+// reason on Workload.Available. Higher numbers indicate causes that are more
+// actionable and should be surfaced over lower-priority transient states.
+// This is a server-internal ranking; clients observe only the winning condition.
+//
+// Priority table (matches RFC §5.4):
+//
+//	0 - NoAvailablePlacements / NoAvailableDeployments (default fallback)
+//	1 - InstancesProvisioning  (transient startup)
+//	2 - NetworkProvisioning    (infra provisioning)
+//	3 - QuotaNotGranted / PendingQuota (operator action may be needed)
+//	4 - ReferencedDataNotReady / AwaitingPropagation / Resolving (transient)
+//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
+//	6 - NetworkNotFound        (hard error; user action required)
+//	7 - NetworkFailedToCreate  (hard infra error)
+func workloadBlockingReasonPriority(reason string) int {
+	switch reason {
+	case computev1alpha.WorkloadReasonNoAvailablePlacements,
+		computev1alpha.WorkloadReasonNoAvailableDeployments:
+		return 0
+	case computev1alpha.WorkloadDeploymentReasonInstancesProvisioning:
+		return 1
+	case computev1alpha.WorkloadDeploymentReasonNetworkProvisioning:
+		return 2
+	case computev1alpha.WorkloadDeploymentReasonQuotaNotGranted,
+		computev1alpha.InstanceProgrammedReasonPendingQuota:
+		return 3
+	case computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
+		computev1alpha.ReferencedDataReasonAwaitingPropagation,
+		computev1alpha.ReferencedDataReasonResolving:
+		return 4
+	case computev1alpha.ReferencedDataReasonSourceNotFound,
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized:
+		return 5
+	case computev1alpha.WorkloadReasonNetworkNotFound:
+		return 6
+	default:
+		return 0
+	}
 }

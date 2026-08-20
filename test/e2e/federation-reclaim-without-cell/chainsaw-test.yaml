@@ -1,0 +1,218 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: federation-reclaim-without-cell
+spec:
+  description: |
+    The datum-cloud/compute#218 reproduction: reclamation must not depend on the
+    cell operator being alive.
+
+    #218 was not a missing cleanup step, it was a cleanup step that could not
+    run. The old teardown ran through the cell: the cell-side finalizer removed
+    the hub write-back copy, and everything upstream waited on it. A cell that is
+    down, unreachable, or already decommissioned therefore stranded hub objects
+    permanently — and a cell being unavailable is precisely when a workload is
+    most likely to be torn down.
+
+    This suite federates a workload normally, then STOPS the cell operator
+    outright and deletes the workload's project object. Nothing on any plane may
+    survive: the project object goes away, the hub deployment goes with it via
+    the federator's finalizer (which runs in the management plane, not the cell),
+    and the hub write-back copies go with the hub deployment via the hub's own
+    garbage collector. No compute controller in the cell is involved in any step
+    of that.
+
+    Scope note: the object deleted here is the project WorkloadDeployment rather
+    than its Workload. The Kind environment runs the management operator with the
+    admission webhooks disabled and no Location/LocationBinding registry, so a
+    Workload never produces a WorkloadDeployment here — the suites all federate
+    WorkloadDeployments directly. The WorkloadDeployment is the object the
+    federation finalizer is attached to, so it is the object whose deletion the
+    invariant is actually about.
+
+    The cell operator is restored in a step cleanup AND in a finally block. A
+    leaked scaled-down cell operator would silently break every suite that runs
+    after this one, so restoring it is made redundant on purpose; both operations
+    are idempotent.
+
+  template: true
+
+  # This suite stops the DFW cell operator for part of its run, which every other
+  # DFW suite depends on. The Taskfile already runs Chainsaw with --parallel 1,
+  # but this makes the requirement a property of the test rather than of how it
+  # happens to be invoked.
+  concurrent: false
+
+  steps:
+  - name: create-workload-deployment
+    description: Federate a WorkloadDeployment through the ordinary path.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: wait-for-the-full-chain
+    description: |
+      Wait until the hub actually holds a write-back copy. Without this the cell
+      might never have produced one, and the emptiness asserted at the end would
+      be indistinguishable from nothing ever having been created.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-no-cell-wd
+    - assert:
+        # Full chain on a constrained runner: federate → propagate → cell
+        # reconcile → write-back.
+        timeout: 300s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-no-cell-wd-0
+
+  - name: stop-the-cell-operator
+    description: |
+      Take the cell operator down for the rest of the suite. From here on, no
+      cell-side finalizer or reconcile can contribute to the teardown — which is
+      the whole point.
+    try:
+    - script:
+        timeout: 180s
+        content: |
+          set -eu
+          CELL=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml
+          kubectl --kubeconfig=$CELL -n compute-system \
+            scale deployment compute-manager --replicas=0
+          # Scaling is asynchronous: wait for the pod to actually be gone, or the
+          # suite could race a still-running reconciler and prove nothing. Polled
+          # rather than `kubectl wait --for=delete`, which errors out when the
+          # selector already matches nothing.
+          for _ in $(seq 1 60); do
+            running=$(kubectl --kubeconfig=$CELL -n compute-system \
+              get pods -l control-plane=compute -o name | wc -l | tr -d ' ')
+            if [ "$running" = "0" ]; then
+              echo "cell operator stopped"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the cell operator did not stop" >&2
+          kubectl --kubeconfig=$CELL -n compute-system get pods -l control-plane=compute >&2
+          exit 1
+    cleanup:
+    - script:
+        timeout: 300s
+        content: |
+          set -eu
+          CELL=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml
+          kubectl --kubeconfig=$CELL -n compute-system \
+            scale deployment compute-manager --replicas=1
+          kubectl --kubeconfig=$CELL -n compute-system \
+            rollout status deployment compute-manager --timeout=240s
+
+  - name: delete-the-project-workload-deployment
+    description: Tear the workload down with the cell unavailable.
+    try:
+    - delete:
+        timeout: 180s
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          namespace: ($namespace)
+          name: test-no-cell-wd
+
+  - name: assert-nothing-remains-on-the-project-plane
+    description: |
+      The project object must not wedge on its finalizer. If it does, the
+      federator could not complete the hub teardown, and the deletion the
+      customer asked for never finishes.
+    try:
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: WorkloadDeployment
+        namespace: ($namespace)
+        name: test-no-cell-wd
+        timeout: 180s
+        for:
+          deletion: {}
+
+  - name: assert-nothing-remains-on-the-hub
+    description: |
+      The hub deployment is removed by the management-plane finalizer, and the
+      write-back copies follow it through the hub garbage collector. Neither path
+      touches the cell, so both must complete with the cell operator stopped.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: WorkloadDeployment
+        namespace: ($downstreamNS)
+        name: test-no-cell-wd
+        timeout: 240s
+        for:
+          deletion: {}
+    - wait:
+        # The hub garbage collector is periodic rather than event-driven, so this
+        # is deliberately generous.
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: Instance
+        namespace: ($downstreamNS)
+        name: test-no-cell-wd-0
+        timeout: 300s
+        for:
+          deletion: {}
+    - script:
+        env:
+        - name: DOWNSTREAM_NS
+          value: ($downstreamNS)
+        content: |
+          set -eu
+          # Nothing derived from this workload may be left behind under any name:
+          # asserting one known name would miss a copy at a different index.
+          left=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            -n "$DOWNSTREAM_NS" get instances \
+            -l compute.datumapis.com/workload-deployment-name=test-no-cell-wd \
+            -o name | wc -l | tr -d ' ')
+          if [ "$left" != "0" ]; then
+            echo "hub write-back copies survived the teardown:" >&2
+            kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+              -n "$DOWNSTREAM_NS" get instances \
+              -l compute.datumapis.com/workload-deployment-name=test-no-cell-wd >&2
+            exit 1
+          fi
+          echo "the hub holds nothing from this workload"
+    finally:
+    # Redundant with the cleanup on stop-the-cell-operator, and idempotent. The
+    # cell operator must be running again before the next suite starts, whatever
+    # happened above.
+    - script:
+        timeout: 300s
+        content: |
+          set -eu
+          CELL=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml
+          kubectl --kubeconfig=$CELL -n compute-system \
+            scale deployment compute-manager --replicas=1
+          kubectl --kubeconfig=$CELL -n compute-system \
+            rollout status deployment compute-manager --timeout=240s

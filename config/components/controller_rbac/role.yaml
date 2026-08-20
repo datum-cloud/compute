@@ -7,10 +7,36 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - namespaces
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - compute.datumapis.com
   resources:
@@ -44,20 +70,16 @@ rules:
   - patch
   - update
 - apiGroups:
-  - networking.datumapis.com
+  - events.k8s.io
   resources:
-  - locations
-  - networkcontexts
-  - subnets
+  - events
   verbs:
-  - get
-  - list
-  - watch
+  - create
+  - patch
 - apiGroups:
   - networking.datumapis.com
   resources:
-  - networkbindings
-  - subnetclaims
+  - networkinterfaceclaims
   verbs:
   - create
   - delete
@@ -67,12 +89,31 @@ rules:
   - update
   - watch
 - apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkinterfaces
+  - networks
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - quota.miloapis.com
   resources:
   - resourceclaims
   verbs:
   - create
   - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconsumers
+  - services
+  verbs:
   - get
   - list
   - watch

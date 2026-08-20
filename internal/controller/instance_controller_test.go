@@ -2,18 +2,23 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -24,9 +29,12 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	"go.datum.net/compute/internal/quota"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
 // Test constants for repeated string literals across controller package tests.
@@ -43,6 +51,20 @@ const (
 	testQuotaAPIGroup          = "quota.miloapis.com"
 	testQuotaResource          = "resourceclaims"
 	kindWorkloadDeploymentTest = "WorkloadDeployment" // mirrors kindWorkloadDeployment
+
+	// testMsgQuotaExceeded is the quota-denied message used across quota tests.
+	testMsgQuotaExceeded = "Quota exceeded for project"
+
+	// testMsgConfigMapNotFound is the resolver message for a missing ConfigMap,
+	// used across Instance.Ready and WD.Available rollup tests.
+	testMsgConfigMapNotFound = `ConfigMap "app-config" not found in namespace "default"`
+
+	// testMsgNetworkCreationFailed is the network-failure message used by the
+	// evaluate-all-then-pick blocking-reason tests.
+	testMsgNetworkCreationFailed = "Network creation failed: timeout"
+
+	// testPlacementA is the placement key used in Workload status rollup tests.
+	testPlacementA = "placement-a"
 )
 
 // newTestScheme builds a runtime.Scheme with the types needed for instance reconcile tests.
@@ -51,6 +73,7 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	require.NoError(t, computev1alpha.AddToScheme(s))
 	require.NoError(t, quotav1alpha1.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
 	return s
 }
 
@@ -175,7 +198,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			},
 		},
 		{
-			name: "instance programmed but not running should wait for running",
+			name: "instance programmed but not available should wait for available",
 			instance: &computev1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       testInstanceName,
@@ -341,7 +364,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 							Type:               computev1alpha.InstanceQuotaGranted,
 							Status:             metav1.ConditionFalse,
 							Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
-							Message:            "Quota exceeded for project",
+							Message:            testMsgQuotaExceeded,
 							LastTransitionTime: metav1.Now(),
 						},
 						{
@@ -366,7 +389,7 @@ func TestReconcileInstanceReadyConditionWithQuota(t *testing.T) {
 				Type:    computev1alpha.InstanceReady,
 				Status:  metav1.ConditionFalse,
 				Reason:  computev1alpha.InstanceProgrammedReasonPendingQuota,
-				Message: "Quota exceeded for project",
+				Message: testMsgQuotaExceeded,
 			},
 		},
 		{
@@ -479,7 +502,7 @@ func TestReconcileQuota(t *testing.T) {
 		instanceName = "my-instance"
 	)
 
-	claimName := namespace + "--" + instanceName
+	claimName := instanceQuotaClaimNamePrefix + instanceName
 
 	const deploymentName = "my-deployment"
 
@@ -543,7 +566,7 @@ func TestReconcileQuota(t *testing.T) {
 				// Instance. The quota admission plugin validates against the
 				// ResourceRegistration's claimingResources, which only allows
 				// resourcemanager.miloapis.com/Project.
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 					APIGroup: miloProjectAPIGroup,
 					Kind:     miloProjectKind,
 					Name:     clusterName,
@@ -566,15 +589,18 @@ func TestReconcileQuota(t *testing.T) {
 		}
 	}
 
-	newReconciler := func(t *testing.T, projectObjs []client.Object, quotaObjs []client.Object) (*InstanceReconciler, client.Client, client.Client) {
+	newReconciler := func(t *testing.T, projectObjs []client.Object, quotaObjs []client.Object, projectInterceptors ...interceptor.Funcs) (*InstanceReconciler, client.Client, client.Client) {
 		t.Helper()
 		s := newTestScheme(t)
 
-		projectClient := fake.NewClientBuilder().
+		projectBuilder := fake.NewClientBuilder().
 			WithScheme(s).
 			WithObjects(projectObjs...).
-			WithStatusSubresource(&computev1alpha.Instance{}).
-			Build()
+			WithStatusSubresource(&computev1alpha.Instance{})
+		for _, funcs := range projectInterceptors {
+			projectBuilder = projectBuilder.WithInterceptorFuncs(funcs)
+		}
+		projectClient := projectBuilder.Build()
 
 		quotaClient := fake.NewClientBuilder().
 			WithScheme(s).
@@ -647,7 +673,47 @@ func TestReconcileQuota(t *testing.T) {
 		assert.False(t, hasQuotaGate, "QuotaSchedulingGate must be removed in the same reconcile pass as the status update")
 	})
 
-	t.Run("quota exceeded flow: conditions cascade to block Programmed/Running/Ready", func(t *testing.T) {
+	t.Run("ready-condition reconcile error: quota condition persisted before the error returns", func(t *testing.T) {
+		s := newTestScheme(t)
+		// A scheduling gate keeps the Ready-condition reconcile on the network
+		// failure checker path, and an interface whose claim cannot be read makes
+		// that checker fail.
+		instance := makeInstance(s,
+			computev1alpha.SchedulingGate{Name: instancecontrol.QuotaSchedulingGate.String()},
+		)
+		instance.Spec.NetworkInterfaces = []computev1alpha.InstanceNetworkInterface{{
+			Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+			Name:    defaultInterfaceName,
+		}}
+		claim := makeClaim(s, metav1.ConditionTrue, quotav1alpha1.ResourceClaimGrantedReason)
+
+		failClaimReads := interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*networkingv1alpha.NetworkInterfaceClaim); ok {
+					return errors.New("network interface claim read failed")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}
+
+		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim}, failClaimReads)
+		// The network failure checker only runs when the networking integration is
+		// enabled; enable it so this test exercises that path.
+		r.NetworkingEnabled = true
+
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName})
+		require.Error(t, err)
+
+		var updated computev1alpha.Instance
+		require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: instanceName}, &updated))
+
+		quotaCond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+		require.NotNil(t, quotaCond,
+			"QuotaGranted condition must be persisted even when the Ready-condition reconcile fails")
+		assert.Equal(t, metav1.ConditionTrue, quotaCond.Status)
+	})
+
+	t.Run("quota exceeded flow: conditions cascade to block Programmed/Available/Ready", func(t *testing.T) {
 		s := newTestScheme(t)
 		instance := makeInstance(s,
 			computev1alpha.SchedulingGate{Name: instancecontrol.NetworkSchedulingGate.String()},
@@ -795,15 +861,11 @@ func TestReconcileQuota(t *testing.T) {
 // the Quota scheduling gate was never removed from an Instance after quota was
 // granted. The root cause was an early return in the Reconcile function: when
 // reconcileQuotaCondition set QuotaGranted=True (statusChanged=true), the code
-// wrote the status update and returned before reaching removeQuotaSchedulingGate.
+// wrote the status update and returned before reaching reconcileSchedulingGates.
 // Because ResourceClaims are immutable (no further transitions) and local
 // Instances are not watched (WithEngageWithLocalCluster(false)), no requeue ever
 // arrived — leaving the Quota gate stranded in spec.controller.schedulingGates
 // and the projected Instance stuck "Pending (SchedulingGatesPresent)".
-//
-// The fix: on the success path (quotaErr==nil), fall through to
-// removeQuotaSchedulingGate after persisting the status update, so gate removal
-// happens in the same reconcile pass as the QuotaGranted=True status write.
 func TestQuotaGateRemovedInSingleReconcile(t *testing.T) {
 	const (
 		clusterName    = "test-project"
@@ -812,7 +874,7 @@ func TestQuotaGateRemovedInSingleReconcile(t *testing.T) {
 		deploymentName = "my-deployment"
 	)
 
-	claimName := namespace + "--" + instanceName
+	claimName := instanceQuotaClaimNamePrefix + instanceName
 
 	tests := []struct {
 		name           string
@@ -884,7 +946,7 @@ func TestQuotaGateRemovedInSingleReconcile(t *testing.T) {
 					ConsumerRef: quotav1alpha1.ConsumerRef{
 						APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName,
 					},
-					ResourceRef: quotav1alpha1.UnversionedObjectReference{
+					ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 						APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName,
 					},
 					Requests: []quotav1alpha1.ResourceRequest{
@@ -994,9 +1056,9 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 		deploymentName = "my-deployment"
 	)
 
-	// Claim name uses the edge namespace prefix (stable identifier for the claim)
-	// but the claim object itself lives in projectNS.
-	claimName := edgeNS + "--" + instanceName
+	// Claim name is the instance-prefixed Instance name; the claim object itself
+	// lives in projectNS (the instance's edge namespace is carried on a label).
+	claimName := instanceQuotaClaimNamePrefix + instanceName
 
 	s := newTestScheme(t)
 
@@ -1043,7 +1105,7 @@ func TestReconcileQuotaSingleMode(t *testing.T) {
 				Kind:     miloProjectKind,
 				Name:     projectID,
 			},
-			ResourceRef: quotav1alpha1.UnversionedObjectReference{
+			ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 				APIGroup: miloProjectAPIGroup,
 				Kind:     miloProjectKind,
 				Name:     projectID,
@@ -1191,7 +1253,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 	newReconcilerWithInterceptor := func(
 		t *testing.T,
 		funcs interceptor.Funcs,
-		fakeRecorder *record.FakeRecorder,
+		fakeRecorder *capturingEventRecorder,
 	) (*InstanceReconciler, client.Client) {
 		t.Helper()
 		s := newTestScheme(t)
@@ -1239,7 +1301,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 	}
 
 	t.Run("FM-2: backend unreachable sets QuotaBackendUnavailable", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		r, projectClient := newReconcilerWithInterceptor(t, interceptor.Funcs{
 			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
 				return fmt.Errorf("connection refused")
@@ -1266,13 +1328,22 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 		default:
 			t.Error("expected a Warning event for backend unavailable, got none")
 		}
+
+		// The event carries the quota-claim action and references the Instance.
+		// The apiserver rejects an events.k8s.io event with an empty action, so a
+		// silently-empty action would 422-drop in production while passing CI.
+		last := fakeRecorder.LastRecorded()
+		require.NotNil(t, last)
+		assert.Equal(t, eventActionClaimingQuota, last.Action)
+		assert.NotEmpty(t, last.Action)
+		assert.NotNil(t, last.Regarding)
 	})
 
 	// FM-4/FM-5: 404 on Create maps to NamespaceNotFound when the claim namespace
 	// is known (the more common case for project-exists-but-namespace-absent), and
 	// to ProjectNotFound when the namespace itself is empty (project CP path missing).
 	t.Run("FM-5: 404 on Create with known namespace sets QuotaNamespaceNotFound", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		notFoundErr := apierrors.NewNotFound(
 			schema.GroupResource{Group: testQuotaAPIGroup, Resource: testQuotaResource}, "claim")
 		r, projectClient := newReconcilerWithInterceptor(t, interceptor.Funcs{
@@ -1307,7 +1378,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 	})
 
 	t.Run("FM-6: 403 on Create sets QuotaMisconfigured", func(t *testing.T) {
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 		forbiddenErr := apierrors.NewForbidden(
 			schema.GroupResource{Group: testQuotaAPIGroup, Resource: testQuotaResource}, "claim",
 			fmt.Errorf("ResourceRegistration not found"))
@@ -1344,9 +1415,9 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 	t.Run("FM-7: claim pending with no budget sets QuotaNoBudget", func(t *testing.T) {
 		s := newTestScheme(t)
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 
-		claimName := testNS + "--" + testInstance
+		claimName := instanceQuotaClaimNamePrefix + testInstance
 		pendingClaim := &quotav1alpha1.ResourceClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: testNS},
 			Spec: quotav1alpha1.ResourceClaimSpec{
@@ -1355,7 +1426,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 					Kind:     miloProjectKind,
 					Name:     testProject,
 				},
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{
 					APIGroup: miloProjectAPIGroup,
 					Kind:     miloProjectKind,
 					Name:     testProject,
@@ -1452,7 +1523,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 			scheme:             s,
 			quotaClientManager: nil, // explicitly disabled
 			edgeClusterName:    testEdgeClusterName,
-			recorder:           record.NewFakeRecorder(10),
+			recorder:           newCapturingEventRecorder(10),
 			projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
 				return string(cn), nil
 			},
@@ -1476,7 +1547,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 	t.Run("observedGeneration guard: stale True condition does not remove gate for new generation", func(t *testing.T) {
 		s := newTestScheme(t)
-		fakeRecorder := record.NewFakeRecorder(10)
+		fakeRecorder := newCapturingEventRecorder(10)
 
 		// Instance at generation 2 with a stale QuotaGranted=True from generation 1.
 		instance := makeInstance()
@@ -1498,12 +1569,12 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 			WithStatusSubresource(&computev1alpha.Instance{}).
 			Build()
 
-		claimName := testNS + "--" + testInstance
+		claimName := instanceQuotaClaimNamePrefix + testInstance
 		grantedClaim := &quotav1alpha1.ResourceClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: testNS},
 			Spec: quotav1alpha1.ResourceClaimSpec{
 				ConsumerRef: quotav1alpha1.ConsumerRef{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: testProject},
-				ResourceRef: quotav1alpha1.UnversionedObjectReference{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: testProject},
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: testProject},
 				Requests:    []quotav1alpha1.ResourceRequest{{ResourceType: quotaResourceTypeInstances, Amount: 1}},
 			},
 			Status: quotav1alpha1.ResourceClaimStatus{
@@ -1548,7 +1619,7 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 
 		// Single reconcile: reconcileQuotaCondition writes QuotaGranted=True with
 		// ObservedGeneration=2 into the in-memory instance, status is persisted,
-		// then removeQuotaSchedulingGate reads the in-memory condition (gen=2 ==
+		// then reconcileSchedulingGates reads the in-memory condition (gen=2 ==
 		// instance.Generation=2) and removes the gate — all in one pass.
 		_, err := r.Reconcile(context.Background(), reconcileReq())
 		require.NoError(t, err)
@@ -1568,5 +1639,1234 @@ func TestReconcileQuotaFailureModes(t *testing.T) {
 		cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceQuotaGranted)
 		require.NotNil(t, cond)
 		assert.Equal(t, int64(2), cond.ObservedGeneration, "condition must reflect current generation")
+	})
+
+	t.Run("FM-1: missing identity label sets ProjectIDUnresolvable and errors", func(t *testing.T) {
+		s := newTestScheme(t)
+		fakeRecorder := newCapturingEventRecorder(10)
+
+		projectClient := fake.NewClientBuilder().
+			WithScheme(s).
+			WithObjects(makeInstance(), makeDeployment()).
+			WithStatusSubresource(&computev1alpha.Instance{}).
+			Build()
+
+		mgr := &fakeMCManager{
+			clusters: map[string]cluster.Cluster{
+				testProject: newFakeCluster(projectClient),
+			},
+		}
+		qm := quota.New(nil)
+		qm.StoreClient(testProject, fake.NewClientBuilder().WithScheme(s).Build())
+
+		// Mirrors the single-mode resolver contract: the edge namespace exists
+		// but was never stamped with the cluster-name identity label.
+		identityErr := fmt.Errorf("edge namespace %q is missing label %q: %w",
+			testNS, downstreamclient.UpstreamOwnerClusterNameLabel, errProjectIdentityUnresolvable)
+
+		r := &InstanceReconciler{
+			mgr:                mgr,
+			scheme:             s,
+			quotaClientManager: qm,
+			edgeClusterName:    testEdgeClusterName,
+			recorder:           fakeRecorder,
+			projectIDForInstance: func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+				return "", identityErr
+			},
+		}
+		r.finalizers = finalizer.NewFinalizers()
+		require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
+		_, err := r.Reconcile(context.Background(), reconcileReq())
+		require.Error(t, err, "unresolvable identity must surface as an error, not a silent PendingEvaluation park")
+		require.ErrorIs(t, err, errProjectIdentityUnresolvable)
+
+		var updated computev1alpha.Instance
+		require.NoError(t, projectClient.Get(context.Background(),
+			types.NamespacedName{Namespace: testNS, Name: testInstance}, &updated))
+
+		cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.InstanceQuotaGranted)
+		require.NotNil(t, cond)
+		assert.Equal(t, metav1.ConditionFalse, cond.Status)
+		assert.Equal(t, computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable, cond.Reason)
+		assert.Contains(t, cond.Message, downstreamclient.UpstreamOwnerClusterNameLabel,
+			"condition message must name the missing label")
+		assert.Contains(t, cond.Message, testNS,
+			"condition message must name the edge namespace")
+
+		select {
+		case event := <-fakeRecorder.Events:
+			assert.Contains(t, event, computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable)
+		default:
+			t.Error("expected a Warning event for unresolvable project identity, got none")
+		}
+	})
+}
+
+// TestReconcileDeletionProjectIdentity verifies the deletion-path tradeoff for
+// project-identity resolution: unresolvable identity (missing namespace labels,
+// a misconfiguration no retry fixes) must not wedge deletion — claim cleanup is
+// skipped and the claim may leak until Milo GC — while transient resolution
+// failures retry rather than risking an orphaned claim.
+func TestReconcileDeletionProjectIdentity(t *testing.T) {
+	const (
+		clusterName  = "test-project"
+		namespace    = "default"
+		instanceName = "my-instance"
+	)
+	claimName := instanceQuotaClaimNamePrefix + instanceName
+
+	makeDeletingInstance := func() *computev1alpha.Instance {
+		now := metav1.Now()
+		return &computev1alpha.Instance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              instanceName,
+				Namespace:         namespace,
+				DeletionTimestamp: &now,
+				Finalizers:        []string{instanceQuotaFinalizer},
+			},
+			Spec: computev1alpha.InstanceSpec{
+				Runtime: computev1alpha.InstanceRuntimeSpec{
+					Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
+				},
+			},
+		}
+	}
+
+	makeClaim := func() *quotav1alpha1.ResourceClaim {
+		return &quotav1alpha1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace},
+			Spec: quotav1alpha1.ResourceClaimSpec{
+				ConsumerRef: quotav1alpha1.ConsumerRef{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName},
+				ResourceRef: &quotav1alpha1.UnversionedObjectReference{APIGroup: miloProjectAPIGroup, Kind: miloProjectKind, Name: clusterName},
+				Requests:    []quotav1alpha1.ResourceRequest{{ResourceType: quotaResourceTypeInstances, Amount: 1}},
+			},
+		}
+	}
+
+	newReconciler := func(t *testing.T, projectIDFn InstanceProjectIDFunc, rec events.EventRecorder) (*InstanceReconciler, client.Client, client.Client) {
+		t.Helper()
+		s := newTestScheme(t)
+		projectClient := fake.NewClientBuilder().
+			WithScheme(s).
+			WithObjects(makeDeletingInstance()).
+			WithStatusSubresource(&computev1alpha.Instance{}).
+			Build()
+		quotaClient := fake.NewClientBuilder().
+			WithScheme(s).
+			WithObjects(makeClaim()).
+			WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
+			Build()
+		mgr := &fakeMCManager{
+			clusters: map[string]cluster.Cluster{
+				clusterName: newFakeCluster(projectClient),
+			},
+		}
+		qm := quota.New(nil)
+		qm.StoreClient(clusterName, quotaClient)
+		r := &InstanceReconciler{
+			mgr:                  mgr,
+			scheme:               s,
+			quotaClientManager:   qm,
+			edgeClusterName:      testEdgeClusterName,
+			recorder:             rec,
+			projectIDForInstance: projectIDFn,
+		}
+		r.finalizers = finalizer.NewFinalizers()
+		require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+		return r, projectClient, quotaClient
+	}
+
+	req := mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}},
+		ClusterName: clusterName,
+	}
+
+	t.Run("unresolvable identity: deletion proceeds, claim cleanup skipped", func(t *testing.T) {
+		fakeRecorder := newCapturingEventRecorder(10)
+		identityErr := fmt.Errorf("edge namespace %q is missing label %q: %w",
+			namespace, downstreamclient.UpstreamOwnerClusterNameLabel, errProjectIdentityUnresolvable)
+		r, projectClient, quotaClient := newReconciler(t,
+			func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+				return "", identityErr
+			}, fakeRecorder)
+
+		_, err := r.Reconcile(context.Background(), req)
+		require.NoError(t, err, "unresolvable identity must not wedge deletion")
+
+		// Finalizer removed; the fake client garbage collects the object once the
+		// last finalizer clears, so accept either a clean object or NotFound.
+		var updated computev1alpha.Instance
+		getErr := projectClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: instanceName}, &updated)
+		if getErr != nil {
+			assert.True(t, apierrors.IsNotFound(getErr), "unexpected error getting instance after finalizer removal")
+		} else {
+			assert.NotContains(t, updated.Finalizers, instanceQuotaFinalizer)
+		}
+
+		// Claim cleanup skipped — the claim leaks until Milo GC removes it.
+		var claim quotav1alpha1.ResourceClaim
+		require.NoError(t, quotaClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: claimName}, &claim),
+			"claim must be left in place when identity is unresolvable")
+
+		select {
+		case event := <-fakeRecorder.Events:
+			assert.Contains(t, event, "QuotaClaimOrphaned")
+		default:
+			t.Error("expected a QuotaClaimOrphaned event, got none")
+		}
+
+		// The deletion-path event names the quota-release action.
+		last := fakeRecorder.LastRecorded()
+		require.NotNil(t, last)
+		assert.Equal(t, eventActionReleasingQuota, last.Action)
+	})
+
+	t.Run("transient resolution failure: reconcile errors and retries", func(t *testing.T) {
+		fakeRecorder := newCapturingEventRecorder(10)
+		r, projectClient, quotaClient := newReconciler(t,
+			func(_ context.Context, _ multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+				return "", fmt.Errorf("connection refused")
+			}, fakeRecorder)
+
+		_, err := r.Reconcile(context.Background(), req)
+		require.Error(t, err, "transient failures must retry rather than orphan the claim")
+
+		var updated computev1alpha.Instance
+		require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: instanceName}, &updated))
+		assert.Contains(t, updated.Finalizers, instanceQuotaFinalizer,
+			"finalizer must stay until claim cleanup succeeds")
+
+		var claim quotav1alpha1.ResourceClaim
+		require.NoError(t, quotaClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: claimName}, &claim))
+
+		select {
+		case event := <-fakeRecorder.Events:
+			t.Errorf("no orphan event expected for a transient failure, got %q", event)
+		default:
+		}
+	})
+}
+
+// TestQuotaPendingRequeueAfter verifies the backing-off safety-net requeue used
+// while an instance's quota claim is still pending: 1s for the first minute, then
+// 15s, then 60s after 5m, then 300s after 10m; and no requeue once granted.
+func TestQuotaPendingRequeueAfter(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// created is the instance creation time; quota elapsed is measured from it
+	// (NOT the condition's LastTransitionTime, which stays at the 1970 default
+	// while quota is pending). The condition LastTransitionTime here is
+	// deliberately left at the 1970 zero value to mirror that production reality.
+	withQuota := func(s metav1.ConditionStatus, created time.Time) *computev1alpha.Instance {
+		return &computev1alpha.Instance{
+			ObjectMeta: metav1.ObjectMeta{
+				CreationTimestamp: metav1.NewTime(created),
+			},
+			Status: computev1alpha.InstanceStatus{
+				Conditions: []metav1.Condition{{
+					Type:   computev1alpha.InstanceQuotaGranted,
+					Status: s,
+					Reason: "PendingEvaluation",
+				}},
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+		inst *computev1alpha.Instance
+		now  time.Time
+		want time.Duration
+	}{
+		{"granted -> no requeue", withQuota(metav1.ConditionTrue, base), base.Add(time.Hour), 0},
+		{"no quota condition -> no requeue", &computev1alpha.Instance{}, base, 0},
+		{"just pending -> 1s", withQuota(metav1.ConditionUnknown, base), base.Add(5 * time.Second), quotaPendingRequeueFast},
+		{"59s -> 1s", withQuota(metav1.ConditionUnknown, base), base.Add(59 * time.Second), quotaPendingRequeueFast},
+		{"60s boundary -> 15s", withQuota(metav1.ConditionUnknown, base), base.Add(60 * time.Second), quotaPendingRequeueMedium},
+		{"3m -> 15s", withQuota(metav1.ConditionUnknown, base), base.Add(3 * time.Minute), quotaPendingRequeueMedium},
+		{"5m boundary -> 60s", withQuota(metav1.ConditionUnknown, base), base.Add(5 * time.Minute), quotaPendingRequeueSlow},
+		{"8m -> 60s", withQuota(metav1.ConditionUnknown, base), base.Add(8 * time.Minute), quotaPendingRequeueSlow},
+		{"10m boundary -> 300s", withQuota(metav1.ConditionUnknown, base), base.Add(10 * time.Minute), quotaPendingRequeueIdle},
+		{"1h -> 300s", withQuota(metav1.ConditionUnknown, base), base.Add(time.Hour), quotaPendingRequeueIdle},
+		{"denied(False) still polls", withQuota(metav1.ConditionFalse, base), base.Add(2 * time.Minute), quotaPendingRequeueMedium},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, quotaPendingRequeueAfter(tc.inst, tc.now))
+		})
+	}
+}
+
+// Shared literals for the instance-sizing / blocking-reason tests below.
+const (
+	testContainerName  = "app"
+	testContainerImage = "test/image:latest"
+)
+
+// TestReconcileInstanceReadyCondition_ProviderSubConditionSurfacing verifies
+// that provider-set sub-condition reasons (e.g. ImageUnavailable written by the
+// unikraft provider onto the Available condition) surface on Ready with both the
+// reason AND the message preserved — even when the sub-condition status is
+// Unknown (the normal state for a retriable image-pull failure).
+//
+// This guards against Ready carrying a generic message that discards the
+// actionable provider reason.
+func TestReconcileInstanceReadyCondition_ProviderSubConditionSurfacing(t *testing.T) {
+	// These messages mirror the exact strings that translateWaitingReason in the
+	// unikraft provider writes. Both the reason AND the message must reach Ready.
+	const (
+		msgImageUnavailable      = "The instance image could not be pulled"
+		msgInstanceCrashing      = "The instance is repeatedly failing to start"
+		msgConfigError           = "The instance could not be started due to a configuration error"
+		msgProvisioning          = "Instance is provisioning"
+		msgProgrammingInProgress = "Instance is being programmed"
+	)
+
+	noGates := func(inst *computev1alpha.Instance) *computev1alpha.Instance { return inst }
+	withQuotaGranted := func(inst *computev1alpha.Instance) *computev1alpha.Instance {
+		inst.Status.Conditions = append(inst.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionTrue,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
+			Message: "Quota allocated",
+		})
+		return inst
+	}
+
+	tests := []struct {
+		name        string
+		instance    *computev1alpha.Instance
+		wantStatus  metav1.ConditionStatus
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			// The key scenario from the design: provider writes Available=Unknown/
+			// ImageUnavailable while Programmed is still Unknown/ProgrammingInProgress.
+			// Ready must carry ImageUnavailable + the actionable message, NOT the
+			// generic "Instance has not been programmed".
+			name: "image_pull_failure_surfaces_on_ready",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							// Provider sets Available=Unknown/ImageUnavailable when the
+							// container enters an image-pull waiting state.
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+		{
+			// Even while Programmed is Unknown, Ready must surface the provider
+			// sub-condition's reason and message; the generic PendingProgramming/
+			// msgNotProgrammed pair is reserved for instances with no more
+			// specific signal.
+			name: "provider_reason_wins_over_generic_message_while_programmed_unknown",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+		{
+			// When both a transient Provisioning and ImageUnavailable are present,
+			// ImageUnavailable (priority 5) must win over Provisioning (priority 1).
+			name: "image_unavailable_beats_transient_provisioning",
+			instance: noGates(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonProvisioning,
+							Message: msgProvisioning,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+		{
+			// When no specific provider sub-condition exists but Programmed carries
+			// a specific reason (ProgrammingInProgress), that reason should
+			// pass-through to Ready. The generic msgNotProgrammed fallback is only
+			// used when Programmed is absent or carries only a generic "Pending" reason.
+			name: "programmed_in_progress_passes_through_when_no_provider_sub_condition",
+			instance: noGates(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+					},
+				},
+			}),
+			// ProgrammingInProgress is more specific than PendingProgramming and
+			// passes through from Programmed → Ready.
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+			wantMessage: msgProgrammingInProgress,
+		},
+		{
+			// True generic fallback: no Programmed condition at all. The default
+			// PendingProgramming/msgNotProgrammed must be emitted.
+			name: "generic_fallback_when_programmed_condition_absent",
+			instance: noGates(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testInstanceName,
+					Namespace: testDefaultNamespace,
+				},
+			}),
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  computev1alpha.InstanceProgrammedReasonPendingProgramming,
+			wantMessage: msgNotProgrammed,
+		},
+		{
+			// InstanceCrashing: terminal-ish (not retried indefinitely by the user,
+			// they must fix the app). Status=Unknown from provider → Ready=Unknown.
+			name: "instance_crashing_surfaces_on_ready",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonInstanceCrashing,
+							Message: msgInstanceCrashing,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonInstanceCrashing,
+			wantMessage: msgInstanceCrashing,
+		},
+		{
+			// ConfigurationError: provider could not start the container due to a
+			// spec/config issue. User must correct the workload.
+			name: "configuration_error_surfaces_on_ready",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+							Message: msgProgrammingInProgress,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonConfigurationError,
+							Message: msgConfigError,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonConfigurationError,
+			wantMessage: msgConfigError,
+		},
+		{
+			// When Programmed=True but Available=Unknown/ImageUnavailable, the
+			// available-not-true branch must also propagate the provider reason+message.
+			name: "image_unavailable_on_available_condition_programmed_true",
+			instance: withQuotaGranted(&computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    computev1alpha.InstanceProgrammed,
+							Status:  metav1.ConditionTrue,
+							Reason:  computev1alpha.InstanceProgrammedReasonProgrammed,
+							Message: msgInstanceProgrammed,
+						},
+						{
+							Type:    computev1alpha.InstanceAvailable,
+							Status:  metav1.ConditionUnknown,
+							Reason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+							Message: msgImageUnavailable,
+						},
+					},
+				},
+			}),
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  computev1alpha.InstanceReadyReasonImageUnavailable,
+			wantMessage: msgImageUnavailable,
+		},
+	}
+
+	noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+		return false, "", nil
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &InstanceReconciler{}
+			_, err := r.reconcileInstanceReadyCondition(context.Background(), nil, tt.instance, noNetworkFailure)
+			require.NoError(t, err)
+
+			ready := apimeta.FindStatusCondition(tt.instance.Status.Conditions, computev1alpha.InstanceReady)
+			require.NotNil(t, ready, "Ready condition must be set")
+			assert.Equal(t, tt.wantStatus, ready.Status, "Ready.Status mismatch")
+			assert.Equal(t, tt.wantReason, ready.Reason, "Ready.Reason mismatch")
+			assert.Equal(t, tt.wantMessage, ready.Message, "Ready.Message mismatch")
+		})
+	}
+}
+
+// TestResolveInstanceResources verifies the three-tier sizing precedence:
+// explicit container Limits > instance-level Requests > instanceType catalog.
+func TestResolveInstanceResources(t *testing.T) {
+	// d1Standard2 is the canonical catalog entry for datumcloud/d1-standard-2
+	// (1 vCPU = 1000 millicores, 2 GiB = 2048 MiB) — the platform-declared quota
+	// size for the instance type.
+	const (
+		d1CPUMillicores = int64(1000)
+		d1MemMiB        = int64(2048)
+	)
+
+	cpu500m := resource.MustParse("500m")
+	cpu1 := resource.MustParse("1")
+	mem256Mi := resource.MustParse("256Mi")
+	mem512Mi := resource.MustParse("512Mi")
+
+	makeContainerResources := func(cpu, mem resource.Quantity) *computev1alpha.ContainerResourceRequirements {
+		return &computev1alpha.ContainerResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    cpu,
+				corev1.ResourceMemory: mem,
+			},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		instance     *computev1alpha.Instance
+		wantCPU      int64
+		wantMem      int64
+		wantResolved bool
+	}{
+		{
+			// Common production case: instanceType only, no explicit limits.
+			// resolveInstanceResources must consult the catalog and return the
+			// d1-standard-2 values so vcpus + memory are included in the claim.
+			name: "instanceType only: d1-standard-2 resolves from catalog",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: instanceTypeD1Standard2,
+						},
+					},
+				},
+			},
+			wantCPU:      d1CPUMillicores,
+			wantMem:      d1MemMiB,
+			wantResolved: true,
+		},
+		{
+			// Explicit container Limits take precedence over the catalog so that
+			// a workload with custom sizing is accounted at its actual footprint.
+			name: "explicit container limits override catalog",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: instanceTypeD1Standard2,
+						},
+						Sandbox: &computev1alpha.SandboxRuntime{
+							Containers: []computev1alpha.SandboxContainer{
+								{
+									Name:      testContainerName,
+									Image:     testContainerImage,
+									Resources: makeContainerResources(cpu500m, mem256Mi),
+								},
+								{
+									Name:      "sidecar",
+									Image:     "test/sidecar:latest",
+									Resources: makeContainerResources(cpu500m, mem256Mi),
+								},
+							},
+						},
+					},
+				},
+			},
+			// Two containers each contributing 500m CPU + 256 MiB → 1000m + 512 MiB.
+			wantCPU:      1000,
+			wantMem:      512,
+			wantResolved: true,
+		},
+		{
+			// A single container with full cpu+memory Limits; no instanceType needed.
+			name: "single container limits, no instanceType",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Sandbox: &computev1alpha.SandboxRuntime{
+							Containers: []computev1alpha.SandboxContainer{
+								{
+									Name:      testContainerName,
+									Image:     testContainerImage,
+									Resources: makeContainerResources(cpu1, mem512Mi),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantCPU:      1000,
+			wantMem:      512,
+			wantResolved: true,
+		},
+		{
+			// Instance-level Requests (no sandbox, no instanceType) use path 2.
+			name: "instance-level resources.requests resolve correctly",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    cpu1,
+								corev1.ResourceMemory: mem512Mi,
+							},
+						},
+					},
+				},
+			},
+			wantCPU:      1000,
+			wantMem:      512,
+			wantResolved: true,
+		},
+		{
+			// An unknown instanceType with no explicit sizing must not fabricate
+			// values; the caller falls back to claiming instance count only.
+			name: "unknown instanceType, no explicit limits: unresolved",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: "datumcloud/unknown-type-99",
+						},
+					},
+				},
+			},
+			wantCPU:      0,
+			wantMem:      0,
+			wantResolved: false,
+		},
+		{
+			// Empty instanceType and no explicit sizing: unresolved.
+			name: "empty instanceType, nothing explicit: unresolved",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{},
+					},
+				},
+			},
+			wantCPU:      0,
+			wantMem:      0,
+			wantResolved: false,
+		},
+		{
+			// Sandbox containers without any Limits fall through to the catalog
+			// when an instanceType is set — partial container specs must not block
+			// catalog resolution.
+			name: "sandbox containers without limits fall through to catalog",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: instanceTypeD1Standard2,
+						},
+						Sandbox: &computev1alpha.SandboxRuntime{
+							Containers: []computev1alpha.SandboxContainer{
+								{
+									Name:  testContainerName,
+									Image: testContainerImage,
+									// No Resources.Limits set — common for UKC workloads.
+								},
+							},
+						},
+					},
+				},
+			},
+			wantCPU:      d1CPUMillicores,
+			wantMem:      d1MemMiB,
+			wantResolved: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cpu, mem, resolved := resolveInstanceResources(tt.instance)
+			assert.Equal(t, tt.wantResolved, resolved, "resolved mismatch")
+			assert.Equal(t, tt.wantCPU, cpu, "cpuMillicores mismatch")
+			assert.Equal(t, tt.wantMem, mem, "memMiB mismatch")
+		})
+	}
+}
+
+// TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory confirms that when an
+// instance is sized by instanceType alone (the typical production shape), the
+// ResourceClaim created by reconcileQuotaClaim includes vcpus and memory
+// requests in addition to the instance count, so the AllowanceBuckets are fed.
+func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
+	const (
+		clusterName  = "test-project"
+		namespace    = "default"
+		instanceName = "claim-resources-test"
+	)
+
+	claimName := instanceQuotaClaimNamePrefix + instanceName
+
+	s := newTestScheme(t)
+
+	// Instance sized by instanceType only — no container limits, no explicit
+	// instance-level requests. This is the common production workload shape.
+	instance := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       instanceName,
+			Namespace:  namespace,
+			Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: testComputeAPIVersion,
+					Kind:       kindWorkloadDeploymentTest,
+					Name:       "owner-deployment",
+					UID:        testUIDString,
+					Controller: func() *bool { b := true; return &b }(),
+				},
+			},
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.QuotaSchedulingGate.String()},
+				},
+			},
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					// No Requests, no container Limits — catalog must supply the values.
+					InstanceType: instanceTypeD1Standard2,
+				},
+			},
+			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+		},
+	}
+
+	deployment := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "owner-deployment",
+			Namespace: namespace,
+			UID:       testUIDString,
+		},
+	}
+
+	projectClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(instance, deployment).
+		WithStatusSubresource(&computev1alpha.Instance{}).
+		Build()
+
+	quotaClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
+		Build()
+
+	qm := quota.New(nil)
+	qm.StoreClient(clusterName, quotaClient)
+
+	r := &InstanceReconciler{
+		mgr:                &fakeMCManager{clusters: map[string]cluster.Cluster{clusterName: newFakeCluster(projectClient)}},
+		scheme:             s,
+		quotaClientManager: qm,
+		edgeClusterName:    testEdgeClusterName,
+		projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+			return string(cn), nil
+		},
+		recorder: &capturingEventRecorder{},
+	}
+	r.finalizers = finalizer.NewFinalizers()
+	require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
+	_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}},
+		ClusterName: clusterName,
+	})
+	require.NoError(t, err)
+
+	// Verify the created ResourceClaim carries vcpus and memory requests.
+	var createdClaim quotav1alpha1.ResourceClaim
+	require.NoError(t, quotaClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: claimName}, &createdClaim))
+
+	byType := make(map[string]int64, len(createdClaim.Spec.Requests))
+	for _, req := range createdClaim.Spec.Requests {
+		byType[req.ResourceType] = req.Amount
+	}
+
+	assert.Equal(t, int64(1), byType[quotaResourceTypeInstances], "instance count must be 1")
+	assert.Equal(t, int64(1000), byType["compute.datumapis.com/vcpus"],
+		"d1-standard-2 must claim 1000 millicores (1 vCPU)")
+	assert.Equal(t, int64(2048), byType["compute.datumapis.com/memory"],
+		"d1-standard-2 must claim 2048 MiB (2 GiB)")
+}
+
+// makeInstanceWithRefDataCondition builds an Instance with the ReferencedData
+// scheduling gate and a ReferencedDataReady=False condition with the given
+// reason and message. Omit reason to skip setting the condition entirely.
+func makeInstanceWithRefDataCondition(refDataReason, refDataMessage string) *computev1alpha.Instance {
+	inst := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testInstanceName,
+			Namespace:  testDefaultNamespace,
+			Generation: 1,
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+				},
+			},
+		},
+	}
+	if refDataReason != "" {
+		inst.Status.Conditions = []metav1.Condition{
+			{
+				Type:               computev1alpha.ReferencedDataReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             refDataReason,
+				Message:            refDataMessage,
+				LastTransitionTime: metav1.Now(),
+			},
+		}
+	}
+	return inst
+}
+
+// TestReconcileInstanceReadyCondition_ReferencedDataEnrichment verifies that
+// reconcileInstanceReadyCondition surfaces the most specific blocking reason from
+// the ReferencedDataReady sub-condition rather than always falling back to
+// SchedulingGatesPresent.
+func TestReconcileInstanceReadyCondition_ReferencedDataEnrichment(t *testing.T) {
+	noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+		return false, "", nil
+	}
+
+	tests := []struct {
+		name            string
+		instance        *computev1alpha.Instance
+		wantStatus      metav1.ConditionStatus
+		wantReason      string
+		wantMsgContains string
+	}{
+		{
+			name: "SourceNotFound from ReferencedDataReady propagates to Ready",
+			instance: makeInstanceWithRefDataCondition(
+				computev1alpha.ReferencedDataReasonSourceNotFound,
+				testMsgConfigMapNotFound,
+			),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.ReferencedDataReasonSourceNotFound,
+			wantMsgContains: `ConfigMap "app-config" not found`,
+		},
+		{
+			name: "SourceTooLarge from ReferencedDataReady propagates verbatim",
+			instance: makeInstanceWithRefDataCondition(
+				computev1alpha.ReferencedDataReasonSourceTooLarge,
+				"ConfigMap app-config exceeds the 1 MiB limit",
+			),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.ReferencedDataReasonSourceTooLarge,
+			wantMsgContains: "exceeds the 1 MiB limit",
+		},
+		{
+			name: "AwaitingPropagation uses cell-side message from ReferencedDataReady",
+			instance: makeInstanceWithRefDataCondition(
+				computev1alpha.ReferencedDataReasonAwaitingPropagation,
+				"Waiting for 1 companion(s) to arrive on cell: ConfigMap/app-config",
+			),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.ReferencedDataReasonAwaitingPropagation,
+			wantMsgContains: "ConfigMap/app-config",
+		},
+		{
+			name: "ReferencedData gate with no sub-condition falls back to SchedulingGatesPresent",
+			instance: &computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testInstanceName,
+					Namespace:  testDefaultNamespace,
+					Generation: 1,
+				},
+				Spec: computev1alpha.InstanceSpec{
+					Controller: &computev1alpha.InstanceController{
+						SchedulingGates: []computev1alpha.SchedulingGate{
+							{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+						},
+					},
+				},
+			},
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
+			wantMsgContains: "ReferencedData",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &InstanceReconciler{}
+			changed, err := r.reconcileInstanceReadyCondition(context.Background(), nil, tt.instance, noNetworkFailure)
+			require.NoError(t, err)
+			assert.True(t, changed)
+
+			cond := apimeta.FindStatusCondition(tt.instance.Status.Conditions, computev1alpha.InstanceReady)
+			require.NotNil(t, cond)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Contains(t, cond.Message, tt.wantMsgContains)
+		})
+	}
+}
+
+// TestCheckForNetworkCreationFailure_NetworkingDisabled verifies that when the
+// networking integration is disabled the check is a no-op and never touches the
+// client. On cells that don't run the networking integration the claim CRD is
+// absent, so a lookup would fail with a "no matches for kind
+// NetworkInterfaceClaim" RESTMapper error and wedge the reconcile before
+// scheduling gates are cleared.
+// A nil client here would panic if the method attempted any lookup.
+func TestCheckForNetworkCreationFailure_NetworkingDisabled(t *testing.T) {
+	instance := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			// A network interface would normally drive a claim lookup.
+			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{}},
+		},
+	}
+
+	r := &InstanceReconciler{NetworkingEnabled: false}
+	failed, msg, err := r.checkForNetworkCreationFailure(context.Background(), nil, instance)
+	require.NoError(t, err)
+	assert.False(t, failed)
+	assert.Empty(t, msg)
+}
+
+// TestReconcileInstanceReadyCondition_EvaluateAllThenPick verifies that all
+// blocking sub-conditions are evaluated before selecting the winner, so a
+// higher-priority cause wins even when a lower-priority one is encountered first.
+func TestReconcileInstanceReadyCondition_EvaluateAllThenPick(t *testing.T) {
+	t.Run("NetworkFailedToCreate wins over AwaitingPropagation (priority 7 > 4)", func(t *testing.T) {
+		// priority 7 (NetworkFailedToCreate) must beat priority 4 (AwaitingPropagation).
+		instance := makeInstanceWithRefDataCondition(
+			computev1alpha.ReferencedDataReasonAwaitingPropagation,
+			"Waiting for 1 companion(s) to arrive on cell: ConfigMap/app-config",
+		)
+
+		alwaysNetworkFailed := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+			return true, testMsgNetworkCreationFailed, nil
+		}
+
+		r := &InstanceReconciler{}
+		_, err := r.reconcileInstanceReadyCondition(context.Background(), nil, instance, alwaysNetworkFailed)
+		require.NoError(t, err)
+
+		cond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceReady)
+		require.NotNil(t, cond)
+		assert.Equal(t, reasonNetworkFailedToCreate, cond.Reason,
+			"NetworkFailedToCreate (priority 7) should beat AwaitingPropagation (priority 4)")
+	})
+
+	t.Run("SourceNotFound wins over AwaitingPropagation (priority 5 > 4)", func(t *testing.T) {
+		// Both are referenced-data related, but SourceNotFound is terminal.
+		inst := &computev1alpha.Instance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       testInstanceName,
+				Namespace:  testDefaultNamespace,
+				Generation: 1,
+			},
+			Spec: computev1alpha.InstanceSpec{
+				Controller: &computev1alpha.InstanceController{
+					SchedulingGates: []computev1alpha.SchedulingGate{
+						{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+					},
+				},
+			},
+			Status: computev1alpha.InstanceStatus{
+				Conditions: []metav1.Condition{
+					{
+						Type:               computev1alpha.ReferencedDataReady,
+						Status:             metav1.ConditionFalse,
+						Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+						Message:            testMsgConfigMapNotFound,
+						LastTransitionTime: metav1.Now(),
+					},
+				},
+			},
+		}
+
+		noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+			return false, "", nil
+		}
+		r := &InstanceReconciler{}
+		_, err := r.reconcileInstanceReadyCondition(context.Background(), nil, inst, noNetworkFailure)
+		require.NoError(t, err)
+
+		cond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceReady)
+		require.NotNil(t, cond)
+		assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
+			"SourceNotFound should propagate verbatim to Ready condition")
+		assert.Contains(t, cond.Message, `ConfigMap "app-config" not found`)
+	})
+}
+
+// TestReconcileInstanceReadyCondition_QuotaVsReferencedData is the RFC §8.1
+// headline case: QuotaGranted=False/QuotaExceeded AND
+// ReferencedDataReady=False/SourceNotFound co-occur.
+//
+// SourceNotFound (priority 5) must win over PendingQuota (priority 3) on Ready.
+// Programmed=False and Running=False must still be set (quota side effects are
+// preserved regardless of which reason wins Ready).
+func TestReconcileInstanceReadyCondition_QuotaVsReferencedData(t *testing.T) {
+	noNetworkFailure := func(_ context.Context, _ client.Client, _ *computev1alpha.Instance) (bool, string, error) {
+		return false, "", nil
+	}
+
+	// Instance has both the Quota gate and the ReferencedData gate, matching the
+	// scenario where reconcileQuotaCondition and reconcileReferencedDataCondition
+	// have both already run and written their respective sub-conditions.
+	inst := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testInstanceName,
+			Namespace:  testDefaultNamespace,
+			Generation: 1,
+		},
+		Spec: computev1alpha.InstanceSpec{
+			Controller: &computev1alpha.InstanceController{
+				SchedulingGates: []computev1alpha.SchedulingGate{
+					{Name: instancecontrol.QuotaSchedulingGate.String()},
+					{Name: instancecontrol.ReferencedDataSchedulingGate.String()},
+				},
+			},
+		},
+		Status: computev1alpha.InstanceStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               computev1alpha.InstanceQuotaGranted,
+					Status:             metav1.ConditionFalse,
+					Reason:             computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
+					Message:            testMsgQuotaExceeded,
+					LastTransitionTime: metav1.Now(),
+				},
+				{
+					Type:               computev1alpha.ReferencedDataReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             computev1alpha.ReferencedDataReasonSourceNotFound,
+					Message:            testMsgConfigMapNotFound,
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	r := &InstanceReconciler{}
+	changed, err := r.reconcileInstanceReadyCondition(context.Background(), nil, inst, noNetworkFailure)
+	require.NoError(t, err)
+	assert.True(t, changed)
+
+	// Ready must carry the higher-priority SourceNotFound reason (priority 5),
+	// not PendingQuota (priority 3).
+	readyCond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceReady)
+	require.NotNil(t, readyCond, "Ready condition must be set")
+	assert.Equal(t, metav1.ConditionFalse, readyCond.Status)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, readyCond.Reason,
+		"SourceNotFound (priority 5) must beat PendingQuota (priority 3)")
+	assert.Equal(t, testMsgConfigMapNotFound, readyCond.Message,
+		"Ready message must be the SourceNotFound message verbatim")
+
+	// Programmed and Running must still be set to False/PendingQuota — quota
+	// side effects are preserved regardless of which reason wins Ready.
+	programmedCond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceProgrammed)
+	require.NotNil(t, programmedCond, "Programmed condition must be set when quota is denied")
+	assert.Equal(t, metav1.ConditionFalse, programmedCond.Status)
+	assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, programmedCond.Reason,
+		"Programmed must reflect quota denial even when Ready surfaces a different reason")
+
+	availableCond := apimeta.FindStatusCondition(inst.Status.Conditions, computev1alpha.InstanceAvailable)
+	require.NotNil(t, availableCond, "Available condition must be set when quota is denied")
+	assert.Equal(t, metav1.ConditionFalse, availableCond.Status)
+	assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, availableCond.Reason,
+		"Available must reflect quota denial even when Ready surfaces a different reason")
+}
+
+// TestInstanceBlockingReasonPriority exhaustively verifies the priority table for
+// Instance.Ready reason selection, as extended in this layer to rank
+// referenced-data reasons. Every listed reason must return the expected integer;
+// reasons absent from the table (including WorkloadDeployment-only reasons that
+// the Instance-side table does not rank) must return 0.
+//
+// NOTE (split): the priority scheme here is the foundation's Instance-side table
+// (Provisioning=1, PendingQuota=3, hard runtime=5, NetworkFailedToCreate=7),
+// extended with referenced-data tiers (transient=4, terminal=5). This differs
+// from the WorkloadDeployment-side table (wdBlockingReasonPriority), which keeps
+// its own 1..7 ranking.
+func TestInstanceBlockingReasonPriority(t *testing.T) {
+	tests := []struct {
+		reason   string
+		wantPrio int
+	}{
+		// Priority 0: unknown / not ranked on the Instance-side table.
+		{"", 0},
+		{"SomethingElse", 0},
+		{computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, 0},
+		{computev1alpha.WorkloadDeploymentReasonNetworkProvisioning, 0},
+		{computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, 0},
+		{computev1alpha.WorkloadReasonNetworkNotFound, 0},
+		// Priority 1: transient runtime startup.
+		{computev1alpha.InstanceReadyReasonProvisioning, 1},
+		// Priority 3: quota.
+		{computev1alpha.InstanceProgrammedReasonPendingQuota, 3},
+		// Priority 4: transient referenced-data.
+		{computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, 4},
+		{computev1alpha.ReferencedDataReasonAwaitingPropagation, 4},
+		{computev1alpha.ReferencedDataReasonResolving, 4},
+		// Priority 5: hard runtime errors and terminal referenced-data.
+		{computev1alpha.InstanceReadyReasonImageUnavailable, 5},
+		{computev1alpha.InstanceReadyReasonInstanceCrashing, 5},
+		{computev1alpha.InstanceReadyReasonConfigurationError, 5},
+		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
+		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
+		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
+		// Priority 7: hard infra error.
+		{reasonNetworkFailedToCreate, 7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			assert.Equal(t, tt.wantPrio, instanceBlockingReasonPriority(tt.reason),
+				"unexpected priority for reason %q", tt.reason)
+		})
+	}
+}
+
+// TestEmitEvent exercises the three load-bearing behaviors of the emitEvent
+// helper directly: the nil-recorder guard, the "%s" indirection that keeps a
+// literal '%' in a message from being format-expanded, and the note truncation
+// that keeps events.k8s.io/v1 from rejecting an oversized note server-side.
+func TestEmitEvent(t *testing.T) {
+	obj := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{Name: "emit-test-instance", Namespace: "default"},
+	}
+
+	t.Run("nil recorder does not panic", func(t *testing.T) {
+		r := &InstanceReconciler{}
+		require.NotPanics(t, func() {
+			r.emitEvent(obj, corev1.EventTypeWarning, "SomeReason", eventActionClaimingQuota, "msg")
+		})
+	})
+
+	t.Run("literal % in message is not format-expanded", func(t *testing.T) {
+		rec := newCapturingEventRecorder(1)
+		r := &InstanceReconciler{recorder: rec}
+		r.emitEvent(obj, corev1.EventTypeWarning, "SomeReason", eventActionClaimingQuota,
+			"connection refused: path %2Fapi got 50% errors")
+		last := rec.LastRecorded()
+		require.NotNil(t, last)
+		assert.Contains(t, last.Note, "%2Fapi")
+		assert.Contains(t, last.Note, "50%")
+		assert.NotContains(t, last.Note, "(MISSING)")
+	})
+
+	t.Run("note truncated at maxEventNoteLen", func(t *testing.T) {
+		rec := newCapturingEventRecorder(1)
+		r := &InstanceReconciler{recorder: rec}
+		r.emitEvent(obj, corev1.EventTypeWarning, "SomeReason", eventActionClaimingQuota,
+			strings.Repeat("x", 2000))
+		last := rec.LastRecorded()
+		require.NotNil(t, last)
+		assert.LessOrEqual(t, len(last.Note), maxEventNoteLen)
+		assert.True(t, strings.HasSuffix(last.Note, "..."))
 	})
 }

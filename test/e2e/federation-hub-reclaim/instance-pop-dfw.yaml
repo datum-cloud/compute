@@ -1,0 +1,29 @@
+# Cell Instance in the DFW POP cell, built the way instance-writeback builds one.
+# The linking labels below are what the stateful control strategy stamps on a
+# real cell Instance at creation, and write-back refuses to copy an Instance that
+# is missing any of them.
+#
+# This suite creates the cell Instance directly instead of federating a
+# WorkloadDeployment. That keeps the cell Instance alive and reconciling after
+# the hub WorkloadDeployment is deleted, which is the only way to show that
+# write-back is owner-gated rather than merely idle.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Instance
+metadata:
+  name: test-hub-reclaim-wd-0
+  namespace: ($instanceNS)
+  labels:
+    compute.datumapis.com/workload-uid: "00000000-0000-0000-0000-000000000001"
+    compute.datumapis.com/workload-deployment-uid: "00000000-0000-0000-0000-000000000002"
+    compute.datumapis.com/instance-index: "0"
+    compute.datumapis.com/workload-deployment-name: test-hub-reclaim-wd
+    compute.datumapis.com/city-code: dfw
+    compute.datumapis.com/workload-name: test-workload
+    compute.datumapis.com/placement-name: default
+spec:
+  runtime:
+    resources:
+      instanceType: datumcloud/d1-standard-2
+  networkInterfaces:
+  - network:
+      name: test-network

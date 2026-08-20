@@ -23,7 +23,6 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-// Test constants for repeated string literals.
 const (
 	testCPUResource        = "cpu"
 	testVolName            = "vol"

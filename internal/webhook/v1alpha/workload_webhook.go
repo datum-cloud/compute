@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-
 package webhook
 
 import (
 	"context"
+
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -97,7 +96,7 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 
 	validCityCodes := sets.Set[string]{}
 	for _, location := range locations.Items {
-		cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
+		cityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
 		if ok {
 			validCityCodes.Insert(cityCode)
 		}
@@ -118,8 +117,48 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 	return nil, nil
 }
 
-func (r *workloadWebhook) ValidateUpdate(_ context.Context, _, _ *computev1alpha.Workload) (admission.Warnings, error) {
-	// TODO(user): fill in your validation logic upon object update.
+func (r *workloadWebhook) ValidateUpdate(ctx context.Context, _ *computev1alpha.Workload, newWorkload *computev1alpha.Workload) (admission.Warnings, error) {
+	clusterName := computewebhook.ClusterNameFromContext(ctx)
+
+	cluster, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(clusterName))
+	if err != nil {
+		return nil, err
+	}
+	clusterClient := cluster.GetClient()
+
+	logger := logf.FromContext(ctx).WithValues("cluster", clusterName)
+	logger.Info("Validating Workload Update", "name", newWorkload.GetName(), "cluster", clusterName)
+
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var locations networkingv1alpha.LocationBindingList
+	if err := clusterClient.List(ctx, &locations); err != nil {
+		return nil, fmt.Errorf("failed to list location bindings: %w", err)
+	}
+
+	validCityCodes := sets.Set[string]{}
+	for _, location := range locations.Items {
+		cityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
+		if ok {
+			validCityCodes.Insert(cityCode)
+		}
+	}
+
+	opts := validation.WorkloadValidationOptions{
+		Context:          ctx,
+		Client:           clusterClient,
+		AdmissionRequest: req,
+		Workload:         newWorkload,
+		ValidCityCodes:   sets.List(validCityCodes),
+	}
+
+	if errs := validation.ValidateWorkloadCreate(newWorkload, opts); len(errs) > 0 {
+		return nil, errors.NewInvalid(newWorkload.GroupVersionKind().GroupKind(), newWorkload.Name, errs)
+	}
+
 	return nil, nil
 }
 

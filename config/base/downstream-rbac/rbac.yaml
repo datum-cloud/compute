@@ -6,9 +6,28 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # The referenced-data controller reads the source ConfigMaps/Secrets a Workload
+  # references and materializes companion copies in the same hub namespace, which
+  # Karmada then propagates to the cell. It owns the companions' full lifecycle,
+  # including ref-count deletion, so it needs create/update/patch/delete here.
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["compute.datumapis.com"]
     resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Compute asks for a network's presence in a location by writing a
+  # NetworkBinding on the hub. NSO turns every binding for the same network and
+  # location into one shared NetworkContext and propagates it to the cells
+  # serving that location, where the claim path can use it. Compute owns the
+  # bindings it creates, including releasing them, but only reads the contexts
+  # NSO derives from them.
+  - apiGroups: ["networking.datumapis.com"]
+    resources: ["networkbindings", "networkbindings/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.datumapis.com"]
+    resources: ["networkcontexts"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["policy.karmada.io"]
     resources: ["propagationpolicies", "clusterpropagationpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

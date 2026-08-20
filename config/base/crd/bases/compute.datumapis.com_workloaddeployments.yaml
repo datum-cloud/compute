@@ -34,7 +34,7 @@ spec:
     - jsonPath: .status.desiredReplicas
       name: Desired
       type: string
-    - jsonPath: .status.currentReplicas
+    - jsonPath: .status.updatedReplicas
       name: Up-to-date
       type: string
     - jsonPath: .status.location.namespace
@@ -78,6 +78,12 @@ spec:
               placementName:
                 description: The placement in the workload which is driving a deployment
                 type: string
+              replicas:
+                description: |-
+                  Replicas is the current desired replica target for this deployment. When
+                  unset, the deployment reconciles to scaleSettings.minReplicas.
+                format: int32
+                type: integer
               scaleSettings:
                 description: Scale settings such as minimum and maximum replica counts.
                 properties:
@@ -204,17 +210,104 @@ spec:
                           name:
                             description: Name of a datum location
                             type: string
-                          namespace:
-                            description: Namespace for the datum location
-                            type: string
                         required:
                         - name
-                        - namespace
                         type: object
                       networkInterfaces:
-                        description: Network interface configuration.
+                        description: |-
+                          Network interface configuration.
+
+                          Keyed by interface name so an interface keeps its identity, and therefore
+                          its addresses, across updates to the rest of the list.
+
+                          Limited to a single interface until the data plane can attach more than
+                          one to an instance.
                         items:
+                          description: |-
+                            InstanceNetworkInterface describes one interface an instance needs. The
+                            fields beyond `network` and `networkPolicy` are copied verbatim onto the
+                            NetworkInterfaceClaim created for each instance slot, so they carry the same
+                            meaning, defaults, and immutability the claim API defines.
+
+                            The location an interface is claimed in is implicit: the claim is created in
+                            the control plane serving the instance, which is already location scoped.
                           properties:
+                            addresses:
+                              description: |-
+                                Requests for addresses beyond the ones the interface holds inside its
+                                network, such as a public IPv4 address in front of a private one. Each is
+                                reported in the interface's `externalAddresses` status.
+
+                                Omit this field for ordinary private addressing, which is the common case.
+                              items:
+                                description: |-
+                                  InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+                                  the interface holds inside its network.
+                                properties:
+                                  class:
+                                    description: |-
+                                      The IPAM class to allocate from, such as public-ipv4.
+
+                                      A class names a kind of address, and the platform decides which pool and
+                                      prefix length serve it. A class never names a pool, a prefix length, or a
+                                      CIDR, so a class cannot be used to ask for a particular address.
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - class
+                                type: object
+                              maxItems: 4
+                              minItems: 1
+                              type: array
+                              x-kubernetes-validations:
+                              - message: Each address class may be requested at most
+                                  once
+                                rule: self.all(a, self.exists_one(b, b.class == a.class))
+                            ipFamilies:
+                              default:
+                              - IPv6
+                              description: |-
+                                The address families the interface must carry, in priority order. List
+                                [IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+                                interface's primary address, which is the one reported as the instance's
+                                network IP.
+
+                                Every family listed must be satisfiable or the interface is never
+                                published, so asking for a family the network does not carry fails rather
+                                than yielding a partially addressed interface.
+                              items:
+                                enum:
+                                - IPv4
+                                - IPv6
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-validations:
+                              - message: Each address family may be requested at most
+                                  once
+                                rule: self.all(f, self.exists_one(g, g == f))
+                              - message: ipFamilies is immutable and cannot be changed
+                                  after creation
+                                rule: self == oldSelf
+                            name:
+                              default: eth0
+                              description: |-
+                                The name of the interface, such as eth0 or eth1. It is both the device
+                                name the guest operating system sees and the suffix of the interface
+                                claim's name, which is what keeps an interface's addresses with the
+                                instance slot across replacement.
+
+                                Immutable, because the guest is configured against it and the claim is
+                                named after it.
+                              maxLength: 15
+                              minLength: 1
+                              type: string
+                              x-kubernetes-validations:
+                              - message: name is immutable and cannot be changed after
+                                  creation
+                                rule: self == oldSelf
                             network:
                               description: The network to attach the network interface
                                 to.
@@ -322,11 +415,44 @@ spec:
                                     type: object
                                   type: array
                               type: object
+                            reclaimPolicy:
+                              default: Delete
+                              description: |-
+                                What becomes of the interface, and its addresses, when the instance slot
+                                it serves goes away.
+
+                                Delete returns the addresses to IPAM, so an instance recreated later comes
+                                back on different addresses. Retain keeps them reserved, and billable, so a
+                                later instance filling the same slot returns to the same addresses. Choose
+                                Retain when an address is published in DNS, allowed through a firewall, or
+                                otherwise depended on from outside.
+
+                                Both policies keep the addresses for as long as the slot exists, including
+                                across instance replacement. They differ only on scale-down and deletion.
+
+                                Immutable. An address keeps the policy it was allocated under.
+                              enum:
+                              - Delete
+                              - Retain
+                              type: string
+                              x-kubernetes-validations:
+                              - message: reclaimPolicy is immutable and cannot be
+                                  changed after creation
+                                rule: self == oldSelf
                           required:
                           - network
                           type: object
+                          x-kubernetes-validations:
+                          - message: addresses is immutable and cannot be set, changed,
+                              or cleared after creation
+                            rule: has(self.addresses) == has(oldSelf.addresses) &&
+                              (!has(self.addresses) || self.addresses == oldSelf.addresses)
+                        maxItems: 1
                         minItems: 1
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       runtime:
                         description: The runtime type of the instance, such as a container
                           sandbox or a VM.
@@ -569,6 +695,54 @@ spec:
                                       x-kubernetes-list-map-keys:
                                       - name
                                       x-kubernetes-list-type: map
+                                    envFrom:
+                                      description: |-
+                                        List of sources to populate environment variables in the container.
+                                        The keys defined within a source must be a C_IDENTIFIER. All invalid
+                                        keys will be reported as an event when the container is starting. When a
+                                        key exists in multiple sources, the value associated with the last source
+                                        will take precedence. Values defined by an Env with a duplicate key will
+                                        take precedence.
+                                      items:
+                                        description: |-
+                                          EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+                                          used as environment variables in a container.
+                                        properties:
+                                          configMapRef:
+                                            description: The ConfigMap to select from.
+                                            properties:
+                                              name:
+                                                description: Name of the ConfigMap
+                                                  in the same namespace as the Workload.
+                                                type: string
+                                              optional:
+                                                description: Specify whether the ConfigMap
+                                                  must be defined.
+                                                type: boolean
+                                            required:
+                                            - name
+                                            type: object
+                                          prefix:
+                                            description: |-
+                                              An optional identifier to prepend to each key in the referenced
+                                              ConfigMap or Secret. Must be a valid C_IDENTIFIER.
+                                            type: string
+                                          secretRef:
+                                            description: The Secret to select from.
+                                            properties:
+                                              name:
+                                                description: Name of the Secret in
+                                                  the same namespace as the Workload.
+                                                type: string
+                                              optional:
+                                                description: Specify whether the Secret
+                                                  must be defined.
+                                                type: boolean
+                                            required:
+                                            - name
+                                            type: object
+                                        type: object
+                                      type: array
                                     image:
                                       description: The fully qualified container image
                                         name.
@@ -1087,8 +1261,9 @@ spec:
                   type: object
                 type: array
               currentReplicas:
-                description: The number of instances which have the latest workload
-                  settings applied.
+                description: |-
+                  The number of instances which have the latest workload settings applied
+                  and are programmed (a subset of UpdatedReplicas that are ready to serve).
                 format: int32
                 type: integer
               desiredReplicas:
@@ -1102,13 +1277,16 @@ spec:
                   name:
                     description: Name of a datum location
                     type: string
-                  namespace:
-                    description: Namespace for the datum location
-                    type: string
                 required:
                 - name
-                - namespace
                 type: object
+              observedGeneration:
+                description: |-
+                  The most recent generation observed by the deployment controller. When
+                  this matches metadata.generation, the controller has reconciled the
+                  latest spec (e.g. a restart request).
+                format: int64
+                type: integer
               readyReplicas:
                 description: The number of instances which are ready.
                 format: int32
@@ -1117,14 +1295,36 @@ spec:
                 description: The number of instances created
                 format: int32
                 type: integer
+              selector:
+                description: Selector is the label selector that identifies Pods backing
+                  this deployment.
+                type: string
+              suspended:
+                description: |-
+                  Suspended, when true, requests that all instances managed by this deployment
+                  be stopped without releasing their placement, disk attachments, or quota allocation.
+                type: boolean
+              updatedReplicas:
+                description: |-
+                  The number of instances updated to the latest template revision, i.e.
+                  whose observed template hash matches the desired template, regardless of
+                  readiness. Lags Replicas during a rolling update or restart, then catches
+                  back up — making an in-progress roll observable.
+                format: int32
+                type: integer
             required:
             - currentReplicas
             - desiredReplicas
             - readyReplicas
             - replicas
+            - updatedReplicas
             type: object
         type: object
     served: true
     storage: true
     subresources:
+      scale:
+        labelSelectorPath: .status.selector
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
       status: {}
