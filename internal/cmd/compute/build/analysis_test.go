@@ -213,6 +213,11 @@ func TestBuildAnalysisResultFromViewRelativeScriptGuard(t *testing.T) {
 		// the wrapper (firstExecutableWord skips it), so it's fine.
 		{name: "recognized wrapper name with a real command is allowed through",
 			args: []string{"entrypoint.sh", "node", "server.js"}},
+		// Our own WORKDIR-wrapper puts /bin/sh in args[0], which
+		// shouldn't hide a relative script name from this guard.
+		{name: "bare relative script survives our own workdir-wrapper unwrapping",
+			args:          []string{"/bin/sh", "-c", "cd /app && exec \"$@\"", workdirWrapperArg0, "start.sh"},
+			wantRelScript: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

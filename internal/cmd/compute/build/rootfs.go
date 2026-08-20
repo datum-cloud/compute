@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -112,7 +113,12 @@ func normalizeRootFSArgs(args []string, workingDir string, env []string, paths m
 	if len(args) >= 2 && isInheritedEntrypointWrapper(args[0]) {
 		args = args[1:]
 	}
-	if len(args) > 0 && !strings.HasPrefix(args[0], "/") && !strings.Contains(args[0], "/") {
+	switch {
+	case len(args) == 0 || path.IsAbs(args[0]):
+		// nothing to resolve
+	case strings.Contains(args[0], "/"):
+		args[0] = normalizeDockerPath(args[0], workingDir)
+	default:
 		if resolved := resolveEntrypointPathWithDirs(args[0], paths, envPathDirs(env)); resolved != "" {
 			args[0] = resolved
 		}

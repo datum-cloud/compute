@@ -133,18 +133,16 @@ func buildAnalysisResultFromView(opts *options, view *tarFSView, args []string, 
 	if len(args) == 0 {
 		return nil, fmt.Errorf("analysis failed: no entrypoint found in root filesystem")
 	}
-	// A relative script name is only used literally if there's nothing after
-	// it (len(args) == 1) or it isn't a recognized wrapper name — matching
-	// firstExecutableWord's own skip condition below. A wrapper name *with*
-	// something after it (["entrypoint.sh", "node", "server.js"]) is fine:
-	// resolveStartupArgs skips past it.
-	if isRelativeEntrypointScript(args[0]) && (len(args) == 1 || !isAnalysisEntrypointWrapper(args[0])) {
+	cmd := resolveStartupArgs(args, env, view)
+	// Checked on the resolved entrypoint, not the raw args[0]: PATH search,
+	// wrapper-name skipping, and our own WORKDIR-wrapper unwrapping may all
+	// have already turned a relative name into an absolute one by this point.
+	if isRelativeEntrypointScript(cmd.Entrypoint) {
 		return nil, fmt.Errorf(
 			"analysis failed: image starts through relative script %q; use an absolute script path that is copied into the final image, or start the app directly with an absolute CMD such as [\"/usr/bin/node\", \"/app/server.mjs\"]",
-			args[0],
+			cmd.Entrypoint,
 		)
 	}
-	cmd := resolveStartupArgs(args, env, view)
 
 	analysisProgressFn := normalizeProgress(progress)
 	if opts.verbose {
