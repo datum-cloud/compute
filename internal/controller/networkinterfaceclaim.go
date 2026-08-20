@@ -90,11 +90,13 @@ func desiredNetworkInterfaceClaimSpec(networkInterface computev1alpha.InstanceNe
 // networkInterfaceClaimSatisfied reports whether a claim holds the addresses the
 // instance needs to boot.
 //
-// Bound and Allocated are the whole criterion. Programmed is deliberately not
-// consulted: no component sets it today, so it stays Unknown forever, and the
-// Ready condition that summarizes it stays Unknown with it. Gating on either
-// would hold every instance back indefinitely. Tighten this to Ready once a data
-// plane owns Programmed.
+// Bound and Allocated are the whole criterion, and stay that way once a data
+// plane owns Programmed. Programmed becomes true when the interface is attached
+// at sandbox creation, and an infrastructure provider defers creating the
+// sandbox while any scheduling gate remains, so a gate waiting on Programmed
+// waits on itself. Programmed reaches a consumer through
+// Instance.status.networkInterfaces[].conditions, which instanceNetworkInterfaceStatus
+// already mirrors, and never through the gate.
 func networkInterfaceClaimSatisfied(claim *networkingv1alpha.NetworkInterfaceClaim) bool {
 	return apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimBound) &&
 		apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimAllocated)
