@@ -13,7 +13,7 @@
   "dependencies": {
     "@datum-cloud/datum-ui": "^1.7.1",
     "@monaco-editor/react": "^4.7.0",
-    "@tanstack/react-query": "5.101.0",
+    "@tanstack/react-query": "5.101.4",
     "lucide-react": "^1.21.0",
     "monaco-editor": "^0.55.0",
     "react": "19.2.8",
