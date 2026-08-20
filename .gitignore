@@ -34,3 +34,5 @@ dist/
 
 # Local datumctl plugin build binary
 /datumctl-compute
+
+sample-compute-build/

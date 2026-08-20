@@ -5,6 +5,7 @@ import (
 	"go.datum.net/datumctl/plugin"
 
 	"go.datum.net/compute/internal/cmd/compute/access"
+	"go.datum.net/compute/internal/cmd/compute/build"
 	"go.datum.net/compute/internal/cmd/compute/deploy"
 	"go.datum.net/compute/internal/cmd/compute/destroy"
 	"go.datum.net/compute/internal/cmd/compute/instances"
@@ -42,6 +43,7 @@ func Command() *cobra.Command {
 		rollout.Command(),
 		scale.Command(),
 		workloads.Command(),
+		build.Command(),
 	)
 
 	return root
