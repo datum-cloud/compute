@@ -68,7 +68,6 @@ type instanceRow struct {
 	name        string
 	workload    string
 	city        string
-	externalIP  string
 	internalIP  string
 	runtimeKind string // "sandbox" or "vm"
 	instType    string
@@ -201,13 +200,9 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 			continue
 		}
 
-		extIP := ""
 		intIP := ""
 		if len(inst.Status.NetworkInterfaces) > 0 {
 			ni := inst.Status.NetworkInterfaces[0]
-			if ni.Assignments.ExternalIP != nil {
-				extIP = *ni.Assignments.ExternalIP
-			}
 			if ni.Assignments.NetworkIP != nil {
 				intIP = *ni.Assignments.NetworkIP
 			}
@@ -222,7 +217,6 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 			name:        inst.Name,
 			workload:    wlName,
 			city:        city,
-			externalIP:  extIP,
 			internalIP:  intIP,
 			runtimeKind: runtimeKind,
 			instType:    inst.Spec.Runtime.Resources.InstanceType,
@@ -252,18 +246,18 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	tw := util.NewTabWriter(out)
 	if !noHeaders {
 		if wide {
-			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tEXTERNAL IP\tINTERNAL IP\tTYPE\tAGE\tSTATUS\tINSTANCE TYPE\n")
+			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tINTERNAL IP\tTYPE\tAGE\tSTATUS\tINSTANCE TYPE\n")
 		} else {
-			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tEXTERNAL IP\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
+			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
 		}
 	}
 	for _, r := range rows {
 		if wide {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.runtimeKind, r.age, r.status, r.instType)
-		} else {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.workload, r.city, r.externalIP, r.internalIP, r.runtimeKind, r.age, r.status)
+				r.name, r.workload, r.city, r.internalIP, r.runtimeKind, r.age, r.status, r.instType)
+		} else {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.name, r.workload, r.city, r.internalIP, r.runtimeKind, r.age, r.status)
 		}
 	}
 	_ = tw.Flush()
