@@ -246,12 +246,12 @@ When something is wrong with a specific instance, `datumctl compute instances` g
 ```
 $ datumctl compute instances
 
-  NAME          WORKLOAD  CITY  EXTERNAL IP    INTERNAL IP   TYPE            AGE   STATUS
-  api-dfw-0     api       DFW   203.0.113.10   10.4.1.5      d1-standard-2   2d    Running
-  api-dfw-1     api       DFW   203.0.113.11   10.4.1.6      d1-standard-2   2d    Running
-  api-iad-0     api       IAD   198.51.100.20  10.5.1.7      d1-standard-2   2d    Running
-  api-iad-1     api       IAD   198.51.100.21  10.5.1.8      d1-standard-2   2d    Running
-  worker-dfw-0  worker    DFW   203.0.113.30   10.4.1.9      d1-standard-4   6h    Running
+  NAME          WORKLOAD  CITY  INTERNAL IP   TYPE            AGE   STATUS
+  api-dfw-0     api       DFW   10.4.1.5      d1-standard-2   2d    Running
+  api-dfw-1     api       DFW   10.4.1.6      d1-standard-2   2d    Running
+  api-iad-0     api       IAD   10.5.1.7      d1-standard-2   2d    Running
+  api-iad-1     api       IAD   10.5.1.8      d1-standard-2   2d    Running
+  worker-dfw-0  worker    DFW   10.4.1.9      d1-standard-4   6h    Running
 
 5 instances — 5 Running, 0 Pending, 0 Failed
 ```
