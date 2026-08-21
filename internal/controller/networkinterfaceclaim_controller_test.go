@@ -31,6 +31,9 @@ const (
 	claimTestAddress     = "10.128.0.2"
 	claimTestAddressCIDR = claimTestAddress + "/32"
 	claimTestExternalIP  = "203.0.113.10"
+
+	// claimTestPendingReason is the reason NSO seeds a data-plane condition with.
+	claimTestPendingReason = "Pending"
 )
 
 // newClaimTestScheme builds a scheme carrying compute and networking types, the
@@ -171,6 +174,7 @@ func TestReconcileNetworkInterfaceClaims_ReadinessPerInstance(t *testing.T) {
 			Conditions: []metav1.Condition{
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
+				claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, metav1.ConditionUnknown, "Pending"),
 			},
 		},
@@ -276,6 +280,7 @@ func TestReconcileNetworkInterfaceStatus(t *testing.T) {
 			Conditions: []metav1.Condition{
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
+				claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, metav1.ConditionUnknown, "Pending"),
 			},
 		},
@@ -299,7 +304,8 @@ func TestReconcileNetworkInterfaceStatus(t *testing.T) {
 	assert.Equal(t, claimTestAddress, *published.Assignments.NetworkIP)
 	require.NotNil(t, published.Assignments.ExternalIP)
 	assert.Equal(t, claimTestExternalIP, *published.Assignments.ExternalIP)
-	assert.Len(t, published.Conditions, 2)
+	assert.Len(t, published.Conditions, 3,
+		"Allocated, Prepared and Programmed all describe the interface itself")
 
 	changed, err = r.reconcileNetworkInterfaceStatus(context.Background(), cl, instance)
 	require.NoError(t, err)
@@ -416,4 +422,152 @@ func TestInstancePublishesTheBoundNetworkInterface(t *testing.T) {
 		&networkingv1alpha.NetworkInterfaceClaim{})
 	assert.Nil(t, unbound.NetworkInterfaceRef)
 	assert.Nil(t, instanceNetworkInterfaceStatus(defaultInterfaceName, nil).NetworkInterfaceRef)
+}
+
+// TestNetworkGateReleasesWhileProgrammedIsNotTrue is the deadlock guard. The
+// data plane reports Programmed at sandbox creation, and the infrastructure
+// provider will not create the sandbox while a gate remains, so the Network gate
+// has to release on Bound and Allocated no matter what Programmed says.
+func TestNetworkGateReleasesWhileProgrammedIsNotTrue(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		programmed metav1.ConditionStatus
+		reason     string
+	}{
+		{name: "unknown", programmed: metav1.ConditionUnknown, reason: claimTestPendingReason},
+		{name: "false", programmed: metav1.ConditionFalse, reason: "AttachmentPending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := newClaimTestDeployment()
+			networkInterface := computev1alpha.InstanceNetworkInterface{
+				Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+				Name:    defaultInterfaceName,
+			}
+			instance := newClaimTestInstance(claimTestDeployment+"-0", networkInterface)
+
+			claim := &networkingv1alpha.NetworkInterfaceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: instance.Name + "-eth0", Namespace: claimTestNamespace},
+				Status: networkingv1alpha.NetworkInterfaceClaimStatus{
+					Conditions: []metav1.Condition{
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, tc.programmed, tc.reason),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimReady, tc.programmed, "NotProgrammed"),
+					},
+				},
+			}
+
+			cl := fake.NewClientBuilder().
+				WithScheme(newClaimTestScheme()).
+				WithObjects(deployment, instance, claim).
+				WithStatusSubresource(instance).
+				Build()
+
+			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
+			ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+				[]computev1alpha.Instance{*instance})
+			require.NoError(t, err)
+			require.True(t, ready[instance.Name],
+				"an unprogrammed claim still holds its addresses, which is the whole criterion")
+
+			_, _, _, _, _, err = r.reconcileInstanceGates(
+				context.Background(), cl, deployment,
+				[]computev1alpha.Instance{*instance}, ready,
+			)
+			require.NoError(t, err)
+
+			var gated computev1alpha.Instance
+			require.NoError(t, cl.Get(context.Background(),
+				client.ObjectKey{Namespace: claimTestNamespace, Name: instance.Name}, &gated))
+			require.NotNil(t, gated.Spec.Controller)
+			for _, gate := range gated.Spec.Controller.SchedulingGates {
+				assert.NotEqual(t, instancecontrol.NetworkSchedulingGate.String(), gate.Name,
+					"holding the Network gate for Programmed deadlocks: no sandbox, no Programmed")
+			}
+
+			// The condition still reaches the consumer, just through status.
+			published := instanceNetworkInterfaceStatus(defaultInterfaceName, claim)
+			mirrored := false
+			for _, condition := range published.Conditions {
+				if condition.Type == networkingv1alpha.NetworkInterfaceClaimProgrammed {
+					mirrored = true
+					assert.Equal(t, tc.programmed, condition.Status)
+				}
+			}
+			assert.True(t, mirrored, "Programmed is reported on the instance rather than gated on")
+		})
+	}
+}
+
+// TestNetworkGateHeldUntilPrepared is the other half of the pair. Prepared is
+// what a Pod can safely wait on, so an instance whose data plane has not
+// prepared stays gated rather than producing a Pod nothing can attach.
+func TestNetworkGateHeldUntilPrepared(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		prepared metav1.ConditionStatus
+		reason   string
+	}{
+		{name: "unknown", prepared: metav1.ConditionUnknown, reason: claimTestPendingReason},
+		{name: "false", prepared: metav1.ConditionFalse, reason: "AttachmentFailed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := newClaimTestDeployment()
+			networkInterface := computev1alpha.InstanceNetworkInterface{
+				Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+				Name:    defaultInterfaceName,
+			}
+			instance := newClaimTestInstance(claimTestDeployment+"-0", networkInterface)
+
+			claim := &networkingv1alpha.NetworkInterfaceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: instance.Name + "-eth0", Namespace: claimTestNamespace},
+				Status: networkingv1alpha.NetworkInterfaceClaimStatus{
+					Conditions: []metav1.Condition{
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, tc.prepared, tc.reason),
+					},
+				},
+			}
+
+			cl := fake.NewClientBuilder().
+				WithScheme(newClaimTestScheme()).
+				WithObjects(deployment, instance, claim).
+				WithStatusSubresource(instance).
+				Build()
+
+			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
+			ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+				[]computev1alpha.Instance{*instance})
+			require.NoError(t, err)
+			assert.False(t, ready[instance.Name],
+				"addresses alone are not enough; the data plane has to be ready to receive the Pod")
+
+			_, _, _, _, _, err = r.reconcileInstanceGates(
+				context.Background(), cl, deployment,
+				[]computev1alpha.Instance{*instance}, ready,
+			)
+			require.NoError(t, err)
+
+			var gated computev1alpha.Instance
+			require.NoError(t, cl.Get(context.Background(),
+				client.ObjectKey{Namespace: claimTestNamespace, Name: instance.Name}, &gated))
+			require.NotNil(t, gated.Spec.Controller)
+			names := make([]string, 0, len(gated.Spec.Controller.SchedulingGates))
+			for _, gate := range gated.Spec.Controller.SchedulingGates {
+				names = append(names, gate.Name)
+			}
+			assert.Contains(t, names, instancecontrol.NetworkSchedulingGate.String(),
+				"the gate is what keeps the Pod from being created before it can be attached")
+		})
+	}
 }

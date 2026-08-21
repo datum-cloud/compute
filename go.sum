@@ -336,8 +336,8 @@ github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9de
 github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67 h1:Mhgt688CeTh2hX7ql61ySR3+/YHdZMgYBSFhBW7W2gA=
 go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67/go.mod h1:6skEjcE7aT8VPf/HVamA/BB6Dc9IISA6c/DdYKhqWNc=
-go.datum.net/network-services-operator v0.25.6-0.20260814125050-f3a972d9da33 h1:oAbsJRV6zNrwO7XymY2WJ7+uAa+PBx9mNeXbo48CQgk=
-go.datum.net/network-services-operator v0.25.6-0.20260814125050-f3a972d9da33/go.mod h1:oz57/uTB5HAjLGrqs1pn1HTP/jW9vkGgMODPvCiUlvc=
+go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569 h1:14vajo15fGGEAmdystQEE261rFH4AqER9s1Vg7POUKo=
+go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569/go.mod h1:A7JNOuc+e6j/KkUVCcZ7Z2odvf6JFMQlX0Zo1Awj2TY=
 go.miloapis.com/milo v0.32.0 h1:TkNIQu/37d+SEquLJ5+GmdisSl+K2RT7eEC4idg6RIs=
 go.miloapis.com/milo v0.32.0/go.mod h1:GKK3afjCwshfZfvhjNe1wp/H45z4m7x5oG/8xbSgU1M=
 go.miloapis.com/service-catalog v0.4.0 h1:LvO1WCHMCoFokpS5igWMP8kyqly9gUFQmQj5IGhwuKs=
