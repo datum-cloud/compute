@@ -14,6 +14,7 @@ import (
 //   - container env.ValueFrom.ConfigMapKeyRef / SecretKeyRef
 //   - container envFrom[].configMapRef / secretRef
 //   - spec.volumes[].configMap and spec.volumes[].secret
+//   - runtime.sandbox.imagePullSecrets[]
 //
 // The namespace field on every returned ObjectRef is set to the provided
 // namespace (the Workload's namespace). References are always same-namespace.
@@ -37,8 +38,16 @@ func CollectFromTemplate(namespace string, template computev1alpha.InstanceTempl
 		})
 	}
 
-	// Collect from sandbox containers.
+	// Collect from the sandbox runtime.
 	if sb := template.Spec.Runtime.Sandbox; sb != nil {
+		// Image pull credentials. These are plain Secrets in the Workload's
+		// namespace, so they federate through the same companion machinery as
+		// every other referenced Secret — the credential has to exist in the cell
+		// namespace before the runtime can authenticate to a private registry.
+		for _, ps := range sb.ImagePullSecrets {
+			add("Secret", ps.Name)
+		}
+
 		for _, c := range sb.Containers {
 			// env[].valueFrom
 			for _, e := range c.Env {

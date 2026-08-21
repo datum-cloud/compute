@@ -639,7 +639,20 @@ func (r *ReferencedDataController) resolveAndValidateSources(
 // isOptionalRef returns true when the given ObjectRef corresponds to a source
 // that was marked optional=true anywhere in the instance template spec.
 // It checks all volume mounts and env/envFrom sources that match (kind, name).
+//
+// Image pull credentials are never optional: without them the image cannot be
+// pulled at all, so silently skipping a missing or oversized one would trade a
+// clear condition on the WorkloadDeployment for an opaque image-pull failure at
+// the cell. A Secret used as a pull credential therefore stays required even if
+// the same Secret is also referenced optionally somewhere else in the template.
 func isOptionalRef(ref referenceddata.ObjectRef, tmpl computev1alpha.InstanceTemplateSpec) bool {
+	if sb := tmpl.Spec.Runtime.Sandbox; sb != nil && ref.Kind == kindSecret {
+		for _, ps := range sb.ImagePullSecrets {
+			if ps.Name == ref.Name {
+				return false
+			}
+		}
+	}
 	if isOptionalInVolumes(ref, tmpl.Spec.Volumes) {
 		return true
 	}
