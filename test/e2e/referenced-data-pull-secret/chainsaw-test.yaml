@@ -1,0 +1,261 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: referenced-data-pull-secret
+spec:
+  description: |
+    Validates that an image pull credential referenced by
+    spec.template.spec.runtime.sandbox.imagePullSecrets is federated to the cell
+    exactly like a ConfigMap or Secret referenced by env/envFrom/volumes, and is
+    reclaimed when the reference is dropped.
+
+    Without this, a user who wires up a pull secret gets an Instance that cannot
+    pull its image: the credential never leaves the project control plane.
+
+    [Hop 1] Source Secret (dockerconfigjson) + ConfigMap created in the project
+            namespace.
+    [Hop 2] WorkloadDeployment referencing the credential is created; the
+            ReferencedDataController materialises a companion Secret in
+            ns-{project-uid} on the Karmada hub and lists it in the
+            expected-referenced-data annotation.
+    [Hop 3] Karmada propagates the companion to pop-dfw via the city-dfw
+            PropagationPolicy Secret selector (label-based, source-agnostic).
+    [Hop 4] The Instance's ReferencedData scheduling gate clears only once the
+            credential is present on the cell.
+    [Hop 5] Dropping the imagePullSecrets entry releases the companion from the
+            hub and the cell, while the still-referenced ConfigMap companion
+            survives.
+
+    Scope: cross-plane DELIVERY and RECLAIM of the credential. Mapping the
+    credential onto the downstream Instance is the provider layer and is not
+    asserted here.
+
+  template: true
+
+  steps:
+
+  # ─── Hop 1: create source data ─────────────────────────────────────────────
+
+  - name: create-source-data
+    description: Create the source pull credential and ConfigMap in the project namespace.
+    try:
+    - apply:
+        file: source-pull-secret.yaml
+    - apply:
+        file: source-configmap.yaml
+
+  # ─── Hop 2: create WD; assert companion materialisation on the hub ─────────
+
+  - name: create-workload-deployment
+    description: Create the WorkloadDeployment referencing the pull credential.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: assert-pull-credential-companion-on-hub
+    description: |
+      Assert the pull credential was copied into ns-{project-uid} on the Karmada
+      hub with the referenced-data label the PropagationPolicy selects on.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          type: kubernetes.io/dockerconfigjson
+          metadata:
+            namespace: ($companionNS)
+            name: registry-creds
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  - name: assert-wd-annotation-lists-pull-credential
+    description: |
+      Assert the expected-referenced-data annotation lists the pull credential,
+      so the Instance gate waits for it to arrive at the cell.
+    try:
+    - script:
+        timeout: 60s
+        content: |
+          ANNO=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get workloaddeployment test-pullsecret-wd \
+            --namespace "$NAMESPACE" \
+            -o jsonpath='{.metadata.annotations.compute\.datumapis\.com/expected-referenced-data}')
+          echo "annotation: $ANNO"
+          echo "$ANNO" | grep -q 'Secret/registry-creds' || {
+            echo "ERROR: pull credential missing from expected-referenced-data: '$ANNO'"
+            exit 1
+          }
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-pullsecret-wd
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+
+  # ─── Hop 3: assert the credential reached the cell ─────────────────────────
+
+  - name: assert-pull-credential-on-cell
+    description: Assert Karmada propagated the pull credential to pop-dfw.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          type: kubernetes.io/dockerconfigjson
+          metadata:
+            namespace: ($downstreamNS)
+            name: registry-creds
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($downstreamNS)
+            name: pullsecret-app-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  # ─── Hop 4: assert the Instance gate cleared ───────────────────────────────
+
+  - name: assert-referenced-data-gate-cleared
+    description: |
+      Assert the ReferencedData scheduling gate cleared, which only happens once
+      every expected companion — including the pull credential — is on the cell.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-pullsecret-wd-0
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+    - script:
+        timeout: 60s
+        content: |
+          DOWNSTREAM_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          GATES=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            get instance test-pullsecret-wd-0 \
+            --namespace "$DOWNSTREAM_NS" \
+            -o jsonpath='{.spec.schedulingGates[*].name}')
+          if echo "$GATES" | grep -qw "ReferencedData"; then
+            echo "ERROR: ReferencedData gate still present in schedulingGates: '$GATES'"
+            exit 1
+          fi
+          echo "ReferencedData gate cleared. Remaining gates: '$GATES'"
+
+  # ─── Hop 5: drop the reference; assert reclaim on hub and cell ─────────────
+
+  - name: remove-pull-credential-reference
+    description: |
+      Remove the imagePullSecrets entry from the WorkloadDeployment, keeping the
+      ConfigMap volume reference in place.
+    try:
+    - apply:
+        file: workload-deployment-no-pull-secret.yaml
+
+  - name: assert-pull-credential-reclaimed-from-hub
+    description: |
+      Assert the de-referenced credential companion is deleted from the hub while
+      the still-referenced ConfigMap companion survives.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: companionNS
+          value: ($stdout)
+    - error:
+        timeout: 90s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($companionNS)
+            name: registry-creds
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($companionNS)
+            name: pullsecret-app-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+
+  - name: assert-pull-credential-reclaimed-from-cell
+    description: Assert Karmada removed the credential from pop-dfw as well.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - error:
+        timeout: 90s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: registry-creds
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($downstreamNS)
+            name: pullsecret-app-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"

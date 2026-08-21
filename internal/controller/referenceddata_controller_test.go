@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -783,7 +784,6 @@ func newRDControllerFederated(
 	t *testing.T,
 	projectCl client.Client,
 	hubCl client.Client,
-	reader referenceddata.ProjectConfigSecretReader,
 ) (*ReferencedDataController, string) {
 	t.Helper()
 	clusterName := rdTestClusterName
@@ -797,7 +797,6 @@ func newRDControllerFederated(
 	c := &ReferencedDataController{
 		mgr: mgr,
 		opts: ReferencedDataControllerOptions{
-			Reader:           reader,
 			FederationClient: hubCl,
 		},
 	}
@@ -841,7 +840,7 @@ func TestReferencedData_Federated_CompanionWrittenToHub(t *testing.T) {
 	require.NoError(t, computev1alpha.AddToScheme(hubScheme))
 	hubCl := fake.NewClientBuilder().WithScheme(hubScheme).Build()
 
-	c, clusterName := newRDControllerFederated(t, projectCl, hubCl, nil)
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
 
 	// First reconcile: stamps finalizer.
 	reconcileWD(t, c, clusterName, projNS, "wd-fed-1")
@@ -1564,4 +1563,251 @@ func (s *stubReader) GetSecret(ctx context.Context, projectID, namespace, name s
 		return s.getSecret(ctx, projectID, namespace, name)
 	}
 	return nil, fmt.Errorf("%w: Secret %s", referenceddata.ErrSourceNotFound, name)
+}
+
+// TestIsOptionalRefImagePullSecret pins that a Secret used as an image pull
+// credential is never treated as optional. Optional sources are silently
+// skipped when missing or oversized; for a pull credential that would swap a
+// clear condition on the WorkloadDeployment for an opaque image-pull failure at
+// the cell, so the required-ness must win even when the same Secret is also
+// referenced with optional=true elsewhere in the template.
+func TestIsOptionalRefImagePullSecret(t *testing.T) {
+	const credName = "registry-creds"
+
+	tmpl := computev1alpha.InstanceTemplateSpec{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Sandbox: &computev1alpha.SandboxRuntime{
+					ImagePullSecrets: []computev1alpha.LocalSecretReference{{Name: credName}},
+					Containers: []computev1alpha.SandboxContainer{
+						{
+							Name:  "app",
+							Image: "registry.example.com/private/app:v1",
+							EnvFrom: []computev1alpha.EnvFromSource{
+								// Same Secret, referenced optionally.
+								{SecretRef: &computev1alpha.SecretEnvSource{Name: credName, Optional: ptr.To(true)}},
+								{SecretRef: &computev1alpha.SecretEnvSource{Name: "other-secret", Optional: ptr.To(true)}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	assert.False(t, isOptionalRef(referenceddata.ObjectRef{Kind: kindSecret, Name: credName, Namespace: "proj"}, tmpl),
+		"an image pull credential must never be optional")
+	assert.True(t, isOptionalRef(referenceddata.ObjectRef{Kind: kindSecret, Name: "other-secret", Namespace: "proj"}, tmpl),
+		"unrelated optional secrets keep their optional semantics")
+}
+
+// ─── Image pull credentials federate like any other referenced Secret ────────
+
+// templateWithImagePullSecret returns an InstanceTemplateSpec whose sandbox
+// pulls from a private registry using the named Secret. Shape mirrors
+// test/e2e/referenced-data-mounts/workload-deployment.yaml.
+func templateWithImagePullSecret(pullSecretNames ...string) computev1alpha.InstanceTemplateSpec {
+	refs := make([]computev1alpha.LocalSecretReference, 0, len(pullSecretNames))
+	for _, n := range pullSecretNames {
+		refs = append(refs, computev1alpha.LocalSecretReference{Name: n})
+	}
+	return computev1alpha.InstanceTemplateSpec{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Sandbox: &computev1alpha.SandboxRuntime{
+					ImagePullSecrets: refs,
+					Containers: []computev1alpha.SandboxContainer{
+						{Name: "app", Image: "registry.example.com/private/app:v1"},
+					},
+				},
+			},
+		},
+	}
+}
+
+// makeDockerConfigSecret returns a Secret shaped like one produced by
+// `kubectl create secret docker-registry`.
+func makeDockerConfigSecret(name string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testProjNS, Name: name},
+		Type:       corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: []byte(
+				`{"auths":{"registry.example.com":{"username":"robot","password":"s3cr3t","auth":"cm9ib3Q6czNjcjN0"}}}`),
+		},
+	}
+}
+
+// TestReferencedData_Federated_ImagePullSecretWrittenToHub asserts the add path
+// end to end on the hub: a Secret referenced ONLY by imagePullSecrets is copied
+// into the downstream ns-{project-uid} namespace, carries the referenced-data
+// label that the PropagationPolicy selects on (which is what carries it to the
+// cell), preserves the dockerconfigjson type and payload, and is listed in the
+// expected-referenced-data annotation so the Instance gate waits for it.
+func TestReferencedData_Federated_ImagePullSecretWrittenToHub(t *testing.T) {
+	projNS := testProjNS
+	const wdName = "wd-pull-1"
+	const pullSecretName = "registry-creds"
+	companionName := referenceddata.CompanionName(kindSecret, pullSecretName)
+
+	projNSObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: testProjNSUID}}
+	srcSecret := makeDockerConfigSecret(pullSecretName)
+	wd := makeWD(projNS, wdName, templateWithImagePullSecret(pullSecretName))
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	projectCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(projNSObj, srcSecret, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	hubScheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(hubScheme))
+	require.NoError(t, computev1alpha.AddToScheme(hubScheme))
+	hubCl := fake.NewClientBuilder().WithScheme(hubScheme).Build()
+
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
+
+	reconcileWD(t, c, clusterName, projNS, wdName) // stamps finalizer
+	reconcileWD(t, c, clusterName, projNS, wdName) // materialises companion
+
+	var hubSecret corev1.Secret
+	require.NoError(t, hubCl.Get(context.Background(),
+		types.NamespacedName{Namespace: testKarmadaNSStr, Name: companionName}, &hubSecret),
+		"pull credential must be copied to the hub downstream namespace")
+	assert.Equal(t, corev1.SecretTypeDockerConfigJson, hubSecret.Type, "companion must preserve the docker config Secret type")
+	assert.Equal(t, srcSecret.Data[corev1.DockerConfigJsonKey], hubSecret.Data[corev1.DockerConfigJsonKey])
+	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, hubSecret.Labels[computev1alpha.ReferencedDataLabel],
+		"companion must carry the referenced-data label the PropagationPolicy selects on to reach the cell")
+
+	wd = getWD(t, projectCl, types.NamespacedName{Namespace: projNS, Name: wdName})
+	assert.Equal(t,
+		[]string{referenceddata.CompanionToken(kindSecret, companionName)},
+		decodeExpectedAnnotation(t, wd),
+		"the Instance gate must wait for the pull credential")
+
+	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+}
+
+// TestReferencedData_Federated_ImagePullSecretRemoved_CompanionReleased asserts
+// the remove path: dropping one entry from imagePullSecrets releases only that
+// companion from the hub, leaving the credential still referenced by the WD in
+// place.
+func TestReferencedData_Federated_ImagePullSecretRemoved_CompanionReleased(t *testing.T) {
+	projNS := testProjNS
+	const wdName = "wd-pull-2"
+	const keptSecret = "registry-creds"
+	const droppedSecret = "legacy-registry-creds"
+
+	projNSObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: testProjNSUID}}
+	wd := makeWD(projNS, wdName, templateWithImagePullSecret(keptSecret, droppedSecret))
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	projectCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(projNSObj, makeDockerConfigSecret(keptSecret), makeDockerConfigSecret(droppedSecret), wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	hubScheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(hubScheme))
+	require.NoError(t, computev1alpha.AddToScheme(hubScheme))
+	hubCl := fake.NewClientBuilder().WithScheme(hubScheme).Build()
+
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
+
+	reconcileWD(t, c, clusterName, projNS, wdName)
+	reconcileWD(t, c, clusterName, projNS, wdName)
+
+	for _, name := range []string{keptSecret, droppedSecret} {
+		var hubSecret corev1.Secret
+		require.NoError(t, hubCl.Get(context.Background(),
+			types.NamespacedName{Namespace: testKarmadaNSStr, Name: name}, &hubSecret), "companion %q must exist before removal", name)
+	}
+
+	// Drop one pull credential from the template.
+	wd = getWD(t, projectCl, types.NamespacedName{Namespace: projNS, Name: wdName})
+	wd.Spec.Template.Spec.Runtime.Sandbox.ImagePullSecrets = []computev1alpha.LocalSecretReference{{Name: keptSecret}}
+	require.NoError(t, projectCl.Update(context.Background(), wd))
+
+	reconcileWD(t, c, clusterName, projNS, wdName)
+
+	var gone corev1.Secret
+	assert.Error(t, hubCl.Get(context.Background(),
+		types.NamespacedName{Namespace: testKarmadaNSStr, Name: droppedSecret}, &gone),
+		"de-referenced pull credential must be removed from the hub (and therefore from the cell)")
+
+	var kept corev1.Secret
+	require.NoError(t, hubCl.Get(context.Background(),
+		types.NamespacedName{Namespace: testKarmadaNSStr, Name: keptSecret}, &kept),
+		"still-referenced pull credential must survive")
+
+	wd = getWD(t, projectCl, types.NamespacedName{Namespace: projNS, Name: wdName})
+	assert.Equal(t,
+		[]string{referenceddata.CompanionToken(kindSecret, keptSecret)},
+		decodeExpectedAnnotation(t, wd))
+}
+
+// TestReferencedData_Federated_ImagePullSecretAlsoMounted_NotReleased pins the
+// dedupe invariant across reference sources: a Secret used BOTH as a pull
+// credential and as a volume must survive when only the pull-credential
+// reference is dropped. The mount would otherwise break.
+func TestReferencedData_Federated_ImagePullSecretAlsoMounted_NotReleased(t *testing.T) {
+	projNS := testProjNS
+	const wdName = "wd-pull-3"
+	const sharedSecret = "registry-creds"
+
+	projNSObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: projNS, UID: testProjNSUID}}
+
+	tmpl := templateWithImagePullSecret(sharedSecret)
+	tmpl.Spec.Volumes = []computev1alpha.InstanceVolume{
+		{
+			Name:         "creds-vol",
+			VolumeSource: computev1alpha.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: sharedSecret}},
+		},
+	}
+	wd := makeWD(projNS, wdName, tmpl)
+
+	s := rdTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(s))
+
+	projectCl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(projNSObj, makeDockerConfigSecret(sharedSecret), wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	hubScheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(hubScheme))
+	require.NoError(t, computev1alpha.AddToScheme(hubScheme))
+	hubCl := fake.NewClientBuilder().WithScheme(hubScheme).Build()
+
+	c, clusterName := newRDControllerFederated(t, projectCl, hubCl)
+
+	reconcileWD(t, c, clusterName, projNS, wdName)
+	reconcileWD(t, c, clusterName, projNS, wdName)
+
+	wd = getWD(t, projectCl, types.NamespacedName{Namespace: projNS, Name: wdName})
+	assert.Len(t, decodeExpectedAnnotation(t, wd), 1, "a Secret referenced twice must federate exactly once")
+
+	// Drop only the pull-credential reference; the volume still mounts it.
+	wd.Spec.Template.Spec.Runtime.Sandbox.ImagePullSecrets = nil
+	require.NoError(t, projectCl.Update(context.Background(), wd))
+
+	reconcileWD(t, c, clusterName, projNS, wdName)
+
+	var stillThere corev1.Secret
+	require.NoError(t, hubCl.Get(context.Background(),
+		types.NamespacedName{Namespace: testKarmadaNSStr, Name: sharedSecret}, &stillThere),
+		"companion must survive: the volume mount still references it")
+
+	refs, err := decodeRefCount(stillThere.Annotations)
+	require.NoError(t, err)
+	assert.Contains(t, refs, types.NamespacedName{Namespace: projNS, Name: wdName}.String())
 }
