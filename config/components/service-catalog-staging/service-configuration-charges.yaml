@@ -1,0 +1,24 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute
+spec:
+  charges:
+    - name: compute.datumapis.com/instance/cpu-seconds
+      chargeType: Usage
+      currency: USD
+      displayName: Compute vCPU
+      usage:
+        metricRef: compute.datumapis.com/instance/cpu-seconds
+        pricingUnit: vcpu-second
+        rates:
+          - flat: "0.000014"
+    - name: compute.datumapis.com/instance/memory-seconds
+      chargeType: Usage
+      currency: USD
+      displayName: Compute Memory
+      usage:
+        metricRef: compute.datumapis.com/instance/memory-seconds
+        pricingUnit: gib-second
+        rates:
+          - flat: "0.0000045"
