@@ -134,7 +134,7 @@ func TestNetworkInterfaceClaimSatisfied(t *testing.T) {
 				Conditions: []metav1.Condition{
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
-					claimCondition(networkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
+					claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, metav1.ConditionUnknown, "Pending"),
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimReady, metav1.ConditionUnknown, "NotProgrammed"),
 				},
@@ -152,7 +152,7 @@ func TestNetworkInterfaceClaimSatisfied(t *testing.T) {
 				Conditions: []metav1.Condition{
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
-					claimCondition(networkInterfaceClaimPrepared, metav1.ConditionUnknown, "Pending"),
+					claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionUnknown, "Pending"),
 				},
 			},
 		}

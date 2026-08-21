@@ -10,11 +10,12 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	// TODO: temporary pin to network-services-operator main. The latest tag
-	// (v0.25.5) predates NetworkInterfaceClaim (#360), ServingLocation (#372),
-	// and per-location networks (#373); re-pin to a tagged release before
-	// compute cuts a release.
-	go.datum.net/network-services-operator v0.25.6-0.20260814125050-f3a972d9da33
+	// TODO: temporary pin to an unmerged network-services-operator branch. The
+	// latest tag (v0.25.5) predates NetworkInterfaceClaim (#360),
+	// ServingLocation (#372), and per-location networks (#373), and this commit
+	// carries the Prepared condition (#393); re-pin to a tagged release before
+	// this merges.
+	go.datum.net/network-services-operator v0.26.1-0.20260821003457-da0f4dab9289
 	go.miloapis.com/milo v0.32.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0

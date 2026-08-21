@@ -545,7 +545,7 @@ func TestNetworkBindingStateDoesNotGateInstances(t *testing.T) {
 			Conditions: []metav1.Condition{
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
-				claimCondition(networkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
+				claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 			},
 		},
 	}

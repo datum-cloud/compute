@@ -174,7 +174,7 @@ func TestReconcileNetworkInterfaceClaims_ReadinessPerInstance(t *testing.T) {
 			Conditions: []metav1.Condition{
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
-				claimCondition(networkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
+				claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, metav1.ConditionUnknown, "Pending"),
 			},
 		},
@@ -280,7 +280,7 @@ func TestReconcileNetworkInterfaceStatus(t *testing.T) {
 			Conditions: []metav1.Condition{
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
-				claimCondition(networkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
+				claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 				claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, metav1.ConditionUnknown, "Pending"),
 			},
 		},
@@ -455,7 +455,7 @@ func TestNetworkGateReleasesWhileProgrammedIsNotTrue(t *testing.T) {
 					Conditions: []metav1.Condition{
 						claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 						claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
-						claimCondition(networkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 						claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, tc.programmed, tc.reason),
 						claimCondition(networkingv1alpha.NetworkInterfaceClaimReady, tc.programmed, "NotProgrammed"),
 					},
@@ -534,7 +534,7 @@ func TestNetworkGateHeldUntilPrepared(t *testing.T) {
 					Conditions: []metav1.Condition{
 						claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 						claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
-						claimCondition(networkInterfaceClaimPrepared, tc.prepared, tc.reason),
+						claimCondition(networkingv1alpha.NetworkInterfaceClaimPrepared, tc.prepared, tc.reason),
 					},
 				},
 			}
