@@ -121,13 +121,12 @@ func TestDesiredNetworkInterfaceClaimSpec(t *testing.T) {
 }
 
 // TestNetworkInterfaceClaimSatisfied is the regression guard for the readiness
-// criterion: Programmed is seeded Unknown and no component sets it today, so
-// waiting on it (or on the Ready condition that summarizes it) would hold every
-// instance back forever.
+// criterion: the gate waits for the data plane to be prepared, and never for it
+// to be programmed, which only happens once the Pod the gate withholds exists.
 func TestNetworkInterfaceClaimSatisfied(t *testing.T) {
 	t.Parallel()
 
-	t.Run("bound and allocated is enough, with Programmed still Unknown", func(t *testing.T) {
+	t.Run("bound, allocated and prepared is enough, with Programmed still Unknown", func(t *testing.T) {
 		t.Parallel()
 
 		claim := &networkingv1alpha.NetworkInterfaceClaim{
@@ -135,6 +134,7 @@ func TestNetworkInterfaceClaimSatisfied(t *testing.T) {
 				Conditions: []metav1.Condition{
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
+					claimCondition(networkInterfaceClaimPrepared, metav1.ConditionTrue, "Prepared"),
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimProgrammed, metav1.ConditionUnknown, "Pending"),
 					claimCondition(networkingv1alpha.NetworkInterfaceClaimReady, metav1.ConditionUnknown, "NotProgrammed"),
 				},
@@ -142,6 +142,23 @@ func TestNetworkInterfaceClaimSatisfied(t *testing.T) {
 		}
 
 		assert.True(t, networkInterfaceClaimSatisfied(claim))
+	})
+
+	t.Run("not satisfied while the data plane has not prepared", func(t *testing.T) {
+		t.Parallel()
+
+		claim := &networkingv1alpha.NetworkInterfaceClaim{
+			Status: networkingv1alpha.NetworkInterfaceClaimStatus{
+				Conditions: []metav1.Condition{
+					claimCondition(networkingv1alpha.NetworkInterfaceClaimBound, metav1.ConditionTrue, "Bound"),
+					claimCondition(networkingv1alpha.NetworkInterfaceClaimAllocated, metav1.ConditionTrue, "Allocated"),
+					claimCondition(networkInterfaceClaimPrepared, metav1.ConditionUnknown, "Pending"),
+				},
+			},
+		}
+
+		assert.False(t, networkInterfaceClaimSatisfied(claim),
+			"a Pod created before the data plane is ready for it cannot be attached")
 	})
 
 	t.Run("not satisfied while allocation is outstanding", func(t *testing.T) {

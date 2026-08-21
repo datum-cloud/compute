@@ -87,19 +87,28 @@ func desiredNetworkInterfaceClaimSpec(networkInterface computev1alpha.InstanceNe
 	return spec
 }
 
+// networkInterfaceClaimPrepared is NSO's Prepared condition, pending a release
+// carrying the constant.
+const networkInterfaceClaimPrepared = "Prepared"
+
 // networkInterfaceClaimSatisfied reports whether a claim holds the addresses the
-// instance needs to boot.
+// instance needs to boot, and whether the data plane is ready to receive it.
 //
-// Bound and Allocated are the whole criterion, and stay that way once a data
-// plane owns Programmed. Programmed becomes true when the interface is attached
-// at sandbox creation, and an infrastructure provider defers creating the
-// sandbox while any scheduling gate remains, so a gate waiting on Programmed
-// waits on itself. Programmed reaches a consumer through
-// Instance.status.networkInterfaces[].conditions, which instanceNetworkInterfaceStatus
-// already mirrors, and never through the gate.
+// Bound and Allocated say the addresses exist. Prepared says the data plane's
+// pre-Pod artifacts exist, so a Pod created now can be attached. It becomes true
+// before any Pod exists, which is what makes waiting on it safe.
+//
+// Programmed is excluded permanently, and the two conditions exist separately
+// for this reason. Programmed becomes true when the interface is attached at
+// sandbox creation, and an infrastructure provider defers creating the Pod while
+// any scheduling gate remains, so a gate waiting on Programmed waits on itself:
+// no Pod, no attachment; no attachment, no Programmed. Programmed reaches a
+// consumer through Instance.status.networkInterfaces[].conditions, which
+// instanceNetworkInterfaceStatus already mirrors, and never through the gate.
 func networkInterfaceClaimSatisfied(claim *networkingv1alpha.NetworkInterfaceClaim) bool {
 	return apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimBound) &&
-		apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimAllocated)
+		apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimAllocated) &&
+		apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkInterfaceClaimPrepared)
 }
 
 // networkInterfaceClaimRejection returns the reason and message of the first
@@ -111,6 +120,7 @@ func networkInterfaceClaimRejection(claim *networkingv1alpha.NetworkInterfaceCla
 	for _, conditionType := range []string{
 		networkingv1alpha.NetworkInterfaceClaimBound,
 		networkingv1alpha.NetworkInterfaceClaimAllocated,
+		networkInterfaceClaimPrepared,
 	} {
 		condition := apimeta.FindStatusCondition(claim.Status.Conditions, conditionType)
 		if condition != nil && condition.Status == metav1.ConditionFalse {
@@ -165,6 +175,7 @@ func instanceNetworkInterfaceStatus(
 	// the interface was obtained.
 	for _, conditionType := range []string{
 		networkingv1alpha.NetworkInterfaceClaimAllocated,
+		networkInterfaceClaimPrepared,
 		networkingv1alpha.NetworkInterfaceClaimProgrammed,
 	} {
 		if condition := apimeta.FindStatusCondition(claim.Status.Conditions, conditionType); condition != nil {
