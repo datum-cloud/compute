@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/part-of: compute
 rules:
   - apiGroups: [""]
-    resources: [nodes, pods, namespaces]
+    resources: [nodes, pods, namespaces, services]
     verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -43,29 +43,17 @@ subjects:
     namespace: compute-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: RoleBinding
 metadata:
   name: compute-prometheus-adapter-authentication-reader
-  labels:
-    app.kubernetes.io/name: compute-prometheus-adapter
-    app.kubernetes.io/part-of: compute
-rules:
-  - apiGroups: [""]
-    resources: [configmaps]
-    resourceNames: [extension-apiserver-authentication]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: compute-prometheus-adapter-authentication-reader
+  namespace: kube-system
   labels:
     app.kubernetes.io/name: compute-prometheus-adapter
     app.kubernetes.io/part-of: compute
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: compute-prometheus-adapter-authentication-reader
+  kind: Role
+  name: extension-apiserver-authentication-reader
 subjects:
   - kind: ServiceAccount
     name: compute-prometheus-adapter
