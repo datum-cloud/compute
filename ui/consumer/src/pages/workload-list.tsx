@@ -6,9 +6,10 @@
  * telemetry (Requests, Avg CPU) shows muted "Coming soon".
  */
 import { CliBanner, SectionCard } from "../components/cli-section";
+import { ComputeEnablementBanner } from "../components/compute-enablement-banner";
 import { StatStrip } from "../components/stat-strip";
 import { ErrorOrRestrictedState, LoadingSkeleton } from "../components/states";
-import { useWorkloads } from "../lib/api";
+import { useComputeEntitlement, useWorkloads } from "../lib/api";
 import {
   workloadHealthToBadgeType,
   type Workload,
@@ -137,6 +138,34 @@ function MetricCell({
   );
 }
 
+/** The "Deploy a workload" / "List & inspect workloads" cards — datumctl handles enabling
+ * Compute itself (the same "Would you like to request access?" prompt the banner's button
+ * triggers), so these commands work whether or not Compute is enabled yet. */
+function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
+  return (
+    <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+      <SectionCard
+        icon={<RocketIcon className="size-4" />}
+        title="Deploy a workload"
+        description="Create a workload manifest and deploy it to your project. The dashboard will reflect the new workload within seconds."
+        commands={[
+          "datumctl compute deploy -f workload.yaml",
+          `datumctl compute deploy --project=${projectId ?? ""} -f workload.yaml`,
+        ]}
+      />
+      <SectionCard
+        icon={<SearchIcon className="size-4" />}
+        title="List & inspect workloads"
+        description="Confirm your workload deployed successfully and inspect its current health and placement status."
+        commands={[
+          "datumctl compute workloads list",
+          "datumctl compute workloads describe <name>",
+        ]}
+      />
+    </div>
+  );
+}
+
 function WorkloadCard({
   workload,
   onClick,
@@ -244,12 +273,23 @@ export default function WorkloadList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const {
+    data: entitlement,
+    isLoading: isEntitlementLoading,
+    error: entitlementError,
+    refetch: refetchEntitlement,
+  } = useComputeEntitlement(projectId);
+  const computeEnabled = entitlement?.phase === "Active";
+
   const {
     data: workloads,
-    isLoading,
+    isLoading: isWorkloadsLoading,
     error,
     refetch,
-  } = useWorkloads(projectId);
+  } = useWorkloads(projectId, computeEnabled);
+
+  const isLoading = isEntitlementLoading || (computeEnabled && isWorkloadsLoading);
 
   // Build the child route path from the current URL rather than the portal's
   // internal `paths.config.ts` (unavailable to plugins) — the host mounts this
@@ -284,7 +324,25 @@ export default function WorkloadList() {
 
       {isLoading && <LoadingSkeleton />}
 
-      {!isLoading && error && (
+      {!isEntitlementLoading && entitlementError && (
+        <ErrorOrRestrictedState
+          error={entitlementError}
+          restrictedMessage="You don't have permission to view this project's Compute access."
+          onRetry={() => void refetchEntitlement()}
+        />
+      )}
+
+      {!isEntitlementLoading && !entitlementError && !computeEnabled && projectId && (
+        <div
+          className="flex flex-col gap-6"
+          data-testid="compute-plugin-workload-not-enabled"
+        >
+          <ComputeEnablementBanner projectId={projectId} phase={entitlement?.phase ?? null} />
+          <WorkloadCliSections projectId={projectId} />
+        </div>
+      )}
+
+      {!isLoading && computeEnabled && error && (
         <ErrorOrRestrictedState
           error={error}
           restrictedMessage="You don't have permission to view workloads."
@@ -292,7 +350,7 @@ export default function WorkloadList() {
         />
       )}
 
-      {!isLoading && !error && (workloads?.length ?? 0) === 0 && (
+      {!isLoading && computeEnabled && !error && (workloads?.length ?? 0) === 0 && (
         <div
           className="flex flex-col gap-6"
           data-testid="compute-plugin-workload-empty"
@@ -301,30 +359,11 @@ export default function WorkloadList() {
             title="Deploy workloads with datumctl"
             description="Workloads are created and managed using the Datum CLI. Install datumctl, write a manifest, and deploy — workloads you create will appear here automatically."
           />
-          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
-            <SectionCard
-              icon={<RocketIcon className="size-4" />}
-              title="Deploy a workload"
-              description="Create a workload manifest and deploy it to your project. The dashboard will reflect the new workload within seconds."
-              commands={[
-                "datumctl compute deploy -f workload.yaml",
-                `datumctl compute deploy --project=${projectId ?? ""} -f workload.yaml`,
-              ]}
-            />
-            <SectionCard
-              icon={<SearchIcon className="size-4" />}
-              title="List & inspect workloads"
-              description="Confirm your workload deployed successfully and inspect its current health and placement status."
-              commands={[
-                "datumctl compute workloads list",
-                "datumctl compute workloads describe <name>",
-              ]}
-            />
-          </div>
+          <WorkloadCliSections projectId={projectId} />
         </div>
       )}
 
-      {!isLoading && !error && workloads && workloads.length > 0 && (
+      {!isLoading && computeEnabled && !error && workloads && workloads.length > 0 && (
         <>
           <FleetSummary workloads={workloads} />
           <div

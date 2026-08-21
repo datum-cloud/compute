@@ -22,7 +22,13 @@
 import { toInstance, toInstanceList, toWorkload, toWorkloadList, INSTANCE_LABELS } from '../adapter';
 import type { RawInstance, RawInstanceList, RawWorkload, RawWorkloadList } from '../adapter';
 import type { Instance, Workload } from '../schema';
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 
 /**
  * Query keys are NAMESPACED under the canonical plugin id. Plugin queries
@@ -78,13 +84,108 @@ async function fetchWorkload(projectId: string, name: string): Promise<Workload>
   return toWorkload(raw);
 }
 
-export function useWorkloads(projectId: string | undefined): UseQueryResult<Workload[], ApiError> {
+export function useWorkloads(
+  projectId: string | undefined,
+  enabled = true
+): UseQueryResult<Workload[], ApiError> {
   return useQuery({
     queryKey: [PLUGIN_ID, 'workloads', projectId],
-    enabled: !!projectId,
+    enabled: !!projectId && enabled,
     queryFn: () => fetchWorkloads(projectId as string),
     refetchInterval: REFETCH_INTERVAL_MS,
     retry: false, // RBAC/entitlement failures shouldn't retry-storm
+  });
+}
+
+// ── Compute service entitlement ─────────────────────────────────────────
+//
+// Mirrors datumctl's `serviceactivation` gate: a project must have an Active
+// `ServiceEntitlement` named "compute" before the Compute API is usable. The
+// entitlement is a cluster-scoped resource in the project's own control
+// plane (services.miloapis.com/v1alpha1), fetched/created through the same
+// proxy as everything else above.
+
+const SERVICE_ENTITLEMENTS_PATH = '/apis/services.miloapis.com/v1alpha1/serviceentitlements';
+
+/** metadata.name of the compute ServiceEntitlement — one per project, named after the service. */
+const COMPUTE_SERVICE_NAME = 'compute';
+
+export type EntitlementPhase = 'PendingApproval' | 'Active' | 'Rejected';
+
+const ENTITLEMENT_PHASES: readonly EntitlementPhase[] = ['PendingApproval', 'Active', 'Rejected'];
+
+function isEntitlementPhase(value: unknown): value is EntitlementPhase {
+  return typeof value === 'string' && (ENTITLEMENT_PHASES as readonly string[]).includes(value);
+}
+
+interface RawServiceEntitlement {
+  status?: {
+    phase?: string;
+  };
+}
+
+export interface ComputeEntitlement {
+  /** `null` means no ServiceEntitlement has been requested for this project yet. */
+  phase: EntitlementPhase | null;
+}
+
+async function fetchComputeEntitlement(projectId: string): Promise<ComputeEntitlement> {
+  const url = `${getProjectScopedBase(projectId)}${SERVICE_ENTITLEMENTS_PATH}/${COMPUTE_SERVICE_NAME}`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (res.status === 404) {
+    return { phase: null };
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, `Request failed (${res.status}): ${SERVICE_ENTITLEMENTS_PATH}`);
+  }
+  const body = (await res.json()) as RawServiceEntitlement;
+  const rawPhase = body.status?.phase;
+  // The entitlement exists — a missing or unrecognized phase (a just-created
+  // object has no status yet; an unrecognized one means a phase this UI
+  // doesn't know about) is treated as PendingApproval rather than passed
+  // through raw, so an unknown value can never be mistaken for "not
+  // requested" and re-trigger a request.
+  return { phase: isEntitlementPhase(rawPhase) ? rawPhase : 'PendingApproval' };
+}
+
+export function useComputeEntitlement(
+  projectId: string | undefined
+): UseQueryResult<ComputeEntitlement, ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'compute-entitlement', projectId],
+    enabled: !!projectId,
+    queryFn: () => fetchComputeEntitlement(projectId as string),
+    retry: false,
+  });
+}
+
+async function requestComputeEntitlement(projectId: string): Promise<void> {
+  const url = `${getProjectScopedBase(projectId)}${SERVICE_ENTITLEMENTS_PATH}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      apiVersion: 'services.miloapis.com/v1alpha1',
+      kind: 'ServiceEntitlement',
+      metadata: { name: COMPUTE_SERVICE_NAME },
+      spec: { serviceRef: { name: COMPUTE_SERVICE_NAME } },
+    }),
+  });
+  // 409 AlreadyExists is a benign race (e.g. a second click) — not a failure.
+  if (!res.ok && res.status !== 409) {
+    throw new ApiError(res.status, `Request failed (${res.status}): ${SERVICE_ENTITLEMENTS_PATH}`);
+  }
+}
+
+export function useRequestComputeAccess(
+  projectId: string | undefined
+): UseMutationResult<void, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => requestComputeEntitlement(projectId as string),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'compute-entitlement', projectId] });
+    },
   });
 }
 
