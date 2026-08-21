@@ -110,6 +110,25 @@ spec:
       - compute.datumapis.com/instance/cpu-allocated
       - compute.datumapis.com/instance/memory-allocated
       - compute.datumapis.com/instance/uptime-seconds
+  charges:
+    - name: compute.datumapis.com/instance/cpu-seconds
+      chargeType: Usage
+      currency: USD
+      displayName: Compute vCPU
+      usage:
+        metricRef: compute.datumapis.com/instance/cpu-seconds
+        pricingUnit: vcpu-second
+        rates:
+          - flat: "0.000014"
+    - name: compute.datumapis.com/instance/memory-seconds
+      chargeType: Usage
+      currency: USD
+      displayName: Compute Memory
+      usage:
+        metricRef: compute.datumapis.com/instance/memory-seconds
+        pricingUnit: gib-second
+        rates:
+          - flat: "0.0000045"
   quota:
     metricRules:
     - selector:
