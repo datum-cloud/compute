@@ -1313,6 +1313,20 @@ spec:
                         The name of the interface this entry reports on, matching the name in the
                         instance's spec.
                       type: string
+                    networkInterfaceRef:
+                      description: |-
+                        The NetworkInterface bound to this entry, in the instance's namespace. An
+                        infrastructure provider follows it to configure the NIC, so it never has to
+                        derive the name of the claim that produced it.
+                      properties:
+                        name:
+                          description: name is the network interface name.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
                   type: object
                 type: array
               suspended:

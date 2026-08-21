@@ -415,6 +415,13 @@ type InstanceNetworkInterfaceStatus struct {
 	// +kubebuilder:validation:Optional
 	Name string `json:"name,omitempty"`
 
+	// The NetworkInterface bound to this entry, in the instance's namespace. An
+	// infrastructure provider follows it to configure the NIC, so it never has to
+	// derive the name of the claim that produced it.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkInterfaceRef *networkingv1alpha.LocalNetworkInterfaceRef `json:"networkInterfaceRef,omitempty"`
+
 	// The addresses the interface holds inside its network, each with its prefix
 	// length and, once the location has a subnet, its gateway.
 	//
