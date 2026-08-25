@@ -35,7 +35,11 @@
       },
       "requirements": {
         "permissions": [
-          { "group": "compute.datumapis.com", "resource": "workloads", "verb": "list" }
+          {
+            "group": "compute.datumapis.com",
+            "resource": "workloads",
+            "verb": "list"
+          }
         ]
       }
     },
@@ -49,12 +53,16 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": "workloads/:workloadName/instances/:instanceName",
+        "path": "workloads/:workloadName/instances/:instanceName/*",
         "component": { "$codeRef": "InstanceDetail" }
       },
       "requirements": {
         "permissions": [
-          { "group": "compute.datumapis.com", "resource": "instances", "verb": "get" }
+          {
+            "group": "compute.datumapis.com",
+            "resource": "instances",
+            "verb": "get"
+          }
         ]
       }
     }

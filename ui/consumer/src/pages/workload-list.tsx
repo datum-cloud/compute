@@ -26,6 +26,7 @@ import {
   BreadcrumbSeparator,
 } from "@datum-cloud/datum-ui/breadcrumb";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
+import { Icon } from "@datum-cloud/datum-ui/icons";
 import { cn } from "@datum-cloud/datum-ui/utils";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ArrowRightIcon, HomeIcon, RocketIcon, SearchIcon } from "lucide-react";
@@ -145,7 +146,7 @@ function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
   return (
     <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
       <SectionCard
-        icon={<RocketIcon className="size-4" />}
+        icon={<Icon icon={RocketIcon} size={16} />}
         title="Deploy a workload"
         description="Create a workload manifest and deploy it to your project. The dashboard will reflect the new workload within seconds."
         commands={[
@@ -154,7 +155,7 @@ function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
         ]}
       />
       <SectionCard
-        icon={<SearchIcon className="size-4" />}
+        icon={<Icon icon={SearchIcon} size={16} />}
         title="List & inspect workloads"
         description="Confirm your workload deployed successfully and inspect its current health and placement status."
         commands={[
@@ -262,7 +263,7 @@ function WorkloadCard({
         </span>
         <span className="flex items-center gap-1">
           View workload
-          <ArrowRightIcon className="size-3" />
+          <Icon icon={ArrowRightIcon} size={12} />
         </span>
       </div>
     </div>
@@ -307,7 +308,7 @@ export default function WorkloadList() {
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
             <BreadcrumbLink href={projectHref}>
-              <HomeIcon className="size-4" />
+              <Icon icon={HomeIcon} size={16} />
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />

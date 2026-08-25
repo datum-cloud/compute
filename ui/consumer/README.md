@@ -119,8 +119,12 @@ server you want running:
   gated on `{compute.datumapis.com, workloads, list}`.
 - **`portal.page/project`** ×3 — `workloads` (`WorkloadList`),
   `workloads/:workloadName` (`WorkloadDetail`), and
-  `workloads/:workloadName/instances/:instanceName` (`InstanceDetail`, gated
-  on `{compute.datumapis.com, instances, get}`).
+  `workloads/:workloadName/instances/:instanceName/*` (`InstanceDetail`
+  layout). The instance layout owns breadcrumbs / title / tabs and nests
+  Overview (index) plus Logs (`…/logs`) through `<Outlet />`. Instance pages
+  gate on `{compute.datumapis.com, instances, get}`. Overview embeds a
+  last-30-minutes `Logs.Table`; the Logs tab mounts the full explorer.
+  Entries stay empty until a Loki query is wired.
 
 Three things stay in lockstep, same as the sample plugin:
 
