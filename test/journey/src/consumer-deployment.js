@@ -736,6 +736,8 @@ function sweep(n) {
   ).status === 200;
   if (!projectExists) return removed;
 
+  // Ordered the same way as teardown_: workloads must be gone before the
+  // network they attach to, or the sweep itself can strand a NetworkContext.
   for (const [g, v, plural] of targets) {
     const res = apiGet(
       resourceURL(projectBase(n.project), g, v, plural, { namespace: NAMESPACE, labelSelector: selector }),
@@ -748,6 +750,14 @@ function sweep(n) {
       if (r.deleted) {
         removed++;
         log(`swept leftover ${plural}/${item.metadata.name}`);
+      }
+      const gone = waitFor(`${plural}/${item.metadata.name} deleted`, T.teardown, () => {
+        const g2 = apiGet(url, 'sweep-get');
+        return { done: g2.status === 404, detail: `http ${g2.status}` };
+      });
+      if (!gone.ok) {
+        cLeaked.add(1, { kind: plural });
+        log(`sweep: ${plural}/${item.metadata.name} still present after ${gone.elapsed}ms`);
       }
     }
   }
