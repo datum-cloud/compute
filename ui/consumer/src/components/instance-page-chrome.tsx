@@ -90,26 +90,32 @@ export function InstancePageChrome({
         titleClassName="text-primary break-all sm:break-normal"
         className="flex-col items-start gap-3 sm:flex-row sm:items-center"
         description={
-          instance ? (
-            <span className="mt-1 flex items-center gap-2 text-sm">
-              <span
-                className={cn(
-                  'size-2 shrink-0 rounded-full',
-                  BADGE_TYPE_DOT[instanceStatusToBadgeType(instance.status)]
-                )}
-                aria-hidden
-              />
-              <span>{instance.status}</span>
-              {instance.city ? (
-                <>
-                  <span className="text-muted-foreground" aria-hidden>
-                    ·
-                  </span>
-                  <span className="text-muted-foreground">{instance.city}</span>
-                </>
-              ) : null}
-            </span>
-          ) : undefined
+          <span className="mt-1 flex min-h-5 items-center gap-2 text-sm">
+            {instance ? (
+              <>
+                <span
+                  className={cn(
+                    'size-2 shrink-0 rounded-full',
+                    BADGE_TYPE_DOT[instanceStatusToBadgeType(instance.status)]
+                  )}
+                  aria-hidden
+                />
+                <span>{instance.status}</span>
+                {instance.city ? (
+                  <>
+                    <span className="text-muted-foreground" aria-hidden>
+                      ·
+                    </span>
+                    <span className="text-muted-foreground">{instance.city}</span>
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <span className="invisible" aria-hidden>
+                Pending
+              </span>
+            )}
+          </span>
         }
         actions={
           onRefresh ? (
