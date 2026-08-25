@@ -15,27 +15,33 @@
     {
       "type": "portal.nav/project",
       "properties": {
-        "id": "compute-workloads",
-        "title": "Workloads",
+        "id": "compute",
+        "title": "Compute",
         "icon": "server",
         "path": "workloads",
-        "order": 80
-      },
-      "requirements": {
-        "permissions": [
-          { "group": "compute.datumapis.com", "resource": "workloads", "verb": "list" }
-        ]
+        "order": 10,
+        "section": "build",
+        "comingSoon": true,
+        "comingSoonMode": "plugin",
+        "roadmapUrl": "https://github.com/datum-cloud/enhancements/issues/682",
+        "serviceRef": "compute.datumapis.com"
       }
     },
     {
       "type": "portal.page/project",
       "properties": {
         "path": "workloads",
-        "component": { "$codeRef": "WorkloadList" }
+        "component": {
+          "$codeRef": "WorkloadList"
+        }
       },
       "requirements": {
         "permissions": [
-          { "group": "compute.datumapis.com", "resource": "workloads", "verb": "list" }
+          {
+            "group": "compute.datumapis.com",
+            "resource": "workloads",
+            "verb": "list"
+          }
         ]
       }
     },
@@ -43,18 +49,26 @@
       "type": "portal.page/project",
       "properties": {
         "path": "workloads/:workloadName",
-        "component": { "$codeRef": "WorkloadDetail" }
+        "component": {
+          "$codeRef": "WorkloadDetail"
+        }
       }
     },
     {
       "type": "portal.page/project",
       "properties": {
         "path": "workloads/:workloadName/instances/:instanceName",
-        "component": { "$codeRef": "InstanceDetail" }
+        "component": {
+          "$codeRef": "InstanceDetail"
+        }
       },
       "requirements": {
         "permissions": [
-          { "group": "compute.datumapis.com", "resource": "instances", "verb": "get" }
+          {
+            "group": "compute.datumapis.com",
+            "resource": "instances",
+            "verb": "get"
+          }
         ]
       }
     }
