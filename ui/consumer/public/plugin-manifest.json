@@ -23,7 +23,7 @@
         "section": "build",
         "comingSoon": true,
         "comingSoonMode": "plugin",
-        "roadmapUrl": "https://github.com/datum-cloud/enhancements/issues/682",
+        "roadmapUrl": "https://www.datum.net/platform/build#compute",
         "serviceRef": "compute.datumapis.com"
       }
     },

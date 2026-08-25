@@ -117,7 +117,7 @@ server you want running:
 
 - **`portal.nav/project`** — **Compute** under Build (`section: "build"`,
   `order: 10`). Soft-launch via `comingSoon` + `comingSoonMode: "plugin"`
-  ([enhancements#682](https://github.com/datum-cloud/enhancements/issues/682))
+  ([Build → Compute](https://www.datum.net/platform/build#compute))
   and `serviceRef: "compute.datumapis.com"` (canonical Service
   `spec.serviceName`). Projects without an Active entitlement for that service
   still open the live `path: "workloads"` mount (request-access / enablement UI)
