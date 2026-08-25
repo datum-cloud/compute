@@ -827,3 +827,30 @@ tasks:
         echo "Waiting for compute-manager rollout on {{.LABEL}}..."
         kubectl --kubeconfig={{.KUBECONFIG_FILE}} -n {{.COMPUTE_NAMESPACE}} \
           rollout status deployment/compute-manager --timeout=180s
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Consumer deployment journey (k6, black-box against a live environment)
+  # ════════════════════════════════════════════════════════════════════════
+
+  journey:generate:
+    desc: "Sync the k6 journey script into the kustomize component"
+    cmds:
+      - cp test/journey/src/consumer-deployment.js config/components/k6-consumer-journey/generated/consumer-deployment.js
+
+  journey:validate:
+    desc: "Type-check the k6 journey script and render its manifests"
+    deps: [journey:generate]
+    cmds:
+      - k6 inspect test/journey/src/consumer-deployment.js > /dev/null
+      - kubectl kustomize config/components/k6-consumer-journey > /dev/null
+      - echo "journey script and manifests are valid"
+
+  journey:run:
+    desc: "Run the consumer deployment journey against a live environment"
+    cmds:
+      - |
+        if [ -z "${DATUM_TOKEN}" ]; then
+          echo "DATUM_TOKEN is unset; try: export DATUM_TOKEN=\$(datumctl auth get-token)" >&2
+          exit 1
+        fi
+        k6 run test/journey/src/consumer-deployment.js

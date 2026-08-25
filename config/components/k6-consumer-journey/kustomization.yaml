@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Generate the script ConfigMap from the checked-in copy under generated/,
+# which is synced from test/journey/src via `task journey:generate`. Keeping a
+# generated copy here means the kustomization never reaches outside its own
+# directory, which OCI-packaged Flux sources require.
+configMapGenerator:
+  - name: compute-k6-consumer-journey
+    files:
+      - generated/consumer-deployment.js
+    options:
+      disableNameSuffixHash: true
+
+resources:
+  - testrun.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: compute-k6-consumer-journey
+      app.kubernetes.io/component: e2e-testing
+      app.kubernetes.io/part-of: compute.datumapis.com

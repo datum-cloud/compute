@@ -40,3 +40,6 @@ dist/
 /datumctl-compute
 
 sample-compute-build/
+
+# k6 journey summary output
+summary.json
