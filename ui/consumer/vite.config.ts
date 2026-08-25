@@ -51,7 +51,6 @@ export default defineConfig({
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
         './InstanceDetail': './src/pages/instance-detail.tsx',
-        './InstanceLogs': './src/pages/instance-logs.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
       // (react 19, react-router 7, react-query 5). singleton:true guarantees

@@ -1,7 +1,7 @@
 /**
- * Shared chrome for instance Overview and Logs pages: breadcrumbs, title,
- * refresh, and tab bar. Keeps the two extensions visually identical above
- * the fold.
+ * Shared instance layout chrome: breadcrumbs, title, refresh, and tab bar.
+ * Used by the splat layout at `instances/:instanceName/*`; tab bodies render
+ * through the parent's `<Outlet />`.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
 import { instanceStatusToBadgeType, type Instance } from '../schema';
