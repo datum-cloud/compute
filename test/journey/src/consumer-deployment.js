@@ -63,6 +63,12 @@ const T = {
   teardown: secs('DATUM_TIMEOUT_TEARDOWN', 600),
 };
 
+// Ceiling on the deploy phase as a whole. Individual stage timeouts are
+// clamped to whatever is left of it, so a run where every stage times out
+// still reaches teardown well inside DATUM_MAX_DURATION instead of being
+// guillotined by k6 with resources still live.
+const JOURNEY_BUDGET = secs('DATUM_JOURNEY_BUDGET', 1500);
+
 const SKIP_TEARDOWN = truthy(__ENV.DATUM_SKIP_TEARDOWN, false);
 // Delete anything tagged with DATUM_RUN_ID and exit. Recovers leftovers from a
 // hard-aborted run without deploying anything new.
@@ -112,7 +118,7 @@ export const options = {
       executor: 'shared-iterations',
       vus: 1,
       iterations: 1,
-      maxDuration: __ENV.DATUM_MAX_DURATION || '45m',
+      maxDuration: __ENV.DATUM_MAX_DURATION || '60m',
     },
   },
   thresholds: {
@@ -233,9 +239,14 @@ function resourceURL(base, group, version, plural, opts) {
 // Every readiness wait is a predicate polled to a deadline. Nothing in this
 // suite sleeps for a fixed duration and hopes.
 
+// budgetDeadline is set when the deploy phase starts. Teardown clears it so
+// its own waits get their full DATUM_TIMEOUT_TEARDOWN.
+let budgetDeadline = 0;
+
 function waitFor(name, timeoutMs, probe) {
   const start = Date.now();
-  const deadline = start + timeoutMs;
+  let deadline = start + timeoutMs;
+  if (budgetDeadline && deadline > budgetDeadline) deadline = budgetDeadline;
   let last = '';
   for (;;) {
     const r = probe();
@@ -244,7 +255,8 @@ function waitFor(name, timeoutMs, probe) {
     }
     last = (r && r.detail) || last;
     if (Date.now() >= deadline) {
-      return { ok: false, elapsed: Date.now() - start, detail: `timed out after ${Math.round(timeoutMs / 1000)}s; last: ${last}` };
+      const capped = deadline < start + timeoutMs ? ' (capped by DATUM_JOURNEY_BUDGET)' : '';
+      return { ok: false, elapsed: Date.now() - start, detail: `timed out after ${Math.round((Date.now() - start) / 1000)}s${capped}; last: ${last}` };
     }
     sleep(POLL_MS / 1000);
   }
@@ -764,6 +776,7 @@ export default function (n) {
   }
 
   const started = Date.now();
+  budgetDeadline = started + JOURNEY_BUDGET;
   let location = '';
   try {
     ensureProject(n);
@@ -795,7 +808,9 @@ export default function (n) {
     awaitInstances(n);
     tJourney.add(Date.now() - started);
   } finally {
-    // Runs even when a stage failed or fail() unwound the iteration.
+    // Runs even when a stage failed or fail() unwound the iteration. Teardown
+    // is deliberately outside the deploy budget.
+    budgetDeadline = 0;
     teardown_(n, location);
   }
 }

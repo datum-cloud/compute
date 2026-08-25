@@ -54,6 +54,12 @@ There are no fixed sleeps. Every readiness wait is a predicate polled at
 `DATUM_POLL_INTERVAL_SECONDS` against an explicit deadline, and a timeout
 reports the last observed condition set.
 
+The individual stage timeouts add up to more than any sensible wall clock, so
+the deploy phase also runs under a single `DATUM_JOURNEY_BUDGET` and each wait
+is clamped to whatever is left of it. Teardown sits outside that budget, so a
+run in which every stage times out still tears itself down rather than being
+killed by k6 with resources still live.
+
 ## Running locally
 
 ```bash
@@ -107,7 +113,8 @@ DATUM_RUN_ID=<run id from the log> DATUM_SWEEP_ONLY=true \
 | `DATUM_TIMEOUT_INSTANCE_READY` | `900` | Seconds |
 | `DATUM_TIMEOUT_NETWORK_CONTEXT` | `600` | Seconds |
 | `DATUM_TIMEOUT_TEARDOWN` | `600` | Seconds |
-| `DATUM_MAX_DURATION` | `45m` | k6 scenario cap |
+| `DATUM_JOURNEY_BUDGET` | `1500` | Seconds; ceiling on the deploy phase. Stage timeouts are clamped to what is left of it so teardown always gets to run |
+| `DATUM_MAX_DURATION` | `60m` | k6 scenario cap |
 | `DATUM_RUN_ID` | generated | Override the run id |
 | `DATUM_SKIP_TEARDOWN` | `false` | Leave everything behind |
 | `DATUM_SWEEP_ONLY` | `false` | Delete this run id's leftovers and exit |
