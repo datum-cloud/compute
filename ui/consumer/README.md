@@ -117,10 +117,13 @@ server you want running:
 
 - **`portal.nav/project`** — a "Workloads" sidebar item (icon `server`),
   gated on `{compute.datumapis.com, workloads, list}`.
-- **`portal.page/project`** ×3 — `workloads` (`WorkloadList`),
-  `workloads/:workloadName` (`WorkloadDetail`), and
-  `workloads/:workloadName/instances/:instanceName` (`InstanceDetail`, gated
-  on `{compute.datumapis.com, instances, get}`).
+- **`portal.page/project`** ×4 — `workloads` (`WorkloadList`),
+  `workloads/:workloadName` (`WorkloadDetail`),
+  `workloads/:workloadName/instances/:instanceName` (`InstanceDetail`), and
+  `…/instances/:instanceName/logs` (`InstanceLogs`, full datum-ui Logs
+  explorer). Instance pages gate on `{compute.datumapis.com, instances, get}`.
+  Overview embeds a last-30-minutes `Logs.Table`; the Logs tab mounts the full
+  explorer. Entries stay empty until a Loki query is wired.
 
 Three things stay in lockstep, same as the sample plugin:
 

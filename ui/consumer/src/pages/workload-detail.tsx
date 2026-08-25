@@ -33,6 +33,7 @@ import {
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
+import { Icon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import { formatDistanceToNowStrict } from 'date-fns';
 import {
@@ -46,7 +47,12 @@ import { useLocation, useNavigate, useParams } from 'react-router';
 
 const COMING_SOON = 'Coming soon';
 
-const WORKLOAD_TABS = ['Overview', 'Deployments', 'Metrics', 'Activity'];
+const WORKLOAD_TABS = [
+  { label: 'Overview' },
+  { label: 'Deployments' },
+  { label: 'Metrics' },
+  { label: 'Activity' },
+];
 
 function InstanceMetricCell({
   label,
@@ -103,7 +109,7 @@ function InstanceCard({ instance, onClick }: { instance: Instance; onClick: () =
         <span>Updated {formatDistanceToNowStrict(instance.createdAt, { addSuffix: true })}</span>
         <span className="flex items-center gap-1">
           View
-          <ArrowRightIcon className="size-3" />
+          <Icon icon={ArrowRightIcon} size={12} />
         </span>
       </div>
     </div>
@@ -125,7 +131,7 @@ function GeneralCard({
       data-testid="compute-plugin-workload-general">
       <CardContent className="p-0 sm:px-6 sm:pb-4">
         <div className="mb-4 flex items-center gap-2.5">
-          <SquareLibraryIcon className="text-muted-foreground size-5 stroke-2" />
+          <Icon icon={SquareLibraryIcon} size={20} className="text-muted-foreground" />
           <span className="text-base font-semibold">General</span>
         </div>
         <DetailList
@@ -174,7 +180,7 @@ function ConfigurationCard({ workload }: { workload: Workload }) {
       data-testid="compute-plugin-workload-configuration">
       <CardContent className="p-0 sm:px-6 sm:pb-4">
         <div className="mb-4 flex items-center gap-2.5">
-          <Settings2Icon className="text-muted-foreground size-5 stroke-2" />
+          <Icon icon={Settings2Icon} size={20} className="text-muted-foreground" />
           <span className="text-base font-semibold">Configuration</span>
         </div>
         <DetailList
@@ -290,7 +296,7 @@ export default function WorkloadDetail() {
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
             <BreadcrumbLink href={projectHref}>
-              <HomeIcon className="size-4" />
+              <Icon icon={HomeIcon} size={16} />
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
@@ -348,7 +354,7 @@ export default function WorkloadDetail() {
             data-testid="compute-plugin-workload-locations">
             <CardContent className="flex flex-col gap-4 p-0 sm:px-6 sm:pb-4">
               <div className="flex items-center gap-2.5">
-                <MapPinIcon className="text-muted-foreground size-5 stroke-2" />
+                <Icon icon={MapPinIcon} size={20} className="text-muted-foreground" />
                 <span className="text-base font-semibold">Instance Locations</span>
               </div>
               <p className="text-muted-foreground text-sm">

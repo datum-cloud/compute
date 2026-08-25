@@ -3,11 +3,11 @@
  * `app/features/workload/cli-section.tsx`. Only the imports changed:
  *  - `@/hooks/useCopyToClipboard` (portal-internal) → `@datum-cloud/datum-ui/hooks`,
  *    which exports the same hook.
- * Everything else — `CommandBlock`, `SectionCard`, `CliBanner` — only depends
- * on `@datum-cloud/datum-ui` and `lucide-react`, so it needs no other changes.
+ *  - Icons rendered via `@datum-cloud/datum-ui/icons` `Icon` wrapper.
  */
 import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { Icon } from '@datum-cloud/datum-ui/icons';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import { BookOpenIcon, CheckIcon, CopyIcon, DownloadIcon, SquareTerminalIcon } from 'lucide-react';
@@ -40,7 +40,7 @@ export function CommandBlock({ value, danger }: { value: string; danger?: boolea
         onClick={handleCopy}
         className="text-muted-foreground hover:text-foreground mt-0.5 shrink-0 transition-colors sm:mt-0"
         aria-label="Copy command">
-        {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
+        {copied ? <Icon icon={CheckIcon} size={16} /> : <Icon icon={CopyIcon} size={16} />}
       </button>
     </div>
   );
@@ -117,7 +117,7 @@ export function Banner({
 export function CliBanner({ title, description }: { title: string; description: string }) {
   return (
     <Banner
-      icon={<SquareTerminalIcon className="text-primary size-8 shrink-0" />}
+      icon={<Icon icon={SquareTerminalIcon} size={32} className="text-primary shrink-0" />}
       title={title}
       description={description}
       actions={
@@ -127,7 +127,7 @@ export function CliBanner({ title, description }: { title: string; description: 
             target="_blank"
             rel="noreferrer"
             className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors">
-            <DownloadIcon className="size-4" />
+            <Icon icon={DownloadIcon} size={16} />
             Install CLI
           </a>
           <a
@@ -135,7 +135,7 @@ export function CliBanner({ title, description }: { title: string; description: 
             target="_blank"
             rel="noreferrer"
             className="border-border hover:bg-muted inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors">
-            <BookOpenIcon className="size-4" />
+            <Icon icon={BookOpenIcon} size={16} />
             CLI Docs
           </a>
         </>

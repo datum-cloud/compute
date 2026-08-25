@@ -9,7 +9,8 @@
   "exposedModules": {
     "WorkloadList": "./src/pages/workload-list.tsx",
     "WorkloadDetail": "./src/pages/workload-detail.tsx",
-    "InstanceDetail": "./src/pages/instance-detail.tsx"
+    "InstanceDetail": "./src/pages/instance-detail.tsx",
+    "InstanceLogs": "./src/pages/instance-logs.tsx"
   },
   "extensions": [
     {
@@ -35,7 +36,11 @@
       },
       "requirements": {
         "permissions": [
-          { "group": "compute.datumapis.com", "resource": "workloads", "verb": "list" }
+          {
+            "group": "compute.datumapis.com",
+            "resource": "workloads",
+            "verb": "list"
+          }
         ]
       }
     },
@@ -54,7 +59,27 @@
       },
       "requirements": {
         "permissions": [
-          { "group": "compute.datumapis.com", "resource": "instances", "verb": "get" }
+          {
+            "group": "compute.datumapis.com",
+            "resource": "instances",
+            "verb": "get"
+          }
+        ]
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": "workloads/:workloadName/instances/:instanceName/logs",
+        "component": { "$codeRef": "InstanceLogs" }
+      },
+      "requirements": {
+        "permissions": [
+          {
+            "group": "compute.datumapis.com",
+            "resource": "instances",
+            "verb": "get"
+          }
         ]
       }
     }

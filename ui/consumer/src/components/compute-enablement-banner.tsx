@@ -9,6 +9,7 @@
 import { Banner } from './cli-section';
 import { useRequestComputeAccess, type EntitlementPhase } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
+import { Icon } from '@datum-cloud/datum-ui/icons';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { ClockIcon, ShieldAlertIcon, XCircleIcon } from 'lucide-react';
 
@@ -18,20 +19,20 @@ const COPY: Record<BannerState, { title: string; description: string; icon: Reac
   NotRequested: {
     title: 'This project does not have Compute enabled',
     description: 'You need to enable Compute to create Workloads in this project.',
-    icon: <ShieldAlertIcon className="text-primary size-8 shrink-0" />,
+    icon: <Icon icon={ShieldAlertIcon} size={32} className="text-primary shrink-0" />,
     cta: 'Enable Compute',
   },
   PendingApproval: {
     title: 'Compute access is pending approval',
     description:
       'A request to enable Compute for this project has been sent to the service provider and is awaiting approval.',
-    icon: <ClockIcon className="text-primary size-8 shrink-0" />,
+    icon: <Icon icon={ClockIcon} size={32} className="text-primary shrink-0" />,
     cta: 'Enable Compute',
   },
   Rejected: {
     title: 'Compute access was declined',
     description: 'The request to enable Compute for this project was declined. You can request access again.',
-    icon: <XCircleIcon className="text-destructive size-8 shrink-0" />,
+    icon: <Icon icon={XCircleIcon} size={32} className="text-destructive shrink-0" />,
     cta: 'Request access again',
   },
 };

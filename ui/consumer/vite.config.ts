@@ -51,6 +51,7 @@ export default defineConfig({
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
         './InstanceDetail': './src/pages/instance-detail.tsx',
+        './InstanceLogs': './src/pages/instance-logs.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
       // (react 19, react-router 7, react-query 5). singleton:true guarantees
@@ -68,8 +69,11 @@ export default defineConfig({
         '@datum-cloud/datum-ui/badge': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/button': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/card': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/icons': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/logs': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/separator': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/skeleton': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/table': { singleton: true, requiredVersion: false },
       },
     }),
   ],
