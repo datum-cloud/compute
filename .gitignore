@@ -40,3 +40,6 @@ dist/
 /datumctl-compute
 
 sample-compute-build/
+
+# Module Federation diagnostics / typegen cache
+ui/**/.mf/

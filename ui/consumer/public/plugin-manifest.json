@@ -57,7 +57,7 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": "workloads/:workloadName/instances/:instanceName",
+        "path": "workloads/:workloadName/instances/:instanceName/*",
         "component": {
           "$codeRef": "InstanceDetail"
         }
