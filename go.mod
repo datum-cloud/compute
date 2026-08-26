@@ -10,10 +10,10 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	// Pinned to network-services-operator main: the latest tag (v0.26.0)
-	// predates the Prepared condition this gate reads. Re-pin to a tagged
-	// release once one carries it.
-	go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569
+	// Pinned to the unmerged network-services-operator proto/network-service
+	// branch: no tag yet carries the Prepared condition this gate reads or the
+	// HolderAvailable constants. Re-pin to a tagged release once one does.
+	go.datum.net/network-services-operator v0.26.2-0.20260826204227-4d2b3e3b8ad5
 	go.miloapis.com/milo v0.32.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0
