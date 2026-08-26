@@ -347,6 +347,14 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		readyErr = fmt.Errorf("failed reconciling network interface status: %w", interfacesErr)
 	}
 
+	// Publish availability to the interfaces the instance holds while every
+	// condition is settled in memory. This sits above the quota and status-update
+	// returns below, because an instance stuck on one of them is precisely an
+	// instance that should stop receiving traffic.
+	if err := r.reconcileHolderAvailability(ctx, cl.GetClient(), &instance); err != nil && readyErr == nil {
+		readyErr = err
+	}
+
 	if statusChanged || readyChanged {
 		if err := cl.GetClient().Status().Update(ctx, &instance); err != nil {
 			if quotaReq > 0 && apierrors.IsConflict(err) {
@@ -382,10 +390,6 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	// persisted as True. Handles both the Quota gate and the ReferencedData gate
 	// in a single patch to avoid duplicate API calls.
 	if err := r.reconcileSchedulingGates(ctx, cl.GetClient(), &instance); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if err := r.reconcileHolderAvailability(ctx, cl.GetClient(), &instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1018,6 +1022,12 @@ func (r *InstanceReconciler) reconcileSuspendedState(
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
 // deleted. It removes the quota finalizer once the ResourceClaim is gone.
 func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) error {
+	// Stop traffic first. Deletion is the drain path that matters — every
+	// scale-down, rolling update, and redeploy goes through it — and the
+	// interfaces must be told before the instance's own cleanup runs, not after.
+	// Best effort: this must never be what keeps an instance in Terminating.
+	r.drainHolderAvailability(ctx, cl, instance)
+
 	if !controllerutil.ContainsFinalizer(instance, instanceQuotaFinalizer) {
 		return nil
 	}

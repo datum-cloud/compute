@@ -11,6 +11,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -34,9 +35,18 @@ const (
 	// holderReasonUnavailable is the fallback for a holder that reported itself
 	// unavailable without naming a reason.
 	holderReasonUnavailable = "HolderUnavailable"
+
+	// holderReasonTerminating covers a holder being deleted. Its own Available
+	// condition can still read True for the whole deletion window, so deletion is
+	// judged before it.
+	holderReasonTerminating = "HolderTerminating"
 )
 
-const msgHolderNotReported = "The instance holding this interface has not reported an availability state"
+const (
+	msgHolderNotReported = "The instance holding this interface has not reported an availability state"
+
+	msgHolderTerminating = "The instance holding this interface is terminating"
+)
 
 // holderAvailableCondition translates an instance's Available condition into the
 // condition networking reads on the interfaces it holds.
@@ -50,6 +60,16 @@ func holderAvailableCondition(instance *computev1alpha.Instance) metav1.Conditio
 		Status:  metav1.ConditionFalse,
 		Reason:  holderReasonNotReported,
 		Message: msgHolderNotReported,
+	}
+
+	// A terminating instance is not serving, whatever it last said about itself:
+	// nothing clears Available on the way out, so it reads True for the whole
+	// deletion window. Deletion is decided first so a scale-down or a rolling
+	// update drains the member instead of routing to a process shutting down.
+	if !instance.DeletionTimestamp.IsZero() {
+		condition.Reason = holderReasonTerminating
+		condition.Message = msgHolderTerminating
+		return condition
 	}
 
 	available := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceAvailable)
@@ -84,6 +104,11 @@ func holderAvailableCondition(instance *computev1alpha.Instance) metav1.Conditio
 // predate the condition pick it up without their workload being redeployed.
 // Writes only when the condition actually moves, so a steady instance produces
 // no API traffic.
+//
+// The condition is derived wholly from the current holder, never merged with
+// what is already on the interface. A reclaimPolicy Retain interface outlives
+// the instance that held it, so a True left by a previous holder must not be
+// inherited by the next one before it is serving.
 func (r *InstanceReconciler) reconcileHolderAvailability(
 	ctx context.Context,
 	clusterClient client.Client,
@@ -124,4 +149,23 @@ func (r *InstanceReconciler) reconcileHolderAvailability(
 	}
 
 	return errors.Join(errs...)
+}
+
+// drainHolderAvailability reports the holder as gone from the interfaces it
+// held, without letting that write become a reason the caller cannot proceed.
+//
+// It is used on the deletion path, where the failure to reach an interface must
+// not wedge finalizer removal: an instance that cannot drain must still be able
+// to finish deleting, or a transient API error strands it in Terminating
+// forever. The interface being gone already is the expected case under a
+// reclaimPolicy of Delete and is not a failure at all.
+func (r *InstanceReconciler) drainHolderAvailability(
+	ctx context.Context,
+	clusterClient client.Client,
+	instance *computev1alpha.Instance,
+) {
+	if err := r.reconcileHolderAvailability(ctx, clusterClient, instance); err != nil {
+		log.FromContext(ctx).Error(err, "failed draining network interfaces; deletion continues",
+			"instance", instance.Name, "namespace", instance.Namespace)
+	}
 }

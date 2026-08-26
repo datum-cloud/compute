@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -308,4 +309,159 @@ func TestReconcileHolderAvailability_NetworkingDisabled(t *testing.T) {
 	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, instance))
 
 	assert.Nil(t, getHolderCondition(t, cl))
+}
+
+// TestHolderAvailableCondition_Terminating covers the case the instance's own
+// Available condition cannot express: nothing clears it on the way out, so a
+// terminating instance still reports itself available.
+func TestHolderAvailableCondition_Terminating(t *testing.T) {
+	t.Parallel()
+
+	instance := newHolderTestInstance(&metav1.Condition{
+		Type:   computev1alpha.InstanceAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: computev1alpha.InstanceAvailableReasonAvailable,
+	})
+	deleting := metav1.Now()
+	instance.DeletionTimestamp = &deleting
+
+	condition := holderAvailableCondition(instance)
+
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, holderReasonTerminating, condition.Reason)
+	assert.Equal(t, msgHolderTerminating, condition.Message)
+}
+
+// TestReconcileDeletion_Drains covers the drain path that carries every
+// scale-down, rolling update, and redeploy: a terminating instance must stop
+// being routed to before its cleanup runs.
+func TestReconcileDeletion_Drains(t *testing.T) {
+	t.Parallel()
+
+	instance := newHolderTestInstance(&metav1.Condition{
+		Type:   computev1alpha.InstanceAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: computev1alpha.InstanceAvailableReasonAvailable,
+	})
+
+	networkInterface := newHolderTestInterface()
+	apimeta.SetStatusCondition(&networkInterface.Status.Conditions, metav1.Condition{
+		Type:   networkInterfaceHolderAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: computev1alpha.InstanceAvailableReasonAvailable,
+	})
+
+	deleting := metav1.Now()
+	instance.DeletionTimestamp = &deleting
+	instance.Finalizers = []string{instanceQuotaFinalizer}
+
+	cl := holderTestClient(instance, networkInterface)
+
+	r := &InstanceReconciler{NetworkingEnabled: true}
+	require.NoError(t, r.reconcileDeletion(context.Background(), cl, "test-cluster", instance))
+
+	condition := getHolderCondition(t, cl)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, holderReasonTerminating, condition.Reason)
+}
+
+// TestReconcileDeletion_DrainFailureDoesNotWedge covers the ordering rule: an
+// instance that cannot reach its interfaces must still finish deleting, or a
+// transient API error strands it in Terminating forever.
+func TestReconcileDeletion_DrainFailureDoesNotWedge(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		client  func(client.Client) client.Client
+		objects []client.Object
+	}{
+		{
+			name:    "interface is already gone",
+			objects: nil,
+		},
+		{
+			name:    "the status write fails",
+			objects: []client.Object{newHolderTestInterface()},
+			client: func(cl client.Client) client.Client {
+				return &holderFailingStatusClient{Client: cl}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			instance := newHolderTestInstance(&metav1.Condition{
+				Type:   computev1alpha.InstanceAvailable,
+				Status: metav1.ConditionTrue,
+				Reason: computev1alpha.InstanceAvailableReasonAvailable,
+			})
+			deleting := metav1.Now()
+			instance.DeletionTimestamp = &deleting
+			instance.Finalizers = []string{instanceQuotaFinalizer}
+
+			cl := holderTestClient(append([]client.Object{instance}, tc.objects...)...)
+			if tc.client != nil {
+				cl = tc.client(cl)
+			}
+
+			r := &InstanceReconciler{NetworkingEnabled: true}
+			require.NoError(t, r.reconcileDeletion(context.Background(), cl, "test-cluster", instance),
+				"a drain failure must not block deletion")
+
+			assert.NotContains(t, instance.Finalizers, instanceQuotaFinalizer,
+				"the finalizer must still be released")
+		})
+	}
+}
+
+// TestReconcileHolderAvailability_StaleTrueNotInherited covers a reclaimPolicy
+// Retain interface outliving the instance that held it: the next instance in
+// the slot must not begin life looking healthy on a predecessor's condition.
+func TestReconcileHolderAvailability_StaleTrueNotInherited(t *testing.T) {
+	t.Parallel()
+
+	retained := newHolderTestInterface()
+	apimeta.SetStatusCondition(&retained.Status.Conditions, metav1.Condition{
+		Type:    networkInterfaceHolderAvailable,
+		Status:  metav1.ConditionTrue,
+		Reason:  computev1alpha.InstanceAvailableReasonAvailable,
+		Message: msgInstanceAvailable,
+	})
+
+	// The successor has rebound the interface but has not started serving, which
+	// on a fresh instance means no Available condition at all.
+	successor := newHolderTestInstance(nil)
+	successor.Name = "holder-test-instance-successor"
+
+	cl := holderTestClient(successor, retained)
+
+	r := &InstanceReconciler{NetworkingEnabled: true}
+	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, successor))
+
+	condition := getHolderCondition(t, cl)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, holderReasonNotReported, condition.Reason)
+}
+
+// holderFailingStatusClient fails every status write, standing in for an
+// interface the API server will not let the instance update on its way out.
+type holderFailingStatusClient struct {
+	client.Client
+}
+
+func (c *holderFailingStatusClient) Status() client.SubResourceWriter {
+	return &holderFailingStatusWriter{SubResourceWriter: c.Client.Status()}
+}
+
+type holderFailingStatusWriter struct {
+	client.SubResourceWriter
+}
+
+func (w *holderFailingStatusWriter) Update(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+	return errors.New("status update refused")
 }
