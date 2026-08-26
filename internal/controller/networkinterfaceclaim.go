@@ -207,3 +207,44 @@ func networkIPProjection(address string) string {
 	}
 	return prefix.Addr().String()
 }
+
+// desiredNetworkInterfaceClaimLabels returns the well-known labels compute
+// stamps on the claims it creates, so a networking NetworkService can select
+// claim membership by label without a consumer labelling anything first.
+//
+// The keys are the ones already stamped on every Instance, reused rather than
+// reinvented, and are sourced from the deployment that drove the instance. A key
+// whose source is empty is omitted rather than stamped blank, so a selector on
+// it matches nothing instead of matching every unset claim.
+func desiredNetworkInterfaceClaimLabels(
+	deployment *computev1alpha.WorkloadDeployment,
+	instance *computev1alpha.Instance,
+) map[string]string {
+	candidates := map[string]string{
+		computev1alpha.WorkloadNameLabel:  deployment.Spec.WorkloadRef.Name,
+		computev1alpha.PlacementNameLabel: deployment.Spec.PlacementName,
+		computev1alpha.CityCodeLabel:      deployment.Spec.CityCode,
+		computev1alpha.InstanceIndexLabel: instance.Labels[computev1alpha.InstanceIndexLabel],
+	}
+
+	labels := make(map[string]string, len(candidates))
+	for key, value := range candidates {
+		if value != "" {
+			labels[key] = value
+		}
+	}
+	return labels
+}
+
+// networkInterfaceClaimLabelsStale reports whether any label compute owns is
+// absent from or differs on a live claim. Only the keys compute sets are
+// considered: networking stamps its own keys on the claim, and a key compute
+// does not set is none of its business.
+func networkInterfaceClaimLabelsStale(current, desired map[string]string) bool {
+	for key, value := range desired {
+		if current[key] != value {
+			return true
+		}
+	}
+	return false
+}

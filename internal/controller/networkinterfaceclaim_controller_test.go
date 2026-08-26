@@ -4,6 +4,8 @@ package controller
 
 import (
 	"context"
+	"maps"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,6 +25,8 @@ const (
 	claimTestNamespace  = "ns-aabbccdd-0000-1111-2222-333344445555"
 	claimTestDeployment = "claim-test-wd"
 	claimTestNetwork    = "default"
+	claimTestWorkload   = "claim-test-workload"
+	claimTestPlacement  = "claim-test-placement"
 
 	// claimTestClass and the addresses below mirror what NSO publishes on a
 	// bound claim: a class-allocated external address, and an interface address
@@ -55,10 +59,17 @@ func newClaimTestDeployment() *computev1alpha.WorkloadDeployment {
 			UID:       "claim-test-wd-uid",
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:    wdControllerTestCityCode,
-			WorkloadRef: computev1alpha.WorkloadReference{Name: "claim-test-workload"},
+			CityCode:      wdControllerTestCityCode,
+			PlacementName: claimTestPlacement,
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: claimTestWorkload},
 		},
 	}
+}
+
+// instanceIndexFromName recovers the ordinal the instance-control strategy
+// encodes in an instance name, which is what it also stamps as the index label.
+func instanceIndexFromName(name string) string {
+	return name[strings.LastIndex(name, "-")+1:]
 }
 
 // newClaimTestInstance builds an instance with the given interfaces and the
@@ -69,6 +80,9 @@ func newClaimTestInstance(name string, interfaces ...computev1alpha.InstanceNetw
 			Name:              name,
 			Namespace:         claimTestNamespace,
 			CreationTimestamp: metav1.Now(),
+			Labels: map[string]string{
+				computev1alpha.InstanceIndexLabel: instanceIndexFromName(name),
+			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: computev1alpha.GroupVersion.String(),
 				Kind:       kindWorkloadDeployment,
@@ -568,6 +582,188 @@ func TestNetworkGateHeldUntilPrepared(t *testing.T) {
 			}
 			assert.Contains(t, names, instancecontrol.NetworkSchedulingGate.String(),
 				"the gate is what keeps the Pod from being created before it can be attached")
+		})
+	}
+}
+
+// TestDesiredNetworkInterfaceClaimLabels covers where each well-known key is
+// sourced from, and that a key with no source is omitted rather than blank.
+func TestDesiredNetworkInterfaceClaimLabels(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		deployment func(*computev1alpha.WorkloadDeployment)
+		instance   func(*computev1alpha.Instance)
+		want       map[string]string
+	}{
+		{
+			name: "every key sourced from the deployment and instance",
+			want: map[string]string{
+				computev1alpha.WorkloadNameLabel:  claimTestWorkload,
+				computev1alpha.PlacementNameLabel: claimTestPlacement,
+				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+				computev1alpha.InstanceIndexLabel: "0",
+			},
+		},
+		{
+			name: "unset placement is omitted",
+			deployment: func(d *computev1alpha.WorkloadDeployment) {
+				d.Spec.PlacementName = ""
+			},
+			want: map[string]string{
+				computev1alpha.WorkloadNameLabel:  claimTestWorkload,
+				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+				computev1alpha.InstanceIndexLabel: "0",
+			},
+		},
+		{
+			name: "instance without an index label is omitted",
+			instance: func(i *computev1alpha.Instance) {
+				delete(i.Labels, computev1alpha.InstanceIndexLabel)
+			},
+			want: map[string]string{
+				computev1alpha.WorkloadNameLabel:  claimTestWorkload,
+				computev1alpha.PlacementNameLabel: claimTestPlacement,
+				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := newClaimTestDeployment()
+			if tc.deployment != nil {
+				tc.deployment(deployment)
+			}
+			instance := newClaimTestInstance(claimTestDeployment + "-0")
+			if tc.instance != nil {
+				tc.instance(instance)
+			}
+
+			assert.Equal(t, tc.want, desiredNetworkInterfaceClaimLabels(deployment, instance))
+		})
+	}
+}
+
+// TestReconcileNetworkInterfaceClaims_Labels covers the two paths a claim
+// becomes selectable by: stamped at creation, and backfilled onto a claim that
+// predates the labels or drifted from them. The immutable spec must survive the
+// backfill untouched.
+func TestReconcileNetworkInterfaceClaims_Labels(t *testing.T) {
+	t.Parallel()
+
+	wantLabels := map[string]string{
+		computev1alpha.WorkloadNameLabel:  claimTestWorkload,
+		computev1alpha.PlacementNameLabel: claimTestPlacement,
+		computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+		computev1alpha.InstanceIndexLabel: "0",
+	}
+
+	// A spec no reconcile pass would derive, so any write to it is visible.
+	existingSpec := networkingv1alpha.NetworkInterfaceClaimSpec{
+		Network:       networkingv1alpha.LocalNetworkRef{Name: "network-from-an-older-request"},
+		InterfaceName: defaultInterfaceName,
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	}
+
+	testCases := []struct {
+		name          string
+		existing      map[string]string
+		wantExtra     map[string]string
+		expectExisted bool
+	}{
+		{
+			name: "created claim carries the labels",
+		},
+		{
+			name:          "claim created before the labels is backfilled",
+			existing:      nil,
+			expectExisted: true,
+		},
+		{
+			name: "foreign labels survive the backfill",
+			existing: map[string]string{
+				"networking.datumapis.com/location": "us-central-1",
+			},
+			wantExtra: map[string]string{
+				"networking.datumapis.com/location": "us-central-1",
+			},
+			expectExisted: true,
+		},
+		{
+			name: "stale value is corrected",
+			existing: map[string]string{
+				computev1alpha.WorkloadNameLabel:  "a-workload-renamed-since",
+				computev1alpha.PlacementNameLabel: claimTestPlacement,
+				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+				computev1alpha.InstanceIndexLabel: "0",
+			},
+			expectExisted: true,
+		},
+		{
+			name:          "labels already correct",
+			existing:      wantLabels,
+			expectExisted: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := newClaimTestDeployment()
+			instance := newClaimTestInstance(claimTestDeployment+"-0",
+				computev1alpha.InstanceNetworkInterface{
+					Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+					Name:    defaultInterfaceName,
+				},
+			)
+
+			builder := fake.NewClientBuilder().
+				WithScheme(newClaimTestScheme()).
+				WithObjects(deployment, instance)
+
+			if tc.expectExisted {
+				existing := &networkingv1alpha.NetworkInterfaceClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      instance.Name + "-eth0",
+						Namespace: claimTestNamespace,
+						Labels:    maps.Clone(tc.existing),
+					},
+					Spec: existingSpec,
+				}
+				builder = builder.WithObjects(existing)
+			}
+
+			cl := builder.Build()
+
+			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
+			_, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+				[]computev1alpha.Instance{*instance})
+			require.NoError(t, err)
+
+			var claim networkingv1alpha.NetworkInterfaceClaim
+			require.NoError(t, cl.Get(context.Background(), client.ObjectKey{
+				Namespace: claimTestNamespace,
+				Name:      instance.Name + "-eth0",
+			}, &claim))
+
+			want := maps.Clone(wantLabels)
+			for k, v := range tc.wantExtra {
+				want[k] = v
+			}
+			assert.Equal(t, want, claim.Labels)
+
+			if tc.expectExisted {
+				assert.Equal(t, existingSpec, claim.Spec,
+					"only labels may be patched; the claim spec is immutable")
+			} else {
+				assert.Equal(t, claimTestNetwork, claim.Spec.Network.Name)
+			}
 		})
 	}
 }
