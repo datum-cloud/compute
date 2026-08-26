@@ -777,10 +777,12 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworkInterfaceClaims(
 // ensureNetworkInterfaceClaim creates the claim for one instance interface if it
 // is absent, and returns the claim either way.
 //
-// An existing claim is never updated: almost every field of a claim spec is
+// An existing claim's spec is never updated: almost every field of it is
 // immutable, because the addresses were allocated against it. A changed
 // interface request is expressed by replacing the instance, which replaces the
-// claim with it.
+// claim with it. Labels are the exception — they are mutable, and a claim
+// created before compute stamped them would otherwise never become selectable,
+// so they are patched onto what is already there.
 func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 	ctx context.Context,
 	c client.Client,
@@ -794,8 +796,13 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 		Name:      networkInterfaceClaimName(instance.Name, instanceInterfaceName(networkInterface)),
 	}
 
+	labels := desiredNetworkInterfaceClaimLabels(deployment, instance)
+
 	err := c.Get(ctx, key, claim)
 	if err == nil {
+		if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
+			return nil, err
+		}
 		return claim, nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -806,6 +813,7 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: key.Namespace,
 			Name:      key.Name,
+			Labels:    labels,
 		},
 		Spec: desiredNetworkInterfaceClaimSpec(networkInterface),
 	}
@@ -823,6 +831,9 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 			if getErr := c.Get(ctx, key, claim); getErr != nil {
 				return nil, fmt.Errorf("failed fetching network interface claim: %w", getErr)
 			}
+			if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
+				return nil, err
+			}
 			return claim, nil
 		}
 		return nil, fmt.Errorf("failed creating network interface claim: %w", err)
@@ -831,6 +842,41 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 	log.FromContext(ctx).Info("created network interface claim", "claim", claim.Name, "instance", instance.Name)
 
 	return claim, nil
+}
+
+// backfillNetworkInterfaceClaimLabels brings the labels compute owns up to date
+// on a claim that already exists, leaving everything else on the object alone.
+//
+// The patch is computed from a copy of the live claim and only ever adds the
+// keys compute sets, so networking's own labels on the same object survive it
+// and the two controllers do not write over each other. Nothing but metadata is
+// in the patch, which is what keeps the immutable spec untouched.
+func (r *WorkloadDeploymentReconciler) backfillNetworkInterfaceClaimLabels(
+	ctx context.Context,
+	c client.Client,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	desired map[string]string,
+) error {
+	if !networkInterfaceClaimLabelsStale(claim.Labels, desired) {
+		return nil
+	}
+
+	patch := client.MergeFrom(claim.DeepCopy())
+	if claim.Labels == nil {
+		claim.Labels = map[string]string{}
+	}
+	for key, value := range desired {
+		claim.Labels[key] = value
+	}
+
+	if err := c.Patch(ctx, claim, patch); err != nil {
+		return fmt.Errorf("failed labelling network interface claim %s/%s: %w",
+			claim.Namespace, claim.Name, err)
+	}
+
+	log.FromContext(ctx).Info("backfilled network interface claim labels", "claim", claim.Name)
+
+	return nil
 }
 
 func (r *WorkloadDeploymentReconciler) Finalize(_ context.Context, _ client.Object) (finalizer.Result, error) {
