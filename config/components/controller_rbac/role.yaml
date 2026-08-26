@@ -99,6 +99,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkinterfaces/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - quota.miloapis.com
   resources:
   - resourceclaims
