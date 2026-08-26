@@ -322,7 +322,7 @@ func TestReconcileInstanceReadyCondition(t *testing.T) {
 			}
 
 			changed, err := reconciler.reconcileInstanceReadyCondition(
-				ctx,
+				t.Context(),
 				nil,
 				tt.instance,
 				networkFailureFunc,
