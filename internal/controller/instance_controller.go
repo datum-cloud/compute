@@ -250,6 +250,7 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceclaims,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -381,6 +382,10 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	// persisted as True. Handles both the Quota gate and the ReferencedData gate
 	// in a single patch to avoid duplicate API calls.
 	if err := r.reconcileSchedulingGates(ctx, cl.GetClient(), &instance); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileHolderAvailability(ctx, cl.GetClient(), &instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -997,6 +1002,12 @@ func (r *InstanceReconciler) reconcileSuspendedState(
 		if err := cl.Status().Update(ctx, instance); err != nil {
 			return fmt.Errorf("updating instance status for suspension: %w", err)
 		}
+	}
+
+	// A suspended instance must stop receiving traffic, so the interfaces it
+	// holds are told before the hub is.
+	if err := r.reconcileHolderAvailability(ctx, cl, instance); err != nil {
+		return err
 	}
 
 	// Write suspended status back to the federation hub so the management
