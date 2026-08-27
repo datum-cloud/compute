@@ -926,6 +926,10 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 	// On cells without network-services-operator these watches would log spurious
 	// errors for missing CRDs.
 	if r.NetworkingEnabled {
+		if err := locations.EnsureServingLocationKind(mgr.GetLocalManager().GetRESTMapper(), r.LocationSource); err != nil {
+			return err
+		}
+
 		servingLocationObject, err := locations.ServingLocationObject(r.LocationSource)
 		if err != nil {
 			return err

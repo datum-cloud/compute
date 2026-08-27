@@ -12,9 +12,11 @@ package locations
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -175,6 +177,60 @@ func ServingLocationObject(source Source) (client.Object, error) {
 		return &networkingv1alpha.ServingLocation{}, nil
 	}
 	return &locationsv1alpha1.ServingLocation{}, nil
+}
+
+// ServingLocationGVK returns the kind a controller watches for the source.
+func ServingLocationGVK(source Source) (schema.GroupVersionKind, error) {
+	resolved, err := source.Resolve()
+	if err != nil {
+		return schema.GroupVersionKind{}, err
+	}
+
+	if resolved == SourceNetworkServices {
+		return networkingv1alpha.GroupVersion.WithKind("ServingLocation"), nil
+	}
+	return locationsv1alpha1.GroupVersion.WithKind("ServingLocation"), nil
+}
+
+// EnsureServingLocationKind fails unless the control plane serves the kind the
+// source watches.
+//
+// A watch is not a read: a list against a kind the control plane does not serve
+// degrades to no locations, but a watch cannot, and registering one wedges the
+// manager during cache sync. Refusing to start says which CRD is missing, where
+// a wedged manager says nothing.
+//
+// This gates only the selected source. A deployment reading network services
+// must not be made to depend on the locations service being installed.
+func EnsureServingLocationKind(mapper apimeta.RESTMapper, source Source) error {
+	gvk, err := ServingLocationGVK(source)
+	if err != nil {
+		return err
+	}
+
+	if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+		if kindNotInstalled(err) {
+			resolved, _ := source.Resolve()
+			return fmt.Errorf(
+				"locationSource %q watches %s, which this control plane does not serve: "+
+					"install the %s CustomResourceDefinition, or set locationSource to %q",
+				resolved, gvk, crdName(gvk), otherSource(resolved))
+		}
+		return fmt.Errorf("failed to determine whether %s is served: %w", gvk, err)
+	}
+
+	return nil
+}
+
+func crdName(gvk schema.GroupVersionKind) string {
+	return fmt.Sprintf("%ss.%s", strings.ToLower(gvk.Kind), gvk.Group)
+}
+
+func otherSource(source Source) Source {
+	if source == SourceLocations {
+		return SourceNetworkServices
+	}
+	return SourceLocations
 }
 
 // CityCodes returns the cities the given locations serve.

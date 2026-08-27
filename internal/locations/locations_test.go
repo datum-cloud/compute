@@ -245,3 +245,30 @@ func TestServingLocationObject(t *testing.T) {
 	_, err = ServingLocationObject("Nonsense")
 	require.Error(t, err)
 }
+
+// TestEnsureServingLocationKind_UnknownSource keeps an unreadable config from
+// reaching the REST mapper at all.
+func TestEnsureServingLocationKind_UnknownSource(t *testing.T) {
+	t.Parallel()
+
+	require.Error(t, EnsureServingLocationKind(apimeta.NewDefaultRESTMapper(nil), "Nonsense"))
+}
+
+func TestServingLocationGVK(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []Source{"", SourceNetworkServices} {
+		gvk, err := ServingLocationGVK(source)
+		require.NoError(t, err)
+		assert.Equal(t, networkingv1alpha.GroupVersion.WithKind("ServingLocation"), gvk)
+		assert.Equal(t, "servinglocations.networking.datumapis.com", crdName(gvk))
+	}
+
+	gvk, err := ServingLocationGVK(SourceLocations)
+	require.NoError(t, err)
+	assert.Equal(t, locationsv1alpha1.GroupVersion.WithKind("ServingLocation"), gvk)
+	assert.Equal(t, "servinglocations.locations.miloapis.com", crdName(gvk))
+
+	_, err = ServingLocationGVK("Nonsense")
+	require.Error(t, err)
+}
