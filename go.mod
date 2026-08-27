@@ -14,6 +14,11 @@ require (
 	// predates the Prepared condition this gate reads. Re-pin to a tagged
 	// release once one carries it.
 	go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569
+	// The locations module publishes no tag and its vanity path does not yet
+	// resolve, so it is pinned by pseudo-version through a replace. The commit
+	// is the one deployed to staging, and is the same one
+	// network-services-operator pins.
+	go.miloapis.com/locations v0.0.0-00010101000000-000000000000
 	go.miloapis.com/milo v0.32.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0
@@ -182,3 +187,5 @@ require (
 	go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67
 	mvdan.cc/sh/v3 v3.12.0
 )
+
+replace go.miloapis.com/locations => github.com/milo-os/locations v0.0.0-20260825185141-507ac2cbd48c

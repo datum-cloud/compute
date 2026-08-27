@@ -15,21 +15,20 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
 	// TopologyCityCodeKey is the topology key holding a location's city.
-	TopologyCityCodeKey = "topology.datum.net/city-code"
+	TopologyCityCodeKey = locationsv1alpha1.TopologyCityCodeKey
 
 	// ServingLocationTopologyLabel is the cluster label a cell carries to claim
 	// the location it serves.
-	ServingLocationTopologyLabel = "topology.datum.net/location"
+	ServingLocationTopologyLabel = locationsv1alpha1.ServingLocationTopologyLabel
 )
 
 // Source names the API group locations are read from.
@@ -43,20 +42,6 @@ const (
 	// SourceLocations reads locations.miloapis.com Locations and
 	// ServingLocations, served by the locations service.
 	SourceLocations Source = "Locations"
-)
-
-var (
-	locationGVK = schema.GroupVersionKind{
-		Group:   "locations.miloapis.com",
-		Version: "v1alpha1",
-		Kind:    "Location",
-	}
-
-	servingLocationGVK = schema.GroupVersionKind{
-		Group:   "locations.miloapis.com",
-		Version: "v1alpha1",
-		Kind:    "ServingLocation",
-	}
 )
 
 // Resolve reports which source to read. An unset source reads network
@@ -109,33 +94,32 @@ func ListPlacementLocations(ctx context.Context, c client.Client, source Source)
 			return nil, fmt.Errorf("failed to list location bindings: %w", err)
 		}
 
-		locations := make([]PlacementLocation, 0, len(bindings.Items))
+		found := make([]PlacementLocation, 0, len(bindings.Items))
 		for _, binding := range bindings.Items {
-			locations = append(locations, PlacementLocation{
+			found = append(found, PlacementLocation{
 				Name:     binding.Name,
 				Topology: binding.Spec.Topology,
 			})
 		}
-		return locations, nil
+		return found, nil
 	}
 
-	items, err := listUnstructured(ctx, c, locationGVK)
-	if err != nil {
+	var list locationsv1alpha1.LocationList
+	if err := c.List(ctx, &list); err != nil {
+		if kindNotInstalled(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to list locations: %w", err)
 	}
 
-	locations := make([]PlacementLocation, 0, len(items))
-	for _, item := range items {
-		topology, err := topologyOf(item)
-		if err != nil {
-			return nil, err
-		}
-		locations = append(locations, PlacementLocation{
-			Name:     item.GetName(),
-			Topology: topology,
+	found := make([]PlacementLocation, 0, len(list.Items))
+	for _, location := range list.Items {
+		found = append(found, PlacementLocation{
+			Name:     location.Name,
+			Topology: location.Spec.Topology,
 		})
 	}
-	return locations, nil
+	return found, nil
 }
 
 // ListServingLocations returns the locations delivered to a cell.
@@ -151,33 +135,32 @@ func ListServingLocations(ctx context.Context, c client.Client, source Source) (
 			return nil, fmt.Errorf("failed to list serving locations: %w", err)
 		}
 
-		locations := make([]ServingLocation, 0, len(list.Items))
-		for _, item := range list.Items {
-			locations = append(locations, ServingLocation{
-				Name:     item.Name,
-				Topology: item.Spec.Topology,
+		found := make([]ServingLocation, 0, len(list.Items))
+		for _, servingLocation := range list.Items {
+			found = append(found, ServingLocation{
+				Name:     servingLocation.Name,
+				Topology: servingLocation.Spec.Topology,
 			})
 		}
-		return locations, nil
+		return found, nil
 	}
 
-	items, err := listUnstructured(ctx, c, servingLocationGVK)
-	if err != nil {
+	var list locationsv1alpha1.ServingLocationList
+	if err := c.List(ctx, &list); err != nil {
+		if kindNotInstalled(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to list serving locations: %w", err)
 	}
 
-	locations := make([]ServingLocation, 0, len(items))
-	for _, item := range items {
-		topology, err := topologyOf(item)
-		if err != nil {
-			return nil, err
-		}
-		locations = append(locations, ServingLocation{
-			Name:     item.GetName(),
-			Topology: topology,
+	found := make([]ServingLocation, 0, len(list.Items))
+	for _, servingLocation := range list.Items {
+		found = append(found, ServingLocation{
+			Name:     servingLocation.Name,
+			Topology: servingLocation.Spec.Topology,
 		})
 	}
-	return locations, nil
+	return found, nil
 }
 
 // ServingLocationObject returns the object a controller watches to learn that
@@ -191,16 +174,13 @@ func ServingLocationObject(source Source) (client.Object, error) {
 	if resolved == SourceNetworkServices {
 		return &networkingv1alpha.ServingLocation{}, nil
 	}
-
-	object := &unstructured.Unstructured{}
-	object.SetGroupVersionKind(servingLocationGVK)
-	return object, nil
+	return &locationsv1alpha1.ServingLocation{}, nil
 }
 
 // CityCodes returns the cities the given locations serve.
-func CityCodes(locations []PlacementLocation) sets.Set[string] {
+func CityCodes(found []PlacementLocation) sets.Set[string] {
 	codes := sets.Set[string]{}
-	for _, location := range locations {
+	for _, location := range found {
 		if code, ok := location.CityCode(); ok {
 			codes.Insert(code)
 		}
@@ -208,27 +188,17 @@ func CityCodes(locations []PlacementLocation) sets.Set[string] {
 	return codes
 }
 
-// listUnstructured lists a kind that may not be installed. A control plane is
-// only expected to serve the kinds its consumers read, so a kind that is not
-// there reads as empty rather than failing the caller.
-func listUnstructured(ctx context.Context, c client.Client, gvk schema.GroupVersionKind) ([]unstructured.Unstructured, error) {
-	var list unstructured.UnstructuredList
-	list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
-
-	if err := c.List(ctx, &list); err != nil {
-		if apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	return list.Items, nil
-}
-
-func topologyOf(object unstructured.Unstructured) (map[string]string, error) {
-	topology, _, err := unstructured.NestedStringMap(object.Object, "spec", "topology")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the topology of location %q: %w", object.GetName(), err)
-	}
-	return topology, nil
+// kindNotInstalled reports whether a list failed because the control plane
+// does not serve the kind. A control plane is only expected to serve the kinds
+// its consumers read, so a kind that is not there reads as empty rather than
+// failing the caller.
+//
+// The REST mapper answers first. A typed client reaches it through discovery,
+// so the no-match arrives wrapped in an ErrResourceDiscoveryFailed rather than
+// bare, and only errors.Is unwrapping finds it. A mapper still holding the kind
+// from before the CRD went away leaves the API server to answer, with a 404. A
+// type missing from the scheme is neither of these: it is a wiring mistake, and
+// must keep surfacing as one.
+func kindNotInstalled(err error) bool {
+	return apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err)
 }

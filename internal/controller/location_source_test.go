@@ -9,38 +9,40 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/locations"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
-var locationsServiceGroupVersion = schema.GroupVersion{Group: "locations.miloapis.com", Version: "v1alpha1"}
-
 // newLocationsServiceScheme returns the networking scheme with the locations
-// service kinds registered as unstructured, which is how compute reads them.
+// service types added, mirroring what the manager registers.
 func newLocationsServiceScheme() *runtime.Scheme {
 	s := newNetworkingScheme()
-	for _, kind := range []string{"Location", "ServingLocation"} {
-		s.AddKnownTypeWithName(locationsServiceGroupVersion.WithKind(kind), &unstructured.Unstructured{})
-		s.AddKnownTypeWithName(locationsServiceGroupVersion.WithKind(kind+"List"), &unstructured.UnstructuredList{})
-	}
+	_ = locationsv1alpha1.AddToScheme(s)
 	return s
 }
 
-func newLocationsServiceObject(kind, name, cityCode string) *unstructured.Unstructured {
-	object := &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"name": name},
-		"spec": map[string]any{
-			"topology": map[string]any{locations.TopologyCityCodeKey: cityCode},
+func newLocationsServiceLocation(name, cityCode string) *locationsv1alpha1.Location {
+	return &locationsv1alpha1.Location{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: locationsv1alpha1.LocationSpec{
+			LocationClassRef: locationsv1alpha1.LocationClassReference{Name: "datum-managed"},
+			Topology:         map[string]string{locations.TopologyCityCodeKey: cityCode},
 		},
-	}}
-	object.SetGroupVersionKind(locationsServiceGroupVersion.WithKind(kind))
-	return object
+	}
+}
+
+func newLocationsServiceServingLocation(name, cityCode string) *locationsv1alpha1.ServingLocation {
+	return &locationsv1alpha1.ServingLocation{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: locationsv1alpha1.ServingLocationSpec{
+			Topology: map[string]string{locations.TopologyCityCodeKey: cityCode},
+		},
+	}
 }
 
 // TestGetDeploymentsForWorkload_LocationsSource verifies that a workload placed
@@ -70,7 +72,7 @@ func TestGetDeploymentsForWorkload_LocationsSource(t *testing.T) {
 
 	cl := fake.NewClientBuilder().
 		WithScheme(newLocationsServiceScheme()).
-		WithObjects(newLocationsServiceObject("Location", "dfw", locTestCityCode)).
+		WithObjects(newLocationsServiceLocation("dfw", locTestCityCode)).
 		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
 		Build()
 
@@ -119,7 +121,7 @@ func TestResolveLocation_LocationsSource(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(newLocationsServiceScheme()).
 		WithObjects(
-			newLocationsServiceObject("ServingLocation", locationName, locTestCityCode),
+			newLocationsServiceServingLocation(locationName, locTestCityCode),
 			// The network services copy must be ignored by this source.
 			newTestServingLocation("nso-"+locationName, locTestOtherCityCode),
 		).
@@ -146,7 +148,7 @@ func TestResolveLocation_NetworkServicesSourceIgnoresLocationsService(t *testing
 
 	cl := fake.NewClientBuilder().
 		WithScheme(newLocationsServiceScheme()).
-		WithObjects(newLocationsServiceObject("ServingLocation", "loc-dfw-1", locTestCityCode)).
+		WithObjects(newLocationsServiceServingLocation("loc-dfw-1", locTestCityCode)).
 		Build()
 
 	r := &WorkloadDeploymentReconciler{}

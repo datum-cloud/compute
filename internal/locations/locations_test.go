@@ -11,14 +11,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
@@ -31,12 +30,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 
 	s := runtime.NewScheme()
 	require.NoError(t, networkingv1alpha.AddToScheme(s))
-
-	for _, gvk := range []schema.GroupVersionKind{locationGVK, servingLocationGVK} {
-		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
-		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
-	}
-
+	require.NoError(t, locationsv1alpha1.AddToScheme(s))
 	return s
 }
 
@@ -50,17 +44,25 @@ func newBinding(name, cityCode string) *networkingv1alpha.LocationBinding {
 	}
 }
 
-func newUnstructuredLocation(gvk schema.GroupVersionKind, name string, topology map[string]any) *unstructured.Unstructured {
-	object := &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"name": name},
-		"spec":     map[string]any{"topology": topology},
-	}}
-	object.SetGroupVersionKind(gvk)
-	return object
+func newLocation(name, cityCode string) *locationsv1alpha1.Location {
+	return &locationsv1alpha1.Location{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: locationsv1alpha1.LocationSpec{
+			LocationClassRef: locationsv1alpha1.LocationClassReference{Name: "datum-managed"},
+			Topology:         map[string]string{TopologyCityCodeKey: cityCode},
+		},
+	}
 }
 
-func cityTopology(cityCode string) map[string]any {
-	return map[string]any{TopologyCityCodeKey: cityCode}
+// TestTopologyKeysAgreeAcrossSources guards the migration's central assumption:
+// a city code means the same thing whichever source served it. If the two
+// groups ever disagree, switching sources would silently repoint every
+// placement.
+func TestTopologyKeysAgreeAcrossSources(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, networkingv1alpha.TopologyCityCodeKey, TopologyCityCodeKey)
+	assert.Equal(t, networkingv1alpha.ServingLocationTopologyLabel, ServingLocationTopologyLabel)
 }
 
 func TestSourceResolve(t *testing.T) {
@@ -96,9 +98,9 @@ func TestListPlacementLocations_NetworkServices(t *testing.T) {
 			newBinding("ord", testOtherCityCode),
 			// A binding with no city code contributes no placement city.
 			&networkingv1alpha.LocationBinding{ObjectMeta: metav1.ObjectMeta{Name: "nowhere"}},
-			// The Locations source must not be read when network services is
+			// The locations service must not be read when network services is
 			// selected.
-			newUnstructuredLocation(locationGVK, "lhr", cityTopology("LHR")),
+			newLocation("lhr", "LHR"),
 		).
 		Build()
 
@@ -114,8 +116,8 @@ func TestListPlacementLocations_Locations(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
 		WithObjects(
-			newUnstructuredLocation(locationGVK, "dfw", cityTopology(testCityCode)),
-			newUnstructuredLocation(locationGVK, "ord", cityTopology(testOtherCityCode)),
+			newLocation("dfw", testCityCode),
+			newLocation("ord", testOtherCityCode),
 			// The network services source must not be read when the locations
 			// service is selected.
 			newBinding("lhr", "LHR"),
@@ -137,24 +139,53 @@ func TestListPlacementLocations_UnknownSource(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestListPlacementLocations_KindNotInstalled covers a control plane that
-// serves only the kinds its consumers read: the locations service kinds are
-// absent, which must read as no locations rather than failing the caller.
-func TestListPlacementLocations_KindNotInstalled(t *testing.T) {
+// TestKindNotInstalled_ScopedToLocationsSource pins the degrade to the source
+// that needs it. A no-match reads as no locations for the locations service,
+// which may not be installed yet, and still fails for network services, whose
+// kinds every control plane already serves.
+func TestKindNotInstalled_ScopedToLocationsSource(t *testing.T) {
 	t.Parallel()
+
+	noMatch := func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
+		gvk := list.GetObjectKind().GroupVersionKind()
+		return &apimeta.NoKindMatchError{GroupKind: gvk.GroupKind().WithVersion("").GroupKind()}
+	}
 
 	cl := fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
-		WithInterceptorFuncs(interceptor.Funcs{
-			List: func(_ context.Context, _ client.WithWatch, _ client.ObjectList, _ ...client.ListOption) error {
-				return &apimeta.NoKindMatchError{GroupKind: locationGVK.GroupKind()}
-			},
-		}).
+		WithInterceptorFuncs(interceptor.Funcs{List: noMatch}).
 		Build()
 
-	found, err := ListPlacementLocations(context.Background(), cl, SourceLocations)
+	ctx := context.Background()
+
+	found, err := ListPlacementLocations(ctx, cl, SourceLocations)
 	require.NoError(t, err)
 	assert.Empty(t, found)
+
+	serving, err := ListServingLocations(ctx, cl, SourceLocations)
+	require.NoError(t, err)
+	assert.Empty(t, serving)
+
+	_, err = ListPlacementLocations(ctx, cl, SourceNetworkServices)
+	require.Error(t, err)
+
+	_, err = ListServingLocations(ctx, cl, SourceNetworkServices)
+	require.Error(t, err)
+}
+
+// TestListLocations_SchemeMissingStillFails separates a control plane that does
+// not serve the kind from a binary that forgot to register it. The first reads
+// as empty; the second is a wiring mistake and must keep surfacing.
+func TestListLocations_SchemeMissingStillFails(t *testing.T) {
+	t.Parallel()
+
+	bare := runtime.NewScheme()
+	require.NoError(t, networkingv1alpha.AddToScheme(bare))
+
+	cl := fake.NewClientBuilder().WithScheme(bare).Build()
+
+	_, err := ListPlacementLocations(context.Background(), cl, SourceLocations)
+	require.Error(t, err, "an unregistered type is a wiring mistake, not an empty control plane")
 }
 
 func TestListServingLocations(t *testing.T) {
@@ -169,7 +200,12 @@ func TestListServingLocations(t *testing.T) {
 					Topology: map[string]string{TopologyCityCodeKey: testCityCode},
 				},
 			},
-			newUnstructuredLocation(servingLocationGVK, "locations-ord", cityTopology(testOtherCityCode)),
+			&locationsv1alpha1.ServingLocation{
+				ObjectMeta: metav1.ObjectMeta{Name: "locations-ord"},
+				Spec: locationsv1alpha1.ServingLocationSpec{
+					Topology: map[string]string{TopologyCityCodeKey: testOtherCityCode},
+				},
+			},
 		).
 		Build()
 
@@ -204,8 +240,7 @@ func TestServingLocationObject(t *testing.T) {
 
 	object, err := ServingLocationObject(SourceLocations)
 	require.NoError(t, err)
-	require.IsType(t, &unstructured.Unstructured{}, object)
-	assert.Equal(t, servingLocationGVK, object.GetObjectKind().GroupVersionKind())
+	assert.IsType(t, &locationsv1alpha1.ServingLocation{}, object)
 
 	_, err = ServingLocationObject("Nonsense")
 	require.Error(t, err)
