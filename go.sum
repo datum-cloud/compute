@@ -212,8 +212,6 @@ github.com/mattn/go-isatty v0.0.22 h1:j8l17JJ9i6VGPUFUYoTUKPSgKe/83EYU2zBC7YNKMw
 github.com/mattn/go-isatty v0.0.22/go.mod h1:ZXfXG4SQHsB/w3ZeOYbR0PrPwLy+n6xiMrJlRFqopa4=
 github.com/mfridman/tparse v0.18.0 h1:wh6dzOKaIwkUGyKgOntDW4liXSo37qg5AXbIhkMV3vE=
 github.com/mfridman/tparse v0.18.0/go.mod h1:gEvqZTuCgEhPbYk/2lS3Kcxg1GmTxxU7kTC8DvP0i/A=
-github.com/milo-os/locations v0.0.0-20260825185141-507ac2cbd48c h1:yanFdiWe+omnmj2W1q+u5C/D62pv7AnqjGUixWYV1Co=
-github.com/milo-os/locations v0.0.0-20260825185141-507ac2cbd48c/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 github.com/moby/buildkit v0.29.0 h1:wxLEFbCOJntEDjSNNN2YWd8zxltZxT5muDQ0LzpbtpU=
 github.com/moby/buildkit v0.29.0/go.mod h1:Dmv2FeDe34t75QuzeU87rBoZpAAkcpT5zeu4hXzmASc=
 github.com/moby/docker-image-spec v1.3.1 h1:jMKff3w6PgbfSa69GfNg+zN/XLhfXJGnEx3Nl2EsFP0=
@@ -340,6 +338,8 @@ go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67 h1:Mhgt688CeTh2hX7ql
 go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67/go.mod h1:6skEjcE7aT8VPf/HVamA/BB6Dc9IISA6c/DdYKhqWNc=
 go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569 h1:14vajo15fGGEAmdystQEE261rFH4AqER9s1Vg7POUKo=
 go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569/go.mod h1:A7JNOuc+e6j/KkUVCcZ7Z2odvf6JFMQlX0Zo1Awj2TY=
+go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c h1:+BQirT3wYCgv7H2lEZtAH+dpMiWu9j/Wa+c8s4jJUIA=
+go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 go.miloapis.com/milo v0.32.0 h1:TkNIQu/37d+SEquLJ5+GmdisSl+K2RT7eEC4idg6RIs=
 go.miloapis.com/milo v0.32.0/go.mod h1:GKK3afjCwshfZfvhjNe1wp/H45z4m7x5oG/8xbSgU1M=
 go.miloapis.com/service-catalog v0.4.0 h1:LvO1WCHMCoFokpS5igWMP8kyqly9gUFQmQj5IGhwuKs=
