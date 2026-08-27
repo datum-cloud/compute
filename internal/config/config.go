@@ -19,6 +19,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"go.datum.net/compute/internal/locations"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 )
 
@@ -42,6 +43,19 @@ type WorkloadOperator struct {
 
 	// ReferencedData configures the ReferencedDataController.
 	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
+
+	// LocationSource names the API group locations are read from. Use
+	// "NetworkServices" for networking.datumapis.com LocationBindings and
+	// ServingLocations, or "Locations" for the dedicated locations.miloapis.com
+	// service. It governs reads only; nothing about what compute writes changes
+	// with it. Defaults to "NetworkServices".
+	LocationSource locations.Source `json:"locationSource,omitempty"`
+}
+
+func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {
+	if obj.LocationSource == "" {
+		obj.LocationSource = locations.SourceNetworkServices
+	}
 }
 
 // +k8s:deepcopy-gen=true
