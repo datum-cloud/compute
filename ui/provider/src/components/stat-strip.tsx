@@ -3,11 +3,21 @@
  * `ui/consumer/src/components/stat-strip.tsx`.
  */
 import { cn } from '@datum-cloud/datum-ui/utils';
+import type { CSSProperties } from 'react';
 
 export interface Stat {
   label: string;
   value: string;
   className?: string;
+  /**
+   * Escape hatch for a color this plugin's own bundle can't guarantee a
+   * Tailwind class for — see `ui/CLAUDE.md`: a plugin has no Tailwind build
+   * of its own, so a class only renders if the host's compiled CSS happens
+   * to already contain that exact string. CSS custom properties (e.g.
+   * `var(--btn-success)`) work regardless, since they're resolved live in
+   * the DOM rather than scanned at build time.
+   */
+  style?: CSSProperties;
 }
 
 export function StatStrip({ stats, testId }: { stats: Stat[]; testId?: string }) {
@@ -21,7 +31,9 @@ export function StatStrip({ stats, testId }: { stats: Stat[]; testId?: string })
             <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
               {s.label}
             </span>
-            <span className={cn('text-lg font-semibold', s.className)}>{s.value}</span>
+            <span className={cn('text-lg font-semibold', s.className)} style={s.style}>
+              {s.value}
+            </span>
           </div>
         ))}
       </div>
