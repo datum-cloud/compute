@@ -250,6 +250,7 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceclaims,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -344,6 +345,14 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	readyChanged, readyErr := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
 	if readyErr == nil && interfacesErr != nil {
 		readyErr = fmt.Errorf("failed reconciling network interface status: %w", interfacesErr)
+	}
+
+	// Publish availability to the interfaces the instance holds while every
+	// condition is settled in memory. This sits above the quota and status-update
+	// returns below, because an instance stuck on one of them is precisely an
+	// instance that should stop receiving traffic.
+	if err := r.reconcileHolderAvailability(ctx, cl.GetClient(), &instance); err != nil && readyErr == nil {
+		readyErr = err
 	}
 
 	if statusChanged || readyChanged {
@@ -999,6 +1008,12 @@ func (r *InstanceReconciler) reconcileSuspendedState(
 		}
 	}
 
+	// A suspended instance must stop receiving traffic, so the interfaces it
+	// holds are told before the hub is.
+	if err := r.reconcileHolderAvailability(ctx, cl, instance); err != nil {
+		return err
+	}
+
 	// Write suspended status back to the federation hub so the management
 	// plane aggregates the correct per-instance state.
 	return r.writeBackToUpstream(ctx, instance)
@@ -1007,6 +1022,12 @@ func (r *InstanceReconciler) reconcileSuspendedState(
 // reconcileDeletion handles quota-claim cleanup when an Instance is being
 // deleted. It removes the quota finalizer once the ResourceClaim is gone.
 func (r *InstanceReconciler) reconcileDeletion(ctx context.Context, cl client.Client, clusterName multicluster.ClusterName, instance *computev1alpha.Instance) error {
+	// Stop traffic first. Deletion is the drain path that matters — every
+	// scale-down, rolling update, and redeploy goes through it — and the
+	// interfaces must be told before the instance's own cleanup runs, not after.
+	// Best effort: this must never be what keeps an instance in Terminating.
+	r.drainHolderAvailability(ctx, cl, instance)
+
 	if !controllerutil.ContainsFinalizer(instance, instanceQuotaFinalizer) {
 		return nil
 	}

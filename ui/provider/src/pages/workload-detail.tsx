@@ -6,9 +6,10 @@
  * "what's wrong with this workload" from a customer: Overview surfaces raw
  * conditions (not just a coarse health enum), Instances is the direct
  * per-instance drill-down (image pull failures, crash loops, scheduling
- * gates, quota), Events/Logs/Metrics are honest "Coming Soon" placeholders
- * since none of those have a data source wired up yet, and YAML gives an
- * escape hatch to the raw resource for anything the tabs don't surface.
+ * gates, quota), Logs mounts the empty datum-ui explorer until Loki is
+ * wired, Events/Metrics stay honest "Coming Soon" placeholders, and YAML
+ * gives an escape hatch to the raw resource for anything the tabs don't
+ * surface.
  *
  * `projectName` comes from `useParams()` resolving the ancestor route param
  * from staff-portal's project-scoped plugin mount
@@ -21,6 +22,7 @@ import { ConditionsTable } from '../components/conditions-table';
 import { DetailList, StatusBadge } from '../components/detail-list';
 import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
+import { WorkloadLogsExplorer } from '../components/workload-logs';
 import { useWorkload, useWorkloadInstances, useWorkloadRaw } from '../lib/api';
 import {
   healthToBadgeType,
@@ -336,12 +338,7 @@ export default function WorkloadDetail() {
             />
           </TabsContent>
           <TabsContent value="Logs">
-            <EmptyContent
-              title="logs aren't available yet"
-              subtitle="Instance log aggregation isn't wired up in this view yet."
-              size="sm"
-              variant="dashed"
-            />
+            <WorkloadLogsExplorer />
           </TabsContent>
           <TabsContent value="Metrics">
             <EmptyContent
