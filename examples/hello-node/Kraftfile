@@ -1,0 +1,27 @@
+# Kraftfile for the Node.js runtime proof.
+#
+# Node is a dynamic musl ELF, so it runs on base-compat:latest (the
+# binary-compatibility / dynamic-loader elfloader variant), NOT base:latest used
+# by the static-PIE Go/Rust proofs. The rootfs (built from the multi-stage
+# Dockerfile) carries the node interpreter plus every shared library it links.
+#
+# The rootfs MUST be packaged as a CPIO initramfs. An erofs initrd does NOT boot
+# on base-compat:latest -- it triggers an instant platform assertion ((i0 EXP) at
+# 0.00ms, no console logs). Omitting rootfs.format leaves kraft on CPIO; the build
+# command passes --rootfs-type cpio explicitly.
+#
+# Build/push (push-only, do not start):
+#   kraft cloud --metro <metro>/v1 --token <token> \
+#     --buildkit-host docker-container://buildkit \
+#     deploy --no-start --rootfs-type cpio -M 512 --name hello-node \
+#     --runtime base-compat:latest --rootfs ./Dockerfile .
+spec: v0.7
+
+name: hello-node
+
+runtime: base-compat:latest
+
+rootfs:
+  source: ./Dockerfile
+
+cmd: ["/usr/bin/node", "/usr/src/server.js"]
