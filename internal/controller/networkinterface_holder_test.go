@@ -68,7 +68,7 @@ func getHolderCondition(t *testing.T, cl client.Client) *metav1.Condition {
 		Namespace: claimTestNamespace,
 		Name:      holderTestInterface,
 	}, &networkInterface))
-	return apimeta.FindStatusCondition(networkInterface.Status.Conditions, networkInterfaceHolderAvailable)
+	return apimeta.FindStatusCondition(networkInterface.Status.Conditions, networkingv1alpha.NetworkInterfaceHolderAvailable)
 }
 
 // TestHolderAvailableCondition covers the translation from the instance's own
@@ -144,7 +144,7 @@ func TestHolderAvailableCondition(t *testing.T) {
 
 			condition := holderAvailableCondition(newHolderTestInstance(tc.available))
 
-			assert.Equal(t, networkInterfaceHolderAvailable, condition.Type)
+			assert.Equal(t, networkingv1alpha.NetworkInterfaceHolderAvailable, condition.Type)
 			assert.Equal(t, tc.wantStatus, condition.Status)
 			assert.Equal(t, tc.wantReason, condition.Reason)
 			assert.Equal(t, tc.wantMessage, condition.Message)
@@ -346,7 +346,7 @@ func TestReconcileDeletion_Drains(t *testing.T) {
 
 	networkInterface := newHolderTestInterface()
 	apimeta.SetStatusCondition(&networkInterface.Status.Conditions, metav1.Condition{
-		Type:   networkInterfaceHolderAvailable,
+		Type:   networkingv1alpha.NetworkInterfaceHolderAvailable,
 		Status: metav1.ConditionTrue,
 		Reason: computev1alpha.InstanceAvailableReasonAvailable,
 	})
@@ -426,7 +426,7 @@ func TestReconcileHolderAvailability_StaleTrueNotInherited(t *testing.T) {
 
 	retained := newHolderTestInterface()
 	apimeta.SetStatusCondition(&retained.Status.Conditions, metav1.Condition{
-		Type:    networkInterfaceHolderAvailable,
+		Type:    networkingv1alpha.NetworkInterfaceHolderAvailable,
 		Status:  metav1.ConditionTrue,
 		Reason:  computev1alpha.InstanceAvailableReasonAvailable,
 		Message: msgInstanceAvailable,

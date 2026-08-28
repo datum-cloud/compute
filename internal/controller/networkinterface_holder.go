@@ -17,24 +17,11 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-// networkInterfaceHolderAvailable is the condition compute publishes on every
-// NetworkInterface an instance holds, reporting whether the holder considers
-// itself able to serve. Networking selects members by it without ever learning
-// that the holder is a workload.
-//
-// It is deliberately not NetworkInterfacePhaseAvailable, which reports that no
-// claim holds the interface — the opposite of a healthy holder.
-const networkInterfaceHolderAvailable = "HolderAvailable"
-
 const (
 	// holderReasonNotReported covers an interface whose holder has published no
 	// availability state at all, which is not the same as a holder that reported
 	// itself unavailable.
 	holderReasonNotReported = "HolderNotReported"
-
-	// holderReasonUnavailable is the fallback for a holder that reported itself
-	// unavailable without naming a reason.
-	holderReasonUnavailable = "HolderUnavailable"
 
 	// holderReasonTerminating covers a holder being deleted. Its own Available
 	// condition can still read True for the whole deletion window, so deletion is
@@ -56,7 +43,7 @@ const (
 // member that cannot be vouched for must drain rather than keep taking traffic.
 func holderAvailableCondition(instance *computev1alpha.Instance) metav1.Condition {
 	condition := metav1.Condition{
-		Type:    networkInterfaceHolderAvailable,
+		Type:    networkingv1alpha.NetworkInterfaceHolderAvailable,
 		Status:  metav1.ConditionFalse,
 		Reason:  holderReasonNotReported,
 		Message: msgHolderNotReported,
@@ -87,7 +74,7 @@ func holderAvailableCondition(instance *computev1alpha.Instance) metav1.Conditio
 	if available.Reason != "" {
 		condition.Reason = available.Reason
 	} else {
-		condition.Reason = holderReasonUnavailable
+		condition.Reason = networkingv1alpha.NetworkInterfaceReasonHolderUnavailable
 	}
 	condition.Message = available.Message
 	if condition.Message == "" {
