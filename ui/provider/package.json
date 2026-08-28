@@ -24,7 +24,7 @@
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "js-yaml": "^5.2.2",
-    "react-router": "7.18.0",
+    "react-router": "7.18.2",
     "sonner": "^2.0.7",
     "zod": "^4.4.3"
   },
