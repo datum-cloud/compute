@@ -28,6 +28,7 @@ TODO (datum-cloud/enhancements process — not yet done):
   - [A platform-owned catalog, not a customer-defined one](#a-platform-owned-catalog-not-a-customer-defined-one)
   - [Cells advertise what they can serve](#cells-advertise-what-they-can-serve)
   - [A dimension for placement, quota, and price](#a-dimension-for-placement-quota-and-price)
+  - [Where the platform ends and a provider begins](#where-the-platform-ends-and-a-provider-begins)
 - [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
@@ -223,6 +224,41 @@ Quota can be granted per class, so a customer can be entitled to the general-pur
 independently of the fast path. Metering and billing carry the class, so per-tier cost is
 visible on the bill and per-tier margin is visible internally. Status and observability
 report it, so both customers and operators can see what is running where and in what tier.
+
+### Where the platform ends and a provider begins
+
+Adding a second class means a second thing that turns an instance into something
+running. The line between what the platform owns and what each provider owns has to be
+drawn deliberately, or the two classes drift into two dialects: different words for the
+same failure, different sizing for the same instance type, different silent gaps.
+
+**The platform owns the contract.** The class catalog and its published promises, the
+instance-type sizing every class must honor, the customer-facing vocabulary for instance
+status and failure reasons, and the translation from an instance's declared spec into a
+runnable description of it. These are the things a customer experiences identically no
+matter which class they chose, so they are defined once, centrally, and shared.
+
+**A provider owns realization.** How its runtime is targeted and configured, its
+runtime-specific plumbing, its lifecycle and cleanup, and advertising the capacity it can
+serve. Providers stay separately deployed and separately released: a fault or a bad
+rollout in one class must not be able to take another class down with it, and a runtime
+whose contract changes on a vendor's schedule should not be able to churn the platform's
+core.
+
+Deliberately, an instance is *not* required to be realized the same way in every class —
+one class may run its instances as containers on a host, another may provision a virtual
+machine from a cloud provider. The platform's abstraction is the instance, not any
+particular realization of it, and this proposal does not narrow that.
+
+**Capability gaps are validated, not silently dropped.** A class will not support
+everything the instance API can express — some won't support disk-backed volumes, some
+will constrain where images may be pulled from. Today an unsupported feature can be
+quietly skipped while the instance otherwise starts, which is tolerable when there is one
+runtime and its limits are documented. Once a class publishes a contract, silently
+ignoring part of a customer's request is a violation of it. Unsupported combinations are
+rejected when the workload is submitted, naming the class and the unsupported feature, so
+the customer learns at apply time rather than from behavior that doesn't match what they
+asked for.
 
 ## Production Readiness Review Questionnaire
 
