@@ -2391,6 +2391,10 @@ func TestResolveInstanceResources(t *testing.T) {
 	}
 }
 
+// testOwnerDeploymentName is the WorkloadDeployment that owns the instances
+// built by the quota claim tests.
+const testOwnerDeploymentName = "owner-deployment"
+
 // TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory confirms that when an
 // instance is sized by instanceType alone (the typical production shape), the
 // ResourceClaim created by reconcileQuotaClaim includes vcpus and memory
@@ -2417,7 +2421,7 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 				{
 					APIVersion: testComputeAPIVersion,
 					Kind:       kindWorkloadDeploymentTest,
-					Name:       "owner-deployment",
+					Name:       testOwnerDeploymentName,
 					UID:        testUIDString,
 					Controller: func() *bool { b := true; return &b }(),
 				},
@@ -2441,7 +2445,7 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 
 	deployment := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "owner-deployment",
+			Name:      testOwnerDeploymentName,
 			Namespace: namespace,
 			UID:       testUIDString,
 		},
@@ -2494,6 +2498,140 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 		"d1-standard-2 must claim 1000 millicores (1 vCPU)")
 	assert.Equal(t, int64(2048), byType["compute.datumapis.com/memory"],
 		"d1-standard-2 must claim 2048 MiB (2 GiB)")
+}
+
+// TestReconcileQuotaClaim_RuntimeClassLabel pins the quota half of the runtime
+// class contract: the class is recorded on the ResourceClaim so per-class
+// consumption of the pooled budget is measurable, but it does not change what
+// is claimed. Entitlement stays pooled — claims are immutable, so splitting the
+// resource types per class is a one-way migration that must be justified by
+// measurement first. The unset case is the shape produced while the
+// RuntimeClasses gate is off, and it must stay byte-identical to what bills
+// today.
+func TestReconcileQuotaClaim_RuntimeClassLabel(t *testing.T) {
+	tests := []struct {
+		name      string
+		class     string
+		wantLabel bool
+	}{
+		{
+			name:      "no class selected leaves the claim unlabeled",
+			class:     "",
+			wantLabel: false,
+		},
+		{
+			name:      "selected class is recorded on the claim",
+			class:     computev1alpha.RuntimeClassGeneralPurpose,
+			wantLabel: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const (
+				clusterName  = "test-project"
+				namespace    = "default"
+				instanceName = "claim-runtime-class-test"
+			)
+
+			claimName := instanceQuotaClaimNamePrefix + instanceName
+
+			s := newTestScheme(t)
+
+			instance := &computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       instanceName,
+					Namespace:  namespace,
+					Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: testComputeAPIVersion,
+							Kind:       kindWorkloadDeploymentTest,
+							Name:       testOwnerDeploymentName,
+							UID:        testUIDString,
+							Controller: func() *bool { b := true; return &b }(),
+						},
+					},
+				},
+				Spec: computev1alpha.InstanceSpec{
+					Controller: &computev1alpha.InstanceController{
+						SchedulingGates: []computev1alpha.SchedulingGate{
+							{Name: instancecontrol.QuotaSchedulingGate.String()},
+						},
+					},
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Class: tt.class,
+						Resources: computev1alpha.InstanceRuntimeResources{
+							InstanceType: instanceTypeD1Standard2,
+						},
+					},
+					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+				},
+			}
+
+			deployment := &computev1alpha.WorkloadDeployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testOwnerDeploymentName,
+					Namespace: namespace,
+					UID:       testUIDString,
+				},
+			}
+
+			projectClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(instance, deployment).
+				WithStatusSubresource(&computev1alpha.Instance{}).
+				Build()
+
+			quotaClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
+				Build()
+
+			qm := quota.New(nil)
+			qm.StoreClient(clusterName, quotaClient)
+
+			r := &InstanceReconciler{
+				mgr:                &fakeMCManager{clusters: map[string]cluster.Cluster{clusterName: newFakeCluster(projectClient)}},
+				scheme:             s,
+				quotaClientManager: qm,
+				edgeClusterName:    testEdgeClusterName,
+				projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+					return string(cn), nil
+				},
+				recorder: &capturingEventRecorder{},
+			}
+			r.finalizers = finalizer.NewFinalizers()
+			require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
+			_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+				Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}},
+				ClusterName: clusterName,
+			})
+			require.NoError(t, err)
+
+			var createdClaim quotav1alpha1.ResourceClaim
+			require.NoError(t, quotaClient.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: claimName}, &createdClaim))
+
+			label, ok := createdClaim.Labels[computev1alpha.RuntimeClassLabel]
+			assert.Equal(t, tt.wantLabel, ok, "runtime class label presence mismatch")
+			if tt.wantLabel {
+				assert.Equal(t, tt.class, label, "runtime class label value mismatch")
+			}
+
+			// The class must not re-dimension the claim: entitlement is pooled,
+			// so the requested resource types are the same either way.
+			resourceTypes := make([]string, 0, len(createdClaim.Spec.Requests))
+			for _, req := range createdClaim.Spec.Requests {
+				resourceTypes = append(resourceTypes, req.ResourceType)
+			}
+			assert.ElementsMatch(t, []string{
+				quotaResourceTypeInstances,
+				"compute.datumapis.com/vcpus",
+				"compute.datumapis.com/memory",
+			}, resourceTypes, "runtime class must not change the claimed resource types")
+		})
+	}
 }
 
 // makeInstanceWithRefDataCondition builds an Instance with the ReferencedData

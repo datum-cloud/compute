@@ -1,0 +1,330 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package runtimeclass
+
+import (
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+)
+
+// Fixture names shared across these tests. They are constants only so the
+// same fixture is named the same way in every case.
+const (
+	testContainerName    = "app"
+	testConfigVolumeName = "config"
+	testDiskVolumeName   = "data"
+	testConfigMapName    = "settings"
+)
+
+// envFromRejection is the rejection the default class returns for envFrom.
+// It is spelled out here rather than built from the validator so the test
+// still fails if the wording changes.
+const envFromRejection = "environment variables sourced from a whole ConfigMap or Secret " +
+	`are not supported by the "unikernel" runtime class`
+
+// fullCapabilities serves everything, so a test that expects no rejection is
+// not passing because it forgot to declare something.
+var fullCapabilities = Capabilities{
+	Class: computev1alpha.RuntimeClassGeneralPurpose,
+	Features: []Feature{
+		FeatureSandboxRuntime,
+		FeatureVirtualMachineRuntime,
+		FeatureConfigMapVolumes,
+		FeatureSecretVolumes,
+		FeatureDiskVolumes,
+		FeatureDeviceVolumeAttachments,
+		FeatureEnvFrom,
+		FeatureImagePullSecrets,
+	},
+}
+
+// minimalCapabilities is the narrow shape a fast path serves: containers with
+// data passed in, and nothing that assumes a disk or a full guest.
+var minimalCapabilities = Capabilities{
+	Class: computev1alpha.RuntimeClassUnikernel,
+	Features: []Feature{
+		FeatureSandboxRuntime,
+		FeatureConfigMapVolumes,
+		FeatureSecretVolumes,
+	},
+}
+
+func sandboxSpec(containers ...computev1alpha.SandboxContainer) computev1alpha.InstanceSpec {
+	return computev1alpha.InstanceSpec{
+		Runtime: computev1alpha.InstanceRuntimeSpec{
+			Sandbox: &computev1alpha.SandboxRuntime{Containers: containers},
+		},
+	}
+}
+
+func TestValidateInstanceSpec(t *testing.T) {
+	tests := []struct {
+		name         string
+		spec         computev1alpha.InstanceSpec
+		capabilities Capabilities
+		want         field.ErrorList
+	}{
+		{
+			name:         "a sandbox using only supported features is accepted",
+			capabilities: minimalCapabilities,
+			spec: func() computev1alpha.InstanceSpec {
+				spec := sandboxSpec(computev1alpha.SandboxContainer{
+					Name:  testContainerName,
+					Image: "index.unikraft.io/datum/app:latest",
+					VolumeAttachments: []computev1alpha.VolumeAttachment{
+						{Name: testConfigVolumeName, MountPath: ptr.To("/etc/app")},
+					},
+				})
+				spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: testConfigVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{},
+						},
+					},
+				}
+				return spec
+			}(),
+		},
+		{
+			name:         "a disk-backed volume is rejected by a class without disks",
+			capabilities: minimalCapabilities,
+			spec: func() computev1alpha.InstanceSpec {
+				spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+				spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: testDiskVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{
+							Disk: &computev1alpha.DiskTemplateVolumeSource{},
+						},
+					},
+				}
+				return spec
+			}(),
+			want: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("disk"),
+					`disk-backed volumes are not supported by the "unikernel" runtime class`),
+			},
+		},
+		{
+			name:         "a disk-backed volume is accepted by a class that serves disks",
+			capabilities: fullCapabilities,
+			spec: func() computev1alpha.InstanceSpec {
+				spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+				spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: testDiskVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{
+							Disk: &computev1alpha.DiskTemplateVolumeSource{},
+						},
+					},
+				}
+				return spec
+			}(),
+		},
+		{
+			name: "a ConfigMap volume is rejected by a class that cannot present one",
+			capabilities: Capabilities{
+				Class:    computev1alpha.RuntimeClassUnikernel,
+				Features: []Feature{FeatureSandboxRuntime},
+			},
+			spec: func() computev1alpha.InstanceSpec {
+				spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+				spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: testConfigVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{},
+						},
+					},
+				}
+				return spec
+			}(),
+			want: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("configMap"),
+					`ConfigMap-backed volumes are not supported by the "unikernel" runtime class`),
+			},
+		},
+		{
+			name: "a Secret volume is rejected by a class that cannot present one",
+			capabilities: Capabilities{
+				Class:    computev1alpha.RuntimeClassUnikernel,
+				Features: []Feature{FeatureSandboxRuntime},
+			},
+			spec: func() computev1alpha.InstanceSpec {
+				spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+				spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: "credentials",
+						VolumeSource: computev1alpha.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{},
+						},
+					},
+				}
+				return spec
+			}(),
+			want: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("secret"),
+					`Secret-backed volumes are not supported by the "unikernel" runtime class`),
+			},
+		},
+		{
+			name:         "envFrom is rejected by a class without it",
+			capabilities: minimalCapabilities,
+			spec: sandboxSpec(computev1alpha.SandboxContainer{
+				Name: testContainerName,
+				EnvFrom: []computev1alpha.EnvFromSource{
+					{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testConfigMapName}},
+				},
+			}),
+			want: field.ErrorList{
+				field.Forbidden(
+					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("envFrom"),
+					envFromRejection),
+			},
+		},
+		{
+			name:         "image pull secrets are rejected by a class that cannot authenticate to a registry",
+			capabilities: minimalCapabilities,
+			spec: func() computev1alpha.InstanceSpec {
+				spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+				spec.Runtime.Sandbox.ImagePullSecrets = []computev1alpha.LocalSecretReference{{Name: "registry"}}
+				return spec
+			}(),
+			want: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "runtime", "sandbox", "imagePullSecrets"),
+					`image pull secrets are not supported by the "unikernel" runtime class`),
+			},
+		},
+		{
+			name:         "an attachment with no mount path is rejected as a raw device",
+			capabilities: minimalCapabilities,
+			spec: sandboxSpec(computev1alpha.SandboxContainer{
+				Name:              testContainerName,
+				VolumeAttachments: []computev1alpha.VolumeAttachment{{Name: testDiskVolumeName}},
+			}),
+			want: field.ErrorList{
+				field.Forbidden(
+					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("volumeAttachments").Index(0),
+					`volumes attached as raw devices are not supported by the "unikernel" runtime class`),
+			},
+		},
+		{
+			name: "a sandbox is rejected by a class that only runs virtual machines",
+			capabilities: Capabilities{
+				Class:    computev1alpha.RuntimeClassGeneralPurpose,
+				Features: []Feature{FeatureVirtualMachineRuntime},
+			},
+			spec: sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName}),
+			want: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "runtime", "sandbox"),
+					`container sandbox instances are not supported by the "general-purpose" runtime class`),
+			},
+		},
+		{
+			name:         "a virtual machine is rejected by a sandbox-only class",
+			capabilities: minimalCapabilities,
+			spec: computev1alpha.InstanceSpec{
+				Runtime: computev1alpha.InstanceRuntimeSpec{
+					VirtualMachine: &computev1alpha.VirtualMachineRuntime{
+						VolumeAttachments: []computev1alpha.VolumeAttachment{
+							{Name: "boot", MountPath: ptr.To("/")},
+						},
+					},
+				},
+			},
+			want: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "runtime", "virtualMachine"),
+					`virtual machine instances are not supported by the "unikernel" runtime class`),
+			},
+		},
+		{
+			name:         "every unsupported feature is reported, not just the first",
+			capabilities: minimalCapabilities,
+			spec: func() computev1alpha.InstanceSpec {
+				spec := sandboxSpec(computev1alpha.SandboxContainer{
+					Name: testContainerName,
+					EnvFrom: []computev1alpha.EnvFromSource{
+						{SecretRef: &computev1alpha.SecretEnvSource{Name: testConfigMapName}},
+					},
+					VolumeAttachments: []computev1alpha.VolumeAttachment{{Name: testDiskVolumeName}},
+				})
+				spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name:         testDiskVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{Disk: &computev1alpha.DiskTemplateVolumeSource{}},
+					},
+				}
+				return spec
+			}(),
+			want: field.ErrorList{
+				field.Forbidden(
+					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("envFrom"),
+					envFromRejection),
+				field.Forbidden(
+					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("volumeAttachments").Index(0),
+					`volumes attached as raw devices are not supported by the "unikernel" runtime class`),
+				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("disk"),
+					`disk-backed volumes are not supported by the "unikernel" runtime class`),
+			},
+		},
+		{
+			name:         "an unset class is named as the platform default in rejections",
+			capabilities: Capabilities{Features: []Feature{FeatureSandboxRuntime}},
+			spec: sandboxSpec(computev1alpha.SandboxContainer{
+				Name: testContainerName,
+				EnvFrom: []computev1alpha.EnvFromSource{
+					{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testConfigMapName}},
+				},
+			}),
+			want: field.ErrorList{
+				field.Forbidden(
+					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("envFrom"),
+					envFromRejection),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ValidateInstanceSpec(test.spec, test.capabilities, field.NewPath("spec"))
+			if delta := cmp.Diff(test.want, got, cmpopts.EquateEmpty()); delta != "" {
+				t.Errorf("unexpected rejections (-want +got):\n%s", delta)
+			}
+		})
+	}
+}
+
+// TestValidateInstanceTemplateSpec confirms a workload's template is rejected
+// at apply time, with paths pointing at the template the customer wrote.
+func TestValidateInstanceTemplateSpec(t *testing.T) {
+	template := computev1alpha.InstanceTemplateSpec{
+		Spec: func() computev1alpha.InstanceSpec {
+			spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+			spec.Volumes = []computev1alpha.InstanceVolume{
+				{
+					Name:         testDiskVolumeName,
+					VolumeSource: computev1alpha.VolumeSource{Disk: &computev1alpha.DiskTemplateVolumeSource{}},
+				},
+			}
+			return spec
+		}(),
+	}
+
+	want := field.ErrorList{
+		field.Forbidden(field.NewPath("spec", "template", "spec", "volumes").Index(0).Child("disk"),
+			`disk-backed volumes are not supported by the "unikernel" runtime class`),
+	}
+
+	got := ValidateInstanceTemplateSpec(template, minimalCapabilities, field.NewPath("spec", "template"))
+	if delta := cmp.Diff(want, got, cmpopts.EquateEmpty()); delta != "" {
+		t.Errorf("unexpected rejections (-want +got):\n%s", delta)
+	}
+}

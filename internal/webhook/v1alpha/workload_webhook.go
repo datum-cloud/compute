@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/locations"
 	"go.datum.net/compute/internal/validation"
 	computewebhook "go.datum.net/compute/internal/webhook"
@@ -52,7 +53,18 @@ var _ admission.Defaulter[*computev1alpha.Workload] = &workloadWebhook{}
 var _ admission.Validator[*computev1alpha.Workload] = &workloadWebhook{}
 
 // Default implements admission.Defaulter so a mutating webhook will be registered for the type.
-func (r *workloadWebhook) Default(_ context.Context, _ *computev1alpha.Workload) error {
+func (r *workloadWebhook) Default(_ context.Context, workload *computev1alpha.Workload) error {
+	// Record the execution tier on the stored object rather than resolving it at
+	// read time, so a future change to the platform default cannot silently move
+	// a running workload to a different tier, cost, and startup profile. While
+	// the feature is off the field is left absent: there is only one tier to run
+	// in, and stamping a name would make a promise the platform is not yet
+	// keeping.
+	if features.FeatureGate.Enabled(features.RuntimeClasses) &&
+		len(workload.Spec.Template.Spec.Runtime.Class) == 0 {
+		workload.Spec.Template.Spec.Runtime.Class = computev1alpha.DefaultRuntimeClass
+	}
+
 	// // TODO(jreese) review and test gateway defaulting / logic
 	// if gw := workload.Spec.Gateway; gw != nil {
 	// 	for i, tcpRoute := range gw.TCPRoutes {
@@ -118,7 +130,7 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 	return nil, nil
 }
 
-func (r *workloadWebhook) ValidateUpdate(ctx context.Context, _ *computev1alpha.Workload, newWorkload *computev1alpha.Workload) (admission.Warnings, error) {
+func (r *workloadWebhook) ValidateUpdate(ctx context.Context, oldWorkload *computev1alpha.Workload, newWorkload *computev1alpha.Workload) (admission.Warnings, error) {
 	clusterName := computewebhook.ClusterNameFromContext(ctx)
 
 	cluster, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(clusterName))
@@ -148,7 +160,7 @@ func (r *workloadWebhook) ValidateUpdate(ctx context.Context, _ *computev1alpha.
 		ValidCityCodes:   validCityCodes,
 	}
 
-	if errs := validation.ValidateWorkloadCreate(newWorkload, opts); len(errs) > 0 {
+	if errs := validation.ValidateWorkloadUpdate(newWorkload, oldWorkload, opts); len(errs) > 0 {
 		return nil, errors.NewInvalid(newWorkload.GroupVersionKind().GroupKind(), newWorkload.Name, errs)
 	}
 

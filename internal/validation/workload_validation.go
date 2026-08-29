@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	k8scorev1 "k8s.io/api/core/v1"
@@ -22,6 +23,42 @@ func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationO
 
 	// allErrs = append(allErrs, validateWorkloadMetadata(w)...)
 	allErrs = append(allErrs, validateWorkloadSpec(w.Spec, opts)...)
+
+	return allErrs
+}
+
+// ValidateWorkloadUpdate validates a workload update. It applies every create
+// time rule, plus the rules that only have meaning against a previous state.
+func ValidateWorkloadUpdate(w, oldWorkload *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
+	allErrs := ValidateWorkloadCreate(w, opts)
+
+	allErrs = append(allErrs, validateWorkloadSpecUpdate(w.Spec, oldWorkload.Spec, field.NewPath("spec"))...)
+
+	return allErrs
+}
+
+func validateWorkloadSpecUpdate(spec, oldSpec computev1alpha.WorkloadSpec, fieldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	classPath := fieldPath.Child("template", "spec", "runtime", "class")
+	class := spec.Template.Spec.Runtime.Class
+	oldClass := oldSpec.Template.Spec.Runtime.Class
+
+	// Moving tiers changes the isolation boundary, image compatibility, startup
+	// behavior, and price of every instance, and no provider can carry an
+	// instance across that line in place. Changing the class is a replace.
+	//
+	// An empty previous value predates the feature being enabled and is not a
+	// tier change: it may still be filled in with the default class, which is
+	// the tier the workload has been running in all along.
+	if len(oldClass) > 0 {
+		allErrs = append(allErrs, apimachineryvalidation.ValidateImmutableField(class, oldClass, classPath)...)
+	} else if len(class) > 0 && class != computev1alpha.DefaultRuntimeClass {
+		allErrs = append(allErrs, field.Forbidden(classPath, fmt.Sprintf(
+			"may only be set to %q on an existing workload, which is the class it already runs in",
+			computev1alpha.DefaultRuntimeClass,
+		)))
+	}
 
 	return allErrs
 }

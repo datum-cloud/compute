@@ -12,6 +12,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,6 +30,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -83,7 +86,12 @@ type WorkloadDeploymentFederator struct {
 	// informer resync. When nil (e.g. in unit tests), the downstream watch is
 	// skipped and the controller falls back to watching only the VCP WD.
 	FederationCluster cluster.Cluster
-	finalizers        finalizer.Finalizers
+	// RuntimeClassesEnabled mirrors the RuntimeClasses feature gate. When it is
+	// off the federator propagates exactly as it did before runtime classes
+	// existed: no class label on the hub copy, city-only policy names, and
+	// cluster selectors that every already-registered cell still satisfies.
+	RuntimeClassesEnabled bool
+	finalizers            finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;update;patch
@@ -158,12 +166,19 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	// Upsert the WorkloadDeployment in the downstream control plane via the
 	// strategy client so any future Create calls also go through
 	// ensureDownstreamNamespace automatically.
-	hubDeployment, err := r.upsertDownstreamDeployment(ctx, strategy.GetClient(), &deployment, downstreamNS)
+	runtimeClass := r.propagationRuntimeClass(&deployment)
+
+	hubDeployment, err := r.upsertDownstreamDeployment(ctx, strategy.GetClient(), &deployment, downstreamNS, runtimeClass)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensurePropagationPolicy(ctx, downstreamNS, deployment.Spec.CityCode); err != nil {
+	if err := r.ensurePropagationPolicy(ctx, downstreamNS, deployment.Spec.CityCode, runtimeClass); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	classRefusal, err := r.runtimeClassPlacementRefusal(ctx, deployment.Spec.CityCode, runtimeClass)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -175,7 +190,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, err
 	}
 
-	if err := r.syncStatusFromDownstream(ctx, cl.GetClient(), &deployment, downstreamNS, binding); err != nil {
+	if err := r.syncStatusFromDownstream(ctx, cl.GetClient(), &deployment, downstreamNS, binding, classRefusal); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -230,7 +245,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	}
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
 
-	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.CityCode); err != nil {
+	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.CityCode, r.propagationRuntimeClass(deployment)); err != nil {
 		return finalizer.Result{}, err
 	}
 
@@ -294,6 +309,7 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 	downstreamClient client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
 	downstreamNS string,
+	runtimeClass string,
 ) (*computev1alpha.WorkloadDeployment, error) {
 	kd := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -308,6 +324,15 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 		}
 		kd.Labels[cityCodeLabel] = deployment.Spec.CityCode
 		kd.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = deployment.Namespace
+		// The class label is what a class-aware PropagationPolicy selects on, so
+		// it must track the policy this deployment is propagated by exactly. An
+		// empty class means class-blind propagation, and a leftover label would
+		// leave the hub copy claimed by a policy the federator no longer keeps.
+		if runtimeClass != "" {
+			kd.Labels[computev1alpha.RuntimeClassLabel] = runtimeClass
+		} else {
+			delete(kd.Labels, computev1alpha.RuntimeClassLabel)
+		}
 		kd.Spec = deployment.Spec
 		// Propagate controller-managed annotations from the project WD to the
 		// downstream WD. The cell reads the expected-referenced-data annotation
@@ -351,14 +376,28 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 // ensurePropagationPolicy creates or updates a PropagationPolicy in the downstream
 // namespace that selects all WorkloadDeployments with the given city-code label
 // and targets clusters carrying the same label.
+//
+// A non-empty runtimeClass narrows both halves of that match to the (city,
+// class) pair: only deployments in the class are selected, and only cells that
+// advertise they can serve it are targeted. An empty class leaves the policy
+// exactly as it was before runtime classes, which is what keeps deployments on
+// cells that advertise nothing placeable.
 func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 	ctx context.Context,
 	downstreamNS string,
 	cityCode string,
+	runtimeClass string,
 ) error {
+	deploymentLabels := map[string]string{cityCodeLabel: cityCode}
+	clusterLabels := map[string]string{cityCodeLabel: cityCode}
+	if runtimeClass != "" {
+		deploymentLabels[computev1alpha.RuntimeClassLabel] = runtimeClass
+		clusterLabels[computev1alpha.RuntimeClassServedLabel(runtimeClass)] = computev1alpha.RuntimeClassServedLabelValue
+	}
+
 	pp := &karmadapolicyv1alpha1.PropagationPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      propagationPolicyNameFor(cityCode),
+			Name:      propagationPolicyNameFor(cityCode, runtimeClass),
 			Namespace: downstreamNS,
 		},
 	}
@@ -381,9 +420,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					APIVersion: computev1alpha.GroupVersion.String(),
 					Kind:       kindWorkloadDeployment,
 					LabelSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							cityCodeLabel: cityCode,
-						},
+						MatchLabels: deploymentLabels,
 					},
 				},
 				{
@@ -415,9 +452,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 				// labeled accordingly.
 				ClusterAffinity: &karmadapolicyv1alpha1.ClusterAffinity{
 					LabelSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							cityCodeLabel: cityCode,
-						},
+						MatchLabels: clusterLabels,
 					},
 				},
 			},
@@ -428,7 +463,7 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 		return fmt.Errorf("failed to upsert PropagationPolicy for city %q in %s: %w", cityCode, downstreamNS, err)
 	}
 
-	log.FromContext(ctx).Info("upserted PropagationPolicy", "result", result, "cityCode", cityCode, "downstreamNamespace", downstreamNS)
+	log.FromContext(ctx).Info("upserted PropagationPolicy", "result", result, "cityCode", cityCode, "runtimeClass", runtimeClass, "downstreamNamespace", downstreamNS)
 	return nil
 }
 
@@ -449,6 +484,7 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	deployment *computev1alpha.WorkloadDeployment,
 	downstreamNS string,
 	binding *networkingv1alpha.NetworkBinding,
+	classRefusal *metav1.Condition,
 ) error {
 	var kd computev1alpha.WorkloadDeployment
 	if err := r.FederationClient.Get(ctx, types.NamespacedName{
@@ -469,6 +505,7 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 		apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
 	}
 	applyNetworkBindingRefusal(merged, binding, deployment.Generation)
+	applyPlacementRefusal(merged, classRefusal, deployment.Generation)
 
 	if equality.Semantic.DeepEqual(deployment.Status, *merged) {
 		return nil
@@ -488,6 +525,7 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 			apimeta.SetStatusCondition(&merged.Conditions, *resolverCond)
 		}
 		applyNetworkBindingRefusal(merged, binding, deployment.Generation)
+		applyPlacementRefusal(merged, classRefusal, deployment.Generation)
 		if equality.Semantic.DeepEqual(deployment.Status, *merged) {
 			return nil
 		}
@@ -500,12 +538,18 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 }
 
 // cleanupPropagationPolicyIfUnused deletes the PropagationPolicy for the given
-// city code if no WorkloadDeployments with that city code remain in the
-// downstream namespace.
+// city code and runtime class if no WorkloadDeployments propagated by it remain
+// in the downstream namespace.
+//
+// The policy is keyed by the pair, so usage has to be counted by the pair too:
+// counting a city alone would keep a class policy alive for deployments in a
+// different class, and would keep the class-blind policy alive for deployments
+// that no longer use it.
 func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 	ctx context.Context,
 	downstreamNS string,
 	cityCode string,
+	runtimeClass string,
 ) error {
 	// The webhook requires cityCode, so an empty value here is corruption. An
 	// empty-valued label selector would match the wrong deployment set and
@@ -514,10 +558,15 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 		return fmt.Errorf("cannot evaluate PropagationPolicy usage in namespace %q: city code is empty", downstreamNS)
 	}
 
+	selector, err := r.propagationPolicyUsageSelector(cityCode, runtimeClass)
+	if err != nil {
+		return err
+	}
+
 	var remaining computev1alpha.WorkloadDeploymentList
 	if err := r.FederationClient.List(ctx, &remaining,
 		client.InNamespace(downstreamNS),
-		client.MatchingLabels{cityCodeLabel: cityCode},
+		selector,
 	); err != nil {
 		return fmt.Errorf("failed to list remaining downstream deployments for city %q: %w", cityCode, err)
 	}
@@ -529,7 +578,7 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 
 	pp := &karmadapolicyv1alpha1.PropagationPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      propagationPolicyNameFor(cityCode),
+			Name:      propagationPolicyNameFor(cityCode, runtimeClass),
 			Namespace: downstreamNS,
 		},
 	}
@@ -537,8 +586,115 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 		return fmt.Errorf("failed to delete PropagationPolicy for city %q in %s: %w", cityCode, downstreamNS, err)
 	}
 
-	log.FromContext(ctx).Info("deleted PropagationPolicy (no more deployments for city)", "cityCode", cityCode, "downstreamNamespace", downstreamNS)
+	log.FromContext(ctx).Info("deleted PropagationPolicy (no more deployments for city)", "cityCode", cityCode, "runtimeClass", runtimeClass, "downstreamNamespace", downstreamNS)
 	return nil
+}
+
+// propagationRuntimeClass returns the runtime class a deployment is propagated
+// under, or "" when propagation must stay class-blind.
+//
+// "" reproduces the pre-runtime-class behavior in full, and both paths to it
+// matter. With the gate off nothing has told cells to advertise a class, so a
+// class-selecting policy would match no cluster and strand workloads that run
+// today. With the gate on, a deployment created before the class was defaulted
+// still carries none, and it keeps being propagated the way it already was.
+func (r *WorkloadDeploymentFederator) propagationRuntimeClass(deployment *computev1alpha.WorkloadDeployment) string {
+	if !r.RuntimeClassesEnabled {
+		return ""
+	}
+	return deployment.Spec.Template.Spec.Runtime.Class
+}
+
+// propagationPolicyUsageSelector returns the selector matching exactly the
+// deployments a (city, class) policy propagates.
+//
+// For the class-blind policy that means deployments carrying no class label at
+// all, which only needs saying once classes are in play: with the gate off no
+// deployment can carry one, so the selector is byte-for-byte the city-only
+// match the federator has always used.
+func (r *WorkloadDeploymentFederator) propagationPolicyUsageSelector(cityCode, runtimeClass string) (client.ListOption, error) {
+	if runtimeClass != "" {
+		return client.MatchingLabels{
+			cityCodeLabel:                    cityCode,
+			computev1alpha.RuntimeClassLabel: runtimeClass,
+		}, nil
+	}
+
+	if !r.RuntimeClassesEnabled {
+		return client.MatchingLabels{cityCodeLabel: cityCode}, nil
+	}
+
+	unclassed, err := labels.NewRequirement(computev1alpha.RuntimeClassLabel, selection.DoesNotExist, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build runtime class selector for city %q: %w", cityCode, err)
+	}
+	return client.MatchingLabelsSelector{
+		Selector: labels.SelectorFromSet(labels.Set{cityCodeLabel: cityCode}).Add(*unclassed),
+	}, nil
+}
+
+// runtimeClassPlacementRefusal reports that no cell serving the deployment's
+// city advertises its runtime class. The Cluster read is against the federation
+// hub, which the hand-written compute-manager ClusterRole in
+// config/base/downstream-rbac already grants; the generated role covers the
+// project control planes and is not involved.
+//
+// Karmada would otherwise record this only as a scheduling failure on a hub
+// object the customer cannot see, leaving them with a workload that sits there
+// and no way to tell an unserved class from a slow start. Both halves of the
+// answer are theirs to change, so both are named.
+func (r *WorkloadDeploymentFederator) runtimeClassPlacementRefusal(
+	ctx context.Context,
+	cityCode string,
+	runtimeClass string,
+) (*metav1.Condition, error) {
+	if runtimeClass == "" {
+		return nil, nil
+	}
+
+	var cells karmadaclusterv1alpha1.ClusterList
+	if err := r.FederationClient.List(ctx, &cells, client.MatchingLabels{
+		cityCodeLabel: cityCode,
+		computev1alpha.RuntimeClassServedLabel(runtimeClass): computev1alpha.RuntimeClassServedLabelValue,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to list cells serving runtime class %q in city %q: %w", runtimeClass, cityCode, err)
+	}
+
+	if len(cells.Items) > 0 {
+		return nil, nil
+	}
+
+	return &metav1.Condition{
+		Type:   computev1alpha.WorkloadDeploymentAvailable,
+		Status: metav1.ConditionFalse,
+		Reason: computev1alpha.WorkloadDeploymentReasonRuntimeClassNotServed,
+		Message: fmt.Sprintf(
+			"No cell in %s serves runtime class %q, so no instance for this deployment can be placed. Select a runtime class the location offers, or a location that offers this class.",
+			cityCode, runtimeClass),
+	}, nil
+}
+
+// applyPlacementRefusal folds a placement refusal into the status the federator
+// is about to write, so why nothing was ever placed is readable on the
+// deployment the customer has.
+//
+// A deployment that is already available keeps its own answer, for the same
+// reason a refused network binding does not overwrite one: what its instances
+// are observed to be doing is the stronger statement.
+func applyPlacementRefusal(
+	status *computev1alpha.WorkloadDeploymentStatus,
+	refusal *metav1.Condition,
+	observedGeneration int64,
+) {
+	if refusal == nil {
+		return
+	}
+	if apimeta.IsStatusConditionTrue(status.Conditions, computev1alpha.WorkloadDeploymentAvailable) {
+		return
+	}
+	applied := *refusal
+	applied.ObservedGeneration = observedGeneration
+	apimeta.SetStatusCondition(&status.Conditions, applied)
 }
 
 // SetupWithManager registers the controller with the multicluster manager.
@@ -716,9 +872,21 @@ func projectClusterNameFromLabel(encoded string) string {
 }
 
 // propagationPolicyNameFor returns the PropagationPolicy name for a given city
-// code. The name is stable and deterministic so that multiple reconciles of
-// different deployments sharing the same city code converge on the same policy.
-func propagationPolicyNameFor(cityCode string) string {
-	sanitized := strings.ToLower(strings.ReplaceAll(cityCode, " ", "-"))
-	return fmt.Sprintf("city-%s", sanitized)
+// code and runtime class. The name is stable and deterministic so that multiple
+// reconciles of different deployments sharing the same pair converge on the
+// same policy.
+//
+// An empty class yields the pre-runtime-class name, so nothing already
+// propagating is renamed — a rename would orphan the old policy and briefly
+// leave running deployments unpropagated.
+func propagationPolicyNameFor(cityCode, runtimeClass string) string {
+	sanitized := sanitizePolicyNameSegment(cityCode)
+	if runtimeClass == "" {
+		return fmt.Sprintf("city-%s", sanitized)
+	}
+	return fmt.Sprintf("city-%s-class-%s", sanitized, sanitizePolicyNameSegment(runtimeClass))
+}
+
+func sanitizePolicyNameSegment(segment string) string {
+	return strings.ToLower(strings.ReplaceAll(segment, " ", "-"))
 }

@@ -340,6 +340,29 @@ spec:
                 description: The runtime type of the instance, such as a container
                   sandbox or a VM.
                 properties:
+                  class:
+                    description: |-
+                      The execution tier the instance runs in. A class is a published promise
+                      about isolation, image compatibility, startup latency, and price, so
+                      customers can trade "starts in milliseconds" against "my image just
+                      works" instead of discovering a runtime's limits by hitting them.
+
+                      The catalog is owned and published by Datum, not defined by customers.
+                      Selecting by name is what lets the machinery behind a class change
+                      without a customer-visible API change, as long as the published promise
+                      still holds.
+
+                      This is independent of the runtime shape above: a sandbox and a virtual
+                      machine can each be run in any class the platform offers, and the two
+                      axes must not be collapsed into one.
+
+                      Left empty, an instance runs in DefaultRuntimeClass, which is pinned to
+                      today's behavior so no existing workload changes tier, cost, or startup
+                      characteristics without an announced migration.
+                    enum:
+                    - unikernel
+                    - general-purpose
+                    type: string
                   resources:
                     description: |-
                       Resources each instance must be allocated.

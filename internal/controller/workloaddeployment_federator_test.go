@@ -263,20 +263,24 @@ func TestPropagationPolicyNameFor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		cityCode string
-		want     string
+		name         string
+		cityCode     string
+		runtimeClass string
+		want         string
 	}{
-		{"LAX", "city-lax"},
-		{"lax", "city-lax"},
-		{"New York", "city-new-york"},
-		{"LOS ANGELES", "city-los-angeles"},
-		{"SEA", "city-sea"},
+		{"LAX", testCityCodeLAX, "", "city-lax"},
+		{"lax", "lax", "", "city-lax"},
+		{"New York", "New York", "", "city-new-york"},
+		{"LOS ANGELES", "LOS ANGELES", "", "city-los-angeles"},
+		{"SEA", "SEA", "", "city-sea"},
+		{"LAX unikernel", testCityCodeLAX, computev1alpha.RuntimeClassUnikernel, "city-lax-class-unikernel"},
+		{"LAX general purpose", testCityCodeLAX, computev1alpha.RuntimeClassGeneralPurpose, "city-lax-class-general-purpose"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.cityCode, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := propagationPolicyNameFor(tt.cityCode)
+			got := propagationPolicyNameFor(tt.cityCode, tt.runtimeClass)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -381,7 +385,7 @@ func TestWorkloadDeploymentFederator_FederatesToKarmada(t *testing.T) {
 		"spec.cityCode should be copied from project WD")
 
 	// PropagationPolicy for the city code must exist.
-	ppName := propagationPolicyNameFor(testCityCodeLAX)
+	ppName := propagationPolicyNameFor(testCityCodeLAX, "")
 	var pp karmadapolicyv1alpha1.PropagationPolicy
 	err = karmadaClient.Get(ctx, types.NamespacedName{
 		Name:      ppName,
@@ -423,7 +427,7 @@ func TestWorkloadDeploymentFederator_FederatesToKarmada(t *testing.T) {
 func TestWorkloadDeploymentFederator_Finalization(t *testing.T) {
 	t.Parallel()
 
-	ppName := propagationPolicyNameFor(testCityCodeLAX)
+	ppName := propagationPolicyNameFor(testCityCodeLAX, "")
 
 	tests := []struct {
 		name string
@@ -547,7 +551,7 @@ func TestCleanupPropagationPolicyIfUnused_EmptyCityCode(t *testing.T) {
 	karmadaClient := newKarmadaFakeClient()
 	r := newTestFederator(projectClient, karmadaClient)
 
-	err := r.cleanupPropagationPolicyIfUnused(context.Background(), testKarmadaNSStr, "")
+	err := r.cleanupPropagationPolicyIfUnused(context.Background(), testKarmadaNSStr, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "city code is empty")
 }
@@ -567,7 +571,7 @@ func TestWorkloadDeploymentFederator_PropagationPolicyHasReferencedDataSelectors
 	_, err := r.Reconcile(context.Background(), reconcileRequest())
 	require.NoError(t, err)
 
-	ppName := propagationPolicyNameFor(testCityCodeLAX)
+	ppName := propagationPolicyNameFor(testCityCodeLAX, "")
 	var pp karmadapolicyv1alpha1.PropagationPolicy
 	require.NoError(t, karmadaClient.Get(context.Background(), types.NamespacedName{
 		Name:      ppName,

@@ -474,6 +474,7 @@ func TestLabelBackfill_Idempotent(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		v1alpha.RuntimeClassLabel:           v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
 		labelServiceKey:                     labelServiceValue,
 	}
 
@@ -548,6 +549,7 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		v1alpha.RuntimeClassLabel:           v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
 		labelServiceKey:                     labelServiceValue,
 	}
 	instance1 := getInstanceForDeployment(deployment, 1)
@@ -559,6 +561,7 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		v1alpha.RuntimeClassLabel:           v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
 		labelServiceKey:                     labelServiceValue,
 	}
 
@@ -590,6 +593,47 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 
 	// No PatchLabels — all labels are already correct.
 	assert.Empty(t, patchActions, "no PatchLabels when all labels are already correct")
+}
+
+// TestRuntimeClass_PropagatedToInstances asserts that the execution tier
+// selected on the deployment's template reaches every instance created from it.
+// The class is what a provider dispatches on, so an instance that loses it would
+// silently run in the wrong tier.
+func TestRuntimeClass_PropagatedToInstances(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+
+	deployment := getWorkloadDeployment("test-runtime-class", 2)
+	deployment.Spec.Template.Spec.Runtime.Class = v1alpha.RuntimeClassGeneralPurpose
+
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, nil)
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+
+	for _, action := range actions {
+		instance, ok := action.Object.(*v1alpha.Instance)
+		require.True(t, ok)
+		assert.Equal(t, v1alpha.RuntimeClassGeneralPurpose, instance.Spec.Runtime.Class,
+			"instance %s did not inherit the deployment's runtime class", instance.Name)
+	}
+}
+
+// TestRuntimeClass_ChangesTemplateHash asserts the class participates in the
+// template hash, so an instance that predates a class change is recognized as
+// stale and recreated rather than left running in the previous tier.
+func TestRuntimeClass_ChangesTemplateHash(t *testing.T) {
+	deployment := getWorkloadDeployment("test-runtime-class-hash", 1)
+
+	unikernel := deployment.Spec.Template
+	unikernel.Spec.Runtime.Class = v1alpha.RuntimeClassUnikernel
+
+	generalPurpose := deployment.Spec.Template
+	generalPurpose.Spec.Runtime.Class = v1alpha.RuntimeClassGeneralPurpose
+
+	assert.NotEqual(t,
+		instancecontrol.ComputeHash(unikernel),
+		instancecontrol.ComputeHash(generalPurpose),
+	)
 }
 
 func getWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDeployment {
@@ -640,6 +684,7 @@ func getInstanceForDeployment(deployment *v1alpha.WorkloadDeployment, ordinal in
 	instance.Labels[v1alpha.CityCodeLabel] = deployment.Spec.CityCode
 	instance.Labels[v1alpha.WorkloadNameLabel] = deployment.Spec.WorkloadRef.Name
 	instance.Labels[v1alpha.PlacementNameLabel] = deployment.Spec.PlacementName
+	instance.Labels[v1alpha.RuntimeClassLabel] = v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class)
 	instance.Labels[labelServiceKey] = labelServiceValue
 
 	return instance

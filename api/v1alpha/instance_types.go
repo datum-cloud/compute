@@ -87,7 +87,51 @@ type InstanceRuntimeSpec struct {
 
 	// A virtual machine is a classical VM environment, booting a full OS provided by the user via an image.
 	VirtualMachine *VirtualMachineRuntime `json:"virtualMachine,omitempty"`
+
+	// The execution tier the instance runs in. A class is a published promise
+	// about isolation, image compatibility, startup latency, and price, so
+	// customers can trade "starts in milliseconds" against "my image just
+	// works" instead of discovering a runtime's limits by hitting them.
+	//
+	// The catalog is owned and published by Datum, not defined by customers.
+	// Selecting by name is what lets the machinery behind a class change
+	// without a customer-visible API change, as long as the published promise
+	// still holds.
+	//
+	// This is independent of the runtime shape above: a sandbox and a virtual
+	// machine can each be run in any class the platform offers, and the two
+	// axes must not be collapsed into one.
+	//
+	// Left empty, an instance runs in DefaultRuntimeClass, which is pinned to
+	// today's behavior so no existing workload changes tier, cost, or startup
+	// characteristics without an announced migration.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=unikernel;general-purpose
+	Class string `json:"class,omitempty"`
 }
+
+// Runtime classes, the platform-owned catalog of execution tiers an instance
+// may be run in. These names are a public contract: they appear in customer
+// specs, in quota and billing dimensions, and in the classes a cell advertises
+// it can serve, so they are consumed by other repositories and must not change
+// meaning.
+const (
+	// RuntimeClassUnikernel is the unikernel fast path: very low startup
+	// latency and very low per-instance overhead, in exchange for narrow image
+	// compatibility. Suited to bursty, short-lived, purpose-built workloads.
+	RuntimeClassUnikernel = "unikernel"
+
+	// RuntimeClassGeneralPurpose runs arbitrary Linux container images behind a
+	// stronger boundary than a shared kernel. Slower to start and more
+	// expensive per instance, but an image that runs elsewhere runs here.
+	RuntimeClassGeneralPurpose = "general-purpose"
+
+	// DefaultRuntimeClass is the class an instance runs in when none is
+	// selected. It is pinned to the runtime the platform served before runtime
+	// classes existed, so enabling the feature moves nobody between tiers.
+	DefaultRuntimeClass = RuntimeClassUnikernel
+)
 
 type SandboxRuntime struct {
 	// A list of containers to run within the sandbox.

@@ -44,6 +44,7 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	quotametrics "go.datum.net/compute/internal/quota"
 	"go.datum.net/compute/internal/referenceddata"
+	"go.datum.net/compute/pkg/instancetype"
 )
 
 const (
@@ -111,31 +112,7 @@ const maxEventNoteLen = 1024
 
 // instanceTypeD1Standard2 is the platform instance type name for the
 // 1 vCPU / 2 GiB size used as the catalog baseline for quota accounting.
-const instanceTypeD1Standard2 = "datumcloud/d1-standard-2"
-
-// instanceTypeResources holds the vCPU and memory for a named instance type.
-type instanceTypeResources struct {
-	// CPUMillicores is the number of CPU millicores (1000 = 1 vCPU).
-	CPUMillicores int64
-	// MemoryMiB is the amount of RAM in mebibytes.
-	MemoryMiB int64
-}
-
-// instanceTypeCatalog maps platform instance type names to their resource
-// dimensions used for quota accounting when the instance spec carries only an
-// instanceType and no explicit container Limits or instance-level Requests.
-//
-// These are the platform-declared quota sizes for the instance type, not a
-// derivation of any infra provider's machine type. (infra-provider-gcp separately
-// maps datumcloud/d1-standard-2 to the GCP n2-standard-2 machine type for VM
-// provisioning; that mapping does not define the quota size here.) When new
-// instance types are added, add them here with their vCPU/memory values.
-var instanceTypeCatalog = map[string]instanceTypeResources{
-	instanceTypeD1Standard2: {
-		CPUMillicores: 1000, // 1 vCPU
-		MemoryMiB:     2048, // 2 GiB
-	},
-}
+const instanceTypeD1Standard2 = instancetype.D1Standard2
 
 // Quota-pending requeue backoff. The instance controller is normally re-queued by
 // the ResourceClaim watch when a claim is granted, but that grant event lives on
@@ -1492,14 +1469,26 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		)
 	}
 
+	claimLabels := map[string]string{
+		instanceQuotaClaimSourceLabel:    r.edgeClusterName,
+		instanceQuotaClaimNamespaceLabel: instance.Namespace,
+	}
+	// Record which execution tier the budget was spent on. Claim requests name
+	// flat resource types and are immutable once created, so entitling a class
+	// separately would mean splitting the pooled resource types and re-granting
+	// every project; this label is what makes per-class consumption of the
+	// pooled budget measurable before that one-way split is taken. Stamped only
+	// when a class was explicitly selected, so claims written while the
+	// RuntimeClasses gate is off are identical to the ones that bill today.
+	if class := instance.Spec.Runtime.Class; class != "" {
+		claimLabels[computev1alpha.RuntimeClassLabel] = class
+	}
+
 	desired := &quotav1alpha1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      claimName,
 			Namespace: claimNamespace,
-			Labels: map[string]string{
-				instanceQuotaClaimSourceLabel:    r.edgeClusterName,
-				instanceQuotaClaimNamespaceLabel: instance.Namespace,
-			},
+			Labels:    claimLabels,
 		},
 		Spec: quotav1alpha1.ResourceClaimSpec{
 			ConsumerRef: quotav1alpha1.ConsumerRef{
@@ -1597,7 +1586,7 @@ func (r *InstanceReconciler) classifyCreateError(
 //  1. Sandbox container Limits (sum across all containers) — all containers
 //     must have both cpu and memory Limits for this path to succeed.
 //  2. Instance-level Resources.Requests — both cpu and memory must be present.
-//  3. instanceTypeCatalog lookup by instanceType — used for the common case
+//  3. instance type catalog lookup by instanceType — used for the common case
 //     where a workload is sized only by instanceType with no explicit limits.
 //
 // Returns (0, 0, false) when none of the above yield a complete sizing, so
@@ -1639,12 +1628,12 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 		return cpu.MilliValue(), mem.Value() / (1024 * 1024), true
 	}
 
-	// Path 3: instanceType catalog — handles the typical production case where
+	// Path 3: instance type catalog — handles the typical production case where
 	// instanceType is the only sizing signal and no explicit limits are set.
-	if rt.Resources.InstanceType != "" {
-		if spec, ok := instanceTypeCatalog[rt.Resources.InstanceType]; ok {
-			return spec.CPUMillicores, spec.MemoryMiB, true
-		}
+	// The catalog is shared with the providers that run the instance, so the
+	// amounts claimed here are the amounts the instance is actually given.
+	if sizing, ok := instancetype.Lookup(rt.Resources.InstanceType); ok {
+		return sizing.CPUMillicores, sizing.MemoryMiB, true
 	}
 
 	return 0, 0, false

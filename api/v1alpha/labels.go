@@ -1,5 +1,7 @@
 package v1alpha
 
+import "k8s.io/apimachinery/pkg/labels"
+
 const (
 	LabelNamespace = "compute.datumapis.com"
 
@@ -33,3 +35,62 @@ const (
 	// ReferencedDataLabelValue is the value used for ReferencedDataLabel.
 	ReferencedDataLabelValue = "true"
 )
+
+// Runtime class labels. Placement, provider dispatch, and per-tier
+// observability all key off these, so they are part of the contract other
+// repositories (cell providers, cluster registration) implement against.
+const (
+	// RuntimeClassLabel carries the runtime class an object is placed and run
+	// in: on the hub copy of a WorkloadDeployment it is what a class-aware
+	// PropagationPolicy selects, and on an Instance it is what a provider
+	// filters by to decide whether the instance is its to realize.
+	RuntimeClassLabel = LabelNamespace + "/runtime-class"
+
+	// RuntimeClassServedLabelPrefix builds the label a cell's Cluster object
+	// carries for every runtime class it can serve, e.g.
+	// compute.datumapis.com/runtime-class.unikernel=true. One key per class,
+	// rather than a single valued label, is what lets a cell advertise more
+	// than one class while placement still selects with equality matching.
+	RuntimeClassServedLabelPrefix = LabelNamespace + "/runtime-class."
+
+	// RuntimeClassServedLabelValue is the value a cell sets on a served-class
+	// label. Only the key's presence carries meaning; the value is fixed so
+	// equality selectors can be written without knowing how a cell was
+	// registered.
+	RuntimeClassServedLabelValue = "true"
+)
+
+// RuntimeClassServedLabel returns the label key a cell carries to advertise
+// that it can serve the given runtime class.
+func RuntimeClassServedLabel(class string) string {
+	return RuntimeClassServedLabelPrefix + class
+}
+
+// EffectiveRuntimeClass returns the class an instance actually runs in for a
+// possibly-empty spec value. An unset class is DefaultRuntimeClass, which is
+// pinned to what the platform served before classes existed, so the answer is
+// truthful whether or not runtime class selection is enabled.
+func EffectiveRuntimeClass(class string) string {
+	if class == "" {
+		return DefaultRuntimeClass
+	}
+	return class
+}
+
+// InstanceRuntimeClassSelector returns the selector a provider uses to claim
+// only the Instances in the runtime class it serves. Two providers running in
+// the same cell must partition the Instances between them by class: filtering
+// on workload shape instead leaves an instance owned by both providers or by
+// neither, and neither failure is visible in status.
+//
+// A provider MUST apply this selector to its informer CACHE —
+// cache.Options.ByObject{&Instance{}: {Label: selector}} — and not only as a
+// controller-runtime event predicate. A predicate filters events after the
+// cache has already stored every Instance in the cell; that has OOM
+// crash-looped a provider in this system before, at which point delete
+// reconciles stop running and instances wedge in Terminating.
+func InstanceRuntimeClassSelector(class string) labels.Selector {
+	return labels.SelectorFromSet(labels.Set{
+		RuntimeClassLabel: EffectiveRuntimeClass(class),
+	})
+}

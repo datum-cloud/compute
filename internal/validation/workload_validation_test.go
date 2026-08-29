@@ -759,3 +759,71 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 
 	return workload
 }
+
+// TestValidateWorkloadSpecUpdate_RuntimeClassImmutable covers the update-only
+// rule: a workload cannot be moved between execution tiers in place. The one
+// permitted transition is filling in an absent class with the default, which is
+// what the mutating webhook does the first time a pre-existing workload is
+// updated after the feature is enabled.
+func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
+	classPath := field.NewPath("spec", "template", "spec", "runtime", "class")
+
+	withClass := func(class string) computev1alpha.WorkloadSpec {
+		return MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+			w.Spec.Template.Spec.Runtime.Class = class
+		}).Spec
+	}
+
+	cases := map[string]struct {
+		oldClass       string
+		class          string
+		expectedErrors field.ErrorList
+	}{
+		"unchanged default": {
+			oldClass: computev1alpha.RuntimeClassUnikernel,
+			class:    computev1alpha.RuntimeClassUnikernel,
+		},
+		"unchanged non-default": {
+			oldClass: computev1alpha.RuntimeClassGeneralPurpose,
+			class:    computev1alpha.RuntimeClassGeneralPurpose,
+		},
+		"still unset": {},
+		"unset gets defaulted": {
+			class: computev1alpha.RuntimeClassUnikernel,
+		},
+		"unset jumps straight to a non-default tier": {
+			class: computev1alpha.RuntimeClassGeneralPurpose,
+			expectedErrors: field.ErrorList{
+				field.Forbidden(classPath, ""),
+			},
+		},
+		"changed tier": {
+			oldClass: computev1alpha.RuntimeClassUnikernel,
+			class:    computev1alpha.RuntimeClassGeneralPurpose,
+			expectedErrors: field.ErrorList{
+				field.Invalid(classPath, "", ""),
+			},
+		},
+		"cleared": {
+			oldClass: computev1alpha.RuntimeClassGeneralPurpose,
+			expectedErrors: field.ErrorList{
+				field.Invalid(classPath, "", ""),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			errs := validateWorkloadSpecUpdate(withClass(tc.class), withClass(tc.oldClass), field.NewPath("spec"))
+
+			delta := cmp.Diff(
+				tc.expectedErrors, errs,
+				cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"),
+				cmpopts.EquateEmpty(),
+			)
+			if delta != "" {
+				t.Errorf("errors mismatch (-want +got):\n%s", delta)
+			}
+		})
+	}
+}

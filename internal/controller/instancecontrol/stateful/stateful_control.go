@@ -256,8 +256,14 @@ func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) 
 		// Self-describing labels for routing, filtering, and observability.
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
-		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
-		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
+		// A provider claims instances by class, so every instance must state one
+		// even when the spec left it unset: the label is the effective class, and
+		// an unset spec means the class the platform served before classes
+		// existed. Stamping it unconditionally is what keeps a class-selecting
+		// provider correct with the feature gate off, where nothing would set it.
+		v1alpha.RuntimeClassLabel:  v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
+		v1alpha.WorkloadNameLabel:  deployment.Spec.WorkloadRef.Name,
+		v1alpha.PlacementNameLabel: deployment.Spec.PlacementName,
 		// Scopes consumer-project cleanup: the consumer provider deletes
 		// resources by this label when a project's ServiceConsumer is revoked.
 		labelServiceKey: labelServiceValue,

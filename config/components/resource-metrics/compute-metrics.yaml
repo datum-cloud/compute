@@ -129,6 +129,18 @@ spec:
                     has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
                       object.metadata.labels['compute_datumapis_com_workload_uid'] :
                       ''
+                # Runtime class is the dimension metering and billing break
+                # instance cost out by, so it is reported from the instance's
+                # own spec rather than inferred from whatever a cell happens to
+                # run. An unset class is reported as the default class, which is
+                # pinned to the runtime the platform served before classes
+                # existed, so the series is never empty and pre-existing
+                # instances stay priceable and comparable.
+                - name: runtime_class
+                  value: |
+                    has(object.spec.runtime) && has(object.spec.runtime.class) && object.spec.runtime.class != '' ?
+                      object.spec.runtime.class :
+                      'unikernel'
 
     - name: instance-status-condition
       resource:

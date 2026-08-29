@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/referenceddata"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -619,6 +620,7 @@ func validateInstanceRuntimeSpec(spec computev1alpha.InstanceRuntimeSpec, volume
 	allErrs := field.ErrorList{}
 
 	allErrs = append(allErrs, validateInstanceRuntimeResources(spec.Resources, fieldPath.Child("resources"))...)
+	allErrs = append(allErrs, validateInstanceRuntimeClass(spec.Class, fieldPath.Child("class"))...)
 
 	numRuntimes := 0
 
@@ -648,6 +650,40 @@ func validateInstanceRuntimeSpec(spec computev1alpha.InstanceRuntimeSpec, volume
 
 	if numRuntimes == 0 {
 		allErrs = append(allErrs, field.Required(fieldPath, "must specify a runtime type"))
+	}
+
+	return allErrs
+}
+
+// supportedRuntimeClasses is the published catalog of execution tiers. The CRD
+// schema enumerates the same set; this check keeps the error a field error with
+// the rest of the spec's, and catches callers that bypass the API server.
+var supportedRuntimeClasses = sets.New(
+	computev1alpha.RuntimeClassUnikernel,
+	computev1alpha.RuntimeClassGeneralPurpose,
+)
+
+func validateInstanceRuntimeClass(class string, fieldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if len(class) == 0 {
+		// Unset means the default class. The mutating webhook stamps it when the
+		// feature is enabled, so an empty value here is always acceptable.
+		return allErrs
+	}
+
+	if !supportedRuntimeClasses.Has(class) {
+		return append(allErrs, field.NotSupported(fieldPath, class, sets.List(supportedRuntimeClasses)))
+	}
+
+	// A class is only a promise the platform can keep once providers serve it
+	// and cells advertise it. Until the feature is enabled, accepting anything
+	// but the default would accept a workload with nowhere to run.
+	if !features.FeatureGate.Enabled(features.RuntimeClasses) && class != computev1alpha.DefaultRuntimeClass {
+		allErrs = append(allErrs, field.Forbidden(fieldPath, fmt.Sprintf(
+			"runtime classes are not enabled on this control plane, only %q may be selected",
+			computev1alpha.DefaultRuntimeClass,
+		)))
 	}
 
 	return allErrs

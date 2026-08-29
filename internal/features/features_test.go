@@ -41,3 +41,38 @@ func TestNetworkingIntegration_ExplicitlyEnabled(t *testing.T) {
 		t.Error("NetworkingIntegration = false after Set=true, want true")
 	}
 }
+
+// TestRuntimeClasses_DefaultDisabled verifies that the RuntimeClasses feature gate
+// defaults to disabled, so a control plane cannot accept a workload selecting an
+// execution tier before providers that serve it are deployed.
+func TestRuntimeClasses_DefaultDisabled(t *testing.T) {
+	// Use a fresh gate so this test is independent of any global state mutations.
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(RuntimeClasses) {
+		t.Error("RuntimeClasses default = true, want false")
+	}
+}
+
+// TestRuntimeClasses_CanBeDisabled verifies that setting RuntimeClasses=false via
+// the feature gate string keeps runtime class selection off.
+func TestRuntimeClasses_CanBeDisabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("RuntimeClasses=false"); err != nil {
+		t.Fatalf("Set(RuntimeClasses=false): %v", err)
+	}
+	if gate.Enabled(RuntimeClasses) {
+		t.Error("RuntimeClasses = true after Set=false, want false")
+	}
+}
+
+// TestRuntimeClasses_ExplicitlyEnabled verifies that the gate can be explicitly
+// set to true (round-trip).
+func TestRuntimeClasses_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("RuntimeClasses=true"); err != nil {
+		t.Fatalf("Set(RuntimeClasses=true): %v", err)
+	}
+	if !gate.Enabled(RuntimeClasses) {
+		t.Error("RuntimeClasses = false after Set=true, want true")
+	}
+}

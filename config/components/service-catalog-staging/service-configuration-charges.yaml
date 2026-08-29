@@ -3,6 +3,28 @@ kind: ServiceConfiguration
 metadata:
   name: compute
 spec:
+  # Rates are matched on the runtime_class dimension declared on these meters,
+  # so the two classes can carry different prices without forking the meter
+  # into per-class metric names (which would break every existing query,
+  # dashboard, and invoice line built on the current names).
+  #
+  # Ordering matters: Milo applies the first matching entry and treats the
+  # trailing unmatched entry as the catch-all. The catch-all is deliberately
+  # kept at today's exact rate so any usage event that arrives without a
+  # runtime_class dimension — which is every event a producer that predates
+  # this change emits — prices identically to before. Once every producer is
+  # confirmed to attach the dimension, the catch-all becomes an explicit
+  # `unikernel` match.
+  #
+  # That last step is also what the Amberflo backend needs: it cannot
+  # materialize a mixed matched + catch-all rate set, so per-class prices only
+  # take effect there once every dimension value is priced explicitly.
+  #
+  # general-purpose intentionally carries today's rate rather than a guessed
+  # premium. The class has higher per-instance overhead and should cost more,
+  # but the enhancement makes measured overhead on Datum hardware a
+  # prerequisite for offering the class — this is the field that measurement
+  # sets, and nothing is billed at it until the class is placeable.
   charges:
     - name: compute.datumapis.com/instance/cpu-seconds
       chargeType: Usage
@@ -12,6 +34,10 @@ spec:
         metricRef: compute.datumapis.com/instance/cpu-seconds
         pricingUnit: vcpu-second
         rates:
+          - match:
+              dimension: runtime_class
+              value: general-purpose
+            flat: "0.000014"
           - flat: "0.000014"
     - name: compute.datumapis.com/instance/memory-seconds
       chargeType: Usage
@@ -21,4 +47,8 @@ spec:
         metricRef: compute.datumapis.com/instance/memory-seconds
         pricingUnit: gib-second
         rates:
+          - match:
+              dimension: runtime_class
+              value: general-purpose
+            flat: "0.0000045"
           - flat: "0.0000045"
