@@ -9,8 +9,8 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// The customer-facing messages are spelled out here rather than referenced
-// from the translator, so the test still fails if the wording changes.
+// These messages are spelled out rather than referenced from the translator, so
+// the test fails if the wording changes.
 const (
 	wantImageUnavailableMessage   = "The instance image could not be pulled"
 	wantConfigurationErrorMessage = "The instance could not be started due to a configuration error"
@@ -108,8 +108,8 @@ func TestTranslateWaitingReason(t *testing.T) {
 				t.Errorf("message = %q, want %q", message, test.wantMessage)
 			}
 
-			// Customers read these strings on their instance: neither the
-			// Kubernetes reason nor Kubernetes nouns belong in them.
+			// Customers read these strings on their instance, so they must
+			// contain neither the Kubernetes reason nor Kubernetes nouns.
 			if test.k8sReason != "" && strings.Contains(reason+message, test.k8sReason) {
 				t.Errorf("translation leaked the Kubernetes reason %q", test.k8sReason)
 			}

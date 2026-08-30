@@ -42,24 +42,21 @@ const (
 	// alpha: v0.1
 	NetworkingIntegration featuregate.Feature = "NetworkingIntegration"
 
-	// RuntimeClasses controls whether customers may select the execution tier a
-	// workload's instances run in, via the runtime class field on the instance
+	// RuntimeClasses controls whether a workload may select the execution tier
+	// its instances run in, through the runtime class field on the instance
 	// template.
 	//
-	// When disabled:
-	//   - The runtime class is not defaulted, so specs are stored with the
-	//     field absent and instances run whatever the cell serves today.
-	//   - Selecting any class other than the default is rejected at admission.
+	// When the gate is disabled, admission does not default the runtime class
+	// and rejects any class selection.
 	//
-	// This flag exists because a class is a promise the platform has to be able
-	// to keep: a non-default class is only placeable once providers that serve
-	// it are deployed and cells advertise it. The default is disabled so a
-	// control plane cannot accept workloads it has nowhere to run. Deployments
-	// whose cells serve more than one class opt in with
+	// The gate defaults to disabled because a non-default class is placeable
+	// only after providers that serve it are deployed and cells advertise it.
+	// Deployments whose cells serve more than one class opt in with
 	// --feature-gates=RuntimeClasses=true.
 	//
-	// Rollback is only safe before a non-default class is generally available:
-	// workloads that already selected one would stop being placeable.
+	// Disabling the gate again is safe only while no non-default class is
+	// generally available. Workloads that already selected one become
+	// unplaceable.
 	//
 	// alpha: v0.1
 	RuntimeClasses featuregate.Feature = "RuntimeClasses"

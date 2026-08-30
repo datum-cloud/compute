@@ -3,18 +3,16 @@
 // Package instancepod translates a compute Instance into the Kubernetes Pod
 // that runs it.
 //
-// This is the runtime-neutral part of realizing an instance: volumes,
-// containers, environment, ports, mounts, and resource resolution mean the
-// same thing regardless of which runtime class ends up executing them, so they
-// are translated once here and shared by every class that realizes instances
-// as Pods. A class is not obliged to — one may provision a virtual machine
-// instead — which is why this translation is its own package rather than part
-// of the class contract in the runtimeclass package.
+// Volumes, containers, environment, ports, mounts, and resource resolution mean
+// the same thing for every runtime class. This package translates them once for
+// every class that realizes instances as Pods. A class may instead provision a
+// virtual machine, so this translation lives in its own package rather than in
+// the runtimeclass contract.
 //
-// Runtime-specific policy is an input, never a branch. Node targeting, extra
-// Pod metadata, disk realization, and the set of features the class serves all
-// arrive through Options, so this package holds no knowledge of any particular
-// class and a new class needs no edit to it.
+// Runtime-specific policy arrives through Options: node targeting, extra Pod
+// metadata, disk realization, and the features a class serves. This package
+// therefore knows nothing about any particular class, and adding a class needs
+// no change here.
 package instancepod
 
 import (
@@ -33,30 +31,29 @@ import (
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
-// FallbackMemoryMiB sizes a container whose memory is fixed by neither an
-// explicit limit nor the instance type catalog. It exists only so an instance
-// with an unrecognized instance type still boots with a sane footprint.
+// FallbackMemoryMiB is the memory, in mebibytes (MiB), given to a container
+// with neither an explicit limit nor an instance type catalog entry. An
+// instance with an unrecognized instance type still boots with usable memory.
 const FallbackMemoryMiB int64 = 1024
 
-// ErrNotSandbox reports an instance whose shape this package cannot translate.
-// Only a sandbox of containers maps onto a Pod; a virtual machine instance is
-// realized by its provider in whatever way that provider provisions VMs.
+// ErrNotSandbox reports an instance this package cannot translate. Only a
+// sandbox of containers maps onto a Pod. The provider realizes a virtual
+// machine instance itself.
 var ErrNotSandbox = errors.New("instance does not declare a sandbox runtime")
 
-// VolumeSourceResolver realizes an instance volume the platform cannot
-// translate on its own — today, a disk — into the Pod volume source that backs
-// it. A class declaring runtimeclass.FeatureDiskVolumes supplies one, since
-// how a disk becomes a volume is the provider's storage integration and not
-// something the platform can name for it.
+// VolumeSourceResolver converts an instance volume the platform cannot
+// translate on its own, today a disk, into the Pod volume source backing it. A
+// class that declares runtimeclass.FeatureDiskVolumes supplies one, because
+// backing a disk depends on the provider's storage integration.
 type VolumeSourceResolver func(volume computev1alpha.InstanceVolume) (corev1.VolumeSource, error)
 
-// Options carries the policy a runtime class contributes to the Pod. Every
-// field here is a decision the platform deliberately does not make, so that
-// this package never has to ask which class it is building for.
+// Options carries the policy a runtime class contributes to the Pod. Each field
+// is a decision the platform leaves to the class, so this package never
+// branches on which class it builds for.
 type Options struct {
-	// Capabilities is the class's declaration of what it serves. It is
-	// enforced before anything is translated, so a feature the class cannot
-	// serve fails the build rather than being dropped from the Pod.
+	// Capabilities declares what the class serves. BuildPodSpec enforces it
+	// before translating, so a feature the class cannot serve fails the build
+	// instead of being dropped from the Pod.
 	Capabilities runtimeclass.Capabilities
 
 	// NodeSelector targets the nodes that can run this class.
@@ -65,16 +62,17 @@ type Options struct {
 	// Tolerations admit the Pod to the taints those nodes carry.
 	Tolerations []corev1.Toleration
 
-	// PodLabels are added to the Pod beyond the platform identity labels, for
-	// a provider's own ownership and selection needs. They win on conflict, so
-	// a provider is never blocked by a platform label it needs to override.
+	// PodLabels are added to the Pod alongside the platform identity labels,
+	// for a provider's own ownership and selection needs. PodLabels take
+	// precedence on a key conflict, so a provider can override a platform
+	// label.
 	PodLabels map[string]string
 
-	// PodAnnotations are added to the Pod, typically to carry runtime
-	// configuration a class reads off the Pod. These are platform- or
-	// provider-owned; tenant-supplied metadata must not be funnelled here,
-	// since runtime configuration influenced by tenant input is how isolation
-	// boundaries get escaped.
+	// PodAnnotations are added to the Pod, usually to carry runtime
+	// configuration a class reads from it. The platform or the provider owns
+	// these values. Do not pass tenant-supplied metadata through them, because
+	// tenant-influenced runtime configuration can break the isolation
+	// boundary.
 	PodAnnotations map[string]string
 
 	// DefaultMemoryMiB overrides FallbackMemoryMiB for a class whose minimum
@@ -87,9 +85,9 @@ type Options struct {
 }
 
 // identityLabelKeys are the compute-owned labels copied from an Instance onto
-// its Pod. They let selectors reach the Pods of a WorkloadDeployment — an HPA
-// /scale target, for one — without exposing arbitrary Instance labels, which
-// are tenant-writable and must not become selectable platform identity.
+// its Pod. Selectors can then reach the Pods of a WorkloadDeployment, for
+// example a horizontal pod autoscaler (HPA) scale target. Arbitrary Instance
+// labels are tenant-writable and must not become selectable platform identity.
 var identityLabelKeys = []string{
 	computev1alpha.WorkloadUIDLabel,
 	computev1alpha.WorkloadDeploymentUIDLabel,
@@ -101,8 +99,8 @@ var identityLabelKeys = []string{
 }
 
 // IdentityLabels returns the platform identity labels an instance's Pod
-// carries. Providers that build their Pod object themselves apply these so
-// every class's Pods stay selectable in the same way.
+// carries. A provider that builds its own Pod object applies these so every
+// class's Pods stay selectable the same way.
 func IdentityLabels(instance *computev1alpha.Instance) map[string]string {
 	labels := make(map[string]string, len(identityLabelKeys))
 	for _, key := range identityLabelKeys {
@@ -113,12 +111,12 @@ func IdentityLabels(instance *computev1alpha.Instance) map[string]string {
 	return labels
 }
 
-// BuildPod returns the complete Pod for an instance, named after it so the
-// backing Pod is always findable from the instance a customer sees.
+// BuildPod returns the complete Pod for an instance. The Pod takes the
+// instance's name, so it is findable from the instance a customer sees.
 //
-// The owner reference is left to the caller: it needs the provider's scheme,
-// and whether a Pod is owned or explicitly torn down is part of a provider's
-// lifecycle rather than of this translation.
+// The caller sets the owner reference, which needs the provider's scheme.
+// Whether the provider owns the Pod or tears it down explicitly belongs to the
+// provider's lifecycle.
 func BuildPod(instance *computev1alpha.Instance, opts Options) (*corev1.Pod, error) {
 	spec, err := BuildPodSpec(instance, opts)
 	if err != nil {
@@ -144,11 +142,11 @@ func BuildPod(instance *computev1alpha.Instance, opts Options) (*corev1.Pod, err
 
 // BuildPodSpec translates an instance's sandbox into a PodSpec.
 //
-// The instance is validated against the class's capabilities first, so an
-// unsupported feature is reported to the customer rather than omitted from the
-// result. Name resolution of the referenced ConfigMaps and Secrets is left to
-// the kubelet realizing the Pod, under its own node identity; nothing is read
-// or mirrored here.
+// BuildPodSpec validates the instance against the class's capabilities first,
+// so an unsupported feature is reported to the customer rather than omitted
+// from the result. The kubelet realizing the Pod resolves the referenced
+// ConfigMaps and Secrets under its own node identity. This package reads and
+// mirrors nothing.
 func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSpec, error) {
 	if instance.Spec.Runtime.Sandbox == nil {
 		return corev1.PodSpec{}, ErrNotSandbox
@@ -189,9 +187,9 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 		Volumes:          volumes,
 		ImagePullSecrets: imagePullSecrets,
 		// An instance runs customer code and must not reach the Kubernetes API
-		// of the cluster hosting it. Without a projected token the identity the
-		// apiserver assigns cannot authenticate, and without service links the
-		// addresses of neighbouring services never enter its environment.
+		// of the cluster hosting it. Without a projected token it cannot
+		// authenticate to the apiserver. Without service links, the addresses
+		// of neighboring services never enter its environment.
 		AutomountServiceAccountToken: ptr.To(false),
 		EnableServiceLinks:           ptr.To(false),
 		RestartPolicy:                corev1.RestartPolicyAlways,
@@ -215,9 +213,9 @@ func buildVolumes(instance *computev1alpha.Instance, opts Options) ([]corev1.Vol
 				VolumeSource: corev1.VolumeSource{Secret: volume.Secret},
 			})
 		case volume.Disk != nil:
-			// Reachable only for a class declaring FeatureDiskVolumes, so a
-			// missing resolver is that class misconfiguring itself rather than
-			// anything the customer can act on.
+			// Only a class declaring FeatureDiskVolumes reaches this branch, so
+			// a missing resolver is a misconfigured class rather than something
+			// the customer can act on.
 			if opts.ResolveVolumeSource == nil {
 				return nil, fmt.Errorf(
 					"runtime class %q declares disk-backed volume support but supplied no volume source resolver",
@@ -249,9 +247,9 @@ func buildEnv(container *computev1alpha.SandboxContainer) []corev1.EnvVar {
 	return env
 }
 
-// buildEnvFrom translates field by field: compute's EnvFromSource is not the
-// Kubernetes type, because the compute API cannot expose Kubernetes-specific
-// sources it has no way to serve.
+// buildEnvFrom translates field by field because compute's EnvFromSource is a
+// distinct type from the Kubernetes one. The compute API does not expose
+// Kubernetes-specific sources it cannot serve.
 func buildEnvFrom(container *computev1alpha.SandboxContainer) []corev1.EnvFromSource {
 	envFrom := make([]corev1.EnvFromSource, 0, len(container.EnvFrom))
 	for _, source := range container.EnvFrom {
@@ -289,9 +287,9 @@ func buildPorts(container *computev1alpha.SandboxContainer) []corev1.ContainerPo
 }
 
 // buildVolumeMounts maps only the attachments that name a mount path. An
-// attachment without one is a raw device the guest is expected to handle
-// itself, which has no Pod equivalent; validation has already confirmed the
-// class serves those, so realizing them is the provider's to do.
+// attachment without a mount path is a raw device with no Pod equivalent.
+// Validation has already confirmed the class serves raw devices, and the
+// provider realizes them.
 func buildVolumeMounts(container *computev1alpha.SandboxContainer) []corev1.VolumeMount {
 	mounts := make([]corev1.VolumeMount, 0, len(container.VolumeAttachments))
 	for _, attachment := range container.VolumeAttachments {
@@ -306,20 +304,21 @@ func buildVolumeMounts(container *computev1alpha.SandboxContainer) []corev1.Volu
 	return mounts
 }
 
-// ContainerResources resolves what a container is actually given.
+// ContainerResources resolves the resources a container receives.
 //
-// Requests equal limits so the Pod lands in the guaranteed QoS class and its
-// footprint is exactly what quota claimed for the instance — a request smaller
-// than the limit would let an instance consume more than it was billed for.
+// Requests equal limits, so the Pod lands in the guaranteed quality of service
+// (QoS) class and uses exactly what quota claimed for the instance. A request
+// smaller than the limit would let an instance consume more than it was billed
+// for.
 //
-// Each dimension resolves independently, so a container that sets only a
-// memory limit keeps that memory while the catalog still sizes its CPU:
+// CPU and memory resolve independently, so a container that sets only a memory
+// limit keeps that memory while the catalog sizes its CPU. Each takes the first
+// of:
 //
-//  1. An explicit container limit for the dimension always wins.
-//  2. The instance type catalog, which is the common case and the sizing quota
-//     accounted for.
-//  3. A default: defaultMemoryMiB for memory, and nothing for CPU, since an
-//     invented CPU limit would throttle an instance at a number no one chose.
+//  1. An explicit container limit.
+//  2. The instance type catalog entry, which is the sizing quota accounted for.
+//  3. A default, which is defaultMemoryMiB for memory and nothing for CPU. An
+//     invented CPU limit would throttle an instance at a value no one chose.
 func ContainerResources(
 	instance *computev1alpha.Instance,
 	container *computev1alpha.SandboxContainer,

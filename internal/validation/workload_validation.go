@@ -28,8 +28,8 @@ func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationO
 	return allErrs
 }
 
-// ValidateWorkloadUpdate validates a workload update. It applies every create
-// time rule, plus the rules that only have meaning against a previous state.
+// ValidateWorkloadUpdate validates a workload update. It applies the
+// create-time rules, plus the rules that need the previous state.
 func ValidateWorkloadUpdate(w, oldWorkload *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
 	allErrs := ValidateWorkloadCreate(w, opts)
 
@@ -45,17 +45,16 @@ func validateWorkloadSpecUpdate(spec, oldSpec computev1alpha.WorkloadSpec, field
 	class := spec.Template.Spec.Runtime.Class
 	oldClass := oldSpec.Template.Spec.Runtime.Class
 
-	// Moving tiers changes the isolation boundary, image compatibility, startup
-	// behavior, and price of every instance, and no provider can carry an
-	// instance across that line in place. Changing the class is a replace.
+	// Changing tiers changes the isolation boundary, image compatibility,
+	// startup behavior, and price of every instance, and no provider can move
+	// an instance across tiers in place. A tier change requires a new workload.
 	//
-	// An empty previous value predates the feature being enabled and is not a
-	// tier change on its own: it may still be filled in with the class the
-	// workload has been running in all along, which is the one the catalog
-	// marks as default, because that is what a workload selecting nothing runs
-	// in. Any other name moves it between tiers. A control plane publishing no
-	// default — including one where the feature is off and the catalog is never
-	// read — has no such class to offer, so nothing may be filled in.
+	// An absent previous class is not a tier change by itself. It may be filled
+	// in with the class the workload already runs in, which is the class the
+	// catalog marks as default, because that is the class a workload selecting
+	// nothing runs in. Any other name moves the workload between tiers. A
+	// control plane that publishes no default, including one with the gate off,
+	// has no such class, so nothing may be filled in.
 	if len(oldClass) > 0 {
 		allErrs = append(allErrs, apimachineryvalidation.ValidateImmutableField(class, oldClass, classPath)...)
 	} else if len(class) > 0 {
@@ -81,11 +80,9 @@ type WorkloadValidationOptions struct {
 	ValidCityCodes   []string
 
 	// RuntimeClasses is the catalog of execution tiers this control plane
-	// publishes, read by the caller. It is empty when runtime class selection
-	// is disabled, since the catalog is not consulted then; when the feature is
-	// enabled an empty catalog means the control plane offers no tier, and a
-	// workload is turned down rather than admitted into one that does not
-	// exist.
+	// publishes, read by the caller. The catalog is empty when runtime class
+	// selection is disabled. When selection is enabled, an empty catalog means
+	// the control plane offers no tier, so validation rejects the workload.
 	RuntimeClasses runtimeclass.Catalog
 }
 

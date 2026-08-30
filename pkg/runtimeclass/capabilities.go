@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package runtimeclass holds the parts of a runtime class contract that every
-// class honors identically: what a class declares it can serve, how an
-// instance is checked against that declaration, and the words a customer is
-// told when an instance cannot run.
+// class implements identically. Those parts are the declaration of what a
+// class can serve, the check of an instance against that declaration, and the
+// customer-facing text shown when an instance cannot run.
 //
-// A runtime class is a published promise, so the pieces a customer experiences
-// the same way no matter which class they chose are defined once here and
-// shared by the compute control plane and by every provider. What a provider
-// keeps for itself is realization: how its runtime is targeted and configured,
-// its plumbing, its lifecycle, and the capacity it advertises.
+// The compute control plane and every provider share this package so that a
+// customer sees the same behavior regardless of which class they choose. Each
+// provider owns the rest: how it targets and configures its runtime, its
+// lifecycle, and the capacity it advertises.
 //
-// Nothing in this package branches on a class name. A class is described by
-// the Capabilities carried on its RuntimeClass object, so adding a class is a
-// catalog change rather than an edit to shared code.
+// No code in this package branches on a class name. A RuntimeClass object
+// describes its own class through Capabilities, so adding a class is a catalog
+// change rather than an edit to shared code.
 package runtimeclass
 
 import (
@@ -22,15 +21,15 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// Feature is an optional part of the instance API that a runtime class may or
-// may not be able to serve. It is the API's type: the declaration a class
-// publishes and the check a provider runs against an instance have to be the
-// same vocabulary, or a class could promise something no provider can read.
+// Feature is an optional part of the instance API that a runtime class may be
+// able to serve. Feature aliases the API type so that a class's declaration and
+// a provider's check use one vocabulary. Separate types would let a class
+// declare a feature no provider can interpret.
 type Feature = computev1alpha.RuntimeClassFeature
 
 // The features a runtime class may declare. These alias the API constants so
-// providers can keep importing them from here without depending on the exact
-// shape of the catalog object.
+// providers can import them from here without depending on the exact shape of
+// the catalog object.
 const (
 	FeatureSandboxRuntime          = computev1alpha.RuntimeClassFeatureSandboxRuntime
 	FeatureVirtualMachineRuntime   = computev1alpha.RuntimeClassFeatureVirtualMachineRuntime
@@ -43,22 +42,21 @@ const (
 )
 
 // Capabilities is a runtime class's declaration of what it can serve, in the
-// form the shared validation works against. It is built from the RuntimeClass
-// object rather than compiled in, so the platform's published contract and the
-// check an instance is held to cannot drift apart.
+// form the shared validation works against. Capabilities comes from the
+// RuntimeClass object rather than from compiled-in values, so the published
+// contract and the check applied to an instance cannot drift apart.
 type Capabilities struct {
-	// Class is the runtime class these capabilities describe. It appears in
-	// every rejection so a customer learns which tier turned their instance
-	// down, and which one to move it to.
+	// Class is the runtime class these capabilities describe. Every rejection
+	// names the class so a customer knows which class refused the instance.
 	Class string
 
-	// Features are the optional parts of the instance API the class serves.
-	// Anything absent is unsupported, so a class that forgets to declare a
-	// feature rejects it loudly rather than serving it by accident.
+	// Features are the optional parts of the instance API the class serves. An
+	// absent feature is unsupported, so a class that omits a feature rejects
+	// requests for it rather than serving it by accident.
 	Features []Feature
 }
 
-// CapabilitiesFrom reads a class's declaration off its catalog entry.
+// CapabilitiesFrom reads a class's declaration from its catalog entry.
 func CapabilitiesFrom(class *computev1alpha.RuntimeClass) Capabilities {
 	if class == nil {
 		return Capabilities{}
@@ -79,11 +77,10 @@ func (c Capabilities) Supports(feature Feature) bool {
 	return false
 }
 
-// ClassDescription is how a rejection refers to the class that turned an
-// instance down. A class the instance never resolved has no name to quote —
-// which is what an instance admitted before the catalog existed looks like — so
-// it is described rather than named, instead of quoting an empty string at a
-// customer.
+// ClassDescription returns the phrase a rejection uses to refer to the class
+// that refused an instance. An instance admitted before the catalog existed has
+// no resolved class name, so ClassDescription returns a generic phrase instead
+// of an empty quoted string.
 func (c Capabilities) ClassDescription() string {
 	if c.Class == "" {
 		return "the runtime class this instance runs in"

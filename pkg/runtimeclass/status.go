@@ -7,19 +7,17 @@ import (
 )
 
 // TranslateWaitingReason converts a Kubernetes container waiting reason into
-// the Instance-domain reason and message a customer reads on their instance.
+// the Instance reason and message a customer reads on their instance.
 //
-// Customers never see Kubernetes-internal jargon (ImagePullBackOff,
-// CrashLoopBackOff) in an instance status: it names a Pod they did not create
-// and leaks how one class happens to be realized. Translating centrally is
-// also what keeps two classes from describing the same failure in two
-// vocabularies — the customer-facing words for a failure belong to the
-// platform, not to whichever runtime observed it.
+// Kubernetes reasons such as ImagePullBackOff describe a Pod the customer did
+// not create and expose how one class is implemented. Translating in one place
+// also keeps two classes from describing the same failure differently, because
+// the customer-facing wording belongs to the platform rather than to the
+// runtime that observed the failure.
 //
-// Anything unrecognized is reported as provisioning rather than surfaced raw,
-// so a new Kubernetes reason can never leak into a customer-facing message.
-// The caller is responsible for logging the original reason and message for
-// operator visibility, since that detail is dropped here.
+// An unrecognized reason maps to provisioning, so a new Kubernetes reason
+// cannot reach a customer-facing message. TranslateWaitingReason drops the
+// original reason and message, so the caller must log them for operators.
 func TranslateWaitingReason(k8sReason string) (reason, message string) {
 	switch k8sReason {
 	case "ImagePullBackOff", "ErrImagePull", "ImageInspectError",

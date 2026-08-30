@@ -15,24 +15,24 @@ import (
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
-// The class names these tests are built on are invented, and deliberately not
-// the ones the platform ships. Resolution is supposed to run entirely off the
-// catalog, and a test written against the shipped names could not tell a
-// catalog lookup apart from a compiled-in one.
+// These tests use invented class names rather than the names the platform
+// ships. Resolution must run entirely off the catalog, and a test written
+// against the shipped names could not distinguish a catalog lookup from a
+// compiled-in one.
 const (
-	// testClassAzurite stands in for the tier a test catalog marks default.
+	// testClassAzurite is the tier a test catalog marks as default.
 	testClassAzurite = "azurite"
 
-	// testClassBasalt stands in for a published tier that is not the default.
+	// testClassBasalt is a published tier that is not the default.
 	testClassBasalt = "basalt"
 
-	// testUnpublishedClass is a class name no test catalog publishes unless it
-	// says so, standing in for a tier a customer names that does not exist.
+	// testUnpublishedClass is a class name that a test catalog publishes only
+	// when the test says so. It represents a tier that does not exist.
 	testUnpublishedClass = "citrine"
 )
 
-// makeRuntimeClass builds a catalog entry that serves everything, so a test
-// only has to state the part of the contract it is exercising.
+// makeRuntimeClass builds a catalog entry that serves every capability, so a
+// test only has to state the part of the contract it exercises.
 func makeRuntimeClass(name string, tweaks ...func(*computev1alpha.RuntimeClass)) computev1alpha.RuntimeClass {
 	class := computev1alpha.RuntimeClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -78,8 +78,8 @@ func withFeatures(featureList ...computev1alpha.RuntimeClassFeature) func(*compu
 	}
 }
 
-// defaultCatalog is the shape a bootstrapped control plane has: one tier marked
-// default, and another beside it.
+// defaultCatalog matches a bootstrapped control plane: one default tier and one
+// other tier.
 func defaultCatalog() runtimeclass.Catalog {
 	return runtimeclass.Catalog{
 		makeRuntimeClass(testClassAzurite, withDefault),
@@ -87,10 +87,9 @@ func defaultCatalog() runtimeclass.Catalog {
 	}
 }
 
-// TestValidateRuntimeClassSelectionGateOff pins the behavior a control plane
-// that has not enabled runtime classes must keep: no tier may be selected at
-// all, and the catalog is never consulted, so publishing one changes nothing
-// until the gate is turned on.
+// TestValidateRuntimeClassSelectionGateOff verifies that a control plane with
+// the gate off rejects every tier selection and never reads the catalog, so
+// publishing a catalog changes nothing until the gate is on.
 func TestValidateRuntimeClassSelectionGateOff(t *testing.T) {
 	root := field.NewPath("spec", "template", "spec")
 	classPath := root.Child("runtime", "class")
@@ -137,8 +136,8 @@ func TestValidateRuntimeClassSelectionGateOff(t *testing.T) {
 	}
 }
 
-// TestValidateRuntimeClassSelection covers reference resolution: a class is
-// accepted because the catalog publishes it, not because it was compiled in.
+// TestValidateRuntimeClassSelection verifies that validation accepts a class
+// because the catalog publishes it, not because the name is compiled in.
 func TestValidateRuntimeClassSelection(t *testing.T) {
 	root := field.NewPath("spec", "template", "spec")
 	classPath := root.Child("runtime", "class")
@@ -210,9 +209,9 @@ func TestValidateRuntimeClassSelection(t *testing.T) {
 	}
 }
 
-// TestValidateRuntimeClassCapabilities is the data-driven half: the same
-// instance is accepted or refused purely on what the class it selected
-// publishes, and the refusal names the class the customer chose.
+// TestValidateRuntimeClassCapabilities verifies that the same instance is
+// accepted or rejected based only on the capabilities the selected class
+// publishes, and that the rejection names the selected class.
 func TestValidateRuntimeClassCapabilities(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, true)
 

@@ -3,14 +3,14 @@
 package v1alpha
 
 // Reason constants for placement outcomes that depend on the runtime class a
-// workload selected. They live alongside the other WorkloadDeployment.Available
-// reasons in the same stable, machine-readable vocabulary clients match on.
+// workload selected. They join the other WorkloadDeployment.Available reasons
+// in the same stable, machine-readable vocabulary that clients match on.
 const (
 	// WorkloadDeploymentReasonRuntimeClassNotServed is set on
 	// WorkloadDeployment.Available when no cell in the deployment's city
-	// advertises the runtime class it selected. Without it the federated
-	// scheduler simply never places the deployment, and the customer sees a
-	// workload that sits there with nothing to act on; the class and the
-	// location are both theirs to change.
+	// advertises the runtime class the deployment selected. Without the reason,
+	// the federated scheduler never places the deployment and the customer has
+	// no signal to act on. The customer can change either the class or the
+	// location.
 	WorkloadDeploymentReasonRuntimeClassNotServed = "RuntimeClassNotServed"
 )

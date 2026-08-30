@@ -20,28 +20,27 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// testCityPolicyLAX is the class-blind PropagationPolicy name for the test city,
-// i.e. the name the federator has always used.
+// testCityPolicyLAX is the PropagationPolicy name for the test city when no
+// runtime class is selected.
 const testCityPolicyLAX = "city-lax"
 
-// The class names these tests are built on are invented, and deliberately not
-// the ones the platform ships. Propagation must key off whatever class the
-// deployment carries, and a test written against the shipped names could not
-// tell that apart from a name the federator knows.
+// These runtime class names are invented rather than the ones the platform
+// ships. Propagation must key off whatever class the deployment carries, and
+// shipped names would hide a class hard-coded in the federator.
 const (
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
 )
 
-// withRuntimeClass sets the runtime class on the deployment's instance template.
 func withRuntimeClass(class string) func(*computev1alpha.WorkloadDeployment) {
 	return func(wd *computev1alpha.WorkloadDeployment) {
 		wd.Spec.Template.Spec.Runtime.Class = class
 	}
 }
 
-// testCell returns a Karmada Cluster labeled as a cell in the given city,
-// serving the given runtime classes.
+// testCell returns a Karmada Cluster serving the given runtime classes in the
+// given city. A cell is a point-of-presence cluster registered with the
+// federation hub.
 func testCell(name, cityCode string, classes ...string) *karmadaclusterv1alpha1.Cluster {
 	cellLabels := map[string]string{cityCodeLabel: cityCode}
 	for _, class := range classes {
@@ -52,8 +51,8 @@ func testCell(name, cityCode string, classes ...string) *karmadaclusterv1alpha1.
 	}
 }
 
-// hubSiblingDeployment returns a hub-namespace WorkloadDeployment, other than
-// the one under test, carrying the labels the federator stamps for the given
+// hubSiblingDeployment returns a hub-namespace WorkloadDeployment other than
+// the one under test. It carries the labels the federator stamps for the given
 // city and runtime class.
 func hubSiblingDeployment(cityCode, runtimeClass string) *computev1alpha.WorkloadDeployment {
 	wdLabels := map[string]string{cityCodeLabel: cityCode}
@@ -75,11 +74,10 @@ func hubSiblingDeployment(cityCode, runtimeClass string) *computev1alpha.Workloa
 	}
 }
 
-// TestWorkloadDeploymentFederator_ClassAwarePropagation covers what the hub
-// copy and its PropagationPolicy look like across the states that matter: the
-// gate off (which must be indistinguishable from the behavior before runtime
-// classes), the gate on with no class selected (a deployment that predates
-// defaulting), and the gate on with a class selected.
+// TestWorkloadDeploymentFederator_ClassAwarePropagation covers the hub copy and
+// its PropagationPolicy in three states: the gate off, the gate on with no
+// runtime class selected, and the gate on with a runtime class selected. The
+// first two states must propagate without a class selector.
 func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 	t.Parallel()
 
@@ -158,8 +156,8 @@ func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 				Namespace: testKarmadaNSStr,
 			}, &pp), "PropagationPolicy %q should exist", tt.wantPolicyName)
 
-			// The companion selectors stay class-agnostic: companions are shared
-			// by every deployment in the namespace regardless of class.
+			// The companion selectors ignore runtime class. Companions are
+			// shared by every deployment in the namespace.
 			require.Len(t, pp.Spec.ResourceSelectors, 3)
 			wdSel := pp.Spec.ResourceSelectors[0]
 			require.NotNil(t, wdSel.LabelSelector)
@@ -174,9 +172,9 @@ func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 }
 
 // TestCleanupPropagationPolicyIfUnused_PerCityAndClass verifies the policy is
-// removed only when nothing it propagates is left. The key has two parts now,
-// so a deployment in another class must not keep a policy alive, and a
-// class-labeled deployment must not keep the class-blind policy alive.
+// removed only when no deployment it propagates remains. A deployment in
+// another runtime class must not keep a class policy alive, and a class-labeled
+// deployment must not keep the no-class policy alive.
 func TestCleanupPropagationPolicyIfUnused_PerCityAndClass(t *testing.T) {
 	t.Parallel()
 
@@ -275,9 +273,8 @@ func TestCleanupPropagationPolicyIfUnused_PerCityAndClass(t *testing.T) {
 }
 
 // TestWorkloadDeploymentFederator_UnservedRuntimeClassCondition verifies that a
-// deployment no cell can serve says so on its own status, rather than sitting
-// unplaced with the reason visible only on a hub object the customer cannot
-// read.
+// deployment no cell can serve reports the reason on its own status, rather
+// than only on a hub object the customer cannot read.
 func TestWorkloadDeploymentFederator_UnservedRuntimeClassCondition(t *testing.T) {
 	t.Parallel()
 
@@ -355,9 +352,9 @@ func TestWorkloadDeploymentFederator_UnservedRuntimeClassCondition(t *testing.T)
 }
 
 // TestApplyPlacementRefusal_KeepsAvailableDeployment verifies that a deployment
-// whose instances are running keeps its own answer: what the cell observes is
-// the stronger statement, and tearing that status down over a cell that stopped
-// advertising a class would be a worse report, not a better one.
+// whose instances are running keeps its existing condition. Observed instance
+// state takes precedence over a refusal raised because a cell stopped
+// advertising a runtime class.
 func TestApplyPlacementRefusal_KeepsAvailableDeployment(t *testing.T) {
 	t.Parallel()
 

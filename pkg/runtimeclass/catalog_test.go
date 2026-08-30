@@ -10,10 +10,10 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// The class names these tests are built on are deliberately invented, and
-// deliberately not the ones the platform ships. Nothing in this package may
-// behave differently because of what a class is called, and a test written
-// against the shipped names could not tell the difference.
+// These tests use invented class names rather than the names the platform
+// ships. No code in this package may behave differently based on a class name,
+// and tests written against the shipped names could not detect such a
+// dependency.
 const (
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
@@ -38,10 +38,10 @@ func TestCatalogFind(t *testing.T) {
 	}
 }
 
-// TestCatalogDefault covers which tier an instance that selects none runs in.
-// The marker on the class is the only source of that answer: a catalog that
-// does not say, or says twice, has not stated a default, and is not guessed at
-// from any class name.
+// TestCatalogDefault covers which class an instance runs in when it selects
+// none. The default marker on a class is the only source of the answer. A
+// catalog with zero or several marked classes has not stated a default, and
+// Default does not infer one from a class name.
 func TestCatalogDefault(t *testing.T) {
 	cases := map[string]struct {
 		catalog Catalog
@@ -94,9 +94,9 @@ func TestCatalogNames(t *testing.T) {
 	}
 }
 
-// TestCatalogClaimedBy is how a provider finds the classes it is responsible
-// for: by the controller name published on them, never by matching a class name
-// it would have to be rebuilt to change.
+// TestCatalogClaimedBy covers how a provider finds the classes it is
+// responsible for. Selection uses the controller name published on each class,
+// never a match against a class name.
 func TestCatalogClaimedBy(t *testing.T) {
 	fastPath := class(testClassAzurite, true)
 	fastPath.Spec.ControllerName = "compute.datumapis.com/unikraft-provider"
@@ -113,9 +113,9 @@ func TestCatalogClaimedBy(t *testing.T) {
 	}
 }
 
-// TestAcceptanceOf separates "no provider has looked at this class yet" from
-// "a provider looked and said no". Only the second is grounds for refusing a
-// workload at admission; the first is what a provider rollout looks like.
+// TestAcceptanceOf separates a class no provider has reported on yet from a
+// class a provider reported it cannot serve. Only the second justifies refusing
+// a workload at admission. The first also occurs during a provider rollout.
 func TestAcceptanceOf(t *testing.T) {
 	accepted := func(status metav1.ConditionStatus, message string) *computev1alpha.RuntimeClass {
 		c := class(testClassCitrine, false)
@@ -160,9 +160,8 @@ func TestAcceptanceOf(t *testing.T) {
 	}
 }
 
-// TestCapabilitiesFrom keeps the check an instance is held to sourced from the
-// class's own declaration, so the published contract and the enforcement cannot
-// drift apart.
+// TestCapabilitiesFrom checks that validation reads a class's own declaration,
+// so the published contract and the enforced check cannot drift apart.
 func TestCapabilitiesFrom(t *testing.T) {
 	published := class(testClassCitrine, false)
 	published.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{FeatureSandboxRuntime}

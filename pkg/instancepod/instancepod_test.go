@@ -19,8 +19,6 @@ import (
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
-// Fixture names shared across these tests. They are constants only so the
-// same fixture is named the same way in every case.
 const (
 	testContainerName    = "app"
 	testConfigVolumeName = "config"
@@ -33,9 +31,8 @@ const (
 	testMemory2Gi        = "2Gi"
 	testLabelValueTrue   = "true"
 
-	// The class names below are invented, and deliberately not the ones the
-	// platform ships: translating an instance must not depend on what its class
-	// is called.
+	// These class names are invented rather than the ones the platform ships.
+	// Translating an instance must not depend on what its class is called.
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
 )
@@ -538,7 +535,8 @@ func TestContainerResources(t *testing.T) {
 				}
 			}
 
-			// Guaranteed QoS, and a footprint equal to what quota claimed.
+			// Equal requests and limits give the guaranteed quality of service
+			// (QoS) class and the footprint quota claimed.
 			if err := diff(got.Limits, got.Requests); err != nil {
 				t.Errorf("requests differ from limits: %v", err)
 			}
@@ -546,9 +544,9 @@ func TestContainerResources(t *testing.T) {
 	}
 }
 
-// TestContainerResourcesRequestsAreIndependent guards against the requests and
-// limits sharing one map, where a caller adjusting one would silently move the
-// other and drop the instance out of guaranteed QoS.
+// TestContainerResourcesRequestsAreIndependent checks that requests and limits
+// do not share one map. A caller adjusting one would otherwise move the other
+// and drop the instance out of the guaranteed QoS class.
 func TestContainerResourcesRequestsAreIndependent(t *testing.T) {
 	instance := newInstance()
 	resources := ContainerResources(instance, &computev1alpha.SandboxContainer{Name: testContainerName}, 0)
@@ -601,8 +599,9 @@ func TestBuildPod(t *testing.T) {
 	}
 }
 
-// TestBuildPodDoesNotMutateOptions guards a caller reusing one Options value
-// across every instance it builds.
+// TestBuildPodDoesNotMutateOptions checks that BuildPod leaves the caller's
+// Options untouched, because a caller reuses one Options value across every
+// instance it builds.
 func TestBuildPodDoesNotMutateOptions(t *testing.T) {
 	labels := map[string]string{testManagedByKey: testManagedByValue}
 	opts := Options{Capabilities: sandboxCapabilities, PodLabels: labels}
@@ -636,8 +635,8 @@ func TestIdentityLabels(t *testing.T) {
 		},
 	}
 
-	// Tenant-writable labels stay off the Pod: identity that platform
-	// selectors rely on must not be something a customer can set.
+	// Tenant-writable labels stay off the Pod. A customer must not be able to
+	// set the identity that platform selectors rely on.
 	want := map[string]string{
 		computev1alpha.WorkloadUIDLabel:            "workload-uid",
 		computev1alpha.WorkloadDeploymentUIDLabel:  "deployment-uid",

@@ -19,9 +19,8 @@ import (
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
-// The class names these tests are built on are invented, and deliberately not
-// the ones the platform ships. Defaulting reads the catalog, so a test written
-// against the shipped names could not tell a catalog lookup apart from a
+// These class names are invented rather than the ones the platform ships. A
+// test using the shipped names could not distinguish a catalog lookup from a
 // compiled-in fallback.
 const (
 	testClassAzurite = "azurite"
@@ -36,9 +35,9 @@ func runtimeClass(name string, isDefault bool) computev1alpha.RuntimeClass {
 	}
 }
 
-// TestWorkloadWebhookDefaultGateOff pins the disabled behavior: the field is
-// left exactly as the customer wrote it, and the catalog is never read — the
-// webhook has no manager here, so any attempt to read it would panic.
+// TestWorkloadWebhookDefaultGateOff checks that defaulting leaves the class
+// field as the customer wrote it and never reads the catalog. The webhook has
+// no manager here, so a catalog read would panic.
 func TestWorkloadWebhookDefaultGateOff(t *testing.T) {
 	cases := map[string]struct {
 		class string
@@ -65,10 +64,9 @@ func TestWorkloadWebhookDefaultGateOff(t *testing.T) {
 	}
 }
 
-// TestDefaultRuntimeClass covers which tier a workload that selected none is
-// recorded as running in. The catalog's marker is the whole answer, so
-// publishing a different default is a catalog change, and a catalog that does
-// not state one leaves the field empty for validation to turn down.
+// TestDefaultRuntimeClass covers which class a workload that selected none
+// records. The catalog's default marker decides it, and a catalog with no
+// default leaves the field empty for validation to reject.
 func TestDefaultRuntimeClass(t *testing.T) {
 	cases := map[string]struct {
 		class   string
@@ -122,10 +120,9 @@ func TestDefaultRuntimeClass(t *testing.T) {
 	}
 }
 
-// TestRuntimeClassCatalogUnreachable pins the safe direction when the catalog
-// cannot be read: the request fails. Admitting a workload while the platform
-// cannot say which tiers exist would store a selection nothing has agreed to
-// run, and the customer would learn only from a workload that is never placed.
+// TestRuntimeClassCatalogUnreachable checks that a catalog the webhook cannot
+// read rejects the request. Admitting the workload instead would store a class
+// selection no provider has agreed to run.
 func TestRuntimeClassCatalogUnreachable(t *testing.T) {
 	scheme := k8sruntime.NewScheme()
 	if err := computev1alpha.AddToScheme(scheme); err != nil {

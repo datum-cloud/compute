@@ -87,9 +87,10 @@ type WorkloadDeploymentFederator struct {
 	// skipped and the controller falls back to watching only the VCP WD.
 	FederationCluster cluster.Cluster
 	// RuntimeClassesEnabled mirrors the RuntimeClasses feature gate. When it is
-	// off the federator propagates exactly as it did before runtime classes
-	// existed: no class label on the hub copy, city-only policy names, and
-	// cluster selectors that every already-registered cell still satisfies.
+	// off, propagation ignores runtime classes: no class label on the hub copy,
+	// city-only policy names, and cluster selectors that every registered cell
+	// satisfies. A cell is a point-of-presence cluster registered with the
+	// federation hub.
 	RuntimeClassesEnabled bool
 	finalizers            finalizer.Finalizers
 }
@@ -324,10 +325,10 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 		}
 		kd.Labels[cityCodeLabel] = deployment.Spec.CityCode
 		kd.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = deployment.Namespace
-		// The class label is what a class-aware PropagationPolicy selects on, so
-		// it must track the policy this deployment is propagated by exactly. An
-		// empty class means class-blind propagation, and a leftover label would
-		// leave the hub copy claimed by a policy the federator no longer keeps.
+		// A class-aware PropagationPolicy selects on this label, so the label
+		// must track the policy that propagates this deployment. A leftover
+		// label would leave the hub copy claimed by a policy the federator no
+		// longer maintains.
 		if runtimeClass != "" {
 			kd.Labels[computev1alpha.RuntimeClassLabel] = runtimeClass
 		} else {
@@ -378,10 +379,9 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 // and targets clusters carrying the same label.
 //
 // A non-empty runtimeClass narrows both halves of that match to the (city,
-// class) pair: only deployments in the class are selected, and only cells that
-// advertise they can serve it are targeted. An empty class leaves the policy
-// exactly as it was before runtime classes, which is what keeps deployments on
-// cells that advertise nothing placeable.
+// class) pair. Only deployments in the class are selected, and only cells that
+// advertise they serve the class are targeted. An empty runtimeClass adds no
+// class selector, so cells that advertise no class remain eligible.
 func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 	ctx context.Context,
 	downstreamNS string,
@@ -541,10 +541,10 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 // city code and runtime class if no WorkloadDeployments propagated by it remain
 // in the downstream namespace.
 //
-// The policy is keyed by the pair, so usage has to be counted by the pair too:
-// counting a city alone would keep a class policy alive for deployments in a
-// different class, and would keep the class-blind policy alive for deployments
-// that no longer use it.
+// Usage is counted by the (city, class) pair because the policy is keyed by
+// that pair. Counting the city alone would keep a class policy alive for
+// deployments in another class, and would keep the no-class policy alive for
+// deployments that no longer use it.
 func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 	ctx context.Context,
 	downstreamNS string,
@@ -590,14 +590,12 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 	return nil
 }
 
-// propagationRuntimeClass returns the runtime class a deployment is propagated
-// under, or "" when propagation must stay class-blind.
+// propagationRuntimeClass returns the runtime class a deployment propagates
+// under, or "" when propagation must ignore runtime classes.
 //
-// "" reproduces the pre-runtime-class behavior in full, and both paths to it
-// matter. With the gate off nothing has told cells to advertise a class, so a
-// class-selecting policy would match no cluster and strand workloads that run
-// today. With the gate on, a deployment created before the class was defaulted
-// still carries none, and it keeps being propagated the way it already was.
+// With the gate off, no cell advertises a class, so a class-selecting policy
+// would match no cluster and the deployment would never be placed. A deployment
+// that selects no class also propagates without a class selector.
 func (r *WorkloadDeploymentFederator) propagationRuntimeClass(deployment *computev1alpha.WorkloadDeployment) string {
 	if !r.RuntimeClassesEnabled {
 		return ""
@@ -608,10 +606,8 @@ func (r *WorkloadDeploymentFederator) propagationRuntimeClass(deployment *comput
 // propagationPolicyUsageSelector returns the selector matching exactly the
 // deployments a (city, class) policy propagates.
 //
-// For the class-blind policy that means deployments carrying no class label at
-// all, which only needs saying once classes are in play: with the gate off no
-// deployment can carry one, so the selector is byte-for-byte the city-only
-// match the federator has always used.
+// The no-class policy matches only deployments that carry no class label, so a
+// class-labeled deployment does not keep that policy alive.
 func (r *WorkloadDeploymentFederator) propagationPolicyUsageSelector(cityCode, runtimeClass string) (client.ListOption, error) {
 	if runtimeClass != "" {
 		return client.MatchingLabels{
@@ -633,16 +629,15 @@ func (r *WorkloadDeploymentFederator) propagationPolicyUsageSelector(cityCode, r
 	}, nil
 }
 
-// runtimeClassPlacementRefusal reports that no cell serving the deployment's
-// city advertises its runtime class. The Cluster read is against the federation
-// hub, which the hand-written compute-manager ClusterRole in
-// config/base/downstream-rbac already grants; the generated role covers the
-// project control planes and is not involved.
+// runtimeClassPlacementRefusal reports that no cell in the deployment's city
+// advertises its runtime class. The Cluster read targets the federation hub,
+// which the hand-written compute-manager ClusterRole in
+// config/base/downstream-rbac grants. The generated role covers the project
+// control planes and is not involved.
 //
-// Karmada would otherwise record this only as a scheduling failure on a hub
-// object the customer cannot see, leaving them with a workload that sits there
-// and no way to tell an unserved class from a slow start. Both halves of the
-// answer are theirs to change, so both are named.
+// Karmada records the failure only on a hub object the customer cannot read.
+// The returned condition names both the runtime class and the location,
+// because the customer can change either one.
 func (r *WorkloadDeploymentFederator) runtimeClassPlacementRefusal(
 	ctx context.Context,
 	cityCode string,
@@ -674,13 +669,13 @@ func (r *WorkloadDeploymentFederator) runtimeClassPlacementRefusal(
 	}, nil
 }
 
-// applyPlacementRefusal folds a placement refusal into the status the federator
-// is about to write, so why nothing was ever placed is readable on the
-// deployment the customer has.
+// applyPlacementRefusal merges a placement refusal into the status the
+// federator is about to write, so the reason nothing was placed appears on the
+// deployment the customer can read.
 //
-// A deployment that is already available keeps its own answer, for the same
-// reason a refused network binding does not overwrite one: what its instances
-// are observed to be doing is the stronger statement.
+// An already-available deployment keeps its existing condition. Observed
+// instance state takes precedence over a predicted refusal, matching how a
+// refused network binding is applied.
 func applyPlacementRefusal(
 	status *computev1alpha.WorkloadDeploymentStatus,
 	refusal *metav1.Condition,
@@ -876,9 +871,8 @@ func projectClusterNameFromLabel(encoded string) string {
 // reconciles of different deployments sharing the same pair converge on the
 // same policy.
 //
-// An empty class yields the pre-runtime-class name, so nothing already
-// propagating is renamed — a rename would orphan the old policy and briefly
-// leave running deployments unpropagated.
+// An empty runtimeClass yields a city-only name. Renaming an existing policy
+// would orphan it and briefly leave running deployments unpropagated.
 func propagationPolicyNameFor(cityCode, runtimeClass string) string {
 	sanitized := sanitizePolicyNameSegment(cityCode)
 	if runtimeClass == "" {

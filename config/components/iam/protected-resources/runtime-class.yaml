@@ -1,7 +1,6 @@
-# Runtime classes are published by the platform and read by customers choosing
-# a tier. The permission set is declared in full so an operator or a provider
-# can be granted writes, but the customer-facing roles grant reads only: the
-# catalog is a promise Datum makes, not one a customer edits.
+# The permission set is declared in full so that operators and providers can be
+# granted write access. Customer-facing roles grant read access only, because
+# customers select a runtime class rather than define one.
 apiVersion: iam.miloapis.com/v1alpha1
 kind: ProtectedResource
 metadata:

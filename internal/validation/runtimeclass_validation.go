@@ -13,15 +13,13 @@ import (
 )
 
 // validateRuntimeClassSelection resolves the execution tier an instance
-// selected against the catalog the control plane publishes, and holds the
-// instance to what that tier declares it can serve.
+// selected against the catalog the control plane publishes, then validates the
+// instance against what that tier declares it can serve.
 //
-// Resolution replaces a compiled-in list of class names on purpose: the catalog
-// is data, so a tier can be added, retired, or have its contract corrected
-// without a schema change. The cost is that the catalog has to be readable to
-// admit a workload at all — the caller supplies it, and a caller that could not
-// read it fails the request rather than admitting a workload into a tier
-// nothing has agreed to run.
+// Resolution reads the catalog instead of a compiled-in list of class names, so
+// a tier can be added, retired, or have its contract corrected without a schema
+// change. The caller supplies the catalog and must fail the request if it could
+// not read the catalog.
 //
 // fieldPath is the path of the instance spec being validated.
 func validateRuntimeClassSelection(
@@ -33,10 +31,9 @@ func validateRuntimeClassSelection(
 	classPath := fieldPath.Child("runtime", "class")
 	class := spec.Runtime.Class
 
-	// A class is only a promise the platform can keep once providers serve it
-	// and cells advertise it. Until the feature is enabled the catalog is not
-	// consulted and no tier has been published, so selecting one would accept a
-	// workload with nowhere to run.
+	// A class is placeable only after providers serve it and cells advertise
+	// it. While the gate is off the control plane publishes no catalog, so a
+	// selected class would have nowhere to run.
 	if !features.FeatureGate.Enabled(features.RuntimeClasses) {
 		if len(class) > 0 {
 			allErrs = append(allErrs, field.Forbidden(classPath,
@@ -48,9 +45,9 @@ func validateRuntimeClassSelection(
 	catalog := opts.RuntimeClasses
 	offered := catalog.Names()
 
-	// The mutating webhook stamps the catalog's default class, so an empty
-	// value here means the catalog offered no default to stamp. Letting it
-	// through would admit a workload whose tier nobody has stated.
+	// The mutating webhook stamps the catalog's default class. An empty value
+	// here means the catalog publishes no default, so the instance has no
+	// execution tier.
 	if len(class) == 0 {
 		return append(allErrs, field.Invalid(classPath, class, offeredClassesMessage(
 			"a runtime class is required because this control plane publishes no default", offered,
@@ -66,14 +63,12 @@ func validateRuntimeClassSelection(
 		return append(allErrs, field.NotSupported(classPath, class, offered))
 	}
 
-	// A class whose controller has looked at it and said it cannot honor what
-	// the class declares will never run an instance, so the workload is turned
-	// down now rather than at placement. A class no controller has reported on
-	// yet is admitted: that is the ordinary state during a provider rollout or
-	// immediately after a class is published, and refusing it would make every
-	// provider restart an outage for new workloads. If no provider ever claims
-	// the class the workload is reported as unplaceable, which is where a
-	// missing provider is visible either way.
+	// A class whose controller reports that it cannot honor the class contract
+	// will never run an instance, so reject the workload here rather than at
+	// placement. A class that no controller has reported on yet is admitted,
+	// because that state is normal during a provider rollout and immediately
+	// after a class is published. If no provider ever claims the class,
+	// placement reports the workload as unplaceable.
 	if acceptance, message := runtimeclass.AcceptanceOf(selected); acceptance == runtimeclass.AcceptanceRejected {
 		reason := fmt.Sprintf("the %q runtime class cannot currently run instances", class)
 		if len(message) > 0 {
@@ -82,16 +77,16 @@ func validateRuntimeClassSelection(
 		return append(allErrs, field.Forbidden(classPath, reason))
 	}
 
-	// Every rejection below is sourced from what the class publishes, so a tier
-	// that cannot serve part of the instance API says so once, in the catalog,
-	// rather than in a table the platform keeps privately in sync.
+	// Every rejection below comes from what the class publishes, so a tier that
+	// cannot serve part of the instance API declares that once, in the
+	// catalog.
 	allErrs = append(allErrs, runtimeclass.ValidateInstanceSpec(spec, runtimeclass.CapabilitiesFrom(selected), fieldPath)...)
 
 	return allErrs
 }
 
-// offeredClassesMessage appends the classes a customer can choose from, so a
-// rejection tells them what to write instead of only what not to.
+// offeredClassesMessage appends the classes a caller can choose from, so a
+// rejection states which values are valid.
 func offeredClassesMessage(reason string, offered []string) string {
 	if len(offered) == 0 {
 		return reason + ", and offers no runtime classes"

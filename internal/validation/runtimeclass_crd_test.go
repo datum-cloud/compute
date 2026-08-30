@@ -20,13 +20,15 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// bootstrapCatalogDir holds the classes a control plane is installed with.
+// bootstrapCatalogDir holds the runtime classes a control plane is installed
+// with.
 const bootstrapCatalogDir = "../../config/components/runtime-classes"
 
-// startRuntimeClassEnvtest boots an API server with the compute CRDs installed
-// and returns a client for it. The RuntimeClass schema carries rules the API
-// server enforces rather than Go code — immutability, the controller name
-// shape, the feature vocabulary — so they are exercised against a real server.
+// startRuntimeClassEnvtest boots an API server with the compute custom
+// resource definitions installed and returns a client for it. The API server,
+// not Go code, enforces several RuntimeClass schema rules: immutability, the
+// controller name shape, and the feature vocabulary. Testing them needs a real
+// server.
 func startRuntimeClassEnvtest(t *testing.T) client.Client {
 	t.Helper()
 
@@ -55,8 +57,9 @@ func startRuntimeClassEnvtest(t *testing.T) client.Client {
 	return c
 }
 
-// TestRuntimeClassCRD covers the contract the API server holds a catalog entry
-// to, including that the catalog this repository ships satisfies it.
+// TestRuntimeClassCRD covers the schema rules the API server enforces on a
+// catalog entry, including that the catalog this repository ships satisfies
+// them.
 func TestRuntimeClassCRD(t *testing.T) {
 	ctx := context.Background()
 	c := startRuntimeClassEnvtest(t)
@@ -79,12 +82,12 @@ func TestRuntimeClassCRD(t *testing.T) {
 			require.NoError(t, c.Create(ctx, &class), entry.Name())
 			published++
 
-			// A class is cluster-scoped: the catalog is the platform's, not a
-			// namespace's, and it is read the same way from every project.
+			// A class is cluster-scoped so that every project reads the same
+			// catalog.
 			require.Empty(t, class.Namespace)
 
-			// Nothing has reported on a freshly published class, which is a
-			// different statement from it being broken.
+			// No controller has reported on a freshly published class, which
+			// differs from a controller rejecting it.
 			require.Len(t, class.Status.Conditions, 1)
 			require.Equal(t, computev1alpha.RuntimeClassConditionAccepted, class.Status.Conditions[0].Type)
 			require.Equal(t, metav1.ConditionUnknown, class.Status.Conditions[0].Status)
@@ -92,8 +95,8 @@ func TestRuntimeClassCRD(t *testing.T) {
 		}
 		require.Positive(t, published, "expected the bootstrap catalog to publish at least one class")
 
-		// Exactly one class may claim the default, or a workload that selects
-		// none has no single answer.
+		// Exactly one class may be the default, so that a workload selecting
+		// no class resolves to a single tier.
 		var catalog computev1alpha.RuntimeClassList
 		require.NoError(t, c.List(ctx, &catalog))
 		defaults := 0

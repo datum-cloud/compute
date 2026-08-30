@@ -33,8 +33,8 @@ func TestCapabilitiesSupports(t *testing.T) {
 }
 
 // TestCapabilitiesClassDescription covers how a rejection refers to the class
-// that refused an instance. The name is whatever the catalog published, and a
-// class that was never resolved is described rather than quoted empty.
+// that refused an instance. A resolved class uses the name the catalog
+// published, and an unresolved class uses a generic phrase.
 func TestCapabilitiesClassDescription(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -54,8 +54,8 @@ func TestCapabilitiesClassDescription(t *testing.T) {
 	}
 }
 
-// TestFeatureDescriptions keeps rejections readable: every feature a class can
-// refuse has to have product language to refuse it in.
+// TestFeatureDescriptions checks that every feature a class can refuse has a
+// customer-facing description to use in the rejection message.
 func TestFeatureDescriptions(t *testing.T) {
 	features := []Feature{
 		FeatureSandboxRuntime,

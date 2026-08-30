@@ -13,15 +13,14 @@ import (
 // ValidateInstanceSpec reports every part of the instance spec the class
 // cannot serve.
 //
-// A class publishes a contract, so quietly skipping a feature a customer asked
-// for — a disk volume dropped while the instance otherwise starts — breaks
-// that contract in a way the customer only discovers from behavior that does
-// not match what they wrote. Every unsupported request is returned instead,
-// naming the class and the feature, so the whole gap is visible at once rather
-// than one rejection per apply.
+// Ignoring an unsupported request, such as dropping a disk volume while the
+// instance still starts, leaves the customer to discover the gap from runtime
+// behavior. ValidateInstanceSpec instead returns one error per unsupported
+// request, naming the class and the feature, so the customer sees the full gap
+// in a single apply.
 //
-// fldPath is the path of the instance spec being validated
-// (`spec` for an Instance, `spec.template.spec` for a workload's template).
+// fldPath is the path of the instance spec being validated. For example, use
+// spec for an Instance and spec.template.spec for a workload's template.
 func ValidateInstanceSpec(
 	spec computev1alpha.InstanceSpec,
 	capabilities Capabilities,
@@ -69,8 +68,8 @@ func ValidateInstanceSpec(
 }
 
 // ValidateInstanceTemplateSpec validates the instance a workload's template
-// would produce. Rejecting at the workload is what lets a customer learn at
-// apply time instead of from instances that never come up.
+// would produce. Rejecting the workload tells the customer at apply time
+// instead of leaving them to diagnose instances that never start.
 func ValidateInstanceTemplateSpec(
 	template computev1alpha.InstanceTemplateSpec,
 	capabilities Capabilities,
@@ -111,9 +110,9 @@ func validateSandbox(
 	return allErrs
 }
 
-// validateVolumeAttachment checks the one property of an attachment a class
-// can refuse: an attachment with no mount path is a raw device handed to the
-// guest, which a class that owns the guest's filesystem cannot present.
+// validateVolumeAttachment checks the single attachment property a class can
+// refuse. An attachment with no mount path is a raw device passed to the guest,
+// which a class that owns the guest filesystem cannot present.
 func validateVolumeAttachment(
 	attachment computev1alpha.VolumeAttachment,
 	capabilities Capabilities,
@@ -129,8 +128,8 @@ func validateVolumeAttachment(
 }
 
 // unsupported builds the customer-facing rejection for a feature a class does
-// not serve. It names the class so the customer knows which tier said no, and
-// the feature in product language so they know what to change.
+// not serve. The message names the class that refused the request and describes
+// the feature in product terms so the customer knows what to change.
 func unsupported(fldPath *field.Path, capabilities Capabilities, feature Feature) *field.Error {
 	return field.Forbidden(fldPath, fmt.Sprintf(
 		"%s are not supported by %s",

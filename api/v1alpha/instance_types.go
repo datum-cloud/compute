@@ -88,25 +88,17 @@ type InstanceRuntimeSpec struct {
 	// A virtual machine is a classical VM environment, booting a full OS provided by the user via an image.
 	VirtualMachine *VirtualMachineRuntime `json:"virtualMachine,omitempty"`
 
-	// The execution tier the instance runs in. A class is a published promise
-	// about isolation, image compatibility, startup latency, and price, so
-	// customers can trade "starts in milliseconds" against "my image just
-	// works" instead of discovering a runtime's limits by hitting them.
+	// The execution tier the instance runs in. The value names a RuntimeClass
+	// in the platform catalog, which Datum publishes and customers do not
+	// define. Publishing a new tier adds a class instead of changing this API.
 	//
-	// The value names a RuntimeClass in the platform's catalog, which is owned
-	// and published by Datum, not defined by customers. The catalog is data,
-	// not schema, so a new tier is published by adding a class rather than by
-	// changing this API, and the machinery behind a class can change without a
-	// customer-visible API change as long as the published promise holds.
+	// The class is independent of the runtime shape above. Either a sandbox or
+	// a virtual machine can run in any class the platform offers.
 	//
-	// This is independent of the runtime shape above: a sandbox and a virtual
-	// machine can each be run in any class the platform offers, and the two
-	// axes must not be collapsed into one.
-	//
-	// Left empty, an instance runs in whichever class the catalog marks as
-	// default. That choice is recorded on the workload when it is admitted and
-	// never resolved again, so no existing workload changes tier, cost, or
-	// startup characteristics without an announced migration.
+	// An empty value selects the class the catalog marks as default. Admission
+	// records that choice on the workload and never resolves it again, so an
+	// existing workload keeps the tier, cost, and startup characteristics it
+	// was created with.
 	//
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Optional

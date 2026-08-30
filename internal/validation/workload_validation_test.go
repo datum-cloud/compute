@@ -762,12 +762,11 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 	return workload
 }
 
-// TestValidateWorkloadSpecUpdate_RuntimeClassImmutable covers the update-only
-// rule: a workload cannot be moved between execution tiers in place. The one
-// permitted transition is filling in an absent class with the one the catalog
-// marks as default, which is what the mutating webhook does the first time a
-// pre-existing workload is updated after the feature is enabled — and which
-// tier that is comes from the catalog, never from a name this package knows.
+// TestValidateWorkloadSpecUpdate_RuntimeClassImmutable verifies that a workload
+// cannot move between execution tiers in place. The only permitted transition
+// fills in an absent class with the class the catalog marks as default, which
+// is what the mutating webhook stamps. The default comes from the catalog, not
+// from a name this package knows.
 func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
 	classPath := field.NewPath("spec", "template", "spec", "runtime", "class")
 
@@ -777,8 +776,8 @@ func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
 		}).Spec
 	}
 
-	// undefaultedCatalog publishes tiers but marks none of them default, so
-	// there is no class a workload can be said to already run in.
+	// undefaultedCatalog publishes tiers but marks none of them as default, so
+	// no class can be filled in on an existing workload.
 	undefaultedCatalog := runtimeclass.Catalog{
 		makeRuntimeClass(testClassAzurite),
 		makeRuntimeClass(testClassBasalt),
@@ -861,9 +860,9 @@ func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
 	}
 }
 
-// TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault checks the
-// refusal tells a customer which class they may fill in, read from the catalog
-// rather than asserted by the platform.
+// TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault verifies that the
+// rejection message names the class that may be filled in, read from the
+// catalog.
 func TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault(t *testing.T) {
 	spec := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
 		w.Spec.Template.Spec.Runtime.Class = testClassBasalt

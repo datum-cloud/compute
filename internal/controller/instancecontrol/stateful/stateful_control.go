@@ -263,16 +263,14 @@ func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) 
 		labelServiceKey: labelServiceValue,
 	}
 
-	// A provider claims instances by class, so the label states the class that
-	// was actually resolved for the deployment when it was admitted — never one
-	// derived here, which would be this plane guessing at a catalog decision.
+	// Providers select instances by runtime class, so the label copies the class
+	// the deployment resolved at admission. Deriving a class here would override
+	// the catalog's decision.
 	//
-	// An absent class means no class was ever resolved, which is every instance
-	// on a control plane where the feature has not been enabled. Those carry no
-	// class label at all, exactly as they did before classes existed, and are
-	// claimed by whichever provider the cell runs rather than by class. Naming
-	// a class here instead would hand them to a class-selecting provider that
-	// may not be the one serving them.
+	// An empty class means no class was resolved. Those instances carry no class
+	// label and are claimed by whichever provider the cell runs. Supplying a
+	// class would route them to a class-selecting provider that may not serve
+	// them.
 	if class := deployment.Spec.Template.Spec.Runtime.Class; class != "" {
 		desired[v1alpha.RuntimeClassLabel] = class
 	}

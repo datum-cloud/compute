@@ -1473,13 +1473,11 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		instanceQuotaClaimSourceLabel:    r.edgeClusterName,
 		instanceQuotaClaimNamespaceLabel: instance.Namespace,
 	}
-	// Record which execution tier the budget was spent on. Claim requests name
-	// flat resource types and are immutable once created, so entitling a class
-	// separately would mean splitting the pooled resource types and re-granting
-	// every project; this label is what makes per-class consumption of the
-	// pooled budget measurable before that one-way split is taken. Stamped only
-	// when a class was explicitly selected, so claims written while the
-	// RuntimeClasses gate is off are identical to the ones that bill today.
+	// Records which runtime class consumed the budget. Claim requests name flat
+	// resource types and are immutable after creation, so entitling a class
+	// separately would require splitting the pooled resource types and
+	// re-granting every project. This label makes per-class consumption of the
+	// pooled budget measurable before that one-way split.
 	if class := instance.Spec.Runtime.Class; class != "" {
 		claimLabels[computev1alpha.RuntimeClassLabel] = class
 	}
@@ -1630,8 +1628,8 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 
 	// Path 3: instance type catalog — handles the typical production case where
 	// instanceType is the only sizing signal and no explicit limits are set.
-	// The catalog is shared with the providers that run the instance, so the
-	// amounts claimed here are the amounts the instance is actually given.
+	// The providers that run the instance share this catalog, so the claimed
+	// amounts match the amounts the instance receives.
 	if sizing, ok := instancetype.Lookup(rt.Resources.InstanceType); ok {
 		return sizing.CPUMillicores, sizing.MemoryMiB, true
 	}

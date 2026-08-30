@@ -592,10 +592,9 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 	assert.Empty(t, patchActions, "no PatchLabels when all labels are already correct")
 }
 
-// TestRuntimeClass_PropagatedToInstances asserts that the execution tier
-// selected on the deployment's template reaches every instance created from it.
-// The class is what a provider dispatches on, so an instance that loses it would
-// silently run in the wrong tier.
+// TestRuntimeClass_PropagatedToInstances verifies that the runtime class on the
+// deployment template reaches every instance created from it. Providers
+// dispatch on the class, so an instance that loses it runs in the wrong class.
 func TestRuntimeClass_PropagatedToInstances(t *testing.T) {
 	ctx := context.Background()
 	control := NewWithOptions(Options{})
@@ -615,9 +614,10 @@ func TestRuntimeClass_PropagatedToInstances(t *testing.T) {
 	}
 }
 
-// TestRuntimeClass_ChangesTemplateHash asserts the class participates in the
-// template hash, so an instance that predates a class change is recognized as
-// stale and recreated rather than left running in the previous tier.
+// TestRuntimeClass_ChangesTemplateHash verifies that the runtime class
+// participates in the template hash. An instance that predates a class change
+// is then treated as stale and recreated instead of running in the previous
+// class.
 func TestRuntimeClass_ChangesTemplateHash(t *testing.T) {
 	deployment := getWorkloadDeployment("test-runtime-class-hash", 1)
 

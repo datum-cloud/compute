@@ -1,5 +1,3 @@
-# The general-purpose tier — an ordinary Linux container image runs here
-# unmodified, at a stronger isolation boundary than a shared kernel.
 apiVersion: compute.datumapis.com/v1alpha
 kind: RuntimeClass
 metadata:

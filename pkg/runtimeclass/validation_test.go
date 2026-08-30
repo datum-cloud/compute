@@ -14,8 +14,8 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// Fixture names shared across these tests. They are constants only so the
-// same fixture is named the same way in every case.
+// Fixture class names shared across these tests. They are constants so every
+// case names the same fixture the same way.
 const (
 	testContainerName    = "app"
 	testConfigVolumeName = "config"
@@ -23,14 +23,14 @@ const (
 	testConfigMapName    = "settings"
 )
 
-// envFromRejection is the rejection a narrow class returns for envFrom.
-// It is spelled out here rather than built from the validator so the test
-// still fails if the wording changes.
+// envFromRejection is the rejection a narrow class returns for envFrom. It is
+// spelled out rather than built from the validator, so the test fails if the
+// wording changes.
 const envFromRejection = "environment variables sourced from a whole ConfigMap or Secret " +
 	`are not supported by the "azurite" runtime class`
 
-// fullCapabilities serves everything, so a test that expects no rejection is
-// not passing because it forgot to declare something.
+// fullCapabilities declares every feature, so a case that expects no rejection
+// cannot pass because of an omitted declaration.
 var fullCapabilities = Capabilities{
 	Class: testClassBasalt,
 	Features: []Feature{
@@ -45,8 +45,9 @@ var fullCapabilities = Capabilities{
 	},
 }
 
-// minimalCapabilities is the narrow shape a fast path serves: containers with
-// data passed in, and nothing that assumes a disk or a full guest.
+// minimalCapabilities is the narrow set a fast-start class serves. It covers
+// containers with injected data and excludes anything requiring a disk or a
+// full guest.
 var minimalCapabilities = Capabilities{
 	Class: testClassAzurite,
 	Features: []Feature{
@@ -303,8 +304,9 @@ func TestValidateInstanceSpec(t *testing.T) {
 	}
 }
 
-// TestValidateInstanceTemplateSpec confirms a workload's template is rejected
-// at apply time, with paths pointing at the template the customer wrote.
+// TestValidateInstanceTemplateSpec confirms validation rejects a workload's
+// template at apply time and reports paths into the template the customer
+// wrote.
 func TestValidateInstanceTemplateSpec(t *testing.T) {
 	template := computev1alpha.InstanceTemplateSpec{
 		Spec: func() computev1alpha.InstanceSpec {

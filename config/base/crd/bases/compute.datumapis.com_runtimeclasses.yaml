@@ -47,18 +47,18 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          RuntimeClass is an execution tier a workload can be run in: a published
-          promise about the isolation surrounding it, what images run in it unmodified,
-          how fast it starts, and what lifecycle operations it offers.
+          RuntimeClass is an execution tier a workload can run in. It publishes the
+          isolation surrounding the workload, which images run unmodified, how fast
+          instances start, and which lifecycle operations the tier offers.
 
-          The catalog is owned and published by Datum. Customers select a class by name
-          on a workload; they never create one. That is what lets the machinery behind
-          a class change without a customer-visible API change, as long as the promise
+          Datum owns and publishes the catalog. Customers select a class by name on a
+          workload and never create one. That restriction lets the machinery behind a
+          class change without a customer-visible API change, as long as the contract
           on this object still holds.
 
           The class is authoritative in the platform control plane and projected
           read-only into project control planes, so a customer can read the contract
-          they are selecting from without reaching the platform's own plane.
+          they select from without reaching the platform control plane.
         properties:
           apiVersion:
             description: |-
@@ -85,28 +85,25 @@ spec:
                 properties:
                   compatibility:
                     description: |-
-                      What runs unmodified in this class and what does not. This is the honest,
-                      unglamorous part of the contract, and the part customers most need before
-                      they commit an image to a tier.
+                      What runs unmodified in this class and what does not. Customers need this
+                      statement before committing an image to the tier.
                     maxLength: 2048
                     type: string
                   features:
                     description: |-
                       The optional parts of the instance API this class serves. Anything absent
-                      is unsupported, so a class that forgets to declare a feature turns the
-                      request down loudly rather than serving it by accident.
+                      is unsupported, so a class that omits a feature rejects requests for it
+                      rather than serving it by accident.
                     items:
                       description: |-
                         RuntimeClassFeature is an optional part of the instance API that a runtime
-                        class may or may not be able to serve. Features name customer-visible
-                        capabilities, not implementation mechanisms, because they are published in
-                        the class contract and quoted back in the message a customer reads when a
-                        class rejects their instance.
+                        class may or may not serve. Features name customer-visible capabilities
+                        rather than implementation mechanisms, because the class contract publishes
+                        them and rejection messages quote them back to the customer.
 
-                        The set of features grows only when the instance API grows a capability a
-                        class could decline, which is why it is enumerated here: a class that
-                        declares a feature nobody defined would promise something no provider can
-                        read.
+                        The set grows only when the instance API gains a capability a class could
+                        decline. Enumerating the features keeps a class from declaring one that no
+                        provider can interpret.
                       enum:
                       - sandboxRuntime
                       - virtualMachineRuntime
@@ -123,15 +120,14 @@ spec:
                 type: object
               controllerName:
                 description: |-
-                  The controller that implements this class. A provider watches for the
-                  classes carrying its own controller name, claims them, and reports
-                  whether it can honor what they declare via the Accepted condition. A
-                  class whose controller never appears is a promise nothing implements,
-                  which is exactly what this field makes visible.
+                  The controller that implements this class. A provider watches for classes
+                  carrying its own controller name, claims them, and reports through the
+                  Accepted condition whether it can honor what they declare. A class whose
+                  controller never appears stays unclaimed, which this field makes visible.
 
-                  This says which provider realizes the class. It does not say where the
-                  class can run: cells advertise that separately, and placement uses that
-                  declaration.
+                  The field says which provider realizes the class. It does not say where
+                  the class can run. Cells advertise that separately, and placement uses
+                  their declaration.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\/[A-Za-z0-9\/\-._~%!$&'()*+,;=:]+$
@@ -143,36 +139,38 @@ spec:
                 description: |-
                   Whether an instance that selects no class runs in this one.
 
-                  The default is stamped onto a workload when it is admitted, never
-                  resolved at read time, so moving this marker changes what new workloads
-                  get and leaves running ones in the tier, cost, and startup profile they
-                  were created with. At most one class in the catalog may set it.
+                  Admission stamps the default onto a workload and never resolves it at
+                  read time. Moving the marker changes what new workloads get and leaves
+                  running ones in the tier, cost, and startup profile they were created
+                  with. At most one class in the catalog may set it.
                 type: boolean
               description:
                 description: What this tier is for and who should choose it.
                 maxLength: 1024
                 type: string
               displayName:
-                description: The name to show a customer choosing a tier, e.g. "Unikernel
-                  fast path".
+                description: |-
+                  The name to show a customer choosing a tier, for example "Unikernel fast
+                  path".
                 maxLength: 64
                 type: string
               isolation:
-                description: What separates a workload in this class from its neighbors.
+                description: What separates a workload in this class from other tenants'
+                  workloads.
                 properties:
                   boundary:
                     description: |-
-                      A short, stable token for the boundary — for example "unikernel" or
-                      "virtual-machine". It is deliberately not enumerated: the boundaries the
-                      platform can offer grow with the catalog, and pinning them in the schema
-                      would make each new tier an API change.
+                      A short, stable token for the boundary, for example "unikernel" or
+                      "virtual-machine". The values are deliberately not enumerated. The
+                      boundaries the platform offers grow with the catalog, and fixing them in
+                      the schema would make each new tier an API change.
                     maxLength: 64
                     minLength: 1
                     type: string
                   description:
                     description: |-
-                      A sentence a customer can put in front of an auditor describing what the
-                      boundary is and what it separates.
+                      A description of the boundary and what it separates, suitable for a
+                      customer to show an auditor.
                     maxLength: 1024
                     type: string
                 required:
@@ -186,20 +184,19 @@ spec:
                   description:
                     description: |-
                       Anything about startup or lifecycle a customer needs that the fields
-                      above cannot say.
+                      above cannot express.
                     maxLength: 1024
                     type: string
                   operations:
                     description: |-
-                      The lifecycle operations this class offers. Declaring none is a truthful
-                      answer, and a better one than implying a tier can do what its isolation
-                      boundary does not allow.
+                      The lifecycle operations this class offers. Declaring none is accurate
+                      for a class whose isolation boundary does not allow them.
                     items:
                       description: |-
                         RuntimeClassLifecycleOperation is a lifecycle action a class can perform on a
-                        running instance. These are what the roadmap's cost story leans on, and they
-                        are not uniformly available across isolation tiers, so each class states
-                        which of them it offers rather than the platform implying them.
+                        running instance. These actions are not uniformly available across isolation
+                        tiers, so each class states which ones it offers rather than the platform
+                        implying them.
                       enum:
                       - Suspend
                       - Resume
@@ -210,10 +207,10 @@ spec:
                     x-kubernetes-list-type: set
                   typicalStartupTime:
                     description: |-
-                      The cold start a customer should plan for — the time from an instance
-                      being created to it running. It is the headline difference between tiers
-                      and the reason a customer picks one, so it is published rather than
-                      discovered.
+                      The cold start a customer should plan for, measured from instance
+                      creation to the instance running. Startup time is the main difference
+                      between tiers, so the class publishes it rather than leaving customers to
+                      measure it.
                     type: string
                 type: object
             required:

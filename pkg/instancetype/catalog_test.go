@@ -8,9 +8,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// TestCatalogSizing pins the published sizing. Quota is claimed against these
-// exact amounts, so changing one silently re-prices every instance of that
-// type — a change here must be a deliberate product decision, not a drive-by.
+// TestCatalogSizing pins the published sizing. Compute claims quota against
+// these exact amounts, so changing one re-prices every instance of that type.
+// Update this test only as part of a deliberate product decision.
 func TestCatalogSizing(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -62,9 +62,9 @@ func TestNames(t *testing.T) {
 	}
 }
 
-// TestLookupDoesNotExposeMutableCatalog guards the source of truth: a consumer
-// that could edit a returned value in place would change platform sizing for
-// every later caller in the process.
+// TestLookupDoesNotExposeMutableCatalog checks that Lookup returns a copy. A
+// consumer that edited the returned value in place would change platform sizing
+// for every later caller in the process.
 func TestLookupDoesNotExposeMutableCatalog(t *testing.T) {
 	sizing, _ := Lookup(D1Standard2)
 	sizing.MemoryMiB = 1

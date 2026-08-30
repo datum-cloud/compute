@@ -3,28 +3,21 @@ kind: ServiceConfiguration
 metadata:
   name: compute
 spec:
-  # Rates are matched on the runtime_class dimension declared on these meters,
-  # so the two classes can carry different prices without forking the meter
-  # into per-class metric names (which would break every existing query,
-  # dashboard, and invoice line built on the current names).
+  # Rates match on the runtime_class dimension declared on these meters, so each
+  # class can carry its own price. Per-class metric names would break every
+  # existing query, dashboard, and invoice line built on the current names.
   #
-  # Ordering matters: Milo applies the first matching entry and treats the
-  # trailing unmatched entry as the catch-all. The catch-all is deliberately
-  # kept at today's exact rate so any usage event that arrives without a
-  # runtime_class dimension — which is every event a producer that predates
-  # this change emits — prices identically to before. Once every producer is
-  # confirmed to attach the dimension, the catch-all becomes an explicit
-  # `unikernel` match.
+  # Order matters. Milo applies the first matching entry and treats the trailing
+  # unmatched entry as the catch-all, which prices usage events that carry no
+  # runtime_class dimension. Replace the catch-all with an explicit unikernel
+  # match once every producer attaches the dimension. The Amberflo backend also
+  # requires that step, because it cannot materialize a rate set that mixes
+  # matched and catch-all entries. Per-class prices take effect there only when
+  # every dimension value is priced explicitly.
   #
-  # That last step is also what the Amberflo backend needs: it cannot
-  # materialize a mixed matched + catch-all rate set, so per-class prices only
-  # take effect there once every dimension value is priced explicitly.
-  #
-  # general-purpose intentionally carries today's rate rather than a guessed
-  # premium. The class has higher per-instance overhead and should cost more,
-  # but the enhancement makes measured overhead on Datum hardware a
-  # prerequisite for offering the class — this is the field that measurement
-  # sets, and nothing is billed at it until the class is placeable.
+  # general-purpose carries the unikernel rate until its higher per-instance
+  # overhead is measured on Datum hardware. That measurement sets this field,
+  # and the class is not placeable until then.
   charges:
     - name: compute.datumapis.com/instance/cpu-seconds
       chargeType: Usage

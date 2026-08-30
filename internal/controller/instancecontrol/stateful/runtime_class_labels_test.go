@@ -11,19 +11,17 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
-// The class names here are invented, and deliberately not the ones the platform
-// ships. Stamping the class must copy whatever the deployment resolved, so a
-// test built on the shipped names could not tell that apart from this plane
-// re-deriving a name it knows.
+// These class names are intentionally not names the platform ships. The label
+// must copy whatever class the deployment resolved. A shipped name would let a
+// test pass even if the control plane re-derived the name itself.
 const (
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
 )
 
-// TestInstanceLabels_RuntimeClassStamped asserts an instance states the class
-// its deployment resolved, and only that class. A provider claims instances by
-// this label, so a label carrying anything other than the resolved class hands
-// the instance to the wrong provider.
+// TestInstanceLabels_RuntimeClassStamped verifies that an instance carries the
+// runtime class its deployment resolved. Providers select instances by this
+// label, so any other value routes the instance to the wrong provider.
 func TestInstanceLabels_RuntimeClassStamped(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -50,12 +48,10 @@ func TestInstanceLabels_RuntimeClassStamped(t *testing.T) {
 	}
 }
 
-// TestInstanceLabels_RuntimeClassAbsentWhenUnresolved pins the behavior of a
-// control plane where runtime class selection has never been enabled: nothing
-// resolves a class, and the instance carries no class label, exactly as it did
-// before classes existed. Stamping a name here would be this plane inventing a
-// tier the catalog never assigned, and would hand the instance to a
-// class-selecting provider that may not be the one serving it.
+// TestInstanceLabels_RuntimeClassAbsentWhenUnresolved verifies that an instance
+// with no resolved runtime class carries no class label. The control plane must
+// not supply a class the catalog never assigned, because a class-selecting
+// provider would then claim an instance it does not serve.
 func TestInstanceLabels_RuntimeClassAbsentWhenUnresolved(t *testing.T) {
 	instance := createdInstance(t, "")
 
@@ -63,12 +59,11 @@ func TestInstanceLabels_RuntimeClassAbsentWhenUnresolved(t *testing.T) {
 	assert.False(t, stamped, "an instance with no resolved class must carry no class label")
 }
 
-// TestInstanceLabels_PreClassesSetIsUnchanged pins the exact set of labels an
-// instance carries where no class was ever resolved, which is every instance on
-// a control plane that has not enabled runtime classes. Providers scope their
-// informer cache by label selector, so a key that appears or disappears here
-// silently changes which instances a running provider owns — and an un-owned
-// instance never starts and never finishes terminating.
+// TestInstanceLabels_PreClassesSetIsUnchanged verifies the exact label set on
+// an instance whose deployment resolved no runtime class. Providers scope their
+// informer cache by label selector, so adding or removing a key changes which
+// instances a running provider owns. An unowned instance never starts and never
+// finishes terminating.
 func TestInstanceLabels_PreClassesSetIsUnchanged(t *testing.T) {
 	deployment := getWorkloadDeployment("test-pre-classes-labels", 1)
 
@@ -84,9 +79,9 @@ func TestInstanceLabels_PreClassesSetIsUnchanged(t *testing.T) {
 	}, desiredControllerLabels(0, deployment))
 }
 
-// TestInstanceLabels_RuntimeClassBackfilled asserts an instance created before
-// the class label existed is recognized as needing it. Providers select on the
-// label, so an instance left without one is never claimed.
+// TestInstanceLabels_RuntimeClassBackfilled verifies that an instance missing
+// the runtime class label is reported as needing a backfill. Providers select
+// on the label, so an instance without one is never claimed.
 func TestInstanceLabels_RuntimeClassBackfilled(t *testing.T) {
 	deployment := getWorkloadDeployment("test-runtime-class-backfill", 1)
 	deployment.Spec.Template.Spec.Runtime.Class = testClassAzurite

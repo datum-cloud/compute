@@ -2391,7 +2391,7 @@ func TestResolveInstanceResources(t *testing.T) {
 	}
 }
 
-// testOwnerDeploymentName is the WorkloadDeployment that owns the instances
+// testOwnerDeploymentName names the WorkloadDeployment that owns the instances
 // built by the quota claim tests.
 const testOwnerDeploymentName = "owner-deployment"
 
@@ -2500,14 +2500,11 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 		"d1-standard-2 must claim 2048 MiB (2 GiB)")
 }
 
-// TestReconcileQuotaClaim_RuntimeClassLabel pins the quota half of the runtime
-// class contract: the class is recorded on the ResourceClaim so per-class
-// consumption of the pooled budget is measurable, but it does not change what
-// is claimed. Entitlement stays pooled — claims are immutable, so splitting the
-// resource types per class is a one-way migration that must be justified by
-// measurement first. The unset case is the shape produced while the
-// RuntimeClasses gate is off, and it must stay byte-identical to what bills
-// today.
+// TestReconcileQuotaClaim_RuntimeClassLabel verifies that reconcileQuotaClaim
+// records the runtime class on the ResourceClaim without changing what the
+// claim requests. Entitlement stays pooled. Claims are immutable, so splitting
+// the resource types per class is a one-way migration that measurement must
+// justify first. The unset case covers instances with no selected class.
 func TestReconcileQuotaClaim_RuntimeClassLabel(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -2619,8 +2616,8 @@ func TestReconcileQuotaClaim_RuntimeClassLabel(t *testing.T) {
 				assert.Equal(t, tt.class, label, "runtime class label value mismatch")
 			}
 
-			// The class must not re-dimension the claim: entitlement is pooled,
-			// so the requested resource types are the same either way.
+			// Entitlement is pooled, so the runtime class must not change the
+			// requested resource types.
 			resourceTypes := make([]string, 0, len(createdClaim.Spec.Requests))
 			for _, req := range createdClaim.Spec.Requests {
 				resourceTypes = append(resourceTypes, req.ResourceType)

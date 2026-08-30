@@ -7,13 +7,14 @@ import (
 )
 
 // RuntimeClassControllerName is the name of the controller that implements a
-// runtime class, as a domain-prefixed path — for example
+// runtime class, as a domain-prefixed path. For example,
 // "compute.datumapis.com/unikraft-provider".
 //
-// This is who realizes the class, not where it can be run. A cell separately
-// advertises the classes it can serve (see RuntimeClassServedLabel), and the
-// two answers are independent: a class can have a provider and no capacity
-// anywhere, or capacity in a cell whose provider has not accepted the class.
+// The name identifies which controller realizes the class, not where the class
+// can run. A cell advertises the classes it can serve separately, through
+// RuntimeClassServedLabel. The two are independent: a class can have a
+// controller and no capacity anywhere, or capacity in a cell whose controller
+// has not accepted the class.
 //
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=253
@@ -21,15 +22,13 @@ import (
 type RuntimeClassControllerName string
 
 // RuntimeClassFeature is an optional part of the instance API that a runtime
-// class may or may not be able to serve. Features name customer-visible
-// capabilities, not implementation mechanisms, because they are published in
-// the class contract and quoted back in the message a customer reads when a
-// class rejects their instance.
+// class may or may not serve. Features name customer-visible capabilities
+// rather than implementation mechanisms, because the class contract publishes
+// them and rejection messages quote them back to the customer.
 //
-// The set of features grows only when the instance API grows a capability a
-// class could decline, which is why it is enumerated here: a class that
-// declares a feature nobody defined would promise something no provider can
-// read.
+// The set grows only when the instance API gains a capability a class could
+// decline. Enumerating the features keeps a class from declaring one that no
+// provider can interpret.
 //
 // +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets
 type RuntimeClassFeature string
@@ -53,12 +52,12 @@ const (
 
 	// RuntimeClassFeatureDiskVolumes is the ability to back a volume with a
 	// persistent disk. A class whose root filesystem lives in RAM typically
-	// cannot.
+	// cannot serve disk-backed volumes.
 	RuntimeClassFeatureDiskVolumes RuntimeClassFeature = "diskVolumes"
 
 	// RuntimeClassFeatureDeviceVolumeAttachments is the ability to attach a
-	// volume as a raw device — an attachment with no mount path — leaving the
-	// guest to format and mount it.
+	// volume as a raw device. The attachment has no mount path, so the guest
+	// formats and mounts it.
 	RuntimeClassFeatureDeviceVolumeAttachments RuntimeClassFeature = "deviceVolumeAttachments"
 
 	// RuntimeClassFeatureEnvFrom is the ability to populate a container's
@@ -71,9 +70,9 @@ const (
 	RuntimeClassFeatureImagePullSecrets RuntimeClassFeature = "imagePullSecrets"
 )
 
-// runtimeClassFeatureDescriptions carries the customer-facing phrase for each
-// feature. Rejections quote this rather than the API value so the message reads
-// as product language instead of a field name.
+// runtimeClassFeatureDescriptions maps each feature to its customer-facing
+// phrase. Rejection messages quote the phrase rather than the API value so the
+// message reads as product language instead of a field name.
 var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureSandboxRuntime:          "container sandbox instances",
 	RuntimeClassFeatureVirtualMachineRuntime:   "virtual machine instances",
@@ -85,9 +84,9 @@ var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureImagePullSecrets:        "image pull secrets",
 }
 
-// Description returns the customer-facing phrase for the feature, falling back
-// to the API value so a newly added feature is still readable if its
-// description was forgotten.
+// Description returns the customer-facing phrase for the feature. It falls back
+// to the API value so a newly added feature stays readable without a
+// description.
 func (f RuntimeClassFeature) Description() string {
 	if description, ok := runtimeClassFeatureDescriptions[f]; ok {
 		return description
@@ -96,9 +95,9 @@ func (f RuntimeClassFeature) Description() string {
 }
 
 // RuntimeClassLifecycleOperation is a lifecycle action a class can perform on a
-// running instance. These are what the roadmap's cost story leans on, and they
-// are not uniformly available across isolation tiers, so each class states
-// which of them it offers rather than the platform implying them.
+// running instance. These actions are not uniformly available across isolation
+// tiers, so each class states which ones it offers rather than the platform
+// implying them.
 //
 // +kubebuilder:validation:Enum=Suspend;Resume;Snapshot
 type RuntimeClassLifecycleOperation string
@@ -116,67 +115,65 @@ const (
 	RuntimeClassLifecycleSnapshot RuntimeClassLifecycleOperation = "Snapshot"
 )
 
-// RuntimeClassIsolation is the class's answer to "what separates my workload
-// from my neighbor's". Multi-tenant customers have to give this answer to their
-// own auditors, so it is published in the API and held stable across providers
-// rather than being a property of whichever runtime a cell happens to run.
+// RuntimeClassIsolation describes what separates a workload in the class from
+// other tenants' workloads. Multi-tenant customers report this boundary to
+// their own auditors, so the API publishes it and holds it stable across
+// providers instead of leaving it to whichever runtime a cell runs.
 type RuntimeClassIsolation struct {
-	// A short, stable token for the boundary — for example "unikernel" or
-	// "virtual-machine". It is deliberately not enumerated: the boundaries the
-	// platform can offer grow with the catalog, and pinning them in the schema
-	// would make each new tier an API change.
+	// A short, stable token for the boundary, for example "unikernel" or
+	// "virtual-machine". The values are deliberately not enumerated. The
+	// boundaries the platform offers grow with the catalog, and fixing them in
+	// the schema would make each new tier an API change.
 	//
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Required
 	Boundary string `json:"boundary"`
 
-	// A sentence a customer can put in front of an auditor describing what the
-	// boundary is and what it separates.
+	// A description of the boundary and what it separates, suitable for a
+	// customer to show an auditor.
 	//
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:Optional
 	Description string `json:"description,omitempty"`
 }
 
-// RuntimeClassCapabilities is what the class can serve. The features are the
-// machine-readable half — a workload asking for anything absent here is
-// rejected when it is submitted, naming the class — and the compatibility
-// statement is the half a customer reads before committing.
+// RuntimeClassCapabilities describes what the class can serve. The features are
+// the machine-readable half: submission rejects a workload that asks for a
+// feature absent here, naming the class. The compatibility statement is the
+// half a customer reads before committing an image to the tier.
 type RuntimeClassCapabilities struct {
 	// The optional parts of the instance API this class serves. Anything absent
-	// is unsupported, so a class that forgets to declare a feature turns the
-	// request down loudly rather than serving it by accident.
+	// is unsupported, so a class that omits a feature rejects requests for it
+	// rather than serving it by accident.
 	//
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:Optional
 	Features []RuntimeClassFeature `json:"features,omitempty"`
 
-	// What runs unmodified in this class and what does not. This is the honest,
-	// unglamorous part of the contract, and the part customers most need before
-	// they commit an image to a tier.
+	// What runs unmodified in this class and what does not. Customers need this
+	// statement before committing an image to the tier.
 	//
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:Optional
 	Compatibility string `json:"compatibility,omitempty"`
 }
 
-// RuntimeClassLifecycle is what a customer can expect of an instance in this
-// class from the moment it is created: how long it takes to be running, and
-// what can be done to it while it is.
+// RuntimeClassLifecycle describes what a customer can expect of an instance in
+// this class: how long it takes to start, and which operations apply to it
+// while it runs.
 type RuntimeClassLifecycle struct {
-	// The cold start a customer should plan for — the time from an instance
-	// being created to it running. It is the headline difference between tiers
-	// and the reason a customer picks one, so it is published rather than
-	// discovered.
+	// The cold start a customer should plan for, measured from instance
+	// creation to the instance running. Startup time is the main difference
+	// between tiers, so the class publishes it rather than leaving customers to
+	// measure it.
 	//
 	// +kubebuilder:validation:Optional
 	TypicalStartupTime *metav1.Duration `json:"typicalStartupTime,omitempty"`
 
-	// The lifecycle operations this class offers. Declaring none is a truthful
-	// answer, and a better one than implying a tier can do what its isolation
-	// boundary does not allow.
+	// The lifecycle operations this class offers. Declaring none is accurate
+	// for a class whose isolation boundary does not allow them.
 	//
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=8
@@ -184,7 +181,7 @@ type RuntimeClassLifecycle struct {
 	Operations []RuntimeClassLifecycleOperation `json:"operations,omitempty"`
 
 	// Anything about startup or lifecycle a customer needs that the fields
-	// above cannot say.
+	// above cannot express.
 	//
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:Optional
@@ -193,36 +190,32 @@ type RuntimeClassLifecycle struct {
 
 // RuntimeClassSpec is the published contract for an execution tier.
 //
-// Pricing is deliberately absent. Price and the billing dimensions a class is
-// metered on are published by the service catalog, which is what customers are
-// actually billed against; restating a number here would create a second source
-// of truth for it.
+// Pricing is deliberately absent. The service catalog publishes price and the
+// billing dimensions a class is metered on, and customers are billed against
+// the catalog. Restating a price here would create a second source of truth.
 //
-// There is deliberately no reference to provider-specific parameters either.
-// Everything here is what a customer is promised, and which runtime a provider
-// reaches for to keep that promise is not a customer-visible decision — the
-// platform reserves the right to change it. Handing providers a slot on this
+// Provider-specific parameters are deliberately absent as well. Everything here
+// is what a customer is promised, and the platform reserves the right to change
+// which runtime a provider uses to keep that promise. A provider slot on this
 // object would also put runtime configuration one RBAC mistake away from a
-// tenant, and tenant-influenced runtime configuration is the escape path this
-// design is meant to close. Provider configuration stays with the provider's
-// own deployment, and can be given a sanctioned home later without breaking
-// anything published here.
+// tenant, which is the escape path this design closes. Provider configuration
+// stays with the provider's own deployment.
 type RuntimeClassSpec struct {
-	// The controller that implements this class. A provider watches for the
-	// classes carrying its own controller name, claims them, and reports
-	// whether it can honor what they declare via the Accepted condition. A
-	// class whose controller never appears is a promise nothing implements,
-	// which is exactly what this field makes visible.
+	// The controller that implements this class. A provider watches for classes
+	// carrying its own controller name, claims them, and reports through the
+	// Accepted condition whether it can honor what they declare. A class whose
+	// controller never appears stays unclaimed, which this field makes visible.
 	//
-	// This says which provider realizes the class. It does not say where the
-	// class can run: cells advertise that separately, and placement uses that
-	// declaration.
+	// The field says which provider realizes the class. It does not say where
+	// the class can run. Cells advertise that separately, and placement uses
+	// their declaration.
 	//
 	// +kubebuilder:validation:XValidation:message="controllerName is immutable",rule="self == oldSelf"
 	// +kubebuilder:validation:Required
 	ControllerName RuntimeClassControllerName `json:"controllerName"`
 
-	// The name to show a customer choosing a tier, e.g. "Unikernel fast path".
+	// The name to show a customer choosing a tier, for example "Unikernel fast
+	// path".
 	//
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Optional
@@ -236,15 +229,15 @@ type RuntimeClassSpec struct {
 
 	// Whether an instance that selects no class runs in this one.
 	//
-	// The default is stamped onto a workload when it is admitted, never
-	// resolved at read time, so moving this marker changes what new workloads
-	// get and leaves running ones in the tier, cost, and startup profile they
-	// were created with. At most one class in the catalog may set it.
+	// Admission stamps the default onto a workload and never resolves it at
+	// read time. Moving the marker changes what new workloads get and leaves
+	// running ones in the tier, cost, and startup profile they were created
+	// with. At most one class in the catalog may set it.
 	//
 	// +kubebuilder:validation:Optional
 	Default bool `json:"default,omitempty"`
 
-	// What separates a workload in this class from its neighbors.
+	// What separates a workload in this class from other tenants' workloads.
 	//
 	// +kubebuilder:validation:Required
 	Isolation RuntimeClassIsolation `json:"isolation"`
@@ -265,9 +258,9 @@ type RuntimeClassSpec struct {
 const (
 	// RuntimeClassConditionAccepted reports whether the controller named in
 	// spec.controllerName has claimed this class and can honor everything it
-	// declares. It stays Unknown until that controller reconciles the class, so
-	// a class nothing implements is visibly unclaimed rather than silently
-	// broken.
+	// declares. The condition stays Unknown until that controller reconciles
+	// the class, so a class that no controller implements is visibly
+	// unclaimed.
 	RuntimeClassConditionAccepted = "Accepted"
 )
 
@@ -278,27 +271,27 @@ const (
 	// it and can serve everything the class declares.
 	RuntimeClassReasonAccepted = "Accepted"
 
-	// RuntimeClassReasonPending is the starting state, and means no controller
-	// has reported on this class yet — normally because the provider that
-	// implements it has not been deployed, or has not reconciled since the
-	// class was published.
+	// RuntimeClassReasonPending is the starting state and means no controller
+	// has reported on this class yet. Typically the provider that implements
+	// the class is not deployed, or has not reconciled since the class was
+	// published.
 	RuntimeClassReasonPending = "Pending"
 
 	// RuntimeClassReasonUnsupportedFeature is set when the class declares a
 	// capability its controller cannot serve. The message names the features,
-	// which is what turns "instances in this tier never start" into a gap
-	// visible in the catalog.
+	// which makes the gap visible in the catalog instead of leaving instances
+	// in the tier failing to start.
 	RuntimeClassReasonUnsupportedFeature = "UnsupportedFeature"
 
 	// RuntimeClassReasonContractNotHonored is set when the controller cannot
-	// keep some other part of the published contract — the isolation boundary
-	// it declares, or a lifecycle operation it offers.
+	// keep some other part of the published contract, such as the isolation
+	// boundary it declares or a lifecycle operation it offers.
 	RuntimeClassReasonContractNotHonored = "ContractNotHonored"
 )
 
 // RuntimeClassStatus is what the controller implementing the class reports
-// back about it. Availability per location is not reported here: cells
-// advertise the classes they serve, and that answer belongs with placement.
+// about it. Per-location availability is not reported here. Cells advertise the
+// classes they serve, and that answer belongs with placement.
 type RuntimeClassStatus struct {
 	// +listType=map
 	// +listMapKey=type
@@ -312,18 +305,18 @@ type RuntimeClassStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Platform,Project"
 
-// RuntimeClass is an execution tier a workload can be run in: a published
-// promise about the isolation surrounding it, what images run in it unmodified,
-// how fast it starts, and what lifecycle operations it offers.
+// RuntimeClass is an execution tier a workload can run in. It publishes the
+// isolation surrounding the workload, which images run unmodified, how fast
+// instances start, and which lifecycle operations the tier offers.
 //
-// The catalog is owned and published by Datum. Customers select a class by name
-// on a workload; they never create one. That is what lets the machinery behind
-// a class change without a customer-visible API change, as long as the promise
+// Datum owns and publishes the catalog. Customers select a class by name on a
+// workload and never create one. That restriction lets the machinery behind a
+// class change without a customer-visible API change, as long as the contract
 // on this object still holds.
 //
 // The class is authoritative in the platform control plane and projected
 // read-only into project control planes, so a customer can read the contract
-// they are selecting from without reaching the platform's own plane.
+// they select from without reaching the platform control plane.
 //
 // +kubebuilder:printcolumn:name="Display Name",type=string,JSONPath=`.spec.displayName`
 // +kubebuilder:printcolumn:name="Isolation",type=string,JSONPath=`.spec.isolation.boundary`
@@ -348,7 +341,7 @@ type RuntimeClass struct {
 
 // +kubebuilder:object:root=true
 
-// RuntimeClassList contains a list of RuntimeClass
+// RuntimeClassList contains a list of RuntimeClass objects.
 type RuntimeClassList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
