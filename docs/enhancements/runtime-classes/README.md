@@ -232,18 +232,23 @@ running. The line between what the platform owns and what each provider owns has
 drawn deliberately, or the two classes drift into two dialects: different words for the
 same failure, different sizing for the same instance type, different silent gaps.
 
-**The platform owns the contract.** The class catalog and its published promises, the
-instance-type sizing every class must honor, the customer-facing vocabulary for instance
-status and failure reasons, and the translation from an instance's declared spec into a
-runnable description of it. These are the things a customer experiences identically no
-matter which class they chose, so they are defined once, centrally, and shared.
+**The platform owns the class type and the contract.** The shape a class is declared in
+and the promises a class must publish, the instance-type sizing every class must honor,
+the customer-facing vocabulary for instance status and failure reasons, and the
+translation from an instance's declared spec into a runnable description of it. These are
+the things a customer experiences identically no matter which class they chose, so they
+are defined once, centrally, and shared.
 
-**A provider owns realization.** How its runtime is targeted and configured, its
-runtime-specific plumbing, its lifecycle and cleanup, and advertising the capacity it can
-serve. Providers stay separately deployed and separately released: a fault or a bad
-rollout in one class must not be able to take another class down with it, and a runtime
-whose contract changes on a vendor's schedule should not be able to churn the platform's
-core.
+**A provider owns realization, and registers the classes it serves.** Each provider
+publishes its own classes from its own repository, so the catalog a control plane offers
+is exactly what its deployed providers can honor, and a class cannot be advertised by a
+platform that has nothing running it. This is the split Gateway API draws between the
+GatewayClass kind and the GatewayClass objects each controller ships. A provider also owns
+how its runtime is targeted and configured, its runtime-specific plumbing, its lifecycle
+and cleanup, and advertising the capacity it can serve. Providers stay separately deployed
+and separately released: a fault or a bad rollout in one class must not be able to take
+another class down with it, and a runtime whose contract changes on a vendor's schedule
+should not be able to churn the platform's core.
 
 Deliberately, an instance is *not* required to be realized the same way in every class —
 one class may run its instances as containers on a host, another may provision a virtual
