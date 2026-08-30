@@ -58,13 +58,13 @@ spec:
     # Runtime class is a separate label rather than a reuse of `tier`. `tier`
     # names a commercial support tier and is also a common name for customer
     # workload labels, so an invoice line broken out by `tier` would be
-    # ambiguous. An instance that sets no class reports the default class, so
-    # the dimension is never empty and every value is priceable.
+    # ambiguous. Providers register the classes they serve, so compute cannot
+    # name the values here. An instance that selects no class reports an empty
+    # dimension, which the catch-all rate prices.
     - name: runtime_class
       description: >-
-        The execution tier the instance runs in (unikernel, general-purpose).
-        Isolation, image compatibility, startup latency, and price differ per
-        class.
+        The execution tier the instance runs in. Isolation, image
+        compatibility, startup latency, and price differ per class.
   metrics:
   # Every instance meter declares the runtime_class dimension. A producer may
   # only attach a key declared here, and a rate may only match on a declared
