@@ -249,25 +249,35 @@ func addInstanceControllerLabels(instance *v1alpha.Instance, index int, deployme
 // that every instance should carry. Used both when stamping a new instance
 // and when checking whether an existing instance needs a backfill patch.
 func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) map[string]string {
-	return map[string]string{
+	desired := map[string]string{
 		v1alpha.InstanceIndexLabel:         strconv.Itoa(index),
 		v1alpha.WorkloadUIDLabel:           string(deployment.Spec.WorkloadRef.UID),
 		v1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
 		// Self-describing labels for routing, filtering, and observability.
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
-		// A provider claims instances by class, so every instance must state one
-		// even when the spec left it unset: the label is the effective class, and
-		// an unset spec means the class the platform served before classes
-		// existed. Stamping it unconditionally is what keeps a class-selecting
-		// provider correct with the feature gate off, where nothing would set it.
-		v1alpha.RuntimeClassLabel:  v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
-		v1alpha.WorkloadNameLabel:  deployment.Spec.WorkloadRef.Name,
-		v1alpha.PlacementNameLabel: deployment.Spec.PlacementName,
+		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
+		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
 		// Scopes consumer-project cleanup: the consumer provider deletes
 		// resources by this label when a project's ServiceConsumer is revoked.
 		labelServiceKey: labelServiceValue,
 	}
+
+	// A provider claims instances by class, so the label states the class that
+	// was actually resolved for the deployment when it was admitted — never one
+	// derived here, which would be this plane guessing at a catalog decision.
+	//
+	// An absent class means no class was ever resolved, which is every instance
+	// on a control plane where the feature has not been enabled. Those carry no
+	// class label at all, exactly as they did before classes existed, and are
+	// claimed by whichever provider the cell runs rather than by class. Naming
+	// a class here instead would hand them to a class-selecting provider that
+	// may not be the one serving them.
+	if class := deployment.Spec.Template.Spec.Runtime.Class; class != "" {
+		desired[v1alpha.RuntimeClassLabel] = class
+	}
+
+	return desired
 }
 
 // labelsNeedBackfill reports whether any of the desired controller-managed

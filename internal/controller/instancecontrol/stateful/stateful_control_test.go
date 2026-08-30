@@ -474,7 +474,6 @@ func TestLabelBackfill_Idempotent(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
-		v1alpha.RuntimeClassLabel:           v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
 		labelServiceKey:                     labelServiceValue,
 	}
 
@@ -549,7 +548,6 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
-		v1alpha.RuntimeClassLabel:           v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
 		labelServiceKey:                     labelServiceValue,
 	}
 	instance1 := getInstanceForDeployment(deployment, 1)
@@ -561,7 +559,6 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
-		v1alpha.RuntimeClassLabel:           v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class),
 		labelServiceKey:                     labelServiceValue,
 	}
 
@@ -604,7 +601,7 @@ func TestRuntimeClass_PropagatedToInstances(t *testing.T) {
 	control := NewWithOptions(Options{})
 
 	deployment := getWorkloadDeployment("test-runtime-class", 2)
-	deployment.Spec.Template.Spec.Runtime.Class = v1alpha.RuntimeClassGeneralPurpose
+	deployment.Spec.Template.Spec.Runtime.Class = testClassBasalt
 
 	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, nil)
 	require.NoError(t, err)
@@ -613,7 +610,7 @@ func TestRuntimeClass_PropagatedToInstances(t *testing.T) {
 	for _, action := range actions {
 		instance, ok := action.Object.(*v1alpha.Instance)
 		require.True(t, ok)
-		assert.Equal(t, v1alpha.RuntimeClassGeneralPurpose, instance.Spec.Runtime.Class,
+		assert.Equal(t, testClassBasalt, instance.Spec.Runtime.Class,
 			"instance %s did not inherit the deployment's runtime class", instance.Name)
 	}
 }
@@ -624,15 +621,15 @@ func TestRuntimeClass_PropagatedToInstances(t *testing.T) {
 func TestRuntimeClass_ChangesTemplateHash(t *testing.T) {
 	deployment := getWorkloadDeployment("test-runtime-class-hash", 1)
 
-	unikernel := deployment.Spec.Template
-	unikernel.Spec.Runtime.Class = v1alpha.RuntimeClassUnikernel
+	azurite := deployment.Spec.Template
+	azurite.Spec.Runtime.Class = testClassAzurite
 
-	generalPurpose := deployment.Spec.Template
-	generalPurpose.Spec.Runtime.Class = v1alpha.RuntimeClassGeneralPurpose
+	basalt := deployment.Spec.Template
+	basalt.Spec.Runtime.Class = testClassBasalt
 
 	assert.NotEqual(t,
-		instancecontrol.ComputeHash(unikernel),
-		instancecontrol.ComputeHash(generalPurpose),
+		instancecontrol.ComputeHash(azurite),
+		instancecontrol.ComputeHash(basalt),
 	)
 }
 
@@ -684,7 +681,9 @@ func getInstanceForDeployment(deployment *v1alpha.WorkloadDeployment, ordinal in
 	instance.Labels[v1alpha.CityCodeLabel] = deployment.Spec.CityCode
 	instance.Labels[v1alpha.WorkloadNameLabel] = deployment.Spec.WorkloadRef.Name
 	instance.Labels[v1alpha.PlacementNameLabel] = deployment.Spec.PlacementName
-	instance.Labels[v1alpha.RuntimeClassLabel] = v1alpha.EffectiveRuntimeClass(deployment.Spec.Template.Spec.Runtime.Class)
+	if class := deployment.Spec.Template.Spec.Runtime.Class; class != "" {
+		instance.Labels[v1alpha.RuntimeClassLabel] = class
+	}
 	instance.Labels[labelServiceKey] = labelServiceValue
 
 	return instance

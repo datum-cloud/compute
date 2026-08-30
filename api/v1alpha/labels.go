@@ -48,7 +48,7 @@ const (
 
 	// RuntimeClassServedLabelPrefix builds the label a cell's Cluster object
 	// carries for every runtime class it can serve, e.g.
-	// compute.datumapis.com/runtime-class.unikernel=true. One key per class,
+	// compute.datumapis.com/runtime-class.<class-name>=true. One key per class,
 	// rather than a single valued label, is what lets a cell advertise more
 	// than one class while placement still selects with equality matching.
 	RuntimeClassServedLabelPrefix = LabelNamespace + "/runtime-class."
@@ -66,22 +66,22 @@ func RuntimeClassServedLabel(class string) string {
 	return RuntimeClassServedLabelPrefix + class
 }
 
-// EffectiveRuntimeClass returns the class an instance actually runs in for a
-// possibly-empty spec value. An unset class is DefaultRuntimeClass, which is
-// pinned to what the platform served before classes existed, so the answer is
-// truthful whether or not runtime class selection is enabled.
-func EffectiveRuntimeClass(class string) string {
-	if class == "" {
-		return DefaultRuntimeClass
-	}
-	return class
-}
-
 // InstanceRuntimeClassSelector returns the selector a provider uses to claim
 // only the Instances in the runtime class it serves. Two providers running in
 // the same cell must partition the Instances between them by class: filtering
 // on workload shape instead leaves an instance owned by both providers or by
 // neither, and neither failure is visible in status.
+//
+// The class is the provider's own to name, from its configuration and the
+// classes the catalog says it controls. It is deliberately not resolvable from
+// the platform API: a class name the platform compiled in would be a tier the
+// catalog could not retire.
+//
+// An Instance carries this label only once a class has been resolved for it, so
+// a cell where runtime class selection has never been enabled holds Instances
+// that no class selector matches. A provider deployed into such a cell must
+// claim its Instances the way it did before classes existed until the cell's
+// control plane is publishing them.
 //
 // A provider MUST apply this selector to its informer CACHE —
 // cache.Options.ByObject{&Instance{}: {Label: selector}} — and not only as a
@@ -91,6 +91,6 @@ func EffectiveRuntimeClass(class string) string {
 // reconciles stop running and instances wedge in Terminating.
 func InstanceRuntimeClassSelector(class string) labels.Selector {
 	return labels.SelectorFromSet(labels.Set{
-		RuntimeClassLabel: EffectiveRuntimeClass(class),
+		RuntimeClassLabel: class,
 	})
 }

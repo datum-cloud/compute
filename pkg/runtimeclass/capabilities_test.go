@@ -4,13 +4,11 @@ package runtimeclass
 
 import (
 	"testing"
-
-	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 func TestCapabilitiesSupports(t *testing.T) {
 	capabilities := Capabilities{
-		Class:    computev1alpha.RuntimeClassUnikernel,
+		Class:    testClassAzurite,
 		Features: []Feature{FeatureSandboxRuntime, FeatureConfigMapVolumes},
 	}
 
@@ -34,50 +32,23 @@ func TestCapabilitiesSupports(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesClassName(t *testing.T) {
+// TestCapabilitiesClassDescription covers how a rejection refers to the class
+// that refused an instance. The name is whatever the catalog published, and a
+// class that was never resolved is described rather than quoted empty.
+func TestCapabilitiesClassDescription(t *testing.T) {
 	tests := []struct {
 		name  string
 		class string
 		want  string
 	}{
-		{
-			name:  "declared class",
-			class: computev1alpha.RuntimeClassGeneralPurpose,
-			want:  computev1alpha.RuntimeClassGeneralPurpose,
-		},
-		{name: "unset class falls back to the platform default", class: "", want: computev1alpha.DefaultRuntimeClass},
+		{name: "a published class is named", class: testClassBasalt, want: `the "basalt" runtime class`},
+		{name: "no class was resolved", class: "", want: "the runtime class this instance runs in"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := (Capabilities{Class: test.class}).ClassName(); got != test.want {
-				t.Errorf("ClassName() = %q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
-func TestEffectiveClass(t *testing.T) {
-	tests := []struct {
-		name  string
-		class string
-		want  string
-	}{
-		{
-			name:  "selected class",
-			class: computev1alpha.RuntimeClassGeneralPurpose,
-			want:  computev1alpha.RuntimeClassGeneralPurpose,
-		},
-		{name: "no class selected", class: "", want: computev1alpha.DefaultRuntimeClass},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			spec := computev1alpha.InstanceSpec{
-				Runtime: computev1alpha.InstanceRuntimeSpec{Class: test.class},
-			}
-			if got := EffectiveClass(spec); got != test.want {
-				t.Errorf("EffectiveClass() = %q, want %q", got, test.want)
+			if got := (Capabilities{Class: test.class}).ClassDescription(); got != test.want {
+				t.Errorf("ClassDescription() = %q, want %q", got, test.want)
 			}
 		})
 	}

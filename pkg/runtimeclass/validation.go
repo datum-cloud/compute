@@ -20,8 +20,7 @@ import (
 // naming the class and the feature, so the whole gap is visible at once rather
 // than one rejection per apply.
 //
-// The caller selects which class's Capabilities to validate against, normally
-// via EffectiveClass. fldPath is the path of the instance spec being validated
+// fldPath is the path of the instance spec being validated
 // (`spec` for an Instance, `spec.template.spec` for a workload's template).
 func ValidateInstanceSpec(
 	spec computev1alpha.InstanceSpec,
@@ -134,7 +133,7 @@ func validateVolumeAttachment(
 // the feature in product language so they know what to change.
 func unsupported(fldPath *field.Path, capabilities Capabilities, feature Feature) *field.Error {
 	return field.Forbidden(fldPath, fmt.Sprintf(
-		"%s are not supported by the %q runtime class",
-		feature.Description(), capabilities.ClassName(),
+		"%s are not supported by %s",
+		feature.Description(), capabilities.ClassDescription(),
 	))
 }

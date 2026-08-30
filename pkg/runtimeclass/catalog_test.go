@@ -10,9 +10,15 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// testGeneralPurpose is a class name used across these tests, standing in for
-// any published tier that is not the platform default.
-const testGeneralPurpose = "general-purpose"
+// The class names these tests are built on are deliberately invented, and
+// deliberately not the ones the platform ships. Nothing in this package may
+// behave differently because of what a class is called, and a test written
+// against the shipped names could not tell the difference.
+const (
+	testClassAzurite = "azurite"
+	testClassBasalt  = "basalt"
+	testClassCitrine = "citrine"
+)
 
 func class(name string, isDefault bool) computev1alpha.RuntimeClass {
 	return computev1alpha.RuntimeClass{
@@ -22,39 +28,43 @@ func class(name string, isDefault bool) computev1alpha.RuntimeClass {
 }
 
 func TestCatalogFind(t *testing.T) {
-	catalog := Catalog{class("unikernel", true), class(testGeneralPurpose, false)}
+	catalog := Catalog{class(testClassAzurite, true), class(testClassBasalt, false)}
 
-	if got := catalog.Find(testGeneralPurpose); got == nil || got.Name != testGeneralPurpose {
-		t.Errorf("Find(general-purpose) = %v, want the published class", got)
+	if got := catalog.Find(testClassBasalt); got == nil || got.Name != testClassBasalt {
+		t.Errorf("Find(basalt) = %v, want the published class", got)
 	}
-	if got := catalog.Find("wasm"); got != nil {
-		t.Errorf("Find(wasm) = %v, want nil for a class the catalog does not offer", got)
+	if got := catalog.Find(testClassCitrine); got != nil {
+		t.Errorf("Find(citrine) = %v, want nil for a class the catalog does not offer", got)
 	}
 }
 
 // TestCatalogDefault covers which tier an instance that selects none runs in.
-// A catalog that does not say, or says twice, must not be guessed at: the
-// answer falls back to the tier the platform served before classes existed,
-// and is nothing at all when that tier is not published either.
+// The marker on the class is the only source of that answer: a catalog that
+// does not say, or says twice, has not stated a default, and is not guessed at
+// from any class name.
 func TestCatalogDefault(t *testing.T) {
 	cases := map[string]struct {
 		catalog Catalog
 		want    string
 	}{
 		"the class marking itself default": {
-			catalog: Catalog{class("unikernel", false), class(testGeneralPurpose, true)},
-			want:    testGeneralPurpose,
+			catalog: Catalog{class(testClassAzurite, false), class(testClassBasalt, true)},
+			want:    testClassBasalt,
 		},
 		"no class marks itself": {
-			catalog: Catalog{class(computev1alpha.DefaultRuntimeClass, false), class("wasm", false)},
-			want:    computev1alpha.DefaultRuntimeClass,
+			catalog: Catalog{class(testClassAzurite, false), class(testClassCitrine, false)},
+			want:    "",
 		},
 		"several classes mark themselves": {
-			catalog: Catalog{class(computev1alpha.DefaultRuntimeClass, true), class("wasm", true)},
-			want:    computev1alpha.DefaultRuntimeClass,
+			catalog: Catalog{class(testClassAzurite, true), class(testClassCitrine, true)},
+			want:    "",
 		},
-		"nothing to fall back to": {
-			catalog: Catalog{class("wasm", true), class(testGeneralPurpose, true)},
+		"the only class marks itself": {
+			catalog: Catalog{class(testClassCitrine, true)},
+			want:    testClassCitrine,
+		},
+		"the only class does not": {
+			catalog: Catalog{class(testClassCitrine, false)},
 			want:    "",
 		},
 		"an empty catalog": {
@@ -76,10 +86,10 @@ func TestCatalogDefault(t *testing.T) {
 }
 
 func TestCatalogNames(t *testing.T) {
-	catalog := Catalog{class("unikernel", true), class(testGeneralPurpose, false)}
+	catalog := Catalog{class(testClassAzurite, true), class(testClassBasalt, false)}
 
 	names := catalog.Names()
-	if len(names) != 2 || names[0] != testGeneralPurpose || names[1] != "unikernel" {
+	if len(names) != 2 || names[0] != testClassAzurite || names[1] != testClassBasalt {
 		t.Errorf("Names() = %v, want the published classes in sorted order", names)
 	}
 }
@@ -88,13 +98,13 @@ func TestCatalogNames(t *testing.T) {
 // for: by the controller name published on them, never by matching a class name
 // it would have to be rebuilt to change.
 func TestCatalogClaimedBy(t *testing.T) {
-	fastPath := class("unikernel", true)
+	fastPath := class(testClassAzurite, true)
 	fastPath.Spec.ControllerName = "compute.datumapis.com/unikraft-provider"
-	general := class(testGeneralPurpose, false)
+	general := class(testClassBasalt, false)
 	general.Spec.ControllerName = "compute.datumapis.com/kata-provider"
 
 	claimed := Catalog{fastPath, general}.ClaimedBy("compute.datumapis.com/kata-provider")
-	if len(claimed) != 1 || claimed[0].Name != testGeneralPurpose {
+	if len(claimed) != 1 || claimed[0].Name != testClassBasalt {
 		t.Errorf("ClaimedBy() = %v, want only the classes naming that controller", claimed.Names())
 	}
 
@@ -108,7 +118,7 @@ func TestCatalogClaimedBy(t *testing.T) {
 // workload at admission; the first is what a provider rollout looks like.
 func TestAcceptanceOf(t *testing.T) {
 	accepted := func(status metav1.ConditionStatus, message string) *computev1alpha.RuntimeClass {
-		c := class("wasm", false)
+		c := class(testClassCitrine, false)
 		c.Status.Conditions = []metav1.Condition{{
 			Type:    computev1alpha.RuntimeClassConditionAccepted,
 			Status:  status,
@@ -117,7 +127,7 @@ func TestAcceptanceOf(t *testing.T) {
 		}}
 		return &c
 	}
-	unreported := class("wasm", false)
+	unreported := class(testClassCitrine, false)
 
 	cases := map[string]struct {
 		class       *computev1alpha.RuntimeClass
@@ -154,12 +164,12 @@ func TestAcceptanceOf(t *testing.T) {
 // class's own declaration, so the published contract and the enforcement cannot
 // drift apart.
 func TestCapabilitiesFrom(t *testing.T) {
-	published := class("wasm", false)
+	published := class(testClassCitrine, false)
 	published.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{FeatureSandboxRuntime}
 
 	capabilities := CapabilitiesFrom(&published)
-	if capabilities.ClassName() != "wasm" {
-		t.Errorf("ClassName() = %q, want the class the instance selected", capabilities.ClassName())
+	if capabilities.Class != testClassCitrine {
+		t.Errorf("Class = %q, want the class the instance selected", capabilities.Class)
 	}
 	if !capabilities.Supports(FeatureSandboxRuntime) {
 		t.Error("a declared feature should be served")

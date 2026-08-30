@@ -29,29 +29,28 @@ func (c Catalog) Find(name string) *computev1alpha.RuntimeClass {
 	return nil
 }
 
-// Default returns the class an instance runs in when it selects none.
+// Default returns the class an instance runs in when it selects none, or nil
+// when the catalog does not say.
 //
-// Exactly one class marking itself default is the intended state and answers
-// directly. Anything else — no class marks itself, or several do — falls back
-// to the class named computev1alpha.DefaultRuntimeClass, which is the tier the
-// platform served before classes existed. That keeps a mislabeled catalog from
-// silently moving new workloads into a tier with different isolation, startup,
-// and cost, and it never invents a class the catalog does not contain: when
-// there is nothing to fall back to, the answer is nil and the caller is
-// expected to make the customer choose.
+// The marker on the class is the whole answer. Exactly one class carrying it is
+// the intended state; a catalog where none does, or several do, has not stated
+// a default, and there is no name to fall back to that would not be the
+// platform overruling the catalog it publishes. Guessing would silently place
+// new workloads in a tier with different isolation, startup, and cost from the
+// one the catalog meant, so the answer is nil and the caller makes the customer
+// choose — which is a refusal naming the classes on offer, not an outage.
 func (c Catalog) Default() *computev1alpha.RuntimeClass {
 	var marked *computev1alpha.RuntimeClass
-	markedCount := 0
 	for i := range c {
-		if c[i].Spec.Default {
-			marked = &c[i]
-			markedCount++
+		if !c[i].Spec.Default {
+			continue
 		}
+		if marked != nil {
+			return nil
+		}
+		marked = &c[i]
 	}
-	if markedCount == 1 {
-		return marked
-	}
-	return c.Find(computev1alpha.DefaultRuntimeClass)
+	return marked
 }
 
 // Names returns the published class names in sorted order, for the "supported

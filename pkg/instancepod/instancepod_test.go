@@ -32,12 +32,18 @@ const (
 	testManagedByValue   = "infra-provider-unikraft"
 	testMemory2Gi        = "2Gi"
 	testLabelValueTrue   = "true"
+
+	// The class names below are invented, and deliberately not the ones the
+	// platform ships: translating an instance must not depend on what its class
+	// is called.
+	testClassAzurite = "azurite"
+	testClassBasalt  = "basalt"
 )
 
 // sandboxCapabilities serves the whole sandbox surface, so a translation test
 // exercises translation rather than capability rejection.
 var sandboxCapabilities = runtimeclass.Capabilities{
-	Class: computev1alpha.RuntimeClassUnikernel,
+	Class: testClassAzurite,
 	Features: []runtimeclass.Feature{
 		runtimeclass.FeatureSandboxRuntime,
 		runtimeclass.FeatureConfigMapVolumes,
@@ -296,7 +302,7 @@ func TestBuildPodSpecTranslation(t *testing.T) {
 			}(),
 			opts: Options{
 				Capabilities: runtimeclass.Capabilities{
-					Class: computev1alpha.RuntimeClassGeneralPurpose,
+					Class: testClassBasalt,
 					Features: []runtimeclass.Feature{
 						runtimeclass.FeatureSandboxRuntime,
 						runtimeclass.FeatureDiskVolumes,
@@ -365,7 +371,7 @@ func TestBuildPodSpecErrors(t *testing.T) {
 				return instance
 			}(),
 			opts:         Options{Capabilities: sandboxCapabilities},
-			wantContains: `disk-backed volumes are not supported by the "unikernel" runtime class`,
+			wantContains: `disk-backed volumes are not supported by the "azurite" runtime class`,
 		},
 		{
 			name: "a class claiming disk support without a resolver is reported",
@@ -380,7 +386,7 @@ func TestBuildPodSpecErrors(t *testing.T) {
 				return instance
 			}(),
 			opts: Options{Capabilities: runtimeclass.Capabilities{
-				Class: computev1alpha.RuntimeClassGeneralPurpose,
+				Class: testClassBasalt,
 				Features: []runtimeclass.Feature{
 					runtimeclass.FeatureSandboxRuntime,
 					runtimeclass.FeatureDiskVolumes,
@@ -402,7 +408,7 @@ func TestBuildPodSpecErrors(t *testing.T) {
 			}(),
 			opts: Options{
 				Capabilities: runtimeclass.Capabilities{
-					Class: computev1alpha.RuntimeClassGeneralPurpose,
+					Class: testClassBasalt,
 					Features: []runtimeclass.Feature{
 						runtimeclass.FeatureSandboxRuntime,
 						runtimeclass.FeatureDiskVolumes,
@@ -624,7 +630,7 @@ func TestIdentityLabels(t *testing.T) {
 				computev1alpha.PlacementNameLabel:          "dfw",
 				computev1alpha.CityCodeLabel:               "DFW",
 				computev1alpha.InstanceIndexLabel:          "0",
-				computev1alpha.RuntimeClassLabel:           "unikernel",
+				computev1alpha.RuntimeClassLabel:           testClassAzurite,
 				"customer-team":                            "payments",
 			},
 		},

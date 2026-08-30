@@ -34,15 +34,13 @@ func validateRuntimeClassSelection(
 	class := spec.Runtime.Class
 
 	// A class is only a promise the platform can keep once providers serve it
-	// and cells advertise it. Until the feature is enabled there is exactly one
-	// tier to run in, the catalog is not consulted, and accepting anything else
-	// would accept a workload with nowhere to run.
+	// and cells advertise it. Until the feature is enabled the catalog is not
+	// consulted and no tier has been published, so selecting one would accept a
+	// workload with nowhere to run.
 	if !features.FeatureGate.Enabled(features.RuntimeClasses) {
-		if len(class) > 0 && class != computev1alpha.DefaultRuntimeClass {
-			allErrs = append(allErrs, field.Forbidden(classPath, fmt.Sprintf(
-				"runtime classes are not enabled on this control plane, only %q may be selected",
-				computev1alpha.DefaultRuntimeClass,
-			)))
+		if len(class) > 0 {
+			allErrs = append(allErrs, field.Forbidden(classPath,
+				"runtime classes are not enabled on this control plane, so a runtime class may not be selected"))
 		}
 		return allErrs
 	}

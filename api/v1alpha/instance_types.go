@@ -103,43 +103,15 @@ type InstanceRuntimeSpec struct {
 	// machine can each be run in any class the platform offers, and the two
 	// axes must not be collapsed into one.
 	//
-	// Left empty, an instance runs in the class the catalog marks as default,
-	// which is pinned to today's behavior so no existing workload changes
-	// tier, cost, or startup characteristics without an announced migration.
+	// Left empty, an instance runs in whichever class the catalog marks as
+	// default. That choice is recorded on the workload when it is admitted and
+	// never resolved again, so no existing workload changes tier, cost, or
+	// startup characteristics without an announced migration.
 	//
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Optional
 	Class string `json:"class,omitempty"`
 }
-
-// Runtime classes, the platform-owned catalog of execution tiers an instance
-// may be run in. These names are a public contract: they appear in customer
-// specs, in quota and billing dimensions, and in the classes a cell advertises
-// it can serve, so they are consumed by other repositories and must not change
-// meaning.
-const (
-	// RuntimeClassUnikernel is the unikernel fast path: very low startup
-	// latency and very low per-instance overhead, in exchange for narrow image
-	// compatibility. Suited to bursty, short-lived, purpose-built workloads.
-	RuntimeClassUnikernel = "unikernel"
-
-	// RuntimeClassGeneralPurpose runs arbitrary Linux container images behind a
-	// stronger boundary than a shared kernel. Slower to start and more
-	// expensive per instance, but an image that runs elsewhere runs here.
-	RuntimeClassGeneralPurpose = "general-purpose"
-
-	// DefaultRuntimeClass is the class an instance runs in when none is
-	// selected and the catalog does not say otherwise. It is pinned to the
-	// runtime the platform served before runtime classes existed, so enabling
-	// the feature moves nobody between tiers.
-	//
-	// The catalog is the published statement of the default (see
-	// RuntimeClassSpec.Default); this constant is the floor beneath it, for the
-	// places that resolve a class where no catalog exists — a provider in a
-	// cell reading an instance whose class predates the feature — and for the
-	// case where the catalog marks no default at all.
-	DefaultRuntimeClass = RuntimeClassUnikernel
-)
 
 type SandboxRuntime struct {
 	// A list of containers to run within the sandbox.

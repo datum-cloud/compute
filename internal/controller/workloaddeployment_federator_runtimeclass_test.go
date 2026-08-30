@@ -24,6 +24,15 @@ import (
 // i.e. the name the federator has always used.
 const testCityPolicyLAX = "city-lax"
 
+// The class names these tests are built on are invented, and deliberately not
+// the ones the platform ships. Propagation must key off whatever class the
+// deployment carries, and a test written against the shipped names could not
+// tell that apart from a name the federator knows.
+const (
+	testClassAzurite = "azurite"
+	testClassBasalt  = "basalt"
+)
+
 // withRuntimeClass sets the runtime class on the deployment's instance template.
 func withRuntimeClass(class string) func(*computev1alpha.WorkloadDeployment) {
 	return func(wd *computev1alpha.WorkloadDeployment) {
@@ -85,7 +94,7 @@ func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 		{
 			name:              "gate off, class selected — propagates class-blind",
 			classesEnabled:    false,
-			specClass:         computev1alpha.RuntimeClassGeneralPurpose,
+			specClass:         testClassBasalt,
 			wantPolicyName:    testCityPolicyLAX,
 			wantWDLabel:       "",
 			wantClusterLabels: map[string]string{cityCodeLabel: testCityCodeLAX},
@@ -109,12 +118,12 @@ func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 		{
 			name:           "gate on, class selected — propagates to cells serving it",
 			classesEnabled: true,
-			specClass:      computev1alpha.RuntimeClassGeneralPurpose,
-			wantPolicyName: "city-lax-class-general-purpose",
-			wantWDLabel:    computev1alpha.RuntimeClassGeneralPurpose,
+			specClass:      testClassBasalt,
+			wantPolicyName: "city-lax-class-basalt",
+			wantWDLabel:    testClassBasalt,
 			wantClusterLabels: map[string]string{
 				cityCodeLabel: testCityCodeLAX,
-				computev1alpha.RuntimeClassServedLabel(computev1alpha.RuntimeClassGeneralPurpose): computev1alpha.RuntimeClassServedLabelValue,
+				computev1alpha.RuntimeClassServedLabel(testClassBasalt): computev1alpha.RuntimeClassServedLabelValue,
 			},
 		},
 	}
@@ -126,7 +135,7 @@ func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 			wd := testWorkloadDeployment(withFinalizer, withRuntimeClass(tt.specClass))
 			projectClient := newProjectFakeClient(testProjectNamespace(), wd)
 			karmadaClient := newKarmadaFakeClient(
-				testCell("lax-cell", testCityCodeLAX, computev1alpha.RuntimeClassGeneralPurpose),
+				testCell("lax-cell", testCityCodeLAX, testClassBasalt),
 			)
 			r := newTestFederator(projectClient, karmadaClient)
 			r.RuntimeClassesEnabled = tt.classesEnabled
@@ -196,24 +205,24 @@ func TestCleanupPropagationPolicyIfUnused_PerCityAndClass(t *testing.T) {
 			name:           "same city and class — kept",
 			classesEnabled: true,
 			cityCode:       testCityCodeLAX,
-			runtimeClass:   computev1alpha.RuntimeClassUnikernel,
-			remaining:      []client.Object{hubSiblingDeployment(testCityCodeLAX, computev1alpha.RuntimeClassUnikernel)},
+			runtimeClass:   testClassAzurite,
+			remaining:      []client.Object{hubSiblingDeployment(testCityCodeLAX, testClassAzurite)},
 			wantPPGone:     false,
 		},
 		{
 			name:           "same city, other class — removed",
 			classesEnabled: true,
 			cityCode:       testCityCodeLAX,
-			runtimeClass:   computev1alpha.RuntimeClassUnikernel,
-			remaining:      []client.Object{hubSiblingDeployment(testCityCodeLAX, computev1alpha.RuntimeClassGeneralPurpose)},
+			runtimeClass:   testClassAzurite,
+			remaining:      []client.Object{hubSiblingDeployment(testCityCodeLAX, testClassBasalt)},
 			wantPPGone:     true,
 		},
 		{
 			name:           "other city, same class — removed",
 			classesEnabled: true,
 			cityCode:       testCityCodeLAX,
-			runtimeClass:   computev1alpha.RuntimeClassUnikernel,
-			remaining:      []client.Object{hubSiblingDeployment("SEA", computev1alpha.RuntimeClassUnikernel)},
+			runtimeClass:   testClassAzurite,
+			remaining:      []client.Object{hubSiblingDeployment("SEA", testClassAzurite)},
 			wantPPGone:     true,
 		},
 		{
@@ -221,7 +230,7 @@ func TestCleanupPropagationPolicyIfUnused_PerCityAndClass(t *testing.T) {
 			classesEnabled: true,
 			cityCode:       testCityCodeLAX,
 			runtimeClass:   "",
-			remaining:      []client.Object{hubSiblingDeployment(testCityCodeLAX, computev1alpha.RuntimeClassUnikernel)},
+			remaining:      []client.Object{hubSiblingDeployment(testCityCodeLAX, testClassAzurite)},
 			wantPPGone:     true,
 		},
 		{
@@ -282,28 +291,28 @@ func TestWorkloadDeploymentFederator_UnservedRuntimeClassCondition(t *testing.T)
 		{
 			name:           "no cell in the city serves the class",
 			classesEnabled: true,
-			specClass:      computev1alpha.RuntimeClassGeneralPurpose,
-			cells:          []client.Object{testCell("lax-cell", testCityCodeLAX, computev1alpha.RuntimeClassUnikernel)},
+			specClass:      testClassBasalt,
+			cells:          []client.Object{testCell("lax-cell", testCityCodeLAX, testClassAzurite)},
 			wantReason:     computev1alpha.WorkloadDeploymentReasonRuntimeClassNotServed,
 		},
 		{
 			name:           "the class is served elsewhere, not here",
 			classesEnabled: true,
-			specClass:      computev1alpha.RuntimeClassGeneralPurpose,
-			cells:          []client.Object{testCell("sea-cell", "SEA", computev1alpha.RuntimeClassGeneralPurpose)},
+			specClass:      testClassBasalt,
+			cells:          []client.Object{testCell("sea-cell", "SEA", testClassBasalt)},
 			wantReason:     computev1alpha.WorkloadDeploymentReasonRuntimeClassNotServed,
 		},
 		{
 			name:           "a cell serves the class",
 			classesEnabled: true,
-			specClass:      computev1alpha.RuntimeClassGeneralPurpose,
-			cells:          []client.Object{testCell("lax-cell", testCityCodeLAX, computev1alpha.RuntimeClassGeneralPurpose)},
+			specClass:      testClassBasalt,
+			cells:          []client.Object{testCell("lax-cell", testCityCodeLAX, testClassBasalt)},
 			wantReason:     "",
 		},
 		{
 			name:           "gate off — cells advertise nothing and nothing is refused",
 			classesEnabled: false,
-			specClass:      computev1alpha.RuntimeClassGeneralPurpose,
+			specClass:      testClassBasalt,
 			cells:          nil,
 			wantReason:     "",
 		},

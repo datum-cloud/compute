@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -20,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/pkg/runtimeclass"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -762,9 +764,10 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 
 // TestValidateWorkloadSpecUpdate_RuntimeClassImmutable covers the update-only
 // rule: a workload cannot be moved between execution tiers in place. The one
-// permitted transition is filling in an absent class with the default, which is
-// what the mutating webhook does the first time a pre-existing workload is
-// updated after the feature is enabled.
+// permitted transition is filling in an absent class with the one the catalog
+// marks as default, which is what the mutating webhook does the first time a
+// pre-existing workload is updated after the feature is enabled — and which
+// tier that is comes from the catalog, never from a name this package knows.
 func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
 	classPath := field.NewPath("spec", "template", "spec", "runtime", "class")
 
@@ -774,38 +777,65 @@ func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
 		}).Spec
 	}
 
+	// undefaultedCatalog publishes tiers but marks none of them default, so
+	// there is no class a workload can be said to already run in.
+	undefaultedCatalog := runtimeclass.Catalog{
+		makeRuntimeClass(testClassAzurite),
+		makeRuntimeClass(testClassBasalt),
+	}
+
 	cases := map[string]struct {
 		oldClass       string
 		class          string
+		catalog        runtimeclass.Catalog
 		expectedErrors field.ErrorList
 	}{
 		"unchanged default": {
-			oldClass: computev1alpha.RuntimeClassUnikernel,
-			class:    computev1alpha.RuntimeClassUnikernel,
+			oldClass: testClassAzurite,
+			class:    testClassAzurite,
+			catalog:  defaultCatalog(),
 		},
 		"unchanged non-default": {
-			oldClass: computev1alpha.RuntimeClassGeneralPurpose,
-			class:    computev1alpha.RuntimeClassGeneralPurpose,
+			oldClass: testClassBasalt,
+			class:    testClassBasalt,
+			catalog:  defaultCatalog(),
 		},
-		"still unset": {},
+		"still unset": {catalog: defaultCatalog()},
 		"unset gets defaulted": {
-			class: computev1alpha.RuntimeClassUnikernel,
+			class:   testClassAzurite,
+			catalog: defaultCatalog(),
 		},
 		"unset jumps straight to a non-default tier": {
-			class: computev1alpha.RuntimeClassGeneralPurpose,
+			class:   testClassBasalt,
+			catalog: defaultCatalog(),
+			expectedErrors: field.ErrorList{
+				field.Forbidden(classPath, ""),
+			},
+		},
+		"unset filled in where the catalog marks no default": {
+			class:   testClassAzurite,
+			catalog: undefaultedCatalog,
+			expectedErrors: field.ErrorList{
+				field.Forbidden(classPath, ""),
+			},
+		},
+		"unset filled in with no catalog read at all": {
+			class: testClassAzurite,
 			expectedErrors: field.ErrorList{
 				field.Forbidden(classPath, ""),
 			},
 		},
 		"changed tier": {
-			oldClass: computev1alpha.RuntimeClassUnikernel,
-			class:    computev1alpha.RuntimeClassGeneralPurpose,
+			oldClass: testClassAzurite,
+			class:    testClassBasalt,
+			catalog:  defaultCatalog(),
 			expectedErrors: field.ErrorList{
 				field.Invalid(classPath, "", ""),
 			},
 		},
 		"cleared": {
-			oldClass: computev1alpha.RuntimeClassGeneralPurpose,
+			oldClass: testClassBasalt,
+			catalog:  defaultCatalog(),
 			expectedErrors: field.ErrorList{
 				field.Invalid(classPath, "", ""),
 			},
@@ -814,7 +844,10 @@ func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			errs := validateWorkloadSpecUpdate(withClass(tc.class), withClass(tc.oldClass), field.NewPath("spec"))
+			errs := validateWorkloadSpecUpdate(
+				withClass(tc.class), withClass(tc.oldClass), field.NewPath("spec"),
+				WorkloadValidationOptions{RuntimeClasses: tc.catalog},
+			)
 
 			delta := cmp.Diff(
 				tc.expectedErrors, errs,
@@ -825,5 +858,24 @@ func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
 				t.Errorf("errors mismatch (-want +got):\n%s", delta)
 			}
 		})
+	}
+}
+
+// TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault checks the
+// refusal tells a customer which class they may fill in, read from the catalog
+// rather than asserted by the platform.
+func TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault(t *testing.T) {
+	spec := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Runtime.Class = testClassBasalt
+	}).Spec
+	oldSpec := MakeSandboxWorkload("test").Spec
+
+	errs := validateWorkloadSpecUpdate(spec, oldSpec, field.NewPath("spec"),
+		WorkloadValidationOptions{RuntimeClasses: defaultCatalog()})
+	if len(errs) != 1 {
+		t.Fatalf("expected the tier change to be refused once, got: %v", errs)
+	}
+	if got := errs[0].Error(); !strings.Contains(got, `"`+testClassAzurite+`"`) {
+		t.Errorf("refusal should name the class the workload already runs in, got: %s", got)
 	}
 }

@@ -273,8 +273,8 @@ func TestPropagationPolicyNameFor(t *testing.T) {
 		{"New York", "New York", "", "city-new-york"},
 		{"LOS ANGELES", "LOS ANGELES", "", "city-los-angeles"},
 		{"SEA", "SEA", "", "city-sea"},
-		{"LAX unikernel", testCityCodeLAX, computev1alpha.RuntimeClassUnikernel, "city-lax-class-unikernel"},
-		{"LAX general purpose", testCityCodeLAX, computev1alpha.RuntimeClassGeneralPurpose, "city-lax-class-general-purpose"},
+		{"LAX with a class", testCityCodeLAX, testClassAzurite, "city-lax-class-azurite"},
+		{"LAX with another class", testCityCodeLAX, testClassBasalt, "city-lax-class-basalt"},
 	}
 
 	for _, tt := range tests {

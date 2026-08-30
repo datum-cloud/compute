@@ -19,6 +19,16 @@ import (
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
+// The class names these tests are built on are invented, and deliberately not
+// the ones the platform ships. Defaulting reads the catalog, so a test written
+// against the shipped names could not tell a catalog lookup apart from a
+// compiled-in fallback.
+const (
+	testClassAzurite = "azurite"
+	testClassBasalt  = "basalt"
+	testClassCitrine = "citrine"
+)
+
 func runtimeClass(name string, isDefault bool) computev1alpha.RuntimeClass {
 	return computev1alpha.RuntimeClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -34,7 +44,7 @@ func TestWorkloadWebhookDefaultGateOff(t *testing.T) {
 		class string
 	}{
 		"unset stays unset":              {},
-		"an explicit class is untouched": {class: computev1alpha.RuntimeClassUnikernel},
+		"an explicit class is untouched": {class: testClassAzurite},
 	}
 
 	for name, tc := range cases {
@@ -56,9 +66,9 @@ func TestWorkloadWebhookDefaultGateOff(t *testing.T) {
 }
 
 // TestDefaultRuntimeClass covers which tier a workload that selected none is
-// recorded as running in. The answer comes from the catalog, so publishing a
-// different default is a catalog change; the compiled-in class is only the
-// floor beneath a catalog that states nothing.
+// recorded as running in. The catalog's marker is the whole answer, so
+// publishing a different default is a catalog change, and a catalog that does
+// not state one leaves the field empty for validation to turn down.
 func TestDefaultRuntimeClass(t *testing.T) {
 	cases := map[string]struct {
 		class   string
@@ -67,29 +77,29 @@ func TestDefaultRuntimeClass(t *testing.T) {
 	}{
 		"the class the catalog marks default is stamped": {
 			catalog: runtimeclass.Catalog{
-				runtimeClass(computev1alpha.RuntimeClassUnikernel, false),
-				runtimeClass(computev1alpha.RuntimeClassGeneralPurpose, true),
+				runtimeClass(testClassAzurite, false),
+				runtimeClass(testClassBasalt, true),
 			},
-			want: computev1alpha.RuntimeClassGeneralPurpose,
+			want: testClassBasalt,
 		},
 		"an explicit selection is never overwritten": {
-			class: computev1alpha.RuntimeClassGeneralPurpose,
+			class: testClassBasalt,
 			catalog: runtimeclass.Catalog{
-				runtimeClass(computev1alpha.RuntimeClassUnikernel, true),
+				runtimeClass(testClassAzurite, true),
 			},
-			want: computev1alpha.RuntimeClassGeneralPurpose,
+			want: testClassBasalt,
 		},
-		"a catalog marking no default falls back to the tier served today": {
+		"a catalog marking no default stamps nothing": {
 			catalog: runtimeclass.Catalog{
-				runtimeClass(computev1alpha.RuntimeClassUnikernel, false),
-				runtimeClass(computev1alpha.RuntimeClassGeneralPurpose, false),
+				runtimeClass(testClassAzurite, false),
+				runtimeClass(testClassBasalt, false),
 			},
-			want: computev1alpha.DefaultRuntimeClass,
+			want: "",
 		},
 		"an ambiguous default is not guessed at": {
 			catalog: runtimeclass.Catalog{
-				runtimeClass("wasm", true),
-				runtimeClass(computev1alpha.RuntimeClassGeneralPurpose, true),
+				runtimeClass(testClassCitrine, true),
+				runtimeClass(testClassBasalt, true),
 			},
 			want: "",
 		},

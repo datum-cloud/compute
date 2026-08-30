@@ -2521,7 +2521,7 @@ func TestReconcileQuotaClaim_RuntimeClassLabel(t *testing.T) {
 		},
 		{
 			name:      "selected class is recorded on the claim",
-			class:     computev1alpha.RuntimeClassGeneralPurpose,
+			class:     testClassBasalt,
 			wantLabel: true,
 		},
 	}

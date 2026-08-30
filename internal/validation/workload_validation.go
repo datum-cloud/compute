@@ -33,12 +33,12 @@ func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationO
 func ValidateWorkloadUpdate(w, oldWorkload *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
 	allErrs := ValidateWorkloadCreate(w, opts)
 
-	allErrs = append(allErrs, validateWorkloadSpecUpdate(w.Spec, oldWorkload.Spec, field.NewPath("spec"))...)
+	allErrs = append(allErrs, validateWorkloadSpecUpdate(w.Spec, oldWorkload.Spec, field.NewPath("spec"), opts)...)
 
 	return allErrs
 }
 
-func validateWorkloadSpecUpdate(spec, oldSpec computev1alpha.WorkloadSpec, fieldPath *field.Path) field.ErrorList {
+func validateWorkloadSpecUpdate(spec, oldSpec computev1alpha.WorkloadSpec, fieldPath *field.Path, opts WorkloadValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	classPath := fieldPath.Child("template", "spec", "runtime", "class")
@@ -50,15 +50,24 @@ func validateWorkloadSpecUpdate(spec, oldSpec computev1alpha.WorkloadSpec, field
 	// instance across that line in place. Changing the class is a replace.
 	//
 	// An empty previous value predates the feature being enabled and is not a
-	// tier change: it may still be filled in with the default class, which is
-	// the tier the workload has been running in all along.
+	// tier change on its own: it may still be filled in with the class the
+	// workload has been running in all along, which is the one the catalog
+	// marks as default, because that is what a workload selecting nothing runs
+	// in. Any other name moves it between tiers. A control plane publishing no
+	// default — including one where the feature is off and the catalog is never
+	// read — has no such class to offer, so nothing may be filled in.
 	if len(oldClass) > 0 {
 		allErrs = append(allErrs, apimachineryvalidation.ValidateImmutableField(class, oldClass, classPath)...)
-	} else if len(class) > 0 && class != computev1alpha.DefaultRuntimeClass {
-		allErrs = append(allErrs, field.Forbidden(classPath, fmt.Sprintf(
-			"may only be set to %q on an existing workload, which is the class it already runs in",
-			computev1alpha.DefaultRuntimeClass,
-		)))
+	} else if len(class) > 0 {
+		if defaultClass := opts.RuntimeClasses.Default(); defaultClass == nil {
+			allErrs = append(allErrs, field.Forbidden(classPath,
+				"may not be set on an existing workload, because this control plane publishes no default runtime class to compare it against"))
+		} else if class != defaultClass.Name {
+			allErrs = append(allErrs, field.Forbidden(classPath, fmt.Sprintf(
+				"may only be set to %q on an existing workload, which is the class it already runs in",
+				defaultClass.Name,
+			)))
+		}
 	}
 
 	return allErrs

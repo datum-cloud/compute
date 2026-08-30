@@ -357,9 +357,10 @@ spec:
                       machine can each be run in any class the platform offers, and the two
                       axes must not be collapsed into one.
 
-                      Left empty, an instance runs in the class the catalog marks as default,
-                      which is pinned to today's behavior so no existing workload changes
-                      tier, cost, or startup characteristics without an announced migration.
+                      Left empty, an instance runs in whichever class the catalog marks as
+                      default. That choice is recorded on the workload when it is admitted and
+                      never resolved again, so no existing workload changes tier, cost, or
+                      startup characteristics without an announced migration.
                     maxLength: 253
                     type: string
                   resources:

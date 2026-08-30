@@ -221,7 +221,7 @@ func buildVolumes(instance *computev1alpha.Instance, opts Options) ([]corev1.Vol
 			if opts.ResolveVolumeSource == nil {
 				return nil, fmt.Errorf(
 					"runtime class %q declares disk-backed volume support but supplied no volume source resolver",
-					opts.Capabilities.ClassName())
+					opts.Capabilities.Class)
 			}
 			source, err := opts.ResolveVolumeSource(volume)
 			if err != nil {

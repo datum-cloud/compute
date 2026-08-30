@@ -23,16 +23,16 @@ const (
 	testConfigMapName    = "settings"
 )
 
-// envFromRejection is the rejection the default class returns for envFrom.
+// envFromRejection is the rejection a narrow class returns for envFrom.
 // It is spelled out here rather than built from the validator so the test
 // still fails if the wording changes.
 const envFromRejection = "environment variables sourced from a whole ConfigMap or Secret " +
-	`are not supported by the "unikernel" runtime class`
+	`are not supported by the "azurite" runtime class`
 
 // fullCapabilities serves everything, so a test that expects no rejection is
 // not passing because it forgot to declare something.
 var fullCapabilities = Capabilities{
-	Class: computev1alpha.RuntimeClassGeneralPurpose,
+	Class: testClassBasalt,
 	Features: []Feature{
 		FeatureSandboxRuntime,
 		FeatureVirtualMachineRuntime,
@@ -48,7 +48,7 @@ var fullCapabilities = Capabilities{
 // minimalCapabilities is the narrow shape a fast path serves: containers with
 // data passed in, and nothing that assumes a disk or a full guest.
 var minimalCapabilities = Capabilities{
-	Class: computev1alpha.RuntimeClassUnikernel,
+	Class: testClassAzurite,
 	Features: []Feature{
 		FeatureSandboxRuntime,
 		FeatureConfigMapVolumes,
@@ -110,7 +110,7 @@ func TestValidateInstanceSpec(t *testing.T) {
 			}(),
 			want: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("disk"),
-					`disk-backed volumes are not supported by the "unikernel" runtime class`),
+					`disk-backed volumes are not supported by the "azurite" runtime class`),
 			},
 		},
 		{
@@ -132,7 +132,7 @@ func TestValidateInstanceSpec(t *testing.T) {
 		{
 			name: "a ConfigMap volume is rejected by a class that cannot present one",
 			capabilities: Capabilities{
-				Class:    computev1alpha.RuntimeClassUnikernel,
+				Class:    testClassAzurite,
 				Features: []Feature{FeatureSandboxRuntime},
 			},
 			spec: func() computev1alpha.InstanceSpec {
@@ -149,13 +149,13 @@ func TestValidateInstanceSpec(t *testing.T) {
 			}(),
 			want: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("configMap"),
-					`ConfigMap-backed volumes are not supported by the "unikernel" runtime class`),
+					`ConfigMap-backed volumes are not supported by the "azurite" runtime class`),
 			},
 		},
 		{
 			name: "a Secret volume is rejected by a class that cannot present one",
 			capabilities: Capabilities{
-				Class:    computev1alpha.RuntimeClassUnikernel,
+				Class:    testClassAzurite,
 				Features: []Feature{FeatureSandboxRuntime},
 			},
 			spec: func() computev1alpha.InstanceSpec {
@@ -172,7 +172,7 @@ func TestValidateInstanceSpec(t *testing.T) {
 			}(),
 			want: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("secret"),
-					`Secret-backed volumes are not supported by the "unikernel" runtime class`),
+					`Secret-backed volumes are not supported by the "azurite" runtime class`),
 			},
 		},
 		{
@@ -200,7 +200,7 @@ func TestValidateInstanceSpec(t *testing.T) {
 			}(),
 			want: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "runtime", "sandbox", "imagePullSecrets"),
-					`image pull secrets are not supported by the "unikernel" runtime class`),
+					`image pull secrets are not supported by the "azurite" runtime class`),
 			},
 		},
 		{
@@ -213,19 +213,19 @@ func TestValidateInstanceSpec(t *testing.T) {
 			want: field.ErrorList{
 				field.Forbidden(
 					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("volumeAttachments").Index(0),
-					`volumes attached as raw devices are not supported by the "unikernel" runtime class`),
+					`volumes attached as raw devices are not supported by the "azurite" runtime class`),
 			},
 		},
 		{
 			name: "a sandbox is rejected by a class that only runs virtual machines",
 			capabilities: Capabilities{
-				Class:    computev1alpha.RuntimeClassGeneralPurpose,
+				Class:    testClassBasalt,
 				Features: []Feature{FeatureVirtualMachineRuntime},
 			},
 			spec: sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName}),
 			want: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "runtime", "sandbox"),
-					`container sandbox instances are not supported by the "general-purpose" runtime class`),
+					`container sandbox instances are not supported by the "basalt" runtime class`),
 			},
 		},
 		{
@@ -242,7 +242,7 @@ func TestValidateInstanceSpec(t *testing.T) {
 			},
 			want: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "runtime", "virtualMachine"),
-					`virtual machine instances are not supported by the "unikernel" runtime class`),
+					`virtual machine instances are not supported by the "azurite" runtime class`),
 			},
 		},
 		{
@@ -270,13 +270,13 @@ func TestValidateInstanceSpec(t *testing.T) {
 					envFromRejection),
 				field.Forbidden(
 					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("volumeAttachments").Index(0),
-					`volumes attached as raw devices are not supported by the "unikernel" runtime class`),
+					`volumes attached as raw devices are not supported by the "azurite" runtime class`),
 				field.Forbidden(field.NewPath("spec", "volumes").Index(0).Child("disk"),
-					`disk-backed volumes are not supported by the "unikernel" runtime class`),
+					`disk-backed volumes are not supported by the "azurite" runtime class`),
 			},
 		},
 		{
-			name:         "an unset class is named as the platform default in rejections",
+			name:         "a class that was never resolved is described rather than named",
 			capabilities: Capabilities{Features: []Feature{FeatureSandboxRuntime}},
 			spec: sandboxSpec(computev1alpha.SandboxContainer{
 				Name: testContainerName,
@@ -287,7 +287,8 @@ func TestValidateInstanceSpec(t *testing.T) {
 			want: field.ErrorList{
 				field.Forbidden(
 					field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).Child("envFrom"),
-					envFromRejection),
+					"environment variables sourced from a whole ConfigMap or Secret "+
+						"are not supported by the runtime class this instance runs in"),
 			},
 		},
 	}
@@ -320,7 +321,7 @@ func TestValidateInstanceTemplateSpec(t *testing.T) {
 
 	want := field.ErrorList{
 		field.Forbidden(field.NewPath("spec", "template", "spec", "volumes").Index(0).Child("disk"),
-			`disk-backed volumes are not supported by the "unikernel" runtime class`),
+			`disk-backed volumes are not supported by the "azurite" runtime class`),
 	}
 
 	got := ValidateInstanceTemplateSpec(template, minimalCapabilities, field.NewPath("spec", "template"))

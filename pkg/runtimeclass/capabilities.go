@@ -17,6 +17,8 @@
 package runtimeclass
 
 import (
+	"fmt"
+
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
@@ -77,17 +79,14 @@ func (c Capabilities) Supports(feature Feature) bool {
 	return false
 }
 
-// ClassName is the class these capabilities describe, resolving an unset Class
-// to the platform default so messages never quote an empty class name.
-func (c Capabilities) ClassName() string {
-	return computev1alpha.EffectiveRuntimeClass(c.Class)
-}
-
-// EffectiveClass is the class an instance runs in: the one it selected, or the
-// platform default when it selected none. Callers choosing which Capabilities
-// to validate an instance against resolve the class through this so an
-// unselected class is treated the same everywhere. What "unset" resolves to is
-// the API's rule, not this package's, so it is asked for rather than repeated.
-func EffectiveClass(spec computev1alpha.InstanceSpec) string {
-	return computev1alpha.EffectiveRuntimeClass(spec.Runtime.Class)
+// ClassDescription is how a rejection refers to the class that turned an
+// instance down. A class the instance never resolved has no name to quote —
+// which is what an instance admitted before the catalog existed looks like — so
+// it is described rather than named, instead of quoting an empty string at a
+// customer.
+func (c Capabilities) ClassDescription() string {
+	if c.Class == "" {
+		return "the runtime class this instance runs in"
+	}
+	return fmt.Sprintf("the %q runtime class", c.Class)
 }

@@ -15,9 +15,21 @@ import (
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
-// testUnpublishedClass is a class name no test catalog publishes unless it
-// says so, standing in for a tier a customer names that does not exist.
-const testUnpublishedClass = "wasm"
+// The class names these tests are built on are invented, and deliberately not
+// the ones the platform ships. Resolution is supposed to run entirely off the
+// catalog, and a test written against the shipped names could not tell a
+// catalog lookup apart from a compiled-in one.
+const (
+	// testClassAzurite stands in for the tier a test catalog marks default.
+	testClassAzurite = "azurite"
+
+	// testClassBasalt stands in for a published tier that is not the default.
+	testClassBasalt = "basalt"
+
+	// testUnpublishedClass is a class name no test catalog publishes unless it
+	// says so, standing in for a tier a customer names that does not exist.
+	testUnpublishedClass = "citrine"
+)
 
 // makeRuntimeClass builds a catalog entry that serves everything, so a test
 // only has to state the part of the contract it is exercising.
@@ -66,19 +78,19 @@ func withFeatures(featureList ...computev1alpha.RuntimeClassFeature) func(*compu
 	}
 }
 
-// defaultCatalog is the shape a bootstrapped control plane has: the fast path
-// marked default, and a general-purpose tier beside it.
+// defaultCatalog is the shape a bootstrapped control plane has: one tier marked
+// default, and another beside it.
 func defaultCatalog() runtimeclass.Catalog {
 	return runtimeclass.Catalog{
-		makeRuntimeClass(computev1alpha.RuntimeClassUnikernel, withDefault),
-		makeRuntimeClass(computev1alpha.RuntimeClassGeneralPurpose),
+		makeRuntimeClass(testClassAzurite, withDefault),
+		makeRuntimeClass(testClassBasalt),
 	}
 }
 
 // TestValidateRuntimeClassSelectionGateOff pins the behavior a control plane
-// that has not enabled runtime classes must keep: exactly one tier is
-// selectable, and the catalog is never consulted, so publishing one changes
-// nothing until the gate is turned on.
+// that has not enabled runtime classes must keep: no tier may be selected at
+// all, and the catalog is never consulted, so publishing one changes nothing
+// until the gate is turned on.
 func TestValidateRuntimeClassSelectionGateOff(t *testing.T) {
 	root := field.NewPath("spec", "template", "spec")
 	classPath := root.Child("runtime", "class")
@@ -92,11 +104,13 @@ func TestValidateRuntimeClassSelectionGateOff(t *testing.T) {
 		"unset with a catalog published": {
 			catalog: defaultCatalog(),
 		},
-		"the default class is selectable": {
-			class: computev1alpha.RuntimeClassUnikernel,
+		"the class a catalog marks default is still refused": {
+			class:          testClassAzurite,
+			catalog:        defaultCatalog(),
+			expectedErrors: field.ErrorList{field.Forbidden(classPath, "")},
 		},
-		"a published non-default class is still refused": {
-			class:          computev1alpha.RuntimeClassGeneralPurpose,
+		"a published class is refused": {
+			class:          testClassBasalt,
 			catalog:        defaultCatalog(),
 			expectedErrors: field.ErrorList{field.Forbidden(classPath, "")},
 		},
@@ -135,7 +149,7 @@ func TestValidateRuntimeClassSelection(t *testing.T) {
 		expectedErrors field.ErrorList
 	}{
 		"a published class is accepted": {
-			class:   computev1alpha.RuntimeClassGeneralPurpose,
+			class:   testClassBasalt,
 			catalog: defaultCatalog(),
 		},
 		"a class published only in the catalog is accepted": {
@@ -148,28 +162,28 @@ func TestValidateRuntimeClassSelection(t *testing.T) {
 			expectedErrors: field.ErrorList{field.NotSupported(classPath, testUnpublishedClass, []string{})},
 		},
 		"an empty catalog cannot run anything": {
-			class:          computev1alpha.RuntimeClassUnikernel,
+			class:          testClassAzurite,
 			expectedErrors: field.ErrorList{field.Invalid(classPath, "", "")},
 		},
 		"a class whose controller refused it is turned down": {
-			class: computev1alpha.RuntimeClassGeneralPurpose,
+			class: testClassBasalt,
 			catalog: runtimeclass.Catalog{
-				makeRuntimeClass(computev1alpha.RuntimeClassGeneralPurpose,
+				makeRuntimeClass(testClassBasalt,
 					withAccepted(metav1.ConditionFalse, computev1alpha.RuntimeClassReasonUnsupportedFeature, "no")),
 			},
 			expectedErrors: field.ErrorList{field.Forbidden(classPath, "")},
 		},
 		"a class no controller has reported on yet is admitted": {
-			class: computev1alpha.RuntimeClassGeneralPurpose,
+			class: testClassBasalt,
 			catalog: runtimeclass.Catalog{
-				makeRuntimeClass(computev1alpha.RuntimeClassGeneralPurpose,
+				makeRuntimeClass(testClassBasalt,
 					withAccepted(metav1.ConditionUnknown, computev1alpha.RuntimeClassReasonPending, "waiting")),
 			},
 		},
 		"a class its controller accepted is admitted": {
-			class: computev1alpha.RuntimeClassGeneralPurpose,
+			class: testClassBasalt,
 			catalog: runtimeclass.Catalog{
-				makeRuntimeClass(computev1alpha.RuntimeClassGeneralPurpose,
+				makeRuntimeClass(testClassBasalt,
 					withAccepted(metav1.ConditionTrue, computev1alpha.RuntimeClassReasonAccepted, "")),
 			},
 		},
