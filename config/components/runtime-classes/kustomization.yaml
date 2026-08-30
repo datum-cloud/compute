@@ -1,8 +1,0 @@
-# Execution tiers are data, not schema. Adding, retiring, or correcting a tier
-# means editing these manifests, not changing the API.
-apiVersion: kustomize.config.k8s.io/v1alpha1
-kind: Component
-
-resources:
-  - unikernel.yaml
-  - general-purpose.yaml
