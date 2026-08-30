@@ -1,0 +1,300 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+    discovery.miloapis.com/parent-contexts: Platform,Project
+  name: runtimeclasses.compute.datumapis.com
+spec:
+  group: compute.datumapis.com
+  names:
+    kind: RuntimeClass
+    listKind: RuntimeClassList
+    plural: runtimeclasses
+    singular: runtimeclass
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: Display Name
+      type: string
+    - jsonPath: .spec.isolation.boundary
+      name: Isolation
+      type: string
+    - jsonPath: .spec.default
+      name: Default
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Accepted")].status
+      name: Accepted
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .spec.controllerName
+      name: Controller
+      priority: 1
+      type: string
+    - jsonPath: .spec.lifecycle.typicalStartupTime
+      name: Startup
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Accepted")].message
+      name: Message
+      priority: 1
+      type: string
+    name: v1alpha
+    schema:
+      openAPIV3Schema:
+        description: |-
+          RuntimeClass is an execution tier a workload can be run in: a published
+          promise about the isolation surrounding it, what images run in it unmodified,
+          how fast it starts, and what lifecycle operations it offers.
+
+          The catalog is owned and published by Datum. Customers select a class by name
+          on a workload; they never create one. That is what lets the machinery behind
+          a class change without a customer-visible API change, as long as the promise
+          on this object still holds.
+
+          The class is authoritative in the platform control plane and projected
+          read-only into project control planes, so a customer can read the contract
+          they are selecting from without reaching the platform's own plane.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Spec is the published contract for this execution tier.
+            properties:
+              capabilities:
+                description: What this class can serve, and what it cannot.
+                properties:
+                  compatibility:
+                    description: |-
+                      What runs unmodified in this class and what does not. This is the honest,
+                      unglamorous part of the contract, and the part customers most need before
+                      they commit an image to a tier.
+                    maxLength: 2048
+                    type: string
+                  features:
+                    description: |-
+                      The optional parts of the instance API this class serves. Anything absent
+                      is unsupported, so a class that forgets to declare a feature turns the
+                      request down loudly rather than serving it by accident.
+                    items:
+                      description: |-
+                        RuntimeClassFeature is an optional part of the instance API that a runtime
+                        class may or may not be able to serve. Features name customer-visible
+                        capabilities, not implementation mechanisms, because they are published in
+                        the class contract and quoted back in the message a customer reads when a
+                        class rejects their instance.
+
+                        The set of features grows only when the instance API grows a capability a
+                        class could decline, which is why it is enumerated here: a class that
+                        declares a feature nobody defined would promise something no provider can
+                        read.
+                      enum:
+                      - sandboxRuntime
+                      - virtualMachineRuntime
+                      - configMapVolumes
+                      - secretVolumes
+                      - diskVolumes
+                      - deviceVolumeAttachments
+                      - envFrom
+                      - imagePullSecrets
+                      type: string
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+              controllerName:
+                description: |-
+                  The controller that implements this class. A provider watches for the
+                  classes carrying its own controller name, claims them, and reports
+                  whether it can honor what they declare via the Accepted condition. A
+                  class whose controller never appears is a promise nothing implements,
+                  which is exactly what this field makes visible.
+
+                  This says which provider realizes the class. It does not say where the
+                  class can run: cells advertise that separately, and placement uses that
+                  declaration.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\/[A-Za-z0-9\/\-._~%!$&'()*+,;=:]+$
+                type: string
+                x-kubernetes-validations:
+                - message: controllerName is immutable
+                  rule: self == oldSelf
+              default:
+                description: |-
+                  Whether an instance that selects no class runs in this one.
+
+                  The default is stamped onto a workload when it is admitted, never
+                  resolved at read time, so moving this marker changes what new workloads
+                  get and leaves running ones in the tier, cost, and startup profile they
+                  were created with. At most one class in the catalog may set it.
+                type: boolean
+              description:
+                description: What this tier is for and who should choose it.
+                maxLength: 1024
+                type: string
+              displayName:
+                description: The name to show a customer choosing a tier, e.g. "Unikernel
+                  fast path".
+                maxLength: 64
+                type: string
+              isolation:
+                description: What separates a workload in this class from its neighbors.
+                properties:
+                  boundary:
+                    description: |-
+                      A short, stable token for the boundary — for example "unikernel" or
+                      "virtual-machine". It is deliberately not enumerated: the boundaries the
+                      platform can offer grow with the catalog, and pinning them in the schema
+                      would make each new tier an API change.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                  description:
+                    description: |-
+                      A sentence a customer can put in front of an auditor describing what the
+                      boundary is and what it separates.
+                    maxLength: 1024
+                    type: string
+                required:
+                - boundary
+                type: object
+              lifecycle:
+                description: |-
+                  How quickly instances in this class start, and what can be done to them
+                  once they are running.
+                properties:
+                  description:
+                    description: |-
+                      Anything about startup or lifecycle a customer needs that the fields
+                      above cannot say.
+                    maxLength: 1024
+                    type: string
+                  operations:
+                    description: |-
+                      The lifecycle operations this class offers. Declaring none is a truthful
+                      answer, and a better one than implying a tier can do what its isolation
+                      boundary does not allow.
+                    items:
+                      description: |-
+                        RuntimeClassLifecycleOperation is a lifecycle action a class can perform on a
+                        running instance. These are what the roadmap's cost story leans on, and they
+                        are not uniformly available across isolation tiers, so each class states
+                        which of them it offers rather than the platform implying them.
+                      enum:
+                      - Suspend
+                      - Resume
+                      - Snapshot
+                      type: string
+                    maxItems: 8
+                    type: array
+                    x-kubernetes-list-type: set
+                  typicalStartupTime:
+                    description: |-
+                      The cold start a customer should plan for — the time from an instance
+                      being created to it running. It is the headline difference between tiers
+                      and the reason a customer picks one, so it is published rather than
+                      discovered.
+                    type: string
+                type: object
+            required:
+            - capabilities
+            - controllerName
+            - isolation
+            type: object
+          status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for the class controller
+                reason: Pending
+                status: Unknown
+                type: Accepted
+            description: Status is what the controller implementing this class reports
+              about it.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

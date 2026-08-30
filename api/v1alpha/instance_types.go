@@ -93,21 +93,22 @@ type InstanceRuntimeSpec struct {
 	// customers can trade "starts in milliseconds" against "my image just
 	// works" instead of discovering a runtime's limits by hitting them.
 	//
-	// The catalog is owned and published by Datum, not defined by customers.
-	// Selecting by name is what lets the machinery behind a class change
-	// without a customer-visible API change, as long as the published promise
-	// still holds.
+	// The value names a RuntimeClass in the platform's catalog, which is owned
+	// and published by Datum, not defined by customers. The catalog is data,
+	// not schema, so a new tier is published by adding a class rather than by
+	// changing this API, and the machinery behind a class can change without a
+	// customer-visible API change as long as the published promise holds.
 	//
 	// This is independent of the runtime shape above: a sandbox and a virtual
 	// machine can each be run in any class the platform offers, and the two
 	// axes must not be collapsed into one.
 	//
-	// Left empty, an instance runs in DefaultRuntimeClass, which is pinned to
-	// today's behavior so no existing workload changes tier, cost, or startup
-	// characteristics without an announced migration.
+	// Left empty, an instance runs in the class the catalog marks as default,
+	// which is pinned to today's behavior so no existing workload changes
+	// tier, cost, or startup characteristics without an announced migration.
 	//
+	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Enum=unikernel;general-purpose
 	Class string `json:"class,omitempty"`
 }
 
@@ -128,8 +129,15 @@ const (
 	RuntimeClassGeneralPurpose = "general-purpose"
 
 	// DefaultRuntimeClass is the class an instance runs in when none is
-	// selected. It is pinned to the runtime the platform served before runtime
-	// classes existed, so enabling the feature moves nobody between tiers.
+	// selected and the catalog does not say otherwise. It is pinned to the
+	// runtime the platform served before runtime classes existed, so enabling
+	// the feature moves nobody between tiers.
+	//
+	// The catalog is the published statement of the default (see
+	// RuntimeClassSpec.Default); this constant is the floor beneath it, for the
+	// places that resolve a class where no catalog exists — a provider in a
+	// cell reading an instance whose class predates the feature — and for the
+	// case where the catalog marks no default at all.
 	DefaultRuntimeClass = RuntimeClassUnikernel
 )
 
