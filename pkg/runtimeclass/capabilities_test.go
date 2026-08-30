@@ -99,7 +99,7 @@ func TestFeatureDescriptions(t *testing.T) {
 
 	for _, feature := range features {
 		t.Run(string(feature), func(t *testing.T) {
-			if _, ok := featureDescriptions[feature]; !ok {
+			if feature.Description() == string(feature) {
 				t.Errorf("feature %q has no customer-facing description", feature)
 			}
 		})

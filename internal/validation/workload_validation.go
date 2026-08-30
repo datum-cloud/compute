@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/pkg/runtimeclass"
 )
 
 // Great reference:
@@ -69,6 +70,14 @@ type WorkloadValidationOptions struct {
 	Context          context.Context
 	Workload         *computev1alpha.Workload
 	ValidCityCodes   []string
+
+	// RuntimeClasses is the catalog of execution tiers this control plane
+	// publishes, read by the caller. It is empty when runtime class selection
+	// is disabled, since the catalog is not consulted then; when the feature is
+	// enabled an empty catalog means the control plane offers no tier, and a
+	// workload is turned down rather than admitted into one that does not
+	// exist.
+	RuntimeClasses runtimeclass.Catalog
 }
 
 func validateWorkloadSpec(spec computev1alpha.WorkloadSpec, opts WorkloadValidationOptions) field.ErrorList {

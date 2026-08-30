@@ -12,8 +12,8 @@
 // its plumbing, its lifecycle, and the capacity it advertises.
 //
 // Nothing in this package branches on a class name. A class is described by
-// the Capabilities its provider declares, so adding a class is a declaration
-// rather than an edit to shared code.
+// the Capabilities carried on its RuntimeClass object, so adding a class is a
+// catalog change rather than an edit to shared code.
 package runtimeclass
 
 import (
@@ -21,74 +21,29 @@ import (
 )
 
 // Feature is an optional part of the instance API that a runtime class may or
-// may not be able to serve. Features name customer-visible capabilities, not
-// implementation mechanisms, because they end up in the published class
-// contract and in the message a customer reads when a class rejects their
-// instance.
-type Feature string
+// may not be able to serve. It is the API's type: the declaration a class
+// publishes and the check a provider runs against an instance have to be the
+// same vocabulary, or a class could promise something no provider can read.
+type Feature = computev1alpha.RuntimeClassFeature
 
+// The features a runtime class may declare. These alias the API constants so
+// providers can keep importing them from here without depending on the exact
+// shape of the catalog object.
 const (
-	// FeatureSandboxRuntime is the ability to run an instance shaped as a
-	// sandbox of containers.
-	FeatureSandboxRuntime Feature = "sandboxRuntime"
-
-	// FeatureVirtualMachineRuntime is the ability to run an instance shaped as
-	// a virtual machine booting a customer-supplied image.
-	FeatureVirtualMachineRuntime Feature = "virtualMachineRuntime"
-
-	// FeatureConfigMapVolumes is the ability to present a ConfigMap to an
-	// instance as a volume.
-	FeatureConfigMapVolumes Feature = "configMapVolumes"
-
-	// FeatureSecretVolumes is the ability to present a Secret to an instance
-	// as a volume.
-	FeatureSecretVolumes Feature = "secretVolumes"
-
-	// FeatureDiskVolumes is the ability to back a volume with a persistent
-	// disk. A class whose root filesystem lives in RAM typically cannot.
-	FeatureDiskVolumes Feature = "diskVolumes"
-
-	// FeatureDeviceVolumeAttachments is the ability to attach a volume as a
-	// raw device — an attachment with no mount path — leaving the guest to
-	// format and mount it.
-	FeatureDeviceVolumeAttachments Feature = "deviceVolumeAttachments"
-
-	// FeatureEnvFrom is the ability to populate a container's environment from
-	// a whole ConfigMap or Secret rather than key by key.
-	FeatureEnvFrom Feature = "envFrom"
-
-	// FeatureImagePullSecrets is the ability to authenticate to a registry
-	// with customer-supplied credentials when pulling an instance image.
-	FeatureImagePullSecrets Feature = "imagePullSecrets"
+	FeatureSandboxRuntime          = computev1alpha.RuntimeClassFeatureSandboxRuntime
+	FeatureVirtualMachineRuntime   = computev1alpha.RuntimeClassFeatureVirtualMachineRuntime
+	FeatureConfigMapVolumes        = computev1alpha.RuntimeClassFeatureConfigMapVolumes
+	FeatureSecretVolumes           = computev1alpha.RuntimeClassFeatureSecretVolumes
+	FeatureDiskVolumes             = computev1alpha.RuntimeClassFeatureDiskVolumes
+	FeatureDeviceVolumeAttachments = computev1alpha.RuntimeClassFeatureDeviceVolumeAttachments
+	FeatureEnvFrom                 = computev1alpha.RuntimeClassFeatureEnvFrom
+	FeatureImagePullSecrets        = computev1alpha.RuntimeClassFeatureImagePullSecrets
 )
 
-// featureDescriptions carries the customer-facing phrase for each feature.
-// Rejections quote this rather than the Feature constant so the message reads
-// as product language instead of an API key.
-var featureDescriptions = map[Feature]string{
-	FeatureSandboxRuntime:          "container sandbox instances",
-	FeatureVirtualMachineRuntime:   "virtual machine instances",
-	FeatureConfigMapVolumes:        "ConfigMap-backed volumes",
-	FeatureSecretVolumes:           "Secret-backed volumes",
-	FeatureDiskVolumes:             "disk-backed volumes",
-	FeatureDeviceVolumeAttachments: "volumes attached as raw devices",
-	FeatureEnvFrom:                 "environment variables sourced from a whole ConfigMap or Secret",
-	FeatureImagePullSecrets:        "image pull secrets",
-}
-
-// Description returns the customer-facing phrase for the feature, falling back
-// to the feature name so a newly added feature is still readable if its
-// description was forgotten.
-func (f Feature) Description() string {
-	if description, ok := featureDescriptions[f]; ok {
-		return description
-	}
-	return string(f)
-}
-
-// Capabilities is a runtime class's declaration of what it can serve. It is
-// supplied by the provider that realizes the class — the platform never infers
-// it — which is what keeps class-specific behavior out of shared code.
+// Capabilities is a runtime class's declaration of what it can serve, in the
+// form the shared validation works against. It is built from the RuntimeClass
+// object rather than compiled in, so the platform's published contract and the
+// check an instance is held to cannot drift apart.
 type Capabilities struct {
 	// Class is the runtime class these capabilities describe. It appears in
 	// every rejection so a customer learns which tier turned their instance
@@ -99,6 +54,17 @@ type Capabilities struct {
 	// Anything absent is unsupported, so a class that forgets to declare a
 	// feature rejects it loudly rather than serving it by accident.
 	Features []Feature
+}
+
+// CapabilitiesFrom reads a class's declaration off its catalog entry.
+func CapabilitiesFrom(class *computev1alpha.RuntimeClass) Capabilities {
+	if class == nil {
+		return Capabilities{}
+	}
+	return Capabilities{
+		Class:    class.Name,
+		Features: class.Spec.Capabilities.Features,
+	}
 }
 
 // Supports reports whether the class serves the feature.

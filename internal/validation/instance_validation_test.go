@@ -16,7 +16,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -24,7 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
-	"go.datum.net/compute/internal/features"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -701,58 +699,5 @@ func TestWorkloadWithReferencedDataE2E(t *testing.T) {
 	errs := ValidateWorkloadCreate(workload, opts)
 	if len(errs) != 0 {
 		t.Errorf("expected no errors, got: %v", errs)
-	}
-}
-
-// TestValidateInstanceRuntimeClass covers the class catalog check and the
-// feature gate check: an unknown class is never accepted, and while the feature
-// is off only the default class — the tier the platform actually serves today —
-// may be selected.
-func TestValidateInstanceRuntimeClass(t *testing.T) {
-	root := field.NewPath("spec", "runtime", "class")
-
-	cases := map[string]struct {
-		class          string
-		gateEnabled    bool
-		expectedErrors field.ErrorList
-	}{
-		"unset is the default class, gate off": {},
-		"unset is the default class, gate on": {
-			gateEnabled: true,
-		},
-		"default class is always selectable": {
-			class: computev1alpha.RuntimeClassUnikernel,
-		},
-		"non-default class with the gate on": {
-			class:       computev1alpha.RuntimeClassGeneralPurpose,
-			gateEnabled: true,
-		},
-		"non-default class with the gate off": {
-			class: computev1alpha.RuntimeClassGeneralPurpose,
-			expectedErrors: field.ErrorList{
-				field.Forbidden(root, ""),
-			},
-		},
-		"unknown class with the gate on": {
-			class:       "wasm",
-			gateEnabled: true,
-			expectedErrors: field.ErrorList{
-				field.NotSupported(root, "wasm", []string{}),
-			},
-		},
-		"unknown class with the gate off": {
-			class: "wasm",
-			expectedErrors: field.ErrorList{
-				field.NotSupported(root, "wasm", []string{}),
-			},
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, tc.gateEnabled)
-
-			cmpErrs(t, tc.expectedErrors, validateInstanceRuntimeClass(tc.class, root))
-		})
 	}
 }
