@@ -1,0 +1,9 @@
+# The catalog of execution tiers the platform publishes. It is data, not
+# schema: a tier is added, retired, or corrected by changing these manifests,
+# without an API change.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - unikernel.yaml
+  - general-purpose.yaml

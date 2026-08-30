@@ -1,0 +1,36 @@
+# The general-purpose tier — an ordinary Linux container image runs here
+# unmodified, at a stronger isolation boundary than a shared kernel.
+apiVersion: compute.datumapis.com/v1alpha
+kind: RuntimeClass
+metadata:
+  name: general-purpose
+spec:
+  controllerName: compute.datumapis.com/kata-provider
+  displayName: General purpose
+  description: >-
+    Runs arbitrary Linux container images and virtual machine images. Slower to
+    start and more expensive per instance than the fast path, but an image that
+    runs elsewhere runs here.
+  isolation:
+    boundary: virtual-machine
+    description: >-
+      Each instance runs in its own lightweight virtual machine with its own
+      kernel. No kernel is shared between tenants.
+  capabilities:
+    features:
+      - sandboxRuntime
+      - virtualMachineRuntime
+      - configMapVolumes
+      - secretVolumes
+      - diskVolumes
+      - deviceVolumeAttachments
+      - envFrom
+      - imagePullSecrets
+    compatibility: >-
+      Runs standard Linux container images without modification, including
+      images that need a full filesystem, dynamic linking, or credentials to
+      pull.
+  lifecycle:
+    description: >-
+      Instances take several seconds to start, dominated by booting a kernel and
+      pulling the image. Suspend, resume, and snapshot are not offered yet.

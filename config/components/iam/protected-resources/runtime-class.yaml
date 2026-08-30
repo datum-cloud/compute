@@ -1,0 +1,26 @@
+# Runtime classes are published by the platform and read by customers choosing
+# a tier. The permission set is declared in full so an operator or a provider
+# can be granted writes, but the customer-facing roles grant reads only: the
+# catalog is a promise Datum makes, not one a customer edits.
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: compute.datumapis.com-runtimeclass
+spec:
+  serviceRef:
+    name: "compute.datumapis.com"
+  kind: RuntimeClass
+  plural: runtimeclasses
+  singular: runtimeclass
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+    - updateStatus
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

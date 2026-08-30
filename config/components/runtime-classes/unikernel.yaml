@@ -1,0 +1,42 @@
+# The unikernel fast path — today's runtime, and the class an instance runs in
+# when it selects none.
+#
+# The declared features are what this tier serves today, not what its runtime
+# could eventually serve. The provider named below reports back on this
+# declaration through the Accepted condition, so a feature declared here that it
+# cannot honor is visible in the catalog rather than in instances that never
+# start.
+apiVersion: compute.datumapis.com/v1alpha
+kind: RuntimeClass
+metadata:
+  name: unikernel
+spec:
+  controllerName: compute.datumapis.com/unikraft-provider
+  displayName: Unikernel fast path
+  description: >-
+    Starts in a fraction of the time a container platform takes and carries very
+    little per-instance overhead, in exchange for narrow image compatibility.
+    Best for bursty, short-lived, purpose-built workloads.
+  default: true
+  isolation:
+    boundary: unikernel
+    description: >-
+      Each instance runs as its own unikernel in its own virtual machine. There
+      is no kernel shared with another tenant, and the instance carries only the
+      operating system code its own application uses.
+  capabilities:
+    features:
+      - sandboxRuntime
+      - configMapVolumes
+      - secretVolumes
+      - envFrom
+    compatibility: >-
+      Runs images whose application binary is position-independent. The root
+      filesystem is held in memory, so image size counts against the instance's
+      memory and disk-backed volumes are not available. Images must be pulled
+      from a registry the platform can reach without customer-supplied
+      credentials.
+  lifecycle:
+    description: >-
+      Instances start in a small fraction of a second. Suspend, resume, and
+      snapshot are not offered yet.
