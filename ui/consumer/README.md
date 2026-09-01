@@ -115,8 +115,15 @@ server you want running:
 
 `public/plugin-manifest.json` declares:
 
-- **`portal.nav/project`** — a "Workloads" sidebar item (icon `server`),
-  gated on `{compute.datumapis.com, workloads, list}`.
+- **`portal.nav/project`** — **Compute** under Build (`section: "build"`,
+  `order: 10`). Soft-launch via `comingSoon` + `comingSoonMode: "plugin"`
+  ([Build → Compute](https://www.datum.net/platform/build#compute))
+  and `serviceRef: "compute.datumapis.com"` (canonical Service
+  `spec.serviceName`). Projects without an Active entitlement for that service
+  still open the live `path: "workloads"` mount (request-access / enablement UI)
+  with a Coming Soon badge; entitled projects get the same path with no badge.
+  Optional `roadmapUrl` is documentation / holding-page CTA material, not the
+  sidebar target.
 - **`portal.page/project`** ×3 — `workloads` (`WorkloadList`),
   `workloads/:workloadName` (`WorkloadDetail`), and
   `workloads/:workloadName/instances/:instanceName/*` (`InstanceDetail`
