@@ -31,6 +31,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/locations"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -49,12 +50,18 @@ type WorkloadReconciler struct {
 	// on control planes without the integration, and engaging a watch against a
 	// missing kind wedges the manager.
 	NetworkingEnabled bool
+
+	// LocationSource selects the API group placement locations are read from.
+	// The zero value reads network services, which is what every deployment
+	// does today.
+	LocationSource locations.Source
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -446,28 +453,21 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		existingDeployments.Insert(deployment.Name)
 	}
 
-	var locations networkingv1alpha.LocationBindingList
-	if err := upstreamClient.List(ctx, &locations); err != nil {
-		return nil, nil, fmt.Errorf("failed to list location bindings: %w", err)
+	placementLocations, err := locations.ListPlacementLocations(ctx, upstreamClient, r.LocationSource)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if len(locations.Items) == 0 {
+	if len(placementLocations) == 0 {
 		return nil, nil, fmt.Errorf("no locations are registered with the system")
 	}
+
+	cityCodes := locations.CityCodes(placementLocations)
 
 	// Remember this: namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	for _, placement := range workload.Spec.Placements {
 		for _, cityCode := range placement.CityCodes {
-			foundLocation := false
-			for _, location := range locations.Items {
-				locationCityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
-				if ok && cityCode == locationCityCode {
-					foundLocation = true
-					break
-				}
-			}
-
-			if !foundLocation {
+			if !cityCodes.Has(cityCode) {
 				// TODO(jreese) update status condition on placement if no locations are
 				// found.
 				continue
