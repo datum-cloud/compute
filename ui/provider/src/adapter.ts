@@ -239,6 +239,14 @@ function deriveInstanceStatus(conditions: RawCondition[]): Instance['status'] {
   return 'Pending';
 }
 
+function deriveInstanceStatusReason(conditions: RawCondition[]): string | undefined {
+  return conditions.find((c) => c.type === 'Available')?.reason;
+}
+
+function deriveInstanceStatusMessage(conditions: RawCondition[]): string | undefined {
+  return conditions.find((c) => c.type === 'Available')?.message;
+}
+
 /** Mirrors `instanceTypeCatalog` in `internal/controller/instance_controller.go`. */
 const INSTANCE_TYPE_CATALOG: Record<string, { cpu: string; memory: string }> = {
   'datumcloud/d1-standard-2': { cpu: '1', memory: '2Gi' },
@@ -281,6 +289,8 @@ export function toInstance(raw: RawInstance): Instance {
     memory,
     image: container?.image,
     status: deriveInstanceStatus(conditions),
+    statusReason: deriveInstanceStatusReason(conditions),
+    statusMessage: deriveInstanceStatusMessage(conditions),
     externalIP: assignments?.externalIP,
     internalIP: assignments?.networkIP,
     conditions: toConditions(conditions),

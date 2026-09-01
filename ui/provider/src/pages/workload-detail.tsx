@@ -24,12 +24,7 @@ import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { WorkloadLogsExplorer } from '../components/workload-logs';
 import { useWorkload, useWorkloadInstances, useWorkloadRaw } from '../lib/api';
-import {
-  healthToBadgeType,
-  instanceStatusToBadgeType,
-  type Instance,
-  type Workload,
-} from '../schema';
+import { healthToBadgeType, type Instance, type Workload } from '../schema';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { CodeEditor } from '@datum-cloud/datum-ui/code-editor';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
@@ -200,9 +195,6 @@ function InstanceRow({ instance }: { instance: Instance }) {
         <TableCell>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="truncate font-mono text-sm">{instance.name}</span>
-            <StatusBadge type={instanceStatusToBadgeType(instance.status)}>
-              {instance.status}
-            </StatusBadge>
             {instance.suspended && <StatusBadge type="muted">Suspended</StatusBadge>}
             {instance.schedulingGates.length > 0 && (
               <StatusBadge type="warning">
@@ -220,13 +212,18 @@ function InstanceRow({ instance }: { instance: Instance }) {
           title={instance.externalIP}>
           {instance.externalIP ?? '—'}
         </TableCell>
+        <TableCell
+          className="text-muted-foreground max-w-64 truncate"
+          title={instance.statusMessage ? (instance.statusReason ?? instance.status) : undefined}>
+          {instance.statusMessage ?? '—'}
+        </TableCell>
         <TableCell className="text-muted-foreground">
           {formatDistanceToNowStrict(instance.createdAt, { addSuffix: true })}
         </TableCell>
       </TableRow>
       {expanded && (
         <TableRow>
-          <TableCell colSpan={5} className="bg-muted/20 whitespace-normal">
+          <TableCell colSpan={6} className="bg-muted/20 whitespace-normal">
             <ConditionsTable conditions={instance.conditions} />
           </TableCell>
         </TableRow>
@@ -251,6 +248,7 @@ function InstancesTab({ instances }: { instances: Instance[] }) {
             <TableHead>Region</TableHead>
             <TableHead>Internal IP</TableHead>
             <TableHead>External IP</TableHead>
+            <TableHead>Message</TableHead>
             <TableHead>Created</TableHead>
           </TableRow>
         </TableHeader>
