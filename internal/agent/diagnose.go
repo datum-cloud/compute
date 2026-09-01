@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,13 +30,16 @@ var depth = map[Level]int{
 
 // Cause is one failing condition, joined to its catalog entry.
 type Cause struct {
-	Level              Level         `json:"level"`
-	Object             string        `json:"object"`
-	ConditionType      string        `json:"conditionType"`
-	Status             string        `json:"status"`
-	Reason             string        `json:"reason"`
-	Message            string        `json:"message"`
-	LastTransitionTime metav1.Time   `json:"lastTransitionTime"`
+	Level         Level  `json:"level"`
+	Object        string `json:"object"`
+	ConditionType string `json:"conditionType"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
+	Message       string `json:"message"`
+	// LastTransitionTime is RFC 3339. It is a string rather than a metav1.Time
+	// because this struct is a tool's output schema: metav1.Time marshals as a
+	// string but is a struct, which JSON Schema inference rejects.
+	LastTransitionTime string        `json:"lastTransitionTime,omitempty"`
 	Actionability      Actionability `json:"actionability,omitempty"`
 	Explanation        string        `json:"explanation"`
 	Remediation        string        `json:"remediation,omitempty"`
@@ -142,6 +146,14 @@ func Diagnose(
 	return d
 }
 
+// formatTime renders a condition timestamp as RFC 3339, or empty when unset.
+func formatTime(t metav1.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 // failing returns the conditions that are not True. Every condition compute
 // sets is positive-polarity, so "not True" is the same as "blocking".
 func failing(conditions []metav1.Condition) []metav1.Condition {
@@ -162,7 +174,7 @@ func toCause(level Level, object string, c metav1.Condition) Cause {
 		Status:             string(c.Status),
 		Reason:             c.Reason,
 		Message:            c.Message,
-		LastTransitionTime: c.LastTransitionTime,
+		LastTransitionTime: formatTime(c.LastTransitionTime),
 	}
 	if info, ok := ExplainReason(c.Reason); ok {
 		cause.Actionability = info.Actionability

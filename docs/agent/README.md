@@ -19,13 +19,24 @@ assistant owns the document schema that carries it.
 
 ## Status
 
-Landed here: the reason catalog, the diagnosis walk, and the knowledge and
-skills above. **The MCP server that serves these as tools is not yet in this
-repo** — `llms-full.txt` describes the tool surface (`workloads_list`,
-`workload_diagnose`, `reason_explain`, ...) that a compute MCP server will
-expose, and a prototype of it runs in the assistant repo's playground today.
-`internal/agent` is the logic those tools call; wiring it to a served endpoint,
-with per-project scoping of reads, is the remaining step.
+Landed here: the reason catalog, the diagnosis walk, the knowledge and skills
+above, and `cmd/compute-mcp` — the MCP server that publishes the five read-only
+tools (`workloads_list`, `workloads_get`, `instances_list`, `workload_diagnose`,
+`reason_explain`) over Streamable HTTP.
+
+Two properties of the server are worth knowing before you deploy it:
+
+- **Every read runs as the caller.** The server holds no credential of its own
+  for the project control plane. It takes the bearer token off the request and
+  builds a client with it, so a tool call can never see more than the person who
+  asked could see themselves, and the server needs no impersonation privilege.
+- **The project comes from a header, not a tool argument.** Tool arguments are
+  chosen by the model; a model that could name its own project would be one
+  prompt injection away from another tenant's workloads. The caller sets
+  `X-Datum-Project` after authenticating the user.
+
+Compute publishes no mutating tool. Allow-list enforcement is the gateway's job,
+but a tool that does not exist cannot be called through any path.
 
 ## Why the knowledge leads with "how to read conditions"
 

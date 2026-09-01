@@ -33,17 +33,17 @@ const (
 // ReasonInfo explains one condition reason.
 type ReasonInfo struct {
 	// Reason is the condition reason as written by the controllers.
-	Reason string
+	Reason string `json:"reason"`
 	// ConditionTypes are the condition types this reason is observed on.
-	ConditionTypes []string
+	ConditionTypes []string `json:"conditionTypes"`
 	// Actionability says who must act.
-	Actionability Actionability
+	Actionability Actionability `json:"actionability"`
 	// Explanation states in plain language what actually happened.
-	Explanation string
+	Explanation string `json:"explanation"`
 	// Remediation says what to do next. Empty for healthy reasons.
-	Remediation string
+	Remediation string `json:"remediation,omitempty"`
 	// Skill names the runbook covering this class of failure, if any.
-	Skill string
+	Skill string `json:"skill,omitempty"`
 }
 
 // Remediation strings shared by several reasons.
