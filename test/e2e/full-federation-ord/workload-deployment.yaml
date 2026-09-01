@@ -4,7 +4,8 @@ metadata:
   name: test-fullfed-ord-wd
   # namespace is injected by Chainsaw from ($namespace)
 spec:
-  cityCode: ord
+  locationRef:
+    name: ord
   placementName: default
   workloadRef:
     name: test-workload

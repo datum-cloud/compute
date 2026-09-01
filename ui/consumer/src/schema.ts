@@ -22,7 +22,7 @@ const workloadConditionSchema = z.object({
 
 export const workloadPlacementRegionSchema = z.object({
   name: z.string(),
-  cityCodes: z.array(z.string()).default([]),
+  locations: z.array(z.string()).default([]),
   readyReplicas: z.number(),
   desiredReplicas: z.number(),
   health: z.enum(['Available', 'Degraded', 'Unavailable', 'Unknown']),
@@ -54,7 +54,7 @@ export const workloadResourceSchema = z.object({
   runtimeType: z.string().optional(),
   tags: z.array(z.string()).default([]),
   ports: z.array(z.string()).default([]),
-  regions: z.array(z.string()).default([]),
+  locations: z.array(z.string()).default([]),
   resources: z.string().optional(),
   replicasPerRegion: z.number().optional(),
 });
@@ -107,7 +107,7 @@ export const instanceResourceSchema = z.object({
   createdAt: z.coerce.date(),
   workloadName: z.string().optional(),
   workloadUid: z.string().optional(),
-  city: z.string().optional(),
+  location: z.string().optional(),
   placement: z.string().optional(),
   instanceType: z.string().optional(),
   /** Allocated CPU — from requests, or resolved from instanceType catalog (e.g. "1"). */

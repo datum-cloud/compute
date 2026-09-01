@@ -29,12 +29,12 @@ spec:
                     cidr: 0.0.0.0/0
   placements:
   - name: us-south
-    cityCodes:
-    - DFW
+    locations:
+    - name: gcp-us-south1-a
     scaleSettings:
       minReplicas: 1
   - name: us-south2
-    cityCodes:
-    - DFW
+    locations:
+    - name: gcp-us-south1-a
     scaleSettings:
       minReplicas: 1

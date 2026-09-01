@@ -26,7 +26,7 @@ const (
 
 type deploymentState struct {
 	placement    string
-	city         string
+	location     string
 	desired      int32
 	ready        int32
 	current      int32
@@ -35,7 +35,7 @@ type deploymentState struct {
 }
 
 // Rollout polls WorkloadDeployment objects for the given workload UID, printing
-// per-city progress rows as state changes. It returns when all deployments
+// per-location progress rows as state changes. It returns when all deployments
 // reach Done, or when ctx is cancelled (Ctrl-C detach).
 func Rollout(ctx context.Context, c client.Client, out io.Writer, project string, workloadUID types.UID) error {
 	start := time.Now()
@@ -76,7 +76,7 @@ func Rollout(ctx context.Context, c client.Client, out io.Writer, project string
 			}
 
 			if !headerPrinted {
-				_, _ = fmt.Fprintln(out, "\n  PLACEMENT\tCITY\tUPDATED\tREADY\tOLD\tPHASE")
+				_, _ = fmt.Fprintln(out, "\n  PLACEMENT\tLOCATION\tUPDATED\tREADY\tOLD\tPHASE")
 				headerPrinted = true
 			}
 
@@ -109,7 +109,7 @@ func processDeployments(
 ) bool {
 	allDone := true
 	for _, d := range deployments {
-		key := d.Spec.CityCode
+		key := d.Spec.LocationRef.Name
 		prev, exists := states[key]
 
 		desired := resolveDesired(d)
@@ -143,7 +143,7 @@ func updateDeploymentState(
 ) deploymentPhase {
 	st := &deploymentState{
 		placement: d.Spec.PlacementName,
-		city:      d.Spec.CityCode,
+		location:  d.Spec.LocationRef.Name,
 		desired:   desired,
 		ready:     ready,
 		current:   current,
@@ -190,7 +190,7 @@ func printDeploymentRow(
 
 	_, _ = fmt.Fprintf(tw, "  %s\t%s\t%d\t%d\t%d\t%s\n",
 		d.Spec.PlacementName,
-		d.Spec.CityCode,
+		d.Spec.LocationRef.Name,
 		current,
 		ready,
 		old,

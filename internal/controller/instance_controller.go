@@ -1278,7 +1278,7 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		computev1alpha.WorkloadDeploymentUIDLabel,
 		computev1alpha.InstanceIndexLabel,
 		computev1alpha.WorkloadDeploymentNameLabel,
-		computev1alpha.CityCodeLabel,
+		computev1alpha.LocationLabel,
 		computev1alpha.WorkloadNameLabel,
 		computev1alpha.PlacementNameLabel,
 	} {
@@ -1322,7 +1322,7 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 				computev1alpha.WorkloadDeploymentUIDLabel:      instance.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
 				computev1alpha.InstanceIndexLabel:              instance.Labels[computev1alpha.InstanceIndexLabel],
 				computev1alpha.WorkloadDeploymentNameLabel:     instance.Labels[computev1alpha.WorkloadDeploymentNameLabel],
-				computev1alpha.CityCodeLabel:                   instance.Labels[computev1alpha.CityCodeLabel],
+				computev1alpha.LocationLabel:                   instance.Labels[computev1alpha.LocationLabel],
 				computev1alpha.WorkloadNameLabel:               instance.Labels[computev1alpha.WorkloadNameLabel],
 				computev1alpha.PlacementNameLabel:              instance.Labels[computev1alpha.PlacementNameLabel],
 			},

@@ -89,7 +89,13 @@ Spec defines the desired state of an Instance.
         <td><b><a href="#instancespecnetworkinterfacesindex">networkInterfaces</a></b></td>
         <td>[]object</td>
         <td>
-          Network interface configuration.<br/>
+          Network interface configuration.
+
+Keyed by interface name so an interface keeps its identity, and therefore
+its addresses, across updates to the rest of the list.
+
+Limited to a single interface until the data plane can attach more than
+one to an instance.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -130,7 +136,13 @@ Virtual Machine.<br/>
 
 
 
+InstanceNetworkInterface describes one interface an instance needs. The
+fields beyond `network` and `networkPolicy` are copied verbatim onto the
+NetworkInterfaceClaim created for each instance slot, so they carry the same
+meaning, defaults, and immutability the claim API defines.
 
+The location an interface is claimed in is implicit: the claim is created in
+the control plane serving the instance, which is already location scoped.
 
 <table>
     <thead>
@@ -149,6 +161,53 @@ Virtual Machine.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#instancespecnetworkinterfacesindexaddressesindex">addresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          Requests for addresses beyond the ones the interface holds inside its
+network, such as a public IPv4 address in front of a private one. Each is
+reported in the interface's `externalAddresses` status.
+
+Omit this field for ordinary private addressing, which is the common case.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(a, self.exists_one(b, b.class == a.class)): Each address class may be requested at most once</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>ipFamilies</b></td>
+        <td>[]enum</td>
+        <td>
+          The address families the interface must carry, in priority order. List
+[IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+interface's primary address, which is the one reported as the instance's
+network IP.
+
+Every family listed must be satisfiable or the interface is never
+published, so asking for a family the network does not carry fails rather
+than yielding a partially addressed interface.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be requested at most once</li><li>self == oldSelf: ipFamilies is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
+            <i>Default</i>: [IPv6]<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the interface, such as eth0 or eth1. It is both the device
+name the guest operating system sees and the suffix of the interface
+claim's name, which is what keeps an interface's addresses with the
+instance slot across replacement.
+
+Immutable, because the guest is configured against it and the claim is
+named after it.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: name is immutable and cannot be changed after creation</li>
+            <i>Default</i>: eth0<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancespecnetworkinterfacesindexnetworkpolicy">networkPolicy</a></b></td>
         <td>object</td>
         <td>
@@ -158,6 +217,29 @@ If provided, this will result in a platform managed network policy being
 created that targets the specfiic instance interface. This network policy
 will be of the lowest priority, and can effectively be prohibited from
 influencing network connectivity.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reclaimPolicy</b></td>
+        <td>enum</td>
+        <td>
+          What becomes of the interface, and its addresses, when the instance slot
+it serves goes away.
+
+Delete returns the addresses to IPAM, so an instance recreated later comes
+back on different addresses. Retain keeps them reserved, and billable, so a
+later instance filling the same slot returns to the same addresses. Choose
+Retain when an address is published in DNS, allowed through a firewall, or
+otherwise depended on from outside.
+
+Both policies keep the addresses for as long as the slot exists, including
+across instance replacement. They differ only on scale-down and deletion.
+
+Immutable. An address keeps the policy it was allocated under.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: reclaimPolicy is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: Delete, Retain<br/>
+            <i>Default</i>: Delete<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -196,6 +278,38 @@ The network to attach the network interface to.
 Defaults to the namespace for the type the reference is embedded in.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.networkInterfaces[index].addresses[index]
+<sup><sup>[↩ Parent](#instancespecnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+the interface holds inside its network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class to allocate from, such as public-ipv4.
+
+A class names a kind of address, and the platform decides which pool and
+prefix length serve it. A class never names a pool, a prefix length, or a
+CIDR, so a class cannot be used to ask for a particular address.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -1426,13 +1540,6 @@ The location which the instance has been scheduled to
           Name of a datum location<br/>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -2052,6 +2159,15 @@ Known condition types are: "Available", "Progressing"<br/>
           Network interface information<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b>suspended</b></td>
+        <td>boolean</td>
+        <td>
+          Suspended, when true, indicates that the instance's process should be stopped
+without releasing its placement, disk attachments, or quota allocation.
+The provider controller stops the running container/VM.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -2177,10 +2293,123 @@ Controller contains status information about the controller managing the instanc
         </tr>
     </thead>
     <tbody><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexaddressesindex">addresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          The addresses the interface holds inside its network, each with its prefix
+length and, once the location has a subnet, its gateway.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancestatusnetworkinterfacesindexassignments">assignments</a></b></td>
         <td>object</td>
         <td>
+          Single address projections of the fields above, kept for clients that read
+one address per interface.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexconditionsindex">conditions</a></b></td>
+        <td>[]object</td>
+        <td>
+          The observations of this interface's current state. Known condition types
+are "Allocated" and "Programmed".<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexexternaladdressesindex">externalAddresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          The addresses the interface is reachable at from outside its network, one
+per class requested in the spec. Each is a bare address with no prefix
+length.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the interface this entry reports on, matching the name in the
+instance's spec.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexnetworkinterfaceref">networkInterfaceRef</a></b></td>
+        <td>object</td>
+        <td>
+          The NetworkInterface bound to this entry, in the instance's namespace. An
+infrastructure provider follows it to configure the NIC, so it never has to
+derive the name of the claim that produced it.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].addresses[index]
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceAddress is an address the interface holds inside its
+network. These are configured on the NIC itself, and always carry a prefix
+length.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>address</b></td>
+        <td>string</td>
+        <td>
+          The address the interface holds, in CIDR notation, such as 10.128.0.2/32
+or 2001:db8:a001::1/128.
+
+For IPv6 this may be a block delegated to the interface rather than a
+single address, such as 2001:db8:a001::/96. The interface owns the whole
+block and assigns within it.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          The address family of this entry.<br/>
           <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class this address was allocated from, such as private-ipv6. It
+is empty for addresses requested by family rather than by class.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>gateway</b></td>
+        <td>string</td>
+        <td>
+          The next hop the interface routes through for this family, such as
+10.128.0.1. It is empty until the subnet backing the network in this
+location exists.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>primary</b></td>
+        <td>boolean</td>
+        <td>
+          Marks the address projected into `assignments.networkIP`.
+
+Exactly one address is primary for the interface as a whole, not one per
+family. It is the address of the first family listed in `ipFamilies`.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -2192,7 +2421,8 @@ Controller contains status information about the controller managing the instanc
 
 
 
-
+Single address projections of the fields above, kept for clients that read
+one address per interface.
 
 <table>
     <thead>
@@ -2208,15 +2438,173 @@ Controller contains status information about the controller managing the instanc
         <td>string</td>
         <td>
           The external IP address used for the interface. A one to one NAT will be
-performed for this address with the interface's network IP.<br/>
+performed for this address with the interface's network IP. It is a
+projection of the first entry in the interface's `externalAddresses`.<br/>
         </td>
         <td>false</td>
       </tr><tr>
         <td><b>networkIP</b></td>
         <td>string</td>
         <td>
-          The IP address assigned as the primary IP from the attached network.<br/>
+          The IP address assigned as the primary IP from the attached network. It is
+a projection of the primary entry in the interface's `addresses`.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].conditions[index]
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+Condition contains details for one aspect of the current state of this API Resource.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>lastTransitionTime</b></td>
+        <td>string</td>
+        <td>
+          lastTransitionTime is the last time the condition transitioned from one status to another.
+This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.<br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>message</b></td>
+        <td>string</td>
+        <td>
+          message is a human readable message indicating details about the transition.
+This may be an empty string.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>reason</b></td>
+        <td>string</td>
+        <td>
+          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+Producers of specific condition types may define expected values and meanings for this field,
+and whether the values are considered a guaranteed API.
+The value should be a CamelCase string.
+This field may not be empty.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>status</b></td>
+        <td>enum</td>
+        <td>
+          status of the condition, one of True, False, Unknown.<br/>
+          <br/>
+            <i>Enum</i>: True, False, Unknown<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>type</b></td>
+        <td>string</td>
+        <td>
+          type of condition in CamelCase or in foo.example.com/CamelCase.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>observedGeneration</b></td>
+        <td>integer</td>
+        <td>
+          observedGeneration represents the .metadata.generation that the condition was set based upon.
+For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+with respect to the current state of the instance.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].externalAddresses[index]
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceExternalAddress is an address reachable from outside
+the network, mapped onto an address the interface holds inside it. A public
+IPv4 address in front of a private address is the usual case.
+
+Unlike an interface address, it is a bare address with no prefix length,
+because nothing configures it on the NIC.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>address</b></td>
+        <td>string</td>
+        <td>
+          The externally reachable address, such as 203.0.113.10. It carries no
+prefix length.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class this address was allocated from, such as public-ipv4. It
+matches a class requested in the interface's `addresses`.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          The address family of this entry.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].networkInterfaceRef
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+The NetworkInterface bound to this entry, in the instance's namespace. An
+infrastructure provider follows it to configure the NIC, so it never has to
+derive the name of the claim that produced it.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          name is the network interface name.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>

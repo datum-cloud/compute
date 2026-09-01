@@ -1,6 +1,7 @@
 package v1alpha
 
 import (
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	k8scorev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -136,10 +137,11 @@ type WorkloadPlacement struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// A list of city codes that define where the instances should be deployed.
+	// A list of locations where the instances should be deployed.
 	//
 	// +kubebuilder:validation:Required
-	CityCodes []string `json:"cityCodes,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	Locations []locationsv1alpha1.LocationReference `json:"locations,omitempty"`
 
 	// Scale settings such as minimum and maximum replica counts.
 	//

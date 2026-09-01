@@ -43,11 +43,7 @@ func (r *WorkloadDeploymentFederator) ensureNetworkBinding(
 	ctx context.Context,
 	hubDeployment *computev1alpha.WorkloadDeployment,
 ) (*networkingv1alpha.NetworkBinding, error) {
-	// The location is written by the cell that serves the deployment and reaches
-	// the hub through Karmada status aggregation, so it is absent for as long as
-	// nothing has placed the deployment. There is no presence to ask for until
-	// then, and a binding without a location cannot be created at all.
-	if hubDeployment.Status.Location == nil || hubDeployment.Status.Location.Name == "" {
+	if hubDeployment.Spec.LocationRef.Name == "" {
 		return nil, nil
 	}
 
@@ -55,7 +51,7 @@ func (r *WorkloadDeploymentFederator) ensureNetworkBinding(
 	if !ok {
 		return nil, nil
 	}
-	location := *hubDeployment.Status.Location
+	location := networkingv1alpha.LocationReference{Name: hubDeployment.Spec.LocationRef.Name}
 
 	key := client.ObjectKey{Namespace: hubDeployment.Namespace, Name: hubDeployment.Name}
 	var existing networkingv1alpha.NetworkBinding

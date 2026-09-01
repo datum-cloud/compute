@@ -5,6 +5,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // InstanceSpec defines the desired state of Instance
@@ -40,7 +41,7 @@ type InstanceSpec struct {
 	// The location which the instance has been scheduled to
 	//
 	// +kubebuilder:validation:Optional
-	Location *networkingv1alpha.LocationReference `json:"location,omitempty"`
+	Location *locationsv1alpha1.LocationReference `json:"location,omitempty"`
 
 	// Controller contains settings driven by the controller managing the instance.
 	//
@@ -871,11 +872,11 @@ const (
 	// waits until the platform resolves the conflict.
 	WorkloadDeploymentReasonAmbiguousServingLocation = "AmbiguousServingLocation"
 
-	// WorkloadDeploymentReasonCityCodeMismatch is set on
-	// WorkloadDeployment.Available when the deployment asks for one city and the
-	// cell serves another. It means the deployment was placed on the wrong cell,
+	// WorkloadDeploymentReasonLocationMismatch is set on
+	// WorkloadDeployment.Available when the deployment asks for one location and
+	// the cell serves another. It means the deployment was placed on the wrong cell,
 	// which is a platform fault rather than anything the user can correct.
-	WorkloadDeploymentReasonCityCodeMismatch = "CityCodeMismatch"
+	WorkloadDeploymentReasonLocationMismatch = "LocationMismatch"
 
 	// WorkloadDeploymentReasonNetworkProvisioning is set on WorkloadDeployment.Available
 	// while the network binding or subnet is still being provisioned.

@@ -119,10 +119,10 @@ will live in, such as in a city, or region.<br/>
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>cityCodes</b></td>
-        <td>[]string</td>
+        <td><b><a href="#workloadspecplacementsindexlocationsindex">locations</a></b></td>
+        <td>[]object</td>
         <td>
-          A list of city codes that define where the instances should be deployed.<br/>
+          A list of locations where the instances should be deployed.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -137,6 +137,33 @@ will live in, such as in a city, or region.<br/>
         <td>object</td>
         <td>
           Scale settings such as minimum and maximum replica counts.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.placements[index].locations[index]
+<sup><sup>[↩ Parent](#workloadspecplacementsindex)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of a datum location<br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -359,7 +386,13 @@ Describes the desired configuration of an instance
         <td><b><a href="#workloadspectemplatespecnetworkinterfacesindex">networkInterfaces</a></b></td>
         <td>[]object</td>
         <td>
-          Network interface configuration.<br/>
+          Network interface configuration.
+
+Keyed by interface name so an interface keeps its identity, and therefore
+its addresses, across updates to the rest of the list.
+
+Limited to a single interface until the data plane can attach more than
+one to an instance.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -400,7 +433,13 @@ Virtual Machine.<br/>
 
 
 
+InstanceNetworkInterface describes one interface an instance needs. The
+fields beyond `network` and `networkPolicy` are copied verbatim onto the
+NetworkInterfaceClaim created for each instance slot, so they carry the same
+meaning, defaults, and immutability the claim API defines.
 
+The location an interface is claimed in is implicit: the claim is created in
+the control plane serving the instance, which is already location scoped.
 
 <table>
     <thead>
@@ -419,6 +458,53 @@ Virtual Machine.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#workloadspectemplatespecnetworkinterfacesindexaddressesindex">addresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          Requests for addresses beyond the ones the interface holds inside its
+network, such as a public IPv4 address in front of a private one. Each is
+reported in the interface's `externalAddresses` status.
+
+Omit this field for ordinary private addressing, which is the common case.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(a, self.exists_one(b, b.class == a.class)): Each address class may be requested at most once</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>ipFamilies</b></td>
+        <td>[]enum</td>
+        <td>
+          The address families the interface must carry, in priority order. List
+[IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+interface's primary address, which is the one reported as the instance's
+network IP.
+
+Every family listed must be satisfiable or the interface is never
+published, so asking for a family the network does not carry fails rather
+than yielding a partially addressed interface.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be requested at most once</li><li>self == oldSelf: ipFamilies is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
+            <i>Default</i>: [IPv6]<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the interface, such as eth0 or eth1. It is both the device
+name the guest operating system sees and the suffix of the interface
+claim's name, which is what keeps an interface's addresses with the
+instance slot across replacement.
+
+Immutable, because the guest is configured against it and the claim is
+named after it.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: name is immutable and cannot be changed after creation</li>
+            <i>Default</i>: eth0<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloadspectemplatespecnetworkinterfacesindexnetworkpolicy">networkPolicy</a></b></td>
         <td>object</td>
         <td>
@@ -428,6 +514,29 @@ If provided, this will result in a platform managed network policy being
 created that targets the specfiic instance interface. This network policy
 will be of the lowest priority, and can effectively be prohibited from
 influencing network connectivity.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reclaimPolicy</b></td>
+        <td>enum</td>
+        <td>
+          What becomes of the interface, and its addresses, when the instance slot
+it serves goes away.
+
+Delete returns the addresses to IPAM, so an instance recreated later comes
+back on different addresses. Retain keeps them reserved, and billable, so a
+later instance filling the same slot returns to the same addresses. Choose
+Retain when an address is published in DNS, allowed through a firewall, or
+otherwise depended on from outside.
+
+Both policies keep the addresses for as long as the slot exists, including
+across instance replacement. They differ only on scale-down and deletion.
+
+Immutable. An address keeps the policy it was allocated under.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: reclaimPolicy is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: Delete, Retain<br/>
+            <i>Default</i>: Delete<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -466,6 +575,38 @@ The network to attach the network interface to.
 Defaults to the namespace for the type the reference is embedded in.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Workload.spec.template.spec.networkInterfaces[index].addresses[index]
+<sup><sup>[↩ Parent](#workloadspectemplatespecnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+the interface holds inside its network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class to allocate from, such as public-ipv4.
+
+A class names a kind of address, and the platform decides which pool and
+prefix length serve it. A class never names a pool, a prefix length, or a
+CIDR, so a class cannot be used to ask for a particular address.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -1696,13 +1837,6 @@ The location which the instance has been scheduled to
           Name of a datum location<br/>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -2559,6 +2693,24 @@ conditions:
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>attachedListenerSets</b></td>
+        <td>integer</td>
+        <td>
+          AttachedListenerSets represents the total number of ListenerSets that have been
+successfully attached to this Gateway.
+
+A ListenerSet is successfully attached to a Gateway when all the following conditions are met:
+- The ListenerSet is selected by the Gateway's AllowedListeners field
+- The ListenerSet has a valid ParentRef selecting the Gateway
+- The ListenerSet's status has the condition "Accepted: true"
+
+Uses for this field include troubleshooting AttachedListenerSets attachment and
+measuring blast radius/impact of changes to a Gateway.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloadstatusgatewayconditionsindex">conditions</a></b></td>
         <td>[]object</td>
         <td>
@@ -2573,7 +2725,35 @@ Known condition types are:
 
 * "Accepted"
 * "Programmed"
-* "Ready"<br/>
+* "Ready"
+
+<gateway:util:excludeFromCRD>
+Notes for implementors:
+
+Conditions are a listType `map`, which means that they function like a
+map with a key of the `type` field _in the k8s apiserver_.
+
+This means that implementations must obey some rules when updating this
+section.
+
+* Implementations MUST perform a read-modify-write cycle on this field
+  before modifying it. That is, when modifying this field, implementations
+  must be confident they have fetched the most recent version of this field,
+  and ensure that changes they make are on that recent version.
+* Implementations MUST NOT remove or reorder Conditions that they are not
+  directly responsible for. For example, if an implementation sees a Condition
+  with type `special.io/SomeField`, it MUST NOT remove, change or update that
+  Condition.
+* Implementations MUST always _merge_ changes into Conditions of the same Type,
+  rather than creating more than one Condition of the same Type.
+* Implementations MUST always update the `observedGeneration` field of the
+  Condition to the `metadata.generation` of the Gateway at the time of update creation.
+* If the `observedGeneration` of a Condition is _greater than_ the value the
+  implementation knows about, then it MUST NOT perform the update on that Condition,
+  but must wait for a future reconciliation and status update. (The assumption is that
+  the implementation's copy of the object is stale and an update will be re-triggered
+  if relevant.)
+</gateway:util:excludeFromCRD><br/>
           <br/>
             <i>Default</i>: [map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Accepted] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed]]<br/>
         </td>
@@ -2737,8 +2917,11 @@ resource or a specific Listener as a parent resource (more detail on
 attachment semantics can be found in the documentation on the various
 Route kinds ParentRefs fields). Listener or Route status does not impact
 successful attachment, i.e. the AttachedRoutes field count MUST be set
-for Listeners with condition Accepted: false and MUST count successfully
-attached Routes that may themselves have Accepted: false conditions.
+for Listeners, even if the Accepted condition of an individual Listener is set
+to "False". The AttachedRoutes number represents the number of Routes with
+the Accepted condition set to "True" that have been attached to this Listener.
+Routes with any other value for the Accepted condition MUST NOT be included
+in this count.
 
 Uses for this field include troubleshooting Route attachment and
 measuring blast radius/impact of changes to a Listener.<br/>
@@ -2750,7 +2933,36 @@ measuring blast radius/impact of changes to a Listener.<br/>
         <td><b><a href="#workloadstatusgatewaylistenersindexconditionsindex">conditions</a></b></td>
         <td>[]object</td>
         <td>
-          Conditions describe the current condition of this listener.<br/>
+          Conditions describe the current condition of this listener.
+
+<gateway:util:excludeFromCRD>
+Notes for implementors:
+
+Conditions are a listType `map`, which means that they function like a
+map with a key of the `type` field _in the k8s apiserver_.
+
+This means that implementations must obey some rules when updating this
+section.
+
+* Implementations MUST perform a read-modify-write cycle on this field
+  before modifying it. That is, when modifying this field, implementations
+  must be confident they have fetched the most recent version of this field,
+  and ensure that changes they make are on that recent version.
+* Implementations MUST NOT remove or reorder Conditions that they are not
+  directly responsible for. For example, if an implementation sees a Condition
+  with type `special.io/SomeField`, it MUST NOT remove, change or update that
+  Condition.
+* Implementations MUST always _merge_ changes into Conditions of the same Type,
+  rather than creating more than one Condition of the same Type.
+* Implementations MUST always update the `observedGeneration` field of the
+  Condition to the `metadata.generation` of the Gateway at the time of update creation.
+* If the `observedGeneration` of a Condition is _greater than_ the value the
+  implementation knows about, then it MUST NOT perform the update on that Condition,
+  but must wait for a future reconciliation and status update. (The assumption is that
+  the implementation's copy of the object is stale and an update will be re-triggered
+  if relevant.)
+
+</gateway:util:excludeFromCRD><br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -2765,7 +2977,7 @@ measuring blast radius/impact of changes to a Listener.<br/>
         <td>[]object</td>
         <td>
           SupportedKinds is the list indicating the Kinds supported by this
-listener. This MUST represent the kinds an implementation supports for
+listener. This MUST represent the kinds supported by an implementation for
 that Listener configuration.
 
 If kinds are specified in Spec that are not supported, they MUST NOT
@@ -2774,7 +2986,7 @@ condition to "False" with the "InvalidRouteKinds" reason. If both valid
 and invalid Route kinds are specified, the implementation MUST
 reference the valid Route kinds that have been specified.<br/>
         </td>
-        <td>true</td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

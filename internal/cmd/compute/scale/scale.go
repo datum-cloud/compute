@@ -26,7 +26,7 @@ func Command() *cobra.Command {
 		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
-	cmd.Flags().Int32Var(&min, "min", 0, "Minimum number of instances per city")
+	cmd.Flags().Int32Var(&min, "min", 0, "Minimum number of instances per location")
 	_ = cmd.MarkFlagRequired("min")
 
 	return cmd

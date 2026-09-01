@@ -62,7 +62,7 @@ function statusLabel(workload: Workload): string {
 }
 
 function regionLabel(region: WorkloadPlacementRegion): string {
-  if (region.cityCodes.length > 0) return region.cityCodes.join(", ");
+  if (region.locations.length > 0) return region.locations.join(", ");
   return region.name;
 }
 
@@ -232,7 +232,7 @@ function WorkloadCard({
       {workload.placementRegions.length > 0 && (
         <div className="border-border flex flex-col gap-1.5 border-t pt-4">
           <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-            Regions
+            Locations
           </p>
           {workload.placementRegions.map((region) => (
             <div
@@ -320,7 +320,7 @@ export default function WorkloadList() {
 
       <PageTitle
         title="Workloads"
-        description="Groups of compute instances deployed across regions"
+        description="Groups of compute instances deployed across locations"
       />
 
       {isLoading && <LoadingSkeleton />}

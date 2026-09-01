@@ -18,7 +18,7 @@ spec:
             Companions are NOT written to the control-plane cluster.
 
     [Hop 3] Karmada hub holds the companion ConfigMap + Secret in ns-{project-uid},
-            propagated by the always-on label selector in the city-dfw
+            propagated by the always-on label selector in the location-dfw
             PropagationPolicy (which includes ConfigMap and Secret selectors).
 
     [Hop 4] Karmada propagates the WD + companions to pop-dfw.
@@ -197,7 +197,7 @@ spec:
 
   - name: assert-propagation-policy-has-companion-selectors
     description: |
-      Assert the PropagationPolicy city-dfw on the hub includes ConfigMap and
+      Assert the PropagationPolicy location-dfw on the hub includes ConfigMap and
       Secret resource selectors so companions co-propagate with the WD.
     cluster: downstream
     try:
@@ -216,7 +216,7 @@ spec:
           kind: PropagationPolicy
           metadata:
             namespace: ($downstreamNS)
-            name: city-dfw
+            name: location-dfw
           spec:
             resourceSelectors:
             - apiVersion: compute.datumapis.com/v1alpha
@@ -224,7 +224,7 @@ spec:
               namespace: ($downstreamNS)
               labelSelector:
                 matchLabels:
-                  topology.datum.net/city-code: dfw
+                  topology.datum.net/location: dfw
             - apiVersion: v1
               kind: ConfigMap
               namespace: ($downstreamNS)

@@ -31,6 +31,7 @@ import (
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 	milosource "go.miloapis.com/milo/pkg/multicluster-runtime/source"
 )
@@ -42,11 +43,9 @@ const (
 	// object is permanently deleted.
 	federatorFinalizer = "compute.datumapis.com/federator"
 
-	// cityCodeLabel is applied to WorkloadDeployments in the downstream namespace
-	// and is used by PropagationPolicy selectors to route them to the correct
-	// POP-cell clusters. Downstream Cluster objects are expected to carry this
-	// label with their city-code value.
-	cityCodeLabel = networkingv1alpha.TopologyCityCodeKey
+	// locationLabel is applied to downstream WorkloadDeployments and is used by
+	// PropagationPolicy selectors to route them to the exact Location-serving cell.
+	locationLabel = locationsv1alpha1.ServingLocationTopologyLabel
 
 	kindWorkloadDeployment = "WorkloadDeployment"
 )
@@ -60,11 +59,11 @@ const (
 //     convention (matching the MappedNamespaceResourceStrategy used by
 //     go.datum.net/network-services-operator).
 //  2. Upserts a corresponding WorkloadDeployment in that downstream namespace,
-//     stamped with label topology.datum.net/city-code=<cityCode>.
-//  3. Lazily creates a PropagationPolicy per city code per downstream namespace
-//     that selects WorkloadDeployments by the city-code label and targets
+//     stamped with label topology.datum.net/location=<location-name>.
+//  3. Lazily creates a PropagationPolicy per location per downstream namespace
+//     that selects WorkloadDeployments by the location label and targets
 //     clusters carrying the same label. The PP is deleted once no deployments
-//     with that city code remain in the namespace.
+//     with that location remain in the namespace.
 //  4. Reads the aggregated status from the downstream control plane and writes
 //     it back to the project-namespace object.
 //  5. On deletion: removes the downstream WorkloadDeployment and cleans up
@@ -163,7 +162,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensurePropagationPolicy(ctx, downstreamNS, deployment.Spec.CityCode); err != nil {
+	if err := r.ensurePropagationPolicy(ctx, downstreamNS, deployment.Spec.LocationRef.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -230,7 +229,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	}
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
 
-	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.CityCode); err != nil {
+	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.LocationRef.Name); err != nil {
 		return finalizer.Result{}, err
 	}
 
@@ -306,7 +305,7 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 		if kd.Labels == nil {
 			kd.Labels = make(map[string]string)
 		}
-		kd.Labels[cityCodeLabel] = deployment.Spec.CityCode
+		kd.Labels[locationLabel] = deployment.Spec.LocationRef.Name
 		kd.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = deployment.Namespace
 		kd.Spec = deployment.Spec
 		// Propagate controller-managed annotations from the project WD to the
@@ -349,26 +348,26 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 }
 
 // ensurePropagationPolicy creates or updates a PropagationPolicy in the downstream
-// namespace that selects all WorkloadDeployments with the given city-code label
+// namespace that selects all WorkloadDeployments with the given location label
 // and targets clusters carrying the same label.
 func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 	ctx context.Context,
 	downstreamNS string,
-	cityCode string,
+	locationName string,
 ) error {
 	pp := &karmadapolicyv1alpha1.PropagationPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      propagationPolicyNameFor(cityCode),
+			Name:      propagationPolicyNameFor(locationName),
 			Namespace: downstreamNS,
 		},
 	}
 
 	result, err := controllerutil.CreateOrPatch(ctx, r.FederationClient, pp, func() error {
 		pp.Spec = karmadapolicyv1alpha1.PropagationSpec{
-			// Select WorkloadDeployments by city-code label, plus ALL
+			// Select WorkloadDeployments by location label, plus ALL
 			// companion ConfigMaps and Secrets in this namespace that carry the
 			// referenced-data label. The label selector on ConfigMap/Secret is
-			// city-code-agnostic — companions are shared across city codes when
+			// location-agnostic — companions are shared across locations when
 			// multiple WDs reference the same source. Karmada propagates the
 			// entire set to matching clusters in one policy, so companions
 			// co-arrive with their WorkloadDeployment.
@@ -382,14 +381,14 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					Kind:       kindWorkloadDeployment,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							cityCodeLabel: cityCode,
+							locationLabel: locationName,
 						},
 					},
 				},
 				{
 					// Propagate companion ConfigMaps alongside WorkloadDeployments.
 					// The referenced-data label is the only selector needed; there
-					// is no per-city partitioning of companions.
+					// is no per-location partitioning of companions.
 					APIVersion: corev1.SchemeGroupVersion.String(),
 					Kind:       kindConfigMap,
 					LabelSelector: &metav1.LabelSelector{
@@ -410,13 +409,13 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 				},
 			},
 			Placement: karmadapolicyv1alpha1.Placement{
-				// Route to clusters that carry the same city-code label. POP-cell
+				// Route to clusters that carry the same location label. POP-cell
 				// clusters registered with the downstream control plane must be
 				// labeled accordingly.
 				ClusterAffinity: &karmadapolicyv1alpha1.ClusterAffinity{
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							cityCodeLabel: cityCode,
+							locationLabel: locationName,
 						},
 					},
 				},
@@ -425,10 +424,10 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("failed to upsert PropagationPolicy for city %q in %s: %w", cityCode, downstreamNS, err)
+		return fmt.Errorf("failed to upsert PropagationPolicy for location %q in %s: %w", locationName, downstreamNS, err)
 	}
 
-	log.FromContext(ctx).Info("upserted PropagationPolicy", "result", result, "cityCode", cityCode, "downstreamNamespace", downstreamNS)
+	log.FromContext(ctx).Info("upserted PropagationPolicy", "result", result, "location", locationName, "downstreamNamespace", downstreamNS)
 	return nil
 }
 
@@ -505,21 +504,21 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 	ctx context.Context,
 	downstreamNS string,
-	cityCode string,
+	locationName string,
 ) error {
-	// The webhook requires cityCode, so an empty value here is corruption. An
+	// The webhook requires locationRef.name, so an empty value here is corruption. An
 	// empty-valued label selector would match the wrong deployment set and
 	// mis-decide whether the PropagationPolicy is still in use.
-	if cityCode == "" {
-		return fmt.Errorf("cannot evaluate PropagationPolicy usage in namespace %q: city code is empty", downstreamNS)
+	if locationName == "" {
+		return fmt.Errorf("cannot evaluate PropagationPolicy usage in namespace %q: location name is empty", downstreamNS)
 	}
 
 	var remaining computev1alpha.WorkloadDeploymentList
 	if err := r.FederationClient.List(ctx, &remaining,
 		client.InNamespace(downstreamNS),
-		client.MatchingLabels{cityCodeLabel: cityCode},
+		client.MatchingLabels{locationLabel: locationName},
 	); err != nil {
-		return fmt.Errorf("failed to list remaining downstream deployments for city %q: %w", cityCode, err)
+		return fmt.Errorf("failed to list remaining downstream deployments for location %q: %w", locationName, err)
 	}
 
 	if len(remaining.Items) > 0 {
@@ -529,15 +528,15 @@ func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 
 	pp := &karmadapolicyv1alpha1.PropagationPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      propagationPolicyNameFor(cityCode),
+			Name:      propagationPolicyNameFor(locationName),
 			Namespace: downstreamNS,
 		},
 	}
 	if err := r.FederationClient.Delete(ctx, pp); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("failed to delete PropagationPolicy for city %q in %s: %w", cityCode, downstreamNS, err)
+		return fmt.Errorf("failed to delete PropagationPolicy for location %q in %s: %w", locationName, downstreamNS, err)
 	}
 
-	log.FromContext(ctx).Info("deleted PropagationPolicy (no more deployments for city)", "cityCode", cityCode, "downstreamNamespace", downstreamNS)
+	log.FromContext(ctx).Info("deleted PropagationPolicy (no more deployments for location)", "location", locationName, "downstreamNamespace", downstreamNS)
 	return nil
 }
 
@@ -718,7 +717,7 @@ func projectClusterNameFromLabel(encoded string) string {
 // propagationPolicyNameFor returns the PropagationPolicy name for a given city
 // code. The name is stable and deterministic so that multiple reconciles of
 // different deployments sharing the same city code converge on the same policy.
-func propagationPolicyNameFor(cityCode string) string {
-	sanitized := strings.ToLower(strings.ReplaceAll(cityCode, " ", "-"))
-	return fmt.Sprintf("city-%s", sanitized)
+func propagationPolicyNameFor(locationName string) string {
+	sanitized := strings.ToLower(strings.ReplaceAll(locationName, " ", "-"))
+	return fmt.Sprintf("location-%s", sanitized)
 }

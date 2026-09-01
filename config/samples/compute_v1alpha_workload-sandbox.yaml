@@ -57,7 +57,7 @@ spec:
           name: workload-sandbox-sample-configmap
   placements:
   - name: us
-    cityCodes:
-    - DFW
+    locations:
+    - name: gcp-us-south1-a
     scaleSettings:
       minReplicas: 1

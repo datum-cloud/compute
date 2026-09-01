@@ -8,14 +8,14 @@ spec:
 
     The dfw path is covered by full-federation. This suite proves the same chain
     routes independently to the OTHER cell: an ord-placed WorkloadDeployment must
-    produce PropagationPolicy city-ord (not city-dfw), propagate to pop-ord (not
+    produce PropagationPolicy location-ord (not location-dfw), propagate to pop-ord (not
     pop-dfw), and create its Instance on pop-ord. Both cells run the same operator
-    image, so this is the coverage that catches city-code routing regressions and
+    image, so this is the coverage that catches location routing regressions and
     a mis-registered second cell.
 
-    1. Create WorkloadDeployment (cityCode: ord) on control-plane.
+    1. Create WorkloadDeployment (locationRef.name: ord) on control-plane.
     2. WorkloadDeploymentFederator replicates it to Karmada (ns-<uid> namespace)
-       and lazily creates PropagationPolicy city-ord routing to city-code=ord cells.
+       and lazily creates PropagationPolicy location-ord routing to location=ord cells.
     3. Karmada propagates the WD to pop-ord.
     4. WorkloadDeploymentReconciler on pop-ord creates Instance test-fullfed-ord-wd-0.
     5. InstanceReconciler on pop-ord writes the Instance back to Karmada with
@@ -39,7 +39,7 @@ spec:
         file: workload-deployment.yaml
 
   - name: assert-wd-and-policy-in-downstream
-    description: Assert the WD federated to Karmada and PropagationPolicy city-ord was created for ord.
+    description: Assert the WD federated to Karmada and PropagationPolicy location-ord was created for ord.
     cluster: downstream
     try:
     - script:
@@ -59,17 +59,17 @@ spec:
             namespace: ($downstreamNS)
             name: test-fullfed-ord-wd
             labels:
-              topology.datum.net/city-code: ord
+              topology.datum.net/location: ord
     - assert:
-        # The federator names the policy city-<cityCode> and routes it to cells
-        # carrying the same city-code label, so ord must land on pop-ord alone.
+        # The federator names the policy location-<name> and routes it to cells
+        # carrying the same location label, so ord must land on pop-ord alone.
         timeout: 120s
         resource:
           apiVersion: policy.karmada.io/v1alpha1
           kind: PropagationPolicy
           metadata:
             namespace: ($downstreamNS)
-            name: city-ord
+            name: location-ord
           spec:
             # Three selectors: the WorkloadDeployment plus the always-on ConfigMap
             # and Secret referenced-data selectors. Chainsaw matches list length
@@ -79,7 +79,7 @@ spec:
               kind: WorkloadDeployment
               labelSelector:
                 matchLabels:
-                  topology.datum.net/city-code: ord
+                  topology.datum.net/location: ord
             - apiVersion: v1
               kind: ConfigMap
               labelSelector:
@@ -94,7 +94,7 @@ spec:
               clusterAffinity:
                 labelSelector:
                   matchLabels:
-                    topology.datum.net/city-code: ord
+                    topology.datum.net/location: ord
 
   - name: assert-wd-on-pop-ord
     description: Assert Karmada propagated the WD to pop-ord and the cell reconciler set status.

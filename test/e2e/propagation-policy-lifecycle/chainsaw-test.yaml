@@ -6,13 +6,13 @@ spec:
   description: |
     Verifies the PropagationPolicy lifecycle managed by the WorkloadDeploymentFederator:
 
-    - A PropagationPolicy (city-dfw) is lazily created when the first WorkloadDeployment
+    - A PropagationPolicy (location-dfw) is lazily created when the first WorkloadDeployment
       for city code "dfw" is federated to Karmada.
     - The PropagationPolicy is RETAINED while at least one WorkloadDeployment for
       that city code remains in the Karmada namespace.
     - The PropagationPolicy is DELETED when the last deployment for the city is removed.
 
-    The test creates two WDs (wd-alpha, wd-beta) both targeting cityCode=dfw, verifies
+    The test creates two WDs (wd-alpha, wd-beta) both targeting location dfw, verifies
     the PP appears, deletes wd-alpha and asserts the PP is still present, then deletes
     wd-beta and waits for the PP to disappear.
 
@@ -66,7 +66,7 @@ spec:
           kind: PropagationPolicy
           metadata:
             namespace: ($downstreamNS)
-            name: city-dfw
+            name: location-dfw
 
   - name: delete-alpha
     description: Delete wd-alpha; wd-beta still targets dfw so the PP must be retained.
@@ -99,7 +99,7 @@ spec:
           kind: PropagationPolicy
           metadata:
             namespace: ($downstreamNS)
-            name: city-dfw
+            name: location-dfw
 
   - name: delete-beta
     description: Delete wd-beta (the last WD for city dfw).
@@ -127,7 +127,7 @@ spec:
         apiVersion: policy.karmada.io/v1alpha1
         kind: PropagationPolicy
         namespace: ($downstreamNS)
-        name: city-dfw
+        name: location-dfw
         timeout: 30s
         for:
           deletion: {}

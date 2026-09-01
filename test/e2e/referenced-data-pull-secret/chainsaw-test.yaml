@@ -18,7 +18,7 @@ spec:
             ReferencedDataController materialises a companion Secret in
             ns-{project-uid} on the Karmada hub and lists it in the
             expected-referenced-data annotation.
-    [Hop 3] Karmada propagates the companion to pop-dfw via the city-dfw
+    [Hop 3] Karmada propagates the companion to pop-dfw via the location-dfw
             PropagationPolicy Secret selector (label-based, source-agnostic).
     [Hop 4] The Instance's ReferencedData scheduling gate clears only once the
             credential is present on the cell.

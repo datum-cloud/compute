@@ -84,10 +84,10 @@ WorkloadDeploymentSpec defines the desired state of WorkloadDeployment
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>cityCode</b></td>
-        <td>string</td>
+        <td><b><a href="#workloaddeploymentspeclocationref">locationRef</a></b></td>
+        <td>object</td>
         <td>
-          deployments can be scheduled in ways other than just a city code.<br/>
+          The location where this deployment runs.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -128,6 +128,33 @@ unset, the deployment reconciles to scaleSettings.minReplicas.<br/>
             <i>Format</i>: int32<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.locationRef
+<sup><sup>[↩ Parent](#workloaddeploymentspec)</sup></sup>
+
+
+
+The location where this deployment runs.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of a datum location<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -348,7 +375,13 @@ Describes the desired configuration of an instance
         <td><b><a href="#workloaddeploymentspectemplatespecnetworkinterfacesindex">networkInterfaces</a></b></td>
         <td>[]object</td>
         <td>
-          Network interface configuration.<br/>
+          Network interface configuration.
+
+Keyed by interface name so an interface keeps its identity, and therefore
+its addresses, across updates to the rest of the list.
+
+Limited to a single interface until the data plane can attach more than
+one to an instance.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -389,7 +422,13 @@ Virtual Machine.<br/>
 
 
 
+InstanceNetworkInterface describes one interface an instance needs. The
+fields beyond `network` and `networkPolicy` are copied verbatim onto the
+NetworkInterfaceClaim created for each instance slot, so they carry the same
+meaning, defaults, and immutability the claim API defines.
 
+The location an interface is claimed in is implicit: the claim is created in
+the control plane serving the instance, which is already location scoped.
 
 <table>
     <thead>
@@ -408,6 +447,53 @@ Virtual Machine.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecnetworkinterfacesindexaddressesindex">addresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          Requests for addresses beyond the ones the interface holds inside its
+network, such as a public IPv4 address in front of a private one. Each is
+reported in the interface's `externalAddresses` status.
+
+Omit this field for ordinary private addressing, which is the common case.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(a, self.exists_one(b, b.class == a.class)): Each address class may be requested at most once</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>ipFamilies</b></td>
+        <td>[]enum</td>
+        <td>
+          The address families the interface must carry, in priority order. List
+[IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+interface's primary address, which is the one reported as the instance's
+network IP.
+
+Every family listed must be satisfiable or the interface is never
+published, so asking for a family the network does not carry fails rather
+than yielding a partially addressed interface.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be requested at most once</li><li>self == oldSelf: ipFamilies is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
+            <i>Default</i>: [IPv6]<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the interface, such as eth0 or eth1. It is both the device
+name the guest operating system sees and the suffix of the interface
+claim's name, which is what keeps an interface's addresses with the
+instance slot across replacement.
+
+Immutable, because the guest is configured against it and the claim is
+named after it.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: name is immutable and cannot be changed after creation</li>
+            <i>Default</i>: eth0<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloaddeploymentspectemplatespecnetworkinterfacesindexnetworkpolicy">networkPolicy</a></b></td>
         <td>object</td>
         <td>
@@ -417,6 +503,29 @@ If provided, this will result in a platform managed network policy being
 created that targets the specfiic instance interface. This network policy
 will be of the lowest priority, and can effectively be prohibited from
 influencing network connectivity.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reclaimPolicy</b></td>
+        <td>enum</td>
+        <td>
+          What becomes of the interface, and its addresses, when the instance slot
+it serves goes away.
+
+Delete returns the addresses to IPAM, so an instance recreated later comes
+back on different addresses. Retain keeps them reserved, and billable, so a
+later instance filling the same slot returns to the same addresses. Choose
+Retain when an address is published in DNS, allowed through a firewall, or
+otherwise depended on from outside.
+
+Both policies keep the addresses for as long as the slot exists, including
+across instance replacement. They differ only on scale-down and deletion.
+
+Immutable. An address keeps the policy it was allocated under.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: reclaimPolicy is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: Delete, Retain<br/>
+            <i>Default</i>: Delete<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -455,6 +564,38 @@ The network to attach the network interface to.
 Defaults to the namespace for the type the reference is embedded in.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.networkInterfaces[index].addresses[index]
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+the interface holds inside its network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class to allocate from, such as public-ipv4.
+
+A class names a kind of address, and the platform decides which pool and
+prefix length serve it. A class never names a pool, a prefix length, or a
+CIDR, so a class cannot be used to ask for a particular address.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -1685,13 +1826,6 @@ The location which the instance has been scheduled to
           Name of a datum location<br/>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -2436,13 +2570,6 @@ Known condition types are: "Available", "Progressing"<br/>
         </td>
         <td>false</td>
       </tr><tr>
-        <td><b><a href="#workloaddeploymentstatuslocation">location</a></b></td>
-        <td>object</td>
-        <td>
-          The location which the deployment has been scheduled to<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
         <td><b>observedGeneration</b></td>
         <td>integer</td>
         <td>
@@ -2458,6 +2585,14 @@ latest spec (e.g. a restart request).<br/>
         <td>string</td>
         <td>
           Selector is the label selector that identifies Pods backing this deployment.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>suspended</b></td>
+        <td>boolean</td>
+        <td>
+          Suspended, when true, requests that all instances managed by this deployment
+be stopped without releasing their placement, disk attachments, or quota allocation.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -2537,39 +2672,5 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### WorkloadDeployment.status.location
-<sup><sup>[↩ Parent](#workloaddeploymentstatus)</sup></sup>
-
-
-
-The location which the deployment has been scheduled to
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b>name</b></td>
-        <td>string</td>
-        <td>
-          Name of a datum location<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>

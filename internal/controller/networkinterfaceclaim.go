@@ -223,7 +223,7 @@ func desiredNetworkInterfaceClaimLabels(
 	candidates := map[string]string{
 		computev1alpha.WorkloadNameLabel:  deployment.Spec.WorkloadRef.Name,
 		computev1alpha.PlacementNameLabel: deployment.Spec.PlacementName,
-		computev1alpha.CityCodeLabel:      deployment.Spec.CityCode,
+		computev1alpha.LocationLabel:      deployment.Spec.LocationRef.Name,
 		computev1alpha.InstanceIndexLabel: instance.Labels[computev1alpha.InstanceIndexLabel],
 	}
 

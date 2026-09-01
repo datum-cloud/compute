@@ -32,6 +32,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
@@ -55,6 +56,7 @@ type WorkloadReconciler struct {
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -446,30 +448,23 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		existingDeployments.Insert(deployment.Name)
 	}
 
-	var locations networkingv1alpha.LocationBindingList
+	var locations locationsv1alpha1.LocationList
 	if err := upstreamClient.List(ctx, &locations); err != nil {
-		return nil, nil, fmt.Errorf("failed to list location bindings: %w", err)
-	}
-
-	if len(locations.Items) == 0 {
-		return nil, nil, fmt.Errorf("no locations are registered with the system")
+		return nil, nil, fmt.Errorf("failed to list locations: %w", err)
 	}
 
 	// Remember this: namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	for _, placement := range workload.Spec.Placements {
-		for _, cityCode := range placement.CityCodes {
-			foundLocation := false
-			for _, location := range locations.Items {
-				locationCityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
-				if ok && cityCode == locationCityCode {
-					foundLocation = true
+		for _, locationRef := range placement.Locations {
+			var location *locationsv1alpha1.Location
+			for i := range locations.Items {
+				if locations.Items[i].Name == locationRef.Name {
+					location = &locations.Items[i]
 					break
 				}
 			}
 
-			if !foundLocation {
-				// TODO(jreese) update status condition on placement if no locations are
-				// found.
+			if location == nil || !apimeta.IsStatusConditionTrue(location.Status.Conditions, locationsv1alpha1.LocationConditionReady) {
 				continue
 			}
 
@@ -477,7 +472,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 			// them via labels instead? Would help with race conditions on workload
 			// recreation.
 
-			deploymentName := fmt.Sprintf("%s-%s-%s", workload.Name, placement.Name, strings.ToLower(cityCode))
+			deploymentName := fmt.Sprintf("%s-%s-%s", workload.Name, placement.Name, strings.ToLower(locationRef.Name))
 			desiredDeployments.Insert(deploymentName)
 
 			desired = append(desired, computev1alpha.WorkloadDeployment{
@@ -486,6 +481,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					Name:      deploymentName,
 					Labels: map[string]string{
 						computev1alpha.WorkloadUIDLabel: string(workload.UID),
+						computev1alpha.LocationLabel:    locationRef.Name,
 						labelServiceName:                labelServiceNameValue,
 					},
 				},
@@ -495,7 +491,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 						UID:  workload.UID,
 					},
 					PlacementName: placement.Name,
-					CityCode:      cityCode,
+					LocationRef:   locationRef,
 					Template:      workload.Spec.Template,
 					ScaleSettings: placement.ScaleSettings,
 					Replicas:      new(placement.ScaleSettings.MinReplicas),

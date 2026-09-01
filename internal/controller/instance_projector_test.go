@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -92,7 +93,7 @@ func projTestWorkloadDeployment() *computev1alpha.WorkloadDeployment {
 			UID:       projTestWDUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      "LAX",
+			LocationRef:   locationsv1alpha1.LocationReference{Name: "us-west-1"},
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: "my-workload"},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},

@@ -14,6 +14,7 @@ require (
 	// predates the Prepared condition this gate reads. Re-pin to a tagged
 	// release once one carries it.
 	go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569
+	go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c
 	go.miloapis.com/milo v0.32.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0

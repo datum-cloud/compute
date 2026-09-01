@@ -20,7 +20,7 @@ import (
 
 type listOptions struct {
 	workload string
-	city     string
+	location string
 }
 
 func Command() *cobra.Command {
@@ -37,8 +37,8 @@ Use the describe subcommand for full details on a single instance.`,
   # Filter by workload
   datumctl compute instances --workload=api
 
-  # Filter by city
-  datumctl compute instances --city=DFW
+  # Filter by location
+  datumctl compute instances --location=us-east-1
 
   # Machine-readable output
   datumctl compute instances -o json
@@ -51,12 +51,12 @@ Use the describe subcommand for full details on a single instance.`,
 	}
 
 	cmd.Flags().StringVar(&opts.workload, "workload", "", "Filter instances to a specific workload")
-	cmd.Flags().StringVar(&opts.city, "city", "", "Filter instances to a specific city")
+	cmd.Flags().StringVar(&opts.location, "location", "", "Filter instances to a specific location")
 	cmd.Flags().StringP("output", "o", "table", "Output format: table, wide, json, yaml")
 	cmd.Flags().Bool("no-headers", false, "Omit the table header row (table and wide only)")
 
 	_ = cmd.RegisterFlagCompletionFunc("workload", util.CompleteWorkloadNames)
-	_ = cmd.RegisterFlagCompletionFunc("city", util.CompleteCityCodes)
+	_ = cmd.RegisterFlagCompletionFunc("location", util.CompleteLocations)
 	_ = cmd.RegisterFlagCompletionFunc("output", util.CompleteOutputFormats("table", "wide", "json", "yaml"))
 
 	cmd.AddCommand(describeCommand())
@@ -67,7 +67,7 @@ Use the describe subcommand for full details on a single instance.`,
 type instanceRow struct {
 	name        string
 	workload    string
-	city        string
+	location    string
 	internalIP  string
 	runtimeKind string // "sandbox" or "vm"
 	instType    string
@@ -111,7 +111,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 		return fmt.Errorf("listing instances: %w", err)
 	}
 
-	// JSON/YAML: emit raw API resource and return early (before city filter).
+	// JSON/YAML: emit raw API resource and return early (before location filter).
 	switch util.OutputFormat(outputFlag) {
 	case util.OutputJSON:
 		return util.PrintJSON(cmd.OutOrStdout(), &instList)
@@ -148,7 +148,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	for _, inst := range instList.Items {
 		wlUID := inst.Labels[computev1alpha.WorkloadUIDLabel]
 
-		city := "unknown"
+		location := "unknown"
 		wlName := workloadMap[wlUID]
 		if wlName == "" {
 			wlName = "orphaned"
@@ -157,12 +157,11 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 		// Prefer self-describing labels stamped at creation time (fast path —
 		// no join needed). Fall back to the WorkloadDeployment join for older
 		// instances that predate the labels.
-		labelCity := inst.Labels[computev1alpha.CityCodeLabel]
 		labelWLName := inst.Labels[computev1alpha.WorkloadNameLabel]
 
-		if labelCity != "" && labelWLName != "" {
+		if inst.Spec.Location != nil && labelWLName != "" {
 			// Both labels present: no join needed.
-			city = labelCity
+			location = inst.Spec.Location.Name
 			wlName = labelWLName
 		} else {
 			// At least one label absent — fall back to WorkloadDeployment lookup.
@@ -174,11 +173,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 				depName = wdNameFromInstanceName(inst.Name)
 			}
 			if dep, ok := deploymentMap[depName]; ok {
-				if labelCity != "" {
-					city = labelCity
-				} else {
-					city = dep.Spec.CityCode
-				}
+				location = dep.Spec.LocationRef.Name
 				if labelWLName != "" {
 					wlName = labelWLName
 				} else if dep.Spec.WorkloadRef.Name != "" {
@@ -186,8 +181,8 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 				}
 			} else {
 				// Deployment not found — use whatever labels we do have.
-				if labelCity != "" {
-					city = labelCity
+				if inst.Spec.Location != nil {
+					location = inst.Spec.Location.Name
 				}
 				if labelWLName != "" {
 					wlName = labelWLName
@@ -195,8 +190,8 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 			}
 		}
 
-		// Client-side city filter.
-		if opts.city != "" && city != opts.city {
+		// Client-side location filter.
+		if opts.location != "" && location != opts.location {
 			continue
 		}
 
@@ -216,7 +211,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 		rows = append(rows, instanceRow{
 			name:        inst.Name,
 			workload:    wlName,
-			city:        city,
+			location:    location,
 			internalIP:  intIP,
 			runtimeKind: runtimeKind,
 			instType:    inst.Spec.Runtime.Resources.InstanceType,
@@ -225,13 +220,13 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 		})
 	}
 
-	// Sort: workload ASC, city ASC, name ASC.
+	// Sort: workload ASC, location ASC, name ASC.
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].workload != rows[j].workload {
 			return rows[i].workload < rows[j].workload
 		}
-		if rows[i].city != rows[j].city {
-			return rows[i].city < rows[j].city
+		if rows[i].location != rows[j].location {
+			return rows[i].location < rows[j].location
 		}
 		return rows[i].name < rows[j].name
 	})
@@ -246,18 +241,18 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 	tw := util.NewTabWriter(out)
 	if !noHeaders {
 		if wide {
-			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tINTERNAL IP\tTYPE\tAGE\tSTATUS\tINSTANCE TYPE\n")
+			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tLOCATION\tINTERNAL IP\tTYPE\tAGE\tSTATUS\tINSTANCE TYPE\n")
 		} else {
-			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tCITY\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
+			_, _ = fmt.Fprintf(tw, "NAME\tWORKLOAD\tLOCATION\tINTERNAL IP\tTYPE\tAGE\tSTATUS\n")
 		}
 	}
 	for _, r := range rows {
 		if wide {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.workload, r.city, r.internalIP, r.runtimeKind, r.age, r.status, r.instType)
+				r.name, r.workload, r.location, r.internalIP, r.runtimeKind, r.age, r.status, r.instType)
 		} else {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.name, r.workload, r.city, r.internalIP, r.runtimeKind, r.age, r.status)
+				r.name, r.workload, r.location, r.internalIP, r.runtimeKind, r.age, r.status)
 		}
 	}
 	_ = tw.Flush()
@@ -311,21 +306,20 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting instance: %w", err)
 	}
 
-	// Resolve CITY, WORKLOAD, and PLACEMENT. Prefer self-describing labels
+	// Resolve LOCATION, WORKLOAD, and PLACEMENT.
 	// stamped at creation time (no join needed). Fall back to a
 	// WorkloadDeployment Get when any of the labels are absent, so that older
 	// instances that predate the stamp still resolve correctly.
 	workloadName := "orphaned"
-	city := "unknown"
+	location := "unknown"
 	placementName := ""
 
-	labelCity := inst.Labels[computev1alpha.CityCodeLabel]
 	labelWLName := inst.Labels[computev1alpha.WorkloadNameLabel]
 	labelPlacement := inst.Labels[computev1alpha.PlacementNameLabel]
 
-	if labelCity != "" && labelWLName != "" && labelPlacement != "" {
+	if inst.Spec.Location != nil && labelWLName != "" && labelPlacement != "" {
 		// All three labels present: no join needed.
-		city = labelCity
+		location = inst.Spec.Location.Name
 		workloadName = labelWLName
 		placementName = labelPlacement
 	} else {
@@ -339,11 +333,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		if depName != "" {
 			var dep computev1alpha.WorkloadDeployment
 			if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: depName}, &dep); err == nil {
-				if labelCity != "" {
-					city = labelCity
-				} else {
-					city = dep.Spec.CityCode
-				}
+				location = dep.Spec.LocationRef.Name
 				if labelPlacement != "" {
 					placementName = labelPlacement
 				} else {
@@ -356,8 +346,8 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 				}
 			} else {
 				// WD Get failed — use whatever labels we do have.
-				if labelCity != "" {
-					city = labelCity
+				if inst.Spec.Location != nil {
+					location = inst.Spec.Location.Name
 				}
 				if labelWLName != "" {
 					workloadName = labelWLName
@@ -379,7 +369,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	if placementName != "" {
 		fmt.Fprintf(out, "%-14s %s\n", "Placement", placementName)
 	}
-	fmt.Fprintf(out, "%-14s %s\n", "City", city)
+	fmt.Fprintf(out, "%-14s %s\n", "Location", location)
 	fmt.Fprintf(out, "%-14s %s\n", "Age", util.RelativeAgeVerbose(inst.CreationTimestamp))
 	fmt.Fprintf(out, "%-14s %s\n", "Status", status)
 	if detail != "" {

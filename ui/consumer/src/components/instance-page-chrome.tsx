@@ -101,12 +101,12 @@ export function InstancePageChrome({
                   aria-hidden
                 />
                 <span>{instance.status}</span>
-                {instance.city ? (
+                {instance.location ? (
                   <>
                     <span className="text-muted-foreground" aria-hidden>
                       ·
                     </span>
-                    <span className="text-muted-foreground">{instance.city}</span>
+                    <span className="text-muted-foreground">{instance.location}</span>
                   </>
                 ) : null}
               </>

@@ -180,7 +180,7 @@ func (w *localCompanionWriter) GetSecret(ctx context.Context, namespace, name st
 // downstreamCompanionWriter implements companionWriter by materialising
 // companions into the `ns-{project-uid}` namespace on the Karmada hub using
 // MappedNamespaceResourceStrategy. Companions written here are propagated to
-// cells via the always-on referenced-data ResourceSelectors in the city-code
+// cells via the always-on referenced-data ResourceSelectors in the location
 // PropagationPolicy.
 //
 // The downstreamNamespace field is pre-computed by the controller from the

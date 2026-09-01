@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -16,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // makeWorkload builds a Workload with the given generation for use in
@@ -95,7 +94,7 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      testDefaultPlacement,
-					CityCodes: []string{"DFW"},
+					Locations: []locationsv1alpha1.LocationReference{{Name: "dfw"}},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 2,
 					},
@@ -103,15 +102,15 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 			},
 		},
 	}
-	location := &networkingv1alpha.LocationBinding{
+	location := &locationsv1alpha1.Location{
 		ObjectMeta: metav1.ObjectMeta{Name: "dfw"},
-		Spec: networkingv1alpha.LocationBindingSpec{
-			LocationRef: corev1.LocalObjectReference{Name: "dfw"},
-			Topology:    map[string]string{"topology.datum.net/city-code": "DFW"},
+		Status: locationsv1alpha1.LocationStatus{
+			Conditions: []metav1.Condition{{Type: locationsv1alpha1.LocationConditionReady, Status: metav1.ConditionTrue}},
 		},
 	}
 
 	s := newNetworkingScheme()
+	require.NoError(t, locationsv1alpha1.AddToScheme(s))
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(location).
@@ -125,6 +124,8 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 	require.Len(t, desired, 1)
 	require.NotNil(t, desired[0].Spec.Replicas)
 	assert.Equal(t, int32(2), *desired[0].Spec.Replicas)
+	assert.Equal(t, "dfw", desired[0].Spec.LocationRef.Name)
+	assert.Equal(t, "dfw", desired[0].Labels[computev1alpha.LocationLabel])
 }
 
 // TestReconcileWorkloadStatus_AllDeploymentsSameReason verifies that when all

@@ -431,7 +431,7 @@ tasks:
   # ════════════════════════════════════════════════════════════════════════
 
   e2e:karmada:join-clusters:
-    desc: "Register POP cell clusters with Karmada and apply city-code labels"
+    desc: "Register POP cell clusters with Karmada and apply canonical location labels"
     cmds:
       # cluster.karmada.io is served by the karmada-aggregated-apiserver through
       # API aggregation, and can briefly return ServiceUnavailable after the pod
@@ -507,7 +507,7 @@ tasks:
           {{.CLUSTER_NAME}} \
           {{.INTERNAL_KUBECONFIG}}
       # ── Apply cluster labels ───────────────────────────────────────────
-      # city-code is what compute's federator places deployments by.
+      # location is the canonical identity compute's federator places deployments by.
       #
       # infra.datum.net/gateways=enabled is what NSO's propagation policy selects
       # on, and every cell in infra carries it. Without it that policy matches no
@@ -516,10 +516,10 @@ tasks:
       - |
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
           label cluster {{.CLUSTER_NAME}} \
-          topology.datum.net/city-code={{.CITY_CODE}} \
+          topology.datum.net/location={{.CITY_CODE}} \
           infra.datum.net/gateways=enabled \
           --overwrite
-        echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/city-code={{.CITY_CODE}} and infra.datum.net/gateways=enabled"
+        echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/location={{.CITY_CODE}} and infra.datum.net/gateways=enabled"
 
   # ════════════════════════════════════════════════════════════════════════
   #  CRD installation

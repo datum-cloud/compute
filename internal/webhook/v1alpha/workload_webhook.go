@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/sets"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -16,7 +17,7 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/validation"
 	computewebhook "go.datum.net/compute/internal/webhook"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // SetupWorkloadWebhookWithManager will setup the manager to manage workload
@@ -89,16 +90,15 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 	// that means for the scheduling phase, since there would not currently be
 	// sufficient context to know who created the workload and what locations
 	// are valid candidates based on that. Maybe an annotation, or spec field?
-	var locations networkingv1alpha.LocationBindingList
+	var locations locationsv1alpha1.LocationList
 	if err := clusterClient.List(ctx, &locations); err != nil {
-		return nil, fmt.Errorf("failed to list location bindings: %w", err)
+		return nil, fmt.Errorf("failed to list locations: %w", err)
 	}
 
-	validCityCodes := sets.Set[string]{}
+	validLocations := sets.Set[string]{}
 	for _, location := range locations.Items {
-		cityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
-		if ok {
-			validCityCodes.Insert(cityCode)
+		if apimeta.IsStatusConditionTrue(location.Status.Conditions, locationsv1alpha1.LocationConditionReady) {
+			validLocations.Insert(location.Name)
 		}
 	}
 
@@ -107,7 +107,7 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 		Client:           clusterClient,
 		AdmissionRequest: req,
 		Workload:         workload,
-		ValidCityCodes:   sets.List(validCityCodes),
+		ValidLocations:   sets.List(validLocations),
 	}
 
 	if errs := validation.ValidateWorkloadCreate(workload, opts); len(errs) > 0 {
@@ -134,16 +134,15 @@ func (r *workloadWebhook) ValidateUpdate(ctx context.Context, _ *computev1alpha.
 		return nil, err
 	}
 
-	var locations networkingv1alpha.LocationBindingList
+	var locations locationsv1alpha1.LocationList
 	if err := clusterClient.List(ctx, &locations); err != nil {
-		return nil, fmt.Errorf("failed to list location bindings: %w", err)
+		return nil, fmt.Errorf("failed to list locations: %w", err)
 	}
 
-	validCityCodes := sets.Set[string]{}
+	validLocations := sets.Set[string]{}
 	for _, location := range locations.Items {
-		cityCode, ok := location.Spec.Topology[networkingv1alpha.TopologyCityCodeKey]
-		if ok {
-			validCityCodes.Insert(cityCode)
+		if apimeta.IsStatusConditionTrue(location.Status.Conditions, locationsv1alpha1.LocationConditionReady) {
+			validLocations.Insert(location.Name)
 		}
 	}
 
@@ -152,7 +151,7 @@ func (r *workloadWebhook) ValidateUpdate(ctx context.Context, _ *computev1alpha.
 		Client:           clusterClient,
 		AdmissionRequest: req,
 		Workload:         newWorkload,
-		ValidCityCodes:   sets.List(validCityCodes),
+		ValidLocations:   sets.List(validLocations),
 	}
 
 	if errs := validation.ValidateWorkloadCreate(newWorkload, opts); len(errs) > 0 {

@@ -18,6 +18,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -37,7 +38,7 @@ func testHubDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *comput
 			UID:       testHubWDUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode: testCityCodeLAX,
+			LocationRef: locationsv1alpha1.LocationReference{Name: testLocationName},
 			Template: computev1alpha.InstanceTemplateSpec{
 				Spec: computev1alpha.InstanceSpec{
 					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{
@@ -58,7 +59,7 @@ func testHubDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *comput
 // which on the hub arrives through Karmada status aggregation.
 func withServingLocation(name string) func(*computev1alpha.WorkloadDeployment) {
 	return func(wd *computev1alpha.WorkloadDeployment) {
-		wd.Status.Location = &networkingv1alpha.LocationReference{Name: name}
+		wd.Spec.LocationRef = locationsv1alpha1.LocationReference{Name: name}
 	}
 }
 
@@ -98,7 +99,7 @@ func TestEnsureNetworkBinding_DeclaresPresenceWhereDeploymentRuns(t *testing.T) 
 	require.NoError(t, err)
 
 	assert.Equal(t, testNetworkName, stored.Spec.Network.Name)
-	assert.Equal(t, testLocationName, stored.Spec.Location.Name)
+	assert.Equal(t, hubWD.Spec.LocationRef.Name, stored.Spec.Location.Name)
 
 	require.NotNil(t, stored.Spec.Consumer)
 	assert.Equal(t, computev1alpha.GroupVersion.Group, stored.Spec.Consumer.APIGroup)
@@ -129,10 +130,6 @@ func TestEnsureNetworkBinding_NothingToDeclareYet(t *testing.T) {
 		name  string
 		hubWD *computev1alpha.WorkloadDeployment
 	}{
-		{
-			name:  "no serving location",
-			hubWD: testHubDeployment(),
-		},
 		{
 			name: "no network interfaces",
 			hubWD: testHubDeployment(withServingLocation(testLocationName), func(wd *computev1alpha.WorkloadDeployment) {
@@ -341,7 +338,7 @@ func TestWorkloadDeploymentFederator_CreatesNetworkBindingOnReconcile(t *testing
 	stored, err := getBinding(t, karmadaClient)
 	require.NoError(t, err)
 	assert.Equal(t, testNetworkName, stored.Spec.Network.Name)
-	assert.Equal(t, testLocationName, stored.Spec.Location.Name)
+	assert.Equal(t, wd.Spec.LocationRef.Name, stored.Spec.Location.Name)
 }
 
 // TestMapNetworkBindingToRequest verifies the binding-to-deployment mapping: the

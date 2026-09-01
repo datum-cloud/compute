@@ -54,18 +54,20 @@ func runDestroy(cmd *cobra.Command, args []string, yes bool) error {
 	}
 
 	// Summarize placements.
-	var allCityCodes []string
+	var allLocations []string
 	var totalMin int32
 	for _, p := range workload.Spec.Placements {
-		allCityCodes = append(allCityCodes, p.CityCodes...)
+		for _, ref := range p.Locations {
+			allLocations = append(allLocations, ref.Name)
+		}
 		totalMin += p.ScaleSettings.MinReplicas
 	}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Workload:     %s\nPlacements:   %d  Cities: %s\nMin replicas: %d\n\n",
+	fmt.Fprintf(out, "Workload:     %s\nPlacements:   %d  Locations: %s\nMin replicas: %d\n\n",
 		workloadName,
 		len(workload.Spec.Placements),
-		strings.Join(allCityCodes, ", "),
+		strings.Join(allLocations, ", "),
 		totalMin,
 	)
 

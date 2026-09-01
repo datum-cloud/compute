@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -37,6 +39,22 @@ func startComputeEnvtest(t *testing.T) *rest.Config {
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "base", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
+		CRDs: []*apiextensionsv1.CustomResourceDefinition{{
+			ObjectMeta: metav1.ObjectMeta{Name: "servinglocations.locations.miloapis.com"},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "locations.miloapis.com",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural: "servinglocations", Singular: "servinglocation", Kind: "ServingLocation", ListKind: "ServingLocationList",
+				},
+				Scope: apiextensionsv1.ClusterScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+					Name: "v1alpha1", Served: true, Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type: "object", XPreserveUnknownFields: new(true),
+					}},
+				}},
+			},
+		}},
 	}
 	// Respect KUBEBUILDER_ASSETS (set by `make test`); fall back to the assets
 	// `setup-envtest` writes under bin/ for local `go test` runs.

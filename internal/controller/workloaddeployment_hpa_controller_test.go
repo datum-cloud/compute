@@ -20,6 +20,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
@@ -37,7 +38,7 @@ func hpaTestDeployment() *computev1alpha.WorkloadDeployment {
 			UID:       wdControllerTestUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      wdControllerTestCityCode,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: wdControllerTestLocation},
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: wdControllerTestWorkload},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
@@ -105,7 +106,7 @@ func TestWorkloadDeploymentHPAReconciler_CreatesHPA(t *testing.T) {
 		computev1alpha.WorkloadDeploymentNameLabel: deployment.Name,
 		computev1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		computev1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
-		computev1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		computev1alpha.LocationLabel:               deployment.Spec.LocationRef.Name,
 	}, hpa.Labels)
 	require.Len(t, hpa.OwnerReferences, 1)
 	assert.Equal(t, deployment.Name, hpa.OwnerReferences[0].Name)

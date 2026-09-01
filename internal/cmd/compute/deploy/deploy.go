@@ -13,6 +13,7 @@ import (
 	"golang.org/x/term"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -22,17 +23,20 @@ import (
 	"go.datum.net/compute/internal/cmd/compute/util"
 	"go.datum.net/compute/internal/cmd/compute/watch"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type options struct {
-	image        string
-	instanceType string
-	cities       []string
-	min          int32
-	port         int32
-	file         string
-	yes          bool
+	image                string
+	instanceType         string
+	locations            []string
+	cities               []string
+	allMatchingLocations bool
+	min                  int32
+	port                 int32
+	file                 string
+	yes                  bool
 }
 
 func Command() *cobra.Command {
@@ -41,13 +45,13 @@ func Command() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "deploy [workload-name]",
 		Short: "Deploy or update a workload",
-		Long: `Deploy a container image as a workload across one or more cities.
+		Long: `Deploy a container image as a workload across one or more locations.
 
 If no arguments are given, an interactive prompt guides you through the deployment.
 Use -f to apply a workload manifest file instead of flags.`,
 		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
-  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD --min=2 --port=8080
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1,eu-west-1 --min=2 --port=8080
 
   # Interactive mode
   datumctl compute deploy
@@ -62,11 +66,15 @@ Use -f to apply a workload manifest file instead of flags.`,
 
 	cmd.Flags().StringVar(&opts.image, "image", "", "Container image to deploy (e.g. ghcr.io/acme/api:1.4.2)")
 	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud/d1-standard-2", "Instance type (e.g. datumcloud/d1-standard-2)")
-	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "One or more city codes to deploy to (e.g. DFW,IAD)")
-	cmd.Flags().Int32Var(&opts.min, "min", 1, "Minimum number of instances per city")
+	cmd.Flags().StringSliceVar(&opts.locations, "location", nil, "One or more locations to deploy to (e.g. us-east-1,eu-west-1)")
+	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "Resolve a city code to an available location (e.g. IAD)")
+	cmd.Flags().BoolVar(&opts.allMatchingLocations, "all-matching-locations", false, "Deploy to every location matching --city")
+	cmd.Flags().Int32Var(&opts.min, "min", 1, "Minimum number of instances per location")
 	cmd.Flags().Int32Var(&opts.port, "port", 0, "Port to expose on the workload (optional)")
 	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Path to a workload manifest file")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Skip confirmation prompts")
+	_ = cmd.RegisterFlagCompletionFunc("location", util.CompleteLocations)
+	_ = cmd.RegisterFlagCompletionFunc("city", util.CompleteCityCodes)
 
 	return cmd
 }
@@ -93,8 +101,11 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	if opts.image == "" {
 		return fmt.Errorf("--image is required")
 	}
-	if len(opts.cities) == 0 {
-		return fmt.Errorf("--city is required (e.g. --city=DFW,IAD)")
+	if len(opts.locations) == 0 && len(opts.cities) == 0 {
+		return fmt.Errorf("--location is required (e.g. --location=us-east-1,eu-west-1); use --city to resolve a city code")
+	}
+	if len(opts.locations) > 0 && len(opts.cities) > 0 {
+		return fmt.Errorf("--location and --city are mutually exclusive")
 	}
 	instanceType := opts.instanceType
 	if instanceType == "" {
@@ -108,6 +119,14 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 
 	ctx := context.Background()
 	out := cmd.OutOrStdout()
+	locations := opts.locations
+	if len(opts.cities) > 0 {
+		locations, err = resolveCities(ctx, c, opts.cities, opts.allMatchingLocations)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Resolved --city to locations: %s\n", strings.Join(locations, ", "))
+	}
 
 	if err := ensureNetwork(ctx, cmd, c, "default", project, opts); err != nil {
 		return err
@@ -143,10 +162,14 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		}
 	}
 
-	// All cities go into one "default" placement.
+	locationRefs := make([]locationsv1alpha1.LocationReference, 0, len(locations))
+	for _, name := range locations {
+		locationRefs = append(locationRefs, locationsv1alpha1.LocationReference{Name: name})
+	}
+	// All locations go into one "default" placement.
 	placement := computev1alpha.WorkloadPlacement{
 		Name:      "default",
-		CityCodes: opts.cities,
+		Locations: locationRefs,
 		ScaleSettings: computev1alpha.HorizontalScaleSettings{
 			MinReplicas:              opts.min,
 			InstanceManagementPolicy: computev1alpha.OrderedReadyInstanceManagementPolicyType,
@@ -175,8 +198,8 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		Placements: []computev1alpha.WorkloadPlacement{placement},
 	}
 
-	fmt.Fprintf(out, "  Placement \"default\": cities=[%s], min=%d\n",
-		strings.Join(opts.cities, ", "), opts.min)
+	fmt.Fprintf(out, "  Placement \"default\": locations=[%s], min=%d\n",
+		strings.Join(locations, ", "), opts.min)
 
 	// Prompt unless --yes or non-interactive.
 	if !opts.yes && term.IsTerminal(int(os.Stdin.Fd())) {
@@ -411,8 +434,12 @@ func manifestDiff(existing, desired computev1alpha.Workload) []string {
 					name, op.ScaleSettings.MinReplicas, np.ScaleSettings.MinReplicas))
 			}
 		} else {
-			lines = append(lines, fmt.Sprintf("  + new placement %q: cities=[%s]",
-				name, strings.Join(np.CityCodes, ", ")))
+			locationNames := make([]string, 0, len(np.Locations))
+			for _, ref := range np.Locations {
+				locationNames = append(locationNames, ref.Name)
+			}
+			lines = append(lines, fmt.Sprintf("  + new placement %q: locations=[%s]",
+				name, strings.Join(locationNames, ", ")))
 		}
 	}
 	for name := range oldPlacements {
@@ -422,4 +449,30 @@ func manifestDiff(existing, desired computev1alpha.Workload) []string {
 	}
 
 	return lines
+}
+
+func resolveCities(ctx context.Context, c client.Client, cities []string, all bool) ([]string, error) {
+	var list locationsv1alpha1.LocationList
+	if err := c.List(ctx, &list); err != nil {
+		return nil, fmt.Errorf("listing project locations: %w", err)
+	}
+	var resolved []string
+	for _, city := range cities {
+		var matches []string
+		for _, location := range list.Items {
+			ready := apimeta.FindStatusCondition(location.Status.Conditions, locationsv1alpha1.LocationConditionReady)
+			if location.Spec.Topology[locationsv1alpha1.TopologyCityCodeKey] != city || ready == nil || ready.Status != metav1.ConditionTrue {
+				continue
+			}
+			matches = append(matches, location.Name)
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("city %q has no Ready locations; run 'datumctl get locations' to see available locations", city)
+		}
+		if len(matches) > 1 && !all {
+			return nil, fmt.Errorf("city %q matches multiple Ready locations (%s); use --location to choose one or --all-matching-locations", city, strings.Join(matches, ", "))
+		}
+		resolved = append(resolved, matches...)
+	}
+	return resolved, nil
 }

@@ -19,6 +19,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
@@ -28,9 +29,9 @@ const (
 	wdControllerTestNS   = "default"
 	wdControllerTestUID  = "wd-uid-test"
 
-	// wdControllerTestCityCode is the shared CityCode fixture for
+	// wdControllerTestLocation is the shared canonical Location fixture for
 	// WorkloadDeployment controller tests.
-	wdControllerTestCityCode = "DFW"
+	wdControllerTestLocation = "us-east-1"
 
 	// wdControllerTestWorkload is the shared WorkloadRef fixture.
 	wdControllerTestWorkload = "test-workload"
@@ -52,7 +53,7 @@ func wdControllerTestDeployment(minReplicas int32) *computev1alpha.WorkloadDeplo
 			UID:       wdControllerTestUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      wdControllerTestCityCode,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: wdControllerTestLocation},
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: wdControllerTestWorkload},
 			Replicas:      new(minReplicas),
@@ -203,7 +204,7 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	deployment := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{Name: wdControllerTestName, Namespace: wdControllerTestNS, UID: wdControllerTestUID},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      wdControllerTestCityCode,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: wdControllerTestLocation},
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: wdControllerTestWorkload},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},

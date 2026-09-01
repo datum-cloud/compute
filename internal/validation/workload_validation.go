@@ -31,7 +31,7 @@ type WorkloadValidationOptions struct {
 	AdmissionRequest admission.Request
 	Context          context.Context
 	Workload         *computev1alpha.Workload
-	ValidCityCodes   []string
+	ValidLocations   []string
 }
 
 func validateWorkloadSpec(spec computev1alpha.WorkloadSpec, opts WorkloadValidationOptions) field.ErrorList {
@@ -71,14 +71,19 @@ func validateWorkloadPlacement(placement computev1alpha.WorkloadPlacement, field
 		}
 	}
 
-	cityCodesPath := fieldPath.Child("cityCodes")
-	if len(placement.CityCodes) == 0 {
-		allErrs = append(allErrs, field.Required(cityCodesPath, ""))
+	locationsPath := fieldPath.Child("locations")
+	if len(placement.Locations) == 0 {
+		allErrs = append(allErrs, field.Required(locationsPath, ""))
 	} else {
-		for i, cityCode := range placement.CityCodes {
-			if !slices.Contains(opts.ValidCityCodes, cityCode) {
-				allErrs = append(allErrs, field.NotSupported(cityCodesPath.Index(i), cityCode, opts.ValidCityCodes))
+		seen := sets.New[string]()
+		for i, location := range placement.Locations {
+			namePath := locationsPath.Index(i).Child("name")
+			if !slices.Contains(opts.ValidLocations, location.Name) {
+				allErrs = append(allErrs, field.NotSupported(namePath, location.Name, opts.ValidLocations))
+			} else if seen.Has(location.Name) {
+				allErrs = append(allErrs, field.Duplicate(namePath, location.Name))
 			}
+			seen.Insert(location.Name)
 		}
 	}
 

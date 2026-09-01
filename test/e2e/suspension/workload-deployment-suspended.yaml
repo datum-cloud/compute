@@ -6,7 +6,8 @@ metadata:
   annotations:
     compute.datumapis.com/suspended: "true"
 spec:
-  cityCode: dfw
+  locationRef:
+    name: dfw
   placementName: default
   workloadRef:
     name: test-workload

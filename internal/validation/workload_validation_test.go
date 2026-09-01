@@ -21,6 +21,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
@@ -47,26 +48,26 @@ func TestValidateWorkloads(t *testing.T) {
 				field.Required(field.NewPath("spec.placements"), ""),
 			},
 		},
-		"missing cityCode": {
+		"missing location": {
 			workload: MakeSandboxWorkload(
 				"test",
 				func(w *computev1alpha.Workload) {
-					w.Spec.Placements[0].CityCodes = []string{}
+					w.Spec.Placements[0].Locations = []locationsv1alpha1.LocationReference{}
 				},
 			),
 			expectedErrors: field.ErrorList{
-				field.Required(field.NewPath("spec.placements[0].cityCodes"), ""),
+				field.Required(field.NewPath("spec.placements[0].locations"), ""),
 			},
 		},
-		"invalid cityCode": {
+		"invalid location": {
 			workload: MakeSandboxWorkload(
 				"test",
 				func(w *computev1alpha.Workload) {
-					w.Spec.Placements[0].CityCodes = []string{"TEST"}
+					w.Spec.Placements[0].Locations = []locationsv1alpha1.LocationReference{{Name: "TEST"}}
 				},
 			),
 			expectedErrors: field.ErrorList{
-				field.NotSupported(field.NewPath("spec.placements[0].cityCodes[0]"), "TEST", []string{}),
+				field.NotSupported(field.NewPath("spec.placements[0].locations[0].name"), "TEST", []string{}),
 			},
 		},
 		"missing placement name": {
@@ -613,8 +614,8 @@ func TestValidateWorkloads(t *testing.T) {
 			},
 		)
 
-		if len(scenario.opts.ValidCityCodes) == 0 {
-			scenario.opts.ValidCityCodes = []string{testCityCodeDFW}
+		if len(scenario.opts.ValidLocations) == 0 {
+			scenario.opts.ValidLocations = []string{testCityCodeDFW}
 		}
 
 		t.Run(name, func(t *testing.T) {
@@ -669,7 +670,7 @@ func MakeSandboxWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload 
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      "placement1",
-					CityCodes: []string{testCityCodeDFW},
+					Locations: []locationsv1alpha1.LocationReference{{Name: testCityCodeDFW}},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 1,
 					},
@@ -744,7 +745,7 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      "placement1",
-					CityCodes: []string{testCityCodeDFW},
+					Locations: []locationsv1alpha1.LocationReference{{Name: testCityCodeDFW}},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 1,
 					},

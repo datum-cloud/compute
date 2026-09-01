@@ -4,7 +4,8 @@ metadata:
   name: test-federation-wd
   # namespace is injected by Chainsaw from ($namespace)
 spec:
-  cityCode: dfw
+  locationRef:
+    name: dfw
   placementName: default
   workloadRef:
     name: test-workload

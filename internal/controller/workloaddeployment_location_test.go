@@ -21,6 +21,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
@@ -29,8 +30,8 @@ const (
 	// locTestCityCode / locTestOtherCityCode: deployments under test target
 	// locTestCityCode; locTestOtherCityCode identifies the city a mis-delivered
 	// cell serves.
-	locTestCityCode      = "DFW"
-	locTestOtherCityCode = "ORD"
+	locTestLocation      = "us-central-1"
+	locTestOtherLocation = "us-central-2"
 
 	// locTestWDNamespace is the namespace of the deployments under test.
 	locTestWDNamespace = "default"
@@ -41,18 +42,16 @@ func newNetworkingScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = computev1alpha.AddToScheme(s)
 	_ = networkingv1alpha.AddToScheme(s)
+	_ = locationsv1alpha1.AddToScheme(s)
 	return s
 }
 
 // newTestServingLocation builds a ServingLocation fixture shaped like the one a
 // cell is delivered: cluster scoped, and carrying its city under the
 // topology.datum.net/city-code key.
-func newTestServingLocation(name, cityCode string) *networkingv1alpha.ServingLocation {
-	return &networkingv1alpha.ServingLocation{
+func newTestServingLocation(name, _ string) *locationsv1alpha1.ServingLocation {
+	return &locationsv1alpha1.ServingLocation{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: networkingv1alpha.ServingLocationSpec{
-			Topology: map[string]string{networkingv1alpha.TopologyCityCodeKey: cityCode},
-		},
 	}
 }
 
@@ -60,7 +59,7 @@ func newTestServingLocation(name, cityCode string) *networkingv1alpha.ServingLoc
 // serves the city the deployment asked for.
 func resolvedTestLocation() servingLocationResult {
 	return servingLocationResult{
-		reference: &networkingv1alpha.LocationReference{Name: "loc-dfw-1"},
+		reference: &locationsv1alpha1.LocationReference{Name: "loc-dfw-1"},
 	}
 }
 
@@ -68,7 +67,7 @@ func newLocationTestDeployment(name string) *computev1alpha.WorkloadDeployment {
 	return &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: locTestWDNamespace},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode: locTestCityCode,
+			LocationRef: locationsv1alpha1.LocationReference{Name: locTestLocation},
 		},
 	}
 }
@@ -83,10 +82,11 @@ func TestResolveLocation_ExactlyOneServingLocation(t *testing.T) {
 
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).
-		WithObjects(newTestServingLocation(locationName, locTestCityCode)).
+		WithObjects(newTestServingLocation(locationName, locTestLocation)).
 		Build()
 
 	deployment := newLocationTestDeployment("test-wd")
+	deployment.Spec.LocationRef = locationsv1alpha1.LocationReference{Name: locationName}
 
 	r := &WorkloadDeploymentReconciler{}
 	result, err := r.resolveLocation(context.Background(), cl)
@@ -119,10 +119,8 @@ func TestResolveLocation_NoServingLocation_IsNonGating(t *testing.T) {
 	assert.False(t, result.blocked,
 		"a cell that has not been identified yet must never hold instances back")
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonNoMatchingLocation, result.reason)
-	assert.Contains(t, result.message, networkingv1alpha.ServingLocationTopologyLabel,
+	assert.Contains(t, result.message, locationsv1alpha1.ServingLocationTopologyLabel,
 		"the message must name the cluster label that fixes it")
-	assert.Nil(t, deployment.Status.Location,
-		"Status.Location must be left alone when nothing resolved")
 }
 
 // TestResolveLocation_MultipleServingLocations_RefusesToGuess verifies the
@@ -134,8 +132,8 @@ func TestResolveLocation_MultipleServingLocations_RefusesToGuess(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).
 		WithObjects(
-			newTestServingLocation("loc-dfw-1", locTestCityCode),
-			newTestServingLocation("loc-ord-1", locTestOtherCityCode),
+			newTestServingLocation("loc-dfw-1", locTestLocation),
+			newTestServingLocation("loc-ord-1", locTestOtherLocation),
 		).
 		Build()
 
@@ -162,7 +160,7 @@ func TestResolveLocation_CityCodeMismatch(t *testing.T) {
 
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).
-		WithObjects(newTestServingLocation("loc-ord-1", locTestOtherCityCode)).
+		WithObjects(newTestServingLocation(locTestOtherLocation, locTestOtherLocation)).
 		Build()
 
 	deployment := newLocationTestDeployment("test-wd")
@@ -175,9 +173,9 @@ func TestResolveLocation_CityCodeMismatch(t *testing.T) {
 	assert.Nil(t, result.reference,
 		"the wrong cell's location must never be stamped on the deployment")
 	assert.True(t, result.blocked, "a misplaced deployment must not proceed silently")
-	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonCityCodeMismatch, result.reason)
-	assert.Contains(t, result.message, locTestCityCode)
-	assert.Contains(t, result.message, locTestOtherCityCode)
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonLocationMismatch, result.reason)
+	assert.Contains(t, result.message, locTestLocation)
+	assert.Contains(t, result.message, locTestOtherLocation)
 }
 
 // newLocationTestWDReconciler builds a WorkloadDeploymentReconciler with
@@ -211,7 +209,7 @@ func newLocationTestReconcilableWD(name string) *computev1alpha.WorkloadDeployme
 			Finalizers: []string{workloadControllerFinalizer},
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:    locTestCityCode,
+			LocationRef: locationsv1alpha1.LocationReference{Name: locTestLocation},
 			WorkloadRef: computev1alpha.WorkloadReference{Name: "location-test-workload"},
 			Replicas:    new(int32(1)),
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{
@@ -287,13 +285,12 @@ func TestWorkloadDeploymentReconcile_UnidentifiedCell_SetsCondition(t *testing.T
 	require.NotNil(t, cond, "Available must be set while the cell has no location")
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonNoMatchingLocation, cond.Reason)
-	assert.Contains(t, cond.Message, networkingv1alpha.ServingLocationTopologyLabel,
+	assert.Contains(t, cond.Message, locationsv1alpha1.ServingLocationTopologyLabel,
 		"the condition message must name the label that identifies the cell")
-	assert.Nil(t, updated.Status.Location)
 
 	// Deliver the cell's location; the next reconcile resolves it and must
 	// replace the waiting reason.
-	servingLocation := newTestServingLocation("loc-dfw-2", locTestCityCode)
+	servingLocation := newTestServingLocation(locTestLocation, locTestLocation)
 	require.NoError(t, cl.Create(context.Background(), servingLocation))
 
 	_, err = r.Reconcile(context.Background(), req)
@@ -304,8 +301,7 @@ func TestWorkloadDeploymentReconcile_UnidentifiedCell_SetsCondition(t *testing.T
 	require.NotNil(t, cond)
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
 		"the waiting reason must give way once the cell knows where it is")
-	require.NotNil(t, updated.Status.Location)
-	assert.Equal(t, servingLocation.Name, updated.Status.Location.Name)
+	assert.Equal(t, servingLocation.Name, updated.Spec.LocationRef.Name)
 }
 
 // TestWorkloadDeploymentReconcile_CityCodeMismatch_HoldsInstances verifies that a
@@ -320,7 +316,7 @@ func TestWorkloadDeploymentReconcile_CityCodeMismatch_HoldsInstances(t *testing.
 
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).
-		WithObjects(deployment, instance, newTestServingLocation("loc-ord-1", locTestOtherCityCode)).
+		WithObjects(deployment, instance, newTestServingLocation(locTestOtherLocation, locTestOtherLocation)).
 		WithStatusSubresource(deployment).
 		Build()
 	r := newLocationTestWDReconciler(cl)
@@ -334,10 +330,8 @@ func TestWorkloadDeploymentReconcile_CityCodeMismatch_HoldsInstances(t *testing.
 
 	cond := apimeta.FindStatusCondition(updated.Status.Conditions, computev1alpha.WorkloadDeploymentAvailable)
 	require.NotNil(t, cond)
-	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonCityCodeMismatch, cond.Reason,
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonLocationMismatch, cond.Reason,
 		"a misplaced deployment must report the placement fault over any other blocker")
-	assert.Nil(t, updated.Status.Location,
-		"the wrong cell's location must never be written to status")
 
 	var updatedInstance computev1alpha.Instance
 	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{
@@ -360,7 +354,7 @@ func TestWorkloadDeploymentReconcile_BackfillsInstanceLocation(t *testing.T) {
 	instance := newLocationTestInstance(deployment)
 	require.Nil(t, instance.Spec.Location, "the fixture must start without a location")
 
-	servingLocation := newTestServingLocation("loc-dfw-1", locTestCityCode)
+	servingLocation := newTestServingLocation(locTestLocation, locTestLocation)
 
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).
@@ -390,7 +384,7 @@ func TestEnqueueWorkloadDeploymentsForServingLocation(t *testing.T) {
 
 	wdDFW := newLocationTestDeployment("wd-dfw")
 	wdORD := newLocationTestDeployment("wd-ord")
-	wdORD.Spec.CityCode = locTestOtherCityCode
+	wdORD.Spec.LocationRef.Name = locTestOtherLocation
 
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).

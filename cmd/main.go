@@ -53,6 +53,7 @@ import (
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	infrastructurev1alpha1 "go.miloapis.com/milo/pkg/apis/infrastructure/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
@@ -88,6 +89,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(config.AddToScheme(scheme))
+	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))

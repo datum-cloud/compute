@@ -39,7 +39,7 @@ function WorkloadRow({ workload }: { workload: Workload }) {
         {workload.readyReplicas}/{workload.desiredReplicas}
       </TableCell>
       <TableCell className="text-muted-foreground">
-        {workload.regions.join(', ') || '—'}
+        {workload.locations.join(', ') || '—'}
       </TableCell>
       <TableCell className="text-muted-foreground">
         {formatDistanceToNowStrict(workload.createdAt, { addSuffix: true })}
@@ -78,7 +78,7 @@ export default function WorkloadList() {
                 <TableHead>Name</TableHead>
                 <TableHead>Health</TableHead>
                 <TableHead>Ready</TableHead>
-                <TableHead>Regions</TableHead>
+                <TableHead>Locations</TableHead>
                 <TableHead>Created</TableHead>
               </TableRow>
             </TableHeader>

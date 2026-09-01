@@ -65,7 +65,7 @@ spec:
           name: workload-vm-sample-configmap
   placements:
   - name: us-south
-    cityCodes:
-    - DFW
+    locations:
+    - name: gcp-us-south1-a
     scaleSettings:
       minReplicas: 1

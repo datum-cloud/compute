@@ -112,10 +112,10 @@ function ConfigurationCard({ workload }: { workload: Workload }) {
               label: 'Replicas',
               content:
                 workload.replicasPerRegion !== undefined
-                  ? `${workload.replicasPerRegion}/region · ${workload.desiredReplicas} total`
+                  ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
                   : `${workload.desiredReplicas} total`,
             },
-            { label: 'Regions', content: workload.regions.join(', ') || '—' },
+            { label: 'Locations', content: workload.locations.join(', ') || '—' },
           ]}
         />
       </CardContent>
@@ -140,7 +140,7 @@ function PlacementsCard({ workload }: { workload: Workload }) {
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-sm font-medium">{p.name}</span>
                   <span className="text-muted-foreground text-xs">
-                    {p.cityCodes.join(', ') || 'no city codes'}
+                    {p.locations.join(', ') || 'no locations'}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -175,7 +175,7 @@ function OverviewTab({ workload }: { workload: Workload }) {
     { label: 'Ready', value: `${workload.readyReplicas}/${workload.desiredReplicas}` },
     { label: 'Current', value: `${workload.currentReplicas}/${workload.desiredReplicas}` },
     { label: 'Updated', value: `${workload.updatedReplicas}/${workload.desiredReplicas}` },
-    { label: 'Regions', value: String(workload.regions.length) },
+    { label: 'Locations', value: String(workload.locations.length) },
   ];
 
   return (
@@ -211,7 +211,7 @@ function InstanceRow({ instance }: { instance: Instance }) {
             )}
           </div>
         </TableCell>
-        <TableCell className="text-muted-foreground">{instance.city ?? '—'}</TableCell>
+        <TableCell className="text-muted-foreground">{instance.location ?? '—'}</TableCell>
         <TableCell className="text-muted-foreground font-mono">
           {instance.internalIP ?? '—'}
         </TableCell>
@@ -248,7 +248,7 @@ function InstancesTab({ instances }: { instances: Instance[] }) {
         <TableHeader>
           <TableRow>
             <TableHead>Instance</TableHead>
-            <TableHead>Region</TableHead>
+            <TableHead>Location</TableHead>
             <TableHead>Internal IP</TableHead>
             <TableHead>External IP</TableHead>
             <TableHead>Created</TableHead>

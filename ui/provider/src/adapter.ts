@@ -74,7 +74,7 @@ export const INSTANCE_LABELS = {
 
 interface RawWorkloadPlacement {
   name: string;
-  cityCodes?: string[];
+  locations?: Array<{ name: string }>;
   scaleSettings?: { minReplicas?: number; maxReplicas?: number };
 }
 
@@ -163,7 +163,7 @@ function toPlacements(
 
     return {
       name: p.name,
-      cityCodes: p.cityCodes ?? [],
+      locations: (p.locations ?? []).map((location) => location.name),
       readyReplicas: ready,
       desiredReplicas: desired,
       currentReplicas: current,
@@ -194,7 +194,7 @@ export function toWorkload(raw: RawWorkload): Workload {
     placements: toPlacements(placements, raw.status?.placements ?? []),
     conditions: toConditions(conditions),
     runtimeType: runtime ? (runtime.sandbox ? 'Container sandbox' : 'Virtual machine') : undefined,
-    regions: Array.from(new Set(placements.flatMap((p) => p.cityCodes ?? []))),
+    locations: Array.from(new Set(placements.flatMap((p) => (p.locations ?? []).map((location) => location.name)))),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),
   };
@@ -274,7 +274,7 @@ export function toInstance(raw: RawInstance): Instance {
     createdAt: raw.metadata?.creationTimestamp
       ? new Date(raw.metadata.creationTimestamp)
       : new Date(),
-    city: labels['compute.datumapis.com/city-code'],
+    location: labels['compute.datumapis.com/location'],
     placement: labels['compute.datumapis.com/placement-name'],
     instanceType: raw.spec?.runtime?.resources?.instanceType,
     cpu,

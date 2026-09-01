@@ -36,7 +36,7 @@ const (
 
 	// The four self-describing labels.
 	wbTestWDName       = "my-workload-deployment"
-	wbTestCityCode     = "DFW"
+	wbTestLocation     = "us-east-1"
 	wbTestWorkloadName = "my-workload"
 	wbTestPlacement    = "us-central"
 
@@ -58,7 +58,7 @@ func wbTestCellInstance() *computev1alpha.Instance {
 				computev1alpha.WorkloadDeploymentUIDLabel:  wbTestWDUID,
 				computev1alpha.InstanceIndexLabel:          wbTestInstanceIndex,
 				computev1alpha.WorkloadDeploymentNameLabel: wbTestWDName,
-				computev1alpha.CityCodeLabel:               wbTestCityCode,
+				computev1alpha.LocationLabel:               wbTestLocation,
 				computev1alpha.WorkloadNameLabel:           wbTestWorkloadName,
 				computev1alpha.PlacementNameLabel:          wbTestPlacement,
 			},
@@ -314,7 +314,7 @@ func TestWriteBackToUpstream_MissingLinkingLabels_Error(t *testing.T) {
 		computev1alpha.WorkloadDeploymentUIDLabel,
 		computev1alpha.InstanceIndexLabel,
 		computev1alpha.WorkloadDeploymentNameLabel,
-		computev1alpha.CityCodeLabel,
+		computev1alpha.LocationLabel,
 		computev1alpha.WorkloadNameLabel,
 		computev1alpha.PlacementNameLabel,
 	} {
@@ -412,7 +412,7 @@ func TestWriteBackToUpstream_MissingSelfDescribingLabel_Error(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), computev1alpha.WorkloadDeploymentNameLabel,
 		"error must name the missing label")
-	assert.NotContains(t, err.Error(), computev1alpha.CityCodeLabel,
+	assert.NotContains(t, err.Error(), computev1alpha.LocationLabel,
 		"a present label must not be reported missing")
 
 	var created computev1alpha.Instance
@@ -551,8 +551,8 @@ func TestWriteBackToUpstream_FourNewLabels_CreatePath(t *testing.T) {
 
 	assert.Equal(t, wbTestWDName, created.Labels[computev1alpha.WorkloadDeploymentNameLabel],
 		"WorkloadDeploymentNameLabel must propagate to Karmada object")
-	assert.Equal(t, wbTestCityCode, created.Labels[computev1alpha.CityCodeLabel],
-		"CityCodeLabel must propagate to Karmada object")
+	assert.Equal(t, wbTestLocation, created.Labels[computev1alpha.LocationLabel],
+		"LocationLabel must propagate to Karmada object")
 	assert.Equal(t, wbTestWorkloadName, created.Labels[computev1alpha.WorkloadNameLabel],
 		"WorkloadNameLabel must propagate to Karmada object")
 	assert.Equal(t, wbTestPlacement, created.Labels[computev1alpha.PlacementNameLabel],
@@ -604,8 +604,8 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 
 	assert.Equal(t, wbTestWDName, updated.Labels[computev1alpha.WorkloadDeploymentNameLabel],
 		"WorkloadDeploymentNameLabel must be set on update path")
-	assert.Equal(t, wbTestCityCode, updated.Labels[computev1alpha.CityCodeLabel],
-		"CityCodeLabel must be set on update path")
+	assert.Equal(t, wbTestLocation, updated.Labels[computev1alpha.LocationLabel],
+		"LocationLabel must be set on update path")
 	assert.Equal(t, wbTestWorkloadName, updated.Labels[computev1alpha.WorkloadNameLabel],
 		"WorkloadNameLabel must be set on update path")
 	assert.Equal(t, wbTestPlacement, updated.Labels[computev1alpha.PlacementNameLabel],

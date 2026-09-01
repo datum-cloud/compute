@@ -21,6 +21,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // TestWorkloadDeploymentSetupWithManager_CellModeNoNetworkingCRD asserts that with
@@ -42,6 +43,7 @@ func TestWorkloadDeploymentSetupWithManager_CellModeNoNetworkingCRD(t *testing.T
 	require.NoError(t, computev1alpha.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	require.NoError(t, locationsv1alpha1.AddToScheme(scheme))
 
 	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) { o.Scheme = scheme })
 	require.NoError(t, err)

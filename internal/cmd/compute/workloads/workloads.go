@@ -21,7 +21,7 @@ func Command() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "workloads",
 		Short: "List or inspect workloads",
-		Long: `List all workloads in the project, optionally filtered by health or city.
+		Long: `List all workloads in the project, optionally filtered by health or location.
 Use the describe subcommand for a unified config + health view of a single workload.`,
 		Example: `  # List all workloads
   datumctl compute workloads
@@ -29,8 +29,8 @@ Use the describe subcommand for a unified config + health view of a single workl
   # Filter by health
   datumctl compute workloads --health=degraded
 
-  # Filter by city
-  datumctl compute workloads --city=DFW
+  # Filter by location
+  datumctl compute workloads --location=us-east-1
 
   # Machine-readable output
   datumctl compute workloads -o json
@@ -44,12 +44,12 @@ Use the describe subcommand for a unified config + health view of a single workl
 
 	// List flags.
 	cmd.Flags().String("health", "", "Filter by health: available, degraded, progressing, unknown")
-	cmd.Flags().String("city", "", "Filter to workloads with a placement in this city")
+	cmd.Flags().String("location", "", "Filter to workloads with a placement in this location")
 	cmd.Flags().StringP("output", "o", "table", "Output format: table, wide, json, yaml")
 	cmd.Flags().Bool("no-headers", false, "Omit the table header row (table and wide only)")
 
 	_ = cmd.RegisterFlagCompletionFunc("health", util.CompleteOutputFormats("available", "degraded", "progressing", "unknown"))
-	_ = cmd.RegisterFlagCompletionFunc("city", util.CompleteCityCodes)
+	_ = cmd.RegisterFlagCompletionFunc("location", util.CompleteLocations)
 	_ = cmd.RegisterFlagCompletionFunc("output", util.CompleteOutputFormats("table", "wide", "json", "yaml"))
 
 	cmd.AddCommand(describeCommand())
@@ -68,7 +68,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 
 	outputFlag, _ := cmd.Flags().GetString("output")
 	healthFilter, _ := cmd.Flags().GetString("health")
-	cityFilter, _ := cmd.Flags().GetString("city")
+	locationFilter, _ := cmd.Flags().GetString("location")
 	noHeaders, _ := cmd.Flags().GetBool("no-headers")
 
 	c, err := util.NewClient(project)
@@ -102,14 +102,13 @@ func runList(cmd *cobra.Command, _ []string) error {
 		deploysByWorkload[wUID] = append(deploysByWorkload[wUID], d)
 	}
 
-	// City filter: collect the set of workload UIDs that have a deployment in
-	// the requested city code.
-	cityFilteredUIDs := map[string]bool{}
-	if cityFilter != "" {
+	// Location filter: collect workload UIDs with a deployment in the requested location.
+	locationFilteredUIDs := map[string]bool{}
+	if locationFilter != "" {
 		for _, d := range deployList.Items {
-			if d.Spec.CityCode == cityFilter {
+			if d.Spec.LocationRef.Name == locationFilter {
 				wUID := d.Labels[computev1alpha.WorkloadUIDLabel]
-				cityFilteredUIDs[wUID] = true
+				locationFilteredUIDs[wUID] = true
 			}
 		}
 	}
@@ -133,8 +132,8 @@ func runList(cmd *cobra.Command, _ []string) error {
 	for _, wl := range wlList.Items {
 		wUID := string(wl.UID)
 
-		// City filter.
-		if cityFilter != "" && !cityFilteredUIDs[wUID] {
+		// Location filter.
+		if locationFilter != "" && !locationFilteredUIDs[wUID] {
 			continue
 		}
 
@@ -213,12 +212,12 @@ func runList(cmd *cobra.Command, _ []string) error {
 	if len(rows) == 0 {
 		if healthFilter != "" {
 			fmt.Fprintf(out, "No workloads in project %s match health=%s.\n", project, healthFilter)
-		} else if cityFilter != "" {
-			fmt.Fprintf(out, "No workloads in project %s have a placement in city %s.\n", project, cityFilter)
+		} else if locationFilter != "" {
+			fmt.Fprintf(out, "No workloads in project %s have a placement in location %s.\n", project, locationFilter)
 		} else {
 			fmt.Fprintf(out, "No workloads found in project %s.\n\n", project)
 			fmt.Fprintf(out, "Get started:\n")
-			fmt.Fprintf(out, "  datumctl compute deploy --name=api --image=ghcr.io/acme/api:v1.0.0 --city=DFW\n")
+			fmt.Fprintf(out, "  datumctl compute deploy api --image=ghcr.io/acme/api:v1.0.0 --location=us-east-1\n")
 		}
 		return nil
 	}
@@ -278,7 +277,7 @@ func describeCommand() *cobra.Command {
 		Use:   "describe <name>",
 		Short: "Show config and health for a single workload",
 		Long: `Display a unified view of workload configuration (container spec, scale settings)
-and runtime health (per-city ready/desired counts). Replaces 'datumctl compute status'.`,
+and runtime health (per-location ready/desired counts). Replaces 'datumctl compute status'.`,
 		Args:    cobra.ExactArgs(1),
 		Example: `  datumctl compute workloads describe api`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -377,11 +376,14 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 			if p.ScaleSettings.MaxReplicas != nil {
 				maxStr = fmt.Sprintf("%d", *p.ScaleSettings.MaxReplicas)
 			}
-			cityCodes := strings.Join(p.CityCodes, ", ")
-			fmt.Fprintf(out, "  %-10s cities: %-24s scale: %d..%s\n",
-				p.Name, cityCodes, p.ScaleSettings.MinReplicas, maxStr)
+			locationNames := make([]string, 0, len(p.Locations))
+			for _, ref := range p.Locations {
+				locationNames = append(locationNames, ref.Name)
+			}
+			fmt.Fprintf(out, "  %-10s locations: %-24s scale: %d..%s\n",
+				p.Name, strings.Join(locationNames, ", "), p.ScaleSettings.MinReplicas, maxStr)
 
-			// Per-city lines from deployments.
+			// Per-location lines from deployments.
 			for _, d := range deplsByPlacement[p.Name] {
 				readyStr := fmt.Sprintf("%d/%d", d.Status.ReadyReplicas, d.Status.DesiredReplicas)
 				annotation := ""
@@ -390,9 +392,9 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 					annotation = degradedAnnotation(ctx, c, d)
 				}
 				if annotation != "" {
-					fmt.Fprintf(out, "    %-8s ready: %-10s %s\n", d.Spec.CityCode, readyStr, annotation)
+					fmt.Fprintf(out, "    %-8s ready: %-10s %s\n", d.Spec.LocationRef.Name, readyStr, annotation)
 				} else {
-					fmt.Fprintf(out, "    %-8s ready: %s\n", d.Spec.CityCode, readyStr)
+					fmt.Fprintf(out, "    %-8s ready: %s\n", d.Spec.LocationRef.Name, readyStr)
 				}
 			}
 		}
@@ -442,7 +444,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// degradedAnnotation returns a short annotation for a per-city line when the
+// degradedAnnotation returns a short annotation for a per-location line when the
 // deployment is not fully ready. It reads the blocking reason+message from the
 // deployment's own Available condition, which the server rolls up from the
 // underlying instances. No per-instance fetch or reason branching needed.

@@ -44,9 +44,9 @@ spec:
     # and Instance write-backs live here.
     downstream:
       kubeconfig: tmp/e2e/kubeconfigs/downstream.yaml
-    # POP DFW cell — downstream member cluster labelled topology.datum.net/city-code=dfw.
+    # POP DFW cell — downstream member cluster labelled topology.datum.net/location=dfw.
     pop-dfw:
       kubeconfig: tmp/e2e/kubeconfigs/pop-dfw.yaml
-    # POP ORD cell — downstream member cluster labelled topology.datum.net/city-code=ord.
+    # POP ORD cell — downstream member cluster labelled topology.datum.net/location=ord.
     pop-ord:
       kubeconfig: tmp/e2e/kubeconfigs/pop-ord.yaml

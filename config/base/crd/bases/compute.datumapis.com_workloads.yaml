@@ -71,11 +71,18 @@ spec:
                   will live in, such as in a city, or region.
                 items:
                   properties:
-                    cityCodes:
-                      description: A list of city codes that define where the instances
-                        should be deployed.
+                    locations:
+                      description: A list of locations where the instances should
+                        be deployed.
                       items:
-                        type: string
+                        properties:
+                          name:
+                            description: Name of a datum location
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      minItems: 1
                       type: array
                     name:
                       description: The name of the placement
@@ -148,7 +155,7 @@ spec:
                       - minReplicas
                       type: object
                   required:
-                  - cityCodes
+                  - locations
                   - name
                   - scaleSettings
                   type: object

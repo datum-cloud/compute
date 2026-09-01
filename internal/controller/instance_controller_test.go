@@ -30,6 +30,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	"go.datum.net/compute/internal/quota"
@@ -74,6 +75,7 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	require.NoError(t, computev1alpha.AddToScheme(s))
 	require.NoError(t, quotav1alpha1.AddToScheme(s))
 	require.NoError(t, corev1.AddToScheme(s))
+	require.NoError(t, locationsv1alpha1.AddToScheme(s))
 	return s
 }
 

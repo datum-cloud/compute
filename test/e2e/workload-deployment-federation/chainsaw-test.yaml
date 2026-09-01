@@ -6,7 +6,7 @@ spec:
   description: |
     Verifies that the WorkloadDeploymentFederator replicates a WorkloadDeployment
     from the project namespace (control-plane cluster) to the Karmada API server
-    with the correct city-code label and PropagationPolicy.
+    with the correct location label and PropagationPolicy.
 
     The federator follows the ns-<namespace-uid> convention for Karmada namespaces,
     matching the MappedNamespaceResourceStrategy used by NSO. The test derives
@@ -14,9 +14,9 @@ spec:
 
     Verified:
     - WorkloadDeployment exists in Karmada at ns-<project-ns-uid>
-    - Karmada copy carries label topology.datum.net/city-code: dfw
-    - PropagationPolicy city-dfw exists in the Karmada namespace,
-      selecting WDs by city-code and routing them to matching POP-cell clusters.
+    - Karmada copy carries label topology.datum.net/location: dfw
+    - PropagationPolicy location-dfw exists in the Karmada namespace,
+      selecting WDs by location and routing them to matching POP-cell clusters.
 
   template: true
 
@@ -28,7 +28,7 @@ spec:
         file: workload-deployment.yaml
 
   - name: assert-wd-in-downstream
-    description: Assert WorkloadDeployment federated to Karmada with city-code label.
+    description: Assert WorkloadDeployment federated to Karmada with location label.
     cluster: downstream
     try:
     - script:
@@ -48,10 +48,10 @@ spec:
             namespace: ($downstreamNS)
             name: test-federation-wd
             labels:
-              topology.datum.net/city-code: dfw
+              topology.datum.net/location: dfw
 
   - name: assert-propagation-policy-in-downstream
-    description: Assert PropagationPolicy created for city-dfw.
+    description: Assert PropagationPolicy created for location-dfw.
     cluster: downstream
     try:
     - script:
@@ -69,7 +69,7 @@ spec:
           kind: PropagationPolicy
           metadata:
             namespace: ($downstreamNS)
-            name: city-dfw
+            name: location-dfw
           spec:
             # The federator emits three resource selectors, not one: the
             # WorkloadDeployment plus the always-on ConfigMap and Secret
@@ -80,7 +80,7 @@ spec:
               kind: WorkloadDeployment
               labelSelector:
                 matchLabels:
-                  topology.datum.net/city-code: dfw
+                  topology.datum.net/location: dfw
             - apiVersion: v1
               kind: ConfigMap
               labelSelector:
@@ -95,4 +95,4 @@ spec:
               clusterAffinity:
                 labelSelector:
                   matchLabels:
-                    topology.datum.net/city-code: dfw
+                    topology.datum.net/location: dfw

@@ -14,7 +14,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/utils/ptr"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	"go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
@@ -278,8 +278,8 @@ func TestInstanceLabels_FourNewLabelsStamped(t *testing.T) {
 
 	assert.Equal(t, deployment.GetName(), instance.Labels[v1alpha.WorkloadDeploymentNameLabel],
 		"WorkloadDeploymentNameLabel must equal deployment name")
-	assert.Equal(t, deployment.Spec.CityCode, instance.Labels[v1alpha.CityCodeLabel],
-		"CityCodeLabel must equal deployment.Spec.CityCode")
+	assert.Equal(t, deployment.Spec.LocationRef.Name, instance.Labels[v1alpha.LocationLabel],
+		"LocationLabel must equal deployment.Spec.LocationRef.Name")
 	assert.Equal(t, deployment.Spec.WorkloadRef.Name, instance.Labels[v1alpha.WorkloadNameLabel],
 		"WorkloadNameLabel must equal deployment.Spec.WorkloadRef.Name")
 	assert.Equal(t, deployment.Spec.PlacementName, instance.Labels[v1alpha.PlacementNameLabel],
@@ -322,24 +322,22 @@ func TestInstanceLabels_RefreshedOnRecreate(t *testing.T) {
 
 	assert.Equal(t, deployment.GetName(), instance.Labels[v1alpha.WorkloadDeploymentNameLabel],
 		"WorkloadDeploymentNameLabel must be set on the recreated instance")
-	assert.Equal(t, deployment.Spec.CityCode, instance.Labels[v1alpha.CityCodeLabel],
-		"CityCodeLabel must be set on the recreated instance")
+	assert.Equal(t, deployment.Spec.LocationRef.Name, instance.Labels[v1alpha.LocationLabel],
+		"LocationLabel must be set on the recreated instance")
 	assert.Equal(t, deployment.Spec.WorkloadRef.Name, instance.Labels[v1alpha.WorkloadNameLabel],
 		"WorkloadNameLabel must be set on the recreated instance")
 	assert.Equal(t, deployment.Spec.PlacementName, instance.Labels[v1alpha.PlacementNameLabel],
 		"PlacementNameLabel must be set on the recreated instance")
 }
 
-// TestInstanceLocation_SetWhenDeploymentStatusLocationPresent verifies that when
-// deployment.Status.Location is set, the new Instance receives it as Spec.Location.
-func TestInstanceLocation_SetWhenDeploymentStatusLocationPresent(t *testing.T) {
+// TestInstanceLocation_SetFromDeploymentSpec verifies that the deployment's
+// requested location is copied to each new Instance.
+func TestInstanceLocation_SetFromDeploymentSpec(t *testing.T) {
 	ctx := context.Background()
 	control := New()
 
 	deployment := getWorkloadDeployment("test-location-set", 1)
-	deployment.Status.Location = &networkingv1alpha.LocationReference{
-		Name: "loc-dfw-1",
-	}
+	deployment.Spec.LocationRef = locationsv1alpha1.LocationReference{Name: "loc-dfw-1"}
 
 	var currentInstances []v1alpha.Instance
 	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
@@ -350,33 +348,8 @@ func TestInstanceLocation_SetWhenDeploymentStatusLocationPresent(t *testing.T) {
 	instance, ok := actions[0].Object.(*v1alpha.Instance)
 	assert.True(t, ok)
 	assert.NotNil(t, instance.Spec.Location,
-		"Spec.Location must be set when deployment.Status.Location is non-nil")
+		"Spec.Location must be set from deployment.spec.locationRef")
 	assert.Equal(t, "loc-dfw-1", instance.Spec.Location.Name)
-}
-
-// TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent verifies that when
-// deployment.Status.Location is nil (no Location object matches the city code),
-// instance creation still succeeds and Spec.Location remains nil — no regression
-// on the "create instances regardless of Location" contract.
-func TestInstanceLocation_NilWhenDeploymentStatusLocationAbsent(t *testing.T) {
-	ctx := context.Background()
-	control := New()
-
-	deployment := getWorkloadDeployment("test-location-nil", 1)
-	// deployment.Status.Location is intentionally not set (nil)
-
-	var currentInstances []v1alpha.Instance
-	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
-
-	assert.NoError(t, err, "instance creation must succeed even when Status.Location is nil")
-	assert.Len(t, actions, 1, "exactly one create action must be produced")
-
-	instance, ok := actions[0].Object.(*v1alpha.Instance)
-	assert.True(t, ok)
-	assert.Nil(t, instance.Spec.Location,
-		"Spec.Location must remain nil when deployment.Status.Location is not set")
-	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[0].ActionType(),
-		"action must be a Create, proving instance creation is not gated on Location")
 }
 
 // TestLabelBackfill_NotReadyMatchingHash verifies that a not-Ready instance
@@ -445,7 +418,7 @@ func TestLabelBackfill_NotReadyMatchingHash(t *testing.T) {
 	patched, ok := patchActions[0].Object.(*v1alpha.Instance)
 	assert.True(t, ok)
 	assert.Equal(t, deployment.GetName(), patched.Labels[v1alpha.WorkloadDeploymentNameLabel])
-	assert.Equal(t, deployment.Spec.CityCode, patched.Labels[v1alpha.CityCodeLabel])
+	assert.Equal(t, deployment.Spec.LocationRef.Name, patched.Labels[v1alpha.LocationLabel])
 	assert.Equal(t, deployment.Spec.WorkloadRef.Name, patched.Labels[v1alpha.WorkloadNameLabel])
 	assert.Equal(t, deployment.Spec.PlacementName, patched.Labels[v1alpha.PlacementNameLabel])
 
@@ -471,7 +444,7 @@ func TestLabelBackfill_Idempotent(t *testing.T) {
 		v1alpha.WorkloadUIDLabel:            string(deployment.Spec.WorkloadRef.UID),
 		v1alpha.WorkloadDeploymentUIDLabel:  string(deployment.GetUID()),
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
-		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.LocationLabel:               deployment.Spec.LocationRef.Name,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
 		labelServiceKey:                     labelServiceValue,
@@ -500,7 +473,7 @@ func TestLabelBackfill_ReadyInstanceCorrected(t *testing.T) {
 	// Ready instance with matching hash but missing city-code label.
 	instance := getInstanceForDeployment(deployment, 0)
 	// Remove the city-code label to simulate drift.
-	delete(instance.Labels, v1alpha.CityCodeLabel)
+	delete(instance.Labels, v1alpha.LocationLabel)
 
 	currentInstances := []v1alpha.Instance{*instance}
 	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
@@ -524,8 +497,8 @@ func TestLabelBackfill_ReadyInstanceCorrected(t *testing.T) {
 	assert.Len(t, patchActions, 1, "PatchLabels action must be produced for the label-drifted ready instance")
 	patched, ok := patchActions[0].Object.(*v1alpha.Instance)
 	assert.True(t, ok)
-	assert.Equal(t, deployment.Spec.CityCode, patched.Labels[v1alpha.CityCodeLabel],
-		"city-code label must be corrected by the backfill")
+	assert.Equal(t, deployment.Spec.LocationRef.Name, patched.Labels[v1alpha.LocationLabel],
+		"location label must be corrected by the backfill")
 }
 
 // TestLabelBackfill_DoesNotAffectRollingUpdate verifies that a genuine template
@@ -545,7 +518,7 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.WorkloadUIDLabel:            string(deployment.Spec.WorkloadRef.UID),
 		v1alpha.WorkloadDeploymentUIDLabel:  string(deployment.GetUID()),
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
-		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.LocationLabel:               deployment.Spec.LocationRef.Name,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
 		labelServiceKey:                     labelServiceValue,
@@ -556,7 +529,7 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 		v1alpha.WorkloadUIDLabel:            string(deployment.Spec.WorkloadRef.UID),
 		v1alpha.WorkloadDeploymentUIDLabel:  string(deployment.GetUID()),
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
-		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.LocationLabel:               deployment.Spec.LocationRef.Name,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
 		labelServiceKey:                     labelServiceValue,
@@ -606,7 +579,7 @@ func getWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDepl
 				UID:  "test-workload-uid",
 			},
 			PlacementName: "test-placement",
-			CityCode:      "DFW",
+			LocationRef:   locationsv1alpha1.LocationReference{Name: "loc-dfw-1"},
 			ScaleSettings: v1alpha.HorizontalScaleSettings{
 				MinReplicas:              minReplicas,
 				InstanceManagementPolicy: v1alpha.OrderedReadyInstanceManagementPolicyType,
@@ -637,7 +610,7 @@ func getInstanceForDeployment(deployment *v1alpha.WorkloadDeployment, ordinal in
 	instance.Labels[v1alpha.WorkloadUIDLabel] = string(deployment.Spec.WorkloadRef.UID)
 	instance.Labels[v1alpha.WorkloadDeploymentUIDLabel] = string(deployment.GetUID())
 	instance.Labels[v1alpha.WorkloadDeploymentNameLabel] = deployment.GetName()
-	instance.Labels[v1alpha.CityCodeLabel] = deployment.Spec.CityCode
+	instance.Labels[v1alpha.LocationLabel] = deployment.Spec.LocationRef.Name
 	instance.Labels[v1alpha.WorkloadNameLabel] = deployment.Spec.WorkloadRef.Name
 	instance.Labels[v1alpha.PlacementNameLabel] = deployment.Spec.PlacementName
 	instance.Labels[labelServiceKey] = labelServiceValue

@@ -100,10 +100,7 @@ func (c *statefulControl) GetActions(
 				},
 				Spec: deployment.Spec.Template.Spec,
 			}
-			// Set Location best-effort: when Status.Location is nil (no matching
-			// Location object for the city code) Instance.Spec.Location stays nil and
-			// instance creation proceeds normally — this must not block scheduling.
-			desiredInstances[i].Spec.Location = deployment.Status.Location
+			desiredInstances[i].Spec.Location = &deployment.Spec.LocationRef
 
 			// TODO(jreese) consider adding scheduling gates via mutating webhooks
 			gates := []v1alpha.SchedulingGate{
@@ -255,7 +252,7 @@ func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) 
 		v1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
 		// Self-describing labels for routing, filtering, and observability.
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
-		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.LocationLabel:               deployment.Spec.LocationRef.Name,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
 		// Scopes consumer-project cleanup: the consumer provider deletes

@@ -17,7 +17,7 @@ metadata:
     compute.datumapis.com/workload-deployment-uid: "00000000-0000-0000-0000-000000000002"
     compute.datumapis.com/instance-index: "0"
     compute.datumapis.com/workload-deployment-name: test-hub-reclaim-wd
-    compute.datumapis.com/city-code: dfw
+    compute.datumapis.com/location: dfw
     compute.datumapis.com/workload-name: test-workload
     compute.datumapis.com/placement-name: default
 spec:

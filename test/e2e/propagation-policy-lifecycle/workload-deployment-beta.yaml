@@ -3,7 +3,8 @@ kind: WorkloadDeployment
 metadata:
   name: wd-beta
 spec:
-  cityCode: dfw
+  locationRef:
+    name: dfw
   placementName: default
   workloadRef:
     name: test-workload

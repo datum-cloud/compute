@@ -422,7 +422,7 @@ func TestReferencedDataSAR(t *testing.T) {
 				Context:          context.Background(),
 				Workload:         tc.workload,
 				AdmissionRequest: admission.Request{},
-				ValidCityCodes:   []string{"DFW"},
+				ValidLocations:   []string{"DFW"},
 			}
 
 			spec := tc.workload.Spec.Template.Spec
@@ -483,7 +483,7 @@ func TestBothRefsSetEnvFrom(t *testing.T) {
 		Context:          context.Background(),
 		Workload:         workload,
 		AdmissionRequest: admission.Request{},
-		ValidCityCodes:   []string{testCityCodeDFW},
+		ValidLocations:   []string{testCityCodeDFW},
 	}
 	_ = validateReferencedDataAccess(workload.Spec.Template.Spec, specPath, opts)
 	if sarCount != sarCountBefore {
@@ -530,7 +530,7 @@ func TestReferencedDataSARInternalError(t *testing.T) {
 		Context:          context.Background(),
 		Workload:         workload,
 		AdmissionRequest: admission.Request{},
-		ValidCityCodes:   []string{testCityCodeDFW},
+		ValidLocations:   []string{testCityCodeDFW},
 	}
 
 	errs := validateReferencedDataAccess(workload.Spec.Template.Spec, specPath, opts)
@@ -601,7 +601,7 @@ func TestValidateUpdateSARPath(t *testing.T) {
 		Context:          context.Background(),
 		Workload:         newWorkload,
 		AdmissionRequest: admission.Request{},
-		ValidCityCodes:   []string{testCityCodeDFW},
+		ValidLocations:   []string{testCityCodeDFW},
 	}
 
 	// ValidateWorkloadCreate is called by ValidateUpdate in the webhook; here
@@ -693,7 +693,7 @@ func TestWorkloadWithReferencedDataE2E(t *testing.T) {
 		Client:         fakeClient,
 		Context:        context.Background(),
 		Workload:       workload,
-		ValidCityCodes: []string{"DFW"},
+		ValidLocations: []string{"DFW"},
 	}
 
 	errs := ValidateWorkloadCreate(workload, opts)

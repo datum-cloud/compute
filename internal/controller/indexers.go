@@ -81,12 +81,12 @@ func deploymentWorkloadUIDIndexFunc(o client.Object) []string {
 
 func deploymentLocationIndexFunc(o client.Object) []string {
 	deployment := o.(*computev1alpha.WorkloadDeployment)
-	if deployment.Status.Location == nil {
+	if deployment.Spec.LocationRef.Name == "" {
 		return nil
 	}
 
 	// Locations are cluster-scoped, so the name alone identifies one.
-	return []string{deployment.Status.Location.Name}
+	return []string{deployment.Spec.LocationRef.Name}
 }
 
 func addWorkloadIndexers(ctx context.Context, mgr mcmanager.Manager) error {

@@ -86,7 +86,7 @@ function InstanceCard({ instance, onClick }: { instance: Instance; onClick: () =
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="min-w-0">
           <p className="truncate font-mono text-sm font-medium">{instance.name}</p>
-          <p className="text-muted-foreground mt-0.5 text-xs">{instance.city ?? 'Unknown region'}</p>
+          <p className="text-muted-foreground mt-0.5 text-xs">{instance.location ?? 'Unknown location'}</p>
         </div>
         <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="w-fit shrink-0">
           {instance.status}
@@ -211,14 +211,14 @@ function ConfigurationCard({ workload }: { workload: Workload }) {
               label: 'Replicas',
               content:
                 workload.replicasPerRegion !== undefined
-                  ? `${workload.replicasPerRegion}/region · ${workload.desiredReplicas} total`
+                  ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
                   : `${workload.desiredReplicas} total`,
             },
             {
-              label: 'Regions',
+              label: 'Locations',
               content:
-                workload.regions.length > 0 ? (
-                  workload.regions.join(', ')
+                workload.locations.length > 0 ? (
+                  workload.locations.join(', ')
                 ) : (
                   <span className="text-muted-foreground">—</span>
                 ),
@@ -252,7 +252,7 @@ export default function WorkloadDetail() {
   const totalCount = workload ? instances.length || workload.desiredReplicas : 0;
   const allHealthy = totalCount > 0 && healthyCount === totalCount;
 
-  const regions = workload?.regions ?? [];
+  const locations = workload?.locations ?? [];
 
   const stats: Stat[] | null = workload
     ? [
@@ -271,7 +271,7 @@ export default function WorkloadDetail() {
                 ? 'text-green-600 dark:text-green-500'
                 : undefined,
         },
-        { label: 'Regions', value: String(regions.length) },
+        { label: 'Locations', value: String(locations.length) },
         {
           label: 'Requests',
           value: COMING_SOON,
@@ -358,9 +358,9 @@ export default function WorkloadDetail() {
                 <span className="text-base font-semibold">Instance Locations</span>
               </div>
               <p className="text-muted-foreground text-sm">
-                {regions.length > 0
-                  ? `Regions where this workload is deployed: ${regions.join(', ')}.`
-                  : 'Regions where this workload is deployed.'}
+                {locations.length > 0
+                  ? `Locations where this workload is deployed: ${locations.join(', ')}.`
+                  : 'Locations where this workload is deployed.'}
               </p>
               <WorldMap className="bg-background aspect-[16/9] w-full overflow-hidden rounded-lg border sm:aspect-[2.5/1]" />
             </CardContent>
