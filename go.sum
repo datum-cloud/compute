@@ -342,8 +342,12 @@ go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c h1:+BQirT3wYCgv7H2l
 go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 go.miloapis.com/milo v0.32.0 h1:TkNIQu/37d+SEquLJ5+GmdisSl+K2RT7eEC4idg6RIs=
 go.miloapis.com/milo v0.32.0/go.mod h1:GKK3afjCwshfZfvhjNe1wp/H45z4m7x5oG/8xbSgU1M=
+go.miloapis.com/milo v0.32.1 h1:xjtJ7bGJpF3KHkpJ2UXxyHmKDa7hBmTO8G8xjELNQXY=
+go.miloapis.com/milo v0.32.1/go.mod h1:GKK3afjCwshfZfvhjNe1wp/H45z4m7x5oG/8xbSgU1M=
 go.miloapis.com/service-catalog v0.4.0 h1:LvO1WCHMCoFokpS5igWMP8kyqly9gUFQmQj5IGhwuKs=
 go.miloapis.com/service-catalog v0.4.0/go.mod h1:1OfIYkdWH0lpbUH1d0Dc4A1yCtyNpcaKh50H6faG45A=
+go.miloapis.com/service-catalog v0.5.0 h1:o9NPcokU9c5BImky/5abI3Tp3p2dPE3zgGWcq4S8uxQ=
+go.miloapis.com/service-catalog v0.5.0/go.mod h1:OvESrinJMw1GYXBl+u4lW8O7fcQIrGjtHEZg6Bfj8N0=
 go.opencensus.io v0.24.0 h1:y73uSU6J157QMP2kn2r30vwW1A2W2WFwSCGnAVxeaD0=
 go.opencensus.io v0.24.0/go.mod h1:vNK8G9p7aAivkbmorf4v+7Hgx+Zs0yY+0fOtgBfjQKo=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
