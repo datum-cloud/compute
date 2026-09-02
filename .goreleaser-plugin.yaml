@@ -20,6 +20,11 @@ builds:
     goarch:
       - amd64
       - arm64
+    ignore:
+      # datumctl publishes no windows/arm64 asset name; drop the combination
+      # rather than shipping an archive the plugin catalog can't resolve.
+      - goos: windows
+        goarch: arm64
     ldflags:
       - "-X main.version=v{{.Version}}"
 
