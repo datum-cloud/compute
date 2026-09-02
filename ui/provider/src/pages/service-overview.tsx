@@ -15,8 +15,10 @@
  * support triage value, not parity with the page it replaces). The full
  * sortable/paginated list of *every* workload (healthy included) stays on
  * the Workloads tab (`../pages/fleet-workloads.tsx`); this page is
- * deliberately light — Overview is every service's default landing content,
- * so it doesn't pull in the `DataTable` bundle Workloads does.
+ * deliberately light — Overview is every service's default landing content.
+ * (It does still pull in a `GroupedTable` for the conditions summary below,
+ * which shares its underlying `data-table` chunk with Workloads — but skips
+ * Workloads' own sort/paginate/search UI.)
  *
  * `serviceName` comes from `useParams()` resolving the ancestor route param
  * from staff-portal's service detail route — see `../lib/api.ts`'s header
@@ -34,11 +36,13 @@ import {
   type ServiceCondition,
 } from '../lib/service-catalog';
 import { healthToBadgeType } from '../schema';
+import { createColumnHelper, type ColumnDef } from '../lib/table';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
+import { GroupedTable, type GroupedTableGroup } from '@datum-cloud/datum-ui/grouped-table';
 import { Text } from '@datum-cloud/datum-ui/typography';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { ChevronDownIcon, ChevronRightIcon } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { ChevronRightIcon } from 'lucide-react';
+import { useMemo } from 'react';
 import { Link, useParams } from 'react-router';
 
 /** How many of the worst unhealthy workloads to preview — full list is the Workloads tab. */
@@ -113,6 +117,8 @@ function ServiceIdentity({
   );
 }
 
+const conditionColumnHelper = createColumnHelper<ServiceCondition>();
+
 /**
  * Whether the compute service itself is healthy — checked *before* digging
  * into a single customer's workload, since a platform-wide problem here
@@ -120,46 +126,68 @@ function ServiceIdentity({
  * Summary line always shows a real count either way; expanding it lists
  * every condition (not just the unhealthy ones — a healthy condition's
  * `reason` is still useful context, e.g. confirming *when* it last passed).
- * Starts expanded when something's actually wrong, collapsed otherwise.
+ * Starts expanded when something's actually wrong, collapsed otherwise —
+ * modeled as a single-group `GroupedTable` so expand state, the chevron, and
+ * the collapsible header band come from the shared component instead of a
+ * hand-rolled `useState`/`ChevronDownIcon` toggle.
  */
 function ServiceConditionsSummary({ conditions }: { conditions: ServiceCondition[] }) {
   const unhealthy = useMemo(() => conditions.filter((c) => c.status !== 'True'), [conditions]);
-  const [expanded, setExpanded] = useState(unhealthy.length > 0);
+
+  // Same TanStack column-array-widening variance `fleet-workloads.tsx` casts
+  // around: an `accessor` column (typed to `string`) and a `display` column
+  // (typed to `unknown`) can't share one array type until widened.
+  const columns = useMemo(
+    () => [
+      conditionColumnHelper.accessor('type', {
+        header: 'Condition',
+        cell: ({ row }) => (
+          <StatusBadge type={healthToBadgeType(row.original.status)}>
+            {row.original.type}
+          </StatusBadge>
+        ),
+      }),
+      conditionColumnHelper.display({
+        id: 'message',
+        header: 'Message',
+        cell: ({ row }) => (
+          <Text size="sm" textColor="muted">
+            {row.original.message ?? row.original.reason ?? '—'}
+          </Text>
+        ),
+      }),
+    ],
+    []
+  );
+
+  const groups = useMemo<GroupedTableGroup<ServiceCondition>[]>(
+    () => [
+      {
+        id: 'conditions',
+        title:
+          unhealthy.length === 0
+            ? `All ${conditions.length} service conditions are healthy`
+            : `${unhealthy.length} of ${conditions.length} service conditions unhealthy`,
+        meta: (
+          <StatusBadge type={unhealthy.length === 0 ? 'success' : 'danger'}>
+            {unhealthy.length === 0 ? 'Healthy' : `${unhealthy.length} unhealthy`}
+          </StatusBadge>
+        ),
+        rows: conditions,
+        defaultOpen: unhealthy.length > 0,
+      },
+    ],
+    [conditions, unhealthy]
+  );
 
   if (conditions.length === 0) return null;
 
   return (
-    <div className="flex flex-col gap-2">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-2 text-left text-sm">
-        <StatusBadge type={unhealthy.length === 0 ? 'success' : 'danger'}>
-          {unhealthy.length === 0 ? 'Healthy' : `${unhealthy.length} unhealthy`}
-        </StatusBadge>
-        <Text size="sm" textColor="muted">
-          {unhealthy.length === 0
-            ? `All ${conditions.length} service conditions are healthy`
-            : `${unhealthy.length} of ${conditions.length} service conditions unhealthy`}
-        </Text>
-        <ChevronDownIcon className={`text-muted-foreground size-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-      </button>
-
-      {expanded && (
-        <div className="border-border overflow-hidden rounded-lg border">
-          {conditions.map((c) => (
-            <div
-              key={c.type}
-              className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0">
-              <StatusBadge type={healthToBadgeType(c.status)}>{c.type}</StatusBadge>
-              <Text size="sm" textColor="muted">
-                {c.message ?? c.reason ?? '—'}
-              </Text>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    <GroupedTable<ServiceCondition>
+      columns={columns as ColumnDef<ServiceCondition, unknown>[]}
+      groups={groups}
+      getRowId={(row) => row.type}
+    />
   );
 }
 
