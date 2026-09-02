@@ -41,7 +41,7 @@ import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { GroupedTable, type GroupedTableGroup } from '@datum-cloud/datum-ui/grouped-table';
 import { Text } from '@datum-cloud/datum-ui/typography';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { ChevronRightIcon } from 'lucide-react';
+import { CheckIcon, ChevronRightIcon, XIcon } from 'lucide-react';
 import { useMemo } from 'react';
 import { Link, useParams } from 'react-router';
 
@@ -139,11 +139,29 @@ function ServiceConditionsSummary({ conditions }: { conditions: ServiceCondition
       conditionColumnHelper.display({
         id: 'message',
         header: 'Message',
-        cell: ({ row }) => (
-          <Text size="sm" textColor="muted">
-            {row.original.message ?? row.original.reason ?? '—'}
-          </Text>
-        ),
+        cell: ({ row }) => {
+          const healthy = row.original.status === 'True';
+          return (
+            <div className="flex items-center gap-2">
+              {healthy ? (
+                <CheckIcon
+                  className="size-4 shrink-0"
+                  style={{ color: 'var(--btn-success)' }}
+                  aria-label="Healthy"
+                />
+              ) : (
+                <XIcon
+                  className="size-4 shrink-0"
+                  style={{ color: 'var(--btn-danger)' }}
+                  aria-label="Unhealthy"
+                />
+              )}
+              <Text size="sm" textColor="muted">
+                {row.original.message ?? row.original.reason ?? '—'}
+              </Text>
+            </div>
+          );
+        },
       }),
     ],
     []
