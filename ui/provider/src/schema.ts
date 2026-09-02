@@ -96,6 +96,10 @@ export const instanceResourceSchema = z.object({
   memory: z.string().optional(),
   image: z.string().optional(),
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
+  /** Raw `reason` off the `Available` condition (e.g. `ImageUnavailable`) — `datumctl get instances` shows this verbatim; the coarse `status` above collapses it into one of four buckets. */
+  statusReason: z.string().optional(),
+  /** Raw `message` off the `Available` condition — shown in the Instances table's Message column. */
+  statusMessage: z.string().optional(),
   externalIP: z.string().optional(),
   internalIP: z.string().optional(),
   conditions: z.array(conditionSchema).default([]),
@@ -111,18 +115,3 @@ export const instanceListSchema = z.object({
 });
 
 export type InstanceList = z.infer<typeof instanceListSchema>;
-
-export function instanceStatusToBadgeType(
-  status: InstanceStatusValue
-): 'success' | 'warning' | 'danger' | 'muted' {
-  switch (status) {
-    case 'Available':
-      return 'success';
-    case 'Pending':
-      return 'warning';
-    case 'Failed':
-      return 'danger';
-    default:
-      return 'muted';
-  }
-}
