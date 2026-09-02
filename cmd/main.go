@@ -53,6 +53,7 @@ import (
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	infrastructurev1alpha1 "go.miloapis.com/milo/pkg/apis/infrastructure/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
@@ -91,6 +92,7 @@ func init() {
 	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
@@ -350,6 +352,7 @@ func main() {
 	if enableManagementControllers {
 		if err = (&controller.WorkloadReconciler{
 			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+			LocationSource:    serverConfig.LocationSource,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Workload")
 			os.Exit(1)
@@ -374,6 +377,7 @@ func main() {
 		}
 		if err = (&controller.WorkloadDeploymentReconciler{
 			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+			LocationSource:    serverConfig.LocationSource,
 		}).SetupWithManager(mgr, wdOpts); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 			os.Exit(1)
@@ -457,7 +461,7 @@ func main() {
 	}
 
 	if serverConfig.WebhookServer != nil {
-		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr); err != nil {
+		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr, serverConfig.LocationSource); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
 			os.Exit(1)
 		}
@@ -802,6 +806,9 @@ func loadServerConfig(path string) (config.WorkloadOperator, error) {
 	}
 	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
 		return serverConfig, fmt.Errorf("unable to decode server config: %w", err)
+	}
+	if _, err := serverConfig.LocationSource.Resolve(); err != nil {
+		return serverConfig, fmt.Errorf("invalid server config: %w", err)
 	}
 	return serverConfig, nil
 }

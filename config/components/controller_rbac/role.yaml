@@ -77,6 +77,15 @@ rules:
   - create
   - patch
 - apiGroups:
+  - locations.miloapis.com
+  resources:
+  - locations
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.datumapis.com
   resources:
   - networkinterfaceclaims
