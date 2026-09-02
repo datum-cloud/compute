@@ -342,6 +342,8 @@ go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c h1:+BQirT3wYCgv7H2l
 go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 go.miloapis.com/milo v0.32.0 h1:TkNIQu/37d+SEquLJ5+GmdisSl+K2RT7eEC4idg6RIs=
 go.miloapis.com/milo v0.32.0/go.mod h1:GKK3afjCwshfZfvhjNe1wp/H45z4m7x5oG/8xbSgU1M=
+go.miloapis.com/milo v0.32.5 h1:08tMRuw9jivqJb8XlOOp53usQLmLOncrZSXfmrNIm0Y=
+go.miloapis.com/milo v0.32.5/go.mod h1:GKK3afjCwshfZfvhjNe1wp/H45z4m7x5oG/8xbSgU1M=
 go.miloapis.com/service-catalog v0.4.0 h1:LvO1WCHMCoFokpS5igWMP8kyqly9gUFQmQj5IGhwuKs=
 go.miloapis.com/service-catalog v0.4.0/go.mod h1:1OfIYkdWH0lpbUH1d0Dc4A1yCtyNpcaKh50H6faG45A=
 go.opencensus.io v0.24.0 h1:y73uSU6J157QMP2kn2r30vwW1A2W2WFwSCGnAVxeaD0=
