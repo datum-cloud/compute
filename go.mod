@@ -181,7 +181,7 @@ require (
 	github.com/google/go-containerregistry v0.21.6
 	github.com/moby/buildkit v0.29.0
 	github.com/sirupsen/logrus v1.9.4
-	github.com/tonistiigi/fsutil v0.0.0-20251211185533-a2aa163d723f
+	github.com/tonistiigi/fsutil v0.0.0-20260819142231-83cac42c1c52
 	go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67
 	mvdan.cc/sh/v3 v3.12.0
 )
