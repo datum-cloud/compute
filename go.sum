@@ -338,6 +338,8 @@ go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67 h1:Mhgt688CeTh2hX7ql
 go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67/go.mod h1:6skEjcE7aT8VPf/HVamA/BB6Dc9IISA6c/DdYKhqWNc=
 go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569 h1:14vajo15fGGEAmdystQEE261rFH4AqER9s1Vg7POUKo=
 go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569/go.mod h1:A7JNOuc+e6j/KkUVCcZ7Z2odvf6JFMQlX0Zo1Awj2TY=
+go.datum.net/network-services-operator v0.26.3 h1:nkrkp1ck/BFOT275/Eh+nvIgV9a6Yv1Vv21jRoD+wpo=
+go.datum.net/network-services-operator v0.26.3/go.mod h1:A7JNOuc+e6j/KkUVCcZ7Z2odvf6JFMQlX0Zo1Awj2TY=
 go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c h1:+BQirT3wYCgv7H2lEZtAH+dpMiWu9j/Wa+c8s4jJUIA=
 go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 go.miloapis.com/milo v0.32.0 h1:TkNIQu/37d+SEquLJ5+GmdisSl+K2RT7eEC4idg6RIs=
