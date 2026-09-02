@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/KimMachineGun/automemlimit v0.7.5
 	github.com/google/go-cmp v0.7.0
-	github.com/karmada-io/api v1.15.0
+	github.com/karmada-io/api v1.17.0
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
