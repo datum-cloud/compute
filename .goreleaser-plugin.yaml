@@ -44,6 +44,15 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+release:
+  # Releases are tagged and published by hand with their own notes; keep the
+  # plugin build from replacing them when it attaches its archives.
+  mode: append
+  # Dev tags (v0.8.0-dev.9) are previews, not the release users should land
+  # on. "auto" keys off the tag's prerelease suffix, so a GA tag still
+  # publishes as the latest release.
+  prerelease: auto
+
 changelog:
   sort: asc
   filters:
