@@ -13,7 +13,7 @@ require (
 	// Pinned to network-services-operator main: the latest tag (v0.26.0)
 	// predates the Prepared condition this gate reads. Re-pin to a tagged
 	// release once one carries it.
-	go.datum.net/network-services-operator v0.26.1-0.20260821014231-aceb24b1b569
+	go.datum.net/network-services-operator v0.26.3
 	// Pinned by pseudo-version to the commit deployed to staging, which is the
 	// same one network-services-operator pins. The module publishes no tag yet.
 	go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c
