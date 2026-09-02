@@ -33,46 +33,52 @@ type outputSpec struct {
 	value string
 }
 
-func handleOutput(ctx context.Context, opts *options, spec outputSpec, img v1.Image) error {
+// handleOutput dispatches the built image to its destination and returns the
+// pushed image pinned by digest (repo@sha256:...) when the destination is a
+// registry, or "" for archive/layout/debug outputs.
+func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Image) (string, error) {
 	switch spec.kind {
 	case outputDebug:
-		if opts.push {
-			return fmt.Errorf("--push requires a registry output: use --output ghcr.io/acme/api:tag")
+		if opts.Push {
+			return "", fmt.Errorf("--push requires a registry output: use --output ghcr.io/acme/api:tag")
 		}
 		fmt.Fprintln(os.Stderr, "Preview complete (image discarded)")
-		return nil
+		return "", nil
 	case outputRegistry:
-		if !opts.push {
+		if !opts.Push {
 			ok, err := confirmRegistryPush(spec.value)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if !ok {
-				return fmt.Errorf("push cancelled")
+				return "", fmt.Errorf("push cancelled")
 			}
 		}
 		return pushImage(ctx, opts, img)
 	case outputArchive:
-		if opts.push {
-			return fmt.Errorf("--push is only valid with registry outputs")
+		if opts.Push {
+			return "", fmt.Errorf("--push is only valid with registry outputs")
 		}
-		return exportArchive(spec.value, img)
+		return "", exportArchive(spec.value, img)
 	case outputLayout:
-		if opts.push {
-			return fmt.Errorf("--push is only valid with registry outputs")
+		if opts.Push {
+			return "", fmt.Errorf("--push is only valid with registry outputs")
 		}
-		return exportLayout(spec.value, img)
+		return "", exportLayout(spec.value, img)
 	default:
-		return fmt.Errorf("unknown output type")
+		return "", fmt.Errorf("unknown output type")
 	}
 }
 
-func pushImage(ctx context.Context, opts *options, img v1.Image) error {
-	task := stderrSpinner.Start("Pushing " + opts.ref)
-	ref, err := name.ParseReference(opts.ref)
+// pushImage pushes img to opts.Ref and returns the pushed image pinned by
+// digest (repo@sha256:...), since a tag is mutable but callers that chain
+// into a deploy step need to pin what they just pushed.
+func pushImage(ctx context.Context, opts *Options, img v1.Image) (string, error) {
+	task := stderrSpinner.Start("Pushing " + opts.Ref)
+	ref, err := name.ParseReference(opts.Ref)
 	if err != nil {
 		task.Done(err)
-		return err
+		return "", err
 	}
 	updates := make(chan v1.Update, 16)
 	done := make(chan struct{})
@@ -90,7 +96,8 @@ func pushImage(ctx context.Context, opts *options, img v1.Image) error {
 	}()
 	// Push the Compute index, not the bare image manifest, so registries expose
 	// the kraftcloud/x86_64 platform descriptor to the runtime pull path.
-	err = remote.WriteIndex(ref, computeImageIndex(img),
+	index := computeImageIndex(img)
+	err = remote.WriteIndex(ref, index,
 		remote.WithContext(ctx),
 		remote.WithAuthFromKeychain(authn.DefaultKeychain),
 		remote.WithProgress(updates),
@@ -98,10 +105,15 @@ func pushImage(ctx context.Context, opts *options, img v1.Image) error {
 	<-done
 	task.Done(err)
 	if err != nil {
-		return fmt.Errorf("pushing image: %w", err)
+		return "", fmt.Errorf("pushing image: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Pushed %s\n", opts.ref)
-	return nil
+	digest, err := index.Digest()
+	if err != nil {
+		return "", fmt.Errorf("computing pushed digest: %w", err)
+	}
+	digestRef := ref.Context().Digest(digest.String()).String()
+	fmt.Fprintf(os.Stderr, "Pushed %s (%s)\n", opts.Ref, digestRef)
+	return digestRef, nil
 }
 
 func parseOutput(value string) outputSpec {
@@ -117,8 +129,8 @@ func parseOutput(value string) outputSpec {
 	return outputSpec{kind: outputRegistry, value: value}
 }
 
-func validateOutputOptions(opts *options, spec outputSpec) error {
-	if !opts.push {
+func validateOutputOptions(opts *Options, spec outputSpec) error {
+	if !opts.Push {
 		return nil
 	}
 	if spec.kind != outputRegistry {

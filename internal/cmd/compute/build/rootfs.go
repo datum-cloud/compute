@@ -49,34 +49,34 @@ func rootfsBuildError(err error) error {
 	return fmt.Errorf("building root filesystem: %w", err)
 }
 
-func buildFinalStage(ctx context.Context, opts *options) (packagingArtifact, error) {
+func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, error) {
 	var progress io.Writer = os.Stderr
-	if opts.quietBuild {
-		logPath := filepath.Join(opts.tmpDir, "buildkit.log")
+	if opts.QuietBuild {
+		logPath := filepath.Join(opts.TmpDir, "buildkit.log")
 		logFile, err := os.Create(logPath)
 		if err != nil {
 			return packagingArtifact{}, fmt.Errorf("creating build log: %w", err)
 		}
 		defer logFile.Close()
-		opts.lastBuildLog = logPath
+		opts.LastBuildLog = logPath
 		progress = logFile
 	} else {
-		opts.lastBuildLog = ""
+		opts.LastBuildLog = ""
 	}
 
-	rootfsTar := filepath.Join(opts.tmpDir, "rootfs.tar")
-	ociTar := filepath.Join(opts.tmpDir, "image.oci.tar")
+	rootfsTar := filepath.Join(opts.TmpDir, "rootfs.tar")
+	ociTar := filepath.Join(opts.TmpDir, "image.oci.tar")
 	var task *task
-	if opts.quietBuild {
+	if opts.QuietBuild {
 		task = stderrSpinner.Start("Building Dockerfile")
 	} else {
 		fmt.Fprintln(os.Stderr, "Building Dockerfile ...")
 	}
 	result, err := buildDockerfileFinalStageQuietly(ctx, dockerfileFinalStageRequest{
-		ContextDir:  opts.contextDir,
-		Dockerfile:  opts.dockerfile,
-		Target:      opts.buildTarget,
-		BuildArgs:   slices.Clone(opts.buildArgs),
+		ContextDir:  opts.ContextDir,
+		Dockerfile:  opts.Dockerfile,
+		Target:      opts.BuildTarget,
+		BuildArgs:   slices.Clone(opts.BuildArgs),
 		RootFSTar:   rootfsTar,
 		OCITar:      ociTar,
 		progressOut: progress,
@@ -90,8 +90,8 @@ func buildFinalStage(ctx context.Context, opts *options) (packagingArtifact, err
 	return result, nil
 }
 
-func packageRootFS(opts *options, build packagingArtifact) (packagingArtifact, error) {
-	rootfsPath := filepath.Join(opts.tmpDir, "rootfs.erofs")
+func packageRootFS(opts *Options, build packagingArtifact) (packagingArtifact, error) {
+	rootfsPath := filepath.Join(opts.TmpDir, "rootfs.erofs")
 	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
 		return packagingArtifact{}, err
 	}

@@ -20,9 +20,9 @@ var kraftfileNames = []string{
 	"Kraftfile",
 }
 
-// findKraftfile returns the path of the first Kraftfile found in dir, or ""
+// FindKraftfile returns the path of the first Kraftfile found in dir, or ""
 // if none exist.
-func findKraftfile(dir string) string {
+func FindKraftfile(dir string) string {
 	for _, name := range kraftfileNames {
 		p := filepath.Join(dir, name)
 		if _, err := os.Stat(p); err == nil {
@@ -37,16 +37,16 @@ func findKraftfile(dir string) string {
 // reimplementing Kraftfile semantics (rootfs source/format, cmd, ...) here.
 //
 // unikraft build takes an input directory, not an explicit Kraftfile path —
-// it auto-discovers one of kraftfileNames within it — so opts.kraftfile must
+// it auto-discovers one of kraftfileNames within it — so opts.Kraftfile must
 // live directly in that directory under one of those names.
-func runKraftBuild(ctx context.Context, opts *options) error {
-	if !slices.Contains(kraftfileNames, filepath.Base(opts.kraftfile)) {
+func runKraftBuild(ctx context.Context, opts *Options) error {
+	if !slices.Contains(kraftfileNames, filepath.Base(opts.Kraftfile)) {
 		return fmt.Errorf(
 			"--kraftfile %s has a name the unikraft CLI won't auto-discover; rename it to one of %v",
-			displayPath(opts.kraftfile), kraftfileNames,
+			displayPath(opts.Kraftfile), kraftfileNames,
 		)
 	}
-	inputDir, err := filepath.Abs(filepath.Dir(opts.kraftfile))
+	inputDir, err := filepath.Abs(filepath.Dir(opts.Kraftfile))
 	if err != nil {
 		return fmt.Errorf("resolving Kraftfile directory: %w", err)
 	}
@@ -55,19 +55,19 @@ func runKraftBuild(ctx context.Context, opts *options) error {
 	if err != nil {
 		return fmt.Errorf(
 			"found a Kraftfile at %s, but the unikraft CLI is not installed; install it from https://github.com/unikraft/cli and re-run, or remove the Kraftfile to use the default Dockerfile-based build",
-			displayPath(opts.kraftfile),
+			displayPath(opts.Kraftfile),
 		)
 	}
 
 	args := []string{"build", inputDir} //nolint:goconst
-	for _, arg := range opts.buildArgs {
+	for _, arg := range opts.BuildArgs {
 		args = append(args, "--build-arg", arg)
 	}
-	if opts.output != "" {
-		args = append(args, "--output", opts.output)
+	if opts.Output != "" {
+		args = append(args, "--output", opts.Output)
 	}
 
-	fmt.Fprintf(os.Stderr, "Kraftfile found at %s: this build is entirely delegated to the unikraft CLI, not datumctl.\n", displayPath(opts.kraftfile))
+	fmt.Fprintf(os.Stderr, "Kraftfile found at %s: this build is entirely delegated to the unikraft CLI, not datumctl.\n", displayPath(opts.Kraftfile))
 	fmt.Fprintf(os.Stderr, "Running: %s\n", formatCommand(unikraftPath, args))
 
 	cmd := exec.CommandContext(ctx, unikraftPath, args...)

@@ -9,54 +9,57 @@ import (
 	"strings"
 )
 
-func run(ctx context.Context, opts *options) error {
-	if opts.contextDir == "" {
-		opts.contextDir = "."
+// Run executes a build per opts and, for a registry Output, pushes the
+// result and returns the pushed image pinned by digest (repo@sha256:...);
+// otherwise it returns "".
+func Run(ctx context.Context, opts *Options) (string, error) {
+	if opts.ContextDir == "" {
+		opts.ContextDir = "."
 	}
-	contextDir, err := filepath.Abs(opts.contextDir)
+	contextDir, err := filepath.Abs(opts.ContextDir)
 	if err != nil {
-		return fmt.Errorf("resolving build context: %w", err)
+		return "", fmt.Errorf("resolving build context: %w", err)
 	}
-	opts.contextDir = contextDir
+	opts.ContextDir = contextDir
 
-	if opts.kraftfile == "" {
-		opts.kraftfile = findKraftfile(opts.contextDir)
+	if opts.Kraftfile == "" {
+		opts.Kraftfile = FindKraftfile(opts.ContextDir)
 	}
-	if opts.kraftfile != "" {
-		return runKraftBuild(ctx, opts)
+	if opts.Kraftfile != "" {
+		return "", runKraftBuild(ctx, opts)
 	}
 
-	output := parseOutput(opts.output)
+	output := parseOutput(opts.Output)
 	if err := validateOutputOptions(opts, output); err != nil {
-		return err
+		return "", err
 	}
 	if output.kind == outputRegistry {
-		opts.ref = output.value
+		opts.Ref = output.value
 	} else {
-		opts.ref = "localhost/datumctl-build:debug"
+		opts.Ref = "localhost/datumctl-build:debug"
 	}
-	if opts.fix {
-		opts.analyze = true
+	if opts.Fix {
+		opts.Analyze = true
 	}
-	opts.dockerfile, err = resolveDockerfilePath(opts.contextDir, opts.dockerfile, opts.dockerfileExplicit)
+	opts.Dockerfile, err = resolveDockerfilePath(opts.ContextDir, opts.Dockerfile, opts.DockerfileExplicit)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	printBuildConfig(opts)
 
 	tmpDir, err := os.MkdirTemp("", "datumctl-build-*")
 	if err != nil {
-		return fmt.Errorf("creating temp dir: %w", err)
+		return "", fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
-	opts.tmpDir = tmpDir
+	opts.TmpDir = tmpDir
 
 	stage, result, err := buildAndAnalyze(ctx, opts)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if opts.fix && result != nil && !result.OK() {
+	if opts.Fix && result != nil && !result.OK() {
 		// More than one round can be necessary: some checks (e.g. NSS modules)
 		// deliberately stay silent about an entrypoint until an earlier fix
 		// (e.g. missing-libs copying libc in) has been applied and rebuilt, so
@@ -65,34 +68,34 @@ func run(ctx context.Context, opts *options) error {
 		for round := 1; result != nil && !result.OK(); round++ {
 			if round > maxFixRounds {
 				printAnalysisResult(result)
-				return fmt.Errorf("%d compatibility issue(s) remain after %d fix attempts", len(result.Findings), maxFixRounds)
+				return "", fmt.Errorf("%d compatibility issue(s) remain after %d fix attempts", len(result.Findings), maxFixRounds)
 			}
 			applied, err := applyExactLineFixes(result)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if applied == 0 {
 				printAnalysisResult(result)
-				return fmt.Errorf("%d compatibility issue(s) found; --fix had no exact line edits to apply", len(result.Findings))
+				return "", fmt.Errorf("%d compatibility issue(s) found; --fix had no exact line edits to apply", len(result.Findings))
 			}
 			fmt.Fprintln(os.Stderr, "Rebuilding after fixes")
-			opts.quietBuild = true
+			opts.QuietBuild = true
 			stage, result, err = buildAndAnalyze(ctx, opts)
 			if err != nil {
-				replayBuildLog(opts.lastBuildLog)
-				return err
+				replayBuildLog(opts.LastBuildLog)
+				return "", err
 			}
 		}
-		opts.quietBuild = false
+		opts.QuietBuild = false
 	}
 
 	build, err := packageRootFS(opts, stage)
 	if err != nil {
-		return err
+		return "", err
 	}
 	img, err := assembleComputeImage(tmpDir, build)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	return handleOutput(ctx, opts, output, img)
@@ -102,7 +105,7 @@ func run(ctx context.Context, opts *options) error {
 // but does not package a rootfs, since intermediate --fix rounds discard
 // their build entirely once a rebuild supersedes it; the caller packages
 // once, after settling on the build it's actually going to use.
-func buildAndAnalyze(ctx context.Context, opts *options) (packagingArtifact, *analysisResult, error) {
+func buildAndAnalyze(ctx context.Context, opts *Options) (packagingArtifact, *analysisResult, error) {
 	stage, err := buildFinalStage(ctx, opts)
 	if err != nil {
 		return packagingArtifact{}, nil, err
@@ -115,7 +118,7 @@ func buildAndAnalyze(ctx context.Context, opts *options) (packagingArtifact, *an
 	if err != nil {
 		return packagingArtifact{}, nil, err
 	}
-	if !opts.analyze {
+	if !opts.Analyze {
 		return stage, nil, nil
 	}
 	result, err := analyzeBuild(ctx, opts, view, stage.Config)
@@ -125,18 +128,18 @@ func buildAndAnalyze(ctx context.Context, opts *options) (packagingArtifact, *an
 	return stage, result, nil
 }
 
-func buildStageRootFS(ctx context.Context, opts *options, stage string, entrypoint string, progress statusFunc) (*tarFSView, error) {
+func buildStageRootFS(ctx context.Context, opts *Options, stage string, entrypoint string, progress statusFunc) (*tarFSView, error) {
 	progress = normalizeProgress(progress)
-	rootfsTar := filepath.Join(opts.tmpDir, "source-stage-"+sanitizeFilename(stage)+".tar")
-	ociTar := filepath.Join(opts.tmpDir, "source-stage-"+sanitizeFilename(stage)+".oci.tar")
+	rootfsTar := filepath.Join(opts.TmpDir, "source-stage-"+sanitizeFilename(stage)+".tar")
+	ociTar := filepath.Join(opts.TmpDir, "source-stage-"+sanitizeFilename(stage)+".oci.tar")
 	stageOpts := *opts
-	stageOpts.buildTarget = stage
+	stageOpts.BuildTarget = stage
 	progress("searching stage %q for runtime files", stage)
 	if _, err := buildDockerfileFinalStageQuietly(ctx, dockerfileFinalStageRequest{
-		ContextDir: stageOpts.contextDir,
-		Dockerfile: stageOpts.dockerfile,
-		Target:     stageOpts.buildTarget,
-		BuildArgs:  slices.Clone(stageOpts.buildArgs),
+		ContextDir: stageOpts.ContextDir,
+		Dockerfile: stageOpts.Dockerfile,
+		Target:     stageOpts.BuildTarget,
+		BuildArgs:  slices.Clone(stageOpts.BuildArgs),
 		RootFSTar:  rootfsTar,
 		OCITar:     ociTar,
 	}); err != nil {
@@ -152,7 +155,7 @@ func buildStageRootFS(ctx context.Context, opts *options, stage string, entrypoi
 	return view, nil
 }
 
-func runtimeDependencyResolverPass(ctx context.Context, opts *options) analysisPass {
+func runtimeDependencyResolverPass(ctx context.Context, opts *Options) analysisPass {
 	return analysisPass{ID: "runtime-file-resolver", Run: func(analysis *analysisContext) ([]finding, error) {
 		var view *tarFSView
 		analysis.RuntimeFileView = func() (*tarFSView, error) {
@@ -215,10 +218,10 @@ func replayBuildLog(path string) {
 	}
 }
 
-func analyzeBuild(ctx context.Context, opts *options, view *tarFSView, config imageConfig) (*analysisResult, error) {
+func analyzeBuild(ctx context.Context, opts *Options, view *tarFSView, config imageConfig) (*analysisResult, error) {
 	var task *task
 	progress := noopProgress
-	if !opts.verbose {
+	if !opts.Verbose {
 		task = stderrSpinner.Start("Analyzing image filesystem")
 		progress = func(format string, args ...any) {
 			if task != nil {
@@ -237,12 +240,12 @@ func analyzeBuild(ctx context.Context, opts *options, view *tarFSView, config im
 	if err != nil {
 		return nil, err
 	}
-	if opts.fix {
+	if opts.Fix {
 		printFixAnalysisSummary(result)
 	} else {
 		printAnalysisResult(result)
 	}
-	if !result.OK() && !opts.fix {
+	if !result.OK() && !opts.Fix {
 		return nil, fmt.Errorf("%d compatibility issue(s) found", len(result.Findings))
 	}
 	return result, nil

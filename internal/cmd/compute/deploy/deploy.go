@@ -19,6 +19,7 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/cmd/compute/build"
 	"go.datum.net/compute/internal/cmd/compute/util"
 	"go.datum.net/compute/internal/cmd/compute/watch"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -27,6 +28,7 @@ import (
 
 type options struct {
 	image        string
+	build        string
 	instanceType string
 	cities       []string
 	min          int32
@@ -44,10 +46,24 @@ func Command() *cobra.Command {
 		Long: `Deploy a container image as a workload across one or more cities.
 
 If no arguments are given, an interactive prompt guides you through the deployment.
-Use -f to apply a workload manifest file instead of flags.`,
+Use -f to apply a workload manifest file instead of flags.
+
+Use --build to build and push the image before deploying, instead of running
+'datumctl compute build' separately. It builds from the given directory (default
+Dockerfile discovery, no build-arg/target overrides — use 'datumctl compute build'
+directly if you need those) and pushes to --image, which the deployed workload
+then pins by digest rather than the tag you gave it. It also analyzes and
+auto-fixes common compatibility issues, rewriting the Dockerfile in place when
+a fix is applied — same as 'datumctl compute build --fix'.`,
 		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD --min=2 --port=8080
+
+  # Build and deploy in one step (builds ., pushes to --image, deploys that digest)
+  datumctl compute deploy api --build --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD
+
+  # Build from another directory
+  datumctl compute deploy api --build=./api --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD
 
   # Interactive mode
   datumctl compute deploy
@@ -60,7 +76,9 @@ Use -f to apply a workload manifest file instead of flags.`,
 		ValidArgsFunction: util.CompleteWorkloadNamesAndFlags,
 	}
 
-	cmd.Flags().StringVar(&opts.image, "image", "", "Container image to deploy (e.g. ghcr.io/acme/api:1.4.2)")
+	cmd.Flags().StringVar(&opts.image, "image", "", "Container image to deploy (e.g. ghcr.io/acme/api:1.4.2); also the push destination when --build is set")
+	cmd.Flags().StringVar(&opts.build, "build", "", "Build and push the image from this directory before deploying (default \".\" if given with no value)")
+	cmd.Flags().Lookup("build").NoOptDefVal = "."
 	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud/d1-standard-2", "Instance type (e.g. datumcloud/d1-standard-2)")
 	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "One or more city codes to deploy to (e.g. DFW,IAD)")
 	cmd.Flags().Int32Var(&opts.min, "min", 1, "Minimum number of instances per city")
@@ -74,10 +92,35 @@ Use -f to apply a workload manifest file instead of flags.`,
 func runDeploy(cmd *cobra.Command, args []string, opts *options) error {
 	// Determine path.
 	if opts.file != "" {
+		if opts.build != "" {
+			return fmt.Errorf("--build cannot be combined with -f; a manifest already specifies its own image")
+		}
 		return deployFromFile(cmd, opts)
 	}
 
 	if len(args) > 0 && opts.image != "" {
+		if opts.build != "" {
+			if kraftfile := build.FindKraftfile(opts.build); kraftfile != "" {
+				return fmt.Errorf(
+					"found %s: Kraftfile-based builds aren't supported by --build, since they delegate entirely to the "+
+						"unikraft CLI. Run the build and deploy steps separately instead:\n"+
+						"  datumctl compute build --push --output <ref> .\n"+
+						"  datumctl compute deploy --image <ref>", kraftfile)
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Building %s and pushing to %s...\n", opts.build, opts.image)
+			digest, err := build.Run(cmd.Context(), &build.Options{
+				ContextDir: opts.build,
+				Dockerfile: "Dockerfile",
+				Output:     opts.image,
+				Push:       true, // a combined build+deploy step always pushes: there's nothing to confirm
+				Fix:        true, // deploying a broken image is worse than auto-fixing and rebuilding
+			})
+			if err != nil {
+				return err
+			}
+			opts.image = digest
+		}
 		return deployFromFlags(cmd, args[0], opts)
 	}
 

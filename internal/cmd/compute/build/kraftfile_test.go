@@ -15,13 +15,13 @@ func TestFindKraftfileLocatesDefaultName(t *testing.T) {
 	if err := os.WriteFile(path, []byte("spec: v0.7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := findKraftfile(dir); got != path {
+	if got := FindKraftfile(dir); got != path {
 		t.Fatalf("expected %q, got %q", path, got)
 	}
 }
 
 func TestFindKraftfileReturnsEmptyWhenAbsent(t *testing.T) {
-	if got := findKraftfile(t.TempDir()); got != "" {
+	if got := FindKraftfile(t.TempDir()); got != "" {
 		t.Fatalf("expected no Kraftfile, got %q", got)
 	}
 }
@@ -35,7 +35,7 @@ func TestRunKraftBuildPromptsToInstallWhenMissing(t *testing.T) {
 	if err := os.WriteFile(kraftfilePath, []byte("spec: v0.7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	opts := &options{contextDir: dir, kraftfile: kraftfilePath}
+	opts := &Options{ContextDir: dir, Kraftfile: kraftfilePath}
 
 	err := runKraftBuild(context.Background(), opts)
 	if err == nil {
@@ -56,7 +56,7 @@ func TestRunKraftBuildRejectsNonStandardKraftfileName(t *testing.T) {
 	if err := os.WriteFile(kraftfilePath, []byte("spec: v0.7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	opts := &options{contextDir: dir, kraftfile: kraftfilePath}
+	opts := &Options{ContextDir: dir, Kraftfile: kraftfilePath}
 
 	err := runKraftBuild(context.Background(), opts)
 	if err == nil {
