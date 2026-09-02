@@ -36,7 +36,7 @@ import {
   type ServiceCondition,
 } from '../lib/service-catalog';
 import { healthToBadgeType } from '../schema';
-import { createColumnHelper, type ColumnDef } from '../lib/table';
+import { createColumnHelper } from '../lib/table';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { GroupedTable, type GroupedTableGroup } from '@datum-cloud/datum-ui/grouped-table';
 import { Text } from '@datum-cloud/datum-ui/typography';
@@ -134,19 +134,8 @@ const conditionColumnHelper = createColumnHelper<ServiceCondition>();
 function ServiceConditionsSummary({ conditions }: { conditions: ServiceCondition[] }) {
   const unhealthy = useMemo(() => conditions.filter((c) => c.status !== 'True'), [conditions]);
 
-  // Same TanStack column-array-widening variance `fleet-workloads.tsx` casts
-  // around: an `accessor` column (typed to `string`) and a `display` column
-  // (typed to `unknown`) can't share one array type until widened.
   const columns = useMemo(
     () => [
-      conditionColumnHelper.accessor('type', {
-        header: 'Condition',
-        cell: ({ row }) => (
-          <StatusBadge type={healthToBadgeType(row.original.status)}>
-            {row.original.type}
-          </StatusBadge>
-        ),
-      }),
       conditionColumnHelper.display({
         id: 'message',
         header: 'Message',
@@ -183,11 +172,7 @@ function ServiceConditionsSummary({ conditions }: { conditions: ServiceCondition
   if (conditions.length === 0) return null;
 
   return (
-    <GroupedTable<ServiceCondition>
-      columns={columns as ColumnDef<ServiceCondition, unknown>[]}
-      groups={groups}
-      getRowId={(row) => row.type}
-    />
+    <GroupedTable<ServiceCondition> columns={columns} groups={groups} getRowId={(row) => row.type} />
   );
 }
 
