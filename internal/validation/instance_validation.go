@@ -85,6 +85,7 @@ func validateInstanceSpec(
 	allErrs = append(allErrs, volumeErrs...)
 
 	allErrs = append(allErrs, validateInstanceRuntimeSpec(spec.Runtime, volumes, fieldPath.Child("runtime"))...)
+	allErrs = append(allErrs, validateRuntimeClassSelection(spec, fieldPath, opts)...)
 	allErrs = append(allErrs, validateInstanceNetworkInterfaces(spec.NetworkInterfaces, fieldPath.Child("networkInterfaces"), opts)...)
 	allErrs = append(allErrs, validateReferencedDataAccess(spec, fieldPath, opts)...)
 

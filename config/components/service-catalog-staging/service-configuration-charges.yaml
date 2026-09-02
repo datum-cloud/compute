@@ -3,6 +3,21 @@ kind: ServiceConfiguration
 metadata:
   name: compute
 spec:
+  # Rates match on the runtime_class dimension declared on these meters, so each
+  # class can carry its own price. Per-class metric names would break every
+  # existing query, dashboard, and invoice line built on the current names.
+  #
+  # Order matters. Milo applies the first matching entry and treats the trailing
+  # unmatched entry as the catch-all, which prices usage events that carry no
+  # runtime_class dimension. Replace the catch-all with an explicit unikernel
+  # match once every producer attaches the dimension. The Amberflo backend also
+  # requires that step, because it cannot materialize a rate set that mixes
+  # matched and catch-all entries. Per-class prices take effect there only when
+  # every dimension value is priced explicitly.
+  #
+  # general-purpose carries the unikernel rate until its higher per-instance
+  # overhead is measured on Datum hardware. That measurement sets this field,
+  # and the class is not placeable until then.
   charges:
     - name: compute.datumapis.com/instance/cpu-seconds
       chargeType: Usage
@@ -12,6 +27,10 @@ spec:
         metricRef: compute.datumapis.com/instance/cpu-seconds
         pricingUnit: vcpu-second
         rates:
+          - match:
+              dimension: runtime_class
+              value: general-purpose
+            flat: "0.000014"
           - flat: "0.000014"
     - name: compute.datumapis.com/instance/memory-seconds
       chargeType: Usage
@@ -21,4 +40,8 @@ spec:
         metricRef: compute.datumapis.com/instance/memory-seconds
         pricingUnit: gib-second
         rates:
+          - match:
+              dimension: runtime_class
+              value: general-purpose
+            flat: "0.0000045"
           - flat: "0.0000045"

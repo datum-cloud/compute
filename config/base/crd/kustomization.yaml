@@ -3,6 +3,7 @@
 # It should be run by an overlay under config/overlays/
 resources:
 - bases/compute.datumapis.com_instances.yaml
+- bases/compute.datumapis.com_runtimeclasses.yaml
 - bases/compute.datumapis.com_workloaddeployments.yaml
 - bases/compute.datumapis.com_workloads.yaml
 # +kubebuilder:scaffold:crdkustomizeresource

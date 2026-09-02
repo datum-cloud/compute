@@ -46,7 +46,7 @@ spec:
   monitoredResourceTypes:
   - type: compute.datumapis.com/Instance
     displayName: Compute Instance
-    description: A Unikraft virtual machine instance.
+    description: A running compute instance, billed for the runtime class it runs in.
     gvk:
       group: compute.datumapis.com
       kind: Instance
@@ -55,32 +55,56 @@ spec:
       description: The region where the instance is running.
     - name: tier
       description: The service tier of the instance.
+    # Runtime class is a separate label rather than a reuse of `tier`. `tier`
+    # names a commercial support tier and is also a common name for customer
+    # workload labels, so an invoice line broken out by `tier` would be
+    # ambiguous. Providers register the classes they serve, so compute cannot
+    # name the values here. An instance that selects no class reports an empty
+    # dimension, which the catch-all rate prices.
+    - name: runtime_class
+      description: >-
+        The execution tier the instance runs in. Isolation, image
+        compatibility, startup latency, and price differ per class.
   metrics:
+  # Every instance meter declares the runtime_class dimension. A producer may
+  # only attach a key declared here, and a rate may only match on a declared
+  # dimension. Without the declaration, per-class rates cannot be expressed and
+  # events carrying the class are quarantined.
   - name: compute.datumapis.com/instance/cpu-seconds
     displayName: Compute Instance CPU Seconds
     description: CPU seconds consumed by a running instance.
     kind: Cumulative
     unit: s
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/instance/memory-seconds
     displayName: Compute Instance Memory Seconds
     description: Memory byte-seconds consumed by a running instance.
     kind: Cumulative
     unit: By.s
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/instance/cpu-allocated
     displayName: Compute Instance CPU Allocated
     description: Number of vCPUs allocated to an instance.
     kind: Gauge
     unit: '{cpu}'
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/instance/memory-allocated
     displayName: Compute Instance Memory Allocated
     description: Bytes of memory allocated to an instance.
     kind: Gauge
     unit: By
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/instance/uptime-seconds
     displayName: Compute Instance Uptime
     description: Seconds the instance has been in a running state.
     kind: Cumulative
     unit: s
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/workloads
     displayName: Compute Workloads
     description: Number of compute workloads.
@@ -110,6 +134,13 @@ spec:
       - compute.datumapis.com/instance/cpu-allocated
       - compute.datumapis.com/instance/memory-allocated
       - compute.datumapis.com/instance/uptime-seconds
+  # Quota stays pooled across runtime classes. Entitling a class separately
+  # requires a registered resource type per class, because a ResourceClaim names
+  # a flat resource type and is immutable once created. It also requires a fresh
+  # grant for every existing project, and existing quota headroom does not carry
+  # over. Revisit once the runtime_class dimension on the meters above and the
+  # class label on each ResourceClaim show per-class consumption against the
+  # pooled limits.
   quota:
     metricRules:
     - selector:

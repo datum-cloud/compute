@@ -17,3 +17,8 @@ spec:
     - compute.datumapis.com/instances.list
     - compute.datumapis.com/instances.get
     - compute.datumapis.com/instances.watch
+    # Customers select an execution tier from the published catalog, so read
+    # access to the catalog is part of viewing compute.
+    - compute.datumapis.com/runtimeclasses.list
+    - compute.datumapis.com/runtimeclasses.get
+    - compute.datumapis.com/runtimeclasses.watch

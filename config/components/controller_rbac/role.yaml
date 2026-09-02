@@ -70,6 +70,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - compute.datumapis.com
+  resources:
+  - runtimeclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - events.k8s.io
   resources:
   - events

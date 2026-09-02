@@ -249,7 +249,7 @@ func addInstanceControllerLabels(instance *v1alpha.Instance, index int, deployme
 // that every instance should carry. Used both when stamping a new instance
 // and when checking whether an existing instance needs a backfill patch.
 func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) map[string]string {
-	return map[string]string{
+	desired := map[string]string{
 		v1alpha.InstanceIndexLabel:         strconv.Itoa(index),
 		v1alpha.WorkloadUIDLabel:           string(deployment.Spec.WorkloadRef.UID),
 		v1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
@@ -262,6 +262,20 @@ func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) 
 		// resources by this label when a project's ServiceConsumer is revoked.
 		labelServiceKey: labelServiceValue,
 	}
+
+	// Providers select instances by runtime class, so the label copies the class
+	// the deployment resolved at admission. Deriving a class here would override
+	// the catalog's decision.
+	//
+	// An empty class means no class was resolved. Those instances carry no class
+	// label and are claimed by whichever provider the cell runs. Supplying a
+	// class would route them to a class-selecting provider that may not serve
+	// them.
+	if class := deployment.Spec.Template.Spec.Runtime.Class; class != "" {
+		desired[v1alpha.RuntimeClassLabel] = class
+	}
+
+	return desired
 }
 
 // labelsNeedBackfill reports whether any of the desired controller-managed

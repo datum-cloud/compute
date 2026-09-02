@@ -87,6 +87,22 @@ type InstanceRuntimeSpec struct {
 
 	// A virtual machine is a classical VM environment, booting a full OS provided by the user via an image.
 	VirtualMachine *VirtualMachineRuntime `json:"virtualMachine,omitempty"`
+
+	// The execution tier the instance runs in. The value names a RuntimeClass
+	// in the platform catalog, which Datum publishes and customers do not
+	// define. Publishing a new tier adds a class instead of changing this API.
+	//
+	// The class is independent of the runtime shape above. Either a sandbox or
+	// a virtual machine can run in any class the platform offers.
+	//
+	// An empty value selects the class the catalog marks as default. Admission
+	// records that choice on the workload and never resolves it again, so an
+	// existing workload keeps the tier, cost, and startup characteristics it
+	// was created with.
+	//
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Optional
+	Class string `json:"class,omitempty"`
 }
 
 type SandboxRuntime struct {

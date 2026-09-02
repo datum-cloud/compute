@@ -129,6 +129,18 @@ spec:
                     has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
                       object.metadata.labels['compute_datumapis_com_workload_uid'] :
                       ''
+                # Metering and billing break instance cost out by runtime
+                # class, so the value comes from the instance spec rather than
+                # from the runtime a cell happens to use. Whichever provider
+                # registers a class also declares whether that class is the
+                # default, so compute cannot name a class here. An instance
+                # that selects no class reports an empty dimension, which the
+                # catch-all billing rate prices.
+                - name: runtime_class
+                  value: |
+                    has(object.spec.runtime) && has(object.spec.runtime.class) && object.spec.runtime.class != '' ?
+                      object.spec.runtime.class :
+                      ''
 
     - name: instance-status-condition
       resource:

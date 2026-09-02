@@ -625,6 +625,11 @@ func workloadBlockingReasonPriority(reason string) int {
 		return 5
 	case computev1alpha.WorkloadReasonNetworkNotFound:
 		return 6
+	// This reason outranks every other blocker. No cell can accept the
+	// deployment, so nothing else can make progress, and the user resolves the
+	// condition by changing the workload spec.
+	case computev1alpha.WorkloadDeploymentReasonRuntimeClassNotServed:
+		return 7
 	default:
 		return 0
 	}

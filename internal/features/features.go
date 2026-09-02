@@ -41,6 +41,25 @@ const (
 	//
 	// alpha: v0.1
 	NetworkingIntegration featuregate.Feature = "NetworkingIntegration"
+
+	// RuntimeClasses controls whether a workload may select the execution tier
+	// its instances run in, through the runtime class field on the instance
+	// template.
+	//
+	// When the gate is disabled, admission does not default the runtime class
+	// and rejects any class selection.
+	//
+	// The gate defaults to disabled because a non-default class is placeable
+	// only after providers that serve it are deployed and cells advertise it.
+	// Deployments whose cells serve more than one class opt in with
+	// --feature-gates=RuntimeClasses=true.
+	//
+	// Disabling the gate again is safe only while no non-default class is
+	// generally available. Workloads that already selected one become
+	// unplaceable.
+	//
+	// alpha: v0.1
+	RuntimeClasses featuregate.Feature = "RuntimeClasses"
 )
 
 // MutableFeatureGate is the mutable feature gate for the compute operator.
@@ -57,6 +76,7 @@ var FeatureGate featuregate.FeatureGate = MutableFeatureGate
 func init() {
 	if err := MutableFeatureGate.Add(map[featuregate.Feature]featuregate.FeatureSpec{
 		NetworkingIntegration: {Default: false, PreRelease: featuregate.Alpha},
+		RuntimeClasses:        {Default: false, PreRelease: featuregate.Alpha},
 	}); err != nil {
 		panic(err)
 	}

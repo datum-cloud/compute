@@ -592,6 +592,47 @@ func TestLabelBackfill_DoesNotAffectRollingUpdate(t *testing.T) {
 	assert.Empty(t, patchActions, "no PatchLabels when all labels are already correct")
 }
 
+// TestRuntimeClass_PropagatedToInstances verifies that the runtime class on the
+// deployment template reaches every instance created from it. Providers
+// dispatch on the class, so an instance that loses it runs in the wrong class.
+func TestRuntimeClass_PropagatedToInstances(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+
+	deployment := getWorkloadDeployment("test-runtime-class", 2)
+	deployment.Spec.Template.Spec.Runtime.Class = testClassBasalt
+
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, nil)
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+
+	for _, action := range actions {
+		instance, ok := action.Object.(*v1alpha.Instance)
+		require.True(t, ok)
+		assert.Equal(t, testClassBasalt, instance.Spec.Runtime.Class,
+			"instance %s did not inherit the deployment's runtime class", instance.Name)
+	}
+}
+
+// TestRuntimeClass_ChangesTemplateHash verifies that the runtime class
+// participates in the template hash. An instance that predates a class change
+// is then treated as stale and recreated instead of running in the previous
+// class.
+func TestRuntimeClass_ChangesTemplateHash(t *testing.T) {
+	deployment := getWorkloadDeployment("test-runtime-class-hash", 1)
+
+	azurite := deployment.Spec.Template
+	azurite.Spec.Runtime.Class = testClassAzurite
+
+	basalt := deployment.Spec.Template
+	basalt.Spec.Runtime.Class = testClassBasalt
+
+	assert.NotEqual(t,
+		instancecontrol.ComputeHash(azurite),
+		instancecontrol.ComputeHash(basalt),
+	)
+}
+
 func getWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDeployment {
 	instance := getInstanceTemplate(name, 0)
 	deployment := &v1alpha.WorkloadDeployment{
@@ -640,6 +681,9 @@ func getInstanceForDeployment(deployment *v1alpha.WorkloadDeployment, ordinal in
 	instance.Labels[v1alpha.CityCodeLabel] = deployment.Spec.CityCode
 	instance.Labels[v1alpha.WorkloadNameLabel] = deployment.Spec.WorkloadRef.Name
 	instance.Labels[v1alpha.PlacementNameLabel] = deployment.Spec.PlacementName
+	if class := deployment.Spec.Template.Spec.Runtime.Class; class != "" {
+		instance.Labels[v1alpha.RuntimeClassLabel] = class
+	}
 	instance.Labels[labelServiceKey] = labelServiceValue
 
 	return instance
