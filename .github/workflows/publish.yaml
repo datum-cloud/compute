@@ -11,7 +11,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
     with:
       image-name: compute
       platforms: linux/amd64,linux/arm64
@@ -25,7 +25,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.20.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
     with:
       image-name: compute-consumer-ui-plugin
       context: ui/consumer
@@ -41,7 +41,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.20.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
     with:
       image-name: compute-provider-ui-plugin
       context: ui/provider
@@ -66,7 +66,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.20.0
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.21.0
     with:
       bundle-name: ghcr.io/datum-cloud/compute-kustomize
       bundle-path: config
