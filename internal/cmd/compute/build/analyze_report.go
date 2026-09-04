@@ -129,7 +129,7 @@ func toolchainLabel(tc toolchain) string {
 	}
 }
 
-func buildAnalysisResultFromView(opts *options, view *tarFSView, args []string, env []string, extraPasses []analysisPass, progress statusFunc) (*analysisResult, error) {
+func buildAnalysisResultFromView(opts *Options, view *tarFSView, args []string, env []string, extraPasses []analysisPass, progress statusFunc) (*analysisResult, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("analysis failed: no entrypoint found in root filesystem")
 	}
@@ -145,7 +145,7 @@ func buildAnalysisResultFromView(opts *options, view *tarFSView, args []string, 
 	}
 
 	analysisProgressFn := normalizeProgress(progress)
-	if opts.verbose {
+	if opts.Verbose {
 		analysisProgressFn = analysisProgress
 	}
 	result, err := analyzeRootFSView(analysisRequest{
@@ -154,7 +154,7 @@ func buildAnalysisResultFromView(opts *options, view *tarFSView, args []string, 
 		Args:           cmd.Args,
 		RequiredShells: cmd.Shells,
 		Env:            env,
-		DockerfilePath: opts.dockerfile,
+		DockerfilePath: opts.Dockerfile,
 		ExtraPasses:    extraPasses,
 		Progress:       analysisProgressFn,
 	})

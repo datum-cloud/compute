@@ -121,15 +121,15 @@ func TestParseOutput(t *testing.T) {
 }
 
 func TestValidateOutputOptionsRequiresRegistryForPush(t *testing.T) {
-	if err := validateOutputOptions(&options{push: true}, outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}); err != nil {
+	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}); err != nil {
 		t.Fatalf("registry output with --push returned error: %v", err)
 	}
 
-	if err := validateOutputOptions(&options{push: true}, outputSpec{kind: outputArchive, value: "image.tar"}); err == nil {
+	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputArchive, value: "image.tar"}); err == nil {
 		t.Fatal("expected local archive output with --push to fail")
 	}
 
-	if err := validateOutputOptions(&options{push: true}, outputSpec{kind: outputDebug}); err == nil {
+	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputDebug}); err == nil {
 		t.Fatal("expected debug output with --push to fail")
 	}
 }

@@ -9,26 +9,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type options struct {
-	analyze            bool
-	buildArgs          []string
-	buildTarget        string
-	contextDir         string
-	dockerfile         string
-	dockerfileExplicit bool
-	fix                bool
-	kraftfile          string
-	lastBuildLog       string
-	output             string
-	push               bool
-	quietBuild         bool
-	ref                string
-	tmpDir             string
-	verbose            bool
+type Options struct {
+	Analyze            bool
+	BuildArgs          []string
+	BuildTarget        string
+	ContextDir         string
+	Dockerfile         string
+	DockerfileExplicit bool
+	Fix                bool
+	Kraftfile          string
+	LastBuildLog       string
+	Output             string
+	Push               bool
+	QuietBuild         bool
+	Ref                string
+	TmpDir             string
+	Verbose            bool
 }
 
 func Command() *cobra.Command {
-	opts := &options{}
+	opts := &Options{}
 
 	cmd := &cobra.Command{
 		Use:     "build [OPTIONS] [CONTEXT]",
@@ -96,52 +96,53 @@ datumctl compute build --kraftfile ./Kraftfile .
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				opts.contextDir = args[0]
+				opts.ContextDir = args[0]
 			}
-			opts.dockerfileExplicit = cmd.Flags().Changed("file")
-			return run(cmd.Context(), opts)
+			opts.DockerfileExplicit = cmd.Flags().Changed("file")
+			_, err := Run(cmd.Context(), opts)
+			return err
 		},
 	}
 
-	cmd.Flags().BoolVar(&opts.analyze, "analyze", false, "Analyze the Dockerfile output for Compute compatibility before packaging")
-	cmd.Flags().StringArrayVar(&opts.buildArgs, "build-arg", nil, "Set build-time variables (KEY=VALUE or KEY to inherit from env)")
-	cmd.Flags().StringVar(&opts.buildTarget, "target", "", "Dockerfile stage to build")
-	cmd.Flags().StringVarP(&opts.dockerfile, "file", "f", "Dockerfile", "Path to Dockerfile")
-	cmd.Flags().BoolVar(&opts.fix, "fix", false, "Apply safe exact-line fixes to the selected Dockerfile and rebuild (implies --analyze)")
-	cmd.Flags().StringVar(&opts.kraftfile, "kraftfile", "", "Advanced: delegate the build to the unikraft CLI using this Kraftfile")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", "", "Output destination: registry ref, .tar OCI archive, or local OCI layout directory")
-	cmd.Flags().BoolVar(&opts.push, "push", false, "Push registry output without confirmation")
-	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "Show detailed analysis progress instead of a spinner")
+	cmd.Flags().BoolVar(&opts.Analyze, "analyze", false, "Analyze the Dockerfile output for Compute compatibility before packaging")
+	cmd.Flags().StringArrayVar(&opts.BuildArgs, "build-arg", nil, "Set build-time variables (KEY=VALUE or KEY to inherit from env)")
+	cmd.Flags().StringVar(&opts.BuildTarget, "target", "", "Dockerfile stage to build")
+	cmd.Flags().StringVarP(&opts.Dockerfile, "file", "f", "Dockerfile", "Path to Dockerfile")
+	cmd.Flags().BoolVar(&opts.Fix, "fix", false, "Apply safe exact-line fixes to the selected Dockerfile and rebuild (implies --analyze)")
+	cmd.Flags().StringVar(&opts.Kraftfile, "kraftfile", "", "Advanced: delegate the build to the unikraft CLI using this Kraftfile")
+	cmd.Flags().StringVarP(&opts.Output, "output", "o", "", "Output destination: registry ref, .tar OCI archive, or local OCI layout directory")
+	cmd.Flags().BoolVar(&opts.Push, "push", false, "Push registry output without confirmation")
+	cmd.Flags().BoolVarP(&opts.Verbose, "verbose", "v", false, "Show detailed analysis progress instead of a spinner")
 
 	cmd.AddCommand(inspectCommand())
 
 	return cmd
 }
 
-func printBuildConfig(opts *options) {
+func printBuildConfig(opts *Options) {
 	row := func(label, value string) {
 		fmt.Fprintf(os.Stderr, "  %-11s %s\n", label+":", value)
 	}
 
-	if opts.output != "" {
-		fmt.Fprintf(os.Stderr, "Build %s\n", opts.ref)
+	if opts.Output != "" {
+		fmt.Fprintf(os.Stderr, "Build %s\n", opts.Ref)
 	} else {
 		fmt.Fprintln(os.Stderr, "Build preview")
 	}
 
-	row("Context", displayPath(opts.contextDir))
-	dockerfileLabel := displayPath(opts.dockerfile)
-	if !opts.dockerfileExplicit && filepath.Base(opts.dockerfile) == "Dockerfile.datum" {
+	row("Context", displayPath(opts.ContextDir))
+	dockerfileLabel := displayPath(opts.Dockerfile)
+	if !opts.DockerfileExplicit && filepath.Base(opts.Dockerfile) == "Dockerfile.datum" {
 		dockerfileLabel += " (override)"
 	}
 	row("Dockerfile", dockerfileLabel)
-	if opts.buildTarget != "" {
-		row("Target", opts.buildTarget)
+	if opts.BuildTarget != "" {
+		row("Target", opts.BuildTarget)
 	}
-	if opts.output == "" {
+	if opts.Output == "" {
 		row("Output", "preview only")
 	} else {
-		row("Output", opts.output)
+		row("Output", opts.Output)
 	}
 	fmt.Fprintln(os.Stderr)
 }

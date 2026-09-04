@@ -222,7 +222,7 @@ func TestBuildAnalysisResultFromViewRelativeScriptGuard(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			view := &tarFSView{Paths: map[string]struct{}{}}
-			_, err := buildAnalysisResultFromView(&options{}, view, tt.args, nil, nil, nil)
+			_, err := buildAnalysisResultFromView(&Options{}, view, tt.args, nil, nil, nil)
 			if err == nil {
 				t.Fatal("expected an error (either relative-script or entrypoint-not-found)")
 			}
