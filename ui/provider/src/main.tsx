@@ -1,3 +1,5 @@
+import FleetWorkloads from './pages/fleet-workloads';
+import ServiceOverview from './pages/service-overview';
 import WorkloadDetail from './pages/workload-detail';
 import WorkloadList from './pages/workload-list';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -14,6 +16,8 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router';
 const queryClient = new QueryClient();
 
 const base = '/customers/projects/:projectName/plugins/workloads';
+const workloadsBase = '/admin/service-catalog/:name/plugins/workloads/workloads';
+const overviewBase = '/admin/service-catalog/:name';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -32,10 +36,16 @@ createRoot(document.getElementById('root')!).render(
             <Link to="/customers/projects/demo-project/plugins/workloads/demo-workload">
               Workload detail
             </Link>
+            <Link to="/admin/service-catalog/compute/plugins/workloads/workloads">
+              Fleet workloads
+            </Link>
+            <Link to="/admin/service-catalog/compute">Service overview</Link>
           </nav>
           <Routes>
             <Route path={base} element={<WorkloadList />} />
             <Route path={`${base}/:workloadName`} element={<WorkloadDetail />} />
+            <Route path={workloadsBase} element={<FleetWorkloads />} />
+            <Route path={overviewBase} element={<ServiceOverview />} />
           </Routes>
         </MemoryRouter>
       </div>

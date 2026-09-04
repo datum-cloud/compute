@@ -38,7 +38,7 @@ export class ApiError extends Error {
 }
 
 function getProjectScopedBase(projectName: string): string {
-  return `/api/internal/apis/resourcemanager.miloapis.com/v1alpha1/projects/${projectName}/control-plane`;
+  return `/api/internal/apis/resourcemanager.miloapis.com/v1alpha1/projects/${encodeURIComponent(projectName)}/control-plane`;
 }
 
 // v1alpha, NOT v1alpha1 — verified against api/v1alpha/groupversion_info.go.
@@ -57,8 +57,20 @@ interface ProxyEnvelope<T> {
 }
 
 async function proxyFetch<T>(projectName: string, path: string): Promise<T> {
-  const url = `${getProjectScopedBase(projectName)}${path}`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  return proxyFetchAbsolute<T>(`${getProjectScopedBase(projectName)}${path}`);
+}
+
+/**
+ * Same envelope-unwrapping `/api/internal/...` fetch as {@link proxyFetch},
+ * for a path that isn't project-scoped (e.g. a cluster-scoped
+ * `services.miloapis.com` resource) — see `../lib/fleet-health.ts` and
+ * `../lib/service-catalog.ts`'s own fetch helpers, which use this directly
+ * (not `proxyFetch`) so a 403 surfaces as {@link ApiError} instead of a
+ * plain `Error` — required for `ErrorOrRestrictedState` to render the
+ * restricted-access state rather than a generic failure card.
+ */
+export async function proxyFetchAbsolute<T>(path: string): Promise<T> {
+  const res = await fetch(`/api/internal${path}`, { headers: { Accept: 'application/json' } });
   if (!res.ok) {
     throw new ApiError(res.status, `Request failed (${res.status}): ${path}`);
   }
@@ -66,7 +78,7 @@ async function proxyFetch<T>(projectName: string, path: string): Promise<T> {
   return envelope.data;
 }
 
-async function fetchWorkloads(projectName: string): Promise<Workload[]> {
+export async function fetchWorkloads(projectName: string): Promise<Workload[]> {
   const body = await proxyFetch<RawWorkloadList>(projectName, `${WORKLOADS_PATH}?limit=100`);
   return toWorkloadList(body.items ?? []);
 }
@@ -93,7 +105,7 @@ function workloadQueryKey(projectName: string | undefined, name: string | undefi
 }
 
 async function fetchRawWorkload(projectName: string, name: string): Promise<RawWorkload> {
-  return proxyFetch<RawWorkload>(projectName, `${WORKLOADS_PATH}/${name}`);
+  return proxyFetch<RawWorkload>(projectName, `${WORKLOADS_PATH}/${encodeURIComponent(name)}`);
 }
 
 export function useWorkload(

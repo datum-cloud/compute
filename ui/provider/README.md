@@ -6,7 +6,7 @@ plugin(s). This directory *is* the plugin (no further nesting): a Module
 Federation remote loaded by `staff-portal`'s plugin host
 (`app/modules/plugins/` there, ported from cloud-portal's
 [Portal Plugin System](https://github.com/datum-cloud/cloud-portal/blob/main/docs/enhancements/portal-plugin-system.md)),
-declaring three extensions:
+declaring five extensions:
 
 - **`portal.resource/platform`** — a data-only extension: label, icon, and the
   `search.miloapis.com` target GVK for compute Workloads
@@ -23,13 +23,26 @@ declaring three extensions:
   path `:workloadName`) — the actual support view for a single Workload,
   reached either from `WorkloadList` or by clicking a Workload row on
   `/customers/resources`.
+- **`portal.page/service`** (`FleetWorkloads`, `src/pages/fleet-workloads.tsx`,
+  path `"workloads"`) — every Workload across every active consumer project
+  of compute, sortable/paginated. Rendered as a "Workloads" tab on
+  staff-portal's `/admin/service-catalog/compute` detail page.
+- **`portal.page/service`** (`ServiceOverview`, `src/pages/service-overview.tsx`,
+  path `""` — the reserved "replace the built-in Overview" convention) —
+  fleet-wide stats, the worst unhealthy workloads, and a handful of
+  service-catalog facts (phase, conditions, quota, pricing, meters), in place
+  of staff-portal's built-in Overview content for compute.
 
-Both pages are mounted under
+The two project-scoped pages are mounted under
 `/customers/projects/:projectName/plugins/<slug>/…` by staff-portal's
 project-scoped plugin mount — `projectName` reaches them via `useParams()`
 resolving the ancestor route match (shared react-router singleton, no extra
 plumbing), and `:workloadName` (on the detail page only) from that
-extension's own declared `path`.
+extension's own declared `path`. The two service-scoped pages are similarly
+mounted under `/admin/service-catalog/:name/plugins/<slug>/…` (or, for the
+Overview override, rendered directly at `/admin/service-catalog/:name`) —
+see `src/lib/fleet-health.ts`'s header comment for how `serviceName` reaches
+them the same way.
 
 ## The support view
 
@@ -69,9 +82,13 @@ bun run build && bun run preview
 ```
 
 ```
-# in staff-portal
-PORTAL_PLUGINS=workloads=http://localhost:5199
+# in staff-portal — PORTAL_PLUGINS_JSON, not the simpler PORTAL_PLUGINS, since
+# the portal.page/service extensions need a serviceRef the simple slug=url
+# syntax has no way to express (see static-source.ts's own doc comment).
+PORTAL_PLUGINS_JSON='[{"slug":"workloads","assets":{"baseURL":"http://localhost:5199"},"serviceRef":{"name":"compute"}}]'
 ```
 
 then load `/customers/resources` in staff-portal, check "Workload" appears in
-the Type filter, and click a Workload row to reach the support view.
+the Type filter, and click a Workload row to reach the support view. Load
+`/admin/service-catalog/compute` to see the Overview override and the
+Workloads tab.
