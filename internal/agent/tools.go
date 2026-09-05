@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -103,6 +104,15 @@ type WorkloadSummary struct {
 	// RootCauseReason and Actionability are empty for a healthy workload.
 	RootCauseReason string        `json:"rootCauseReason,omitempty"`
 	Actionability   Actionability `json:"actionability,omitempty"`
+	// RootCauseSince is when the root-cause condition last transitioned, in
+	// RFC 3339. A string rather than a metav1.Time for the reason
+	// Cause.LastTransitionTime gives: this struct is a tool output schema.
+	RootCauseSince string `json:"rootCauseSince,omitempty"`
+	// RootCauseFor is that same age rendered "5d" / "12m". Both are emitted
+	// because the consumer is a language model: the timestamp is the fact, and
+	// the relative form is what makes a five-day "in progress" impossible to
+	// read as normal in-flight work without doing arithmetic first.
+	RootCauseFor string `json:"rootCauseFor,omitempty"`
 }
 
 // WorkloadsListInput takes no arguments: the project is fixed by the request,
@@ -165,8 +175,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 		Name:  ToolWorkloadsList,
 		Title: "List workloads",
 		Description: "List every Workload in the project with its availability, ready/desired replicas, " +
-			"and — when it is not fully available — the root-cause reason and whether that cause is " +
-			"user-actionable, a platform fault, or transient. Start here. Read-only.",
+			"and — when it is not fully available — the root-cause reason, how long it has held that " +
+			"state (rootCauseFor, e.g. \"5d\"), and whether that cause is user-actionable, a platform " +
+			"fault, transient, or stalled. Start here. Read-only.",
 	}, workloadsList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -223,10 +234,14 @@ func workloadsList(deps DepsFor) mcp.ToolHandlerFor[WorkloadsListInput, Workload
 			return nil, WorkloadsListOutput{}, err
 		}
 
+		// One clock for the whole listing, so every row's age is measured from
+		// the same instant and the rows are comparable to each other.
+		now := time.Now()
+
 		out := WorkloadsListOutput{Workloads: make([]WorkloadSummary, 0, len(workloads))}
 		for i := range workloads {
 			w := &workloads[i]
-			diagnosis, err := diagnoseOne(ctx, d, w)
+			diagnosis, err := diagnoseOne(ctx, d, w, now)
 			if err != nil {
 				return nil, WorkloadsListOutput{}, err
 			}
@@ -238,6 +253,8 @@ func workloadsList(deps DepsFor) mcp.ToolHandlerFor[WorkloadsListInput, Workload
 			if diagnosis.RootCause != nil {
 				summary.RootCauseReason = diagnosis.RootCause.Reason
 				summary.Actionability = diagnosis.RootCause.Actionability
+				summary.RootCauseSince = diagnosis.RootCause.LastTransitionTime
+				summary.RootCauseFor = diagnosis.RootCause.InStateFor
 			}
 			out.Workloads = append(out.Workloads, summary)
 		}
@@ -331,7 +348,7 @@ func workloadDiagnose(deps DepsFor) mcp.ToolHandlerFor[WorkloadDiagnoseInput, Di
 		if err != nil {
 			return nil, Diagnosis{}, err
 		}
-		diagnosis, err := diagnoseOne(ctx, d, workload)
+		diagnosis, err := diagnoseOne(ctx, d, workload, time.Now())
 		if err != nil {
 			return nil, Diagnosis{}, err
 		}
@@ -364,7 +381,9 @@ func reasonExplain(deps DepsFor) mcp.ToolHandlerFor[ReasonExplainInput, ReasonEx
 
 // ----------------------------------------------------------------- helpers
 
-func diagnoseOne(ctx context.Context, d ToolDeps, w *computev1alpha.Workload) (Diagnosis, error) {
+func diagnoseOne(
+	ctx context.Context, d ToolDeps, w *computev1alpha.Workload, now time.Time,
+) (Diagnosis, error) {
 	deployments, err := d.Reader.ListDeployments(ctx, d.Namespace, w.Name)
 	if err != nil {
 		return Diagnosis{}, err
@@ -373,7 +392,7 @@ func diagnoseOne(ctx context.Context, d ToolDeps, w *computev1alpha.Workload) (D
 	if err != nil {
 		return Diagnosis{}, err
 	}
-	return Diagnose(w, deployments, instances), nil
+	return DiagnoseAt(now, w, deployments, instances), nil
 }
 
 // sortUnavailableFirst puts unavailable workloads at the top. The sort is

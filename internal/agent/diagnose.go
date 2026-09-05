@@ -39,11 +39,15 @@ type Cause struct {
 	// LastTransitionTime is RFC 3339. It is a string rather than a metav1.Time
 	// because this struct is a tool's output schema: metav1.Time marshals as a
 	// string but is a struct, which JSON Schema inference rejects.
-	LastTransitionTime string        `json:"lastTransitionTime,omitempty"`
-	Actionability      Actionability `json:"actionability,omitempty"`
-	Explanation        string        `json:"explanation"`
-	Remediation        string        `json:"remediation,omitempty"`
-	Skill              string        `json:"skill,omitempty"`
+	LastTransitionTime string `json:"lastTransitionTime,omitempty"`
+	// InStateFor is how long the condition has held this status, rendered for
+	// a reader ("5d", "12m"). Derived from LastTransitionTime against the
+	// clock at read time, never stored; empty when the API left it unset.
+	InStateFor    string        `json:"inStateFor,omitempty"`
+	Actionability Actionability `json:"actionability,omitempty"`
+	Explanation   string        `json:"explanation"`
+	Remediation   string        `json:"remediation,omitempty"`
+	Skill         string        `json:"skill,omitempty"`
 }
 
 // BlockedInstance names an instance that is not Ready, with its own most
@@ -93,21 +97,33 @@ func Diagnose(
 	deployments []computev1alpha.WorkloadDeployment,
 	instances []computev1alpha.Instance,
 ) Diagnosis {
+	return DiagnoseAt(time.Now(), workload, deployments, instances)
+}
+
+// DiagnoseAt is Diagnose with the clock supplied. How long a condition has held
+// is part of the answer, so the clock is an input rather than something the
+// walk reaches for, and a test can pin an age instead of racing wall time.
+func DiagnoseAt(
+	now time.Time,
+	workload *computev1alpha.Workload,
+	deployments []computev1alpha.WorkloadDeployment,
+	instances []computev1alpha.Instance,
+) Diagnosis {
 	var causes []Cause
 
 	for _, c := range failing(workload.Status.Conditions) {
-		causes = append(causes, toCause(LevelWorkload, workload.Name, c))
+		causes = append(causes, toCause(LevelWorkload, workload.Name, c, now))
 	}
 	for i := range deployments {
 		d := &deployments[i]
 		for _, c := range failing(d.Status.Conditions) {
-			causes = append(causes, toCause(LevelDeployment, d.Name, c))
+			causes = append(causes, toCause(LevelDeployment, d.Name, c, now))
 		}
 	}
 	for i := range instances {
 		inst := &instances[i]
 		for _, c := range failing(inst.Status.Conditions) {
-			causes = append(causes, toCause(LevelInstance, inst.Name, c))
+			causes = append(causes, toCause(LevelInstance, inst.Name, c, now))
 		}
 	}
 
@@ -154,6 +170,52 @@ func formatTime(t metav1.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// age returns how long ago an RFC 3339 timestamp was, relative to now.
+//
+// It refuses an empty, unparseable, or future value rather than guessing one.
+// Everything downstream reads age as evidence about whether a state is stuck,
+// and a fabricated age is worse than none.
+func age(rfc3339 string, now time.Time) (time.Duration, bool) {
+	if rfc3339 == "" {
+		return 0, false
+	}
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return 0, false
+	}
+	d := now.Sub(t)
+	if d < 0 {
+		return 0, false
+	}
+	return d, true
+}
+
+// humanDuration renders a duration coarsest-unit-first, the way an operator
+// would say it. The consumer is a language model reading a tool result: "5d"
+// lands where a nanosecond count, or a pair of timestamps it has to subtract,
+// does not.
+func humanDuration(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return ""
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		if m := int(d.Minutes()) % 60; m > 0 {
+			return fmt.Sprintf("%dh%dm", int(d.Hours()), m)
+		}
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		days, hours := int(d.Hours())/24, int(d.Hours())%24
+		if hours > 0 {
+			return fmt.Sprintf("%dd%dh", days, hours)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
+}
+
 // failing returns the conditions that are not True. Every condition compute
 // sets is positive-polarity, so "not True" is the same as "blocking".
 func failing(conditions []metav1.Condition) []metav1.Condition {
@@ -166,7 +228,7 @@ func failing(conditions []metav1.Condition) []metav1.Condition {
 	return out
 }
 
-func toCause(level Level, object string, c metav1.Condition) Cause {
+func toCause(level Level, object string, c metav1.Condition, now time.Time) Cause {
 	cause := Cause{
 		Level:              level,
 		Object:             object,
@@ -175,6 +237,9 @@ func toCause(level Level, object string, c metav1.Condition) Cause {
 		Reason:             c.Reason,
 		Message:            c.Message,
 		LastTransitionTime: formatTime(c.LastTransitionTime),
+	}
+	if elapsed, ok := age(cause.LastTransitionTime, now); ok {
+		cause.InStateFor = humanDuration(elapsed)
 	}
 	if info, ok := ExplainReason(c.Reason); ok {
 		cause.Actionability = info.Actionability
@@ -249,10 +314,16 @@ func summarize(w *computev1alpha.Workload, available bool, root *Cause, blockedC
 	if available {
 		state = "partially available"
 	}
+	// The age belongs in the one-line summary: it is what separates work that
+	// is in flight from work that stopped moving days ago.
+	var held string
+	if root.InStateFor != "" {
+		held = fmt.Sprintf(", unchanged for %s", root.InStateFor)
+	}
 	return fmt.Sprintf(
-		"Workload %s is %s (%d/%d replicas ready). Root cause: %s on %s %s (%s). %s.",
+		"Workload %s is %s (%d/%d replicas ready). Root cause: %s on %s %s (%s)%s. %s.",
 		w.Name, state, w.Status.ReadyReplicas, w.Status.DesiredReplicas,
-		root.Reason, root.Level, root.Object, root.ConditionType, who)
+		root.Reason, root.Level, root.Object, root.ConditionType, held, who)
 }
 
 func nextSteps(root *Cause) []string {

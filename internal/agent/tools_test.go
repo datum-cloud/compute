@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -443,4 +444,59 @@ func keysOf(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// wedgedReader is the staging shape: one workload whose only instance has sat
+// in a provider-side transient state since 2026-08-31.
+func wedgedReader(since time.Time) *fakeReader {
+	w := workload("xcheck-iad", 0, 1,
+		condAt(computev1alpha.WorkloadAvailable, "False",
+			computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments.", since))
+	inst := instance("xcheck-iad-iad-0",
+		condAt(computev1alpha.InstanceProgrammed, "False",
+			computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+			"The infrastructure provider is programming the instance.", since))
+	return &fakeReader{
+		workloads: []computev1alpha.Workload{*w},
+		instances: map[string][]computev1alpha.Instance{"xcheck-iad": {inst}},
+	}
+}
+
+// TestWorkloadsListCarriesTheAgeOfTheRootCause is the fleet-view half of the
+// staging failure: the row itself has to say how old the state is, because the
+// fleet view is where the "is anything wrong?" question is actually answered.
+func TestWorkloadsListCarriesTheAgeOfTheRootCause(t *testing.T) {
+	deps := fixtureDeps(wedgedReader(time.Now().Add(-5 * 24 * time.Hour)))
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	if len(out.Workloads) != 1 {
+		t.Fatalf("got %d workloads, want 1", len(out.Workloads))
+	}
+
+	row := out.Workloads[0]
+	if row.RootCauseFor != "5d" {
+		t.Errorf("RootCauseFor = %q, want %q", row.RootCauseFor, "5d")
+	}
+	if _, err := time.Parse(time.RFC3339, row.RootCauseSince); err != nil {
+		t.Errorf("RootCauseSince = %q, want an RFC 3339 timestamp: %v", row.RootCauseSince, err)
+	}
+}
+
+// A healthy row carries no age, so the fleet view stays quiet about workloads
+// nobody asked about.
+func TestWorkloadsListOmitsAgeForHealthyWorkloads(t *testing.T) {
+	deps := fixtureDeps(fixtureReader())
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	for _, row := range out.Workloads {
+		if row.Workload == wlWebFrontend && (row.RootCauseSince != "" || row.RootCauseFor != "") {
+			t.Errorf("healthy row carries an age: since=%q for=%q", row.RootCauseSince, row.RootCauseFor)
+		}
+	}
 }

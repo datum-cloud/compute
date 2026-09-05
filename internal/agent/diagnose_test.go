@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -19,6 +20,14 @@ func cond(condType, status, reason, message string) metav1.Condition {
 		Reason:  reason,
 		Message: message,
 	}
+}
+
+// condAt is cond with the transition time pinned, for the tests that turn on
+// how long a condition has held its current state.
+func condAt(condType, status, reason, message string, at time.Time) metav1.Condition {
+	c := cond(condType, status, reason, message)
+	c.LastTransitionTime = metav1.NewTime(at)
+	return c
 }
 
 func workload(name string, ready, desired int32, conditions ...metav1.Condition) *computev1alpha.Workload {
@@ -260,5 +269,61 @@ func TestDiagnoseUncataloguedReason(t *testing.T) {
 	}
 	if !strings.Contains(d.RootCause.Explanation, "No catalog entry") {
 		t.Errorf("Explanation = %q, want it to admit the reason is uncatalogued", d.RootCause.Explanation)
+	}
+}
+
+// TestDiagnoseReportsHowLongTheCauseHasHeld covers the gap that made a wedged
+// workload indistinguishable from a healthy one: a condition's age has to reach
+// the answer, and it has to be legible without arithmetic.
+func TestDiagnoseReportsHowLongTheCauseHasHeld(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name           string
+		since          time.Duration
+		wantInStateFor string
+	}{
+		{"seconds", 30 * time.Second, "30s"},
+		{"minutes", 12 * time.Minute, "12m"},
+		{"hours", 3*time.Hour + 20*time.Minute, "3h20m"},
+		{"whole hours", 4 * time.Hour, "4h"},
+		{"days", 5 * 24 * time.Hour, "5d"},
+		{"days and hours", 5*24*time.Hour + 6*time.Hour, "5d6h"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := workload("xcheck-iad", 0, 1,
+				condAt(computev1alpha.WorkloadAvailable, "False",
+					computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+					"Programming in progress.", now.Add(-tc.since)))
+
+			d := DiagnoseAt(now, w, nil, nil)
+			if d.RootCause.InStateFor != tc.wantInStateFor {
+				t.Errorf("InStateFor = %q, want %q", d.RootCause.InStateFor, tc.wantInStateFor)
+			}
+			if d.RootCause.LastTransitionTime == "" {
+				t.Error("LastTransitionTime is empty; the absolute timestamp must survive too")
+			}
+			if !strings.Contains(d.Summary, tc.wantInStateFor) {
+				t.Errorf("Summary = %q, want it to carry the age %q", d.Summary, tc.wantInStateFor)
+			}
+		})
+	}
+}
+
+// TestDiagnoseWithoutTransitionTimeReportsNoAge: the API may leave
+// LastTransitionTime unset, and an invented age is worse than none.
+func TestDiagnoseWithoutTransitionTimeReportsNoAge(t *testing.T) {
+	w := workload("mystery", 0, 1,
+		cond(computev1alpha.WorkloadAvailable, "False",
+			computev1alpha.InstanceProgrammedReasonProgrammingInProgress, "Programming."))
+
+	d := DiagnoseAt(time.Now(), w, nil, nil)
+	if d.RootCause.InStateFor != "" {
+		t.Errorf("InStateFor = %q, want empty when the API set no transition time", d.RootCause.InStateFor)
+	}
+	if d.RootCause.LastTransitionTime != "" {
+		t.Errorf("LastTransitionTime = %q, want empty", d.RootCause.LastTransitionTime)
 	}
 }
