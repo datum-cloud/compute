@@ -53,10 +53,10 @@ Pointer reasons you must read *through*, never report as the answer:
 The `workload_diagnose` tool does this walk for you and returns the leaf cause.
 Prefer it over assembling the tree by hand.
 
-## Three kinds of cause
+## Kinds of cause
 
-Every reason falls into one of three buckets, and saying which one is usually
-the most useful thing you can tell someone:
+Every reason is classified, and saying which class it falls in is usually the
+most useful thing you can tell someone:
 
 user-actionable
   The workload spec or project configuration is wrong. The customer can fix it.
@@ -75,47 +75,73 @@ transient
   PendingProgramming, ProgrammingInProgress, Resolving, AwaitingPropagation,
   NetworkProvisioning, PendingEvaluation, Starting.
 
+stalled
+  Classified transient, but the condition has held that reason for longer than
+  it should take. Not a bucket the controllers write — the tools derive it from
+  `lastTransitionTime` on every read.
+
 Do not tell a customer to change their spec for a platform fault, and do not
 escalate a transient state.
 
-## Quota
+## Transient is a claim about duration — check it
 
-Quota is evaluated per instance against the project's allowance. The instance's
-`QuotaGranted` condition carries the outcome. The distinctions are easy to
-confuse and matter a lot:
+This is the rule that is easy to miss and expensive to get wrong. "Transient"
+says the work should finish soon; it does not say the work is finishing. A
+`ProgrammingInProgress` thirty seconds old and one five days old carry the same
+reason, and only the elapsed time tells them apart.
 
-  QuotaExceeded        Explicitly denied — the project asked for more than its
-                       allowance permits. Customer reduces usage or requests
-                       more.
-  QuotaNoBudget        The claim is pending because the project has no
-                       AllowanceBucket configured at all. Platform fault.
-  PendingEvaluation    Claim not created yet, or first evaluation in flight.
-                       Transient.
-  QuotaDisabled        Enforcement intentionally off in this environment. Not a
-                       failure.
+Every tool result that names a cause carries how long the state has held:
+`rootCauseFor` / `rootCauseSince` in the fleet view, `inStateFor` /
+`lastTransitionTime` on a diagnosis. Every transient reason carries the window
+it should clear inside (`expectedWithin` from `reason_explain`). Past that
+window the actionability comes back as `stalled`.
 
-## Referenced data
+`stalled` is not the same as a platform fault. No controller reported a cause;
+the classification has merely been contradicted by the clock. Report the
+duration and the expectation, say the cause is unreported, and escalate with the
+object — do not assert that it is Datum's. The `stalled-transient` skill has the
+procedure.
 
-ConfigMaps and Secrets referenced by a workload template are resolved by the
-management plane and delivered to the cell. `ReferencedDataReady` appears on
-both WorkloadDeployment (resolver view) and Instance (cell view).
-`SourceNotFound` and `SourceTooLarge` are the customer's to fix;
-`SourceUnauthorized` is Datum's.
+Read the duration before you tell anyone to wait.
 
-## Placement
+## Subsystems
 
-A WorkloadDeployment must know which location its cell serves. Every failure in
-this area — NoMatchingLocation, AmbiguousServingLocation, CityCodeMismatch — is
-a platform fault. The customer's placement request is not the problem; the
-cell's configuration is.
+Each of these has a skill carrying the full procedure; what follows is only
+enough to know which one to load.
+
+Quota
+  Evaluated per instance against the project's allowance; the outcome is on the
+  instance's `QuotaGranted` condition. The reasons look alike and lead to
+  opposite advice — denied, unbudgeted, pending, backend down, enforcement off.
+  Load `quota-triage` before answering any of them.
+
+Referenced data
+  ConfigMaps and Secrets named by a workload template are read by the management
+  plane and delivered to the cell, so `ReferencedDataReady` appears twice: on the
+  WorkloadDeployment (could it read the source?) and on the Instance (did the
+  data arrive?). Load `referenced-data-triage`.
+
+Placement
+  A WorkloadDeployment must know which location its cell serves. Load
+  `placement-triage` — and note before you answer that every failure in this
+  area is the cell's configuration, not the customer's placement request.
+
+Instance runtime
+  Image pulls, crash loops, and rejected configurations are reported by the
+  provider, not by compute. Load `instance-not-ready`.
 
 ## What the tools give you
 
-  workloads_list      fleet view, worst first, with root-cause reason
+  workloads_list      fleet view, worst first, with root-cause reason,
+                      actionability, and how long that cause has held
   workloads_get       raw condition tree for one workload
   instances_list      per-instance conditions, to see failure distribution
-  workload_diagnose   the walk, the leaf cause, and next steps
-  reason_explain      any reason, explained and classified
+  workload_diagnose   the walk, the leaf cause with its age, and next steps
+  reason_explain      any reason, explained, classified, and — when transient —
+                      the window it should clear inside
 
-Skills (load on demand) cover the full procedures: workload-not-available,
-quota-triage, instance-not-ready, referenced-data-triage, placement-triage.
+Skills (load on demand) carry the procedures: workload-not-available,
+quota-triage, instance-not-ready, referenced-data-triage, placement-triage,
+stalled-transient. This document is orientation; it deliberately does not
+restate what a skill covers, so reach for the skill rather than answering a
+triage question from what is in the prompt.

@@ -76,7 +76,11 @@ around walking through them.
 
 Skills use progressive disclosure: only a name and one-line description enter
 the system prompt, and the body is fetched when a request matches. That lets
-compute publish many procedures at near-zero prompt cost.
+compute publish many procedures at near-zero prompt cost — but only if the
+knowledge document does not already carry the procedure. It did, for quota,
+referenced data and placement, and a live test showed the model answering a
+full runbook question with no skill load at all. `llms-full.txt` is now
+orientation and classification; the procedures live here and nowhere else.
 
 | Skill | Covers |
 |---|---|
