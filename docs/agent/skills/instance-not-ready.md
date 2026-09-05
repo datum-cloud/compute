@@ -1,7 +1,20 @@
 # Skill: instance not ready
 
 Use when instances exist but are not becoming Ready — `ImageUnavailable`,
-`InstanceCrashing`, `ConfigurationError`, or a stuck `Provisioning`.
+`InstanceCrashing`, `ConfigurationError`, or a stuck `Provisioning` — and
+whenever a stalled instance carries `pattern: NoTerminalStateReported`.
+
+## A crash may never reach the reason
+
+These four reasons are only visible if the provider propagates them. It does not
+always. In the 2026-08-27 staging case the pods on the cell had exited with code
+1 and were restarting, while the project control plane still read
+`Programmed: Unknown` / `ProgrammingInProgress`, "Instance is provisioning".
+
+So `InstanceCrashing` being absent is not evidence that the container is fine.
+An old instance that has never become Ready and reports nothing terminal is a
+crash-loop candidate, and step 3 is the cheapest way to settle it — the logs
+are on the cell either way.
 
 ## Procedure
 
@@ -43,3 +56,9 @@ Use when instances exist but are not becoming Ready — `ImageUnavailable`,
 For `ImageUnavailable` and `ConfigurationError`, name the exact field to change.
 For `InstanceCrashing`, do not guess the bug — direct them to the logs and quote
 the exit code and restart count.
+
+When you got here from a stalled instance rather than a reported reason, say
+which of the two you are answering: the logs showed a crash (user-actionable,
+and the provider also failed to report it), or they did not (escalate, with the
+crash loop ruled out). Do not report "not a spec problem" without having
+looked.

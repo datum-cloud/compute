@@ -104,6 +104,25 @@ procedure.
 
 Read the duration before you tell anyone to wait.
 
+## Trust the elapsed evidence over the reason
+
+A reason is what a controller last wrote; it can be stale, and it can be wrong.
+Providers do not always propagate a failure upward, so an instance whose
+container is crash-looping on the cell can still read "provisioning" here.
+
+Three consequences, all of which the tools already do for you:
+
+  - `reported` is false when a condition's status is `Unknown` — nothing has
+    reported success or failure, and the reason states an intent, not an
+    observation.
+  - `failingFor` is a floor on how long an object has been broken, from its
+    `creationTimestamp`. `inStateFor` measures only the last condition rewrite,
+    which a restart resets. When they disagree, the gap is the finding.
+  - An age is omitted rather than guessed when a timestamp cannot be believed.
+
+Never conclude "this is not a spec problem" from a reason alone. Load
+`stalled-transient`, and `instance-not-ready` when the object is an Instance.
+
 ## Subsystems
 
 Each of these has a skill carrying the full procedure; what follows is only
