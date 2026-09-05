@@ -10,6 +10,8 @@
 package agent
 
 import (
+	"time"
+
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
@@ -28,6 +30,22 @@ const (
 	// ActionabilityTransient means the resource is in a normal in-flight state
 	// and the right advice is to wait.
 	ActionabilityTransient Actionability = "transient"
+
+	// ActionabilityStalled means the reason is classified transient but the
+	// condition has held it for longer than that reason's expected window.
+	// Treat it as suspect and escalate.
+	//
+	// This is deliberately not ActionabilityPlatform. Platform means the
+	// controllers reported a cause that is Datum's; stalled means nothing
+	// reported a cause at all and the classification has merely been falsified
+	// by elapsed time. The fault may still turn out to be the customer's
+	// image, a provider that never picked the job up, or a controller that is
+	// not running. Say the state has outlived its expectation and hand over
+	// the object and the duration; do not assert a platform fault.
+	//
+	// It is never written in the catalog. It is derived at read time from a
+	// condition's LastTransitionTime, so it cannot go stale in storage.
+	ActionabilityStalled Actionability = "stalled"
 )
 
 // ReasonInfo explains one condition reason.
@@ -44,7 +62,53 @@ type ReasonInfo struct {
 	Remediation string `json:"remediation,omitempty"`
 	// Skill names the runbook covering this class of failure, if any.
 	Skill string `json:"skill,omitempty"`
+	// ExpectedDuration bounds how long a transient reason should plausibly
+	// last. Past it, callers report ActionabilityStalled instead. Zero means
+	// the reason has no window: it is not transient, or it is a resting state
+	// that can legitimately persist forever (Available, QuotaDisabled).
+	//
+	// Omitted from JSON because time.Duration marshals as a nanosecond count,
+	// which is noise in a tool result; ExpectedWithin carries it instead.
+	ExpectedDuration time.Duration `json:"-"`
+	// ExpectedWithin renders ExpectedDuration for a reader ("30m").
+	ExpectedWithin string `json:"expectedWithin,omitempty"`
 }
+
+// Expected windows for the transient reasons.
+//
+// A transient classification is a claim about duration, so every reason that
+// says "wait" also says how long is reasonable, and the claim becomes
+// falsifiable. The tiers come from what the reasons mean rather than one global
+// constant: a control-plane read is bounded by a reconcile loop, provider work
+// by real infrastructure, and an aggregate reason has to outlast the children
+// it is waiting on or it would be reported stalled while the instance beneath
+// it was still legitimately in flight.
+//
+// They are generous on purpose. A window that is too short turns healthy work
+// into a false alarm, which costs more trust than a stall noticed an hour late.
+const (
+	// windowControlPlaneRead: a controller reads or evaluates against another
+	// control plane. No infrastructure provider is involved.
+	windowControlPlaneRead = 5 * time.Minute
+
+	// windowHandoff: one controller must observe another's work and act — a
+	// gate clearing, a claim being picked up, resolved data reaching a cell, an
+	// instance finishing a start or stop.
+	windowHandoff = 10 * time.Minute
+
+	// windowNetworkProvisioning: a provider allocates a subnet and binds it.
+	// Real infrastructure, but far less of it than an instance.
+	windowNetworkProvisioning = 15 * time.Minute
+
+	// windowInstanceProvisioning: a provider creates the machine, attaches
+	// disks and pulls an image. The slowest single step, and a large image pull
+	// legitimately takes tens of minutes.
+	windowInstanceProvisioning = 30 * time.Minute
+
+	// windowFleetRollout: waiting on every instance underneath, so it must
+	// exceed the longest instance window.
+	windowFleetRollout = 45 * time.Minute
+)
 
 // Remediation strings shared by several reasons.
 const (
@@ -64,6 +128,7 @@ const (
 	SkillInstanceNotReady     = "instance-not-ready"
 	SkillReferencedData       = "referenced-data-triage"
 	SkillPlacementTriage      = "placement-triage"
+	SkillStalledTransient     = "stalled-transient"
 )
 
 // catalog is the full reason vocabulary. Entries key off the constants in
@@ -135,6 +200,10 @@ var catalog = []ReasonInfo{
 		Explanation:    "The quota claim has not been created yet, or its first evaluation is still in flight.",
 		Remediation:    "Wait. If it persists for more than a few minutes, treat it as a quota-backend problem.",
 		Skill:          SkillQuotaTriage,
+		// The quota reasons keep quota-triage rather than the stall runbook:
+		// its procedure already ends at "sustained PendingEvaluation is a stuck
+		// quota backend", which is the more specific answer.
+		ExpectedDuration: windowControlPlaneRead,
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable,
@@ -200,8 +269,9 @@ var catalog = []ReasonInfo{
 		Actionability:  ActionabilityTransient,
 		Explanation: "Programming is deliberately held back until quota is granted. The real cause is " +
 			"on the instance's QuotaGranted condition — read that one.",
-		Remediation: "Diagnose the QuotaGranted condition; this reason only points at it.",
-		Skill:       SkillQuotaTriage,
+		Remediation:      "Diagnose the QuotaGranted condition; this reason only points at it.",
+		Skill:            SkillQuotaTriage,
+		ExpectedDuration: windowHandoff,
 	},
 
 	// ---------------------------------------------------- instance runtime
@@ -236,46 +306,58 @@ var catalog = []ReasonInfo{
 		Skill:       SkillInstanceNotReady,
 	},
 	{
-		Reason:         computev1alpha.InstanceReadyReasonProvisioning,
-		ConditionTypes: []string{computev1alpha.InstanceReady},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The runtime is still setting up the execution environment — creating the container, unpacking the image.",
-		Remediation:    "Wait; this is normal and non-actionable.",
+		Reason:           computev1alpha.InstanceReadyReasonProvisioning,
+		ConditionTypes:   []string{computev1alpha.InstanceReady},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The runtime is still setting up the execution environment — creating the container, unpacking the image.",
+		Remediation:      "Wait; this is normal and non-actionable.",
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowInstanceProvisioning,
 	},
 	{
-		Reason:         computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
-		ConditionTypes: []string{computev1alpha.InstanceReady},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "Scheduling gates are still attached to the instance, so it is intentionally held before scheduling.",
-		Remediation:    "Wait for the gates to clear; if they never do, the gating controller is stuck — escalate.",
+		Reason:           computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
+		ConditionTypes:   []string{computev1alpha.InstanceReady},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "Scheduling gates are still attached to the instance, so it is intentionally held before scheduling.",
+		Remediation:      "Wait for the gates to clear; if they never do, the gating controller is stuck — escalate.",
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowHandoff,
 	},
 	{
-		Reason:         computev1alpha.InstanceProgrammedReasonPendingProgramming,
-		ConditionTypes: []string{computev1alpha.InstanceProgrammed},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The infrastructure provider has not started programming the instance yet.",
-		Remediation:    "Wait. If it persists, the provider controller may not be running.",
+		Reason:           computev1alpha.InstanceProgrammedReasonPendingProgramming,
+		ConditionTypes:   []string{computev1alpha.InstanceProgrammed},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The infrastructure provider has not started programming the instance yet.",
+		Remediation:      "Wait. If it persists, the provider controller may not be running.",
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowHandoff,
 	},
 	{
-		Reason:         computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
-		ConditionTypes: []string{computev1alpha.InstanceProgrammed},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The infrastructure provider is actively programming the instance.",
-		Remediation:    remediationWait,
+		Reason:           computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+		ConditionTypes:   []string{computev1alpha.InstanceProgrammed},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The infrastructure provider is actively programming the instance.",
+		Remediation:      remediationWait,
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowInstanceProvisioning,
 	},
 	{
-		Reason:         computev1alpha.InstanceAvailableReasonStarting,
-		ConditionTypes: []string{computev1alpha.InstanceAvailable},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The instance is starting up.",
-		Remediation:    remediationWait,
+		Reason:           computev1alpha.InstanceAvailableReasonStarting,
+		ConditionTypes:   []string{computev1alpha.InstanceAvailable},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The instance is starting up.",
+		Remediation:      remediationWait,
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowHandoff,
 	},
 	{
-		Reason:         computev1alpha.InstanceAvailableReasonStopping,
-		ConditionTypes: []string{computev1alpha.InstanceAvailable},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The instance is shutting down.",
-		Remediation:    remediationWait,
+		Reason:           computev1alpha.InstanceAvailableReasonStopping,
+		ConditionTypes:   []string{computev1alpha.InstanceAvailable},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The instance is shutting down.",
+		Remediation:      remediationWait,
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowHandoff,
 	},
 	{
 		Reason:         computev1alpha.InstanceAvailableReasonStopped,
@@ -323,18 +405,22 @@ var catalog = []ReasonInfo{
 		Skill:          SkillReferencedData,
 	},
 	{
-		Reason:         computev1alpha.ReferencedDataReasonResolving,
-		ConditionTypes: []string{computev1alpha.ReferencedDataReady},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The resolver is reading the source ConfigMaps/Secrets from the project control plane.",
-		Remediation:    remediationWait,
+		Reason:           computev1alpha.ReferencedDataReasonResolving,
+		ConditionTypes:   []string{computev1alpha.ReferencedDataReady},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The resolver is reading the source ConfigMaps/Secrets from the project control plane.",
+		Remediation:      remediationWait,
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowControlPlaneRead,
 	},
 	{
-		Reason:         computev1alpha.ReferencedDataReasonAwaitingPropagation,
-		ConditionTypes: []string{computev1alpha.ReferencedDataReady},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The resolved data has not yet fully arrived on the cell.",
-		Remediation:    remediationWait,
+		Reason:           computev1alpha.ReferencedDataReasonAwaitingPropagation,
+		ConditionTypes:   []string{computev1alpha.ReferencedDataReady},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The resolved data has not yet fully arrived on the cell.",
+		Remediation:      remediationWait,
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowHandoff,
 	},
 
 	// ------------------------------------------- placement / deployment
@@ -364,18 +450,22 @@ var catalog = []ReasonInfo{
 		Skill:          SkillPlacementTriage,
 	},
 	{
-		Reason:         computev1alpha.WorkloadDeploymentReasonNetworkProvisioning,
-		ConditionTypes: []string{computev1alpha.WorkloadDeploymentAvailable},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "The network binding or subnet is still being provisioned.",
-		Remediation:    remediationWait,
+		Reason:           computev1alpha.WorkloadDeploymentReasonNetworkProvisioning,
+		ConditionTypes:   []string{computev1alpha.WorkloadDeploymentAvailable},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "The network binding or subnet is still being provisioned.",
+		Remediation:      remediationWait,
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowNetworkProvisioning,
 	},
 	{
-		Reason:         computev1alpha.WorkloadDeploymentReasonInstancesProvisioning,
-		ConditionTypes: []string{computev1alpha.WorkloadDeploymentAvailable},
-		Actionability:  ActionabilityTransient,
-		Explanation:    "Instances exist but none are ready yet.",
-		Remediation:    "Wait, then diagnose the individual instances if it does not settle.",
+		Reason:           computev1alpha.WorkloadDeploymentReasonInstancesProvisioning,
+		ConditionTypes:   []string{computev1alpha.WorkloadDeploymentAvailable},
+		Actionability:    ActionabilityTransient,
+		Explanation:      "Instances exist but none are ready yet.",
+		Remediation:      "Wait, then diagnose the individual instances if it does not settle.",
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowFleetRollout,
 	},
 	{
 		Reason: computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady,
@@ -428,13 +518,38 @@ var catalog = []ReasonInfo{
 	},
 }
 
+// byReason indexes the catalog and, in the same pass, renders each entry's
+// window once so the duration is written in exactly one place — the table —
+// and every reader sees the same string.
 var byReason = func() map[string]ReasonInfo {
 	m := make(map[string]ReasonInfo, len(catalog))
-	for _, r := range catalog {
-		m[r.Reason] = r
+	for i := range catalog {
+		catalog[i].ExpectedWithin = humanDuration(catalog[i].ExpectedDuration)
+		m[catalog[i].Reason] = catalog[i]
 	}
 	return m
 }()
+
+// ActionabilityAt reports how a reason should be treated given how long its
+// condition has held, escalating a transient reason to ActionabilityStalled
+// once it has outlived the window the catalog claims for it.
+//
+// lastTransition is the condition's LastTransitionTime in RFC 3339, and the
+// comparison is made against now on every read — nothing about a stall is
+// persisted or inferred from anything but elapsed time.
+//
+// A missing or unparseable timestamp returns the static classification: absence
+// of evidence that a state is old is not evidence that it has stalled.
+func ActionabilityAt(info ReasonInfo, lastTransition string, now time.Time) Actionability {
+	if info.Actionability != ActionabilityTransient || info.ExpectedDuration <= 0 {
+		return info.Actionability
+	}
+	elapsed, ok := age(lastTransition, now)
+	if !ok || elapsed <= info.ExpectedDuration {
+		return info.Actionability
+	}
+	return ActionabilityStalled
+}
 
 // ExplainReason returns the catalog entry for a condition reason.
 func ExplainReason(reason string) (ReasonInfo, bool) {

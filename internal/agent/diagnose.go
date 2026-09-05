@@ -242,10 +242,19 @@ func toCause(level Level, object string, c metav1.Condition, now time.Time) Caus
 		cause.InStateFor = humanDuration(elapsed)
 	}
 	if info, ok := ExplainReason(c.Reason); ok {
-		cause.Actionability = info.Actionability
+		cause.Actionability = ActionabilityAt(info, cause.LastTransitionTime, now)
 		cause.Explanation = info.Explanation
 		cause.Remediation = info.Remediation
 		cause.Skill = info.Skill
+		if cause.Actionability == ActionabilityStalled {
+			// The catalogued remediation for these reasons is "wait", which is
+			// now the wrong advice: it is what produced the five-day wait this
+			// escalation exists to end.
+			cause.Remediation = fmt.Sprintf(
+				"Stop waiting. %s normally clears within %s and this one has held for %s. "+
+					"Escalate to Datum with the object name, the reason, and that duration.",
+				c.Reason, info.ExpectedWithin, cause.InStateFor)
+		}
 	} else {
 		// An uncatalogued reason is still worth reporting — the condition
 		// message is the best available cause — but say the classification is
@@ -306,6 +315,9 @@ func summarize(w *computev1alpha.Workload, available bool, root *Cause, blockedC
 		who = "This is a platform fault — escalate to Datum"
 	case ActionabilityTransient:
 		who = "This is a transient state"
+	case ActionabilityStalled:
+		who = "This reason is classified transient but has outlived the time it should " +
+			"take — treat it as stuck, not in flight, and escalate to Datum"
 	default:
 		who = "The owner of this cause is unclassified"
 	}
@@ -337,6 +349,12 @@ func nextSteps(root *Cause) []string {
 	if root.Actionability == ActionabilityPlatform {
 		steps = append(steps,
 			"Do not change the workload spec — this cause is not fixable from the customer side.")
+	}
+	if root.Actionability == ActionabilityStalled {
+		steps = append(steps,
+			"Do not report this as normal in-flight work: the reason claims transient, "+
+				"but the elapsed time contradicts the claim. The cause has not been "+
+				"reported by any controller, so gather evidence rather than asserting a fault.")
 	}
 	if root.Skill != "" {
 		steps = append(steps, fmt.Sprintf("Load the %q skill for the full procedure.", root.Skill))

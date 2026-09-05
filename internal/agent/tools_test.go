@@ -500,3 +500,76 @@ func TestWorkloadsListOmitsAgeForHealthyWorkloads(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkloadsListFlagsTheStagingStall reproduces the failure that motivated
+// all of this, end to end through the tool the assistant actually calls first.
+//
+// On 2026-09-05 the fleet view reported xcheck-iad as ProgrammingInProgress /
+// transient, and the assistant answered "normal in-flight state, wait a few
+// minutes". The condition had last transitioned on 2026-08-31. Five days of
+// "in flight" must not read as healthy.
+func TestWorkloadsListFlagsTheStagingStall(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	since := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	deps := fixtureDeps(wedgedReader(since))
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	row := out.Workloads[0]
+	if row.RootCauseReason != computev1alpha.InstanceProgrammedReasonProgrammingInProgress {
+		t.Fatalf("RootCauseReason = %q, want ProgrammingInProgress", row.RootCauseReason)
+	}
+	if row.Actionability != ActionabilityStalled {
+		t.Errorf("Actionability = %q, want %q — a five-day ProgrammingInProgress is not in-flight work",
+			row.Actionability, ActionabilityStalled)
+	}
+	if row.RootCauseSince != since.Format(time.RFC3339) {
+		t.Errorf("RootCauseSince = %q, want %q", row.RootCauseSince, since.Format(time.RFC3339))
+	}
+
+	// The same workload through the deep path, with the clock pinned so the
+	// advice can be asserted exactly.
+	w, err := wedgedReader(since).GetWorkload(context.Background(), testNamespace, "xcheck-iad")
+	if err != nil {
+		t.Fatalf("GetWorkload: %v", err)
+	}
+	d := DiagnoseAt(now, w, nil, wedgedReader(since).instances["xcheck-iad"])
+	if d.RootCause.Actionability != ActionabilityStalled {
+		t.Fatalf("RootCause.Actionability = %q, want stalled", d.RootCause.Actionability)
+	}
+	if d.RootCause.InStateFor != "5d" {
+		t.Errorf("InStateFor = %q, want %q", d.RootCause.InStateFor, "5d")
+	}
+	if d.RootCause.Skill != SkillStalledTransient {
+		t.Errorf("Skill = %q, want %q", d.RootCause.Skill, SkillStalledTransient)
+	}
+	// "Wait." was the catalogued advice and the wrong answer; it must not
+	// survive the escalation.
+	if strings.Contains(d.RootCause.Remediation, "Wait.") {
+		t.Errorf("Remediation still says to wait: %q", d.RootCause.Remediation)
+	}
+	if !strings.Contains(d.RootCause.Remediation, "5d") {
+		t.Errorf("Remediation = %q, want it to quote how long the state has held", d.RootCause.Remediation)
+	}
+	if !strings.Contains(d.Summary, "stuck") {
+		t.Errorf("Summary = %q, want it to say the state is stuck rather than in flight", d.Summary)
+	}
+}
+
+// TestWorkloadsListLeavesFreshTransientStateAlone is the other half: the same
+// workload minutes old must still read as in-flight, or the escalation is just
+// a new way to be wrong.
+func TestWorkloadsListLeavesFreshTransientStateAlone(t *testing.T) {
+	deps := fixtureDeps(wedgedReader(time.Now().Add(-2 * time.Minute)))
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	if got := out.Workloads[0].Actionability; got != ActionabilityTransient {
+		t.Errorf("Actionability = %q, want %q for a two-minute-old ProgrammingInProgress",
+			got, ActionabilityTransient)
+	}
+}

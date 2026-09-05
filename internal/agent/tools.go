@@ -202,8 +202,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 		Description: "Diagnose why a Workload is not available. Walks Workload -> WorkloadDeployment -> " +
 			"Instance, follows compute's pointer reasons (QuotaNotGranted, NoAvailablePlacements, " +
 			"ReferencedDataNotReady) down to the condition that names the real cause, and returns that " +
-			"root cause with an explanation, whether it is user-actionable or a platform fault, concrete " +
-			"next steps, and which skill covers the full procedure. This is the tool to reach for when " +
+			"root cause with an explanation, how long it has held that state, whether it is " +
+			"user-actionable, a platform fault, transient, or stalled (transient for longer than that " +
+			"reason should take), concrete next steps, and which skill covers the full procedure. This is the tool to reach for when " +
 			"someone asks why a workload is broken. Read-only.",
 	}, workloadDiagnose(deps))
 
@@ -212,7 +213,8 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 		Title: "Explain a condition reason",
 		Description: "Explain any compute condition reason (e.g. \"QuotaExceeded\", \"ImageUnavailable\", " +
 			"\"CityCodeMismatch\"): what it means, which condition types carry it, whether it is " +
-			"user-actionable, a platform fault, or transient, and how to remediate it. Call with no " +
+			"user-actionable, a platform fault, or transient, how long a transient one should take " +
+			"(expectedWithin), and how to remediate it. Call with no " +
 			"argument to list the whole catalog. Use when you encounter a reason on a resource the " +
 			"diagnose tool did not cover. Read-only.",
 	}, reasonExplain(deps))
