@@ -327,3 +327,280 @@ func TestDiagnoseWithoutTransitionTimeReportsNoAge(t *testing.T) {
 		t.Errorf("LastTransitionTime = %q, want empty", d.RootCause.LastTransitionTime)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The staging Instances of 2026-08-27/28. Every layer above them was healthy,
+// the pod on the cell was crash-looping, and the provider never propagated that
+// upward: the project control plane still read Programmed=Unknown /
+// ProgrammingInProgress, with condition timestamps that were either the Unix
+// epoch or hours old on an object nine days old.
+
+// stagingNow is the instant the three stuck workloads were traced to the pod.
+var stagingNow = time.Date(2026, 9, 5, 12, 46, 24, 0, time.UTC)
+
+// epochCond is a condition carrying the sentinel real Instances arrive with.
+// It is not metav1.Time's zero value — Go's zero time is year 1 — so IsZero()
+// does not catch it.
+func epochCond(condType, status, reason, message string) metav1.Condition {
+	c := cond(condType, status, reason, message)
+	c.LastTransitionTime = metav1.NewTime(time.Unix(0, 0).UTC())
+	return c
+}
+
+func instanceCreated(name string, created time.Time, conditions ...metav1.Condition) computev1alpha.Instance {
+	i := instance(name, conditions...)
+	i.CreationTimestamp = metav1.NewTime(created)
+	return i
+}
+
+// workloadCreated is a single-replica Workload with its creationTimestamp set.
+// The staging workloads were all one replica, none of it ready.
+func workloadCreated(name string, created time.Time, conditions ...metav1.Condition) *computev1alpha.Workload {
+	w := workload(name, 0, 1, conditions...)
+	w.CreationTimestamp = metav1.NewTime(created)
+	return w
+}
+
+// TestDiagnoseDiscardsImplausibleTimestamps covers defect 1. demo2loc-dfw-dfw-1
+// carried lastTransitionTime "1970-01-01T00:00:00Z" on Programmed, Available
+// and Ready. metav1.Time.IsZero() let it through, and the epoch renders as
+// 496846h — twenty thousand days — which alone was enough to call the condition
+// stalled. An implausible timestamp is no signal, not a huge one.
+func TestDiagnoseDiscardsImplausibleTimestamps(t *testing.T) {
+	created := stagingNow.Add(-9 * 24 * time.Hour)
+
+	tests := []struct {
+		name     string
+		instance computev1alpha.Instance
+	}{
+		{
+			name: "the epoch sentinel, on an object with no creationTimestamp",
+			instance: instance("demo2loc-dfw-dfw-1",
+				epochCond(computev1alpha.InstanceProgrammed, "Unknown",
+					computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+					"Instance is provisioning")),
+		},
+		{
+			name: "the epoch sentinel, on the real nine-day-old object",
+			instance: instanceCreated("demo2loc-dfw-dfw-1", created,
+				epochCond(computev1alpha.InstanceProgrammed, "Unknown",
+					computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+					"Instance is provisioning")),
+		},
+		{
+			name: "a timestamp predating the object that carries it",
+			instance: instanceCreated("demo2loc-dfw-dfw-1", created,
+				condAt(computev1alpha.InstanceProgrammed, "Unknown",
+					computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+					"Instance is provisioning", created.Add(-time.Hour))),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := workloadCreated("demo2loc", created,
+				cond(computev1alpha.WorkloadAvailable, "False",
+					computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments."))
+
+			d := DiagnoseAt(stagingNow, w, nil, []computev1alpha.Instance{tc.instance})
+			root := d.RootCause
+
+			if root.LastTransitionTime != "" {
+				t.Errorf("LastTransitionTime = %q, want empty: the value cannot be believed",
+					root.LastTransitionTime)
+			}
+			if root.InStateFor != "" {
+				t.Errorf("InStateFor = %q, want empty rather than an age derived from a sentinel",
+					root.InStateFor)
+			}
+			if root.Actionability == ActionabilityStalled {
+				t.Error("Actionability = stalled, derived from a timestamp that is not a fact")
+			}
+			// The whole diagnosis is what the assistant reads, so no age
+			// derived from the sentinel may leak into any of it. The sentinel
+			// itself is quoted once, deliberately, as evidence.
+			for _, text := range append([]string{d.Summary, root.Explanation, root.Remediation}, d.NextSteps...) {
+				for _, absurd := range []string{"20701", "496846"} {
+					if strings.Contains(text, absurd) {
+						t.Errorf("output contains %q, an age derived from the epoch sentinel: %q",
+							absurd, text)
+					}
+				}
+			}
+			if !strings.Contains(root.Explanation, "sentinel") {
+				t.Errorf("Explanation = %q, want it to say the timestamp was discarded and why",
+					root.Explanation)
+			}
+		})
+	}
+}
+
+// TestActionabilityAtIgnoresTheEpochSentinel is the same defect at the boundary
+// the escalation is actually decided at.
+func TestActionabilityAtIgnoresTheEpochSentinel(t *testing.T) {
+	programming, ok := ExplainReason(computev1alpha.InstanceProgrammedReasonProgrammingInProgress)
+	if !ok {
+		t.Fatal("ProgrammingInProgress should be catalogued")
+	}
+	if got := ActionabilityAt(programming, "1970-01-01T00:00:00Z", stagingNow); got != ActionabilityTransient {
+		t.Errorf("ActionabilityAt(epoch) = %q, want %q — 20701 days is a sentinel, not a stall",
+			got, ActionabilityTransient)
+	}
+}
+
+// TestDiagnoseUsesCreationTimestampAsFailureFloor covers defect 2. rootCauseFor
+// reported 9h30m for workloads that had been failing since 2026-08-27, because
+// every crash rewrites lastTransitionTime and resets the clock. The object's own
+// creationTimestamp cannot be reset that way.
+func TestDiagnoseUsesCreationTimestampAsFailureFloor(t *testing.T) {
+	created := stagingNow.Add(-9 * 24 * time.Hour)
+	rewritten := stagingNow.Add(-9*time.Hour - 30*time.Minute)
+
+	w := workloadCreated("xcheck", created,
+		cond(computev1alpha.WorkloadAvailable, "False",
+			computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments."))
+	insts := []computev1alpha.Instance{
+		instanceCreated("xcheck-dfw-dfw-0", created,
+			condAt(computev1alpha.InstanceProgrammed, "Unknown",
+				computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+				"Instance is provisioning", rewritten)),
+	}
+
+	d := DiagnoseAt(stagingNow, w, nil, insts)
+	root := d.RootCause
+
+	if root.InStateFor != "9h30m" {
+		t.Errorf("InStateFor = %q, want %q — the condition clock is still reported as it is",
+			root.InStateFor, "9h30m")
+	}
+	if root.ObjectAge != "9d" {
+		t.Errorf("ObjectAge = %q, want %q", root.ObjectAge, "9d")
+	}
+	if root.FailingFor != "9d" {
+		t.Errorf("FailingFor = %q, want %q — the object has been broken nine days, whatever the "+
+			"condition says", root.FailingFor, "9d")
+	}
+	// The gap is the diagnostic signal, so both numbers have to reach the
+	// summary; reporting only the smaller one is the defect.
+	if !strings.Contains(d.Summary, "9h30m") || !strings.Contains(d.Summary, "9d") {
+		t.Errorf("Summary = %q, want it to carry both 9h30m and 9d", d.Summary)
+	}
+}
+
+// A ready object is not "failing", however old it is: the floor is a floor on
+// an outage, not on the object's existence.
+func TestDiagnoseDoesNotClaimAReadyObjectIsFailing(t *testing.T) {
+	created := stagingNow.Add(-9 * 24 * time.Hour)
+	w := workload("served", 1, 1,
+		cond(computev1alpha.WorkloadAvailable, "True",
+			computev1alpha.WorkloadDeploymentReasonStableInstanceFound, "Serving."))
+	w.CreationTimestamp = metav1.NewTime(created)
+	insts := []computev1alpha.Instance{
+		instanceCreated("served-dfw-0", created,
+			cond(computev1alpha.InstanceReady, "True", computev1alpha.InstanceReadyReasonAvailable, "Serving."),
+			condAt(computev1alpha.InstanceQuotaGranted, "False",
+				computev1alpha.InstanceQuotaGrantedReasonPendingEvaluation, "Evaluating.",
+				stagingNow.Add(-time.Minute))),
+	}
+
+	d := DiagnoseAt(stagingNow, w, nil, insts)
+	if d.RootCause.FailingFor != "" {
+		t.Errorf("FailingFor = %q, want empty: the instance is Ready", d.RootCause.FailingFor)
+	}
+}
+
+// TestDiagnoseSeparatesUnreportedFromReportedFailure covers defect 3.
+// Programmed=Unknown means no controller has reported success or failure. That
+// is not "provisioning", and it is not evidence that the spec is sound — the
+// pod behind these Instances was crash-looping the whole time, which is
+// InstanceCrashing, a user-actionable class.
+func TestDiagnoseSeparatesUnreportedFromReportedFailure(t *testing.T) {
+	created := stagingNow.Add(-9 * 24 * time.Hour)
+	rewritten := stagingNow.Add(-9*time.Hour - 30*time.Minute)
+
+	diagnose := func(status string) Diagnosis {
+		w := workloadCreated("joseszycho-billing-test", created,
+			cond(computev1alpha.WorkloadAvailable, "False",
+				computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments."))
+		insts := []computev1alpha.Instance{
+			instanceCreated("joseszycho-billing-test-dfw-dfw-0", created,
+				condAt(computev1alpha.InstanceProgrammed, status,
+					computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+					"Instance is provisioning", rewritten)),
+		}
+		return DiagnoseAt(stagingNow, w, nil, insts)
+	}
+
+	t.Run("Unknown is nothing reported", func(t *testing.T) {
+		d := diagnose("Unknown")
+		root := d.RootCause
+
+		if root.Reported {
+			t.Error("Reported = true for a condition status of Unknown")
+		}
+		if root.Pattern != PatternNoTerminalStateReported {
+			t.Errorf("Pattern = %q, want %q", root.Pattern, PatternNoTerminalStateReported)
+		}
+		if !strings.Contains(root.Explanation, "Observed:") || !strings.Contains(root.Explanation, "Inferred:") {
+			t.Errorf("Explanation = %q, want it to separate observation from inference", root.Explanation)
+		}
+		// The assistant told the customer "this isn't a spec problem, escalate
+		// to Datum" while the container was crash-looping. Naming the
+		// user-actionable possibility is the point of the whole change.
+		if !strings.Contains(root.Remediation, "InstanceCrashing") {
+			t.Errorf("Remediation = %q, want it to name InstanceCrashing as a live possibility",
+				root.Remediation)
+		}
+		var routed bool
+		for _, s := range d.NextSteps {
+			if strings.Contains(s, SkillInstanceNotReady) {
+				routed = true
+			}
+		}
+		if !routed {
+			t.Errorf("NextSteps = %q, want the instance-not-ready runbook offered alongside escalation",
+				d.NextSteps)
+		}
+		if strings.Contains(root.Remediation, "Wait.") {
+			t.Errorf("Remediation still tells the reader to wait: %q", root.Remediation)
+		}
+	})
+
+	t.Run("False is a reported failure", func(t *testing.T) {
+		root := diagnose("False").RootCause
+
+		if !root.Reported {
+			t.Error("Reported = false for a condition status of False")
+		}
+		if root.Pattern != "" {
+			t.Errorf("Pattern = %q, want empty: a controller did report this status", root.Pattern)
+		}
+		if strings.Contains(root.Explanation, "no controller has reported") {
+			t.Errorf("Explanation = %q, want it not to claim nothing was reported", root.Explanation)
+		}
+	})
+}
+
+// The pattern must not fire on an object that is merely old. Nine days of
+// healthy service followed by a two-minute-old Unknown is in-flight work, and
+// calling it stuck is the same overclaim in the other direction.
+func TestDiagnoseDoesNotFlagAFreshFailureOnAnOldObject(t *testing.T) {
+	created := stagingNow.Add(-9 * 24 * time.Hour)
+	w := workloadCreated("recently-broken", created,
+		cond(computev1alpha.WorkloadAvailable, "False",
+			computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments."))
+	insts := []computev1alpha.Instance{
+		instanceCreated("recently-broken-dfw-0", created,
+			condAt(computev1alpha.InstanceProgrammed, "Unknown",
+				computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+				"Instance is provisioning", stagingNow.Add(-2*time.Minute))),
+	}
+
+	d := DiagnoseAt(stagingNow, w, nil, insts)
+	if d.RootCause.Pattern != "" {
+		t.Errorf("Pattern = %q, want empty for a two-minute-old condition", d.RootCause.Pattern)
+	}
+	if d.RootCause.Actionability != ActionabilityTransient {
+		t.Errorf("Actionability = %q, want transient", d.RootCause.Actionability)
+	}
+}

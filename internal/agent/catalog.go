@@ -324,11 +324,12 @@ var catalog = []ReasonInfo{
 		ExpectedDuration: windowHandoff,
 	},
 	{
-		Reason:           computev1alpha.InstanceProgrammedReasonPendingProgramming,
-		ConditionTypes:   []string{computev1alpha.InstanceProgrammed},
-		Actionability:    ActionabilityTransient,
-		Explanation:      "The infrastructure provider has not started programming the instance yet.",
-		Remediation:      "Wait. If it persists, the provider controller may not be running.",
+		Reason:         computev1alpha.InstanceProgrammedReasonPendingProgramming,
+		ConditionTypes: []string{computev1alpha.InstanceProgrammed},
+		Actionability:  ActionabilityTransient,
+		Explanation:    "The infrastructure provider has not started programming the instance yet.",
+		Remediation: "Wait. If it persists, nothing has reported on this instance either way — " +
+			"rule out a crash-looping container before concluding the provider controller is down.",
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowHandoff,
 	},
@@ -538,8 +539,11 @@ var byReason = func() map[string]ReasonInfo {
 // comparison is made against now on every read — nothing about a stall is
 // persisted or inferred from anything but elapsed time.
 //
-// A missing or unparseable timestamp returns the static classification: absence
-// of evidence that a state is old is not evidence that it has stalled.
+// A missing, unparseable, or implausible timestamp returns the static
+// classification: absence of evidence that a state is old is not evidence that
+// it has stalled. The object's own creationTimestamp deliberately does not
+// escalate here either — an object can be nine days old and have failed a
+// minute ago, so age alone would manufacture false alarms.
 func ActionabilityAt(info ReasonInfo, lastTransition string, now time.Time) Actionability {
 	if info.Actionability != ActionabilityTransient || info.ExpectedDuration <= 0 {
 		return info.Actionability
