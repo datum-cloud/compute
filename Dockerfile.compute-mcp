@@ -1,0 +1,59 @@
+# Build the compute-mcp binary
+#
+# A second image, not a variant of the manager's: the root Dockerfile copies
+# only cmd/main.go, so cmd/compute-mcp is not even in its build context. The
+# build context here is the repository root — go.mod plus every in-repo package
+# the server imports — so this file lives at the root alongside Dockerfile.crds
+# rather than next to the command.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+# The shared publish workflow passes these to every image it builds. The MCP
+# server carries its version as an MCP protocol constant rather than an ldflags
+# variable, so they are declared to be accepted and deliberately unused.
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG GIT_TREE_STATE=unknown
+ARG BUILD_DATE=unknown
+
+WORKDIR /workspace
+# Copy the Go Modules manifests
+COPY go.mod go.mod
+COPY go.sum go.sum
+# cache deps before building and copying source so that we don't need to re-download as much
+# and so that source changes don't invalidate our downloaded layer
+
+RUN go mod download
+
+# Copy the go source. docs/ is a build input, not documentation: docs/agent is
+# a package whose embed.FS carries the knowledge and skills the server serves,
+# so it must be in the build context even though nothing loose reaches the
+# runtime image.
+COPY cmd/compute-mcp/ cmd/compute-mcp/
+COPY api/ api/
+COPY internal/ internal/
+COPY docs/ docs/
+
+# Build
+# CGO is off and the base image below has no libc, so the binary must be
+# static. GOARCH comes from the buildx target platform for the same reason the
+# manager's does — see the root Dockerfile.
+ENV GOCACHE=/root/.cache/go-build
+ENV GOTMPDIR=/root/.cache/go-build
+RUN --mount=type=cache,target=/go/pkg/mod/ \
+  --mount=type=cache,target="/root/.cache/go-build" \
+  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w" \
+    -o compute-mcp ./cmd/compute-mcp
+
+# Use distroless as minimal base image to package the compute-mcp binary.
+# The nonroot variant has no shell and no package manager, so a tool call that
+# somehow reached command execution would find nothing to execute.
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/compute-mcp .
+USER 65532:65532
+
+EXPOSE 8080
+
+ENTRYPOINT ["/compute-mcp"]
