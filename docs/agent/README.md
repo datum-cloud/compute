@@ -111,6 +111,21 @@ catalog and never stored.
 reader to wait without saying how long is reasonable, because a transient claim
 nobody can falsify is how a wedged workload reads as healthy.
 
+Every reason also has to be *readable*. This text reaches a paying customer
+almost verbatim, and the customer deploys workloads — they do not operate Datum.
+A term is theirs if they write it in their own workload (`image`, `replicas`,
+`configMapRef`, `placement`, `schedulingGates`) or read it in output they
+already see (`QuotaExceeded`); it is ours, and banned from the copy, if it only
+ever appears inside the implementation (`cell`, `AllowanceBucket`, controllers,
+reconcilers, the quota claim). `TestCatalogCopyUsesNoInternalVocabulary`,
+`TestDiagnosisCopyUsesNoInternalVocabulary` and
+`TestPublishedDocsUseNoInternalVocabulary` fail on the second list, and each
+banned term carries the argument for banning it, so the list can be disputed
+rather than guessed at. `TestPlainLanguageKeepsTheEvidence` is the counterweight:
+object names, reason codes, condition types and durations must survive the plain
+English, because those are what a customer escalates with.
+
 When you add a condition reason, add its catalog entry in the same change, give
-it a window if it is transient, and update the relevant skill if the triage
-procedure changes.
+it a window if it is transient, write the explanation for the customer rather
+than for yourself, and update the relevant skill if the triage procedure
+changes.

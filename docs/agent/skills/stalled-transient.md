@@ -9,11 +9,11 @@ far longer than it should.
 
 ## The one thing to know
 
-**Stalled is an inference, not a report.** No controller said anything was
-wrong; the reason still claims the work is in flight, and only the elapsed time
-contradicts it. That makes it different from a platform fault, where the
-controllers named a cause that is Datum's. Do not say "this is a Datum problem"
-— say the state has outlived what it should take, and hand over the evidence.
+**Stalled is a conclusion drawn from the clock, not something anyone reported.**
+Nothing said anything was wrong; the status still claims the work is under way,
+and only the elapsed time contradicts it. That makes it different from a fault
+Datum reported as theirs. Do not say "this is Datum's problem" — say it has
+taken far longer than it should and hand over the evidence.
 
 The failure this exists to prevent is the opposite one: reporting a five-day
 `ProgrammingInProgress` as "normal, wait a few minutes" because the reason said
@@ -21,26 +21,26 @@ transient.
 
 ## The second thing to know
 
-**A reported state can itself be stale or wrong.** Compute shows you what the
-controllers wrote to the project control plane, and a provider that fails to
-propagate a result leaves a reason that has stopped describing reality.
+**A reported state can itself be stale or wrong.** What compute shows you is
+what was last written into the customer's project, and a failure that never gets
+passed upward leaves a status that has stopped describing reality.
 
 On 2026-08-27 three workloads read `Programmed: Unknown` /
-`ProgrammingInProgress`, "Instance is provisioning". On the cell, the container
-had exited with code 1 and was restarting — `InstanceCrashing`, which is
-**user-actionable**. The unikraft provider never propagated the crash upward.
-Anyone reading the reason at face value told the customer "this isn't a spec
-problem, escalate to Datum", which was confident, actionable, and wrong.
+`ProgrammingInProgress`, "Instance is provisioning". Down at the machine, the
+container had exited with code 1 and was restarting — `InstanceCrashing`, which
+is **the customer's to fix**. The crash was never passed upward. Anyone reading
+the status at face value told the customer "this isn't a problem with your
+workload, escalate to Datum", which was confident, actionable, and wrong.
 
 So the rule extends: the reason is a claim, the elapsed evidence outranks it,
-and neither is licence to rule the workload spec out.
+and neither is licence to rule the customer's own workload out.
 
 ## Procedure
 
 1. **Quantify it, and use the larger number.** `workload_diagnose` gives two
    ages on the root cause and they answer different questions:
 
-   - `inStateFor` — how long the *condition* has held this reason.
+   - `inStateFor` — how long the *status* has said this.
    - `failingFor` — a floor on how long the *object* has been broken, taken
      from its `creationTimestamp` (`objectAge`) when that is longer.
 
@@ -51,34 +51,35 @@ and neither is licence to rule the workload spec out.
    been broken".
 
    **A large gap between them is itself a finding**: nine hours of "in state" on
-   an object failing for nine days means something is rewriting the condition
+   an object broken for nine days means something is rewriting the status
    without ever finishing. Say so.
 
-   Then call `reason_explain` for `expectedWithin` — the window the reason is
-   supposed to clear inside. "Nine days against an expected thirty minutes" is
-   the whole finding.
+   Then call `reason_explain` for `expectedWithin` — how long this step should
+   take. "Nine days, against thirty minutes" is the whole finding.
 
    Two things the tools will not give you, on purpose. An age is omitted rather
-   than guessed when the condition's timestamp cannot be believed — real
-   Instances carry `lastTransitionTime: "1970-01-01T00:00:00Z"`, and a
-   twenty-thousand-day age is a sentinel, not a stall. And `failingFor` never
-   escalates `actionability` by itself: an object can be nine days old and have
-   failed a minute ago.
+   than guessed when a timestamp cannot be believed — real Instances carry
+   `lastTransitionTime: "1970-01-01T00:00:00Z"`, and a twenty-thousand-day age
+   is a placeholder, not a stall. And `failingFor` never escalates
+   `actionability` by itself: an object can be nine days old and have broken a
+   minute ago.
 
-2. **Check whether anything reported at all.** `reported` on the cause is false
-   when the condition status is `Unknown`, meaning no controller has reported
+2. **Check whether anything was reported at all.** `reported` on the cause is
+   false when the condition status is `Unknown`, meaning nothing has reported
    success *or* failure. That is materially different from `False`, which is a
-   reported failure with a message you can quote.
+   reported failure with a message you can quote. In plain terms: "Datum hasn't
+   reported back on this either way" versus "Datum told us it failed, and here
+   is what it said".
 
-   When an unreported condition sits on an object that has outlived its own
+   When nothing has been reported about an object that has outlived its own
    window, the cause carries `pattern: NoTerminalStateReported`. Read it as:
-   something is acting on this object and reporting nothing either way. It does
+   something is working on this and never saying how it turned out. It does
    **not** name a culprit — see step 5.
 
 3. **Check whether it is one object or all of them.** `instances_list` for the
-   workload. Every instance stuck in the same state points at the provider or
-   controller for that cell; one stuck among healthy siblings points at that
-   object. Say which — it decides who Datum pages.
+   workload. Every instance stuck the same way points at the place they all
+   run; one stuck among healthy siblings points at that object. Say which — it
+   decides who Datum wakes up.
 
 4. **Look underneath before escalating.** Read `contributingConditions` from
    `workload_diagnose`. A stalled pointer reason (`InstancesProvisioning`,
@@ -86,36 +87,44 @@ and neither is licence to rule the workload spec out.
    that arrived after the stall began. If one is there, that is the answer —
    follow its skill instead.
 
-5. **Route by which layer stopped moving — without ruling the spec out:**
+5. **Route by what stopped moving — without ruling the workload out:**
 
-   - `ProgrammingInProgress`, `PendingProgramming`, `Provisioning` — a provider
+   - `ProgrammingInProgress`, `PendingProgramming`, `Provisioning` — something
      took the job and reported nothing further. Do **not** say this cannot be a
-     spec problem. From the project control plane, a provider that never reports
-     and a user container that starts and exits immediately look identical, and
-     the second is `InstanceCrashing` — user-actionable. Load
+     problem with the workload. From where the customer sits, infrastructure
+     that never reports back and a container that starts and exits immediately
+     look identical, and the second is `InstanceCrashing` — theirs to fix. Load
      `instance-not-ready` and rule out a crash loop *before* escalating, and
-     escalate in parallel rather than instead.
-   - `PendingEvaluation`, `PendingQuota` — quota. Load `quota-triage`; a
-     sustained pending claim is a stuck quota backend.
-   - `Resolving`, `AwaitingPropagation` — referenced data never reached the
-     cell. Load `referenced-data-triage`.
-   - `SchedulingGatesPresent` — the gating controller never removed the gate.
+     escalate alongside it rather than instead of it.
+   - `PendingEvaluation`, `PendingQuota` — the quota check. Load
+     `quota-triage`; a check that never finishes is the checking service stuck.
+   - `Resolving`, `AwaitingPropagation` — a ConfigMap or Secret never arrived.
+     Load `referenced-data-triage`.
+   - `SchedulingGatesPresent` — a scheduling gate was never cleared.
 
-6. **Do not suggest a restart or a spec edit to shake it loose.** Deleting and
+6. **Do not suggest a restart or an edit to shake it loose.** Deleting and
    recreating a workload destroys the evidence Datum needs and often reproduces
    the same stall. Offer it only if the customer asks and accepts that.
 
 ## Reporting
 
-Lead with `failingFor` and the expectation, and give `inStateFor` beside it when
-the two differ. Then: whether the workload is serving at all, whether every
-replica or only one is affected, and whether any controller reported a cause.
+Lead with `failingFor` and how long it should have taken, and give `inStateFor`
+beside it when the two differ. Then: whether the workload is serving at all,
+whether every replica or only one is affected, and whether anything reported a
+cause.
 
-Separate what is observed from what is inferred, and say which is which.
-Observed: the object's age, the condition status, the message, the timestamps.
-Inferred: that it is stuck, and who might be at fault. Do not promote the second
-into the first — "nine days with nothing reported" is a finding a human can act
-on; "the provider is broken" is a guess that has already been wrong.
+Keep what is known apart from what it suggests, and say which is which. Known:
+how old the object is, what the status says, the message, the timestamps.
+Suggested and not established: that it is stuck, and who is at fault. Do not
+promote the second into the first — "nine days with nothing reported" is a
+finding a person can act on; "Datum's infrastructure is broken" is a guess that
+has already been wrong once.
+
+Watch the first sentence in particular. "None of these is anything you can fix"
+is a verdict, and if the body then walks it back to "probably not yours, but not
+provably not yours", the opening was wrong. When nothing has been reported,
+neither side is ruled out yet: open with what is known and how long it has been
+going on, and let the verdict wait for evidence that supports one.
 
 Hand over the object name, the condition type, the reason, the
-`lastTransitionTime`, and the condition message verbatim.
+`lastTransitionTime`, and the status message verbatim.

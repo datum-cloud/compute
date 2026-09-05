@@ -11,29 +11,38 @@ Use when someone asks why a Workload is not running, not available, or stuck.
 
 2. **Read `rootCause.actionability` before anything else.** It decides what you
    tell the customer:
-   - `user` — name the exact field or object to change.
-   - `platform` — say plainly that this is Datum's to fix, and that no workload
-     change will help. Do not offer spec edits.
+   - `user` — name the exact thing to change: the image, the replica count, the
+     missing ConfigMap or Secret, the network name.
+   - `platform` — say plainly that this one is Datum's to fix and that no
+     change to their workload will clear it. Do not offer workarounds.
    - `transient` — say what it is waiting on and roughly how long is normal.
+   - `stalled` — it is taking far longer than it should and nobody has said
+     why. Load `stalled-transient`; do not answer it from here.
 
 3. **Check the blast radius.** `instances.ready` vs `instances.total` tells you
    whether this is total failure or partial degradation. A workload with 2/6
-   ready is serving — say so; the customer's page may not be down.
+   ready is serving — say so; the customer's site may not be down.
 
 4. **If several instances fail for different reasons**, `instances.blocked`
    lists each one's own reason. Fix the most common cause first, then re-check;
    a second cause often disappears with the first.
 
 5. **Follow the suggested skill.** `suggestedSkill` names the runbook for the
-   specific subsystem — load it rather than improvising.
+   specific area — load it rather than improvising.
 
-6. **If `rootCause` is null** but replicas are missing, the controllers have not
-   yet written status. Say the workload was just created or the controller is
-   behind, and suggest re-checking shortly.
+6. **If `rootCause` is null** but replicas are missing, nothing has written a
+   status yet. Say the workload was just created, or that Datum is behind, and
+   suggest re-checking shortly.
 
 ## Reporting
 
-State, in this order: whether it is serving, the leaf cause in the customer's
-terms, who has to act, and the single next step. Quote the condition message
-verbatim when it names an object (an image tag, a ConfigMap) — it is the most
-actionable line available.
+Say, in this order: whether it is serving, what is actually wrong in the
+customer's own terms, who has to act, and the single next step. Then the
+identifiers — the object name, the image tag, the missing ConfigMap — quoted
+from the status message verbatim, because those are what they need if they have
+to escalate.
+
+Do not open with a verdict the body then walks back. If the diagnosis says
+`stalled`, or carries `pattern: NoTerminalStateReported`, then who is at fault
+is not yet established: say what is known first, and reach a verdict only if the
+evidence gets you one.
