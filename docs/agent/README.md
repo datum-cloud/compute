@@ -15,6 +15,7 @@ assistant owns the document schema that carries it.
 |---|---|
 | `llms-full.txt` | Knowledge. The compute resource model and, critically, how to read its conditions. Fetched over HTTP and appended to the system prompt. |
 | `skills/*.md` | Skills. Reviewed, step-by-step triage procedures, loaded on demand. |
+| `embed.go` | Embeds both into the binary, so `cmd/compute-mcp` can serve them with no files to mount beside it. |
 | `../../internal/agent` | The reason catalog and the diagnosis walk that back the tools. |
 
 ## Status
@@ -23,6 +24,23 @@ Landed here: the reason catalog, the diagnosis walk, the knowledge and skills
 above, and `cmd/compute-mcp` — the MCP server that publishes the five read-only
 tools (`workloads_list`, `workloads_get`, `instances_list`, `workload_diagnose`,
 `reason_explain`) over Streamable HTTP.
+
+## HTTP surface
+
+One process answers everything compute's capability document points at:
+
+| Route | Serves |
+|---|---|
+| `POST /mcp` | Streamable HTTP MCP, stateless. Requires the caller's bearer token and `X-Datum-Project`. |
+| `GET /llms-full.txt` | The knowledge document. Public. |
+| `GET /runbooks/<name>.md` | One skill. Public. |
+| `GET /healthz` | Liveness. |
+
+The URL says `runbooks` while the directory says `skills`: the path belongs to
+the agent framework and is already baked into shipped capability documents, so
+it is not compute's to rename. Both document routes are unauthenticated on
+purpose — the assistant fetches them to build a system prompt, before it holds
+any project context, and they are static text with no tenant data in them.
 
 Two properties of the server are worth knowing before you deploy it:
 

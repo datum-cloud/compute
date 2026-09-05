@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command compute-mcp serves compute's read-only diagnostic tools over MCP.
+// Command compute-mcp serves compute's read-only diagnostic tools over MCP,
+// alongside the knowledge and skills an assistant reads before calling them:
+//
+//	POST /mcp                   Streamable HTTP MCP, stateless
+//	GET  /llms-full.txt         Knowledge: the compute resource model
+//	GET  /runbooks/<name>.md    Skills: triage procedures
+//	GET  /healthz               liveness
+//
+// One process, because compute's capability document names all of those URLs
+// and a second deployment to satisfy the static ones would be a second thing to
+// keep in step. Only /mcp takes a credential; see docs.go for why the documents
+// do not.
 //
 // Every read runs as the caller. The server holds no credential of its own for
 // the project control plane: it takes the bearer token off the incoming
@@ -108,8 +119,18 @@ func run(addr string, baseConfig *rest.Config) error {
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
 
+	// The knowledge and skills the capability document points the assistant at.
+	// They are served from this same process so that one deployment satisfies
+	// every URL compute publishes.
+	docs, err := newKnowledgeHandler()
+	if err != nil {
+		return err
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
+	mux.Handle(knowledgePath, docs)
+	mux.Handle(runbookPrefix, docs)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
@@ -121,7 +142,7 @@ func run(addr string, baseConfig *rest.Config) error {
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	setupLog.Info("listening", "addr", addr, "mcp", "/mcp")
+	setupLog.Info("listening", "addr", addr, "mcp", "/mcp", "docs", docs.paths())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serving on %s: %w", addr, err)
 	}
