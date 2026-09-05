@@ -85,6 +85,7 @@ compute publish many procedures at near-zero prompt cost.
 | `instance-not-ready` | `ImageUnavailable`, `InstanceCrashing`, `ConfigurationError` |
 | `referenced-data-triage` | Missing, unauthorized, or oversized ConfigMaps/Secrets |
 | `placement-triage` | `NoMatchingLocation`, `AmbiguousServingLocation`, `CityCodeMismatch` |
+| `stalled-transient` | A transient reason that has outlived its expected window |
 
 A skill never grants privileges. It can only direct the model toward tools that
 are independently on the enforced allow-list, which is why these go through the
@@ -98,5 +99,14 @@ should change their spec or escalate. `TestCatalogCoversEveryAPIReason` parses
 `api/v1alpha` and fails when a reason is added without being classified, so the
 catalog cannot silently fall behind the API.
 
-When you add a condition reason, add its catalog entry in the same change, and
-update the relevant skill if the triage procedure changes.
+A transient reason also declares how long it should take. `stalled` is the
+fourth actionability the tools can report, derived at read time when a
+condition has held a transient reason past that window — never written in the
+catalog and never stored.
+`TestTransientReasonsThatSayWaitDeclareAWindow` fails when a reason tells the
+reader to wait without saying how long is reasonable, because a transient claim
+nobody can falsify is how a wedged workload reads as healthy.
+
+When you add a condition reason, add its catalog entry in the same change, give
+it a window if it is transient, and update the relevant skill if the triage
+procedure changes.
