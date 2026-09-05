@@ -545,10 +545,10 @@ func TestWorkloadsListFlagsTheStagingStall(t *testing.T) {
 	if d.RootCause.Skill != SkillStalledTransient {
 		t.Errorf("Skill = %q, want %q", d.RootCause.Skill, SkillStalledTransient)
 	}
-	// "Wait." was the catalogued advice and the wrong answer; it must not
-	// survive the escalation.
-	if strings.Contains(d.RootCause.Remediation, "Wait.") {
-		t.Errorf("Remediation still says to wait: %q", d.RootCause.Remediation)
+	// "this is normal, it clears on its own" was the catalogued advice and the
+	// wrong answer; it must not survive the escalation.
+	if strings.Contains(d.RootCause.Remediation, "this is normal") {
+		t.Errorf("Remediation still calls this normal: %q", d.RootCause.Remediation)
 	}
 	if !strings.Contains(d.RootCause.Remediation, "5d") {
 		t.Errorf("Remediation = %q, want it to quote how long the state has held", d.RootCause.Remediation)
@@ -602,8 +602,8 @@ func TestWorkloadsListCarriesTheFailureFloor(t *testing.T) {
 		t.Fatalf("workloads_list: %v", err)
 	}
 	row := out.Workloads[0]
-	if row.RootCauseFor != "9h30m" {
-		t.Errorf("RootCauseFor = %q, want %q", row.RootCauseFor, "9h30m")
+	if row.RootCauseFor != stagingInState {
+		t.Errorf("RootCauseFor = %q, want %q", row.RootCauseFor, stagingInState)
 	}
 	if row.RootCauseFailingFor != "9d" {
 		t.Errorf("RootCauseFailingFor = %q, want %q — nine days of failure must not read as nine hours",

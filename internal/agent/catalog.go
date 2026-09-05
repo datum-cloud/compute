@@ -56,7 +56,13 @@ type ReasonInfo struct {
 	ConditionTypes []string `json:"conditionTypes"`
 	// Actionability says who must act.
 	Actionability Actionability `json:"actionability"`
-	// Explanation states in plain language what actually happened.
+	// Explanation states, in the customer's language, what actually happened.
+	// The reader deploys workloads; they do not operate Datum. Write for
+	// someone who knows containers, images, replicas and logs, and who has
+	// never heard of a condition, a reconciler, or an allowance bucket. Anything the
+	// customer writes in their own workload — image, replicas, ConfigMap, Secret,
+	// placement — is their vocabulary and stays.
+	// TestCopyUsesNoInternalVocabulary enforces the vocabulary half of that.
 	Explanation string `json:"explanation"`
 	// Remediation says what to do next. Empty for healthy reasons.
 	Remediation string `json:"remediation,omitempty"`
@@ -112,12 +118,16 @@ const (
 
 // Remediation strings shared by several reasons.
 const (
-	// remediationWait is the advice for transient states: the resource is in
+	// remediationWait is the advice for transient states: the work is in
 	// flight and nothing needs doing.
-	remediationWait = "Wait."
-	// remediationEscalate is the advice for platform faults the customer has
-	// no lever on at all.
-	remediationEscalate = "Escalate to Datum."
+	//
+	// It carries the phrase "this is normal" because that is exactly the claim
+	// the stalled path has to retract; TestStalledAdviceRetractsTheWaitAdvice
+	// pins that it does not survive.
+	remediationWait = "Nothing to do here — this is normal and clears on its own."
+	// remediationEscalate is the advice for faults on Datum's side that the
+	// customer has no lever on at all.
+	remediationEscalate = "Raise this with Datum. There is no change to your workload that will clear it."
 )
 
 // Skill names. These correspond to the runbooks published alongside this
@@ -143,31 +153,31 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceReadyReasonAvailable,
 		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceAvailable},
 		Actionability:  ActionabilityTransient,
-		Explanation:    "The instance is serving.",
+		Explanation:    "This instance is up and serving.",
 	},
 	{
 		Reason:         computev1alpha.WorkloadDeploymentReasonStableInstanceFound,
 		ConditionTypes: []string{computev1alpha.WorkloadDeploymentAvailable},
 		Actionability:  ActionabilityTransient,
-		Explanation:    "The deployment has at least one ready instance and is serving.",
+		Explanation:    "At least one instance here is up and serving.",
 	},
 	{
 		Reason:         computev1alpha.InstanceProgrammedReasonProgrammed,
 		ConditionTypes: []string{computev1alpha.InstanceProgrammed},
 		Actionability:  ActionabilityTransient,
-		Explanation:    "The infrastructure provider has fully programmed the instance.",
+		Explanation:    "Datum has finished building the machine this instance runs on.",
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonQuotaAvailable,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityTransient,
-		Explanation:    "Quota was evaluated and granted for this instance.",
+		Explanation:    "This instance fits inside your project's compute quota, so it was cleared to run.",
 	},
 	{
 		Reason:         computev1alpha.ReferencedDataReasonReady,
 		ConditionTypes: []string{computev1alpha.ReferencedDataReady},
 		Actionability:  ActionabilityTransient,
-		Explanation:    "All referenced ConfigMaps and Secrets are resolved and present on the cell.",
+		Explanation:    "Every ConfigMap and Secret your workload references was found and is available to it.",
 	},
 
 	// --------------------------------------------------------------- quota
@@ -175,30 +185,31 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityUser,
-		Explanation: "The project asked for more compute than its allowance permits, so the quota " +
-			"backend explicitly denied the claim. Nothing will proceed until headroom exists.",
-		Remediation: "Reduce the workload's replica count or instance size, release capacity by " +
-			"deleting unused workloads, or request a quota increase for the project.",
+		Explanation: "Your project asked for more compute than its quota allows, so Datum turned this " +
+			"instance down. Nothing here starts until there is room for it.",
+		Remediation: "Free up room or ask for more: lower the replica count, lower the CPU or memory " +
+			"per instance, delete workloads you no longer need, or ask Datum to raise the project's " +
+			"quota. The status message says how much was asked for and how much was left.",
 		Skill: SkillQuotaTriage,
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonNoBudget,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityPlatform,
-		Explanation: "The quota claim was created and is pending because no AllowanceBucket has been " +
-			"configured for this project at all. This is distinct from QuotaExceeded (explicitly " +
-			"denied) and PendingEvaluation (evaluation in flight) — the project has no budget to " +
-			"spend against.",
-		Remediation: "The project needs an AllowanceBucket provisioned. Escalate to Datum — the " +
-			"customer cannot configure this.",
+		Explanation: "Your project has no compute quota set up at all, so there is nothing for this " +
+			"instance to draw against. That is not the same as running out (QuotaExceeded) or still " +
+			"being checked (PendingEvaluation): the quota was never created, and only Datum can " +
+			"create it.",
+		Remediation: "Ask Datum to set up your project's compute quota. Nothing you change in the " +
+			"workload will get past this.",
 		Skill: SkillQuotaTriage,
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonPendingEvaluation,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityTransient,
-		Explanation:    "The quota claim has not been created yet, or its first evaluation is still in flight.",
-		Remediation:    "Wait. If it persists for more than a few minutes, treat it as a quota-backend problem.",
+		Explanation:    "Datum has not finished checking this instance against your project's compute quota yet.",
+		Remediation:    "Give it a few minutes. If it sits here longer than that, the quota check itself is stuck and is worth raising with Datum.",
 		Skill:          SkillQuotaTriage,
 		// The quota reasons keep quota-triage rather than the stall runbook:
 		// its procedure already ends at "sustained PendingEvaluation is a stuck
@@ -209,24 +220,24 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityPlatform,
-		Explanation: "Quota enforcement is configured but the Milo quota backend could not be reached — " +
-			"network error, TLS failure, or a 401/503 from the backend.",
-		Remediation: "Escalate to Datum. Nothing in the customer's workload spec affects this.",
+		Explanation: "Datum could not reach the service that checks your project's compute quota, " +
+			"so nothing can be cleared to run right now.",
+		Remediation: "Raise this with Datum. Nothing in your workload affects it.",
 		Skill:       SkillQuotaTriage,
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonProjectNotFound,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityPlatform,
-		Explanation:    "The Milo project referenced by this instance does not exist — the project control plane returned 404.",
-		Remediation:    "Escalate to Datum; the project registration is missing or was removed.",
+		Explanation:    "Datum has no record of the project this instance belongs to, so it cannot check what that project is allowed to use.",
+		Remediation:    "Raise this with Datum — the project's registration is missing or was removed. There is nothing to fix in your workload.",
 		Skill:          SkillQuotaTriage,
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonNamespaceNotFound,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityPlatform,
-		Explanation:    "The claim namespace does not exist on the Milo project control plane.",
+		Explanation:    "Datum's record of this project is incomplete, so the check against your project's compute quota cannot run.",
 		Remediation:    remediationEscalate,
 		Skill:          SkillQuotaTriage,
 	},
@@ -234,17 +245,18 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonMisconfigured,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityPlatform,
-		Explanation: "The Milo admission plugin rejected the ResourceClaim (403/422): the " +
-			"ResourceRegistration is absent, or the claimingRules do not match.",
-		Remediation: "Escalate to Datum — this is a platform quota configuration error.",
-		Skill:       SkillQuotaTriage,
+		Explanation: "Datum's quota service rejected the request outright: the rules it " +
+			"checks against are missing or do not match this kind of workload.",
+		Remediation: "Raise this with Datum — their quota system is misconfigured, " +
+			"not in your workload.",
+		Skill: SkillQuotaTriage,
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonProjectIDUnresolvable,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityPlatform,
-		Explanation: "The namespace label required to derive the Milo project ID is missing or " +
-			"unreadable, so the claim cannot be attributed to a project.",
+		Explanation: "Datum cannot tell which project this instance belongs to, so it cannot check it " +
+			"against that project's compute quota.",
 		Remediation: remediationEscalate,
 		Skill:       SkillQuotaTriage,
 	},
@@ -252,24 +264,23 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonQuotaDisabled,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityTransient,
-		Explanation: "Quota enforcement is intentionally switched off in this environment because no " +
-			"credential path was configured. Not a failure.",
+		Explanation:    "Compute quotas are deliberately not enforced in this environment. Nothing is wrong.",
 	},
 	{
 		Reason:         computev1alpha.InstanceQuotaGrantedReasonValidationFailed,
 		ConditionTypes: []string{computev1alpha.InstanceQuotaGranted},
 		Actionability:  ActionabilityUser,
-		Explanation:    "The quota claim failed validation before it could be evaluated.",
-		Remediation:    "Check the instance resource requests for invalid or unsupported values.",
+		Explanation:    "The request to check this instance against your project's compute quota was rejected as invalid before it could be checked.",
+		Remediation:    "Check the CPU and memory values on the workload for anything unsupported — a zero, a negative, or a unit Datum does not accept.",
 		Skill:          SkillQuotaTriage,
 	},
 	{
 		Reason:         computev1alpha.InstanceProgrammedReasonPendingQuota,
 		ConditionTypes: []string{computev1alpha.InstanceProgrammed},
 		Actionability:  ActionabilityTransient,
-		Explanation: "Programming is deliberately held back until quota is granted. The real cause is " +
-			"on the instance's QuotaGranted condition — read that one.",
-		Remediation:      "Diagnose the QuotaGranted condition; this reason only points at it.",
+		Explanation: "Datum is deliberately not building this instance yet: it is waiting on the check " +
+			"against your project's compute quota. The real answer is in that check, not here.",
+		Remediation:      "Read the instance's QuotaGranted status; this only points at it.",
 		Skill:            SkillQuotaTriage,
 		ExpectedDuration: windowHandoff,
 	},
@@ -279,38 +290,42 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceReadyReasonImageUnavailable,
 		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceProgrammed},
 		Actionability:  ActionabilityUser,
-		Explanation: "The provider could not pull the instance image: a bad image name, missing " +
-			"registry credentials, or an unreachable registry.",
-		Remediation: "Verify the image reference in the workload spec (tag exists, registry path " +
-			"correct) and that pull credentials for a private registry are configured.",
+		Explanation: "Your container image could not be downloaded, so nothing could start. Usually " +
+			"that is a name or tag that does not exist, a private registry with no credentials " +
+			"configured, or a registry that could not be reached.",
+		Remediation: "Check the image on your workload: that the tag exists, that the repository path " +
+			"is right, and — for a private registry — that pull credentials are set. The status " +
+			"message usually says which of the three it was.",
 		Skill: SkillInstanceNotReady,
 	},
 	{
 		Reason:         computev1alpha.InstanceReadyReasonInstanceCrashing,
 		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceProgrammed},
 		Actionability:  ActionabilityUser,
-		Explanation: "The process started but keeps exiting and being restarted (CrashLoopBackOff in " +
-			"the underlying runtime). The application itself is failing — the platform delivered it " +
-			"correctly.",
-		Remediation: "Read the instance logs for the exit cause: a failing entrypoint, a missing env " +
-			"var or mount, or an unmet dependency at startup.",
+		Explanation: "Your container starts, exits, and is restarted, over and over, so it never stays " +
+			"up long enough to serve. Datum delivered and started it correctly — it is the program " +
+			"inside that keeps failing.",
+		Remediation: "Read the instance logs and the exit code. The usual causes are a start command " +
+			"that fails immediately, a missing environment variable or mounted file, or something it " +
+			"needs at startup that it cannot reach.",
 		Skill: SkillInstanceNotReady,
 	},
 	{
 		Reason:         computev1alpha.InstanceReadyReasonConfigurationError,
 		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceProgrammed},
 		Actionability:  ActionabilityUser,
-		Explanation: "The runtime rejected the instance configuration before the process could start — " +
-			"for example an invalid environment-variable injection or a missing device.",
-		Remediation: "Correct the workload spec; the runtime refused it as written.",
+		Explanation: "The machine refused to start your container because part of its configuration is " +
+			"invalid — an environment variable it could not set, or a device that is not there. Your " +
+			"program never ran at all.",
+		Remediation: "Fix the setting the status message names; your workload was refused as written.",
 		Skill:       SkillInstanceNotReady,
 	},
 	{
 		Reason:           computev1alpha.InstanceReadyReasonProvisioning,
 		ConditionTypes:   []string{computev1alpha.InstanceReady},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "The runtime is still setting up the execution environment — creating the container, unpacking the image.",
-		Remediation:      "Wait; this is normal and non-actionable.",
+		Explanation:      "Datum is setting up the place your container runs — creating it and unpacking your image.",
+		Remediation:      "Nothing to do here — this is normal, and a large image can take a while.",
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowInstanceProvisioning,
 	},
@@ -318,8 +333,8 @@ var catalog = []ReasonInfo{
 		Reason:           computev1alpha.InstanceReadyReasonSchedulingGatesPresent,
 		ConditionTypes:   []string{computev1alpha.InstanceReady},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "Scheduling gates are still attached to the instance, so it is intentionally held before scheduling.",
-		Remediation:      "Wait for the gates to clear; if they never do, the gating controller is stuck — escalate.",
+		Explanation:      "This instance still has a scheduling gate on it, so it is deliberately held before it is placed anywhere. Most often the gate is Datum waiting on the quota check.",
+		Remediation:      "Wait for the gate to clear. If it never clears, whatever put it there is stuck: raise it with Datum.",
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowHandoff,
 	},
@@ -327,9 +342,10 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceProgrammedReasonPendingProgramming,
 		ConditionTypes: []string{computev1alpha.InstanceProgrammed},
 		Actionability:  ActionabilityTransient,
-		Explanation:    "The infrastructure provider has not started programming the instance yet.",
-		Remediation: "Wait. If it persists, nothing has reported on this instance either way — " +
-			"rule out a crash-looping container before concluding the provider controller is down.",
+		Explanation:    "Datum has accepted this instance but has not started building the machine for it yet.",
+		Remediation: "Give it a few minutes. If it stays here, nothing has reported back on this " +
+			"instance either way: check the instance logs for a container of your own that keeps " +
+			"crashing before assuming the hold-up is on Datum's side.",
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowHandoff,
 	},
@@ -337,7 +353,7 @@ var catalog = []ReasonInfo{
 		Reason:           computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
 		ConditionTypes:   []string{computev1alpha.InstanceProgrammed},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "The infrastructure provider is actively programming the instance.",
+		Explanation:      "Datum is building the machine for this instance — creating it, attaching storage, and pulling your image.",
 		Remediation:      remediationWait,
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowInstanceProvisioning,
@@ -346,7 +362,7 @@ var catalog = []ReasonInfo{
 		Reason:           computev1alpha.InstanceAvailableReasonStarting,
 		ConditionTypes:   []string{computev1alpha.InstanceAvailable},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "The instance is starting up.",
+		Explanation:      "The instance is booting.",
 		Remediation:      remediationWait,
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowHandoff,
@@ -364,17 +380,18 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.InstanceAvailableReasonStopped,
 		ConditionTypes: []string{computev1alpha.InstanceAvailable},
 		Actionability:  ActionabilityUser,
-		Explanation:    "The instance is stopped and is not serving.",
-		Remediation:    "Start the instance, or check whether it was stopped deliberately.",
+		Explanation:    "This instance is stopped, so it is not serving.",
+		Remediation:    "Start it again — or check whether someone stopped it on purpose, because a deliberate stop looks exactly like this.",
 	},
 	{
 		Reason:         computev1alpha.InstanceReadyReasonSuspended,
 		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceAvailable},
 		Actionability:  ActionabilityPlatform,
-		Explanation: "The instance was intentionally stopped because the project is suspended. Its " +
-			"placement, disk, and quota allocation are retained and the process restarts from disk " +
-			"on reinstatement.",
-		Remediation: "Resolve the project suspension (usually billing or an account hold). No workload change will help.",
+		Explanation: "Your project is suspended, so Datum stopped this instance. Nothing has been " +
+			"thrown away — where it runs, its disk, and its share of your project's quota are all held, and " +
+			"it starts back up from the same disk once the suspension is lifted.",
+		Remediation: "Clear the suspension — it is usually billing or an account hold. No change to " +
+			"the workload will start it while the project is suspended.",
 	},
 
 	// --------------------------------------------------- referenced data
@@ -382,34 +399,36 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.ReferencedDataReasonSourceNotFound,
 		ConditionTypes: []string{computev1alpha.ReferencedDataReady},
 		Actionability:  ActionabilityUser,
-		Explanation: "One or more ConfigMaps or Secrets referenced by the workload template do not " +
-			"exist in the project namespace.",
-		Remediation: "Create the missing ConfigMap/Secret in the project namespace, or correct the " +
-			"reference in the workload spec.",
+		Explanation: "Your workload references a ConfigMap or Secret that does not exist in this " +
+			"project, so its instances cannot start without it. The status message names the " +
+			"missing one.",
+		Remediation: "Create the missing ConfigMap or Secret in this project, or fix the name your " +
+			"workload references it by.",
 		Skill: SkillReferencedData,
 	},
 	{
 		Reason:         computev1alpha.ReferencedDataReasonSourceUnauthorized,
 		ConditionTypes: []string{computev1alpha.ReferencedDataReady},
 		Actionability:  ActionabilityPlatform,
-		Explanation: "The management identity does not have permission to read one or more referenced " +
-			"ConfigMaps or Secrets.",
-		Remediation: "Escalate to Datum — the platform's RBAC for referenced data is insufficient.",
-		Skill:       SkillReferencedData,
+		Explanation: "The ConfigMap or Secret exists, but Datum does not have permission to read it, " +
+			"so it cannot reach your instances.",
+		Remediation: "Raise this with Datum — their read permissions are too narrow. Do not recreate " +
+			"anything; your ConfigMap or Secret is fine as it is.",
+		Skill: SkillReferencedData,
 	},
 	{
 		Reason:         computev1alpha.ReferencedDataReasonSourceTooLarge,
 		ConditionTypes: []string{computev1alpha.ReferencedDataReady},
 		Actionability:  ActionabilityUser,
-		Explanation:    "One or more referenced ConfigMaps or Secrets exceed the allowed size limit.",
-		Remediation:    "Shrink the referenced object, or split it into smaller ones.",
+		Explanation:    "A ConfigMap or Secret your workload references is larger than Datum allows.",
+		Remediation:    "Shrink it, or split it into several smaller ones.",
 		Skill:          SkillReferencedData,
 	},
 	{
 		Reason:           computev1alpha.ReferencedDataReasonResolving,
 		ConditionTypes:   []string{computev1alpha.ReferencedDataReady},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "The resolver is reading the source ConfigMaps/Secrets from the project control plane.",
+		Explanation:      "Datum is reading the ConfigMaps and Secrets your workload references.",
 		Remediation:      remediationWait,
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowControlPlaneRead,
@@ -418,7 +437,7 @@ var catalog = []ReasonInfo{
 		Reason:           computev1alpha.ReferencedDataReasonAwaitingPropagation,
 		ConditionTypes:   []string{computev1alpha.ReferencedDataReady},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "The resolved data has not yet fully arrived on the cell.",
+		Explanation:      "The ConfigMaps and Secrets have been read and are on their way to the machine that will run your instance.",
 		Remediation:      remediationWait,
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowHandoff,
@@ -429,16 +448,17 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.WorkloadDeploymentReasonNoMatchingLocation,
 		ConditionTypes: []string{computev1alpha.WorkloadDeploymentAvailable},
 		Actionability:  ActionabilityPlatform,
-		Explanation:    "The cell has not been told which location it serves, so the deployment cannot be assigned one.",
-		Remediation:    "Escalate to Datum — cell location configuration is missing.",
+		Explanation:    "Datum has not finished setting up the location this part of your workload was sent to, so it has nowhere to run.",
+		Remediation:    "Raise this with Datum — the location setup is missing on their side. Nothing in your workload will change it.",
 		Skill:          SkillPlacementTriage,
 	},
 	{
 		Reason:         computev1alpha.WorkloadDeploymentReasonAmbiguousServingLocation,
 		ConditionTypes: []string{computev1alpha.WorkloadDeploymentAvailable},
 		Actionability:  ActionabilityPlatform,
-		Explanation: "More than one location was delivered to the cell. The cell will not guess which " +
-			"it serves, so the deployment waits for the platform to resolve the conflict.",
+		Explanation: "Datum's setup for this location contradicts itself — it has been given more than " +
+			"one identity — so your workload is being held rather than started somewhere it may not " +
+			"belong.",
 		Remediation: remediationEscalate,
 		Skill:       SkillPlacementTriage,
 	},
@@ -446,15 +466,15 @@ var catalog = []ReasonInfo{
 		Reason:         computev1alpha.WorkloadDeploymentReasonCityCodeMismatch,
 		ConditionTypes: []string{computev1alpha.WorkloadDeploymentAvailable},
 		Actionability:  ActionabilityPlatform,
-		Explanation:    "The deployment asked for one city and the cell serves another — it was placed on the wrong cell.",
-		Remediation:    "Escalate to Datum; this is a placement fault, not a spec error.",
+		Explanation:    "Your workload asked to run in one city and was sent to another, so Datum is refusing to start it in the wrong place.",
+		Remediation:    "Raise this with Datum — your placement request is fine; it was routed to the wrong place on their side.",
 		Skill:          SkillPlacementTriage,
 	},
 	{
 		Reason:           computev1alpha.WorkloadDeploymentReasonNetworkProvisioning,
 		ConditionTypes:   []string{computev1alpha.WorkloadDeploymentAvailable},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "The network binding or subnet is still being provisioned.",
+		Explanation:      "Datum is still setting up the network this workload attaches to.",
 		Remediation:      remediationWait,
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowNetworkProvisioning,
@@ -463,8 +483,8 @@ var catalog = []ReasonInfo{
 		Reason:           computev1alpha.WorkloadDeploymentReasonInstancesProvisioning,
 		ConditionTypes:   []string{computev1alpha.WorkloadDeploymentAvailable},
 		Actionability:    ActionabilityTransient,
-		Explanation:      "Instances exist but none are ready yet.",
-		Remediation:      "Wait, then diagnose the individual instances if it does not settle.",
+		Explanation:      "The instances exist, but none of them is serving yet.",
+		Remediation:      "Give it time; if it does not settle, look at the instances one by one — each reports its own cause.",
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowFleetRollout,
 	},
@@ -475,9 +495,9 @@ var catalog = []ReasonInfo{
 			computev1alpha.WorkloadAvailable,
 		},
 		Actionability: ActionabilityUser,
-		Explanation: "The worst-blocking sub-condition is a ReferencedData failure. The message carries " +
-			"that sub-condition verbatim — read the ReferencedDataReady condition for the real cause.",
-		Remediation: "Diagnose the ReferencedDataReady condition on the deployment or instance.",
+		Explanation: "A ConfigMap or Secret your workload references is not ready. The status message " +
+			"repeats the underlying problem word for word; that is the one to answer.",
+		Remediation: "Read the ReferencedDataReady status on the deployment or the instance for the real cause.",
 		Skill:       SkillReferencedData,
 	},
 	{
@@ -487,34 +507,35 @@ var catalog = []ReasonInfo{
 			computev1alpha.WorkloadAvailable,
 		},
 		Actionability: ActionabilityUser,
-		Explanation: "Quota is blocking one or more instances. The real cause is the instance's " +
-			"QuotaGranted condition.",
-		Remediation: "Diagnose the QuotaGranted condition on the blocked instances.",
+		Explanation: "Your project's compute quota is holding back one or more instances. The real answer " +
+			"is in the per-instance quota check, not here.",
+		Remediation: "Read the QuotaGranted status on the blocked instances.",
 		Skill:       SkillQuotaTriage,
 	},
 	{
 		Reason:         computev1alpha.WorkloadReasonNetworkNotFound,
 		ConditionTypes: []string{computev1alpha.WorkloadAvailable},
 		Actionability:  ActionabilityUser,
-		Explanation:    "One or more networks referenced by the workload's network interfaces do not exist.",
-		Remediation: "Create the referenced Network, or correct the network name in the workload's " +
-			"network interfaces.",
+		Explanation:    "Your workload attaches to a network that does not exist in this project.",
+		Remediation: "Create that network, or fix the network name on the workload's network " +
+			"interfaces.",
 	},
 	{
 		Reason:         computev1alpha.WorkloadReasonNoAvailablePlacements,
 		ConditionTypes: []string{computev1alpha.WorkloadAvailable},
 		Actionability:  ActionabilityUser,
-		Explanation: "Every placement reports no available deployments. This is the last-resort default " +
-			"reason — the specific cause is on the placements below.",
-		Remediation: "Diagnose the individual placements and their deployments.",
+		Explanation: "Nothing is running in any of this workload's placements. This is the fallback " +
+			"answer when nothing more specific was found at the top — the real cause is in one of the " +
+			"placements underneath.",
+		Remediation: "Look at each placement in turn; the specific cause is on one of them.",
 		Skill:       SkillWorkloadNotAvailable,
 	},
 	{
 		Reason:         computev1alpha.WorkloadReasonNoAvailableDeployments,
 		ConditionTypes: []string{computev1alpha.WorkloadAvailable},
 		Actionability:  ActionabilityUser,
-		Explanation:    "No deployment in this placement is available.",
-		Remediation:    "Diagnose the deployments in this placement.",
+		Explanation:    "Nothing in this placement is serving yet.",
+		Remediation:    "Look at what this placement created; the cause is there.",
 		Skill:          SkillWorkloadNotAvailable,
 	},
 }

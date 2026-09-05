@@ -46,7 +46,7 @@ type Cause struct {
 	// clock at read time, never stored; empty when the API left it unset or
 	// set a value that cannot be believed.
 	InStateFor string `json:"inStateFor,omitempty"`
-	// Reported separates a condition status of False — a controller looked and
+	// Reported separates a condition status of False — something looked and
 	// reported a failure — from Unknown, where nothing has reported success or
 	// failure and the reason states an intent rather than an observation.
 	// Flattening the two turns "we have heard nothing" into "we were told it is
@@ -78,8 +78,8 @@ type Cause struct {
 // failure. Something is acting on the object and reporting nothing either way.
 //
 // It is named for exactly what is observed. It is not a claim about who is at
-// fault: a provider that never reports and a container that starts and exits
-// immediately are indistinguishable from the project control plane.
+// fault: infrastructure that never reports back and a container that starts and
+// exits immediately look identical from inside the customer's project.
 const PatternNoTerminalStateReported = "NoTerminalStateReported"
 
 // note appends a derived observation to an explanation, so what the catalog
@@ -272,8 +272,9 @@ func discardedTime(c metav1.Condition, kept string) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"The condition's lastTransitionTime (%s) is a sentinel rather than an observation, "+
-			"so no age was derived from it.",
+		"The time recorded against this status (%s) is a placeholder Datum writes when it has "+
+			"nothing real to record, so nothing was worked out from it about how long this has "+
+			"been going on.",
 		c.LastTransitionTime.UTC().Format(time.RFC3339))
 }
 
@@ -375,7 +376,8 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 		// message is the best available cause — but say the classification is
 		// unknown rather than implying one.
 		cause.Explanation = fmt.Sprintf(
-			"No catalog entry for reason %q. Treat the condition message as the cause.", c.Reason)
+			"Datum reported %q, which this diagnosis has no explanation written for. "+
+				"Go by the status message: it is the best account of what happened.", c.Reason)
 		cause.note(discardedTime(c, cause.LastTransitionTime))
 		return cause
 	}
@@ -387,7 +389,8 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 		// provider is actively programming the instance"). Under Unknown
 		// nothing observed that, so it is framed as the claim it is rather
 		// than asserted and then contradicted two sentences later.
-		cause.Explanation = "What the reason claims: " + info.Explanation
+		cause.Explanation = "Nobody has confirmed this — it is what the status claims, not what was " +
+			"seen: " + info.Explanation
 	}
 	cause.Remediation = info.Remediation
 	cause.Skill = info.Skill
@@ -396,9 +399,10 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 		// now the wrong advice: it is what produced the five-day wait this
 		// escalation exists to end.
 		cause.Remediation = fmt.Sprintf(
-			"Stop waiting. %s normally clears within %s and this one has held for %s. "+
-				"Escalate to Datum with the object name, the reason, and that duration.",
-			c.Reason, info.ExpectedWithin, cause.InStateFor)
+			"Stop waiting on this one. A step like this normally finishes within %s, and this one "+
+				"has been sitting for %s. Take it to Datum, with the name (%s), the status code "+
+				"(%s), and how long it has been stuck.",
+			info.ExpectedWithin, cause.InStateFor, cause.Object, c.Reason)
 	}
 	switch {
 	case noTerminalStateReported(obj, cause, info, objectAge, inState):
@@ -409,8 +413,9 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 		// nothing observed that, and repeating it is how a crash-looping
 		// container got reported as provisioning.
 		cause.note(fmt.Sprintf(
-			"The %s condition is Unknown: no controller has reported success or failure, so %q "+
-				"states an intent rather than an observation.", c.Type, c.Reason))
+			"Datum has not reported back on this either way — not success, not failure (%s is still "+
+				"unknown) — so %q says what is meant to be happening, not what anyone saw.",
+			c.Type, c.Reason))
 	}
 	cause.note(discardedTime(c, cause.LastTransitionTime))
 	return cause
@@ -444,28 +449,29 @@ func applyNoTerminalState(cause *Cause, info ReasonInfo) {
 
 	clock := "and it carries no usable timestamp"
 	if cause.InStateFor != "" {
-		clock = fmt.Sprintf("yet its timestamp was rewritten %s ago", cause.InStateFor)
+		clock = fmt.Sprintf("though its status was last rewritten %s ago", cause.InStateFor)
 	}
 	cause.note(fmt.Sprintf(
-		"Observed: %s %s has existed for %s without reaching its ready state, its %s condition is "+
-			"still Unknown — no controller has reported success or failure — %s.",
+		"What is known: %s %s has existed for %s and has never come up, and Datum has not reported "+
+			"back on it either way — not success, not failure (%s is still unknown) — %s.",
 		cause.Level, cause.Object, cause.ObjectAge, cause.ConditionType, clock))
 	cause.note(fmt.Sprintf(
-		"Inferred: something is acting on this object without ever reporting a terminal state. "+
-			"%q states an intent, not an observation, so it is not evidence that the workload "+
-			"spec is sound.", cause.Reason))
+		"What that suggests: something is working on it and never saying how it turned out. %q is "+
+			"what is meant to be happening, not what anyone saw, so it is no evidence that your "+
+			"workload itself is fine.", cause.Reason))
 
-	rule := "Do not rule the workload spec out and do not rule Datum out: nothing has been reported either way."
+	rule := "Nothing has been reported either way, so neither your workload nor Datum is ruled out yet."
 	if cause.Level == LevelInstance {
 		rule = fmt.Sprintf(
-			"A container that starts and exits immediately (InstanceCrashing, user-actionable) is "+
-				"indistinguishable from a provider that never reports, from the project control "+
-				"plane. Read the instance logs and exit code first — the %q skill — and escalate "+
-				"to Datum in parallel.", SkillInstanceNotReady)
+			"From here, a container of your own that starts and exits immediately (InstanceCrashing, "+
+				"which you would fix yourself) looks exactly like Datum infrastructure that never "+
+				"reported back. Read the instance logs and exit code first — the %q steps — and "+
+				"raise it with Datum at the same time.", SkillInstanceNotReady)
 	}
 	cause.Remediation = fmt.Sprintf(
-		"Stop waiting, and stop assuming this is in flight. %s has been failing for at least %s "+
-			"against an expected %s, with no terminal state reported. %s",
+		"Stop waiting on this one, and stop treating it as work in progress. %s has been failing "+
+			"for at least %s, where a step like this normally finishes within %s, and nothing has "+
+			"reported back on it. %s",
 		cause.Object, cause.FailingFor, info.ExpectedWithin, rule)
 }
 
@@ -502,42 +508,55 @@ func instanceSummary(instances []computev1alpha.Instance) InstanceSummary {
 
 func summarize(w *computev1alpha.Workload, available bool, root *Cause, blockedCount int) string {
 	if available && blockedCount == 0 {
-		return fmt.Sprintf("Workload %s is available: %d/%d replicas ready.",
+		return fmt.Sprintf("Workload %s is running: %d of %d replicas ready.",
 			w.Name, w.Status.ReadyReplicas, w.Status.DesiredReplicas)
 	}
 	if root == nil {
 		return fmt.Sprintf(
-			"Workload %s reports no failing conditions but only %d/%d replicas are ready.",
+			"Workload %s reports nothing wrong, but only %d of %d replicas are ready.",
 			w.Name, w.Status.ReadyReplicas, w.Status.DesiredReplicas)
 	}
 
 	var who string
 	switch root.Actionability {
 	case ActionabilityUser:
-		who = "This is user-actionable"
+		who = "This is one you can fix yourself"
 	case ActionabilityPlatform:
-		who = "This is a platform fault — escalate to Datum"
+		who = "This one is Datum's to fix, not yours — take it to them"
 	case ActionabilityTransient:
-		who = "This is a transient state"
+		who = "This is a normal step along the way and should clear on its own"
 	case ActionabilityStalled:
-		who = "This reason is classified transient but has outlived the time it should " +
-			"take — treat it as stuck, not in flight, and escalate to Datum"
+		// Says what has actually been established and what has not. The
+		// classification alone reads as "not your fault", which is the
+		// overclaim a crash-looping container punishes. Whether anything was
+		// reported changes which half is true, so the two never share a
+		// sentence.
+		who = "A step like this normally finishes quickly and this one has not, so treat it as " +
+			"stuck rather than in progress and take it to Datum"
+		if root.Reported {
+			who += ". Datum did report this state, so quote what it said — but nothing accounts " +
+				"for the delay"
+		} else {
+			who += ". Nothing has reported a fault either way, so a problem inside your own " +
+				"container is not ruled out"
+		}
 	default:
-		who = "The owner of this cause is unclassified"
+		who = "Who has to act on this one is not something Datum has classified"
 	}
 	if root.Pattern == PatternNoTerminalStateReported {
 		// Overrides the actionability sentence rather than adding to it: an
 		// unreported reason that says "in progress" must not be summarised as a
-		// transient state, and blaming Datum is exactly the overclaim the
+		// normal step, and blaming Datum is exactly the overclaim the
 		// crash-looping container case punishes.
-		who = "Treat this as stuck rather than in flight: no controller has reported success or " +
-			"failure, so escalate to Datum with the evidence — and do not tell the customer this " +
-			"cannot be a spec problem, because a crash-looping container looks identical from here"
+		who = "Treat this as stuck rather than in progress: nothing has reported back either way, " +
+			"so it is worth taking to Datum with the details below — with the caveat that a " +
+			"container of your own that keeps crashing on start would look exactly like this from " +
+			"here, so that is not ruled out"
 	}
 
-	state := "not available"
+	state := "is not running"
 	if available {
-		state = "partially available"
+		state = "is only partly running"
 	}
 	// The age belongs in the one-line summary: it is what separates work that
 	// is in flight from work that stopped moving days ago. Both numbers are
@@ -545,18 +564,18 @@ func summarize(w *computev1alpha.Workload, available bool, root *Cause, blockedC
 	var held string
 	switch {
 	case root.FailingFor != "" && root.InStateFor == "":
-		held = fmt.Sprintf(", failing for at least %s (the condition carries no usable timestamp)",
+		held = fmt.Sprintf(", stuck for at least %s (there is no usable timestamp on its status)",
 			root.FailingFor)
 	case root.FailingFor != "" && root.FailingFor != root.InStateFor:
-		held = fmt.Sprintf(", unchanged for %s but failing for at least %s",
+		held = fmt.Sprintf(", unchanged for %s but stuck for at least %s",
 			root.InStateFor, root.FailingFor)
 	case root.InStateFor != "":
 		held = fmt.Sprintf(", unchanged for %s", root.InStateFor)
 	}
 	return fmt.Sprintf(
-		"Workload %s is %s (%d/%d replicas ready). Root cause: %s on %s %s (%s)%s. %s.",
+		"Workload %s %s: %d of %d replicas ready. The hold-up is %s %s%s (status %s on %s). %s.",
 		w.Name, state, w.Status.ReadyReplicas, w.Status.DesiredReplicas,
-		root.Reason, root.Level, root.Object, root.ConditionType, held, who)
+		root.Level, root.Object, held, root.Reason, root.ConditionType, who)
 }
 
 func nextSteps(root *Cause) []string {
@@ -569,35 +588,38 @@ func nextSteps(root *Cause) []string {
 	}
 	if root.Actionability == ActionabilityPlatform {
 		steps = append(steps,
-			"Do not change the workload spec — this cause is not fixable from the customer side.")
+			"Do not change your workload to work around this one: Datum reported the fault as "+
+				"theirs, and no edit on your side clears it.")
 	}
 	if root.Actionability == ActionabilityStalled {
-		step := "Do not report this as normal in-flight work: the reason claims transient, " +
-			"but the elapsed time contradicts the claim."
-		// Whether a controller reported anything decides what may be asserted,
-		// so the two statuses get different advice instead of one blended line.
+		step := "Do not describe this as normal progress. The status still says the work is " +
+			"under way, but it has taken far longer than that work should take."
+		// Whether anything reported at all decides what may be asserted, so the
+		// two statuses get different advice instead of one blended line.
 		if root.Reported {
-			step += " A controller did report this status, so quote its condition message as the reported cause."
+			step += " Datum did report this state, so quote its status message as what was reported."
 		} else {
-			step += " The cause has not been reported by any controller, so gather evidence " +
-				"rather than asserting a fault."
+			step += " Nothing has reported a cause at all, so gather the details rather than " +
+				"naming a culprit."
 		}
 		steps = append(steps, step)
 	}
 	if root.Pattern == PatternNoTerminalStateReported {
 		steps = append(steps, fmt.Sprintf(
-			"Report the observation and the inference separately: that %s is %s old and still "+
-				"reports %s=Unknown are facts; that the provider is at fault is not.",
+			"Keep what is known apart from what is guessed. Known: %s is %s old and Datum has "+
+				"still reported nothing about %s either way. Guessed, and not established: that "+
+				"Datum's infrastructure is the thing at fault.",
 			root.Object, root.ObjectAge, root.ConditionType))
 		if root.Level == LevelInstance {
 			steps = append(steps, fmt.Sprintf(
-				"Rule out InstanceCrashing before saying this is not a spec problem — load the %q "+
-					"skill. A user container that exits on start presents from here exactly as a "+
-					"provider that never reported.", SkillInstanceNotReady))
+				"Rule out a crashing container (InstanceCrashing) before saying this cannot be a "+
+					"problem with the workload itself — the %q steps cover how. A container of "+
+					"your own that exits the moment it starts looks, from here, exactly like "+
+					"Datum infrastructure that never reported back.", SkillInstanceNotReady))
 		}
 	}
 	if root.Skill != "" {
-		steps = append(steps, fmt.Sprintf("Load the %q skill for the full procedure.", root.Skill))
+		steps = append(steps, fmt.Sprintf("The %q runbook has the full procedure.", root.Skill))
 	}
 	return steps
 }

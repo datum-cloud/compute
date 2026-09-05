@@ -190,8 +190,8 @@ func TestDiagnoseHealthyWorkload(t *testing.T) {
 	if d.Instances.Ready != 2 || len(d.Instances.Blocked) != 0 {
 		t.Errorf("Instances = %+v, want 2 ready and none blocked", d.Instances)
 	}
-	if !strings.Contains(d.Summary, "is available") {
-		t.Errorf("Summary = %q, want it to say the workload is available", d.Summary)
+	if !strings.Contains(d.Summary, "is running") {
+		t.Errorf("Summary = %q, want it to say the workload is running", d.Summary)
 	}
 }
 
@@ -212,18 +212,18 @@ func TestDiagnosePlatformFaultTellsCustomerNotToChangeSpec(t *testing.T) {
 	if d.RootCause.Actionability != ActionabilityPlatform {
 		t.Fatalf("Actionability = %q, want platform", d.RootCause.Actionability)
 	}
-	if !strings.Contains(d.Summary, "escalate to Datum") {
-		t.Errorf("Summary = %q, want it to direct the reader to escalate", d.Summary)
+	if !strings.Contains(d.Summary, "Datum's to fix") {
+		t.Errorf("Summary = %q, want it to direct the reader to take this to Datum", d.Summary)
 	}
 
 	var warned bool
 	for _, s := range d.NextSteps {
-		if strings.Contains(s, "Do not change the workload spec") {
+		if strings.Contains(s, "Do not change your workload") {
 			warned = true
 		}
 	}
 	if !warned {
-		t.Errorf("NextSteps = %q, want an explicit do-not-change-the-spec warning", d.NextSteps)
+		t.Errorf("NextSteps = %q, want an explicit do-not-change-your-workload warning", d.NextSteps)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestDiagnoseUncataloguedReason(t *testing.T) {
 	if d.RootCause.Actionability != "" {
 		t.Errorf("Actionability = %q, want empty rather than a guessed classification", d.RootCause.Actionability)
 	}
-	if !strings.Contains(d.RootCause.Explanation, "No catalog entry") {
+	if !strings.Contains(d.RootCause.Explanation, "no explanation written for") {
 		t.Errorf("Explanation = %q, want it to admit the reason is uncatalogued", d.RootCause.Explanation)
 	}
 }
@@ -335,8 +335,14 @@ func TestDiagnoseWithoutTransitionTimeReportsNoAge(t *testing.T) {
 // ProgrammingInProgress, with condition timestamps that were either the Unix
 // epoch or hours old on an object nine days old.
 
-// stagingNow is the instant the three stuck workloads were traced to the pod.
+// stagingNow is the instant the three stuck workloads were traced to the
+// crashing container.
 var stagingNow = time.Date(2026, 9, 5, 12, 46, 24, 0, time.UTC)
+
+// stagingInState is how long the staging conditions claimed to have held, on
+// objects that had in fact been broken for nine days. The gap between the two
+// numbers is the finding, so both are asserted in several places from here.
+const stagingInState = "9h30m"
 
 // epochCond is a condition carrying the sentinel real Instances arrive with.
 // It is not metav1.Time's zero value — Go's zero time is year 1 — so IsZero()
@@ -427,7 +433,7 @@ func TestDiagnoseDiscardsImplausibleTimestamps(t *testing.T) {
 					}
 				}
 			}
-			if !strings.Contains(root.Explanation, "sentinel") {
+			if !strings.Contains(root.Explanation, "placeholder") {
 				t.Errorf("Explanation = %q, want it to say the timestamp was discarded and why",
 					root.Explanation)
 			}
@@ -469,9 +475,9 @@ func TestDiagnoseUsesCreationTimestampAsFailureFloor(t *testing.T) {
 	d := DiagnoseAt(stagingNow, w, nil, insts)
 	root := d.RootCause
 
-	if root.InStateFor != "9h30m" {
+	if root.InStateFor != stagingInState {
 		t.Errorf("InStateFor = %q, want %q — the condition clock is still reported as it is",
-			root.InStateFor, "9h30m")
+			root.InStateFor, stagingInState)
 	}
 	if root.ObjectAge != "9d" {
 		t.Errorf("ObjectAge = %q, want %q", root.ObjectAge, "9d")
@@ -482,7 +488,7 @@ func TestDiagnoseUsesCreationTimestampAsFailureFloor(t *testing.T) {
 	}
 	// The gap is the diagnostic signal, so both numbers have to reach the
 	// summary; reporting only the smaller one is the defect.
-	if !strings.Contains(d.Summary, "9h30m") || !strings.Contains(d.Summary, "9d") {
+	if !strings.Contains(d.Summary, stagingInState) || !strings.Contains(d.Summary, "9d") {
 		t.Errorf("Summary = %q, want it to carry both 9h30m and 9d", d.Summary)
 	}
 }
@@ -541,8 +547,13 @@ func TestDiagnoseSeparatesUnreportedFromReportedFailure(t *testing.T) {
 		if root.Pattern != PatternNoTerminalStateReported {
 			t.Errorf("Pattern = %q, want %q", root.Pattern, PatternNoTerminalStateReported)
 		}
-		if !strings.Contains(root.Explanation, "Observed:") || !strings.Contains(root.Explanation, "Inferred:") {
-			t.Errorf("Explanation = %q, want it to separate observation from inference", root.Explanation)
+		// The two labels are the observed/inferred split in plain words. They
+		// are asserted because collapsing them is how "nothing was reported"
+		// became "the provider is at fault".
+		if !strings.Contains(root.Explanation, "What is known:") ||
+			!strings.Contains(root.Explanation, "What that suggests:") {
+			t.Errorf("Explanation = %q, want it to separate what is known from what it suggests",
+				root.Explanation)
 		}
 		// The assistant told the customer "this isn't a spec problem, escalate
 		// to Datum" while the container was crash-looping. Naming the
@@ -561,8 +572,8 @@ func TestDiagnoseSeparatesUnreportedFromReportedFailure(t *testing.T) {
 			t.Errorf("NextSteps = %q, want the instance-not-ready runbook offered alongside escalation",
 				d.NextSteps)
 		}
-		if strings.Contains(root.Remediation, "Wait.") {
-			t.Errorf("Remediation still tells the reader to wait: %q", root.Remediation)
+		if strings.Contains(root.Remediation, "this is normal") {
+			t.Errorf("Remediation still tells the reader this is normal: %q", root.Remediation)
 		}
 	})
 
@@ -575,7 +586,7 @@ func TestDiagnoseSeparatesUnreportedFromReportedFailure(t *testing.T) {
 		if root.Pattern != "" {
 			t.Errorf("Pattern = %q, want empty: a controller did report this status", root.Pattern)
 		}
-		if strings.Contains(root.Explanation, "no controller has reported") {
+		if strings.Contains(root.Explanation, "has not reported back") {
 			t.Errorf("Explanation = %q, want it not to claim nothing was reported", root.Explanation)
 		}
 	})
