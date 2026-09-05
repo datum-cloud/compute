@@ -42,8 +42,14 @@ it is not compute's to rename. Both document routes are unauthenticated on
 purpose — the assistant fetches them to build a system prompt, before it holds
 any project context, and they are static text with no tenant data in them.
 
-Two properties of the server are worth knowing before you deploy it:
+Three properties of the server are worth knowing before you deploy it:
 
+- **A project is a control plane, not a namespace.** `X-Datum-Project` selects a
+  project by rewriting the API host path to
+  `/apis/resourcemanager.miloapis.com/v1alpha1/projects/<project>/control-plane`,
+  the same rewrite `internal/quota`, `internal/referenceddata` and the datumctl
+  plugin perform. Within that control plane compute's objects live in the
+  `default` namespace.
 - **Every read runs as the caller.** The server holds no credential of its own
   for the project control plane. It takes the bearer token off the request and
   builds a client with it, so a tool call can never see more than the person who

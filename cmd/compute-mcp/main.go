@@ -33,6 +33,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
@@ -52,8 +54,8 @@ import (
 )
 
 const (
-	// projectHeader names the project whose namespace a request reads. Set by
-	// the caller, not by the model.
+	// projectHeader names the project whose control plane a request reads. Set
+	// by the caller, not by the model.
 	projectHeader = "X-Datum-Project"
 
 	// serverName and serverVersion identify this server to MCP clients.
@@ -63,6 +65,13 @@ const (
 	// readHeaderTimeout bounds how long a slow client may hold a connection
 	// before sending headers.
 	readHeaderTimeout = 10 * time.Second
+
+	// resourceNamespace is the namespace compute's objects live in inside a
+	// project's control plane. The project routes to the control plane; within
+	// it everything is in "default". Mirrors util.ResourceNamespace, which the
+	// CLI uses for the same objects; not imported because that package pulls in
+	// the whole datumctl plugin runtime.
+	resourceNamespace = "default"
 )
 
 var (
@@ -168,24 +177,59 @@ func depsFromRequest(r *http.Request, baseConfig *rest.Config) agent.DepsFor {
 			return agent.ToolDeps{}, fmt.Errorf("no project on the request: set the %s header", projectHeader)
 		}
 
-		c, err := clientForToken(baseConfig, token)
+		c, err := clientForToken(baseConfig, token, project)
 		if err != nil {
 			return agent.ToolDeps{}, err
 		}
-		return agent.ToolDeps{Reader: agent.NewClientReader(c), Namespace: project}, nil
+		return agent.ToolDeps{Reader: agent.NewClientReader(c), Namespace: resourceNamespace}, nil
 	}
 }
 
-// clientForToken builds a client that authenticates as the bearer of token.
+// projectControlPlanePath returns the API path for a project's control plane.
+//
+// A project is addressed by rewriting the host path, not by a namespace named
+// after it: this mirrors the rewrite the Milo multicluster provider performs,
+// and matches internal/quota/client.go, internal/referenceddata/project_reader.go
+// and internal/cmd/compute/util/client.go.
+func projectControlPlanePath(project string) string {
+	return fmt.Sprintf("/apis/resourcemanager.miloapis.com/v1alpha1/projects/%s/control-plane", project)
+}
+
+// clientConfig derives the REST config one request reads through: the caller's
+// token, pointed at the caller's project control plane.
 //
 // The base config supplies the endpoint and CA only; every credential field it
 // might carry is cleared first, so the server's own identity (a mounted service
 // account token, a kubeconfig's client certificate) can never leak into a
 // caller's read.
-func clientForToken(baseConfig *rest.Config, token string) (client.Client, error) {
+func clientConfig(baseConfig *rest.Config, token, project string) (*rest.Config, error) {
+	// The project arrives in a header and is interpolated into a URL path, so
+	// it is validated before it can reshape that path into another API route.
+	if errs := validation.IsDNS1123Subdomain(project); len(errs) > 0 {
+		return nil, fmt.Errorf("invalid project %q on the %s header: %s", project, projectHeader, strings.Join(errs, "; "))
+	}
+
 	cfg := rest.AnonymousClientConfig(rest.CopyConfig(baseConfig))
 	cfg.BearerToken = token
 	cfg.BearerTokenFile = ""
+
+	host, err := url.Parse(cfg.Host)
+	if err != nil {
+		return nil, fmt.Errorf("parsing control plane host: %w", err)
+	}
+	host.Path = projectControlPlanePath(project)
+	cfg.Host = host.String()
+
+	return cfg, nil
+}
+
+// clientForToken builds a client that reads project's control plane as the
+// bearer of token.
+func clientForToken(baseConfig *rest.Config, token, project string) (client.Client, error) {
+	cfg, err := clientConfig(baseConfig, token, project)
+	if err != nil {
+		return nil, err
+	}
 
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
