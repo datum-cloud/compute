@@ -113,6 +113,15 @@ type WorkloadSummary struct {
 	// the relative form is what makes a five-day "in progress" impossible to
 	// read as normal in-flight work without doing arithmetic first.
 	RootCauseFor string `json:"rootCauseFor,omitempty"`
+	// RootCauseFailingFor is the floor on how long the root-cause object has
+	// been failing, from its creationTimestamp. RootCauseFor alone measures
+	// condition churn: a restart rewrites lastTransitionTime, so a workload
+	// broken for nine days can report nine hours. When the two disagree, the
+	// gap is the finding.
+	RootCauseFailingFor string `json:"rootCauseFailingFor,omitempty"`
+	// RootCausePattern names a failure shape derived from elapsed evidence
+	// rather than reported by a controller. Empty unless one was recognised.
+	RootCausePattern string `json:"rootCausePattern,omitempty"`
 }
 
 // WorkloadsListInput takes no arguments: the project is fixed by the request,
@@ -176,8 +185,10 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 		Title: "List workloads",
 		Description: "List every Workload in the project with its availability, ready/desired replicas, " +
 			"and — when it is not fully available — the root-cause reason, how long it has held that " +
-			"state (rootCauseFor, e.g. \"5d\"), and whether that cause is user-actionable, a platform " +
-			"fault, transient, or stalled. Start here. Read-only.",
+			"state (rootCauseFor, e.g. \"5d\"), how long the failing object has existed " +
+			"(rootCauseFailingFor — a restart rewrites the condition clock, so trust the larger " +
+			"number), and whether that cause is user-actionable, a platform fault, transient, or " +
+			"stalled. Start here. Read-only.",
 	}, workloadsList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -204,7 +215,11 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 			"ReferencedDataNotReady) down to the condition that names the real cause, and returns that " +
 			"root cause with an explanation, how long it has held that state, whether it is " +
 			"user-actionable, a platform fault, transient, or stalled (transient for longer than that " +
-			"reason should take), concrete next steps, and which skill covers the full procedure. This is the tool to reach for when " +
+			"reason should take), concrete next steps, and which skill covers the full procedure. " +
+			"Read inStateFor against failingFor: the first is how long the reason has held, the " +
+			"second a floor on how long the object has been broken, and a large gap means the " +
+			"condition is being rewritten. A reported=false cause means no controller reported " +
+			"success or failure — do not repeat its reason as an observation. This is the tool to reach for when " +
 			"someone asks why a workload is broken. Read-only.",
 	}, workloadDiagnose(deps))
 
@@ -257,6 +272,8 @@ func workloadsList(deps DepsFor) mcp.ToolHandlerFor[WorkloadsListInput, Workload
 				summary.Actionability = diagnosis.RootCause.Actionability
 				summary.RootCauseSince = diagnosis.RootCause.LastTransitionTime
 				summary.RootCauseFor = diagnosis.RootCause.InStateFor
+				summary.RootCauseFailingFor = diagnosis.RootCause.FailingFor
+				summary.RootCausePattern = diagnosis.RootCause.Pattern
 			}
 			out.Workloads = append(out.Workloads, summary)
 		}

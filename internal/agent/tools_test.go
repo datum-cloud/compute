@@ -573,3 +573,43 @@ func TestWorkloadsListLeavesFreshTransientStateAlone(t *testing.T) {
 			got, ActionabilityTransient)
 	}
 }
+
+// TestWorkloadsListCarriesTheFailureFloor is the fleet-view half of the
+// 2026-08-27 stall. The row reported rootCauseFor 9h30m for a workload that had
+// been broken for nine days, which reads as a rollout in progress. Both numbers
+// have to be on the row, because the fleet view is where the "is anything
+// wrong?" question is actually answered.
+func TestWorkloadsListCarriesTheFailureFloor(t *testing.T) {
+	created := time.Now().Add(-9 * 24 * time.Hour)
+	rewritten := time.Now().Add(-9*time.Hour - 30*time.Minute)
+
+	w := workloadCreated("joseszycho-billing-test", created,
+		cond(computev1alpha.WorkloadAvailable, "False",
+			computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments."))
+	inst := instanceCreated("joseszycho-billing-test-dfw-dfw-0", created,
+		condAt(computev1alpha.InstanceProgrammed, "Unknown",
+			computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+			"Instance is provisioning", rewritten))
+	deps := fixtureDeps(&fakeReader{
+		workloads: []computev1alpha.Workload{*w},
+		instances: map[string][]computev1alpha.Instance{
+			"joseszycho-billing-test": {inst},
+		},
+	})
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	row := out.Workloads[0]
+	if row.RootCauseFor != "9h30m" {
+		t.Errorf("RootCauseFor = %q, want %q", row.RootCauseFor, "9h30m")
+	}
+	if row.RootCauseFailingFor != "9d" {
+		t.Errorf("RootCauseFailingFor = %q, want %q — nine days of failure must not read as nine hours",
+			row.RootCauseFailingFor, "9d")
+	}
+	if row.RootCausePattern != PatternNoTerminalStateReported {
+		t.Errorf("RootCausePattern = %q, want %q", row.RootCausePattern, PatternNoTerminalStateReported)
+	}
+}
