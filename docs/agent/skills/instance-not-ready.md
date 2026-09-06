@@ -51,11 +51,51 @@ it — the logs are there either way.
    image; one failing among healthy siblings points at one machine or one
    location, which is Datum's.
 
+## When the logs cannot be reached
+
+Step 3 ends at the instance logs, and it is the only cheap way to settle
+whether a silent stall is really a crash loop. On some workloads that
+route is closed: retrieval fails outright rather than coming back empty, because
+the machine answers plain HTTP on the port where encrypted log traffic is
+expected. No logs come back, for anyone, however often it is retried.
+
+When that happens:
+
+1. **Say so, and do not send them anyway.** "Check the container logs" is not a
+   next step if the logs cannot be fetched. Say retrieval is failing and give
+   them what you do have: the restart count, the exit code if the status carries
+   one, how long the instance has been failing, and whether its siblings fail
+   the same way.
+
+2. **Do not let it settle the answer.** A crash loop you could not look for is
+   not a crash loop ruled out. Do not turn "I could not check" into "the
+   container is fine", and do not hand this to Datum as a stall with the crash
+   loop eliminated. Name the check you were unable to run.
+
+3. **File `UnactionableGuidance`.** The gap is not the broken container — that
+   is the customer's, and it is working as designed that compute reported it.
+   The gap is that the next step this procedure names cannot be carried out on
+   these workloads at all, so every crash answer stops one step short of the
+   cause. Quote the failure, not your conclusion:
+
+       "capability": "container log retrieval for a crashing instance",
+       "kind": "UnactionableGuidance",
+       "evidence": {
+         "tool": "instances_list",
+         "observed": "InstanceCrashing; remediation points at the logs",
+         "contradictedBy": "log retrieval fails outright on this instance:
+                            the port answers plain HTTP where encrypted
+                            traffic is expected" }
+
+File it once, for the blocked step. A container that keeps exiting because of a
+bug in the customer's program is not a gap however many times it happens.
+
 ## Reporting
 
 For `ImageUnavailable` and `ConfigurationError`, name the exact thing to change.
 For `InstanceCrashing`, do not guess the bug — send them to the logs, and quote
-the exit code and restart count.
+the exit code and restart count. If the logs cannot be fetched, say that instead
+of pointing at them, and file the gap.
 
 When you got here from a stalled instance rather than a reported reason, say
 which of the two you are answering: the logs showed a crash (the customer's to
