@@ -5,11 +5,16 @@ Use when `ReferencedDataReady=False`, or the workload reports
 
 ## Background
 
-ConfigMaps and Secrets referenced by a workload template are read by the
-management plane from the project namespace and delivered to the cell. The
-`ReferencedDataReady` condition appears in two places: on the WorkloadDeployment
-(the resolver's view — could it read the source?) and on the Instance (the
-cell's view — did the data arrive?). Read both; they fail for different reasons.
+The ConfigMaps and Secrets a workload references are read out of the customer's
+project by Datum and delivered to the machines that run the instances. The
+`ReferencedDataReady` condition therefore appears in two places: on the
+WorkloadDeployment (could Datum read it?) and on the Instance (did it arrive?).
+Read both; they fail for different reasons.
+
+Call them ConfigMaps and Secrets. The customer wrote `configMapRef:` or
+`secretRef:` in their own workload, so those are already their words;
+"referenced data" is not. Quote the object name from the status message
+verbatim — that is the part they act on.
 
 ## Procedure
 
@@ -18,29 +23,29 @@ cell's view — did the data arrive?). Read both; they fail for different reason
 
 2. **Map the reason:**
 
-   - `SourceNotFound` — the ConfigMap or Secret does not exist in the project
-     namespace. **Customer fixes.** The message names the object and the
-     container that references it — quote it. Usual causes: a typo in the
-     reference, or the object was never created in this project.
-   - `SourceUnauthorized` — the management identity cannot read the object.
-     **Platform fault.** The object exists; Datum's RBAC is insufficient.
-     Escalate; do not ask the customer to recreate anything.
-   - `SourceTooLarge` — the object exceeds the size limit. **Customer fixes**
-     by shrinking or splitting it.
-   - `Resolving` / `AwaitingPropagation` — transient. Reading, or in flight to
-     the cell. Wait.
+   - `SourceNotFound` — the ConfigMap or Secret does not exist in the project.
+     **Customer fixes.** The message names the object and the container that
+     references it — quote it. Usual causes: a typo in the name, or it was
+     never created in this project.
+   - `SourceUnauthorized` — the object is there, but Datum does not have
+     permission to read it. **Datum fixes.** Escalate; do not ask the customer
+     to recreate anything, and say plainly that their object is fine.
+   - `SourceTooLarge` — the object is bigger than Datum allows. **Customer
+     fixes**, by shrinking or splitting it.
+   - `Resolving` / `AwaitingPropagation` — normal. Being read, or in transit.
+     Wait.
 
-3. **Distinguish "not found" from "not yet propagated."** `SourceNotFound` on
-   the deployment means the source genuinely is not there.
-   `AwaitingPropagation` on the instance means it was read fine and is still
-   travelling. Only the first is actionable.
+3. **Distinguish "not found" from "not there yet."** `SourceNotFound` on the
+   deployment means it genuinely is not in the project. `AwaitingPropagation`
+   on the instance means it was read fine and is still on its way. Only the
+   first is something the customer can act on.
 
-4. **Check every reference.** A workload may mount several ConfigMaps and
-   Secrets; the condition reports the first blocking one. After it is fixed,
+4. **Check every reference.** A workload may use several ConfigMaps and
+   Secrets; the condition reports the first one blocking. After it is fixed,
    re-check — another may be waiting behind it.
 
 ## Reporting
 
-Quote the object name and namespace from the condition message. For
-`SourceNotFound`, the next step is concrete: create that object in that
-namespace, or correct the reference.
+Quote the object name from the status message. For `SourceNotFound`, the next
+step is concrete: create that ConfigMap or Secret in this project, or fix the
+name the workload references it by.

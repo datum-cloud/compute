@@ -11,11 +11,10 @@ import (
 
 // Reader fetches the compute objects the tools reason over.
 //
-// It exists so the tools can be tested without a cluster, and so the identity
-// a read runs under is decided by whoever constructs the Reader rather than
-// buried in tool code. The server builds one per request from the caller's own
-// credentials, which is what keeps a tool call from ever seeing more than the
-// caller could see themselves.
+// The identity a read runs under is decided by whoever constructs the Reader,
+// never buried in tool code: the server builds one per request from the
+// caller's own credentials, so a tool call can never see more than the caller
+// could see themselves.
 type Reader interface {
 	// ListWorkloads returns every Workload in the namespace.
 	ListWorkloads(ctx context.Context, namespace string) ([]computev1alpha.Workload, error)

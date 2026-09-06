@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 // TestCatalogCoversEveryAPIReason parses api/v1alpha and asserts that every
@@ -60,6 +63,11 @@ func TestEveryCatalogEntryIsUsable(t *testing.T) {
 		}
 		switch info.Actionability {
 		case ActionabilityUser, ActionabilityPlatform, ActionabilityTransient:
+		case ActionabilityStalled:
+			// Stalled is derived from elapsed time on every read. Writing it in
+			// the table would be a stored guess about a live condition.
+			t.Errorf("%s: %q must never be declared in the catalog; it is derived by ActionabilityAt",
+				info.Reason, ActionabilityStalled)
 		default:
 			t.Errorf("%s: invalid Actionability %q", info.Reason, info.Actionability)
 		}
@@ -152,4 +160,129 @@ func parseAPIReasons(t *testing.T) map[string]string {
 		}
 	}
 	return reasons
+}
+
+// TestTransientReasonsThatSayWaitDeclareAWindow is the invariant behind the
+// stalled state: "transient" is a claim about duration, so a reason that tells
+// someone to wait has to say how long is reasonable, or the claim can never be
+// falsified. The converse holds too — a resting state (Available, QuotaDisabled)
+// offers no remediation and legitimately persists forever, so it gets no window.
+func TestTransientReasonsThatSayWaitDeclareAWindow(t *testing.T) {
+	for _, info := range AllReasons() {
+		if info.Actionability != ActionabilityTransient {
+			if info.ExpectedDuration != 0 {
+				t.Errorf("%s: %s reason declares ExpectedDuration %s; windows only apply to transient reasons",
+					info.Reason, info.Actionability, info.ExpectedDuration)
+			}
+			continue
+		}
+		switch {
+		case info.Remediation != "" && info.ExpectedDuration <= 0:
+			t.Errorf("%s: transient and tells the reader to wait, but declares no ExpectedDuration — "+
+				"the transient claim can never be falsified", info.Reason)
+		case info.Remediation == "" && info.ExpectedDuration > 0:
+			t.Errorf("%s: transient resting state declares a window of %s; it can legitimately persist",
+				info.Reason, info.ExpectedDuration)
+		}
+		if info.ExpectedDuration > 0 && info.ExpectedWithin == "" {
+			t.Errorf("%s: ExpectedDuration %s renders to an empty ExpectedWithin", info.Reason, info.ExpectedDuration)
+		}
+	}
+}
+
+// TestStallableReasonsCarryARunbook: every reason that can escalate to stalled
+// must route somewhere, or the assistant is told to escalate with no procedure.
+func TestStallableReasonsCarryARunbook(t *testing.T) {
+	for _, info := range AllReasons() {
+		if info.ExpectedDuration > 0 && info.Skill == "" {
+			t.Errorf("%s: can stall but names no skill", info.Reason)
+		}
+	}
+}
+
+// TestActionabilityAtEscalatesOnlyOnEvidence pins the boundary. The staging
+// failure was a transient reason held for five days; the risk in fixing it is
+// crying wolf on work that is still in flight, or on a condition whose
+// timestamp we cannot read at all.
+func TestActionabilityAtEscalatesOnlyOnEvidence(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+
+	programming, ok := ExplainReason(computev1alpha.InstanceProgrammedReasonProgrammingInProgress)
+	if !ok {
+		t.Fatal("ProgrammingInProgress should be catalogued")
+	}
+	quotaExceeded, _ := ExplainReason(computev1alpha.InstanceQuotaGrantedReasonQuotaExceeded)
+	available, _ := ExplainReason(computev1alpha.InstanceReadyReasonAvailable)
+
+	tests := []struct {
+		name           string
+		info           ReasonInfo
+		lastTransition string
+		want           Actionability
+	}{
+		{
+			name:           "just under the window stays transient",
+			info:           programming,
+			lastTransition: at(programming.ExpectedDuration - time.Minute),
+			want:           ActionabilityTransient,
+		},
+		{
+			name:           "exactly at the window has not yet exceeded it",
+			info:           programming,
+			lastTransition: at(programming.ExpectedDuration),
+			want:           ActionabilityTransient,
+		},
+		{
+			name:           "just over the window stalls",
+			info:           programming,
+			lastTransition: at(programming.ExpectedDuration + time.Minute),
+			want:           ActionabilityStalled,
+		},
+		{
+			name:           "the staging case: five days stalls",
+			info:           programming,
+			lastTransition: at(5 * 24 * time.Hour),
+			want:           ActionabilityStalled,
+		},
+		{
+			name:           "a missing timestamp degrades to transient",
+			info:           programming,
+			lastTransition: "",
+			want:           ActionabilityTransient,
+		},
+		{
+			name:           "an unparseable timestamp degrades to transient",
+			info:           programming,
+			lastTransition: "last Tuesday",
+			want:           ActionabilityTransient,
+		},
+		{
+			name:           "a future timestamp degrades to transient",
+			info:           programming,
+			lastTransition: now.Add(time.Hour).Format(time.RFC3339),
+			want:           ActionabilityTransient,
+		},
+		{
+			name:           "a resting transient state has no window and never stalls",
+			info:           available,
+			lastTransition: at(365 * 24 * time.Hour),
+			want:           ActionabilityTransient,
+		},
+		{
+			name:           "a user-actionable reason is never reclassified by age",
+			info:           quotaExceeded,
+			lastTransition: at(365 * 24 * time.Hour),
+			want:           ActionabilityUser,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ActionabilityAt(tc.info, tc.lastTransition, now); got != tc.want {
+				t.Errorf("ActionabilityAt(%s, %q) = %q, want %q",
+					tc.info.Reason, tc.lastTransition, got, tc.want)
+			}
+		})
+	}
 }

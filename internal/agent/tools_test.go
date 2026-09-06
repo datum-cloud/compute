@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -366,12 +367,10 @@ func TestReaderErrorsPropagate(t *testing.T) {
 	}
 }
 
-// TestRegisterToolsPublishesExactlyTheReadOnlySet connects a real MCP client to
-// a registered server and inspects what it actually advertises.
-//
-// It guards the tool surface itself: compute publishes five read-only tools and
-// no mutating one, so anything extra appearing over the wire is a bug. It also
-// catches a schema that fails to infer, since AddTool panics on a bad one.
+// TestRegisterToolsPublishesExactlyTheReadOnlySet inspects what a registered
+// server actually advertises: five read-only tools and no mutating one, so
+// anything extra over the wire is a bug. It also catches a schema that fails to
+// infer, since AddTool panics on a bad one.
 func TestRegisterToolsPublishesExactlyTheReadOnlySet(t *testing.T) {
 	ctx := context.Background()
 
@@ -443,4 +442,167 @@ func keysOf(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// wedgedReader is one workload whose only instance has sat in a provider-side
+// transient state since the given instant.
+func wedgedReader(since time.Time) *fakeReader {
+	w := workload("xcheck-iad", 0, 1,
+		condAt(computev1alpha.WorkloadAvailable, "False",
+			computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments.", since))
+	inst := instance("xcheck-iad-iad-0",
+		condAt(computev1alpha.InstanceProgrammed, "False",
+			computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+			"The infrastructure provider is programming the instance.", since))
+	return &fakeReader{
+		workloads: []computev1alpha.Workload{*w},
+		instances: map[string][]computev1alpha.Instance{"xcheck-iad": {inst}},
+	}
+}
+
+// TestWorkloadsListCarriesTheAgeOfTheRootCause: the row itself has to say how
+// old the state is, because the fleet view is where "is anything wrong?" is
+// actually answered.
+func TestWorkloadsListCarriesTheAgeOfTheRootCause(t *testing.T) {
+	deps := fixtureDeps(wedgedReader(time.Now().Add(-5 * 24 * time.Hour)))
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	if len(out.Workloads) != 1 {
+		t.Fatalf("got %d workloads, want 1", len(out.Workloads))
+	}
+
+	row := out.Workloads[0]
+	if row.RootCauseFor != "5d" {
+		t.Errorf("RootCauseFor = %q, want %q", row.RootCauseFor, "5d")
+	}
+	if _, err := time.Parse(time.RFC3339, row.RootCauseSince); err != nil {
+		t.Errorf("RootCauseSince = %q, want an RFC 3339 timestamp: %v", row.RootCauseSince, err)
+	}
+}
+
+// A healthy row carries no age, so the fleet view stays quiet about workloads
+// nobody asked about.
+func TestWorkloadsListOmitsAgeForHealthyWorkloads(t *testing.T) {
+	deps := fixtureDeps(fixtureReader())
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	for _, row := range out.Workloads {
+		if row.Workload == wlWebFrontend && (row.RootCauseSince != "" || row.RootCauseFor != "") {
+			t.Errorf("healthy row carries an age: since=%q for=%q", row.RootCauseSince, row.RootCauseFor)
+		}
+	}
+}
+
+// TestWorkloadsListFlagsTheStagingStall runs the motivating failure end to end
+// through the tool the assistant calls first: a transient reason held for five
+// days was answered with "normal in-flight state, wait a few minutes". Five
+// days of "in flight" must not read as healthy.
+func TestWorkloadsListFlagsTheStagingStall(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	since := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	deps := fixtureDeps(wedgedReader(since))
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	row := out.Workloads[0]
+	if row.RootCauseReason != computev1alpha.InstanceProgrammedReasonProgrammingInProgress {
+		t.Fatalf("RootCauseReason = %q, want ProgrammingInProgress", row.RootCauseReason)
+	}
+	if row.Actionability != ActionabilityStalled {
+		t.Errorf("Actionability = %q, want %q — a five-day ProgrammingInProgress is not in-flight work",
+			row.Actionability, ActionabilityStalled)
+	}
+	if row.RootCauseSince != since.Format(time.RFC3339) {
+		t.Errorf("RootCauseSince = %q, want %q", row.RootCauseSince, since.Format(time.RFC3339))
+	}
+
+	// The same workload through the deep path, with the clock pinned so the
+	// advice can be asserted exactly.
+	w, err := wedgedReader(since).GetWorkload(context.Background(), testNamespace, "xcheck-iad")
+	if err != nil {
+		t.Fatalf("GetWorkload: %v", err)
+	}
+	d := DiagnoseAt(now, w, nil, wedgedReader(since).instances["xcheck-iad"])
+	if d.RootCause.Actionability != ActionabilityStalled {
+		t.Fatalf("RootCause.Actionability = %q, want stalled", d.RootCause.Actionability)
+	}
+	if d.RootCause.InStateFor != "5d" {
+		t.Errorf("InStateFor = %q, want %q", d.RootCause.InStateFor, "5d")
+	}
+	if d.RootCause.Skill != SkillStalledTransient {
+		t.Errorf("Skill = %q, want %q", d.RootCause.Skill, SkillStalledTransient)
+	}
+	// "this is normal, it clears on its own" was the catalogued advice and the
+	// wrong answer; it must not survive the escalation.
+	if strings.Contains(d.RootCause.Remediation, "this is normal") {
+		t.Errorf("Remediation still calls this normal: %q", d.RootCause.Remediation)
+	}
+	if !strings.Contains(d.RootCause.Remediation, "5d") {
+		t.Errorf("Remediation = %q, want it to quote how long the state has held", d.RootCause.Remediation)
+	}
+	if !strings.Contains(d.Summary, "stuck") {
+		t.Errorf("Summary = %q, want it to say the state is stuck rather than in flight", d.Summary)
+	}
+}
+
+// TestWorkloadsListLeavesFreshTransientStateAlone is the other half: the same
+// workload minutes old must still read as in-flight, or the escalation is just
+// a new way to be wrong.
+func TestWorkloadsListLeavesFreshTransientStateAlone(t *testing.T) {
+	deps := fixtureDeps(wedgedReader(time.Now().Add(-2 * time.Minute)))
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	if got := out.Workloads[0].Actionability; got != ActionabilityTransient {
+		t.Errorf("Actionability = %q, want %q for a two-minute-old ProgrammingInProgress",
+			got, ActionabilityTransient)
+	}
+}
+
+// TestWorkloadsListCarriesTheFailureFloor: a row reporting rootCauseFor 9h30m
+// for a workload broken nine days reads as a rollout in progress. Both numbers
+// have to reach the fleet view, where "is anything wrong?" is answered.
+func TestWorkloadsListCarriesTheFailureFloor(t *testing.T) {
+	created := time.Now().Add(-9 * 24 * time.Hour)
+	rewritten := time.Now().Add(-9*time.Hour - 30*time.Minute)
+
+	w := workloadCreated("joseszycho-billing-test", created,
+		cond(computev1alpha.WorkloadAvailable, "False",
+			computev1alpha.WorkloadReasonNoAvailablePlacements, "No available deployments."))
+	inst := instanceCreated("joseszycho-billing-test-dfw-dfw-0", created,
+		condAt(computev1alpha.InstanceProgrammed, "Unknown",
+			computev1alpha.InstanceProgrammedReasonProgrammingInProgress,
+			"Instance is provisioning", rewritten))
+	deps := fixtureDeps(&fakeReader{
+		workloads: []computev1alpha.Workload{*w},
+		instances: map[string][]computev1alpha.Instance{
+			"joseszycho-billing-test": {inst},
+		},
+	})
+
+	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
+	if err != nil {
+		t.Fatalf("workloads_list: %v", err)
+	}
+	row := out.Workloads[0]
+	if row.RootCauseFor != stagingInState {
+		t.Errorf("RootCauseFor = %q, want %q", row.RootCauseFor, stagingInState)
+	}
+	if row.RootCauseFailingFor != "9d" {
+		t.Errorf("RootCauseFailingFor = %q, want %q — nine days of failure must not read as nine hours",
+			row.RootCauseFailingFor, "9d")
+	}
+	if row.RootCausePattern != PatternNoTerminalStateReported {
+		t.Errorf("RootCausePattern = %q, want %q", row.RootCausePattern, PatternNoTerminalStateReported)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,12 +14,10 @@ import (
 
 // The tools compute publishes to an assistant. All five are read-only.
 //
-// There is deliberately no mutating tool here — no workload_delete, no scale,
-// no restart. Compute does not need to ship a destructive tool to prove the
-// allow-list works: enforcement is the gateway's job (an MCPRoute toolSelector
-// naming exactly the sanctioned tools), and a provider that simply never
-// implements one cannot have it called through any path. If a mutating tool is
-// ever wanted, it needs its own review, not a quiet addition here.
+// There is deliberately no mutating tool — no delete, no scale, no restart.
+// The gateway's allow-list is the enforcement point, but a tool that is never
+// implemented cannot be called through any path at all. Adding one needs its
+// own review, not a quiet addition here.
 const (
 	ToolWorkloadsList    = "workloads_list"
 	ToolWorkloadsGet     = "workloads_get"
@@ -34,11 +33,9 @@ type ToolDeps struct {
 	Namespace string
 }
 
-// DepsFor resolves the dependencies for a tool call.
-//
-// It is a function rather than a plain value so the caller decides how the
-// identity and project behind a call are established — the server derives both
-// from the incoming HTTP request, while tests supply them directly.
+// DepsFor resolves the dependencies for a tool call. A function rather than a
+// value so the caller decides how identity and project are established: the
+// server derives both from the HTTP request, tests supply them directly.
 type DepsFor func(context.Context) (ToolDeps, error)
 
 // ---------------------------------------------------------------- I/O types
@@ -103,6 +100,22 @@ type WorkloadSummary struct {
 	// RootCauseReason and Actionability are empty for a healthy workload.
 	RootCauseReason string        `json:"rootCauseReason,omitempty"`
 	Actionability   Actionability `json:"actionability,omitempty"`
+	// RootCauseSince is when the root-cause condition last transitioned, in
+	// RFC 3339. A string rather than a metav1.Time for the reason
+	// Cause.LastTransitionTime gives: this struct is a tool output schema.
+	RootCauseSince string `json:"rootCauseSince,omitempty"`
+	// RootCauseFor is that same age rendered "5d" / "12m". Both are emitted
+	// because the consumer is a language model: the relative form is what makes
+	// a five-day "in progress" impossible to read as normal in-flight work.
+	RootCauseFor string `json:"rootCauseFor,omitempty"`
+	// RootCauseFailingFor is the floor on how long the root-cause object has
+	// been failing, from its creationTimestamp. RootCauseFor alone measures
+	// condition churn — a restart rewrites lastTransitionTime — so when the two
+	// disagree, the gap is the finding.
+	RootCauseFailingFor string `json:"rootCauseFailingFor,omitempty"`
+	// RootCausePattern names a failure shape derived from elapsed evidence
+	// rather than reported by a controller. Empty unless one was recognised.
+	RootCausePattern string `json:"rootCausePattern,omitempty"`
 }
 
 // WorkloadsListInput takes no arguments: the project is fixed by the request,
@@ -155,18 +168,19 @@ type ReasonExplainOutput struct {
 
 // ------------------------------------------------------------ registration
 
-// RegisterTools adds compute's read-only diagnostic tools to s.
-//
-// deps is consulted per call rather than captured once, so a single server can
-// serve many callers without any of them inheriting another's identity or
-// project.
+// RegisterTools adds compute's read-only diagnostic tools to s. deps is
+// consulted per call rather than captured once, so no caller can inherit
+// another's identity or project.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:  ToolWorkloadsList,
 		Title: "List workloads",
 		Description: "List every Workload in the project with its availability, ready/desired replicas, " +
-			"and — when it is not fully available — the root-cause reason and whether that cause is " +
-			"user-actionable, a platform fault, or transient. Start here. Read-only.",
+			"and — when it is not fully available — the root-cause reason, how long it has held that " +
+			"state (rootCauseFor, e.g. \"5d\"), how long the failing object has existed " +
+			"(rootCauseFailingFor — a restart rewrites the condition clock, so trust the larger " +
+			"number), and whether that cause is user-actionable, a platform fault, transient, or " +
+			"stalled. Start here. Read-only.",
 	}, workloadsList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -191,8 +205,13 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 		Description: "Diagnose why a Workload is not available. Walks Workload -> WorkloadDeployment -> " +
 			"Instance, follows compute's pointer reasons (QuotaNotGranted, NoAvailablePlacements, " +
 			"ReferencedDataNotReady) down to the condition that names the real cause, and returns that " +
-			"root cause with an explanation, whether it is user-actionable or a platform fault, concrete " +
-			"next steps, and which skill covers the full procedure. This is the tool to reach for when " +
+			"root cause with an explanation, how long it has held that state, whether it is " +
+			"user-actionable, a platform fault, transient, or stalled (transient for longer than that " +
+			"reason should take), concrete next steps, and which skill covers the full procedure. " +
+			"Read inStateFor against failingFor: the first is how long the reason has held, the " +
+			"second a floor on how long the object has been broken, and a large gap means the " +
+			"condition is being rewritten. A reported=false cause means no controller reported " +
+			"success or failure — do not repeat its reason as an observation. This is the tool to reach for when " +
 			"someone asks why a workload is broken. Read-only.",
 	}, workloadDiagnose(deps))
 
@@ -201,7 +220,8 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 		Title: "Explain a condition reason",
 		Description: "Explain any compute condition reason (e.g. \"QuotaExceeded\", \"ImageUnavailable\", " +
 			"\"CityCodeMismatch\"): what it means, which condition types carry it, whether it is " +
-			"user-actionable, a platform fault, or transient, and how to remediate it. Call with no " +
+			"user-actionable, a platform fault, or transient, how long a transient one should take " +
+			"(expectedWithin), and how to remediate it. Call with no " +
 			"argument to list the whole catalog. Use when you encounter a reason on a resource the " +
 			"diagnose tool did not cover. Read-only.",
 	}, reasonExplain(deps))
@@ -223,10 +243,14 @@ func workloadsList(deps DepsFor) mcp.ToolHandlerFor[WorkloadsListInput, Workload
 			return nil, WorkloadsListOutput{}, err
 		}
 
+		// One clock for the whole listing, so every row's age is measured from
+		// the same instant and the rows are comparable to each other.
+		now := time.Now()
+
 		out := WorkloadsListOutput{Workloads: make([]WorkloadSummary, 0, len(workloads))}
 		for i := range workloads {
 			w := &workloads[i]
-			diagnosis, err := diagnoseOne(ctx, d, w)
+			diagnosis, err := diagnoseOne(ctx, d, w, now)
 			if err != nil {
 				return nil, WorkloadsListOutput{}, err
 			}
@@ -238,6 +262,10 @@ func workloadsList(deps DepsFor) mcp.ToolHandlerFor[WorkloadsListInput, Workload
 			if diagnosis.RootCause != nil {
 				summary.RootCauseReason = diagnosis.RootCause.Reason
 				summary.Actionability = diagnosis.RootCause.Actionability
+				summary.RootCauseSince = diagnosis.RootCause.LastTransitionTime
+				summary.RootCauseFor = diagnosis.RootCause.InStateFor
+				summary.RootCauseFailingFor = diagnosis.RootCause.FailingFor
+				summary.RootCausePattern = diagnosis.RootCause.Pattern
 			}
 			out.Workloads = append(out.Workloads, summary)
 		}
@@ -331,7 +359,7 @@ func workloadDiagnose(deps DepsFor) mcp.ToolHandlerFor[WorkloadDiagnoseInput, Di
 		if err != nil {
 			return nil, Diagnosis{}, err
 		}
-		diagnosis, err := diagnoseOne(ctx, d, workload)
+		diagnosis, err := diagnoseOne(ctx, d, workload, time.Now())
 		if err != nil {
 			return nil, Diagnosis{}, err
 		}
@@ -364,7 +392,9 @@ func reasonExplain(deps DepsFor) mcp.ToolHandlerFor[ReasonExplainInput, ReasonEx
 
 // ----------------------------------------------------------------- helpers
 
-func diagnoseOne(ctx context.Context, d ToolDeps, w *computev1alpha.Workload) (Diagnosis, error) {
+func diagnoseOne(
+	ctx context.Context, d ToolDeps, w *computev1alpha.Workload, now time.Time,
+) (Diagnosis, error) {
 	deployments, err := d.Reader.ListDeployments(ctx, d.Namespace, w.Name)
 	if err != nil {
 		return Diagnosis{}, err
@@ -373,12 +403,11 @@ func diagnoseOne(ctx context.Context, d ToolDeps, w *computev1alpha.Workload) (D
 	if err != nil {
 		return Diagnosis{}, err
 	}
-	return Diagnose(w, deployments, instances), nil
+	return DiagnoseAt(now, w, deployments, instances), nil
 }
 
-// sortUnavailableFirst puts unavailable workloads at the top. The sort is
-// stable so workloads in the same state keep the reader's order, which keeps
-// output reproducible between calls.
+// sortUnavailableFirst puts unavailable workloads at the top. Stable, so rows
+// in the same state keep the reader's order and output stays reproducible.
 func sortUnavailableFirst(rows []WorkloadSummary) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		return !rows[i].Available && rows[j].Available
