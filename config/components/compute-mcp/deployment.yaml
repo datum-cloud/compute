@@ -25,8 +25,14 @@ spec:
         app.kubernetes.io/instance: compute-mcp
         app.kubernetes.io/name: compute-mcp
     spec:
-      # Unbound account, and the token is mounted only so in-cluster config can
-      # resolve the endpoint and CA — see service_account.yaml.
+      # Deliberately unbound — see service_account.yaml. The server reads as
+      # the caller, so this account holds no permission of its own.
+      #
+      # This template carries no control plane configuration: which control
+      # plane the server reads is deployment topology, so the deployer patches
+      # in a kubeconfig volume and KUBECONFIG. Without one the binary refuses to
+      # start rather than falling back to the local cluster's API server; see
+      # checkControlPlaneEndpoint in cmd/compute-mcp.
       serviceAccountName: compute-mcp
       securityContext:
         runAsNonRoot: true
