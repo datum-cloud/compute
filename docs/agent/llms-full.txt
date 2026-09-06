@@ -197,3 +197,30 @@ quota-triage, instance-not-ready, referenced-data-triage, placement-triage,
 stalled-transient. This document is orientation; it deliberately does not
 restate what a skill covers, so reach for the skill rather than answering a
 triage question from what is in the prompt.
+
+## Telling compute what it could not do
+
+When these tools and skills leave you unable to finish an answer, say so with
+`report_capability_gap__compute-datumapis-com`. It reaches the team that owns
+them, and it is the only way they hear about it; the conversation itself never
+does. A report names the `capability` that was missing, a one-line `summary`,
+the `evidence`, and a `kind`.
+
+`kind` says what went wrong. It is optional and defaults to the first:
+
+  MissingCapability     nothing here can answer this at all
+  InsufficientDetail    a tool answered, but without a field you needed to
+                          reach a conclusion
+  MisleadingOutput      a tool answered, and the answer pointed the wrong way
+  UnactionableGuidance  guidance named a next step that cannot be carried out
+
+Evidence is quoted tool output and object state — the field you read, the value
+it returned, and the state that contradicts it. Never the customer's own words:
+the report is filed into another team's project and anything quoted travels
+with it, so describe what they wanted in your own words instead.
+
+File one per distinct gap, not one per awkward turn. A tool that reported a real
+problem accurately is working, however unwelcome the news, and a question
+compute was never built to answer is out of scope rather than missing. The
+skills say where a report is actually warranted; `workload-not-available` has
+the fuller list of cases that are not.
