@@ -32,6 +32,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -96,12 +97,17 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// GetConfig resolves in-cluster config, the --kubeconfig flag that
-	// controller-runtime registers, KUBECONFIG, then ~/.kube/config. Only the
-	// endpoint and CA are used; see clientForToken.
+	// GetConfig resolves the --kubeconfig flag that controller-runtime
+	// registers, then KUBECONFIG, then in-cluster config, then ~/.kube/config.
+	// Only the endpoint and CA are used; see clientForToken.
 	baseConfig, err := ctrl.GetConfig()
 	if err != nil {
 		setupLog.Error(err, "unable to load control plane configuration")
+		os.Exit(1)
+	}
+
+	if err := checkControlPlaneEndpoint(baseConfig); err != nil {
+		setupLog.Error(err, "refusing to start")
 		os.Exit(1)
 	}
 
@@ -109,6 +115,55 @@ func main() {
 		setupLog.Error(err, "server failed")
 		os.Exit(1)
 	}
+}
+
+// checkControlPlaneEndpoint refuses to start when the configuration resolved to
+// the API server of the cluster this process runs in.
+//
+// GetConfig always returns *something* in a pod: given no kubeconfig it falls
+// back to in-cluster config, whose endpoint is the local API server. That
+// endpoint is never right here. The tools read Datum project control planes,
+// and clientConfig addresses a project by rewriting only the PATH of whatever
+// host it is handed — so the fallback produces a control-plane path on the
+// local API server, carrying a Datum token it will not accept. Every tool call
+// then fails with "the server has asked for the client to provide credentials",
+// which reads like the caller's token is bad when the deployment is what is
+// wrong. Failing at boot puts the error where the mistake is.
+//
+// The check matches the SHAPE of the mistake, never an address: no environment's
+// hostname appears in this repo, because which control plane a deployment reads
+// is deployment configuration and belongs to whoever deploys it.
+func checkControlPlaneEndpoint(cfg *rest.Config) error {
+	local := localClusterEndpoint()
+	if local == "" || !sameEndpoint(cfg.Host, local) {
+		return nil
+	}
+	return fmt.Errorf(
+		"control plane endpoint %s is this cluster's own API server: compute-mcp reads Datum "+
+			"project control planes, not the cluster it runs in, so the in-cluster fallback is "+
+			"never correct. Give the deployment an explicit control plane: mount a kubeconfig "+
+			"naming the control plane's address and CA, and point KUBECONFIG at it (or pass "+
+			"--kubeconfig)",
+		cfg.Host)
+}
+
+// localClusterEndpoint returns the API server address in-cluster config resolves
+// to, or "" when this process is not running in a pod.
+//
+// It mirrors rest.InClusterConfig's own derivation from KUBERNETES_SERVICE_HOST
+// and _PORT rather than calling it, so the check still holds when the projected
+// ServiceAccount token InClusterConfig also requires is not mounted.
+func localClusterEndpoint() string {
+	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" || port == "" {
+		return ""
+	}
+	return "https://" + net.JoinHostPort(host, port)
+}
+
+// sameEndpoint compares two API server addresses, ignoring a trailing slash.
+func sameEndpoint(a, b string) bool {
+	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
 }
 
 func run(addr string, baseConfig *rest.Config) error {

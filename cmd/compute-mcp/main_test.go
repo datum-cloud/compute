@@ -225,3 +225,103 @@ func TestReadsGoThroughTheProjectControlPlane(t *testing.T) {
 		t.Errorf("Authorization = %q, want the caller's bearer token", gotAuth)
 	}
 }
+
+// TestCheckControlPlaneEndpointRejectsTheInClusterFallback pins the startup
+// guard. A pod given no kubeconfig still gets a config — the in-cluster one,
+// pointing at the local API server — and every tool call then fails with a 401
+// that reads like the caller's credentials are bad. The guard turns that into a
+// boot failure that names the actual mistake.
+func TestCheckControlPlaneEndpointRejectsTheInClusterFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		serviceHost string
+		servicePort string
+		host        string
+		wantErr     bool
+	}{
+		{
+			name:        "in-cluster fallback",
+			serviceHost: "10.0.0.1",
+			servicePort: "443",
+			host:        "https://10.0.0.1:443",
+			wantErr:     true,
+		},
+		{
+			name:        "in-cluster fallback, trailing slash",
+			serviceHost: "10.0.0.1",
+			servicePort: "443",
+			host:        "https://10.0.0.1:443/",
+			wantErr:     true,
+		},
+		{
+			name:        "IPv6 in-cluster fallback",
+			serviceHost: "fd00::1",
+			servicePort: "443",
+			host:        "https://[fd00::1]:443",
+			wantErr:     true,
+		},
+		{
+			// The deployment supplied a kubeconfig naming a different control
+			// plane. This is the only correct configuration.
+			name:        "explicit control plane",
+			serviceHost: "10.0.0.1",
+			servicePort: "443",
+			host:        "https://control-plane.example:6443",
+			wantErr:     false,
+		},
+		{
+			// Same address, different port: a control plane fronted by the
+			// local cluster is still not the local API server.
+			name:        "same host, different port",
+			serviceHost: "10.0.0.1",
+			servicePort: "443",
+			host:        "https://10.0.0.1:6443",
+			wantErr:     false,
+		},
+		{
+			// Outside a pod there is no local API server to have fallen back
+			// to, so the guard must not fire on a developer's ~/.kube/config.
+			name:    "not in a cluster",
+			host:    "https://127.0.0.1:6443",
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KUBERNETES_SERVICE_HOST", tc.serviceHost)
+			t.Setenv("KUBERNETES_SERVICE_PORT", tc.servicePort)
+
+			err := checkControlPlaneEndpoint(&rest.Config{Host: tc.host})
+			if tc.wantErr == (err == nil) {
+				t.Fatalf("checkControlPlaneEndpoint(%q) error = %v, wantErr = %v", tc.host, err, tc.wantErr)
+			}
+			if err == nil {
+				return
+			}
+			// Actionable: it must say what to set, not just that something is
+			// wrong.
+			if !strings.Contains(err.Error(), "KUBECONFIG") {
+				t.Errorf("error = %q, want it to name the setting to fix", err)
+			}
+		})
+	}
+}
+
+// TestGuardNamesNoEnvironment: the guard exists so that deployment topology
+// stays out of this repo, so it must not smuggle any in. It recognises the
+// mistake from KUBERNETES_SERVICE_HOST/_PORT, which every cluster sets for
+// itself — nothing here knows an address.
+func TestGuardNamesNoEnvironment(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+	if got := localClusterEndpoint(); got != "" {
+		t.Errorf("localClusterEndpoint() = %q with no cluster env, want %q", got, "")
+	}
+
+	t.Setenv("KUBERNETES_SERVICE_HOST", "198.51.100.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	if got, want := localClusterEndpoint(), "https://198.51.100.1:443"; got != want {
+		t.Errorf("localClusterEndpoint() = %q, want %q", got, want)
+	}
+}
