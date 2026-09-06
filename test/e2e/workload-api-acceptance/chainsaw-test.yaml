@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workload-api-acceptance
+spec:
+  cluster: compute-e2e
+  steps:
+    - name: Apply networking fixtures
+      try:
+        - apply:
+            timeout: 1m
+            file: location.yaml
+        - apply:
+            timeout: 1m
+            file: network.yaml
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: e2e-acceptance-network
+
+    - name: Apply Workload and assert acceptance
+      try:
+        - apply:
+            timeout: 1m
+            file: workload.yaml
+        - assert:
+            resource:
+              apiVersion: compute.datumapis.com/v1alpha
+              kind: Workload
+              metadata:
+                name: e2e-acceptance-workload
