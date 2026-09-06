@@ -1,0 +1,121 @@
+# Datum Compute — assistant knowledge
+
+Datum Compute owns the `compute.datumapis.com/v1alpha` API group: Workloads,
+WorkloadDeployments, and Instances. Compute does not provision anything itself.
+It records intent and status; infrastructure providers (the GCP provider, the
+Unikraft provider) do the actual provisioning and write results back onto the
+resources as conditions.
+
+That split matters when diagnosing: a failure recorded by compute is often
+reported *by* a provider, and the fix may lie in the workload spec, in the
+project's quota, or with Datum itself.
+
+## The resource model
+
+Workload
+  What the customer declares: an instance template (image, resources, network
+  interfaces) and one or more placements describing where it should run.
+  Status carries `Available`, replica counts, and a per-placement summary.
+
+WorkloadDeployment
+  One Workload projected onto one cell/location. Created by compute's
+  federator, not by the customer. This is where location, city code, and
+  referenced-data resolution are settled.
+
+Instance
+  A single running unit within a deployment. Carries the most specific
+  conditions: `Ready`, `Available`, `Programmed`, `QuotaGranted`,
+  `ReferencedDataReady`.
+
+The tree is always Workload -> WorkloadDeployment -> Instance. Availability
+aggregates upward; causes live downward.
+
+## Reading conditions — the one rule that matters
+
+Compute's condition reasons are stable, machine-readable values, and the
+top-level ones are deliberately **pointers**, not causes.
+
+`Workload.Available=False` with reason `QuotaNotGranted` does not tell you what
+is wrong with quota. It tells you which subsystem is blocking. The actual reason
+— `QuotaExceeded`, `QuotaNoBudget`, `QuotaBackendUnavailable` — is on an
+Instance's `QuotaGranted` condition further down the tree.
+
+Pointer reasons you must read *through*, never report as the answer:
+
+  NoAvailablePlacements     -> look at the placements
+  NoAvailableDeployments    -> look at the deployments in that placement
+  InstancesProvisioning     -> look at the instances
+  QuotaNotGranted           -> look at Instance.QuotaGranted
+  ReferencedDataNotReady    -> look at ReferencedDataReady
+  PendingQuota              -> look at Instance.QuotaGranted
+  SchedulingGatesPresent    -> something else is gating; find what
+
+The `workload_diagnose` tool does this walk for you and returns the leaf cause.
+Prefer it over assembling the tree by hand.
+
+## Three kinds of cause
+
+Every reason falls into one of three buckets, and saying which one is usually
+the most useful thing you can tell someone:
+
+user-actionable
+  The workload spec or project configuration is wrong. The customer can fix it.
+  Examples: ImageUnavailable, InstanceCrashing, ConfigurationError,
+  QuotaExceeded, SourceNotFound, SourceTooLarge, NetworkNotFound.
+
+platform fault
+  Datum's problem. No change to the workload will help, and suggesting one
+  wastes the customer's time. Examples: NoMatchingLocation,
+  AmbiguousServingLocation, CityCodeMismatch, QuotaNoBudget,
+  QuotaBackendUnavailable, QuotaMisconfigured, QuotaProjectNotFound,
+  SourceUnauthorized, Suspended.
+
+transient
+  Normal in-flight state; the right advice is to wait. Examples: Provisioning,
+  PendingProgramming, ProgrammingInProgress, Resolving, AwaitingPropagation,
+  NetworkProvisioning, PendingEvaluation, Starting.
+
+Do not tell a customer to change their spec for a platform fault, and do not
+escalate a transient state.
+
+## Quota
+
+Quota is evaluated per instance against the project's allowance. The instance's
+`QuotaGranted` condition carries the outcome. The distinctions are easy to
+confuse and matter a lot:
+
+  QuotaExceeded        Explicitly denied — the project asked for more than its
+                       allowance permits. Customer reduces usage or requests
+                       more.
+  QuotaNoBudget        The claim is pending because the project has no
+                       AllowanceBucket configured at all. Platform fault.
+  PendingEvaluation    Claim not created yet, or first evaluation in flight.
+                       Transient.
+  QuotaDisabled        Enforcement intentionally off in this environment. Not a
+                       failure.
+
+## Referenced data
+
+ConfigMaps and Secrets referenced by a workload template are resolved by the
+management plane and delivered to the cell. `ReferencedDataReady` appears on
+both WorkloadDeployment (resolver view) and Instance (cell view).
+`SourceNotFound` and `SourceTooLarge` are the customer's to fix;
+`SourceUnauthorized` is Datum's.
+
+## Placement
+
+A WorkloadDeployment must know which location its cell serves. Every failure in
+this area — NoMatchingLocation, AmbiguousServingLocation, CityCodeMismatch — is
+a platform fault. The customer's placement request is not the problem; the
+cell's configuration is.
+
+## What the tools give you
+
+  workloads_list      fleet view, worst first, with root-cause reason
+  workloads_get       raw condition tree for one workload
+  instances_list      per-instance conditions, to see failure distribution
+  workload_diagnose   the walk, the leaf cause, and next steps
+  reason_explain      any reason, explained and classified
+
+Skills (load on demand) cover the full procedures: workload-not-available,
+quota-triage, instance-not-ready, referenced-data-triage, placement-triage.
