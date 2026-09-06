@@ -48,38 +48,22 @@ jobs:
       dockerfile-path: ui/provider/Dockerfile
     secrets: inherit
 
-  # Deployed as a Component (config/components/compute-mcp) folded into
-  # compute-manager's own kustomize bundle/Flux Kustomization, same as the UI
-  # plugins above. Built from the repository root because the server imports
-  # internal/ and api/ — only the Dockerfile path differs from the manager's.
-  # Multi-arch to match the manager it is deployed beside; both are Go.
-  publish-compute-mcp-image:
-    permissions:
-      id-token: write
-      contents: read
-      packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.20.0
-    with:
-      image-name: compute-mcp
-      context: .
-      dockerfile-path: Dockerfile.compute-mcp
-      platforms: linux/amd64,linux/arm64
-    secrets: inherit
-
   # Stamps compute's own apiserver image (config/base/manager), both UI plugin
   # images (config/components/{consumer,provider}-ui-plugin) and the MCP server
   # (config/components/compute-mcp) into one compute-kustomize bundle publish.
   # The `images:` input (v1.20.0+) supports multiple {path, name, tag} entries
   # in one invocation — the single image-name/image-overlays inputs it replaces
-  # can only stamp one image across N paths, which can't express "four
+  # can only stamp one image across N paths, which can't express "three
   # different images, four different paths" at all.
+  #
+  # compute-mcp is stamped with the manager's image and the manager's tag: one
+  # image carries both binaries, so the two paths cannot name different builds.
   publish-kustomize-bundles:
     needs:
       [
         publish-container-image,
         publish-consumer-ui-plugin-image,
         publish-provider-ui-plugin-image,
-        publish-compute-mcp-image,
       ]
     permissions:
       id-token: write
@@ -93,5 +77,5 @@ jobs:
         - { path: config/base/manager, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
         - { path: config/components/consumer-ui-plugin, name: ghcr.io/datum-cloud/compute-consumer-ui-plugin, tag: "${{ needs.publish-consumer-ui-plugin-image.outputs.tag }}" }
         - { path: config/components/provider-ui-plugin, name: ghcr.io/datum-cloud/compute-provider-ui-plugin, tag: "${{ needs.publish-provider-ui-plugin-image.outputs.tag }}" }
-        - { path: config/components/compute-mcp, name: ghcr.io/datum-cloud/compute-mcp, tag: "${{ needs.publish-compute-mcp-image.outputs.tag }}" }
+        - { path: config/components/compute-mcp, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
     secrets: inherit
