@@ -185,7 +185,7 @@ require (
 	github.com/erofs/go-erofs v0.3.1
 	github.com/fatih/color v1.19.0
 	github.com/google/go-containerregistry v0.21.6
-	github.com/moby/buildkit v0.29.0
+	github.com/moby/buildkit v0.31.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/tonistiigi/fsutil v0.0.0-20251211185533-a2aa163d723f
 	go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67
