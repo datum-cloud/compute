@@ -12,19 +12,17 @@ import (
 	agentdocs "go.datum.net/compute/docs/agent"
 )
 
-// The copy in this package is read by a customer, not by the person who wrote
-// the controllers. These tests pin the two halves of that: the words are the
-// customer's, and the facts they need in order to escalate survive the
-// translation.
+// The copy in this package is read by a customer, not by whoever wrote the
+// controllers. These tests pin both halves: the words are the customer's, and
+// the facts they need in order to escalate survive the translation.
 
 // bannedTerm is one piece of vocabulary the customer has no way to know, with
 // the reason it is banned, so a future reader can argue with the list rather
 // than guess at it.
 type bannedTerm struct {
-	// pattern matches the term in prose. Case-insensitive, anchored on word
-	// boundaries, and applied only after every API identifier has been removed
-	// — an identifier quoted as evidence is allowed, the same word used as
-	// English is not.
+	// pattern matches the term in prose, applied only after every API identifier
+	// is removed: an identifier quoted as evidence is allowed, the same word used
+	// as English is not.
 	pattern *regexp.Regexp
 	// why justifies the ban.
 	why string
@@ -36,16 +34,12 @@ func banned(pattern, why string) bannedTerm {
 
 // internalVocabulary is the denylist.
 //
-// The test is: does the word appear in the workload the customer authors
-// (api/v1alpha), or in output they already read? Then it is theirs — image,
-// replicas, ConfigMap, Secret, placement, network interface, scheduling gate,
-// quota — and it survives. Does it appear only inside Datum's implementation?
-// Then a customer reading it learns nothing, and it is banned here.
-//
-// Absence from Datum's public documentation was the first draft of this test
-// and is a weaker one: it flagged ConfigMap, which is a field the customer
-// types themselves and which the docs simply have no page for yet. Check the
-// API, not the page count.
+// The test for a word: does it appear in the workload the customer authors
+// (api/v1alpha), or in output they already read? Then it is theirs and it
+// survives. Does it appear only inside Datum's implementation? Then a customer
+// reading it learns nothing, and it is banned. Check the API, not the public
+// docs — those have no ConfigMap page, and ConfigMap is a field the customer
+// types themselves.
 func internalVocabulary() []bannedTerm {
 	return []bannedTerm{
 		banned(`\bcells?\b`,
@@ -113,9 +107,8 @@ func customerFacingOnly() []bannedTerm {
 }
 
 // apiIdentifiers are the strings that may appear in copy verbatim: reason
-// codes, condition types, skill and pattern names. They are evidence — a
-// customer quotes them when escalating — so they are removed before the prose
-// is scanned rather than being allowed to trip it.
+// codes, condition types, skill and pattern names. A customer quotes them when
+// escalating, so they are removed before the prose is scanned.
 func apiIdentifiers() []string {
 	seen := map[string]struct{}{
 		PatternNoTerminalStateReported: {},
@@ -148,12 +141,9 @@ func apiIdentifiers() []string {
 	return out
 }
 
-// prose strips the API identifiers, and any extra identifiers the caller
-// supplies, out of a string — leaving the English around them.
-//
-// The extras matter: object names are chosen by the customer, and a workload
-// legitimately called "api-backend" must not be read as prose that says
-// "backend".
+// prose strips the API identifiers, and any extras the caller supplies, out of
+// a string. The extras matter: object names are chosen by the customer, and a
+// workload called "api-backend" must not be read as prose that says "backend".
 func prose(s string, extra ...string) string {
 	for _, id := range append(apiIdentifiers(), extra...) {
 		if id != "" {
@@ -186,9 +176,7 @@ func TestCatalogCopyUsesNoInternalVocabulary(t *testing.T) {
 }
 
 // TestDiagnosisCopyUsesNoInternalVocabulary covers the sentences the walk
-// assembles at read time, which the catalog test cannot see: the stalled
-// advice, the unreported framing, the pattern narrative, the summary and the
-// next steps.
+// assembles at read time, which the catalog test cannot see.
 func TestDiagnosisCopyUsesNoInternalVocabulary(t *testing.T) {
 	terms := append(internalVocabulary(), customerFacingOnly()...)
 	for name, d := range diagnosisFixtures() {
@@ -205,10 +193,8 @@ func TestDiagnosisCopyUsesNoInternalVocabulary(t *testing.T) {
 }
 
 // TestPublishedDocsUseNoInternalVocabulary covers the knowledge document and
-// the runbooks. These are addressed to the assistant rather than the customer,
-// so they may say "condition" — but they are also where the assistant learns
-// its vocabulary, and a runbook that says "cell" produces an answer that says
-// "cell".
+// the runbooks. They may say "condition" — they address the assistant — but a
+// runbook that says "cell" produces an answer that says "cell".
 func TestPublishedDocsUseNoInternalVocabulary(t *testing.T) {
 	terms := internalVocabulary()
 	entries, err := fs.ReadDir(agentdocs.FS, agentdocs.SkillsDir)
@@ -234,10 +220,9 @@ func TestPublishedDocsUseNoInternalVocabulary(t *testing.T) {
 	}
 }
 
-// TestPlainLanguageKeepsTheEvidence is the counterweight. Every identifier a
-// customer needs in order to escalate has to survive the rewrite: plain
-// language is not the same as vague language, and a summary that reads well but
-// names nothing is worse than the jargon it replaced.
+// TestPlainLanguageKeepsTheEvidence is the counterweight: every identifier a
+// customer needs in order to escalate must survive the rewrite. Plain language
+// is not vague language, and a summary that names nothing is worse than jargon.
 func TestPlainLanguageKeepsTheEvidence(t *testing.T) {
 	created := stagingNow.Add(-9 * 24 * time.Hour)
 	rewritten := stagingNow.Add(-9*time.Hour - 30*time.Minute)

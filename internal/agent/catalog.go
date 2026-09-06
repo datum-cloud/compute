@@ -1,12 +1,6 @@
 // Package agent turns compute's condition status into answers an assistant can
-// give a customer.
-//
-// Compute already carries the diagnostic vocabulary: every blocking cause is a
-// stable, machine-readable reason on a condition, and the doc comments in
-// api/v1alpha say, for each one, whether the customer must act, whether the
-// platform is at fault, or whether it is simply in flight. This package lifts
-// that into a lookup table (catalog.go) and a walk over the resource tree
-// (diagnose.go).
+// give a customer: a lookup table over the condition reasons api/v1alpha
+// declares (catalog.go), and a walk over the resource tree (diagnose.go).
 package agent
 
 import (
@@ -31,20 +25,17 @@ const (
 	// and the right advice is to wait.
 	ActionabilityTransient Actionability = "transient"
 
-	// ActionabilityStalled means the reason is classified transient but the
-	// condition has held it for longer than that reason's expected window.
-	// Treat it as suspect and escalate.
+	// ActionabilityStalled means a transient reason has held longer than its
+	// expected window. Treat it as suspect and escalate.
 	//
-	// This is deliberately not ActionabilityPlatform. Platform means the
-	// controllers reported a cause that is Datum's; stalled means nothing
-	// reported a cause at all and the classification has merely been falsified
-	// by elapsed time. The fault may still turn out to be the customer's
-	// image, a provider that never picked the job up, or a controller that is
-	// not running. Say the state has outlived its expectation and hand over
-	// the object and the duration; do not assert a platform fault.
+	// Deliberately not ActionabilityPlatform: platform means a cause was
+	// reported and it is Datum's, while stalled means nothing reported a cause
+	// at all and only elapsed time falsified the classification — the fault may
+	// still be the customer's. Report the duration; do not assert a platform
+	// fault.
 	//
-	// It is never written in the catalog. It is derived at read time from a
-	// condition's LastTransitionTime, so it cannot go stale in storage.
+	// Never written in the catalog: derived at read time from
+	// LastTransitionTime, so it cannot go stale in storage.
 	ActionabilityStalled Actionability = "stalled"
 )
 
@@ -56,41 +47,32 @@ type ReasonInfo struct {
 	ConditionTypes []string `json:"conditionTypes"`
 	// Actionability says who must act.
 	Actionability Actionability `json:"actionability"`
-	// Explanation states, in the customer's language, what actually happened.
-	// The reader deploys workloads; they do not operate Datum. Write for
-	// someone who knows containers, images, replicas and logs, and who has
-	// never heard of a condition, a reconciler, or an allowance bucket. Anything the
-	// customer writes in their own workload — image, replicas, ConfigMap, Secret,
-	// placement — is their vocabulary and stays.
-	// TestCopyUsesNoInternalVocabulary enforces the vocabulary half of that.
+	// Explanation states, in the customer's language, what happened. They know
+	// containers, images, replicas and logs; they have never heard of a
+	// condition or a reconciler. TestCatalogCopyUsesNoInternalVocabulary
+	// enforces the vocabulary.
 	Explanation string `json:"explanation"`
 	// Remediation says what to do next. Empty for healthy reasons.
 	Remediation string `json:"remediation,omitempty"`
 	// Skill names the runbook covering this class of failure, if any.
 	Skill string `json:"skill,omitempty"`
 	// ExpectedDuration bounds how long a transient reason should plausibly
-	// last. Past it, callers report ActionabilityStalled instead. Zero means
-	// the reason has no window: it is not transient, or it is a resting state
-	// that can legitimately persist forever (Available, QuotaDisabled).
+	// last; past it, callers report ActionabilityStalled. Zero means no window:
+	// the reason is not transient, or it is a resting state that legitimately
+	// persists forever (Available, QuotaDisabled).
 	//
-	// Omitted from JSON because time.Duration marshals as a nanosecond count,
-	// which is noise in a tool result; ExpectedWithin carries it instead.
+	// Omitted from JSON: time.Duration marshals as a nanosecond count, which is
+	// noise in a tool result; ExpectedWithin carries it instead.
 	ExpectedDuration time.Duration `json:"-"`
 	// ExpectedWithin renders ExpectedDuration for a reader ("30m").
 	ExpectedWithin string `json:"expectedWithin,omitempty"`
 }
 
-// Expected windows for the transient reasons.
+// Expected windows for the transient reasons. A transient classification is a
+// claim about duration, so every reason that says "wait" also says how long is
+// reasonable and the claim becomes falsifiable.
 //
-// A transient classification is a claim about duration, so every reason that
-// says "wait" also says how long is reasonable, and the claim becomes
-// falsifiable. The tiers come from what the reasons mean rather than one global
-// constant: a control-plane read is bounded by a reconcile loop, provider work
-// by real infrastructure, and an aggregate reason has to outlast the children
-// it is waiting on or it would be reported stalled while the instance beneath
-// it was still legitimately in flight.
-//
-// They are generous on purpose. A window that is too short turns healthy work
+// They are generous on purpose: a window that is too short turns healthy work
 // into a false alarm, which costs more trust than a stall noticed an hour late.
 const (
 	// windowControlPlaneRead: a controller reads or evaluates against another
@@ -118,12 +100,9 @@ const (
 
 // Remediation strings shared by several reasons.
 const (
-	// remediationWait is the advice for transient states: the work is in
-	// flight and nothing needs doing.
-	//
-	// It carries the phrase "this is normal" because that is exactly the claim
-	// the stalled path has to retract; TestStalledAdviceRetractsTheWaitAdvice
-	// pins that it does not survive.
+	// remediationWait is the advice for transient states. The phrase "this is
+	// normal" is load-bearing: it is the claim the stalled path has to retract,
+	// and TestWorkloadsListFlagsTheStagingStall pins that it does not survive.
 	remediationWait = "Nothing to do here — this is normal and clears on its own."
 	// remediationEscalate is the advice for faults on Datum's side that the
 	// customer has no lever on at all.
@@ -141,12 +120,10 @@ const (
 	SkillStalledTransient     = "stalled-transient"
 )
 
-// catalog is the full reason vocabulary. Entries key off the constants in
-// api/v1alpha rather than string literals so that this file and the API cannot
-// drift apart silently; TestCatalogCoversEveryAPIReason enforces completeness.
-//
-// Several reasons share a string across condition types (ImageUnavailable is
-// set on both Ready and Programmed, for example). One entry covers all of them.
+// catalog is the full reason vocabulary. Entries key off the api/v1alpha
+// constants rather than string literals so the two cannot drift silently;
+// TestCatalogCoversEveryAPIReason enforces completeness. One entry covers a
+// reason shared across several condition types.
 var catalog = []ReasonInfo{
 	// ------------------------------------------------------------- healthy
 	{
@@ -211,9 +188,8 @@ var catalog = []ReasonInfo{
 		Explanation:    "Datum has not finished checking this instance against your project's compute quota yet.",
 		Remediation:    "Give it a few minutes. If it sits here longer than that, the quota check itself is stuck and is worth raising with Datum.",
 		Skill:          SkillQuotaTriage,
-		// The quota reasons keep quota-triage rather than the stall runbook:
-		// its procedure already ends at "sustained PendingEvaluation is a stuck
-		// quota backend", which is the more specific answer.
+		// Keeps quota-triage rather than the stall runbook: that procedure already
+		// ends at a stuck quota check, which is the more specific answer.
 		ExpectedDuration: windowControlPlaneRead,
 	},
 	{
@@ -540,9 +516,8 @@ var catalog = []ReasonInfo{
 	},
 }
 
-// byReason indexes the catalog and, in the same pass, renders each entry's
-// window once so the duration is written in exactly one place — the table —
-// and every reader sees the same string.
+// byReason indexes the catalog, rendering each entry's window in the same pass
+// so the duration is written in one place and every reader sees one string.
 var byReason = func() map[string]ReasonInfo {
 	m := make(map[string]ReasonInfo, len(catalog))
 	for i := range catalog {
@@ -554,17 +529,13 @@ var byReason = func() map[string]ReasonInfo {
 
 // ActionabilityAt reports how a reason should be treated given how long its
 // condition has held, escalating a transient reason to ActionabilityStalled
-// once it has outlived the window the catalog claims for it.
-//
-// lastTransition is the condition's LastTransitionTime in RFC 3339, and the
-// comparison is made against now on every read — nothing about a stall is
-// persisted or inferred from anything but elapsed time.
+// once it outlives the catalog's window. Nothing is persisted: lastTransition
+// (RFC 3339) is compared against now on every read.
 //
 // A missing, unparseable, or implausible timestamp returns the static
-// classification: absence of evidence that a state is old is not evidence that
-// it has stalled. The object's own creationTimestamp deliberately does not
-// escalate here either — an object can be nine days old and have failed a
-// minute ago, so age alone would manufacture false alarms.
+// classification — absence of evidence that a state is old is not evidence it
+// has stalled. Object age deliberately does not escalate either: an object can
+// be nine days old and have failed a minute ago.
 func ActionabilityAt(info ReasonInfo, lastTransition string, now time.Time) Actionability {
 	if info.Actionability != ActionabilityTransient || info.ExpectedDuration <= 0 {
 		return info.Actionability

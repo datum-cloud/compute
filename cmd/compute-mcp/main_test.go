@@ -180,8 +180,7 @@ func TestBearerToken(t *testing.T) {
 }
 
 // TestReadsGoThroughTheProjectControlPlane drives a real client at a stub API
-// server and asserts the request line. This is the evidence behind the
-// addressing: a workload read lands on the project's control-plane path with
+// server: a workload read must land on the project's control-plane path with
 // the caller's token, in the "default" namespace — not on a namespace named
 // after the project on the base host.
 func TestReadsGoThroughTheProjectControlPlane(t *testing.T) {
@@ -227,10 +226,9 @@ func TestReadsGoThroughTheProjectControlPlane(t *testing.T) {
 }
 
 // TestCheckControlPlaneEndpointRejectsTheInClusterFallback pins the startup
-// guard. A pod given no kubeconfig still gets a config — the in-cluster one,
-// pointing at the local API server — and every tool call then fails with a 401
-// that reads like the caller's credentials are bad. The guard turns that into a
-// boot failure that names the actual mistake.
+// guard: a pod given no kubeconfig still gets the in-cluster config, and every
+// tool call then fails with a 401 that reads like the caller's credentials are
+// bad. The guard turns that into a boot failure naming the actual mistake.
 func TestCheckControlPlaneEndpointRejectsTheInClusterFallback(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -308,10 +306,9 @@ func TestCheckControlPlaneEndpointRejectsTheInClusterFallback(t *testing.T) {
 	}
 }
 
-// TestGuardNamesNoEnvironment: the guard exists so that deployment topology
-// stays out of this repo, so it must not smuggle any in. It recognises the
-// mistake from KUBERNETES_SERVICE_HOST/_PORT, which every cluster sets for
-// itself — nothing here knows an address.
+// TestGuardNamesNoEnvironment: the guard exists so deployment topology stays
+// out of this repo, so it must not smuggle any in. It recognises the mistake
+// from KUBERNETES_SERVICE_HOST/_PORT, which every cluster sets for itself.
 func TestGuardNamesNoEnvironment(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")

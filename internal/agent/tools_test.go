@@ -367,12 +367,10 @@ func TestReaderErrorsPropagate(t *testing.T) {
 	}
 }
 
-// TestRegisterToolsPublishesExactlyTheReadOnlySet connects a real MCP client to
-// a registered server and inspects what it actually advertises.
-//
-// It guards the tool surface itself: compute publishes five read-only tools and
-// no mutating one, so anything extra appearing over the wire is a bug. It also
-// catches a schema that fails to infer, since AddTool panics on a bad one.
+// TestRegisterToolsPublishesExactlyTheReadOnlySet inspects what a registered
+// server actually advertises: five read-only tools and no mutating one, so
+// anything extra over the wire is a bug. It also catches a schema that fails to
+// infer, since AddTool panics on a bad one.
 func TestRegisterToolsPublishesExactlyTheReadOnlySet(t *testing.T) {
 	ctx := context.Background()
 
@@ -446,8 +444,8 @@ func keysOf(m map[string]string) []string {
 	return out
 }
 
-// wedgedReader is the staging shape: one workload whose only instance has sat
-// in a provider-side transient state since 2026-08-31.
+// wedgedReader is one workload whose only instance has sat in a provider-side
+// transient state since the given instant.
 func wedgedReader(since time.Time) *fakeReader {
 	w := workload("xcheck-iad", 0, 1,
 		condAt(computev1alpha.WorkloadAvailable, "False",
@@ -462,9 +460,9 @@ func wedgedReader(since time.Time) *fakeReader {
 	}
 }
 
-// TestWorkloadsListCarriesTheAgeOfTheRootCause is the fleet-view half of the
-// staging failure: the row itself has to say how old the state is, because the
-// fleet view is where the "is anything wrong?" question is actually answered.
+// TestWorkloadsListCarriesTheAgeOfTheRootCause: the row itself has to say how
+// old the state is, because the fleet view is where "is anything wrong?" is
+// actually answered.
 func TestWorkloadsListCarriesTheAgeOfTheRootCause(t *testing.T) {
 	deps := fixtureDeps(wedgedReader(time.Now().Add(-5 * 24 * time.Hour)))
 
@@ -501,13 +499,10 @@ func TestWorkloadsListOmitsAgeForHealthyWorkloads(t *testing.T) {
 	}
 }
 
-// TestWorkloadsListFlagsTheStagingStall reproduces the failure that motivated
-// all of this, end to end through the tool the assistant actually calls first.
-//
-// On 2026-09-05 the fleet view reported xcheck-iad as ProgrammingInProgress /
-// transient, and the assistant answered "normal in-flight state, wait a few
-// minutes". The condition had last transitioned on 2026-08-31. Five days of
-// "in flight" must not read as healthy.
+// TestWorkloadsListFlagsTheStagingStall runs the motivating failure end to end
+// through the tool the assistant calls first: a transient reason held for five
+// days was answered with "normal in-flight state, wait a few minutes". Five
+// days of "in flight" must not read as healthy.
 func TestWorkloadsListFlagsTheStagingStall(t *testing.T) {
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	since := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
@@ -574,11 +569,9 @@ func TestWorkloadsListLeavesFreshTransientStateAlone(t *testing.T) {
 	}
 }
 
-// TestWorkloadsListCarriesTheFailureFloor is the fleet-view half of the
-// 2026-08-27 stall. The row reported rootCauseFor 9h30m for a workload that had
-// been broken for nine days, which reads as a rollout in progress. Both numbers
-// have to be on the row, because the fleet view is where the "is anything
-// wrong?" question is actually answered.
+// TestWorkloadsListCarriesTheFailureFloor: a row reporting rootCauseFor 9h30m
+// for a workload broken nine days reads as a rollout in progress. Both numbers
+// have to reach the fleet view, where "is anything wrong?" is answered.
 func TestWorkloadsListCarriesTheFailureFloor(t *testing.T) {
 	created := time.Now().Add(-9 * 24 * time.Hour)
 	rewritten := time.Now().Add(-9*time.Hour - 30*time.Minute)

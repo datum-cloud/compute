@@ -329,19 +329,17 @@ func TestDiagnoseWithoutTransitionTimeReportsNoAge(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The staging Instances of 2026-08-27/28. Every layer above them was healthy,
-// the pod on the cell was crash-looping, and the provider never propagated that
-// upward: the project control plane still read Programmed=Unknown /
-// ProgrammingInProgress, with condition timestamps that were either the Unix
-// epoch or hours old on an object nine days old.
+// Fixtures for the shape that motivated this work: a crash-looping container
+// the provider never reported upward, so the control plane still read
+// Programmed=Unknown with a timestamp that was either the Unix epoch or hours
+// old on a nine-day-old object.
 
-// stagingNow is the instant the three stuck workloads were traced to the
-// crashing container.
+// stagingNow is the pinned clock these fixtures are read against.
 var stagingNow = time.Date(2026, 9, 5, 12, 46, 24, 0, time.UTC)
 
-// stagingInState is how long the staging conditions claimed to have held, on
-// objects that had in fact been broken for nine days. The gap between the two
-// numbers is the finding, so both are asserted in several places from here.
+// stagingInState is how long the conditions claimed to have held, on objects
+// that had in fact been broken for nine days. The gap is the finding, so both
+// numbers are asserted in several places from here.
 const stagingInState = "9h30m"
 
 // epochCond is a condition carrying the sentinel real Instances arrive with.
@@ -367,11 +365,10 @@ func workloadCreated(name string, created time.Time, conditions ...metav1.Condit
 	return w
 }
 
-// TestDiagnoseDiscardsImplausibleTimestamps covers defect 1. demo2loc-dfw-dfw-1
-// carried lastTransitionTime "1970-01-01T00:00:00Z" on Programmed, Available
-// and Ready. metav1.Time.IsZero() let it through, and the epoch renders as
-// 496846h — twenty thousand days — which alone was enough to call the condition
-// stalled. An implausible timestamp is no signal, not a huge one.
+// TestDiagnoseDiscardsImplausibleTimestamps: real Instances carry the epoch as
+// an unset sentinel, metav1.Time.IsZero() lets it through, and it renders as
+// twenty thousand days — alone enough to call a healthy condition stalled. An
+// implausible timestamp is no signal, not a huge one.
 func TestDiagnoseDiscardsImplausibleTimestamps(t *testing.T) {
 	created := stagingNow.Add(-9 * 24 * time.Hour)
 
@@ -454,10 +451,9 @@ func TestActionabilityAtIgnoresTheEpochSentinel(t *testing.T) {
 	}
 }
 
-// TestDiagnoseUsesCreationTimestampAsFailureFloor covers defect 2. rootCauseFor
-// reported 9h30m for workloads that had been failing since 2026-08-27, because
-// every crash rewrites lastTransitionTime and resets the clock. The object's own
-// creationTimestamp cannot be reset that way.
+// TestDiagnoseUsesCreationTimestampAsFailureFloor: every crash rewrites
+// lastTransitionTime and resets the condition clock, so a nine-day outage was
+// reported as nine hours. creationTimestamp cannot be reset that way.
 func TestDiagnoseUsesCreationTimestampAsFailureFloor(t *testing.T) {
 	created := stagingNow.Add(-9 * 24 * time.Hour)
 	rewritten := stagingNow.Add(-9*time.Hour - 30*time.Minute)
@@ -515,11 +511,10 @@ func TestDiagnoseDoesNotClaimAReadyObjectIsFailing(t *testing.T) {
 	}
 }
 
-// TestDiagnoseSeparatesUnreportedFromReportedFailure covers defect 3.
-// Programmed=Unknown means no controller has reported success or failure. That
-// is not "provisioning", and it is not evidence that the spec is sound — the
-// pod behind these Instances was crash-looping the whole time, which is
-// InstanceCrashing, a user-actionable class.
+// TestDiagnoseSeparatesUnreportedFromReportedFailure: Programmed=Unknown means
+// nothing reported success or failure. That is not "provisioning", and it is
+// not evidence the spec is sound — the container behind these Instances was
+// crash-looping throughout, which is InstanceCrashing, a user-actionable class.
 func TestDiagnoseSeparatesUnreportedFromReportedFailure(t *testing.T) {
 	created := stagingNow.Add(-9 * 24 * time.Hour)
 	rewritten := stagingNow.Add(-9*time.Hour - 30*time.Minute)
@@ -555,9 +550,8 @@ func TestDiagnoseSeparatesUnreportedFromReportedFailure(t *testing.T) {
 			t.Errorf("Explanation = %q, want it to separate what is known from what it suggests",
 				root.Explanation)
 		}
-		// The assistant told the customer "this isn't a spec problem, escalate
-		// to Datum" while the container was crash-looping. Naming the
-		// user-actionable possibility is the point of the whole change.
+		// Naming the user-actionable possibility is the point: the answer was
+		// "not a spec problem, escalate" while the container was crash-looping.
 		if !strings.Contains(root.Remediation, "InstanceCrashing") {
 			t.Errorf("Remediation = %q, want it to name InstanceCrashing as a live possibility",
 				root.Remediation)

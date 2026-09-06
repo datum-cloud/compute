@@ -41,27 +41,23 @@ type Cause struct {
 	// because this struct is a tool's output schema: metav1.Time marshals as a
 	// string but is a struct, which JSON Schema inference rejects.
 	LastTransitionTime string `json:"lastTransitionTime,omitempty"`
-	// InStateFor is how long the condition has held this status, rendered for
-	// a reader ("5d", "12m"). Derived from LastTransitionTime against the
-	// clock at read time, never stored; empty when the API left it unset or
-	// set a value that cannot be believed.
+	// InStateFor is how long the condition has held this status ("5d", "12m"),
+	// derived at read time and never stored. Empty when the API set no
+	// timestamp, or set one that cannot be believed.
 	InStateFor string `json:"inStateFor,omitempty"`
-	// Reported separates a condition status of False — something looked and
-	// reported a failure — from Unknown, where nothing has reported success or
-	// failure and the reason states an intent rather than an observation.
-	// Flattening the two turns "we have heard nothing" into "we were told it is
-	// in progress", which is the more confident and the more wrong answer.
+	// Reported separates False — something looked and reported a failure — from
+	// Unknown, where nothing reported either way and the reason states an intent,
+	// not an observation. Flattening the two turns "we have heard nothing" into
+	// "we were told it is in progress": the more confident, and the more wrong.
 	Reported bool `json:"reported"`
 	// ObjectAge is how long the object carrying this condition has existed,
 	// from its creationTimestamp.
 	ObjectAge string `json:"objectAge,omitempty"`
-	// FailingFor is a floor on how long this object has been failing to reach
-	// its ready state: the greater of InStateFor and ObjectAge, set only while
-	// the object is not ready. It is deliberately NOT a claim that Reason held
-	// for that whole span — a crash rewrites lastTransitionTime, so InStateFor
-	// measures the last rewrite, not the outage. Read InStateFor as "this
-	// reason has held this long" and FailingFor as "this object has been broken
-	// at least this long"; the gap between them is itself the signal.
+	// FailingFor is a floor on how long this object has been failing: the
+	// greater of InStateFor and ObjectAge, set only while it is not ready. It is
+	// deliberately NOT a claim that Reason held that whole span — a crash
+	// rewrites lastTransitionTime, so InStateFor measures the last rewrite, not
+	// the outage. The gap between the two is itself the signal.
 	FailingFor string `json:"failingFor,omitempty"`
 	// Pattern names a failure shape that no controller reported and only the
 	// elapsed evidence reveals. Empty unless one was recognised.
@@ -72,14 +68,13 @@ type Cause struct {
 	Skill         string        `json:"skill,omitempty"`
 }
 
-// PatternNoTerminalStateReported is the shape the staging stall took: an object
-// that has outlived its reason's window without ever reaching ready, whose
-// condition status is still Unknown, so nothing has reported success or
-// failure. Something is acting on the object and reporting nothing either way.
+// PatternNoTerminalStateReported: an object has outlived its reason's window
+// without reaching ready and its condition is still Unknown, so something is
+// acting on it and reporting nothing either way.
 //
-// It is named for exactly what is observed. It is not a claim about who is at
-// fault: infrastructure that never reports back and a container that starts and
-// exits immediately look identical from inside the customer's project.
+// Named for what is observed, not for who is at fault: infrastructure that
+// never reports back and a container that exits the moment it starts look
+// identical from inside the customer's project.
 const PatternNoTerminalStateReported = "NoTerminalStateReported"
 
 // note appends a derived observation to an explanation, so what the catalog
@@ -91,10 +86,9 @@ func (c *Cause) note(s string) {
 	c.Explanation = strings.TrimSpace(c.Explanation + " " + s)
 }
 
-// object is the context a condition is read in: which object carried it, when
-// that object came into existence, and whether the object is reaching its own
-// ready state. The last two are what let a cause report how long the object has
-// been broken rather than only how long the condition has held.
+// object is the context a condition is read in. created and notReady are what
+// let a cause report how long the object has been broken, rather than only how
+// long the condition has held.
 type object struct {
 	level    Level
 	name     string
@@ -136,14 +130,12 @@ type Diagnosis struct {
 // Diagnose explains why a Workload is not available.
 //
 // It walks Workload -> WorkloadDeployment -> Instance and returns the deepest
-// condition that actually names a cause. This matters because compute's
-// top-level reasons are deliberately pointers: Workload.Available=False with
-// reason QuotaNotGranted says which subsystem is blocking, while the real
-// reason lives on an Instance's QuotaGranted condition below it. Reporting the
-// pointer is a wrong answer that reads like a right one.
+// condition that names a cause. Compute's top-level reasons are deliberately
+// pointers — QuotaNotGranted names the blocking subsystem while the real reason
+// sits on an Instance's QuotaGranted below it — and reporting the pointer is a
+// wrong answer that reads like a right one.
 //
-// The caller supplies the objects; this function performs no I/O, so the
-// ranking is testable without a cluster.
+// The caller supplies the objects; this performs no I/O.
 func Diagnose(
 	workload *computev1alpha.Workload,
 	deployments []computev1alpha.WorkloadDeployment,
@@ -228,14 +220,10 @@ func DiagnoseAt(
 }
 
 // minPlausibleTime is the floor a timestamp must clear to count as an
-// observation.
-//
-// Real Instances carry lastTransitionTime "1970-01-01T00:00:00Z" as an unset
-// sentinel, and metav1.Time.IsZero() does not catch it because Go's zero time
-// is year 1, not 1970. The epoch therefore sails through and renders as an age
-// of twenty thousand days, which is enough on its own to call a healthy object
-// stalled. Nothing in compute predates its own API by decades, so a timestamp
-// at or below this floor is a sentinel, not a fact.
+// observation. Real Instances carry "1970-01-01T00:00:00Z" as an unset
+// sentinel and metav1.Time.IsZero() misses it, because Go's zero time is year
+// 1; the epoch then renders as twenty thousand days, enough on its own to call
+// a healthy object stalled.
 var minPlausibleTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // plausible reports whether a timestamp can be believed as a real observation.
@@ -278,11 +266,9 @@ func discardedTime(c metav1.Condition, kept string) string {
 		c.LastTransitionTime.UTC().Format(time.RFC3339))
 }
 
-// age returns how long ago an RFC 3339 timestamp was, relative to now.
-//
-// It refuses an empty, unparseable, implausible, or future value rather than
-// guessing one. Everything downstream reads age as evidence about whether a
-// state is stuck, and a fabricated age is worse than none.
+// age returns how long ago an RFC 3339 timestamp was. It refuses an empty,
+// unparseable, implausible, or future value: downstream reads age as evidence
+// that a state is stuck, and a fabricated age is worse than none.
 func age(rfc3339 string, now time.Time) (time.Duration, bool) {
 	if rfc3339 == "" {
 		return 0, false
@@ -301,10 +287,9 @@ func age(rfc3339 string, now time.Time) (time.Duration, bool) {
 	return d, true
 }
 
-// humanDuration renders a duration coarsest-unit-first, the way an operator
-// would say it. The consumer is a language model reading a tool result: "5d"
-// lands where a nanosecond count, or a pair of timestamps it has to subtract,
-// does not.
+// humanDuration renders a duration coarsest-unit-first. The consumer is a
+// language model reading a tool result: "5d" lands where a nanosecond count,
+// or a pair of timestamps it must subtract, does not.
 func humanDuration(d time.Duration) string {
 	switch {
 	case d <= 0:
@@ -358,9 +343,8 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 	}
 
 	// creationTimestamp is the floor on how long the object has been broken:
-	// every crash and restart rewrites lastTransitionTime, so the condition
-	// clock measures churn, and it understates most in the crash-loop case that
-	// matters most. The object clock cannot be reset that way.
+	// every crash rewrites lastTransitionTime, so the condition clock measures
+	// churn. The object clock cannot be reset that way.
 	var objectAge time.Duration
 	if elapsed, ok := age(formatTime(obj.created), now); ok {
 		objectAge = elapsed
@@ -385,19 +369,17 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 	cause.Actionability = ActionabilityAt(info, cause.LastTransitionTime, now)
 	cause.Explanation = info.Explanation
 	if !cause.Reported {
-		// The catalogued explanations are written as observations ("the
-		// provider is actively programming the instance"). Under Unknown
-		// nothing observed that, so it is framed as the claim it is rather
-		// than asserted and then contradicted two sentences later.
+		// Catalogued explanations are written as observations. Under Unknown
+		// nothing observed anything, so it is framed as the claim it is rather
+		// than asserted and contradicted two sentences later.
 		cause.Explanation = "Nobody has confirmed this — it is what the status claims, not what was " +
 			"seen: " + info.Explanation
 	}
 	cause.Remediation = info.Remediation
 	cause.Skill = info.Skill
 	if cause.Actionability == ActionabilityStalled {
-		// The catalogued remediation for these reasons is "wait", which is
-		// now the wrong advice: it is what produced the five-day wait this
-		// escalation exists to end.
+		// The catalogued remediation is "wait", now the wrong advice: it is what
+		// produced the multi-day wait this escalation exists to end.
 		cause.Remediation = fmt.Sprintf(
 			"Stop waiting on this one. A step like this normally finishes within %s, and this one "+
 				"has been sitting for %s. Take it to Datum, with the name (%s), the status code "+
@@ -408,9 +390,7 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 	case noTerminalStateReported(obj, cause, info, objectAge, inState):
 		applyNoTerminalState(&cause, info)
 	case !cause.Reported:
-		// The catalogued explanations are written as observations ("the
-		// provider is actively programming the instance"). Under Unknown
-		// nothing observed that, and repeating it is how a crash-looping
+		// Repeating an Unknown reason as observed fact is how a crash-looping
 		// container got reported as provisioning.
 		cause.note(fmt.Sprintf(
 			"Datum has not reported back on this either way — not success, not failure (%s is still "+
@@ -421,16 +401,13 @@ func toCause(obj object, c metav1.Condition, now time.Time) Cause {
 	return cause
 }
 
-// noTerminalStateReported recognises the staging shape: the object is not
-// reaching ready, its condition status is Unknown so nothing has reported
-// success or failure, it has existed for longer than its own reason's window,
-// and the condition clock either already contradicts the reason or cannot be
-// read at all.
+// noTerminalStateReported: the object is not reaching ready, its condition is
+// Unknown, it has outlived its reason's window, and the condition clock either
+// contradicts the reason or cannot be read at all.
 //
-// That last clause is what keeps this off a healthy object that broke a moment
-// ago. An object can be nine days old and have failed one minute ago; age alone
-// says nothing, which is why the creation floor never escalates actionability
-// by itself.
+// That last clause keeps this off an old object that broke a moment ago. Age
+// alone says nothing, which is why the creation floor never escalates
+// actionability by itself.
 func noTerminalStateReported(obj object, cause Cause, info ReasonInfo, objectAge, inState time.Duration) bool {
 	if cause.Reported || !obj.notReady || info.ExpectedDuration <= 0 {
 		return false
@@ -526,11 +503,9 @@ func summarize(w *computev1alpha.Workload, available bool, root *Cause, blockedC
 	case ActionabilityTransient:
 		who = "This is a normal step along the way and should clear on its own"
 	case ActionabilityStalled:
-		// Says what has actually been established and what has not. The
-		// classification alone reads as "not your fault", which is the
-		// overclaim a crash-looping container punishes. Whether anything was
-		// reported changes which half is true, so the two never share a
-		// sentence.
+		// The classification alone reads as "not your fault", the overclaim a
+		// crash-looping container punishes. Whether anything was reported
+		// changes which half is true, so the two never share a sentence.
 		who = "A step like this normally finishes quickly and this one has not, so treat it as " +
 			"stuck rather than in progress and take it to Datum"
 		if root.Reported {
@@ -545,9 +520,8 @@ func summarize(w *computev1alpha.Workload, available bool, root *Cause, blockedC
 	}
 	if root.Pattern == PatternNoTerminalStateReported {
 		// Overrides the actionability sentence rather than adding to it: an
-		// unreported reason that says "in progress" must not be summarised as a
-		// normal step, and blaming Datum is exactly the overclaim the
-		// crash-looping container case punishes.
+		// unreported "in progress" must not be summarised as a normal step, and
+		// blaming Datum is the overclaim a crash-looping container punishes.
 		who = "Treat this as stuck rather than in progress: nothing has reported back either way, " +
 			"so it is worth taking to Datum with the details below — with the caveat that a " +
 			"container of your own that keeps crashing on start would look exactly like this from " +
@@ -558,9 +532,9 @@ func summarize(w *computev1alpha.Workload, available bool, root *Cause, blockedC
 	if available {
 		state = "is only partly running"
 	}
-	// The age belongs in the one-line summary: it is what separates work that
-	// is in flight from work that stopped moving days ago. Both numbers are
-	// carried when they disagree, because the disagreement is the finding.
+	// The age separates work in flight from work that stopped moving days ago.
+	// Both numbers are carried when they disagree: the disagreement is the
+	// finding.
 	var held string
 	switch {
 	case root.FailingFor != "" && root.InStateFor == "":

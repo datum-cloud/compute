@@ -20,9 +20,8 @@ const (
 	knowledgePath = "/llms-full.txt"
 
 	// runbookPrefix serves the skills. The URL says "runbooks" while the repo
-	// directory says "skills": the path is the framework's, fixed by the
-	// capability documents the assistant already ships, so it is not ours to
-	// rename.
+	// directory says "skills": the path is fixed by the capability documents the
+	// assistant already ships, so it is not ours to rename.
 	runbookPrefix = "/runbooks/"
 
 	textContentType     = "text/plain; charset=utf-8"
@@ -37,15 +36,13 @@ type document struct {
 
 // knowledgeHandler serves compute's knowledge and skills over plain HTTP.
 //
-// Routing is an exact-match lookup in a table enumerated once from the embedded
-// FS, never a path join against a directory: a request either names a document
-// listed at startup or it 404s, so "..", an absolute path, or an escaped
+// Routing is an exact-match lookup in a table enumerated at startup, never a
+// path join against a directory, so "..", an absolute path, or an escaped
 // separator has nothing to traverse to.
 //
-// These documents are public and carry no auth check. The assistant fetches
-// them to build a system prompt, before it holds any project context, and they
-// are static text with no tenant data in them — the credential-bearing surface
-// is /mcp alone.
+// These documents are public and carry no auth check: the assistant fetches
+// them before it holds any project context, and they are static text with no
+// tenant data. /mcp is the credential-bearing surface.
 type knowledgeHandler struct {
 	docs map[string]document
 }
@@ -96,9 +93,8 @@ func (h *knowledgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every byte served is fixed at build time and already in memory, so a
-	// response is one write of a known-size buffer — no per-request I/O that
-	// could outlast the server's header timeout.
+	// Every byte is fixed at build time and already in memory: one write of a
+	// known-size buffer, no per-request I/O.
 	w.Header().Set("Content-Type", doc.contentType)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(doc.body))
 }

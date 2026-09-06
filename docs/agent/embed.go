@@ -3,11 +3,9 @@
 // Package agentdocs embeds the knowledge and skills compute publishes to an AI
 // assistant.
 //
-// The assistant fetches these over plain HTTP from URLs named in compute's
-// capability document, so cmd/compute-mcp has to serve them. Embedding rather
-// than reading from disk keeps the server a single self-contained binary: the
-// container image needs no docs layer, and a stripped image cannot silently
-// start answering 404 for knowledge the capability document promises.
+// Embedding rather than reading from disk keeps the server a single
+// self-contained binary: a stripped image cannot silently start answering 404
+// for knowledge compute's capability document promises.
 package agentdocs
 
 import "embed"

@@ -140,10 +140,8 @@ func TestMissingRunbookIs404(t *testing.T) {
 	}
 }
 
-// TestTraversalIsRefused covers escapes out of the runbook prefix. The handler
-// matches paths exactly against a table enumerated at startup, so nothing here
-// can resolve to a file the table does not already publish. The mux may clean
-// and redirect a path first, so the assertion is the end-to-end one: whatever
+// TestTraversalIsRefused covers escapes out of the runbook prefix. The mux may
+// clean and redirect a path first, so the assertion is end-to-end: whatever
 // finally answers 200 must be one of the enumerated public documents.
 func TestTraversalIsRefused(t *testing.T) {
 	mux, docs := newTestMux(t)
