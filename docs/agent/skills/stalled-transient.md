@@ -128,3 +128,49 @@ going on, and let the verdict wait for evidence that supports one.
 
 Hand over the object name, the condition type, the reason, the
 `lastTransitionTime`, and the status message verbatim.
+
+## When the classification itself was wrong
+
+This skill exists because of one answer. A nine-day stall came back classified
+`transient` with a remediation of "Wait.", and was read out to the customer as a
+normal in-flight state that would clear in a few minutes. That reading was a
+fair reading of what was handed over. It was also wrong, and nothing in the
+conversation announced it — a person found the truth afterwards by looking at
+the object itself.
+
+So do not wait to notice that an answer was wrong; you usually will not. Notice
+instead the moment you take one back:
+
+**If you told this customer earlier in the conversation that something was
+normal, in progress, or worth waiting a few minutes for, and a later tool result
+shows it has been in that state for hours or days, that reversal is the signal.**
+File `MisleadingOutput` against the tool whose output you believed. You are not
+reporting that the workload is broken — that goes to the customer. You are
+reporting that reading the output correctly produced the wrong answer, which is
+the only failure nobody else will catch.
+
+Two other tells for the same thing:
+
+- **Two numbers in one response that cannot both be true.** `actionability:
+  transient`, or a remediation of "Wait.", sitting beside a `failingFor` of `9d`
+  and an `expectedWithin` of `30m`. Here you have not said anything yet, so
+  there is nothing to retract — file it anyway and answer from the clock.
+- **The customer pushing back**: "it has been days", "are you sure", "that is
+  not right". Re-read the durations before defending the earlier answer, and
+  file if they turn out to be right. Their words are not evidence and must not
+  be quoted into the report; the two clocks are.
+
+Evidence for this one is the pair of clocks and the classification they defeat,
+copied out of the tool result:
+
+    "capability": "duration-aware classification of transient reasons",
+    "kind": "MisleadingOutput",
+    "evidence": {
+      "tool": "workload_diagnose",
+      "observed": "actionability: transient, remediation \"Wait.\"",
+      "contradictedBy": "failingFor: 9d, inStateFor: 9h30m, expectedWithin: 30m" }
+
+Do not file when the clock and the classification agree. A two-minute
+`ProgrammingInProgress` called transient is the tool being right, and a stall
+the tools already returned as `stalled` is the tools working as intended — the
+answer there is this procedure, not a report.
