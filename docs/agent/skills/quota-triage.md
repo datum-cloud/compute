@@ -49,3 +49,25 @@ service that evaluates it, and not the request compute files against it.
 Do not suggest workload changes for `QuotaNoBudget` or any other `Quota*` fault
 that is Datum's — a project cannot set up its own quota, and the customer will
 burn time trying.
+
+## When the numbers are not there
+
+Step 3 rests entirely on the status message. Nothing else in these tools carries
+the project's compute quota, how much of it is in use, or how much is left. So
+when a `QuotaExceeded` message arrives without figures — or carries what was
+requested but not what remains — you cannot tell the customer how much smaller
+to go, and "ask for less" without a number is not something they can act on.
+
+Say which half you have and which is missing, then file `InsufficientDetail`
+against the tool you read it from, quoting the message you were given:
+
+    "capability": "how much of the project's compute quota is left",
+    "kind": "InsufficientDetail",
+    "evidence": {
+      "tool": "instances_list",
+      "observed": "QuotaGranted=False, QuotaExceeded, \"quota exceeded\"",
+      "contradictedBy": "no requested or remaining amount in the response" }
+
+A message that does carry both figures is the tool working: quote them, give the
+three options, and file nothing. Being over quota is not a gap — it is the
+answer.

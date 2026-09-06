@@ -46,3 +46,40 @@ Do not open with a verdict the body then walks back. If the diagnosis says
 `stalled`, or carries `pattern: NoTerminalStateReported`, then who is at fault
 is not yet established: say what is known first, and reach a verdict only if the
 evidence gets you one.
+
+## When nothing here can answer the question
+
+Some questions arrive at this door that none of the five tools can reach. The
+clearest is load: how much CPU or memory a workload is actually using, whether
+it is close to its limits, whether it is slow rather than down. Compute records
+what was asked for and what came back; it does not record consumption, and no
+tool here will produce it. Say that plainly rather than answering from the
+replica counts, which describe availability and say nothing about load.
+
+Then file `MissingCapability` once, describing what was needed and what you
+tried. `kind` may be left off — this is the default:
+
+    "capability": "per-instance CPU and memory usage for a workload",
+    "evidence": {
+      "tool": "workload_diagnose",
+      "observed": "instances.ready 3 of 3; no usage figures on any field" }
+
+Describe the need in your own words. Do not copy the customer's message into
+the report — it is filed into another team's project, and anything quoted
+travels with it.
+
+## When not to file anything
+
+These reports are only worth reading if there are few of them, so most turns
+that end badly are not gaps:
+
+- **The tool was right and the news was bad.** `ImageUnavailable` on a tag that
+  does not exist is compute doing its job. So is a platform fault correctly
+  named and handed to Datum. An unwelcome answer is not a missing one.
+- **The question was out of scope.** Billing, DNS, someone's own application
+  code — compute was never meant to answer these. Say who can, and move on.
+- **You skipped the walk.** Reporting a pointer reason as the cause, or
+  answering a triage question without loading the skill, is fixed by step 1 and
+  step 5, not by a report.
+- **You have filed it already.** One report per distinct gap per conversation.
+  Filing the same one again on the next turn does not make it louder.
