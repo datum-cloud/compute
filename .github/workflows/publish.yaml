@@ -48,13 +48,16 @@ jobs:
       dockerfile-path: ui/provider/Dockerfile
     secrets: inherit
 
-  # Stamps compute's own apiserver image (config/base/manager) and both UI
-  # plugin images (config/components/{consumer,provider}-ui-plugin) into one
-  # compute-kustomize bundle publish. The `images:` input (v1.20.0+) supports
-  # multiple {path, name, tag} entries in one invocation — the single
-  # image-name/image-overlays inputs it replaces can only stamp one image
-  # across N paths, which can't express "three different images, three
-  # different paths" at all.
+  # Stamps compute's own apiserver image (config/base/manager), both UI plugin
+  # images (config/components/{consumer,provider}-ui-plugin) and the MCP server
+  # (config/components/compute-mcp) into one compute-kustomize bundle publish.
+  # The `images:` input (v1.20.0+) supports multiple {path, name, tag} entries
+  # in one invocation — the single image-name/image-overlays inputs it replaces
+  # can only stamp one image across N paths, which can't express "three
+  # different images, four different paths" at all.
+  #
+  # compute-mcp is stamped with the manager's image and the manager's tag: one
+  # image carries both binaries, so the two paths cannot name different builds.
   publish-kustomize-bundles:
     needs:
       [
@@ -74,4 +77,5 @@ jobs:
         - { path: config/base/manager, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
         - { path: config/components/consumer-ui-plugin, name: ghcr.io/datum-cloud/compute-consumer-ui-plugin, tag: "${{ needs.publish-consumer-ui-plugin-image.outputs.tag }}" }
         - { path: config/components/provider-ui-plugin, name: ghcr.io/datum-cloud/compute-provider-ui-plugin, tag: "${{ needs.publish-provider-ui-plugin-image.outputs.tag }}" }
+        - { path: config/components/compute-mcp, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
     secrets: inherit

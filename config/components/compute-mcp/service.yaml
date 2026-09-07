@@ -1,0 +1,22 @@
+# Cluster-internal only: the assistant reaches /mcp over this Service's DNS
+# name, and no Gateway or HTTPRoute fronts it. Unlike the UI plugins there is no
+# https:// requirement forcing a cert-manager CSI volume here, so the pod serves
+# plain HTTP and the mesh/network layer owns transport security.
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: compute-mcp
+    app.kubernetes.io/name: compute-mcp
+  name: compute-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/instance: compute-mcp
+    app.kubernetes.io/name: compute-mcp
