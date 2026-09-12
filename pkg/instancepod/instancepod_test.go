@@ -480,16 +480,22 @@ func TestBuildPodSpecSecurityContext(t *testing.T) {
 		want      *corev1.SecurityContext
 	}{
 		{
-			name:      "no request leaves the provider's defaults in charge",
+			name:      "no request drops ALL and adds nothing",
 			container: nginx(nil),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
 		},
 		{
-			name: "a security context without capabilities is not a request",
+			name: "a security context without capabilities drops ALL and adds nothing",
 			container: computev1alpha.SandboxContainer{
 				Name:            testContainerName,
 				Image:           "docker.io/library/nginx:1.27",
 				SecurityContext: &computev1alpha.SandboxSecurityContext{},
 			},
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
 		},
 		{
 			name: "requested capabilities are added in sorted order after dropping ALL",

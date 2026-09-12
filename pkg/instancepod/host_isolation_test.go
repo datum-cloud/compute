@@ -5,6 +5,7 @@ package instancepod
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -173,6 +174,35 @@ func TestBuildPodNeverReachesTheHost(t *testing.T) {
 	if len(spec.Containers) != 2 || len(spec.Volumes) != 4 || len(spec.Containers[0].Ports) != 2 {
 		t.Fatalf("the maximal instance was not fully translated: %d containers, %d volumes",
 			len(spec.Containers), len(spec.Volumes))
+	}
+}
+
+// TestBuildPodDropsAllCapabilitiesInEveryContainer confirms no container keeps a
+// container runtime default capability, including a container that requests
+// none, so a provider cannot leave one in place by omission.
+func TestBuildPodDropsAllCapabilitiesInEveryContainer(t *testing.T) {
+	pod, err := BuildPod(maximalInstance(), maximalOptions())
+	if err != nil {
+		t.Fatalf("BuildPod() returned an unexpected error: %v", err)
+	}
+
+	containers := make([]corev1.Container, 0, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
+	containers = append(containers, pod.Spec.Containers...)
+	containers = append(containers, pod.Spec.InitContainers...)
+	for _, container := range containers {
+		securityContext := container.SecurityContext
+		if securityContext == nil || securityContext.Capabilities == nil ||
+			!slices.Contains(securityContext.Capabilities.Drop, corev1.Capability(computev1alpha.CapabilityAll)) {
+			t.Errorf("container %q does not drop ALL capabilities: %+v", container.Name, securityContext)
+		}
+	}
+
+	// The sidecar requests no capabilities, so it proves the default rather
+	// than a request.
+	if len(pod.Spec.Containers) != 2 || pod.Spec.Containers[1].SecurityContext == nil ||
+		pod.Spec.Containers[1].SecurityContext.Capabilities == nil ||
+		len(pod.Spec.Containers[1].SecurityContext.Capabilities.Add) != 0 {
+		t.Errorf("the container without a request was not translated to drop ALL and add nothing")
 	}
 }
 

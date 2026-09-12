@@ -300,20 +300,20 @@ func buildPorts(container *computev1alpha.SandboxContainer) []corev1.ContainerPo
 	return ports
 }
 
-// buildSecurityContext translates a container's capability request. Without a
-// request it returns nil, which leaves the provider's own defaults in charge.
+// buildSecurityContext translates a container's capability request. Every
+// container drops ALL, so no container runtime default capability survives in
+// any class, whether or not the container requests capabilities.
 //
-// With a request, the Pod always drops ALL so no runtime default capability
-// survives, and adds back only what the customer asked for. Validation has
-// already confirmed the class grants each added capability. A capability that
-// is also named in drop is left out, so an explicit drop wins as it does in
-// Kubernetes container runtimes. Added capabilities are sorted so an unchanged
-// Instance produces an unchanged Pod.
+// A container gets back only the capabilities it adds. Validation has already
+// confirmed the class grants each one. A capability that is also named in drop
+// is left out, so an explicit drop wins as it does in Kubernetes container
+// runtimes. Added capabilities are sorted so an unchanged Instance produces an
+// unchanged Pod.
 func buildSecurityContext(container *computev1alpha.SandboxContainer) *corev1.SecurityContext {
-	if container.SecurityContext == nil || container.SecurityContext.Capabilities == nil {
-		return nil
+	var requested computev1alpha.SandboxCapabilities
+	if container.SecurityContext != nil && container.SecurityContext.Capabilities != nil {
+		requested = *container.SecurityContext.Capabilities
 	}
-	requested := container.SecurityContext.Capabilities
 
 	var add []corev1.Capability
 	for _, capability := range requested.Add {
