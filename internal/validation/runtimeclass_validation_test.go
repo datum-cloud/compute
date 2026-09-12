@@ -29,6 +29,15 @@ const (
 	// testUnpublishedClass is a class name that a test catalog publishes only
 	// when the test says so. It represents a tier that does not exist.
 	testUnpublishedClass = "citrine"
+
+	// testCapChown and testCapNetBindService are capabilities every test class
+	// grants.
+	testCapChown          = "CHOWN"
+	testCapNetBindService = "NET_BIND_SERVICE"
+
+	// testCapPrefixedChown is testCapChown as tools that keep the CAP_ prefix
+	// spell it.
+	testCapPrefixedChown = "CAP_CHOWN"
 )
 
 // makeRuntimeClass builds a catalog entry that serves every capability, so a
@@ -49,7 +58,9 @@ func makeRuntimeClass(name string, tweaks ...func(*computev1alpha.RuntimeClass))
 					computev1alpha.RuntimeClassFeatureDeviceVolumeAttachments,
 					computev1alpha.RuntimeClassFeatureEnvFrom,
 					computev1alpha.RuntimeClassFeatureImagePullSecrets,
+					computev1alpha.RuntimeClassFeatureContainerCapabilities,
 				},
+				GrantableCapabilities: []computev1alpha.Capability{testCapChown, testCapNetBindService},
 			},
 		},
 	}
@@ -132,6 +143,77 @@ func TestValidateRuntimeClassSelectionGateOff(t *testing.T) {
 			opts := WorkloadValidationOptions{RuntimeClasses: tc.catalog}
 
 			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(spec, root, opts))
+		})
+	}
+}
+
+// capabilitySpec is a sandbox whose single container adds and drops
+// capabilities the way a Kubernetes nginx manifest does.
+func capabilitySpec(class string, add, drop []computev1alpha.Capability) computev1alpha.InstanceSpec {
+	return computev1alpha.InstanceSpec{
+		Runtime: computev1alpha.InstanceRuntimeSpec{
+			Class: class,
+			Sandbox: &computev1alpha.SandboxRuntime{
+				Containers: []computev1alpha.SandboxContainer{{
+					Name:  "nginx",
+					Image: "docker.io/library/nginx:1.27",
+					SecurityContext: &computev1alpha.SandboxSecurityContext{
+						Capabilities: &computev1alpha.SandboxCapabilities{Add: add, Drop: drop},
+					},
+				}},
+			},
+		},
+	}
+}
+
+// TestValidateContainerCapabilitiesSelection verifies capability requests
+// against the class the instance selects, with the gate both off and on.
+func TestValidateContainerCapabilitiesSelection(t *testing.T) {
+	root := field.NewPath("spec", "template", "spec")
+	addPath := root.Child("runtime", "sandbox", "containers").Index(0).
+		Child("securityContext", "capabilities", "add")
+
+	cases := map[string]struct {
+		gate           bool
+		spec           computev1alpha.InstanceSpec
+		catalog        runtimeclass.Catalog
+		expectedErrors field.ErrorList
+	}{
+		"gate off: adding a capability is refused": {
+			spec: capabilitySpec("", []computev1alpha.Capability{testCapChown}, []computev1alpha.Capability{computev1alpha.CapabilityAll}),
+			expectedErrors: field.ErrorList{
+				field.Forbidden(addPath, ""),
+			},
+		},
+		"gate off: dropping capabilities is accepted": {
+			spec: capabilitySpec("", nil, []computev1alpha.Capability{computev1alpha.CapabilityAll}),
+		},
+		"gate on: a class that grants the capability accepts it": {
+			gate:    true,
+			spec:    capabilitySpec(testClassBasalt, []computev1alpha.Capability{testCapChown}, nil),
+			catalog: defaultCatalog(),
+		},
+		"gate on: a class without the feature refuses the request": {
+			gate: true,
+			spec: capabilitySpec(testClassBasalt, []computev1alpha.Capability{testCapChown}, nil),
+			catalog: runtimeclass.Catalog{makeRuntimeClass(testClassBasalt,
+				withFeatures(computev1alpha.RuntimeClassFeatureSandboxRuntime))},
+			expectedErrors: field.ErrorList{field.Forbidden(addPath, "")},
+		},
+		"gate on: a capability outside the grantable set is refused": {
+			gate:           true,
+			spec:           capabilitySpec(testClassBasalt, []computev1alpha.Capability{"SYS_ADMIN"}, nil),
+			catalog:        defaultCatalog(),
+			expectedErrors: field.ErrorList{field.Forbidden(addPath.Index(0), "")},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, tc.gate)
+
+			opts := WorkloadValidationOptions{RuntimeClasses: tc.catalog}
+			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(tc.spec, root, opts))
 		})
 	}
 }

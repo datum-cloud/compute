@@ -735,6 +735,11 @@ func validateContainerCommon(
 
 	allErrs = append(allErrs, validateEnvFrom(container.EnvFrom, fieldPath.Child("envFrom"))...)
 
+	if container.SecurityContext != nil {
+		allErrs = append(allErrs, validateSandboxCapabilities(container.SecurityContext.Capabilities,
+			fieldPath.Child("securityContext", "capabilities"))...)
+	}
+
 	// TODO(jreese) validate named ports are unique across all containers?
 	allErrs = append(allErrs, validateNamedPorts(container.Ports, fieldPath.Child("ports"))...)
 
@@ -775,6 +780,47 @@ func imageHasExplicitRegistry(image string) bool {
 	return maybeDomain == "localhost" ||
 		strings.ContainsAny(maybeDomain, ".:") ||
 		strings.ToLower(maybeDomain) != maybeDomain
+}
+
+// validateSandboxCapabilities checks the shape of a capability request. Whether
+// the selected runtime class grants each capability is checked with the class.
+//
+// The schema pattern admits CAP_-prefixed names, and Kubernetes manifests
+// written for other tools often use them, so the prefix gets a message saying
+// how to fix it rather than a class rejection naming a capability that looks
+// correct.
+func validateSandboxCapabilities(capabilities *computev1alpha.SandboxCapabilities, fldPath *field.Path) field.ErrorList {
+	if capabilities == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+
+	addPath := fldPath.Child("add")
+	for i, capability := range capabilities.Add {
+		if capability == computev1alpha.CapabilityAll {
+			allErrs = append(allErrs, field.Forbidden(addPath.Index(i),
+				"ALL may not be added; list each capability the container needs"))
+			continue
+		}
+		allErrs = append(allErrs, validateCapabilityName(capability, addPath.Index(i))...)
+	}
+
+	dropPath := fldPath.Child("drop")
+	for i, capability := range capabilities.Drop {
+		allErrs = append(allErrs, validateCapabilityName(capability, dropPath.Index(i))...)
+	}
+
+	return allErrs
+}
+
+func validateCapabilityName(capability computev1alpha.Capability, fldPath *field.Path) field.ErrorList {
+	name := string(capability)
+	if trimmed, ok := strings.CutPrefix(name, "CAP_"); ok {
+		return field.ErrorList{field.Invalid(fldPath, name,
+			fmt.Sprintf("must omit the CAP_ prefix, for example %q", trimmed))}
+	}
+	return nil
 }
 
 // validateEnvFrom validates the envFrom field on a SandboxContainer.
