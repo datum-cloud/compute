@@ -101,6 +101,8 @@ Spec is the published contract for this execution tier.
         <td>object</td>
         <td>
           What this class can serve, and what it cannot.<br/>
+          <br/>
+            <i>Validations</i>:<li>!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features): grantableCapabilities requires the containerCapabilities feature</li><li>!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0): the containerCapabilities feature requires a non-empty grantableCapabilities</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -161,6 +163,29 @@ path".<br/>
 once they are running.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b>networkAttachment</b></td>
+        <td>enum</td>
+        <td>
+          How a guest in this class takes the network interface the platform gives
+it. The provider that publishes the class states it, because only the
+provider knows what its runtime expects.
+
+Leaving it empty is the right answer for any class whose guests take the
+interface the cell already gives them, and it is what every class
+published today does. An empty value asks the networking layer for
+nothing, so the cell's own setting continues to decide. Stating a value
+overrides that setting for every guest in the class, in every cell, so
+state one only for a class whose runtime cannot use what the cell would
+otherwise give it.
+
+The value is resolved when a deployment is created and then fixed for the
+life of each instance, so correcting it here moves new instances without
+disturbing running ones.<br/>
+          <br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -197,7 +222,26 @@ statement before committing an image to the tier.<br/>
 is unsupported, so a class that omits a feature rejects requests for it
 rather than serving it by accident.<br/>
           <br/>
-            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets<br/>
+            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets, containerCapabilities<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>grantableCapabilities</b></td>
+        <td>[]string</td>
+        <td>
+          The Linux capabilities a sandbox container in this class may add. A
+container requesting a capability outside this set is rejected, naming the
+class. The platform reads this field itself and never passes it to a
+runtime, and each value is drawn from the closed set of Linux capability
+names, which excludes ALL. The class's isolation boundary justifies what it
+grants: a class whose guest kernel confines the workload may grant
+capabilities a shared-kernel class could not.
+
+A class lists capabilities here only when it declares the
+containerCapabilities feature, and a class declaring that feature lists at
+least one.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM']): grantableCapabilities must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted</li>
         </td>
         <td>false</td>
       </tr></tbody>

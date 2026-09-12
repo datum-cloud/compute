@@ -282,6 +282,26 @@ rejected when the workload is submitted, naming the class and the unsupported fe
 the customer learns at apply time rather than from behavior that doesn't match what they
 asked for.
 
+**Container capabilities are a class-declared feature with a published grant.** The
+platform removes every Linux capability from a sandbox container by default, which keeps
+many stock images from starting. A container can ask for specific capabilities back in the
+shape Kubernetes manifests already use. A class opts in by declaring the feature and
+publishing the set of capabilities it grants, and a request outside that set is rejected
+at submission, naming the class and what it grants. Dropping capabilities never needs the
+feature, because it can only reduce privilege. The mechanism is the same for every class,
+so a future unikernel class can opt in the same way.
+
+What a class grants is justified by its isolation boundary. A class that shares the host
+kernel must keep its grant within the cell's security profile. A class isolated by its own
+guest kernel may sit outside that profile, because the guest confines what the profile
+protects: capabilities, running as root, privilege escalation, and syscall filtering. The
+guest does not confine anything that reaches the host, so the platform never produces host
+directory mounts, host networking, host process or IPC namespaces, or host ports for an
+instance in any class. The instance API has no way to express them, and translation
+refuses them even when a provider supplies one.
+
+Whether capability grants should be metered or reviewed per project is an open question.
+
 ## Production Readiness Review Questionnaire
 
 <!-- Completed for alpha; beta/GA sections filled in as the feature matures. -->
