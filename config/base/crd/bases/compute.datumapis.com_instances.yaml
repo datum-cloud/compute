@@ -696,6 +696,48 @@ spec:
                                     of compute resources required.
                                   type: object
                               type: object
+                            securityContext:
+                              description: Security options for the container.
+                              properties:
+                                capabilities:
+                                  description: The Linux capabilities to grant to
+                                    or remove from the container.
+                                  properties:
+                                    add:
+                                      description: |-
+                                        The capabilities to grant to the container. Each must be one that the
+                                        selected runtime class grants. ALL is not allowed, so a container states
+                                        exactly what it needs.
+                                      items:
+                                        description: |-
+                                          Capability is a Linux capability name without the CAP_ prefix, for example
+                                          CHOWN or NET_BIND_SERVICE.
+                                        maxLength: 64
+                                        minLength: 1
+                                        pattern: ^[A-Z_]+$
+                                        type: string
+                                      maxItems: 64
+                                      type: array
+                                      x-kubernetes-list-type: set
+                                    drop:
+                                      description: |-
+                                        The capabilities to remove from the container. The platform already removes
+                                        every capability, so drop is accepted for compatibility with Kubernetes
+                                        manifests, for example drop: [ALL]. Naming a capability here also removes
+                                        it when the runtime class would otherwise grant it by default.
+                                      items:
+                                        description: |-
+                                          Capability is a Linux capability name without the CAP_ prefix, for example
+                                          CHOWN or NET_BIND_SERVICE.
+                                        maxLength: 64
+                                        minLength: 1
+                                        pattern: ^[A-Z_]+$
+                                        type: string
+                                      maxItems: 64
+                                      type: array
+                                      x-kubernetes-list-type: set
+                                  type: object
+                              type: object
                             volumeAttachments:
                               description: A list of volumes to attach to the container.
                               items:
