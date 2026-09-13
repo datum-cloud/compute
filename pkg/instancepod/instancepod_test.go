@@ -30,6 +30,15 @@ const (
 	testManagedByValue   = "infra-provider-unikraft"
 	testMemory2Gi        = "2Gi"
 	testLabelValueTrue   = "true"
+	testNginxImage       = "docker.io/library/nginx:1.27"
+
+	// Untyped so they fit both compute and Kubernetes capability lists.
+	testCapAll            = "ALL"
+	testCapChown          = "CHOWN"
+	testCapNetBindService = "NET_BIND_SERVICE"
+	testCapSysAdmin       = "SYS_ADMIN"
+	testCapSetuid         = "SETUID"
+	testCapSetgid         = "SETGID"
 
 	// These class names are invented rather than the ones the platform ships.
 	// Translating an instance must not depend on what its class is called.
@@ -439,6 +448,116 @@ func TestBuildPodSpecErrors(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err, test.wantContains)
 			}
 		})
+	}
+}
+
+// TestBuildPodSpecSecurityContext covers how a container's capability request
+// reaches the Pod.
+func TestBuildPodSpecSecurityContext(t *testing.T) {
+	capabilityOptions := Options{Capabilities: runtimeclass.Capabilities{
+		Class: testClassBasalt,
+		Features: []runtimeclass.Feature{
+			runtimeclass.FeatureSandboxRuntime,
+			runtimeclass.FeatureContainerCapabilities,
+		},
+		GrantableCapabilities: []runtimeclass.Capability{testCapNetBindService, testCapChown, testCapSetuid, testCapSetgid},
+	}}
+
+	nginx := func(capabilities *computev1alpha.SandboxCapabilities) computev1alpha.SandboxContainer {
+		container := computev1alpha.SandboxContainer{
+			Name:  testContainerName,
+			Image: testNginxImage,
+		}
+		if capabilities != nil {
+			container.SecurityContext = &computev1alpha.SandboxSecurityContext{Capabilities: capabilities}
+		}
+		return container
+	}
+
+	tests := []struct {
+		name      string
+		container computev1alpha.SandboxContainer
+		want      *corev1.SecurityContext
+	}{
+		{
+			name:      "no request drops ALL and adds nothing",
+			container: nginx(nil),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
+		},
+		{
+			name: "a security context without capabilities drops ALL and adds nothing",
+			container: computev1alpha.SandboxContainer{
+				Name:            testContainerName,
+				Image:           "docker.io/library/nginx:1.27",
+				SecurityContext: &computev1alpha.SandboxSecurityContext{},
+			},
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
+		},
+		{
+			name: "requested capabilities are added in sorted order after dropping ALL",
+			container: nginx(&computev1alpha.SandboxCapabilities{
+				Add:  []computev1alpha.Capability{testCapSetuid, testCapChown, testCapSetgid},
+				Drop: []computev1alpha.Capability{testCapAll},
+			}),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+				Add:  []corev1.Capability{testCapChown, testCapSetgid, testCapSetuid},
+			}},
+		},
+		{
+			name: "a drop-only request still drops ALL",
+			container: nginx(&computev1alpha.SandboxCapabilities{
+				Drop: []computev1alpha.Capability{testCapNetBindService},
+			}),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
+		},
+		{
+			name: "a capability both added and dropped is not added",
+			container: nginx(&computev1alpha.SandboxCapabilities{
+				Add:  []computev1alpha.Capability{testCapChown, testCapNetBindService},
+				Drop: []computev1alpha.Capability{testCapNetBindService},
+			}),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+				Add:  []corev1.Capability{testCapChown},
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec, err := BuildPodSpec(newInstance(test.container), capabilityOptions)
+			if err != nil {
+				t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+			}
+			if err := diff(test.want, spec.Containers[0].SecurityContext); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// TestBuildPodSpecRejectsUngrantedCapability confirms a provider building a Pod
+// refuses a capability its class does not grant rather than passing it through.
+func TestBuildPodSpecRejectsUngrantedCapability(t *testing.T) {
+	instance := newInstance(computev1alpha.SandboxContainer{
+		Name:  testContainerName,
+		Image: testNginxImage,
+		SecurityContext: &computev1alpha.SandboxSecurityContext{
+			Capabilities: &computev1alpha.SandboxCapabilities{Add: []computev1alpha.Capability{testCapSysAdmin}},
+		},
+	})
+
+	_, err := BuildPodSpec(instance, Options{Capabilities: sandboxCapabilities})
+	want := `container capability requests are not supported by the "azurite" runtime class`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("BuildPodSpec() error = %v, want it to contain %q", err, want)
 	}
 }
 

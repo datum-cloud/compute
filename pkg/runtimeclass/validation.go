@@ -4,6 +4,8 @@ package runtimeclass
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
@@ -101,6 +103,9 @@ func validateSandbox(
 			allErrs = append(allErrs, unsupported(containerPath.Child("envFrom"), capabilities, FeatureEnvFrom))
 		}
 
+		allErrs = append(allErrs, validateContainerCapabilities(container.SecurityContext, capabilities,
+			containerPath.Child("securityContext", "capabilities"))...)
+
 		for j, attachment := range container.VolumeAttachments {
 			allErrs = append(allErrs, validateVolumeAttachment(attachment, capabilities,
 				containerPath.Child("volumeAttachments").Index(j))...)
@@ -108,6 +113,50 @@ func validateSandbox(
 	}
 
 	return allErrs
+}
+
+// validateContainerCapabilities checks the capabilities a container adds
+// against what the class grants. Only added capabilities are checked, because a
+// drop can only reduce privilege and every class can honor it.
+func validateContainerCapabilities(
+	securityContext *computev1alpha.SandboxSecurityContext,
+	capabilities Capabilities,
+	fldPath *field.Path,
+) field.ErrorList {
+	if securityContext == nil || securityContext.Capabilities == nil || len(securityContext.Capabilities.Add) == 0 {
+		return nil
+	}
+
+	addPath := fldPath.Child("add")
+	if !capabilities.Supports(FeatureContainerCapabilities) {
+		return field.ErrorList{unsupported(addPath, capabilities, FeatureContainerCapabilities)}
+	}
+
+	allErrs := field.ErrorList{}
+	for i, requested := range securityContext.Capabilities.Add {
+		if capabilities.Grants(requested) {
+			continue
+		}
+		allErrs = append(allErrs, field.Forbidden(addPath.Index(i), fmt.Sprintf(
+			"capability %s is not granted by %s, which grants %s",
+			requested, capabilities.ClassDescription(), grantedList(capabilities.GrantableCapabilities),
+		)))
+	}
+	return allErrs
+}
+
+// grantedList renders a class's grantable capabilities in sorted order so the
+// rejection reads the same on every apply.
+func grantedList(granted []Capability) string {
+	if len(granted) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(granted))
+	for _, capability := range granted {
+		names = append(names, string(capability))
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
 }
 
 // validateVolumeAttachment checks the single attachment property a class can

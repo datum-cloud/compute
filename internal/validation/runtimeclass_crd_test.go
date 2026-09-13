@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -144,6 +145,59 @@ func TestRuntimeClassCRD(t *testing.T) {
 		class.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{"telepathy"}
 		require.Error(t, c.Create(ctx, class))
 	})
+
+	t.Run("a class serving capability requests publishes what it grants", func(t *testing.T) {
+		class := newCatalogEntry("grants-capabilities")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown, testCapNetBindService}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	t.Run("a class cannot publish grantable capabilities without the feature", func(t *testing.T) {
+		class := newCatalogEntry("grants-without-feature")
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"grantableCapabilities requires the containerCapabilities feature")
+	})
+
+	t.Run("a class declaring the feature must publish what it grants", func(t *testing.T) {
+		class := newCatalogEntry("feature-without-grants")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		require.ErrorContains(t, c.Create(ctx, class),
+			"the containerCapabilities feature requires a non-empty grantableCapabilities")
+	})
+
+	t.Run("a class isolated by its own guest kernel can grant any Linux capability", func(t *testing.T) {
+		class := newCatalogEntry("grants-admin")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{
+			"NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE", "CHECKPOINT_RESTORE",
+		}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	// A grant is drawn from the closed set of Linux capability names, so a
+	// class cannot publish every capability or a name no kernel defines.
+	notACapability := "grantableCapabilities must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted"
+	for invalid, wantMessage := range map[computev1alpha.Capability]string{
+		computev1alpha.CapabilityAll: notACapability,
+		testCapPrefixedChown:         notACapability,
+		"TELEPATHY":                  notACapability,
+		"net_raw":                    "should match",
+	} {
+		t.Run("a class cannot grant "+string(invalid), func(t *testing.T) {
+			class := newCatalogEntry("grants-" + strings.ToLower(strings.ReplaceAll(string(invalid), "_", "-")))
+			class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+				computev1alpha.RuntimeClassFeatureContainerCapabilities)
+			class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{invalid}
+			require.ErrorContains(t, c.Create(ctx, class), wantMessage)
+		})
+	}
 
 	t.Run("a class must state its isolation boundary", func(t *testing.T) {
 		class := newCatalogEntry("no-boundary")

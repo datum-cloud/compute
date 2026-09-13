@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -40,6 +41,10 @@ const FallbackMemoryMiB int64 = 1024
 // sandbox of containers maps onto a Pod. The provider realizes a virtual
 // machine instance itself.
 var ErrNotSandbox = errors.New("instance does not declare a sandbox runtime")
+
+// ErrHostPathVolume reports a volume resolved to a directory on the host. The
+// platform never gives an instance access to the host, whatever its class.
+var ErrHostPathVolume = errors.New("a volume may not be backed by a host path")
 
 // VolumeSourceResolver converts an instance volume the platform cannot
 // translate on its own, today a disk, into the Pod volume source backing it. A
@@ -165,15 +170,16 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 	for i := range instance.Spec.Runtime.Sandbox.Containers {
 		container := &instance.Spec.Runtime.Sandbox.Containers[i]
 		containers = append(containers, corev1.Container{
-			Name:         container.Name,
-			Image:        container.Image,
-			Command:      container.Command,
-			Args:         container.Args,
-			Env:          buildEnv(container),
-			EnvFrom:      buildEnvFrom(container),
-			Ports:        buildPorts(container),
-			Resources:    ContainerResources(instance, container, opts.DefaultMemoryMiB),
-			VolumeMounts: buildVolumeMounts(container),
+			Name:            container.Name,
+			Image:           container.Image,
+			Command:         container.Command,
+			Args:            container.Args,
+			Env:             buildEnv(container),
+			EnvFrom:         buildEnvFrom(container),
+			Ports:           buildPorts(container),
+			Resources:       ContainerResources(instance, container, opts.DefaultMemoryMiB),
+			VolumeMounts:    buildVolumeMounts(container),
+			SecurityContext: buildSecurityContext(container),
 		})
 	}
 
@@ -224,6 +230,14 @@ func buildVolumes(instance *computev1alpha.Instance, opts Options) ([]corev1.Vol
 			source, err := opts.ResolveVolumeSource(volume)
 			if err != nil {
 				return nil, fmt.Errorf("failed to resolve volume %q: %w", volume.Name, err)
+			}
+			// Some classes run outside the cell's security profile because
+			// their guest kernel confines the workload. A host directory is not
+			// confined by the guest, so the refusal lives here rather than in
+			// each provider's resolver.
+			if source.HostPath != nil {
+				return nil, fmt.Errorf("runtime class %q resolved volume %q: %w",
+					opts.Capabilities.Class, volume.Name, ErrHostPathVolume)
 			}
 			volumes = append(volumes, corev1.Volume{Name: volume.Name, VolumeSource: source})
 		default:
@@ -284,6 +298,39 @@ func buildPorts(container *computev1alpha.SandboxContainer) []corev1.ContainerPo
 		ports = append(ports, translated)
 	}
 	return ports
+}
+
+// buildSecurityContext translates a container's capability request. Every
+// container drops ALL, so no container runtime default capability survives in
+// any class, whether or not the container requests capabilities.
+//
+// A container gets back only the capabilities it adds. Validation has already
+// confirmed the class grants each one. A capability that is also named in drop
+// is left out, so an explicit drop wins as it does in Kubernetes container
+// runtimes. Added capabilities are sorted so an unchanged Instance produces an
+// unchanged Pod.
+func buildSecurityContext(container *computev1alpha.SandboxContainer) *corev1.SecurityContext {
+	var requested computev1alpha.SandboxCapabilities
+	if container.SecurityContext != nil && container.SecurityContext.Capabilities != nil {
+		requested = *container.SecurityContext.Capabilities
+	}
+
+	var add []corev1.Capability
+	for _, capability := range requested.Add {
+		if slices.Contains(requested.Drop, capability) {
+			continue
+		}
+		add = append(add, corev1.Capability(capability))
+	}
+	slices.Sort(add)
+	add = slices.Compact(add)
+
+	return &corev1.SecurityContext{
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{corev1.Capability(computev1alpha.CapabilityAll)},
+			Add:  add,
+		},
+	}
 }
 
 // buildVolumeMounts maps only the attachments that name a mount path. An

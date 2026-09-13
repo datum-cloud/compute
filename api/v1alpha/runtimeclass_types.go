@@ -30,7 +30,7 @@ type RuntimeClassControllerName string
 // decline. Enumerating the features keeps a class from declaring one that no
 // provider can interpret.
 //
-// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets
+// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities
 type RuntimeClassFeature string
 
 const (
@@ -68,6 +68,11 @@ const (
 	// registry with customer-supplied credentials when pulling an instance
 	// image.
 	RuntimeClassFeatureImagePullSecrets RuntimeClassFeature = "imagePullSecrets"
+
+	// RuntimeClassFeatureContainerCapabilities is the ability to grant a sandbox
+	// container Linux capabilities it requests. A class declaring it publishes
+	// which capabilities it grants in grantableCapabilities.
+	RuntimeClassFeatureContainerCapabilities RuntimeClassFeature = "containerCapabilities"
 )
 
 // runtimeClassFeatureDescriptions maps each feature to its customer-facing
@@ -82,6 +87,7 @@ var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureDeviceVolumeAttachments: "volumes attached as raw devices",
 	RuntimeClassFeatureEnvFrom:                 "environment variables sourced from a whole ConfigMap or Secret",
 	RuntimeClassFeatureImagePullSecrets:        "image pull secrets",
+	RuntimeClassFeatureContainerCapabilities:   "container capability requests",
 }
 
 // Description returns the customer-facing phrase for the feature. It falls back
@@ -165,6 +171,9 @@ type RuntimeClassIsolation struct {
 // the machine-readable half: submission rejects a workload that asks for a
 // feature absent here, naming the class. The compatibility statement is the
 // half a customer reads before committing an image to the tier.
+//
+// +kubebuilder:validation:XValidation:message="grantableCapabilities requires the containerCapabilities feature",rule="!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features)"
+// +kubebuilder:validation:XValidation:message="the containerCapabilities feature requires a non-empty grantableCapabilities",rule="!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0)"
 type RuntimeClassCapabilities struct {
 	// The optional parts of the instance API this class serves. Anything absent
 	// is unsupported, so a class that omits a feature rejects requests for it
@@ -174,6 +183,24 @@ type RuntimeClassCapabilities struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:Optional
 	Features []RuntimeClassFeature `json:"features,omitempty"`
+
+	// The Linux capabilities a sandbox container in this class may add. A
+	// container requesting a capability outside this set is rejected, naming the
+	// class. The platform reads this field itself and never passes it to a
+	// runtime, and each value is drawn from the closed set of Linux capability
+	// names, which excludes ALL. The class's isolation boundary justifies what it
+	// grants: a class whose guest kernel confines the workload may grant
+	// capabilities a shared-kernel class could not.
+	//
+	// A class lists capabilities here only when it declares the
+	// containerCapabilities feature, and a class declaring that feature lists at
+	// least one.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:message="grantableCapabilities must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted",rule="self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM'])"
+	// +kubebuilder:validation:Optional
+	GrantableCapabilities []Capability `json:"grantableCapabilities,omitempty"`
 
 	// What runs unmodified in this class and what does not. Customers need this
 	// statement before committing an image to the tier.
