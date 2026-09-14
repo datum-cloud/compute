@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -20,19 +19,13 @@ import (
 	"go.datum.net/compute/internal/agent"
 )
 
-const (
-	testToken = "caller-token"
-	// testHost stands in for the control plane a deployment is pointed at, and
-	// testProjectName for the project a request names in its header.
-	testHost        = "https://api.datum.example"
-	testProjectName = "my-project"
-)
+const testToken = "caller-token"
 
 func baseConfig() *rest.Config {
 	// Shaped like an in-cluster config: endpoint and CA, plus a server identity
 	// that must not survive into a caller's read.
 	return &rest.Config{
-		Host:            testHost,
+		Host:            "https://api.datum.example",
 		BearerToken:     "server-service-account-token",
 		BearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
 		TLSClientConfig: rest.TLSClientConfig{CAFile: "/var/run/secrets/ca.crt"},
@@ -44,7 +37,7 @@ func baseConfig() *rest.Config {
 // internal/referenceddata and the datumctl plugin perform. The namespace within
 // that control plane is "default", never the project name.
 func TestClientConfigAddressesProjectControlPlane(t *testing.T) {
-	cfg, err := clientConfig(baseConfig(), testToken, testProjectName)
+	cfg, err := clientConfig(baseConfig(), testToken, "my-project")
 	if err != nil {
 		t.Fatalf("clientConfig: %v", err)
 	}
@@ -62,7 +55,7 @@ func TestClientConfigAddressesProjectControlPlane(t *testing.T) {
 // whole design rests on: the server must never read as itself.
 func TestClientConfigCarriesOnlyTheCallerCredential(t *testing.T) {
 	base := baseConfig()
-	cfg, err := clientConfig(base, testToken, testProjectName)
+	cfg, err := clientConfig(base, testToken, "my-project")
 	if err != nil {
 		t.Fatalf("clientConfig: %v", err)
 	}
@@ -80,7 +73,7 @@ func TestClientConfigCarriesOnlyTheCallerCredential(t *testing.T) {
 		t.Errorf("CAFile = %q, want the base config's %q", cfg.CAFile, base.CAFile)
 	}
 	// The base config must be left alone; it is shared by every request.
-	if base.BearerToken != "server-service-account-token" || base.Host != testHost {
+	if base.BearerToken != "server-service-account-token" || base.Host != "https://api.datum.example" {
 		t.Error("clientConfig mutated the shared base config")
 	}
 }
@@ -112,8 +105,8 @@ func TestDepsFromRequestRequiresCredentials(t *testing.T) {
 		project string
 		want    string
 	}{
-		{name: "no token", project: testProjectName, want: "no credentials"},
-		{name: "wrong scheme", auth: "Basic abc", project: testProjectName, want: "no credentials"},
+		{name: "no token", project: "my-project", want: "no credentials"},
+		{name: "wrong scheme", auth: "Basic abc", project: "my-project", want: "no credentials"},
 		{name: "no project", auth: "Bearer " + testToken, want: "no project"},
 		{name: "invalid project", auth: "Bearer " + testToken, project: "a/b", want: "invalid project"},
 	}
@@ -269,7 +262,7 @@ func TestReadsGoThroughTheProjectControlPlane(t *testing.T) {
 	}))
 	defer api.Close()
 
-	cfg, err := clientConfig(&rest.Config{Host: api.URL}, testToken, testProjectName)
+	cfg, err := clientConfig(&rest.Config{Host: api.URL}, testToken, "my-project")
 	if err != nil {
 		t.Fatalf("clientConfig: %v", err)
 	}
@@ -404,92 +397,5 @@ func TestGuardNamesNoEnvironment(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
 	if got, want := localClusterEndpoint(), "https://198.51.100.1:443"; got != want {
 		t.Errorf("localClusterEndpoint() = %q, want %q", got, want)
-	}
-}
-
-// TestResolvePlanTokenKey covers the key plan tokens are signed with. A key
-// too short to be one is a deployment mistake worth refusing to start over; a
-// missing one is not, because a single process signing with a key only it
-// knows is a working configuration — it just cannot survive a second replica.
-func TestResolvePlanTokenKey(t *testing.T) {
-	raw := strings.Repeat("k", minPlanTokenKeyLen)
-	encoded := base64.StdEncoding.EncodeToString([]byte(raw))
-
-	t.Run("base64", func(t *testing.T) {
-		got, err := resolvePlanTokenKey(encoded)
-		if err != nil {
-			t.Fatalf("resolvePlanTokenKey: %v", err)
-		}
-		// Decoded, not taken as the 44 printable characters it is written as:
-		// the operator generated 32 bytes of entropy and that is what signs.
-		if string(got) != raw {
-			t.Errorf("key = %q, want the decoded %q", got, raw)
-		}
-	})
-
-	t.Run("raw", func(t *testing.T) {
-		got, err := resolvePlanTokenKey(raw)
-		if err != nil {
-			t.Fatalf("resolvePlanTokenKey: %v", err)
-		}
-		if string(got) != raw {
-			t.Errorf("key = %q, want %q", got, raw)
-		}
-	})
-
-	t.Run("too short", func(t *testing.T) {
-		if _, err := resolvePlanTokenKey("hunter2"); err == nil {
-			t.Error("accepted a key too short to sign with")
-		} else if !strings.Contains(err.Error(), planTokenKeyEnv) {
-			t.Errorf("error = %q, want it to name the setting to fix", err)
-		}
-	})
-
-	t.Run("unset", func(t *testing.T) {
-		first, err := resolvePlanTokenKey("")
-		if err != nil {
-			t.Fatalf("resolvePlanTokenKey: %v", err)
-		}
-		if len(first) < minPlanTokenKeyLen {
-			t.Errorf("generated a %d-byte key, want at least %d", len(first), minPlanTokenKeyLen)
-		}
-		second, err := resolvePlanTokenKey("")
-		if err != nil {
-			t.Fatalf("resolvePlanTokenKey: %v", err)
-		}
-		if string(first) == string(second) {
-			t.Error("generated the same key twice; it must be random per process")
-		}
-	})
-}
-
-// TestDepsBindThePlanToTheHeadersProject: a plan token is only good in the
-// project it was minted for, and that project is the header's — the same one
-// the client addresses. If these two could ever differ, a token minted in one
-// tenant would spend in another.
-func TestDepsBindThePlanToTheHeadersProject(t *testing.T) {
-	planTokenKey = []byte(strings.Repeat("k", minPlanTokenKeyLen))
-	t.Cleanup(func() { planTokenKey = nil })
-
-	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	r.Header.Set("Authorization", "Bearer "+testToken)
-	r.Header.Set(projectHeader, testProjectName)
-
-	// No CA file: this builds a real client, and the point here is what the
-	// deps carry, not what they can reach.
-	deps, err := depsFromRequest(r, &rest.Config{Host: testHost})(context.Background())
-	if err != nil {
-		t.Fatalf("depsFromRequest: %v", err)
-	}
-	if deps.Project != testProjectName {
-		t.Errorf("Project = %q, want the header's %q", deps.Project, testProjectName)
-	}
-	if string(deps.PlanTokenKey) != string(planTokenKey) {
-		t.Error("PlanTokenKey did not reach the tools; no plan could be minted")
-	}
-	// The writer runs as the caller, like every other tool: one client, built
-	// from the bearer token on this request.
-	if deps.Writer == nil {
-		t.Error("no Writer on the deps; the write tools would report themselves unconfigured")
 	}
 }

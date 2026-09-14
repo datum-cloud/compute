@@ -23,7 +23,6 @@ const (
 	locationDFW        = "loc-dfw-1"
 	locationAMS        = "loc-ams-1"
 	cityDFW            = "DFW"
-	cityAMS            = "AMS"
 )
 
 // The identities the in-memory MCP transports are exercised under. Shared, so
@@ -379,22 +378,11 @@ func TestReaderErrorsPropagate(t *testing.T) {
 }
 
 // TestRegisterToolsPublishesExactlyTheDocumentedSet inspects what a registered
-// server actually advertises. Two things are pinned here, and they are the
-// reason this test is worth its length.
-//
-// The set is closed: thirteen tools, named, so a fourteenth cannot arrive
-// without someone editing this list. The gateway's allow-list is the
-// enforcement point, but a tool that does not exist cannot be called through
-// any path at all.
-//
-// And of those thirteen, exactly two may leave out the promise that they
-// change nothing: compute_workload_plan and compute_workload_apply. That promise is load
-// bearing — it is what tells the model it can run a tool without asking first
-// — so a tool that quietly stops making it, or a new mutating tool that never
-// made it, fails here rather than in a conversation.
-//
-// It also catches a schema that fails to infer, since AddTool panics on a bad
-// one.
+// server actually advertises: seven named tools, none of them mutating, so
+// anything extra over the wire is a bug. A tool's promise that it changes
+// nothing is what tells the model it can run it without asking first, so every
+// description must make it. It also catches a schema that fails to infer, since
+// AddTool panics on a bad one.
 func TestRegisterToolsPublishesExactlyTheDocumentedSet(t *testing.T) {
 	ctx := context.Background()
 
@@ -432,16 +420,9 @@ func TestRegisterToolsPublishesExactlyTheDocumentedSet(t *testing.T) {
 		ToolInstancesList,
 		ToolWorkloadDiagnose,
 		ToolReasonExplain,
-		// What the project may deploy.
-		ToolLocationsList,
-		ToolNetworksList,
-		ToolQuotaGet,
+		// What a new workload may ask for, and its manifest.
 		ToolInstanceTypesList,
-		// Writing: two that cannot change anything, and two that can.
 		ToolWorkloadRender,
-		ToolWorkloadValidate,
-		ToolWorkloadPlan,
-		ToolWorkloadApply,
 	}
 	if len(got) != len(want) {
 		t.Errorf("published %d tools %v, want exactly %d", len(got), keysOf(got), len(want))
@@ -459,21 +440,16 @@ func TestRegisterToolsPublishesExactlyTheDocumentedSet(t *testing.T) {
 		}
 	}
 
-	// The two mutating tools, and no others. A tool whose description does not
-	// promise it changes nothing is one the model has to ask about first, so
-	// the set of tools making no such promise IS the mutating surface, as the
-	// model sees it.
-	mutating := map[string]bool{ToolWorkloadPlan: true, ToolWorkloadApply: true}
+	// Compute ships no mutating tool. Enforcement of the allow-list is the
+	// gateway's job, but a tool that does not exist cannot be called at all.
 	for name, desc := range got {
-		promises := strings.Contains(desc, "Read-only.") || strings.Contains(desc, "Writes nothing.")
-		switch {
-		case promises && mutating[name]:
-			t.Errorf("tool %q changes things but its description promises it does not; "+
-				"the model will call it without asking", name)
-		case !promises && !mutating[name]:
-			t.Errorf("tool %q does not say it is read-only or writes nothing. Either say so, or — if "+
-				"it really can change something — a third mutating tool is a new decision that gets "+
-				"its own review, not a quiet addition here", name)
+		for _, forbidden := range []string{"delete", "create", "update", "scale", "restart", "apply", "plan"} {
+			if strings.Contains(name, forbidden) {
+				t.Errorf("tool %q looks mutating; compute publishes read-only tools only", name)
+			}
+		}
+		if !strings.Contains(desc, "Read-only.") && !strings.Contains(desc, "Writes nothing.") {
+			t.Errorf("tool %q does not say it is read-only or writes nothing", name)
 		}
 	}
 }

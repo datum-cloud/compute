@@ -199,68 +199,6 @@ func AvailableLocations(ctx context.Context, c client.Client) (available sets.Se
 	return available, true, nil
 }
 
-// ErrAvailabilityNotServed reports that a project does not serve one of the two
-// kinds ListAvailableLocations reads, so where compute is offered cannot be
-// answered at all.
-//
-// This does NOT degrade to no locations, where placement reads do. An empty
-// list is a real answer — compute is offered nowhere this project may use —
-// and returning it for a kind nobody is serving tells a customer their project
-// has no locations when the truth is that nothing looked. The two call for
-// opposite actions: one waits for Datum to add a location, the other is a
-// deployment that needs fixing, so they must never arrive as the same answer.
-//
-// Wrapped with the kind that was missing, and matched with errors.Is.
-var ErrAvailabilityNotServed = errors.New("where compute is offered cannot be read from this project")
-
-// ListAvailableLocations returns the locations where compute is offered and
-// this project may use it, read only from the ServiceAvailability records the
-// platform mirrors into the project and the Locations they name.
-//
-// There is no choice of source here, deliberately. ListPlacementLocations
-// serves the manager, which reads whichever kinds its deployment was migrated
-// to and treats a control plane that serves no availability as one that
-// enforces none. This answers a customer instead, and a customer asking where
-// they may deploy must be told the same thing wherever they ask, or refused —
-// hence ErrAvailabilityNotServed rather than the permissive fallback.
-func ListAvailableLocations(ctx context.Context, c client.Client) ([]PlacementLocation, error) {
-	available, enforced, err := AvailableLocations(ctx, c)
-	if err != nil {
-		return nil, err
-	}
-	if !enforced {
-		return nil, fmt.Errorf("%w: %s is not served here", ErrAvailabilityNotServed, "ServiceAvailability")
-	}
-
-	var list locationsv1alpha1.LocationList
-	if err := c.List(ctx, &list); err != nil {
-		if kindNotInstalled(err) {
-			return nil, fmt.Errorf("%w: %s is not served here: %w", ErrAvailabilityNotServed, "Location", err)
-		}
-		return nil, fmt.Errorf("failed to list locations: %w", err)
-	}
-
-	// A record naming a Location that is not there is skipped, not failed: the
-	// two objects are written by different services, and a project that can
-	// read one but not the other must still see the locations it can.
-	found := make([]PlacementLocation, 0, available.Len())
-	for i := range list.Items {
-		location := &list.Items[i]
-		if !available.Has(location.Name) {
-			continue
-		}
-		found = append(found, PlacementLocation{
-			Name:     location.Name,
-			Topology: location.Spec.Topology,
-			Ready: apimeta.IsStatusConditionTrue(
-				location.Status.Conditions, locationsv1alpha1.LocationConditionReady),
-			ServiceAvailable: true,
-		})
-	}
-	sort.Slice(found, func(i, j int) bool { return found[i].Name < found[j].Name })
-	return found, nil
-}
-
 // ServiceAvailabilityGVK returns the kind a controller watches to learn that
 // compute availability at a location changed.
 func ServiceAvailabilityGVK() schema.GroupVersionKind {

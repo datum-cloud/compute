@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command compute-mcp serves compute's tools over MCP, alongside the knowledge
-// and skills an assistant reads before calling them:
+// Command compute-mcp serves compute's read-only diagnostic tools over MCP,
+// alongside the knowledge and skills an assistant reads before calling them:
 //
 //	POST /mcp                   Streamable HTTP MCP, stateless
 //	GET  /llms-full.txt         Knowledge: the compute resource model
@@ -12,26 +12,19 @@
 // Only /mcp takes a credential; see docs.go for why the documents do not.
 //
 // The server holds no credential of its own for the project control plane: it
-// reads and writes through a client built from the caller's own bearer token.
-// So a tool call can never see or create more than the person who asked, the
-// platform's RBAC stays the single enforcement point, and there is no
-// impersonation privilege here to escalate with.
+// reads through a client built from the caller's own bearer token. So a tool
+// call can never see more than the person who asked, the platform's RBAC stays
+// the single enforcement point, and there is no impersonation privilege here to
+// escalate with.
 //
 // The project a request reads is taken from a header, never from a tool
 // argument: arguments are chosen by the model, and a model that could name its
 // own project would be one prompt-injection away from another tenant's
 // workloads. The header is set by the already-authenticated caller.
-//
-// Two of the published tools can change something — compute_workload_plan and
-// compute_workload_apply — and apply only ever creates the manifest a plan
-// token was minted for. Those tokens are signed with PLAN_TOKEN_KEY; see
-// resolvePlanTokenKey for what a deployment owes it.
 package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -55,10 +48,6 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/agent"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
-	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
-	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
 const (
@@ -81,16 +70,6 @@ const (
 	misconfiguredClientNote = "The person who asked did nothing wrong and re-authenticating will not " +
 		"help: this is a configuration problem for whoever operates that client"
 
-	// planTokenKeyEnv names the environment variable holding the key plan
-	// tokens are signed with. Base64 or raw, at least minPlanTokenKeyLen bytes
-	// either way.
-	planTokenKeyEnv = "PLAN_TOKEN_KEY"
-
-	// minPlanTokenKeyLen is the shortest key accepted. HMAC-SHA256's block
-	// structure gets nothing from a key longer than its 32-byte output, and a
-	// shorter one is a weaker signature than the scheme is meant to have.
-	minPlanTokenKeyLen = 32
-
 	// resourceNamespace is where compute's objects live inside a project's
 	// control plane: the project routes to the control plane, and within it
 	// everything is in "default". Mirrors util.ResourceNamespace, not imported
@@ -101,26 +80,11 @@ const (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
-
-	// planTokenKey signs the plan tokens compute_workload_plan mints and
-	// compute_workload_apply checks. Deployment configuration, resolved once at
-	// startup: every request reads it, and a key that differs between replicas
-	// means a plan minted by one is refused by another.
-	planTokenKey []byte
 )
 
-// The scheme carries every group a tool reads: compute's own objects for the
-// diagnosis walk, plus networks, quota, and — for the locations a project may
-// place at — compute's service availability records and the Locations they
-// name. A group missing here fails at the first read with a scheme error, which
-// says nothing about which tool wanted it.
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
-	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
-	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
-	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 }
 
 func main() {
@@ -134,13 +98,6 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	key, err := resolvePlanTokenKey(os.Getenv(planTokenKeyEnv))
-	if err != nil {
-		setupLog.Error(err, "refusing to start")
-		os.Exit(1)
-	}
-	planTokenKey = key
 
 	// GetConfig resolves the --kubeconfig flag that controller-runtime
 	// registers, then KUBECONFIG, then in-cluster config, then ~/.kube/config.
@@ -160,44 +117,6 @@ func main() {
 		setupLog.Error(err, "server failed")
 		os.Exit(1)
 	}
-}
-
-// resolvePlanTokenKey returns the key plan tokens are signed with, given the
-// environment's value for it.
-//
-// A missing key is not fatal: the server generates one and runs. A plan token
-// is only ever checked by the process that minted it, and one process holding
-// a key nobody else knows is exactly what the scheme needs. What it costs is
-// that a plan minted by one replica is refused by another, and a restart
-// refuses every token outstanding — so the warning says that plainly rather
-// than letting an operator discover it as intermittent refusals under a load
-// balancer.
-func resolvePlanTokenKey(configured string) ([]byte, error) {
-	if configured = strings.TrimSpace(configured); configured != "" {
-		// Base64 first, since a key generated with `openssl rand -base64 32`
-		// is 44 printable characters that would otherwise pass the raw check
-		// while carrying only 32 bytes of the entropy it was meant to have.
-		if decoded, err := base64.StdEncoding.DecodeString(configured); err == nil &&
-			len(decoded) >= minPlanTokenKeyLen {
-			return decoded, nil
-		}
-		if len(configured) >= minPlanTokenKeyLen {
-			return []byte(configured), nil
-		}
-		return nil, fmt.Errorf(
-			"%s is too short: it must be at least %d bytes, either raw or base64-encoded. Generate one "+
-				"with: openssl rand -base64 32", planTokenKeyEnv, minPlanTokenKeyLen)
-	}
-
-	key := make([]byte, minPlanTokenKeyLen)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("generating a plan token key: %w", err)
-	}
-	setupLog.Info("no plan token key configured, generated one for this process",
-		"warning", "plan tokens will not validate across replicas or survive a restart; set "+
-			planTokenKeyEnv+" to the same value on every replica",
-		"env", planTokenKeyEnv)
-	return key, nil
 }
 
 // checkControlPlaneEndpoint refuses to start when the configuration resolved to
@@ -254,9 +173,8 @@ func run(addr string, baseConfig *rest.Config) error {
 			agent.RegisterTools(s, depsFromRequest(r, baseConfig))
 			return s
 		},
-		// Stateless: no tool needs session state — what a plan settled travels
-		// in the token it returns, not in memory here — and it keeps the
-		// server robust against client crashes.
+		// Stateless: no session state is needed for read-only tools, and it
+		// keeps the server robust against client crashes.
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
 
@@ -313,23 +231,7 @@ func depsFromRequest(r *http.Request, baseConfig *rest.Config) agent.DepsFor {
 		if err != nil {
 			return agent.ToolDeps{}, err
 		}
-		// One client serves all three: the reads a tool makes are the reads the
-		// person who asked could make themselves, and a workload it creates is
-		// one they could have created themselves, whichever tool does it. The
-		// Discoverer is given no platform client — this server holds no
-		// credential of its own, so quota display units fall back rather than
-		// being fetched with an identity the caller does not have.
-		return agent.ToolDeps{
-			Reader:     agent.NewClientReader(c),
-			Discoverer: agent.NewClientDiscoverer(c),
-			Writer:     agent.NewClientWriter(c),
-			Namespace:  resourceNamespace,
-			// The project a plan is bound to is the header's, the same one the
-			// client above addresses, so a token minted for one project can
-			// never be spent in another.
-			Project:      project,
-			PlanTokenKey: planTokenKey,
-		}, nil
+		return agent.ToolDeps{Reader: agent.NewClientReader(c), Namespace: resourceNamespace}, nil
 	}
 }
 

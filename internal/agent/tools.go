@@ -12,23 +12,16 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// The tools compute publishes to an assistant. These five are read-only, as
-// are the four discovery tools in discovery.go.
+// The tools compute publishes to an assistant. These five diagnose what a
+// project has deployed; render.go and instancetypes.go add the two that help
+// write a new workload. None of them changes anything.
 //
-// Compute publishes exactly two tools that can change anything:
-// compute_workload_plan and compute_workload_apply, in write.go. They are one
-// operation split in half. Plan returns a manifest and a token that is a hash
-// of it; apply takes that manifest and that token and re-derives the hash, so
-// the only thing that can be created is the manifest the model already showed
-// the person who asked, unchanged, in this project, against the workload the
-// plan saw. Everything else about the surface is unchanged by them: every call
-// runs as the caller's own credential, so a tool can write nothing the person
-// could not write themselves, and whether the mutating tools are offered to a
-// given project at all is the gateway's allow-list to decide.
-//
-// There is still no delete, no scale, and no restart. A third mutating tool is
-// a new decision and gets its own review — the argument for these two is about
-// these two and does not generalise.
+// There is deliberately no mutating tool — no delete, no scale, no restart,
+// and no create. Creating a workload goes through the assistant's own plan and
+// apply tools, which hold the confirmation step for every service. The
+// gateway's allow-list is the enforcement point, but a tool that is never
+// implemented cannot be called through any path at all. Adding one needs its
+// own review, not a quiet addition here.
 const (
 	ToolWorkloadsList    = "compute_workloads_list"
 	ToolWorkloadsGet     = "compute_workloads_get"
@@ -40,24 +33,8 @@ const (
 // ToolDeps is what one request's tool calls operate over: where to read from,
 // and which project's namespace they are confined to.
 type ToolDeps struct {
-	Reader Reader
-	// Discoverer reads what the project may deploy — locations, networks,
-	// quota. May be nil on a server built for diagnosis only; the discovery
-	// tools then fail with a message naming that, rather than panicking.
-	Discoverer Discoverer
-	// Writer creates and changes workloads. Nil on a server built for
-	// diagnosis only, and the write tools then say so rather than panicking —
-	// a deployment that publishes no write path is a supported configuration.
-	Writer    Writer
+	Reader    Reader
 	Namespace string
-	// Project is the project this request is for. Tools never take it as an
-	// argument; it is carried here so a plan token can be bound to it, and a
-	// plan minted for one project is refused in another.
-	Project string
-	// PlanTokenKey signs plan tokens. Empty on a server built without the
-	// write path, which then refuses to mint or accept one: a server that
-	// cannot check a token must not issue something that looks like one.
-	PlanTokenKey []byte
 }
 
 // DepsFor resolves the dependencies for a tool call. A function rather than a
@@ -194,9 +171,9 @@ type ReasonExplainOutput struct {
 
 // ------------------------------------------------------------ registration
 
-// RegisterTools adds every tool compute publishes to s: diagnosis, discovery,
-// and the write path. deps is consulted per call rather than captured once, so
-// no caller can inherit another's identity or project.
+// RegisterTools adds every tool compute publishes to s. deps is consulted per
+// call rather than captured once, so no caller can inherit another's identity
+// or project.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:  ToolWorkloadsList,
@@ -252,13 +229,8 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 			"diagnose tool did not cover. Read-only.",
 	}, reasonExplain(deps))
 
-	// What the project may deploy, alongside what it has deployed. See
-	// discovery.go for why an assistant needs both.
-	RegisterDiscoveryTools(s, deps)
-
-	// And the write path: render and validate, which change nothing, then the
-	// two token-bound tools that do. See write.go.
-	RegisterWriteTools(s, deps)
+	registerInstanceTypesTool(s, deps)
+	registerRenderTool(s, deps)
 }
 
 // ---------------------------------------------------------------- handlers
