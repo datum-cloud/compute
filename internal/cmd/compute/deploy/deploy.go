@@ -52,6 +52,7 @@ type options struct {
 	image            string
 	build            string
 	instanceType     string
+	runtimeClass     string
 	locations        []string
 	locationSelector string
 	cities           []string
@@ -93,7 +94,14 @@ a fix is applied — same as 'datumctl compute build --fix'.
 Use --http-port to declare that the workload is an HTTP service. Declaring one
 publishes the workload on a Datum-managed HTTPS URL, printed as the last line
 of a successful deploy. Omitting --http-port on an existing workload leaves its
-HTTP service as it is; --no-http removes it and stops serving.`,
+HTTP service as it is; --no-http removes it and stops serving.
+
+Use --runtime-class to choose the tier the workload's Instances run in, such as
+general-purpose or unikernel. A new workload without --runtime-class runs in
+the platform default. A workload keeps its runtime class for its whole life:
+omitting --runtime-class on an existing workload keeps its class, and naming a
+different one is refused. To change tiers, destroy the workload and deploy it
+again, or deploy under a new name.`,
 		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1,eu-west-1 --min=2 --http-port=8080
@@ -109,6 +117,9 @@ HTTP service as it is; --no-http removes it and stops serving.`,
 
   # Build from another directory
   datumctl compute deploy api --build=./api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1,eu-west-1
+
+  # Run on the general-purpose tier instead of the platform default
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --runtime-class=general-purpose
 
   # Deploy to every location in one or more cities
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD
@@ -131,6 +142,7 @@ HTTP service as it is; --no-http removes it and stops serving.`,
 	cmd.Flags().StringVar(&opts.build, "build", "", "Build and push the image from this directory before deploying (default \".\" if given with no value)")
 	cmd.Flags().Lookup("build").NoOptDefVal = "."
 	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud/d1-standard-2", "Instance type (e.g. datumcloud/d1-standard-2)")
+	cmd.Flags().StringVar(&opts.runtimeClass, "runtime-class", "", "Runtime class the workload's Instances run in (e.g. general-purpose, unikernel); defaults to the platform default and cannot be changed after the workload is created")
 	cmd.Flags().StringSliceVar(&opts.locations, "location", nil, "One or more locations to deploy to (e.g. us-east-1,eu-west-1)")
 	cmd.Flags().StringVar(&opts.locationSelector, "location-selector", "", "Select every location whose topology matches a label selector (e.g. 'topology.datum.net/city-code=DFW' or 'topology.datum.net/region in (us-east-1,eu-west-1)')")
 	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "Deploy to every location in these cities (e.g. DFW,IAD); shorthand for a --location-selector on topology.datum.net/city-code")
@@ -176,6 +188,8 @@ func validateFlags(cmd *cobra.Command, opts *options) error {
 			return fmt.Errorf("--http-port cannot be combined with -f: a manifest declares its own ports, and declaring an HTTP service in a manifest is not supported yet")
 		case opts.noHTTP:
 			return fmt.Errorf("--no-http cannot be combined with -f: remove the URL with 'datumctl compute destroy', or deploy with flags")
+		case opts.runtimeClass != "":
+			return fmt.Errorf("--runtime-class cannot be combined with -f: set spec.template.spec.runtime.class in the manifest instead")
 		}
 	}
 
@@ -322,6 +336,14 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		httpPort = declaredHTTPPort(&workload)
 	}
 
+	// Checked before the plan and the prompt, because the control plane
+	// refuses a class change and saying so after "Apply?" wastes the answer.
+	runtimeClass, err := resolveRuntimeClass(&workload, creating, opts.runtimeClass)
+	if err != nil {
+		return err
+	}
+	networkInterfaces := resolveNetworkInterfaces(&workload, creating)
+
 	// Build spec.
 	tcp := corev1.ProtocolTCP
 	container := computev1alpha.SandboxContainer{
@@ -363,13 +385,9 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 					Sandbox: &computev1alpha.SandboxRuntime{
 						Containers: []computev1alpha.SandboxContainer{container},
 					},
+					Class: runtimeClass,
 				},
-				NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{
-					{
-						// TODO: "default" network name is a convention; confirm with platform team.
-						Network: networkingv1alpha.NetworkRef{Name: "default"},
-					},
-				},
+				NetworkInterfaces: networkInterfaces,
 			},
 		},
 		Placements: []computev1alpha.WorkloadPlacement{placement},
@@ -377,6 +395,9 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 
 	fmt.Fprintln(out, planLine(`Placement "default"`,
 		fmt.Sprintf("%s, min=%d", describePlacementLocations(placement), opts.min)))
+	if runtimeClass != "" {
+		fmt.Fprintln(out, planLine("Runtime class", runtimeClass))
+	}
 
 	removedURL := planHTTPService(ctx, out, c, workloadName, httpPort, opts, creating)
 
@@ -603,6 +624,51 @@ func planLine(label, value string) string {
 // that line's value rather than carrying a label of its own.
 func planNote(text string) string {
 	return fmt.Sprintf("  %-*s %s", planLabelWidth, "", text)
+}
+
+// resolveRuntimeClass returns the runtime class a flag-driven deploy writes.
+//
+// The flag path rewrites the whole spec, so it must carry an existing
+// workload's class forward. An empty class lets admission fill in the catalog
+// default, which the control plane rejects as a class change for any workload
+// created in a different tier.
+//
+// A requested class that differs from the existing one fails here instead of
+// at admission, so the error can say what to do about it.
+func resolveRuntimeClass(existing *computev1alpha.Workload, creating bool, requested string) (string, error) {
+	if creating {
+		return requested, nil
+	}
+	current := existing.Spec.Template.Spec.Runtime.Class
+	switch {
+	case requested == "":
+		return current, nil
+	case current == "" || requested == current:
+		// A workload with no recorded class predates runtime classes. Admission
+		// decides whether the requested class is the one it already runs in.
+		return requested, nil
+	}
+	return "", fmt.Errorf(
+		"workload %q runs in runtime class %q and cannot move to %q, because a workload's runtime class cannot be changed after it is created. "+
+			"To change it, delete the workload with 'datumctl compute destroy %s' and deploy it again, or deploy under a new name",
+		existing.Name, current, requested, existing.Name)
+}
+
+// resolveNetworkInterfaces returns the network interfaces a flag-driven deploy
+// writes. An existing workload keeps its own. The interface name, address
+// families, address requests, and reclaim policy are immutable and no flag
+// sets them, so rewriting the interface would reset them to their defaults
+// and the control plane would reject the update.
+func resolveNetworkInterfaces(existing *computev1alpha.Workload, creating bool) []computev1alpha.InstanceNetworkInterface {
+	if !creating && len(existing.Spec.Template.Spec.NetworkInterfaces) > 0 {
+		return existing.Spec.Template.Spec.NetworkInterfaces
+	}
+	return []computev1alpha.InstanceNetworkInterface{
+		{
+			// TODO: "default" network name is a convention; confirm with platform team.
+			Network: networkingv1alpha.NetworkRef{Name: "default"},
+		},
+	}
 }
 
 // declaredHTTPPort returns the HTTP port a workload already declares, or 0.
