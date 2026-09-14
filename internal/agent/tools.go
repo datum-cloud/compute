@@ -12,18 +12,22 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// The tools compute publishes to an assistant. All five are read-only.
+// The tools compute publishes to an assistant. These five diagnose what a
+// project has deployed; render.go and instancetypes.go add the two that help
+// write a new workload. None of them changes anything.
 //
-// There is deliberately no mutating tool — no delete, no scale, no restart.
-// The gateway's allow-list is the enforcement point, but a tool that is never
+// There is deliberately no mutating tool — no delete, no scale, no restart,
+// and no create. Creating a workload goes through the assistant's own plan and
+// apply tools, which hold the confirmation step for every service. The
+// gateway's allow-list is the enforcement point, but a tool that is never
 // implemented cannot be called through any path at all. Adding one needs its
 // own review, not a quiet addition here.
 const (
-	ToolWorkloadsList    = "workloads_list"
-	ToolWorkloadsGet     = "workloads_get"
-	ToolInstancesList    = "instances_list"
-	ToolWorkloadDiagnose = "workload_diagnose"
-	ToolReasonExplain    = "reason_explain"
+	ToolWorkloadsList    = "compute_workloads_list"
+	ToolWorkloadsGet     = "compute_workloads_get"
+	ToolInstancesList    = "compute_instances_list"
+	ToolWorkloadDiagnose = "compute_workload_diagnose"
+	ToolReasonExplain    = "compute_reason_explain"
 )
 
 // ToolDeps is what one request's tool calls operate over: where to read from,
@@ -167,9 +171,9 @@ type ReasonExplainOutput struct {
 
 // ------------------------------------------------------------ registration
 
-// RegisterTools adds compute's read-only diagnostic tools to s. deps is
-// consulted per call rather than captured once, so no caller can inherit
-// another's identity or project.
+// RegisterTools adds every tool compute publishes to s. deps is consulted per
+// call rather than captured once, so no caller can inherit another's identity
+// or project.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:  ToolWorkloadsList,
@@ -224,6 +228,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 			"argument to list the whole catalog. Use when you encounter a reason on a resource the " +
 			"diagnose tool did not cover. Read-only.",
 	}, reasonExplain(deps))
+
+	registerInstanceTypesTool(s, deps)
+	registerRenderTool(s, deps)
 }
 
 // ---------------------------------------------------------------- handlers

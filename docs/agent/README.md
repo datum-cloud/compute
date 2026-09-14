@@ -21,9 +21,25 @@ assistant owns the document schema that carries it.
 ## Status
 
 Landed here: the reason catalog, the diagnosis walk, the knowledge and skills
-above, and `cmd/compute-mcp` — the MCP server that publishes the five read-only
-tools (`workloads_list`, `workloads_get`, `instances_list`, `workload_diagnose`,
-`reason_explain`) over Streamable HTTP.
+above, and `cmd/compute-mcp` — the MCP server that publishes compute's tools
+over Streamable HTTP:
+
+| Tools | Names |
+|---|---|
+| Diagnosis, read-only | `compute_workloads_list`, `compute_workloads_get`, `compute_instances_list`, `compute_workload_diagnose`, `compute_reason_explain` |
+| Creation, writes nothing | `compute_instance_types_list` (the sizes a workload may ask for), `compute_workload_render` (inputs to a Workload manifest, pure) |
+
+Every tool is prefixed `compute_`, so the assistant can compose tools from
+several services in one conversation without names colliding; the capability
+document must register the prefixed names.
+
+Compute publishes no mutating tool. Everything else creating a workload needs
+comes from the assistant's base tools, which it gives every project turn and
+which act as the caller: `locations_list` with service `compute` for where
+compute is offered, `quota_get` for what is left, `resources_list` for
+Networks and RuntimeClasses, and `resources_validate`, `resources_plan` and
+`resources_apply` for the change itself. The plan token and the confirmation
+step live there, once, for every service.
 
 ## HTTP surface
 
@@ -59,9 +75,6 @@ Three properties of the server are worth knowing before you deploy it:
   prompt injection away from another tenant's workloads. The caller sets
   `X-Datum-Project` after authenticating the user.
 
-Compute publishes no mutating tool. Allow-list enforcement is the gateway's job,
-but a tool that does not exist cannot be called through any path.
-
 ## Why the knowledge leads with "how to read conditions"
 
 Compute's top-level condition reasons are deliberately **pointers, not causes**.
@@ -90,6 +103,7 @@ orientation and classification; the procedures live here and nowhere else.
 | `referenced-data-triage` | Missing, unauthorized, or oversized ConfigMaps/Secrets |
 | `placement-triage` | `NoMatchingLocation`, `AmbiguousServingLocation`, `LocationMismatch` |
 | `stalled-transient` | A transient reason that has outlived its expected window |
+| `workload-create` | Deploying something new: prerequisites, the choices that are final at create, and render → plan → show → confirm → apply |
 
 A skill never grants privileges. It can only direct the model toward tools that
 are independently on the enforced allow-list, which is why these go through the

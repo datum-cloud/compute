@@ -11,8 +11,8 @@ service that evaluates it, and not the request compute files against it.
 ## Procedure
 
 1. **Get the real reason.** `QuotaNotGranted` on the Workload or
-   WorkloadDeployment is a pointer. Call `workload_diagnose`, or read the
-   Instance's `QuotaGranted` condition via `instances_list`. Never report
+   WorkloadDeployment is a pointer. Call `compute_workload_diagnose`, or read the
+   Instance's `QuotaGranted` condition via `compute_instances_list`. Never report
    `QuotaNotGranted` as the cause.
 
 2. **Separate the four cases.** They look alike and lead to opposite advice:
@@ -34,13 +34,14 @@ service that evaluates it, and not the request compute files against it.
 3. **For `QuotaExceeded`, quantify it.** The status message carries the amount
    requested and the amount left. Quote both. Then give the customer the three
    real options: fewer replicas, less CPU or memory per instance, or ask Datum
-   to raise the project's quota.
+   to raise the project's quota. If the message leaves out what is left,
+   `quota_get` has it.
 
 4. **For `PendingEvaluation`**, check how long. Minutes is normal. If it stays
    there, the checking service itself is stuck — treat it as
    `QuotaBackendUnavailable` and hand it to Datum.
 
-5. **Check the split.** `instances_list` shows how many instances were cleared
+5. **Check the split.** `compute_instances_list` shows how many instances were cleared
    and how many were not. Partial is the common case: the workload is serving at
    reduced capacity, which is worth saying explicitly.
 
@@ -52,19 +53,22 @@ burn time trying.
 
 ## When the numbers are not there
 
-Step 3 rests entirely on the status message. Nothing else in these tools carries
-the project's compute quota, how much of it is in use, or how much is left. So
-when a `QuotaExceeded` message arrives without figures — or carries what was
-requested but not what remains — you cannot tell the customer how much smaller
-to go, and "ask for less" without a number is not something they can act on.
+When a `QuotaExceeded` message arrives without figures — or carries what was
+requested but not what remains — call `quota_get` with service
+`compute.datumapis.com`. It reports the project's compute quota per resource
+type: the limit, how much is in use, and how much is left. That is the number
+the customer needs to know how much smaller to go.
 
-Say which half you have and which is missing, then file `InsufficientDetail`
-against the tool you read it from, quoting the message you were given:
+If `quota_get` cannot answer either, you cannot tell the customer how much
+smaller to go, and "ask for less" without a number is not something they can act
+on. Say which half you have and which is missing, then file
+`InsufficientDetail` against the tool you read it from, quoting the message you
+were given:
 
     "capability": "how much of the project's compute quota is left",
     "kind": "InsufficientDetail",
     "evidence": {
-      "tool": "instances_list",
+      "tool": "compute_instances_list",
       "observed": "QuotaGranted=False, QuotaExceeded, \"quota exceeded\"",
       "contradictedBy": "no requested or remaining amount in the response" }
 

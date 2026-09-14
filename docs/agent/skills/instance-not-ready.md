@@ -46,7 +46,7 @@ it — the logs are there either way.
    unpacked. Say to wait. Only if it persists well beyond a few minutes should
    you treat it as Datum's problem.
 
-6. **Check whether every instance fails the same way.** `instances_list` for the
+6. **Check whether every instance fails the same way.** `compute_instances_list` for the
    workload: all of them failing the same way points at the workload or the
    image; one failing among healthy siblings points at one machine or one
    location, which is Datum's.
@@ -81,7 +81,7 @@ When that happens:
        "capability": "container log retrieval for a crashing instance",
        "kind": "UnactionableGuidance",
        "evidence": {
-         "tool": "instances_list",
+         "tool": "compute_instances_list",
          "observed": "InstanceCrashing; remediation points at the logs",
          "contradictedBy": "log retrieval fails outright on this instance:
                             the port answers plain HTTP where encrypted

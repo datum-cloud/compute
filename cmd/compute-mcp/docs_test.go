@@ -113,6 +113,7 @@ func TestSkillsMatchDocumentedSet(t *testing.T) {
 		"/runbooks/referenced-data-triage.md": true,
 		"/runbooks/placement-triage.md":       true,
 		"/runbooks/stalled-transient.md":      true,
+		"/runbooks/workload-create.md":        true,
 	}
 	got := docs.paths()
 	if len(got) != len(want) {

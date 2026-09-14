@@ -4,7 +4,7 @@ Use when someone asks why a Workload is not running, not available, or stuck.
 
 ## Procedure
 
-1. **Diagnose before you read.** Call `workload_diagnose` with the workload
+1. **Diagnose before you read.** Call `compute_workload_diagnose` with the workload
    name. It walks Workload -> WorkloadDeployment -> Instance and returns the
    leaf cause. Do not assemble the tree by hand first — the top-level reason is
    usually a pointer, not a cause.
@@ -61,7 +61,7 @@ tried. `kind` may be left off — this is the default:
 
     "capability": "per-instance CPU and memory usage for a workload",
     "evidence": {
-      "tool": "workload_diagnose",
+      "tool": "compute_workload_diagnose",
       "observed": "instances.ready 3 of 3; no usage figures on any field" }
 
 Describe the need in your own words. Do not copy the customer's message into

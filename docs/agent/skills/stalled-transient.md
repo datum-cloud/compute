@@ -37,7 +37,7 @@ and neither is licence to rule the customer's own workload out.
 
 ## Procedure
 
-1. **Quantify it, and use the larger number.** `workload_diagnose` gives two
+1. **Quantify it, and use the larger number.** `compute_workload_diagnose` gives two
    ages on the root cause and they answer different questions:
 
    - `inStateFor` — how long the *status* has said this.
@@ -54,7 +54,7 @@ and neither is licence to rule the customer's own workload out.
    an object broken for nine days means something is rewriting the status
    without ever finishing. Say so.
 
-   Then call `reason_explain` for `expectedWithin` — how long this step should
+   Then call `compute_reason_explain` for `expectedWithin` — how long this step should
    take. "Nine days, against thirty minutes" is the whole finding.
 
    Two things the tools will not give you, on purpose. An age is omitted rather
@@ -76,13 +76,13 @@ and neither is licence to rule the customer's own workload out.
    something is working on this and never saying how it turned out. It does
    **not** name a culprit — see step 5.
 
-3. **Check whether it is one object or all of them.** `instances_list` for the
+3. **Check whether it is one object or all of them.** `compute_instances_list` for the
    workload. Every instance stuck the same way points at the place they all
    run; one stuck among healthy siblings points at that object. Say which — it
    decides who Datum wakes up.
 
 4. **Look underneath before escalating.** Read `contributingConditions` from
-   `workload_diagnose`. A stalled pointer reason (`InstancesProvisioning`,
+   `compute_workload_diagnose`. A stalled pointer reason (`InstancesProvisioning`,
    `PendingQuota`, `SchedulingGatesPresent`) often has a real cause below it
    that arrived after the stall began. If one is there, that is the answer —
    follow its skill instead.
@@ -166,7 +166,7 @@ copied out of the tool result:
     "capability": "duration-aware classification of transient reasons",
     "kind": "MisleadingOutput",
     "evidence": {
-      "tool": "workload_diagnose",
+      "tool": "compute_workload_diagnose",
       "observed": "actionability: transient, remediation \"Wait.\"",
       "contradictedBy": "failingFor: 9d, inStateFor: 9h30m, expectedWithin: 30m" }
 

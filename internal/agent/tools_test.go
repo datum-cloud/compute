@@ -21,6 +21,16 @@ const (
 	depAPIBackend      = "api-backend-a"
 	placementUSCentral = "us-central"
 	locationDFW        = "loc-dfw-1"
+	locationAMS        = "loc-ams-1"
+	cityDFW            = "DFW"
+)
+
+// The identities the in-memory MCP transports are exercised under. Shared, so
+// the several tests that stand a server up are obviously the same setup.
+const (
+	testImplVersion = "0.0.1"
+	testServerName  = "test"
+	testClientName  = "test-client"
 )
 
 // fakeReader serves canned objects so the tools can be exercised without a
@@ -109,7 +119,7 @@ func fixtureReader() *fakeReader {
 			computev1alpha.WorkloadDeploymentReasonNoMatchingLocation,
 			"The cell has not been told which location it serves."))
 	edgeDeployment.Spec.PlacementName = "ams-edge"
-	edgeDeployment.Spec.LocationRef.Name = "loc-ams-1"
+	edgeDeployment.Spec.LocationRef.Name = locationAMS
 
 	apiDeployment := deployment(depAPIBackend,
 		cond(computev1alpha.WorkloadDeploymentAvailable, "False",
@@ -141,7 +151,7 @@ func TestWorkloadsListReportsRootCauseAndOrdersWorstFirst(t *testing.T) {
 
 	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
 	if err != nil {
-		t.Fatalf("workloads_list: %v", err)
+		t.Fatalf("compute_workloads_list: %v", err)
 	}
 	if len(out.Workloads) != 3 {
 		t.Fatalf("got %d workloads, want 3", len(out.Workloads))
@@ -194,7 +204,7 @@ func TestWorkloadsGetReturnsFullTree(t *testing.T) {
 
 	_, out, err := workloadsGet(deps)(context.Background(), nil, WorkloadsGetInput{Name: wlAPIBackend})
 	if err != nil {
-		t.Fatalf("workloads_get: %v", err)
+		t.Fatalf("compute_workloads_get: %v", err)
 	}
 
 	if out.Workload.Name != wlAPIBackend || out.Workload.Namespace != testNamespace {
@@ -230,7 +240,7 @@ func TestInstancesListFilters(t *testing.T) {
 
 	_, filtered, err := instancesList(deps)(context.Background(), nil, InstancesListInput{Workload: wlAPIBackend})
 	if err != nil {
-		t.Fatalf("instances_list filtered: %v", err)
+		t.Fatalf("compute_instances_list filtered: %v", err)
 	}
 	if len(filtered.Instances) != 3 {
 		t.Errorf("filtered instances = %d, want 3", len(filtered.Instances))
@@ -238,7 +248,7 @@ func TestInstancesListFilters(t *testing.T) {
 
 	_, all, err := instancesList(deps)(context.Background(), nil, InstancesListInput{})
 	if err != nil {
-		t.Fatalf("instances_list unfiltered: %v", err)
+		t.Fatalf("compute_instances_list unfiltered: %v", err)
 	}
 	// web-frontend has 3, api-backend has 3, edge-cache has none.
 	if len(all.Instances) != 6 {
@@ -277,7 +287,7 @@ func TestWorkloadDiagnoseSurfacesLeafCause(t *testing.T) {
 			_, d, err := workloadDiagnose(deps)(
 				context.Background(), nil, WorkloadDiagnoseInput{Name: tc.workload})
 			if err != nil {
-				t.Fatalf("workload_diagnose: %v", err)
+				t.Fatalf("compute_workload_diagnose: %v", err)
 			}
 			if d.RootCause == nil {
 				t.Fatalf("RootCause is nil, want %q", tc.wantReason)
@@ -305,7 +315,7 @@ func TestReasonExplain(t *testing.T) {
 
 	_, one, err := reasonExplain(deps)(ctx, nil, ReasonExplainInput{Reason: "QuotaNoBudget"})
 	if err != nil {
-		t.Fatalf("reason_explain: %v", err)
+		t.Fatalf("compute_reason_explain: %v", err)
 	}
 	if one.Reason == nil {
 		t.Fatal("Reason is nil")
@@ -319,7 +329,7 @@ func TestReasonExplain(t *testing.T) {
 
 	_, all, err := reasonExplain(deps)(ctx, nil, ReasonExplainInput{})
 	if err != nil {
-		t.Fatalf("reason_explain (all): %v", err)
+		t.Fatalf("compute_reason_explain (all): %v", err)
 	}
 	if len(all.Reasons) != len(AllReasons()) {
 		t.Errorf("got %d reasons, want the whole catalog (%d)", len(all.Reasons), len(AllReasons()))
@@ -339,19 +349,19 @@ func TestToolsFailWhenDepsUnavailable(t *testing.T) {
 	ctx := context.Background()
 
 	if _, _, err := workloadsList(denied)(ctx, nil, WorkloadsListInput{}); err == nil {
-		t.Error("workloads_list should fail without deps")
+		t.Error("compute_workloads_list should fail without deps")
 	}
 	if _, _, err := workloadsGet(denied)(ctx, nil, WorkloadsGetInput{Name: "x"}); err == nil {
-		t.Error("workloads_get should fail without deps")
+		t.Error("compute_workloads_get should fail without deps")
 	}
 	if _, _, err := instancesList(denied)(ctx, nil, InstancesListInput{}); err == nil {
-		t.Error("instances_list should fail without deps")
+		t.Error("compute_instances_list should fail without deps")
 	}
 	if _, _, err := workloadDiagnose(denied)(ctx, nil, WorkloadDiagnoseInput{Name: "x"}); err == nil {
-		t.Error("workload_diagnose should fail without deps")
+		t.Error("compute_workload_diagnose should fail without deps")
 	}
 	if _, _, err := reasonExplain(denied)(ctx, nil, ReasonExplainInput{}); err == nil {
-		t.Error("reason_explain should fail without deps: it must not be a probe for unauthenticated callers")
+		t.Error("compute_reason_explain should fail without deps: it must not be a probe for unauthenticated callers")
 	}
 }
 
@@ -363,18 +373,20 @@ func TestReaderErrorsPropagate(t *testing.T) {
 	deps := fixtureDeps(r)
 
 	if _, _, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{}); err == nil {
-		t.Error("workloads_list should surface a reader error")
+		t.Error("compute_workloads_list should surface a reader error")
 	}
 }
 
-// TestRegisterToolsPublishesExactlyTheReadOnlySet inspects what a registered
-// server actually advertises: five read-only tools and no mutating one, so
-// anything extra over the wire is a bug. It also catches a schema that fails to
-// infer, since AddTool panics on a bad one.
-func TestRegisterToolsPublishesExactlyTheReadOnlySet(t *testing.T) {
+// TestRegisterToolsPublishesExactlyTheDocumentedSet inspects what a registered
+// server actually advertises: seven named tools, none of them mutating, so
+// anything extra over the wire is a bug. A tool's promise that it changes
+// nothing is what tells the model it can run it without asking first, so every
+// description must make it. It also catches a schema that fails to infer, since
+// AddTool panics on a bad one.
+func TestRegisterToolsPublishesExactlyTheDocumentedSet(t *testing.T) {
 	ctx := context.Background()
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: testServerName, Version: testImplVersion}, nil)
 	RegisterTools(server, fixtureDeps(fixtureReader()))
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -384,7 +396,7 @@ func TestRegisterToolsPublishesExactlyTheReadOnlySet(t *testing.T) {
 	}
 	defer func() { _ = serverSession.Close() }()
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: testClientName, Version: testImplVersion}, nil)
 	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatalf("connecting client: %v", err)
@@ -402,11 +414,15 @@ func TestRegisterToolsPublishesExactlyTheReadOnlySet(t *testing.T) {
 	}
 
 	want := []string{
+		// What the project has deployed.
 		ToolWorkloadsList,
 		ToolWorkloadsGet,
 		ToolInstancesList,
 		ToolWorkloadDiagnose,
 		ToolReasonExplain,
+		// What a new workload may ask for, and its manifest.
+		ToolInstanceTypesList,
+		ToolWorkloadRender,
 	}
 	if len(got) != len(want) {
 		t.Errorf("published %d tools %v, want exactly %d", len(got), keysOf(got), len(want))
@@ -426,11 +442,14 @@ func TestRegisterToolsPublishesExactlyTheReadOnlySet(t *testing.T) {
 
 	// Compute ships no mutating tool. Enforcement of the allow-list is the
 	// gateway's job, but a tool that does not exist cannot be called at all.
-	for name := range got {
-		for _, forbidden := range []string{"delete", "create", "update", "scale", "restart"} {
+	for name, desc := range got {
+		for _, forbidden := range []string{"delete", "create", "update", "scale", "restart", "apply", "plan"} {
 			if strings.Contains(name, forbidden) {
 				t.Errorf("tool %q looks mutating; compute publishes read-only tools only", name)
 			}
+		}
+		if !strings.Contains(desc, "Read-only.") && !strings.Contains(desc, "Writes nothing.") {
+			t.Errorf("tool %q does not say it is read-only or writes nothing", name)
 		}
 	}
 }
@@ -468,7 +487,7 @@ func TestWorkloadsListCarriesTheAgeOfTheRootCause(t *testing.T) {
 
 	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
 	if err != nil {
-		t.Fatalf("workloads_list: %v", err)
+		t.Fatalf("compute_workloads_list: %v", err)
 	}
 	if len(out.Workloads) != 1 {
 		t.Fatalf("got %d workloads, want 1", len(out.Workloads))
@@ -490,7 +509,7 @@ func TestWorkloadsListOmitsAgeForHealthyWorkloads(t *testing.T) {
 
 	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
 	if err != nil {
-		t.Fatalf("workloads_list: %v", err)
+		t.Fatalf("compute_workloads_list: %v", err)
 	}
 	for _, row := range out.Workloads {
 		if row.Workload == wlWebFrontend && (row.RootCauseSince != "" || row.RootCauseFor != "") {
@@ -510,7 +529,7 @@ func TestWorkloadsListFlagsTheStagingStall(t *testing.T) {
 
 	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
 	if err != nil {
-		t.Fatalf("workloads_list: %v", err)
+		t.Fatalf("compute_workloads_list: %v", err)
 	}
 	row := out.Workloads[0]
 	if row.RootCauseReason != computev1alpha.InstanceProgrammedReasonProgrammingInProgress {
@@ -561,7 +580,7 @@ func TestWorkloadsListLeavesFreshTransientStateAlone(t *testing.T) {
 
 	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
 	if err != nil {
-		t.Fatalf("workloads_list: %v", err)
+		t.Fatalf("compute_workloads_list: %v", err)
 	}
 	if got := out.Workloads[0].Actionability; got != ActionabilityTransient {
 		t.Errorf("Actionability = %q, want %q for a two-minute-old ProgrammingInProgress",
@@ -592,7 +611,7 @@ func TestWorkloadsListCarriesTheFailureFloor(t *testing.T) {
 
 	_, out, err := workloadsList(deps)(context.Background(), nil, WorkloadsListInput{})
 	if err != nil {
-		t.Fatalf("workloads_list: %v", err)
+		t.Fatalf("compute_workloads_list: %v", err)
 	}
 	row := out.Workloads[0]
 	if row.RootCauseFor != stagingInState {

@@ -22,17 +22,17 @@ end.
    - `LocationMismatch` — the workload asked for one location and was sent to
      another. It was routed to the wrong place.
 
-2. **Confirm the scope.** `workloads_list` shows whether other workloads in the
-   same placement are also failing. Several failing in one place is a
-   location-wide problem and is worth reporting as such; a single one may be a
-   leftover deployment.
+2. **Confirm the scope.** `compute_workloads_list` shows whether other
+   workloads in the same placement are also failing. Several failing in one
+   place is a location-wide problem and is worth reporting as such; a single one
+   may be a leftover deployment.
 
 3. **Check whether other placements are serving.** A workload with several
    placements may be fully available elsewhere. Say so — the customer's service
    may be up even though this part is broken.
 
 4. **Escalate with specifics.** Datum needs: the WorkloadDeployment name, its
-   `location`, and the status message. Pull these from `workloads_get`.
+   `location`, and the status message. Pull these from `compute_workloads_get`.
 
 ## Reporting
 

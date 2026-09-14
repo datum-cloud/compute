@@ -78,8 +78,8 @@ Pointer reasons you must read *through*, never report as the answer:
   PendingQuota              -> look at Instance.QuotaGranted
   SchedulingGatesPresent    -> something else is holding it; find what
 
-The `workload_diagnose` tool does this walk for you and returns the leaf cause.
-Prefer it over assembling the tree by hand.
+The `compute_workload_diagnose` tool does this walk for you and returns the
+leaf cause. Prefer it over assembling the tree by hand.
 
 ## Kinds of cause
 
@@ -121,8 +121,8 @@ reason, and only the elapsed time tells them apart.
 Every tool result that names a cause carries how long the state has held:
 `rootCauseFor` / `rootCauseSince` in the fleet view, `inStateFor` /
 `lastTransitionTime` on a diagnosis. Every transient reason carries the window
-it should clear inside (`expectedWithin` from `reason_explain`). Past that
-window the actionability comes back as `stalled`.
+it should clear inside (`expectedWithin` from `compute_reason_explain`). Past
+that window the actionability comes back as `stalled`.
 
 `stalled` is not the same as a platform fault. Nothing reported a cause; the
 classification has merely been contradicted by the clock. Report the duration
@@ -182,21 +182,70 @@ Instance runtime
   infrastructure that runs the container, not by compute. Load
   `instance-not-ready`.
 
+## Creating a workload
+
+A Workload is three things: a name, one instance template, and one or more
+placements. The template says what runs — either containers in a sandbox, or a
+virtual machine booting a full operating system — at one instance type, on one
+network interface, with whatever volumes the containers or the machine attach.
+Each placement says where in one of two ways — a list of location names, or a
+selector over the topology those locations declare (city code, region), which
+places at every location matching it and picks up new ones as they appear — and
+a replica count. Where it runs and how many of it there are live in the
+placement, not in the template.
+
+Some of that is settled for good at create. The workload's name, the runtime
+kind, and the network interface — its name, the address families it carries,
+any extra addresses such as a public IPv4 one, and what becomes of those
+addresses afterwards — cannot be changed later. Getting one of them wrong means
+a new workload rather than an edit, which is why the create procedure asks
+about them explicitly rather than defaulting them quietly.
+
+Two things are outside your reach entirely. You cannot build or push a
+container image: it must already exist in a registry, fully qualified, and be
+built for the runtime Datum runs it on — `datumctl compute build` is the step
+the customer runs. And you cannot enable Compute for a project or grant it
+quota; both are Datum's to give.
+
+Writing is a sequence, not a call. `compute_workload_render` turns inputs into
+a Workload manifest and touches nothing. The rest is the platform's own change
+path, the same for every service: `resources_plan` validates the manifests,
+settles create versus update, orders a Network ahead of the Workload that names
+it, and returns them with a plan token. `resources_apply` takes those manifests
+and that token and nothing else, so the only thing that can be created is what
+you showed the customer and they agreed to.
+
+Load `workload-create` before any of this. The prerequisites, the inputs, the
+rejections that are worth pre-empting, and what to do at each failure are all
+there, and this section deliberately does not restate them.
+
 ## What the tools give you
 
-  workloads_list      fleet view, worst first, with root-cause reason,
-                      actionability, and how long that cause has held
-  workloads_get       raw condition tree for one workload
-  instances_list      per-instance conditions, to see failure distribution
-  workload_diagnose   the walk, the leaf cause with its age, and next steps
-  reason_explain      any reason, explained, classified, and — when transient —
-                      the window it should clear inside
+  compute_workloads_list      fleet view, worst first, with root-cause reason,
+                              actionability, and how long that cause has held
+  compute_workloads_get       raw condition tree for one workload
+  compute_instances_list      per-instance conditions, to see failure
+                              distribution
+  compute_workload_diagnose   the walk, the leaf cause with its age, and next
+                              steps
+  compute_reason_explain      any reason, explained, classified, and — when
+                              transient — the window it should clear inside
+  compute_instance_types_list the instance types a workload may ask for
+  compute_workload_render     inputs to a full Workload manifest; writes
+                              nothing, reads nothing
+
+The platform's base tools fill in the rest of a create. Call locations_list
+with service "compute" for the locations this project may place a workload in —
+a location absent from it is one compute is not offered in, and placements name
+these verbatim or select them by their topology. quota_get says how much
+compute is left, resources_list reads Networks and RuntimeClasses, and
+resources_plan and resources_apply make the change.
 
 Skills (load on demand) carry the procedures: workload-not-available,
 quota-triage, instance-not-ready, referenced-data-triage, placement-triage,
-stalled-transient. This document is orientation; it deliberately does not
-restate what a skill covers, so reach for the skill rather than answering a
-triage question from what is in the prompt.
+stalled-transient, workload-create. This document is orientation; it
+deliberately does not restate what a skill covers, so reach for the skill
+rather than answering a triage or creation question from what is in the prompt.
 
 ## Telling compute what it could not do
 
