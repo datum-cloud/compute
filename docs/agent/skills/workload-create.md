@@ -72,6 +72,61 @@ If the user has no image yet, stop and say that: the build is theirs to run, and
 everything below waits on it. Do not render a manifest around an image name
 nobody has pushed.
 
+### The runtime class is chosen once
+
+A runtime class is the execution tier the instances run in: its isolation, what
+runs unmodified in it, how fast it starts. Every workload gets exactly one, and
+it cannot be changed afterwards. A workload that names none still gets one —
+the class marked default — so leaving it out is a choice too, and one the user
+has to see.
+
+Read the choices with `resources_list` for kind `RuntimeClass` in
+`compute.datumapis.com/v1alpha`. It has no namespace. For each class:
+
+- **Show `spec.displayName` and `spec.description`**, with the name you will
+  render. The name alone tells the user nothing.
+- **Recommend the one with `spec.default: true`.** That is the class a workload
+  gets when it names none. If no class, or more than one, is marked default,
+  there is no default: the user has to pick, and a workload that names no class
+  is rejected.
+- **Read `status.conditions` of type `Available`:**
+  - `True` (`Served`) — usable. Offer it.
+  - `Unknown` (`Pending`, which is also where every class starts) — nobody has
+    confirmed it can run anything. A workload in it is accepted, and may never
+    start. Offer it only with that warning, said plainly.
+  - `False` (`UnsupportedFeature` or `ContractNotHonored`) — do not offer it.
+    The plan refuses it, quoting the status message.
+- **Check `spec.capabilities.features` against what the user asked for,** before
+  rendering. A class serves only what it lists, and the plan rejects the rest
+  by name:
+
+  | The workload has | The class must list |
+  |---|---|
+  | containers | `sandboxRuntime` |
+  | a virtual machine | `virtualMachineRuntime`, and `diskVolumes` for its boot disk |
+  | a ConfigMap mounted as files | `configMapVolumes` |
+  | a Secret mounted as files | `secretVolumes` |
+  | a persistent disk | `diskVolumes` |
+  | a whole ConfigMap or Secret as environment (`envFrom`) | `envFrom` |
+  | registry credentials (`imagePullSecrets`) | `imagePullSecrets` |
+  | an added Linux capability | `containerCapabilities`, with the capability in `grantableCapabilities` |
+
+  A single environment variable read from one ConfigMap or Secret key needs no
+  feature. If the class the user wants lacks one they need, say which, and
+  offer a class that has it.
+
+**What you cannot see: whether a location offers the class.** `Available`
+says the class works, not that every location runs it, and nothing here lists
+which locations serve which class. A workload in a class its location does not
+offer is still created, and then places nothing: `compute_workload_diagnose`
+reports `RuntimeClassNotServed` on that placement. Say this when the user picks
+a class other than the default, and if it happens, load `placement-triage`.
+
+**If the list is empty, or the kind is not there,** runtime classes are not
+turned on for this project. Leave the class unset. Naming one fails the plan on
+`spec.template.spec.runtime.class` with a message saying runtime classes are
+not enabled, and so does adding a Linux capability to a container.
+
 ## 3. Gather the inputs
 
 Ask for what is missing rather than inventing it. `compute_workload_render`
@@ -95,10 +150,9 @@ takes:
   zero, and the ceiling is 1000.
 - **instance type** — from `compute_instance_types_list`. Leave it unset to take
   the default.
-- **runtime class** — only if the user named an execution tier. The choices are
-  the RuntimeClass objects `resources_list` returns for
-  `compute.datumapis.com/v1alpha`. Leave it unset otherwise; the platform picks
-  its default, and the tier cannot be changed later.
+- **runtime class** — a name from the RuntimeClass list, chosen as above. Leave
+  it unset to take the default, but only once you have told the user which class
+  that is. It cannot be changed later.
 - **network** — the name of a Network from `resources_list`, or leave it unset
   for `default`.
 - **port** — optional, and named. A port is how anything reaches the workload;
@@ -198,8 +252,11 @@ catch.
 3. **Show the user the planned manifests and the diff.** Whole, not
    summarised, and the plan's own manifests rather than your draft. Then say in
    plain words what will be created, where, how many, and what it will cost
-   against their quota. If a Network is in the plan, say that: it is a second
-   object.
+   against their quota. Name the runtime class it will run in, by display name
+   and name, and say that it is final. When the manifest names none, that is the
+   class marked default, which the render notes point at. Repeat the warning
+   if its `Available` status is not `True`. If a Network is in the plan, say
+   that: it is a second object.
 
 4. **Get an explicit yes.** A question about the plan is not a yes. "Looks
    right" is. If the user asks for any change, go back to step 1 — a token
@@ -232,6 +289,12 @@ catch.
   already there. Stop and say so. Ask whether the user meant to change the
   existing one, and check the diff for anything immutable from trap 5 before
   going on, because those rejections arrive at apply and not before.
+
+  If they did mean to change it, read the existing Workload first —
+  `resources_get`, or `resources_list` for kind `Workload` — and render again
+  with its `spec.template.spec.runtime.class` as the runtime class. A render
+  with no class asks for the default, and on a workload in any other class that
+  is a request to change tiers, which is refused.
 
 - **Apply refuses the token** — something changed after the plan. That refusal
   is the mechanism working. Re-plan, show the new manifests, and ask again.
