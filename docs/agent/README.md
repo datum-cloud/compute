@@ -27,13 +27,19 @@ over Streamable HTTP:
 | Tools | Names |
 |---|---|
 | Diagnosis, read-only | `compute_workloads_list`, `compute_workloads_get`, `compute_instances_list`, `compute_workload_diagnose`, `compute_reason_explain` |
-| Discovery, read-only | `compute_locations_list`, `compute_networks_list`, `compute_quota_get`, `compute_instance_types_list` — what a project may place, attach to, afford, and ask for. The locations come from compute's own availability records, so the list is where compute is offered and this project can use it. |
-| Planning, writes nothing | `compute_workload_render` (inputs to a manifest, pure), `compute_workload_validate` (the server's verdict on that manifest without creating it) |
-| Mutating | `compute_workload_plan`, `compute_workload_apply` |
+| Creation, writes nothing | `compute_instance_types_list` (the sizes a workload may ask for), `compute_workload_render` (inputs to a Workload manifest, pure) |
 
 Every tool is prefixed `compute_`, so the assistant can compose tools from
 several services in one conversation without names colliding; the capability
 document must register the prefixed names.
+
+Compute publishes no mutating tool. Everything else creating a workload needs
+comes from the assistant's base tools, which it gives every project turn and
+which act as the caller: `locations_list` with service `compute` for where
+compute is offered, `quota_get` for what is left, `resources_list` for
+Networks and RuntimeClasses, and `resources_validate`, `resources_plan` and
+`resources_apply` for the change itself. The plan token and the confirmation
+step live there, once, for every service.
 
 ## HTTP surface
 
@@ -69,29 +75,6 @@ Three properties of the server are worth knowing before you deploy it:
   prompt injection away from another tenant's workloads. The caller sets
   `X-Datum-Project` after authenticating the user.
 
-Compute publishes exactly two mutating tools, `compute_workload_plan` and
-`compute_workload_apply`, and they are deliberately one operation split in half.
-`compute_workload_plan` validates a manifest, resolves whether it is a create or an
-update, reports whether the network the interface names would have to be
-created too, and returns the manifest, the diff, and a plan token — a hash of
-that manifest, the project, and the version of the workload it saw.
-`compute_workload_apply` accepts that manifest and that token and nothing else, and
-re-derives the hash before it writes: a manifest edited after the plan, a token
-from another project, or a workload someone else changed in the meantime is
-refused. So the only thing apply can produce is the manifest the model already
-put in front of the person who asked. A model that reads a poisoned status message cannot
-smuggle a different workload past a confirmation of this one, and a manifest
-nobody was shown has no token and cannot be applied at all.
-
-The rest of the surface is unchanged by this. Every write runs as the caller,
-from the bearer token on the request, so the server holds no credential of its
-own and can create nothing the person could not create themselves; the project
-still comes from the header. Whether `compute_workload_apply` is offered to a given
-project at all is the gateway's decision, from its allow-list — the split above
-constrains what a published tool can do, not which projects get it. Adding a
-third mutating tool is a new decision and gets its own review: the argument
-above is about these two and does not generalise.
-
 ## Why the knowledge leads with "how to read conditions"
 
 Compute's top-level condition reasons are deliberately **pointers, not causes**.
@@ -120,7 +103,7 @@ orientation and classification; the procedures live here and nowhere else.
 | `referenced-data-triage` | Missing, unauthorized, or oversized ConfigMaps/Secrets |
 | `placement-triage` | `NoMatchingLocation`, `AmbiguousServingLocation`, `LocationMismatch` |
 | `stalled-transient` | A transient reason that has outlived its expected window |
-| `workload-create` | Deploying something new: prerequisites, the choices that are final at create, and render → validate → show → plan → confirm → apply |
+| `workload-create` | Deploying something new: prerequisites, the choices that are final at create, and render → plan → show → confirm → apply |
 
 A skill never grants privileges. It can only direct the model toward tools that
 are independently on the enforced allow-list, which is why these go through the

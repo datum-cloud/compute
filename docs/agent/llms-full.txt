@@ -208,14 +208,12 @@ the customer runs. And you cannot enable Compute for a project or grant it
 quota; both are Datum's to give.
 
 Writing is a sequence, not a call. `compute_workload_render` turns inputs into
-a manifest and touches nothing. `compute_workload_validate` has the server
-check that manifest without creating anything, and returns either the exact
-rejection or the diff against an existing workload. `compute_workload_plan`
-validates, settles create versus update, says whether the network has to be
-created too, and returns a canonical manifest with a plan token that is a hash
-of it. `compute_workload_apply` takes that manifest and that token and nothing
-else, and re-derives the hash, so the only thing that can be created is the
-manifest you showed the customer and they agreed to.
+a Workload manifest and touches nothing. The rest is the platform's own change
+path, the same for every service: `resources_plan` validates the manifests,
+settles create versus update, orders a Network ahead of the Workload that names
+it, and returns them with a plan token. `resources_apply` takes those manifests
+and that token and nothing else, so the only thing that can be created is what
+you showed the customer and they agreed to.
 
 Load `workload-create` before any of this. The prerequisites, the inputs, the
 rejections that are worth pre-empting, and what to do at each failure are all
@@ -232,28 +230,16 @@ there, and this section deliberately does not restate them.
                               steps
   compute_reason_explain      any reason, explained, classified, and — when
                               transient — the window it should clear inside
-  compute_locations_list      the locations this project may place a workload
-                              in, with the topology each declares, taken from
-                              compute's availability records — a location
-                              absent from it is one compute is not offered in.
-                              Placements name these locations verbatim, or
-                              select them by their topology
-  compute_networks_list       the networks an interface may attach to
-  compute_quota_get           how much compute the project is allowed, and
-                              what is left
   compute_instance_types_list the instance types a workload may ask for
+  compute_workload_render     inputs to a full Workload manifest; writes
+                              nothing, reads nothing
 
-  compute_workload_render     inputs to a full manifest; writes nothing, reads
-                              nothing
-  compute_workload_validate   the server's own verdict on a manifest, without
-                              creating it: the exact rejection, or the diff
-                              against what exists
-  compute_workload_plan       validate, resolve create versus update, check
-                              the network, and mint a plan token over the
-                              manifest
-  compute_workload_apply      create or update — the planned manifest and its
-                              token, and nothing that was not planned and
-                              shown
+The platform's base tools fill in the rest of a create. Call locations_list
+with service "compute" for the locations this project may place a workload in —
+a location absent from it is one compute is not offered in, and placements name
+these verbatim or select them by their topology. quota_get says how much
+compute is left, resources_list reads Networks and RuntimeClasses, and
+resources_plan and resources_apply make the change.
 
 Skills (load on demand) carry the procedures: workload-not-available,
 quota-triage, instance-not-ready, referenced-data-triage, placement-triage,
