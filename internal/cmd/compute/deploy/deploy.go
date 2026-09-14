@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -39,6 +40,10 @@ const (
 	// the Apply prompt, so every line in it starts its value at the same
 	// column.
 	planLabelWidth = 20
+
+	// defaultNetworkName is the network a new workload's interface joins when
+	// --network is not set.
+	defaultNetworkName = "default"
 )
 
 // errPortRenamed is the one-release migration for --port. It is an error and
@@ -53,6 +58,7 @@ type options struct {
 	build            string
 	instanceType     string
 	runtimeClass     string
+	network          string
 	locations        []string
 	locationSelector string
 	cities           []string
@@ -101,7 +107,15 @@ general-purpose or unikernel. A new workload without --runtime-class runs in
 the platform default. A workload keeps its runtime class for its whole life:
 omitting --runtime-class on an existing workload keeps its class, and naming a
 different one is refused. To change tiers, destroy the workload and deploy it
-again, or deploy under a new name.`,
+again, or deploy under a new name.
+
+Use --network to choose the network a new workload's Instances attach to. A
+new workload without --network attaches to the network named "default". If the
+network does not exist, deploy offers to create it. A workload stays on its
+network: omitting --network on an existing workload keeps its network, and
+naming a different one is refused. To move a workload, destroy it and deploy
+it again, or deploy under a new name. A workload attached to more than one
+network is managed with a manifest.`,
 		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1,eu-west-1 --min=2 --http-port=8080
@@ -120,6 +134,9 @@ again, or deploy under a new name.`,
 
   # Run on the general-purpose tier instead of the platform default
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --runtime-class=general-purpose
+
+  # Attach a new workload to a network other than "default"
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --network=backend
 
   # Deploy to every location in one or more cities
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD
@@ -143,6 +160,7 @@ again, or deploy under a new name.`,
 	cmd.Flags().Lookup("build").NoOptDefVal = "."
 	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud/d1-standard-2", "Instance type (e.g. datumcloud/d1-standard-2)")
 	cmd.Flags().StringVar(&opts.runtimeClass, "runtime-class", "", "Runtime class the workload's Instances run in (e.g. general-purpose, unikernel); defaults to the platform default and cannot be changed after the workload is created")
+	cmd.Flags().StringVar(&opts.network, "network", "", "Network a new workload's Instances attach to (default \"default\"); cannot be changed after the workload is created")
 	cmd.Flags().StringSliceVar(&opts.locations, "location", nil, "One or more locations to deploy to (e.g. us-east-1,eu-west-1)")
 	cmd.Flags().StringVar(&opts.locationSelector, "location-selector", "", "Select every location whose topology matches a label selector (e.g. 'topology.datum.net/city-code=DFW' or 'topology.datum.net/region in (us-east-1,eu-west-1)')")
 	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "Deploy to every location in these cities (e.g. DFW,IAD); shorthand for a --location-selector on topology.datum.net/city-code")
@@ -190,6 +208,8 @@ func validateFlags(cmd *cobra.Command, opts *options) error {
 			return fmt.Errorf("--no-http cannot be combined with -f: remove the URL with 'datumctl compute destroy', or deploy with flags")
 		case opts.runtimeClass != "":
 			return fmt.Errorf("--runtime-class cannot be combined with -f: set spec.template.spec.runtime.class in the manifest instead")
+		case opts.network != "":
+			return fmt.Errorf("--network cannot be combined with -f: set spec.template.spec.networkInterfaces[].network.name in the manifest instead")
 		}
 	}
 
@@ -300,10 +320,6 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	out := cmd.OutOrStdout()
 	locations := opts.locations
 
-	if err := ensureNetwork(ctx, cmd, c, "default", project, opts); err != nil {
-		return err
-	}
-
 	fmt.Fprintf(out, "Resolving workload %q in project %s...\n", workloadName, project)
 
 	var workload computev1alpha.Workload
@@ -342,7 +358,19 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	if err != nil {
 		return err
 	}
-	networkInterfaces := resolveNetworkInterfaces(&workload, creating)
+	networkInterfaces, err := resolveNetworkInterfaces(&workload, creating, opts.network)
+	if err != nil {
+		return err
+	}
+	// Checked once the workload is resolved, so a redeploy checks the network
+	// the workload is attached to and never offers to create "default" for a
+	// workload that is not on it.
+	networks := networkNames(networkInterfaces)
+	for _, name := range networks {
+		if err := ensureNetwork(ctx, cmd, c, name, project, opts); err != nil {
+			return err
+		}
+	}
 
 	// Build spec.
 	tcp := corev1.ProtocolTCP
@@ -398,6 +426,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	if runtimeClass != "" {
 		fmt.Fprintln(out, planLine("Runtime class", runtimeClass))
 	}
+	fmt.Fprintln(out, planLine("Network", strings.Join(networks, ", ")))
 
 	removedURL := planHTTPService(ctx, out, c, workloadName, httpPort, opts, creating)
 
@@ -655,20 +684,67 @@ func resolveRuntimeClass(existing *computev1alpha.Workload, creating bool, reque
 }
 
 // resolveNetworkInterfaces returns the network interfaces a flag-driven deploy
-// writes. An existing workload keeps its own. The interface name, address
+// writes. A new workload gets one interface on the requested network, or on
+// "default" when none is requested.
+//
+// An existing workload keeps its own interfaces. The interface name, address
 // families, address requests, and reclaim policy are immutable and no flag
 // sets them, so rewriting the interface would reset them to their defaults
 // and the control plane would reject the update.
-func resolveNetworkInterfaces(existing *computev1alpha.Workload, creating bool) []computev1alpha.InstanceNetworkInterface {
-	if !creating && len(existing.Spec.Template.Spec.NetworkInterfaces) > 0 {
-		return existing.Spec.Template.Spec.NetworkInterfaces
+//
+// A requested network that differs from the existing one fails here. The
+// control plane accepts the edit, but it replaces every Instance, and each
+// Instance's interface claim is never updated and cannot change network, so a
+// replacement can come back on the old network. Refusing is the honest answer
+// until moving a workload between networks is supported.
+func resolveNetworkInterfaces(existing *computev1alpha.Workload, creating bool, requested string) ([]computev1alpha.InstanceNetworkInterface, error) {
+	current := existing.Spec.Template.Spec.NetworkInterfaces
+	if creating || len(current) == 0 {
+		name := requested
+		if name == "" {
+			name = defaultNetworkName
+		}
+		return []computev1alpha.InstanceNetworkInterface{
+			{Network: networkingv1alpha.NetworkRef{Name: name}},
+		}, nil
 	}
-	return []computev1alpha.InstanceNetworkInterface{
-		{
-			// TODO: "default" network name is a convention; confirm with platform team.
-			Network: networkingv1alpha.NetworkRef{Name: "default"},
-		},
+
+	switch {
+	case requested == "":
+		return current, nil
+	case len(current) > 1:
+		return nil, fmt.Errorf(
+			"workload %q is attached to networks %s, and --network sets a single network. "+
+				"Manage a workload attached to more than one network with a manifest: datumctl compute deploy -f workload.yaml",
+			existing.Name, quotedList(networkNames(current)))
+	case requested == current[0].Network.Name:
+		return current, nil
 	}
+	return nil, fmt.Errorf(
+		"workload %q is attached to network %q and cannot move to %q, because moving a workload's Instances to a different network is not supported. "+
+			"To change it, delete the workload with 'datumctl compute destroy %s' and deploy it again with --network=%s, or deploy under a new name",
+		existing.Name, current[0].Network.Name, requested, existing.Name, requested)
+}
+
+// networkNames returns the distinct networks the interfaces attach to, in the
+// order they first appear.
+func networkNames(interfaces []computev1alpha.InstanceNetworkInterface) []string {
+	var names []string
+	for _, iface := range interfaces {
+		if !slices.Contains(names, iface.Network.Name) {
+			names = append(names, iface.Network.Name)
+		}
+	}
+	return names
+}
+
+// quotedList renders names as a quoted, comma-separated list.
+func quotedList(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // declaredHTTPPort returns the HTTP port a workload already declares, or 0.
@@ -721,8 +797,8 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 	ctx := context.Background()
 	out := cmd.OutOrStdout()
 
-	for _, iface := range workload.Spec.Template.Spec.NetworkInterfaces {
-		if err := ensureNetwork(ctx, cmd, c, iface.Network.Name, project, opts); err != nil {
+	for _, name := range networkNames(workload.Spec.Template.Spec.NetworkInterfaces) {
+		if err := ensureNetwork(ctx, cmd, c, name, project, opts); err != nil {
 			return err
 		}
 	}

@@ -23,7 +23,8 @@ func storedWorkload(class string) *computev1alpha.Workload {
 	w.Spec.Template.Spec.Runtime.Resources = computev1alpha.InstanceRuntimeResources{InstanceType: "datumcloud/d1-standard-2"}
 	w.Spec.Template.Spec.Runtime.Class = class
 
-	iface := resolveNetworkInterfaces(workload(), true)[0]
+	created, _ := resolveNetworkInterfaces(workload(), true, "")
+	iface := created[0]
 	iface.Name = "eth0"
 	iface.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
 	iface.ReclaimPolicy = "Delete"
@@ -115,14 +116,20 @@ func TestResolveNetworkInterfacesKeepsImmutableFields(t *testing.T) {
 	existing := storedWorkload(classGeneralPurpose)
 	existing.Spec.Template.Spec.NetworkInterfaces[0].IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
 
-	got := resolveNetworkInterfaces(existing, false)
+	got, err := resolveNetworkInterfaces(existing, false, "")
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
 	if !reflect.DeepEqual(got, existing.Spec.Template.Spec.NetworkInterfaces) {
 		t.Errorf("interfaces = %+v, want the stored ones %+v", got, existing.Spec.Template.Spec.NetworkInterfaces)
 	}
 
 	// A new workload gets the single default interface and leaves the
 	// immutable fields for the control plane to default.
-	created := resolveNetworkInterfaces(workload(), true)
+	created, err := resolveNetworkInterfaces(workload(), true, "")
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
 	if len(created) != 1 || created[0].Name != "" || created[0].IPFamilies != nil || created[0].Addresses != nil {
 		t.Errorf("interfaces on create = %+v, want one interface with only its network set", created)
 	}
