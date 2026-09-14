@@ -56,6 +56,9 @@ type options struct {
 	locationSelector string
 	cities           []string
 	min              int32
+	max              int32
+	cpuPercent       int32
+	memoryPercent    int32
 	httpPort         int32
 	noHTTP           bool
 	port             int32
@@ -134,7 +137,7 @@ HTTP service as it is; --no-http removes it and stops serving.`,
 	cmd.Flags().StringSliceVar(&opts.locations, "location", nil, "One or more locations to deploy to (e.g. us-east-1,eu-west-1)")
 	cmd.Flags().StringVar(&opts.locationSelector, "location-selector", "", "Select every location whose topology matches a label selector (e.g. 'topology.datum.net/city-code=DFW' or 'topology.datum.net/region in (us-east-1,eu-west-1)')")
 	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "Deploy to every location in these cities (e.g. DFW,IAD); shorthand for a --location-selector on topology.datum.net/city-code")
-	cmd.Flags().Int32Var(&opts.min, "min", 1, "Minimum number of instances per location")
+	util.AddScaleFlags(cmd, &opts.min, &opts.max, &opts.cpuPercent, &opts.memoryPercent, 1)
 	cmd.Flags().Int32Var(&opts.httpPort, "http-port", 0, "Port the container serves HTTP on; publishes the workload on a Datum-managed HTTPS URL")
 	cmd.Flags().BoolVar(&opts.noHTTP, "no-http", false, "Remove the workload's HTTP service, and with it its URL")
 	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Path to a workload manifest file")
@@ -260,6 +263,38 @@ func resolveLocationSelector(opts *options) (*metav1.LabelSelector, error) {
 	return nil, nil
 }
 
+// resolveScaleSettings picks the baseline scale settings for this deploy's
+// flags to merge onto, and returns the merged, validated result.
+//
+// The baseline is the one existing placement's settings, under any name, so
+// an unrelated flag change doesn't reset previously configured autoscaling.
+// A multi-placement workload (only possible via a manifest deploy) has no
+// single baseline to preserve; it warns via out before dropping autoscaling
+// rather than doing so silently.
+func resolveScaleSettings(
+	cmd *cobra.Command, out io.Writer, opts *options, existingPlacements []computev1alpha.WorkloadPlacement,
+) (computev1alpha.HorizontalScaleSettings, error) {
+	current := computev1alpha.HorizontalScaleSettings{MinReplicas: 1}
+
+	switch len(existingPlacements) {
+	case 0:
+		// Fresh workload; the default above stands.
+	case 1:
+		current = existingPlacements[0].ScaleSettings
+	default:
+		for _, p := range existingPlacements {
+			if p.ScaleSettings.MaxReplicas != nil {
+				fmt.Fprintln(out, planNote(fmt.Sprintf(
+					"replacing %d placements with one; placement %q's autoscaling settings will be dropped",
+					len(existingPlacements), p.Name)))
+				break
+			}
+		}
+	}
+
+	return util.MergeScaleSettings(cmd, current, opts.min, opts.max, opts.cpuPercent, opts.memoryPercent)
+}
+
 func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) error {
 	project := util.ProjectFromCmd(cmd)
 	if project == "" {
@@ -342,15 +377,19 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	for _, name := range locations {
 		locationRefs = append(locationRefs, locationsv1alpha1.LocationReference{Name: name})
 	}
-	// All locations go into one "default" placement.
+
+	// All locations go into one "default" placement, replacing whatever
+	// placements the workload had before.
+	scaleSettings, err := resolveScaleSettings(cmd, out, opts, workload.Spec.Placements)
+	if err != nil {
+		return err
+	}
+
 	placement := computev1alpha.WorkloadPlacement{
 		Name:             "default",
 		Locations:        locationRefs,
 		LocationSelector: locationSelector,
-		ScaleSettings: computev1alpha.HorizontalScaleSettings{
-			MinReplicas:              opts.min,
-			InstanceManagementPolicy: computev1alpha.OrderedReadyInstanceManagementPolicyType,
-		},
+		ScaleSettings:    scaleSettings,
 	}
 
 	workload.Spec = computev1alpha.WorkloadSpec{
@@ -376,7 +415,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	}
 
 	fmt.Fprintln(out, planLine(`Placement "default"`,
-		fmt.Sprintf("%s, min=%d", describePlacementLocations(placement), opts.min)))
+		fmt.Sprintf("%s, %s", describePlacementLocations(placement), util.FormatScaleSettings(scaleSettings))))
 
 	removedURL := planHTTPService(ctx, out, c, workloadName, httpPort, opts, creating)
 
@@ -842,6 +881,14 @@ func manifestDiff(existing, desired computev1alpha.Workload) []string {
 				lines = append(lines, fmt.Sprintf("  placement %q min replicas: %d → %d",
 					name, op.ScaleSettings.MinReplicas, np.ScaleSettings.MinReplicas))
 			}
+			if maxReplicasStr(op.ScaleSettings.MaxReplicas) != maxReplicasStr(np.ScaleSettings.MaxReplicas) {
+				lines = append(lines, fmt.Sprintf("  placement %q max replicas: %s → %s",
+					name, maxReplicasStr(op.ScaleSettings.MaxReplicas), maxReplicasStr(np.ScaleSettings.MaxReplicas)))
+			}
+			if len(op.ScaleSettings.Metrics) != len(np.ScaleSettings.Metrics) {
+				lines = append(lines, fmt.Sprintf("  placement %q autoscaling metrics: %d → %d",
+					name, len(op.ScaleSettings.Metrics), len(np.ScaleSettings.Metrics)))
+			}
 			if before, after := describePlacementLocations(op), describePlacementLocations(np); before != after {
 				lines = append(lines, fmt.Sprintf("  placement %q: %s → %s", name, before, after))
 			}
@@ -856,6 +903,14 @@ func manifestDiff(existing, desired computev1alpha.Workload) []string {
 	}
 
 	return lines
+}
+
+// maxReplicasStr renders a placement's MaxReplicas for diff output.
+func maxReplicasStr(max *int32) string {
+	if max == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%d", *max)
 }
 
 // describePlacementLocations says where a placement runs the way the CLI

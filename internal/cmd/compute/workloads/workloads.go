@@ -593,8 +593,8 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 			if p.ScaleSettings.MaxReplicas != nil {
 				maxStr = fmt.Sprintf("%d", *p.ScaleSettings.MaxReplicas)
 			}
-			fmt.Fprintf(out, "  %-10s %-34s scale: %d..%s\n",
-				p.Name, placementLocationsSummary(p), p.ScaleSettings.MinReplicas, maxStr)
+			fmt.Fprintf(out, "  %-10s %-34s scale: %d..%s%s\n",
+				p.Name, placementLocationsSummary(p), p.ScaleSettings.MinReplicas, maxStr, autoscaleAnnotation(p.ScaleSettings))
 
 			// Per-location lines from deployments.
 			for _, d := range deplsByPlacement[p.Name] {
@@ -672,6 +672,21 @@ func placementLocationsSummary(p computev1alpha.WorkloadPlacement) string {
 		names = append(names, ref.Name)
 	}
 	return "locations: " + strings.Join(names, ", ")
+}
+
+// autoscaleAnnotation renders a placement's autoscaling metrics for the
+// "scale: min..max" line, e.g. " (cpu@70%, memory@80%)". The HPA controller
+// only acts when a metric is set too, so a max with none is flagged rather
+// than shown as if autoscaling were active.
+func autoscaleAnnotation(s computev1alpha.HorizontalScaleSettings) string {
+	if s.MaxReplicas == nil {
+		return ""
+	}
+	ann := util.MetricsAnnotation(s.Metrics)
+	if ann == "" {
+		return " (autoscaling disabled)"
+	}
+	return " " + ann
 }
 
 // degradedAnnotation returns a short annotation for a per-location line when the
