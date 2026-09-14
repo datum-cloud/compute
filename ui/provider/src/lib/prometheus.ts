@@ -1,15 +1,14 @@
 /**
- * Same-origin VictoriaMetrics access via the portal's `POST /api/prometheus`.
+ * Same-origin VictoriaMetrics access via staff-portal's `POST /api/metrics`.
  *
- * Plugins cannot import cloud-portal's `usePrometheusChart` / `MetricChart`.
- * This module mirrors that HTTP contract so instance CPU/memory (and ALB
- * traffic when a URL is published) query the same `vmsingle-datum-resource-metrics`
- * the built-in edge metrics pages use.
+ * Same PromQL request body as cloud-portal's `/api/prometheus`; the response
+ * is the staff-portal `{ requestId, code, data, path }` envelope (see
+ * `./api.ts`), not cloud-portal's `{ success, data }`.
  */
 import { ApiError, PLUGIN_ID } from './api';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 
-const PROMETHEUS_ROUTE_PATH = '/api/prometheus';
+const METRICS_ROUTE_PATH = '/api/metrics';
 
 export type MetricFormat =
   | 'number'
@@ -51,12 +50,12 @@ export interface MetricCardData {
   labels?: Record<string, string>;
 }
 
-interface PrometheusAPIResponse<T> {
-  success: boolean;
-  data: T;
+interface MetricsAPIResponse<T> {
+  requestId?: string;
+  code?: string;
+  data?: T;
   error?: string;
-  type?: string;
-  details?: unknown;
+  path?: string;
 }
 
 export class PrometheusError extends Error {
@@ -77,21 +76,21 @@ function toUnixRange(timeRange: PrometheusTimeRange): { start: number; end: numb
 }
 
 async function prometheusRequest<T>(body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(PROMETHEUS_ROUTE_PATH, {
+  const res = await fetch(METRICS_ROUTE_PATH, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 
-  let payload: PrometheusAPIResponse<T> | undefined;
+  let payload: MetricsAPIResponse<T> | undefined;
   try {
-    payload = (await res.json()) as PrometheusAPIResponse<T>;
+    payload = (await res.json()) as MetricsAPIResponse<T>;
   } catch {
-    throw new PrometheusError(`Prometheus request failed (${res.status})`, res.status);
+    throw new PrometheusError(`Metrics request failed (${res.status})`, res.status);
   }
 
-  if (!res.ok || !payload.success) {
-    throw new PrometheusError(payload.error || `Prometheus request failed (${res.status})`, res.status);
+  if (!res.ok || payload.data === undefined) {
+    throw new PrometheusError(payload.error || `Metrics request failed (${res.status})`, res.status);
   }
 
   return payload.data;

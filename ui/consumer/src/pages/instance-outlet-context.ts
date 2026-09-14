@@ -11,8 +11,14 @@ export type InstanceOutletContext = {
   projectId?: string;
   logsHref: string;
   metricsHref: string;
-  /** HTTPProxy name when the workload is published on a URL; otherwise unset. */
+  /** HTTPProxy name when an ALB backs this workload's NetworkService. */
   proxyId?: string;
+  /** Canonical/default hostname of the connected ALB, when known. */
+  albHostname?: string;
+  /** Portal display name of the connected ALB (`app.kubernetes.io/name` or `kubernetes.io/display-name`). */
+  albDisplayName?: string;
+  /** True while the NetworkService → HTTPProxy lookup is in flight. */
+  albLoading: boolean;
 };
 
 export function useInstanceOutlet(): InstanceOutletContext {

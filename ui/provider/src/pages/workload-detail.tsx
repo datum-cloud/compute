@@ -6,8 +6,8 @@
  * "what's wrong with this workload" from a customer: Overview surfaces raw
  * conditions (not just a coarse health enum), Instances is the direct
  * per-instance drill-down (image pull failures, crash loops, scheduling
- * gates, quota), Logs mounts the empty datum-ui explorer until Loki is
- * wired, Events/Metrics stay honest "Coming Soon" placeholders, and YAML
+ * gates, quota), Logs merges ALB access logs with instance stdout, Metrics
+ * charts CPU/memory/network (and ALB traffic when published), and YAML
  * gives an escape hatch to the raw resource for anything the tabs don't
  * surface.
  *
@@ -20,12 +20,28 @@
 import type { RawWorkload } from '../adapter';
 import { ConditionsTable } from '../components/conditions-table';
 import { DetailList, StatusBadge } from '../components/detail-list';
+import { formatKpiValue } from '../components/metric-area-chart';
 import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { WorkloadLogsExplorer } from '../components/workload-logs';
-import { useWorkload, useWorkloadInstances, useWorkloadRaw } from '../lib/api';
-import { healthToBadgeType, type Instance, type Workload } from '../schema';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { WorkloadMetrics } from '../components/workload-metrics';
+import { usePublishedUrl, useWorkload, useWorkloadInstances, useWorkloadRaw } from '../lib/api';
+import {
+  formatLocationName,
+  formatLocationNames,
+  formatLocationSelector,
+  useLocationIndex,
+  type LocationIndex,
+} from '../lib/locations';
+import {
+  albRpsQuery,
+  useInstanceMetricIdentity,
+  workloadCpuAvgQuery,
+  workloadMemoryAvgQuery,
+} from '../lib/metrics-queries';
+import { usePrometheusCard } from '../lib/prometheus';
+import { healthToBadgeType, type Instance, type Workload, type WorkloadPlacement } from '../schema';
+import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { CodeEditor } from '@datum-cloud/datum-ui/code-editor';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
@@ -42,12 +58,14 @@ type Tab = (typeof TABS)[number];
 
 function GeneralCard({ workload }: { workload: Workload }) {
   return (
-    <Card className="h-full w-full gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4">
-      <CardContent className="p-0 sm:px-6 sm:pb-4">
-        <div className="mb-4 flex items-center gap-2.5">
-          <BoxIcon className="text-muted-foreground size-5 stroke-2" />
-          <span className="text-base font-semibold">General</span>
-        </div>
+    <Card size="sm" sectioned className="h-full w-full overflow-hidden">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <BoxIcon className="text-secondary size-4 stroke-2" />
+          General
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none">
         <DetailList
           items={[
             {
@@ -81,14 +99,30 @@ function GeneralCard({ workload }: { workload: Workload }) {
   );
 }
 
-function ConfigurationCard({ workload }: { workload: Workload }) {
+function placementLocationLabel(placement: WorkloadPlacement, index: LocationIndex): string {
+  if (placement.locations.length > 0) return formatLocationNames(placement.locations, index);
+  if (placement.locationSelector) {
+    return formatLocationSelector(placement.locationSelector, index) ?? placement.locationSelector;
+  }
+  return 'no locations';
+}
+
+function ConfigurationCard({
+  workload,
+  locationLabel,
+}: {
+  workload: Workload;
+  locationLabel: string;
+}) {
   return (
-    <Card className="h-full w-full gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4">
-      <CardContent className="p-0 sm:px-6 sm:pb-4">
-        <div className="mb-4 flex items-center gap-2.5">
-          <Settings2Icon className="text-muted-foreground size-5 stroke-2" />
-          <span className="text-base font-semibold">Configuration</span>
-        </div>
+    <Card size="sm" sectioned className="h-full w-full overflow-hidden">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Settings2Icon className="text-secondary size-4 stroke-2" />
+          Configuration
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none">
         <DetailList
           items={[
             { label: 'Runtime', content: workload.runtimeType ?? '—' },
@@ -110,7 +144,12 @@ function ConfigurationCard({ workload }: { workload: Workload }) {
                   ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
                   : `${workload.desiredReplicas} total`,
             },
-            { label: 'Locations', content: workload.locations.join(', ') || '—' },
+            {
+              label: 'Locations',
+              content: (
+                <span title={workload.locations.join(', ') || undefined}>{locationLabel}</span>
+              ),
+            },
           ]}
         />
       </CardContent>
@@ -118,37 +157,45 @@ function ConfigurationCard({ workload }: { workload: Workload }) {
   );
 }
 
-function PlacementsCard({ workload }: { workload: Workload }) {
+function PlacementsCard({
+  workload,
+  locationIndex,
+}: {
+  workload: Workload;
+  locationIndex: LocationIndex;
+}) {
   if (workload.placements.length === 0) return null;
 
   return (
-    <Card className="w-full overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4">
-      <CardContent className="flex flex-col gap-4 p-0 sm:px-6 sm:pb-4">
-        <div className="flex items-center gap-2.5">
-          <MapPinIcon className="text-muted-foreground size-5 stroke-2" />
-          <span className="text-base font-semibold">Placements</span>
-        </div>
-        <div className="flex flex-col gap-4">
-          {workload.placements.map((p) => (
-            <div key={p.name} className="border-border rounded-lg border p-3">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-medium">{p.name}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {p.locations.join(', ') || p.locationSelector || 'no locations'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-muted-foreground text-xs">
-                    {p.readyReplicas}/{p.desiredReplicas} ready
-                  </span>
-                  <StatusBadge type={healthToBadgeType(p.health)}>{p.health}</StatusBadge>
-                </div>
+    <Card size="sm" sectioned className="w-full overflow-hidden">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <MapPinIcon className="text-secondary size-4 stroke-2" />
+          Placements
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {workload.placements.map((p) => (
+          <div key={p.name} className="border-border rounded-lg border p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-sm font-medium">{p.name}</span>
+                <span
+                  className="text-muted-foreground text-xs"
+                  title={p.locations.join(', ') || p.locationSelector}>
+                  {placementLocationLabel(p, locationIndex)}
+                </span>
               </div>
-              {p.conditions.length > 0 && <ConditionsTable conditions={p.conditions} />}
+              <div className="flex items-center gap-3">
+                <span className="text-muted-foreground text-xs">
+                  {p.readyReplicas}/{p.desiredReplicas} ready
+                </span>
+                <StatusBadge type={healthToBadgeType(p.health)}>{p.health}</StatusBadge>
+              </div>
             </div>
-          ))}
-        </div>
+            {p.conditions.length > 0 && <ConditionsTable conditions={p.conditions} />}
+          </div>
+        ))}
       </CardContent>
     </Card>
   );
@@ -156,21 +203,38 @@ function PlacementsCard({ workload }: { workload: Workload }) {
 
 function ConditionsCard({ workload }: { workload: Workload }) {
   return (
-    <Card className="w-full overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4">
-      <CardContent className="flex flex-col gap-4 p-0 sm:px-6 sm:pb-4">
-        <span className="text-base font-semibold">Conditions</span>
+    <Card size="sm" sectioned className="w-full overflow-hidden">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="text-sm">Conditions</CardTitle>
+      </CardHeader>
+      <CardContent>
         <ConditionsTable conditions={workload.conditions} />
       </CardContent>
     </Card>
   );
 }
 
-function OverviewTab({ workload }: { workload: Workload }) {
+function OverviewTab({
+  workload,
+  requests,
+  avgCpu,
+  avgMemory,
+  locationIndex,
+}: {
+  workload: Workload;
+  requests: string;
+  avgCpu: string;
+  avgMemory: string;
+  locationIndex: LocationIndex;
+}) {
   const stats: Stat[] = [
     { label: 'Ready', value: `${workload.readyReplicas}/${workload.desiredReplicas}` },
     { label: 'Current', value: `${workload.currentReplicas}/${workload.desiredReplicas}` },
     { label: 'Updated', value: `${workload.updatedReplicas}/${workload.desiredReplicas}` },
     { label: 'Locations', value: String(workload.locations.length) },
+    { label: 'Requests', value: requests },
+    { label: 'Avg CPU', value: avgCpu },
+    { label: 'Avg Memory', value: avgMemory },
   ];
 
   return (
@@ -178,15 +242,24 @@ function OverviewTab({ workload }: { workload: Workload }) {
       <StatStrip stats={stats} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <GeneralCard workload={workload} />
-        <ConfigurationCard workload={workload} />
+        <ConfigurationCard
+          workload={workload}
+          locationLabel={formatLocationNames(workload.locations, locationIndex)}
+        />
       </div>
-      <PlacementsCard workload={workload} />
+      <PlacementsCard workload={workload} locationIndex={locationIndex} />
       <ConditionsCard workload={workload} />
     </div>
   );
 }
 
-function InstanceRow({ instance }: { instance: Instance }) {
+function InstanceRow({
+  instance,
+  locationLabel,
+}: {
+  instance: Instance;
+  locationLabel: string;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -203,7 +276,9 @@ function InstanceRow({ instance }: { instance: Instance }) {
             )}
           </div>
         </TableCell>
-        <TableCell className="text-muted-foreground">{instance.location ?? '—'}</TableCell>
+        <TableCell className="text-muted-foreground" title={instance.location}>
+          {locationLabel}
+        </TableCell>
         <TableCell className="text-muted-foreground font-mono">
           {instance.internalIP ?? '—'}
         </TableCell>
@@ -232,7 +307,13 @@ function InstanceRow({ instance }: { instance: Instance }) {
   );
 }
 
-function InstancesTab({ instances }: { instances: Instance[] }) {
+function InstancesTab({
+  instances,
+  locationIndex,
+}: {
+  instances: Instance[];
+  locationIndex: LocationIndex;
+}) {
   if (instances.length === 0) {
     return (
       <EmptyContent title="there are no instances for this workload" size="sm" variant="dashed" />
@@ -254,7 +335,11 @@ function InstancesTab({ instances }: { instances: Instance[] }) {
         </TableHeader>
         <TableBody>
           {instances.map((instance) => (
-            <InstanceRow key={instance.uid || instance.name} instance={instance} />
+            <InstanceRow
+              key={instance.uid || instance.name}
+              instance={instance}
+              locationLabel={formatLocationName(instance.location, locationIndex)}
+            />
           ))}
         </TableBody>
       </Table>
@@ -292,8 +377,39 @@ export default function WorkloadDetail() {
   const { data: workload, isLoading, error, refetch } = useWorkload(projectName, workloadName);
   const { data: instances = [] } = useWorkloadInstances(projectName, workloadName);
   const { data: raw } = useWorkloadRaw(projectName, workloadName);
+  const published = usePublishedUrl(projectName, workloadName);
+  const instanceNames = useMemo(() => instances.map((instance) => instance.name), [instances]);
+  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(
+    projectName,
+    instanceNames[0]
+  );
+  const chartsEnabled =
+    !identityLoading && !!identity && !!projectName && instanceNames.length > 0;
+  const cpuQuery =
+    chartsEnabled && identity && projectName
+      ? workloadCpuAvgQuery(projectName, identity.label, instanceNames)
+      : undefined;
+  const memoryQuery =
+    chartsEnabled && identity && projectName
+      ? workloadMemoryAvgQuery(projectName, identity.label, instanceNames)
+      : undefined;
+  const proxyId = published.data?.proxyName;
+  const rpsQuery = projectName && proxyId ? albRpsQuery(projectName, proxyId) : undefined;
+  const cpu = usePrometheusCard(cpuQuery, 'number', { enabled: chartsEnabled });
+  const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled: chartsEnabled });
+  const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
+  const requestsValue = proxyId
+    ? (rps.data?.formattedValue ?? formatKpiValue(rps.data?.value, 'requestsPerSecond'))
+    : '—';
+  const avgCpu = chartsEnabled
+    ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number'))
+    : '—';
+  const avgMemory = chartsEnabled
+    ? (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes'))
+    : '—';
 
   const titleName = workload?.name ?? workloadName ?? 'Workload';
+  const locationIndex = useLocationIndex(projectName);
 
   return (
     <div
@@ -312,20 +428,28 @@ export default function WorkloadDetail() {
       )}
 
       {!isLoading && !error && workload && (
-        <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
-          <TabsList>
-            {TABS.map((t) => (
-              <TabsTrigger key={t} value={t}>
-                {t}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="gap-6">
+          <div className="border-border -mx-4 border-b px-4 sm:-mx-6 sm:px-6">
+            <TabsList variant="line">
+              {TABS.map((t) => (
+                <TabsTrigger key={t} value={t} className="text-xs md:py-2">
+                  {t}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
 
           <TabsContent value="Overview">
-            <OverviewTab workload={workload} />
+            <OverviewTab
+              workload={workload}
+              requests={requestsValue}
+              avgCpu={avgCpu}
+              avgMemory={avgMemory}
+              locationIndex={locationIndex}
+            />
           </TabsContent>
           <TabsContent value="Instances">
-            <InstancesTab instances={instances} />
+            <InstancesTab instances={instances} locationIndex={locationIndex} />
           </TabsContent>
           <TabsContent value="Events">
             <EmptyContent
@@ -336,14 +460,19 @@ export default function WorkloadDetail() {
             />
           </TabsContent>
           <TabsContent value="Logs">
-            <WorkloadLogsExplorer />
+            <WorkloadLogsExplorer
+              projectName={projectName}
+              proxyId={proxyId}
+              instanceNames={instanceNames}
+            />
           </TabsContent>
           <TabsContent value="Metrics">
-            <EmptyContent
-              title="metrics aren't available yet"
-              subtitle="Workload and instance resource metrics aren't wired up in this view yet."
-              size="sm"
-              variant="dashed"
+            <WorkloadMetrics
+              projectName={projectName}
+              instanceNames={instanceNames}
+              identityLabel={identity?.label}
+              identityLoading={identityLoading}
+              proxyId={proxyId}
             />
           </TabsContent>
           <TabsContent value="YAML">

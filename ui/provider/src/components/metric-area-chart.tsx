@@ -208,7 +208,7 @@ export function MetricAreaChart({
     return (
       <div
         className={className}
-        data-testid={`compute-plugin-metric-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}>
+        data-testid={`provider-plugin-metric-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}>
         {series.length > 1 ? (
           <div className="mb-2 flex flex-wrap items-center gap-3">
             {series.map((item, index) => (
@@ -232,7 +232,7 @@ export function MetricAreaChart({
       size="sm"
       sectioned
       className={cn('overflow-hidden', className)}
-      data-testid={`compute-plugin-metric-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}>
+      data-testid={`provider-plugin-metric-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}>
       <CardHeader size="sm" bordered>
         <CardTitle className="flex items-center gap-3 text-sm">
           {title}

@@ -56,6 +56,7 @@ export default defineConfig({
       },
       shared: {
         react: { singleton: true, requiredVersion: '^19.0.0' },
+        'react/jsx-runtime': { singleton: true, requiredVersion: false },
         'react-dom': { singleton: true, requiredVersion: '^19.0.0' },
         // `react-dom/client` is only ever imported by this plugin's
         // standalone preview harness (main.tsx, never loaded by the real

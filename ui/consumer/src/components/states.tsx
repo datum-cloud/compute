@@ -31,7 +31,7 @@ export function LoadingSkeleton() {
 export function RestrictedState({ message }: { message: string }) {
   return (
     <div data-testid="compute-plugin-restricted" className="flex flex-col gap-4">
-      <Card className="max-w-md">
+      <Card size="sm" className="max-w-md">
         <CardContent className="flex flex-col items-start gap-3">
           <Icon icon={LockIcon} size={24} className="text-muted-foreground" />
           <div>
@@ -49,7 +49,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
 
   return (
     <div data-testid="compute-plugin-error" className="flex flex-col gap-4">
-      <Card className="max-w-md">
+      <Card size="sm" className="max-w-md">
         <CardContent className="flex flex-col items-start gap-3">
           <Icon icon={ServerCrashIcon} size={24} className="text-destructive" />
           <div>

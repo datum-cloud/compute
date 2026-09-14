@@ -1,41 +1,89 @@
 /**
  * Instance log surfaces built on `@datum-cloud/datum-ui/logs`.
  *
- * - {@link RecentInstanceLogs} — compact last-30-minutes table for Overview
+ * - {@link RecentInstanceLogs} — ALB-style live feed on Overview
  * - {@link InstanceLogsExplorer} — full explorer for the Logs tab
  *
- * v1 is ALB access logs only, and only when the workload has a published
- * HTTPProxy. Instance stdout is not in customer-facing o11y yet.
+ * When the workload has a published HTTPProxy, the table merges ALB access
+ * logs with instance stdout. Without one, the tab stays on the unpublished
+ * empty state.
  */
 import { ApiError } from '../lib/api';
 import {
-  albLogFacets,
-  filterAlbLogsByHost,
-  useAlbLogs,
   ALB_LOGS_PREVIEW_LIMIT,
+  combinedLogFacets,
+  filterCombinedLogs,
+  LOG_SOURCE_ALB,
+  useInstanceLogs,
 } from '../lib/o11y-logs';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
-import { Icon } from '@datum-cloud/datum-ui/icons';
+import { Badge } from '@datum-cloud/datum-ui/badge';
+import { Button } from '@datum-cloud/datum-ui/button';
 import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@datum-cloud/datum-ui/card';
+import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
+import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
+import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
+import {
+  httpStatusBadgeType,
   lastThirtyMinutes,
+  logRequestHost,
   Logs,
+  parseLogLine,
   resolveLogTimeRange,
-  type LogColumnId,
+  type LogColumn,
+  type LogColumnSpec,
+  type LogEntry,
   type LogFilters,
   type LogTimeRange,
 } from '@datum-cloud/datum-ui/logs';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { ScrollTextIcon } from 'lucide-react';
+import { formatDistanceToNowStrict } from 'date-fns';
+import { CheckIcon, CopyIcon, LogsIcon, RadioIcon } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 
-const OVERVIEW_COLUMNS: readonly LogColumnId[] = ['time', 'status', 'path'];
-const EXPLORER_COLUMNS: readonly LogColumnId[] = ['time', 'status', 'host', 'path'];
+const SOURCE_COLUMN: LogColumn = {
+  id: 'source',
+  header: 'Source',
+  size: 'hug',
+  className: 'text-muted-foreground font-mono text-xs',
+  cell: ({ entry }) => entry.labels.source ?? '—',
+};
+
+const DETAIL_COLUMN: LogColumn = {
+  id: 'detail',
+  header: 'Detail',
+  size: 'fill',
+  className: 'truncate font-mono text-xs',
+  cell: ({ entry, path, message }) => {
+    const text = entry.labels.source === LOG_SOURCE_ALB ? path : message || path;
+    return (
+      <span className={text ? undefined : 'text-muted-foreground'} title={text ?? undefined}>
+        {text || '—'}
+      </span>
+    );
+  },
+};
+
+const EXPLORER_COLUMNS: readonly LogColumnSpec[] = [
+  'time',
+  SOURCE_COLUMN,
+  'status',
+  'host',
+  DETAIL_COLUMN,
+];
+
+const ROW_LIMIT = ALB_LOGS_PREVIEW_LIMIT;
 
 const UNPUBLISHED_TITLE = 'No load balancer logs';
 const UNPUBLISHED_SUBTITLE =
-  'ALB logs appear here when this workload is published on a public URL.';
+  'ALB and instance logs appear here when this workload is published on a public URL.';
 const DENIED_MESSAGE = "You don't have permission to view load balancer logs.";
 
 function UnpublishedLogs({ className }: { className?: string }) {
@@ -50,50 +98,186 @@ function UnpublishedLogs({ className }: { className?: string }) {
   );
 }
 
-/** Compact last-30-minutes log table for the instance Overview card. */
+function relativeAge(date: Date): string {
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${formatDistanceToNowStrict(date, { roundingMethod: 'floor' })
+    .replace(/ minutes?/, 'm')
+    .replace(/ hours?/, 'h')
+    .replace(/ days?/, 'd')} ago`;
+}
+
+function IdleChip() {
+  return (
+    <Badge
+      type="muted"
+      theme="solid"
+      className="h-5 gap-1.5 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap">
+      <span className="bg-muted-foreground/60 size-1.5 rounded-full" aria-hidden="true" />
+      Idle
+    </Badge>
+  );
+}
+
+function LivePulse() {
+  return (
+    <span
+      className="relative flex size-4 items-center justify-center"
+      role="img"
+      aria-label="Active">
+      <span className="size-2.5 rounded-full shadow-[0_0_0_3px_rgba(34,197,94,0.4)]" />
+      <span className="absolute size-2.5 animate-pulse rounded-full bg-green-500" />
+    </span>
+  );
+}
+
+function PreviewEmpty({
+  hostname,
+}: {
+  hostname?: string;
+}) {
+  const [copied, copy] = useCopyToClipboard();
+  const testCommand = hostname ? `curl -I https://${hostname}/` : null;
+
+  return (
+    <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center lg:min-h-72">
+      <span className="bg-muted flex size-10 items-center justify-center rounded-full">
+        <Icon icon={RadioIcon} size={18} className="text-muted-foreground" aria-hidden="true" />
+      </span>
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">Waiting for the first request…</p>
+        <p className="text-muted-foreground max-w-xs text-xs">
+          Send a test request and it will appear here live.
+        </p>
+      </div>
+      {testCommand ? (
+        <div className="bg-muted/60 border-border flex w-full max-w-sm items-center gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-left">
+          <code className="min-w-0 flex-1 font-mono text-xs break-all">{testCommand}</code>
+          <Button
+            type="quaternary"
+            theme="borderless"
+            size="xs"
+            className="text-muted-foreground size-6 shrink-0 p-0"
+            aria-label="Copy test request command"
+            onClick={() => void copy(testCommand, { withToast: true })}>
+            <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RequestRow({ entry, logsHref }: { entry: LogEntry; logsHref: string }) {
+  const parsed = parseLogLine(entry.line, entry.labels);
+  const host = logRequestHost(entry.labels);
+
+  if (parsed.kind !== 'http') {
+    return (
+      <li>
+        <Link
+          to={logsHref}
+          className="hover:bg-muted/40 flex items-center gap-3 px-(--card-px) py-2 transition-colors">
+          <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs">
+            {parsed.line}
+          </span>
+          <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+            {relativeAge(entry.timestamp)}
+          </span>
+        </Link>
+      </li>
+    );
+  }
+
+  return (
+    <li>
+      <Link
+        to={logsHref}
+        className="hover:bg-muted/40 flex items-center gap-3 px-(--card-px) py-2 transition-colors">
+        <Badge
+          type={httpStatusBadgeType(parsed.status)}
+          theme="light"
+          className="h-5 w-11 shrink-0 justify-center rounded-md px-0 font-mono text-[11px] font-medium tabular-nums">
+          {parsed.status}
+        </Badge>
+        <span className="text-muted-foreground w-12 shrink-0 font-mono text-[11px] font-medium">
+          {parsed.method}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs" title={parsed.path}>
+          {parsed.path}
+        </span>
+        {host ? (
+          <span className="text-muted-foreground hidden max-w-40 shrink-0 truncate text-xs lg:inline">
+            {host}
+          </span>
+        ) : null}
+        <span
+          className={cn(
+            'w-14 shrink-0 text-right font-mono text-xs tabular-nums',
+            parsed.durationMs >= 1000 ? 'text-(--color-badge-warning)' : 'text-muted-foreground'
+          )}>
+          {parsed.durationMs >= 1000
+            ? `${(parsed.durationMs / 1000).toFixed(1)}s`
+            : `${Math.round(parsed.durationMs)}ms`}
+        </span>
+        <span className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">
+          {relativeAge(entry.timestamp)}
+        </span>
+      </Link>
+    </li>
+  );
+}
+
+/** ALB-style live feed for the instance Overview card. */
 export function RecentInstanceLogs({
   logsHref,
   projectId,
   proxyId,
+  instanceName,
+  albHostname,
   className,
 }: {
   logsHref: string;
   projectId?: string;
   proxyId?: string;
+  instanceName?: string;
+  albHostname?: string;
   className?: string;
 }) {
   const [timeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
-  const logsQuery = useAlbLogs(projectId, proxyId, {
+  const logsQuery = useInstanceLogs(projectId, proxyId, instanceName, {
     timeRange,
-    limit: ALB_LOGS_PREVIEW_LIMIT,
+    limit: ROW_LIMIT,
+    live: !!proxyId,
     enabled: !!proxyId,
   });
 
   const denied = logsQuery.error instanceof ApiError && logsQuery.error.status === 403;
-  const errorMessage =
-    logsQuery.error && !denied ? logsQuery.error.message : undefined;
+  const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
+  const entries = (logsQuery.data ?? []).slice(0, ROW_LIMIT);
+  const empty = !logsQuery.isLoading && !denied && !errorMessage && entries.length === 0;
 
   return (
     <Card
-      className={cn(
-        'flex h-full w-full flex-col gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4',
-        className
-      )}
+      size="sm"
+      sectioned
+      className={cn('relative flex h-full w-full flex-col overflow-hidden', className)}
       data-testid="compute-plugin-instance-logs">
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-0 sm:px-6 sm:pb-4">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <Icon icon={ScrollTextIcon} size={20} className="text-muted-foreground" />
-            <span className="text-base font-semibold">Recent Logs</span>
-            <span className="text-muted-foreground text-xs">Last 30 min</span>
-          </div>
-          <Link
-            to={logsHref}
-            className="text-muted-foreground hover:text-foreground text-xs transition-colors">
-            View all →
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={LogsIcon} size={16} className="text-secondary" />
+          Live requests
+          {entries.length > 0 ? <LivePulse /> : null}
+          {proxyId && empty ? <IdleChip /> : null}
+        </CardTitle>
+        <CardDescription className="text-xs">Most recent · last 30 min</CardDescription>
+        <CardAction>
+          <Link to={logsHref} className="text-primary text-xs font-medium hover:underline">
+            View all
           </Link>
-        </div>
-
+        </CardAction>
+      </CardHeader>
+      <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
         {!proxyId ? (
           <UnpublishedLogs className="min-h-48 flex-1 lg:min-h-72" />
         ) : denied ? (
@@ -104,15 +288,22 @@ export function RecentInstanceLogs({
             variant="dashed"
             className="min-h-48 flex-1 lg:min-h-72"
           />
+        ) : logsQuery.isLoading ? (
+          <div className="flex h-full min-h-48 items-center justify-center lg:min-h-72">
+            <SpinnerIcon size="sm" />
+          </div>
+        ) : errorMessage ? (
+          <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm lg:min-h-72">
+            Unable to load recent requests.
+          </div>
+        ) : entries.length === 0 ? (
+          <PreviewEmpty hostname={albHostname} />
         ) : (
-          <Logs.Root
-            entries={logsQuery.data ?? []}
-            isLoading={logsQuery.isLoading}
-            error={errorMessage}
-            columns={[...OVERVIEW_COLUMNS]}
-            className="border-border flex min-h-48 flex-1 flex-col overflow-hidden rounded-lg border lg:min-h-72">
-            <Logs.Table />
-          </Logs.Root>
+          <ul className="divide-border divide-y">
+            {entries.map((entry) => (
+              <RequestRow key={entry.id} entry={entry} logsHref={logsHref} />
+            ))}
+          </ul>
         )}
       </CardContent>
     </Card>
@@ -123,10 +314,12 @@ export function RecentInstanceLogs({
 export function InstanceLogsExplorer({
   projectId,
   proxyId,
+  instanceName,
   className,
 }: {
   projectId?: string;
   proxyId?: string;
+  instanceName?: string;
   className?: string;
 }) {
   const [filters, setFilters] = useState<LogFilters>({});
@@ -140,7 +333,7 @@ export function InstanceLogsExplorer({
     );
   }, []);
 
-  const logsQuery = useAlbLogs(projectId, proxyId, {
+  const logsQuery = useInstanceLogs(projectId, proxyId, instanceName, {
     timeRange,
     filters,
     search,
@@ -149,14 +342,13 @@ export function InstanceLogsExplorer({
   });
 
   const visibleEntries = useMemo(
-    () => filterAlbLogsByHost(logsQuery.data ?? [], filters),
+    () => filterCombinedLogs(logsQuery.data ?? [], filters),
     [logsQuery.data, filters]
   );
-  const facets = useMemo(() => albLogFacets(logsQuery.data ?? []), [logsQuery.data]);
+  const facets = useMemo(() => combinedLogFacets(logsQuery.data ?? []), [logsQuery.data]);
 
   const denied = logsQuery.error instanceof ApiError && logsQuery.error.status === 403;
-  const errorMessage =
-    logsQuery.error && !denied ? logsQuery.error.message : undefined;
+  const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
 
   if (!proxyId) {
     return (
@@ -185,31 +377,32 @@ export function InstanceLogsExplorer({
   }
 
   return (
-    <div
-      className={cn(
-        'border-border bg-card flex min-h-96 flex-col overflow-hidden rounded-xl border',
-        className
-      )}
+    <Card
+      size="sm"
+      sectioned
+      className={cn('flex min-h-96 flex-col overflow-hidden', className)}
       style={{ minHeight: '32rem' }}
       data-testid="compute-plugin-instance-logs-explorer">
-      <Logs.Root
-        entries={visibleEntries}
-        facets={facets}
-        timeRange={timeRange}
-        filters={filters}
-        search={search}
-        live={live}
-        isLoading={logsQuery.isLoading}
-        error={errorMessage}
-        columns={[...EXPLORER_COLUMNS]}
-        onTimeRangeChange={setTimeRange}
-        onFiltersChange={setFilters}
-        onSearchChange={setSearch}
-        onLiveChange={setLive}
-        onRefresh={handleRefresh}
-        className="bg-card flex min-h-0 flex-1 flex-col">
-        <Logs.Explorer className="bg-card min-h-0 flex-1" />
-      </Logs.Root>
-    </div>
+      <CardContent padding="none" className="flex min-h-0 flex-1 flex-col">
+        <Logs.Root
+          entries={visibleEntries}
+          facets={facets}
+          timeRange={timeRange}
+          filters={filters}
+          search={search}
+          live={live}
+          isLoading={logsQuery.isLoading}
+          error={errorMessage}
+          columns={[...EXPLORER_COLUMNS]}
+          onTimeRangeChange={setTimeRange}
+          onFiltersChange={setFilters}
+          onSearchChange={setSearch}
+          onLiveChange={setLive}
+          onRefresh={handleRefresh}
+          className="bg-card flex min-h-0 flex-1 flex-col">
+          <Logs.Explorer className="bg-card min-h-0 flex-1" />
+        </Logs.Root>
+      </CardContent>
+    </Card>
   );
 }

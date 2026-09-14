@@ -1,17 +1,16 @@
 /**
- * Instance Metrics tab: CPU/memory always, plus ALB traffic when the workload
- * is published on a URL. Charts query the portal VictoriaMetrics endpoint.
+ * Workload Metrics tab: CPU/memory always, plus ALB traffic when published.
+ * Charts query staff-portal `POST /api/metrics`.
  */
-import { MetricAreaChart, formatKpiValue } from '../components/metric-area-chart';
-import { useInstanceOutlet } from './instance-outlet-context';
+import { MetricAreaChart, formatKpiValue } from './metric-area-chart';
 import {
   albErrorRateQuery,
   albP99Query,
   albRpsQuery,
-  cpuUsageQuery,
-  memoryUsageQuery,
-  networkIoQuery,
-  useInstanceMetricIdentity,
+  type InstanceIdentityLabel,
+  workloadCpuAvgQuery,
+  workloadMemoryAvgQuery,
+  workloadNetworkIoQuery,
 } from '../lib/metrics-queries';
 import {
   lastHour,
@@ -20,7 +19,6 @@ import {
   type PrometheusTimeRange,
 } from '../lib/prometheus';
 import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
-import { Icon } from '@datum-cloud/datum-ui/icons';
 import { ChartColumnIncreasingIcon } from 'lucide-react';
 import { useMemo } from 'react';
 
@@ -42,50 +40,68 @@ function KpiCell({
   );
 }
 
-function useKpi(
-  query: string | undefined,
-  format: MetricFormat,
-  enabled: boolean
-) {
+function useKpi(query: string | undefined, format: MetricFormat, enabled: boolean) {
   return usePrometheusCard(query, format, { enabled: enabled && !!query });
 }
 
-export default function InstanceMetrics() {
-  const { instance, projectId, proxyId } = useInstanceOutlet();
+export function WorkloadMetrics({
+  projectName,
+  instanceNames,
+  identityLabel,
+  identityLoading,
+  proxyId,
+}: {
+  projectName?: string;
+  instanceNames: readonly string[];
+  identityLabel?: InstanceIdentityLabel;
+  identityLoading: boolean;
+  proxyId?: string;
+}) {
   const timeRange = useMemo<PrometheusTimeRange>(() => lastHour(), []);
-  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(
-    projectId,
-    instance.name
-  );
+  const chartsEnabled = !identityLoading && !!identityLabel && !!projectName && instanceNames.length > 0;
+  const cpuQuery =
+    chartsEnabled && identityLabel && projectName
+      ? workloadCpuAvgQuery(projectName, identityLabel, instanceNames)
+      : undefined;
+  const memoryQuery =
+    chartsEnabled && identityLabel && projectName
+      ? workloadMemoryAvgQuery(projectName, identityLabel, instanceNames)
+      : undefined;
+  const networkQuery =
+    chartsEnabled && identityLabel && projectName
+      ? workloadNetworkIoQuery(projectName, identityLabel, instanceNames)
+      : undefined;
+  const rpsQuery = projectName && proxyId ? albRpsQuery(projectName, proxyId) : undefined;
+  const p99Query = projectName && proxyId ? albP99Query(projectName, proxyId) : undefined;
+  const errorQuery = projectName && proxyId ? albErrorRateQuery(projectName, proxyId) : undefined;
 
-  const cpuQuery = projectId && identity ? cpuUsageQuery(projectId, identity) : undefined;
-  const memoryQuery = projectId && identity ? memoryUsageQuery(projectId, identity) : undefined;
-  const networkQuery = projectId && identity ? networkIoQuery(projectId, identity) : undefined;
-  const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
-  const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
-  const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
-
-  const cpuCard = useKpi(cpuQuery, 'number', !identityLoading);
-  const memoryCard = useKpi(memoryQuery, 'bytes', !identityLoading);
+  const cpuCard = useKpi(cpuQuery, 'number', chartsEnabled);
+  const memoryCard = useKpi(memoryQuery, 'bytes', chartsEnabled);
   const rpsCard = useKpi(rpsQuery, 'requestsPerSecond', !!proxyId);
   const p99Card = useKpi(p99Query, 'milliseconds-auto', !!proxyId);
   const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
 
-  const chartsEnabled = !identityLoading && !!identity;
-
   return (
-    <div className="flex flex-col gap-6" data-testid="compute-plugin-instance-metrics-page">
+    <div className="flex flex-col gap-6" data-testid="provider-plugin-workload-metrics">
       <Card size="sm" sectioned className="w-full overflow-hidden">
         <CardHeader size="sm" bordered>
           <CardTitle className="flex items-center gap-2 text-sm">
-            <Icon icon={ChartColumnIncreasingIcon} size={16} className="text-secondary" />
+            <ChartColumnIncreasingIcon className="text-secondary size-4 stroke-2" />
             Last hour
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="divide-border border-border flex divide-x overflow-x-auto overscroll-x-contain rounded-lg border">
-            <KpiCell label="CPU" value={cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number')} hint="cores" />
-            <KpiCell label="Memory" value={memoryCard.data?.formattedValue ?? formatKpiValue(memoryCard.data?.value, 'bytes')} />
+            <KpiCell
+              label="CPU"
+              value={cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number')}
+              hint="avg cores"
+            />
+            <KpiCell
+              label="Memory"
+              value={memoryCard.data?.formattedValue ?? formatKpiValue(memoryCard.data?.value, 'bytes')}
+              hint="avg"
+            />
             {proxyId ? (
               <>
                 <KpiCell
@@ -165,7 +181,6 @@ export default function InstanceMetrics() {
           />
         </div>
       ) : null}
-
     </div>
   );
 }

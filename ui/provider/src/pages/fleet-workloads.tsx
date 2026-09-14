@@ -30,6 +30,7 @@
 import { StatusBadge } from '../components/detail-list';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { useFleetHealth, type FleetWorkload } from '../lib/fleet-health';
+import { buildLocationIndex, formatLocationNames, type LocationIndex } from '../lib/locations';
 import { healthToBadgeType } from '../schema';
 import { createColumnHelper, type ColumnDef } from '../lib/table';
 import { DataTable } from '@datum-cloud/datum-ui/data-table';
@@ -61,7 +62,13 @@ const cellClassName = 'px-3 py-2 text-sm';
 const headerCellClassName = 'px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide';
 const rowClassName = 'border-border border-b last:border-b-0 hover:bg-muted/40';
 
-function WorkloadsTable({ workloads }: { workloads: FleetWorkload[] }) {
+function WorkloadsTable({
+  workloads,
+  locationIndex,
+}: {
+  workloads: FleetWorkload[];
+  locationIndex: LocationIndex;
+}) {
   const columns = useMemo(
     () => [
       columnHelper.accessor((row) => row.project.displayName, {
@@ -125,10 +132,14 @@ function WorkloadsTable({ workloads }: { workloads: FleetWorkload[] }) {
           </span>
         ),
       }),
-      columnHelper.accessor((row) => row.workload.locations.join(', '), {
+      columnHelper.accessor((row) => formatLocationNames(row.workload.locations, locationIndex), {
         id: 'locations',
         header: 'Locations',
-        cell: ({ getValue }) => <span className="text-muted-foreground">{getValue() || '—'}</span>,
+        cell: ({ row, getValue }) => (
+          <span className="text-muted-foreground" title={row.original.workload.locations.join(', ')}>
+            {getValue() || '—'}
+          </span>
+        ),
       }),
       columnHelper.accessor((row) => row.statusSince.getTime(), {
         id: 'statusSince',
@@ -140,7 +151,7 @@ function WorkloadsTable({ workloads }: { workloads: FleetWorkload[] }) {
         ),
       }),
     ],
-    []
+    [locationIndex]
   );
 
   return (
@@ -169,6 +180,10 @@ function WorkloadsTable({ workloads }: { workloads: FleetWorkload[] }) {
 export default function FleetWorkloads() {
   const { name: serviceName } = useParams<{ name: string }>();
   const { data, isLoading, error, refetch } = useFleetHealth(serviceName);
+  const locationIndex = useMemo(
+    () => buildLocationIndex(data?.locations ?? []),
+    [data?.locations]
+  );
 
   return (
     <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6" data-testid="provider-plugin-fleet-workloads">
@@ -193,7 +208,7 @@ export default function FleetWorkloads() {
               variant="dashed"
             />
           ) : (
-            <WorkloadsTable workloads={data.workloads} />
+            <WorkloadsTable workloads={data.workloads} locationIndex={locationIndex} />
           )}
         </>
       )}

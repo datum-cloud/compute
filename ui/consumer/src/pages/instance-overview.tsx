@@ -5,19 +5,29 @@
 import { CommandBlock } from '../components/cli-section';
 import { DetailList, StatusBadge } from '../components/detail-list';
 import { RecentInstanceLogs } from '../components/instance-logs';
-import { formatKpiValue } from '../components/metric-area-chart';
+import { MetricAreaChart, formatKpiValue } from '../components/metric-area-chart';
 import { useInstanceOutlet } from './instance-outlet-context';
+import { formatLocationName, useLocationIndex } from '../lib/locations';
 import {
   albErrorRateQuery,
   albP99Query,
   albRpsQuery,
   cpuUsageQuery,
   memoryUsageQuery,
+  networkIoQuery,
   useInstanceMetricIdentity,
 } from '../lib/metrics-queries';
-import { usePrometheusCard } from '../lib/prometheus';
+import { lastThirtyMinutesRange, usePrometheusCard } from '../lib/prometheus';
 import { instanceStatusToBadgeType, type Instance } from '../schema';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@datum-cloud/datum-ui/card';
+import { Button } from '@datum-cloud/datum-ui/button';
 import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { toast } from '@datum-cloud/datum-ui/toast';
@@ -29,7 +39,7 @@ import {
   SquareLibraryIcon,
   SquareTerminalIcon,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 
 const COMING_SOON = 'Coming soon';
@@ -72,6 +82,34 @@ function CopyableText({
   );
 }
 
+/**
+ * Canonical ALB hostname with the same hover-copy treatment as portal
+ * `ValueRow` (copy button fades in on the CardField row).
+ */
+function HostnameCopyValue({ value }: { value: string }) {
+  const [copied, copy] = useCopyToClipboard();
+
+  return (
+    <span className="flex min-w-0 items-center gap-1">
+      <span className="min-w-0 truncate font-mono text-sm" title={value}>
+        {value}
+      </span>
+      <Button
+        type="quaternary"
+        theme="borderless"
+        size="xs"
+        className={cn(
+          'text-muted-foreground hidden size-7 shrink-0 p-0 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 sm:inline-flex',
+          copied && 'opacity-100'
+        )}
+        aria-label={copied ? 'Copied' : `Copy ${value}`}
+        onClick={() => void copy(value, { withToast: true })}>
+        <Icon icon={copied ? CheckIcon : CopyIcon} size={14} />
+      </Button>
+    </span>
+  );
+}
+
 function ComingSoonValue() {
   return <span className="text-muted-foreground">{COMING_SOON}</span>;
 }
@@ -106,20 +144,35 @@ function formatCreatedAt(date: Date): string {
   });
 }
 
-function GeneralCard({ instance }: { instance: Instance }) {
-  const hostname = instance.externalIP;
+function GeneralCard({
+  instance,
+  projectId,
+  proxyId,
+  albHostname,
+  albDisplayName,
+  albLoading,
+  locationLabel,
+}: {
+  instance: Instance;
+  projectId?: string;
+  proxyId?: string;
+  albHostname?: string;
+  albDisplayName?: string;
+  albLoading?: boolean;
+  locationLabel: string;
+}) {
   const cpu = formatCpu(instance.cpu);
   const memory = formatMemory(instance.memory);
 
   return (
-    <Card
-      className="w-full gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
-      data-testid="compute-plugin-instance-general">
-      <CardContent className="p-0 sm:px-6 sm:pb-4">
-        <div className="mb-4 flex items-center gap-2.5">
-          <Icon icon={SquareLibraryIcon} size={20} className="text-muted-foreground" />
-          <span className="text-base font-semibold">General</span>
-        </div>
+    <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="compute-plugin-instance-general">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={SquareLibraryIcon} size={16} className="text-secondary" />
+          General
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none">
         <DetailList
           items={[
             {
@@ -135,15 +188,36 @@ function GeneralCard({ instance }: { instance: Instance }) {
               content: <CopyableText value={instance.name} className="font-mono" />,
             },
             {
+              label: 'Location',
+              content: instance.location ? (
+                <span title={instance.location}>{locationLabel}</span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              ),
+            },
+            {
               label: 'Default Hostname',
-              content: hostname ? (
-                <CopyableText
-                  value={hostname}
-                  className="text-primary font-mono text-xs"
-                  textClassName="max-w-[250px]"
-                />
+              className: 'group/row',
+              content: albLoading ? (
+                <span className="text-muted-foreground">—</span>
+              ) : albHostname ? (
+                <HostnameCopyValue value={albHostname} />
               ) : (
                 <ComingSoonValue />
+              ),
+            },
+            {
+              label: 'Load balancer',
+              content: albLoading ? (
+                <span className="text-muted-foreground">—</span>
+              ) : proxyId && projectId ? (
+                <Link
+                  to={`/project/${projectId}/alb/${proxyId}/overview`}
+                  className="text-primary text-sm hover:underline">
+                  {albDisplayName || proxyId}
+                </Link>
+              ) : (
+                <span className="text-muted-foreground">Not connected</span>
               ),
             },
             {
@@ -185,6 +259,9 @@ function MetricsCard({
   const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
 
+  const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
+  const networkQuery = enabled && identity && projectId ? networkIoQuery(projectId, identity) : undefined;
+
   const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
   const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled });
   const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
@@ -216,13 +293,22 @@ function MetricsCard({
 
   return (
     <Card
-      className="w-full flex-1 gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
+      size="sm"
+      sectioned
+      className="w-full flex-1 overflow-hidden"
       data-testid="compute-plugin-instance-metrics">
-      <CardContent className="flex flex-col gap-4 p-0 sm:px-6 sm:pb-4">
-        <div className="flex items-center gap-2.5">
-          <Icon icon={ChartColumnIncreasingIcon} size={20} className="text-muted-foreground" />
-          <span className="text-base font-semibold">Metrics</span>
-        </div>
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={ChartColumnIncreasingIcon} size={16} className="text-secondary" />
+          Metrics
+        </CardTitle>
+        <CardAction>
+          <Link to={metricsHref} className="text-primary text-xs font-medium hover:underline">
+            View all
+          </Link>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
         <div className="divide-border border-border flex divide-x overflow-x-auto overscroll-x-contain rounded-lg border [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {kpis.map((kpi) => (
             <div key={kpi.label} className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
@@ -239,27 +325,52 @@ function MetricsCard({
             </div>
           ))}
         </div>
-        <div className="border-border bg-muted/40 text-muted-foreground flex h-36 items-center justify-center rounded-md border border-dashed text-xs">
-          Network I/O — {COMING_SOON}
+        <div>
+          <p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
+            Network I/O
+          </p>
+          <MetricAreaChart
+            title="Network I/O"
+            query={networkQuery}
+            timeRange={timeRange}
+            format="bytesPerSecond"
+            enabled={enabled}
+            embedded
+            height={144}
+          />
         </div>
-        <Link
-          to={metricsHref}
-          className="text-muted-foreground hover:text-foreground text-xs transition-colors">
-          View full metrics →
-        </Link>
       </CardContent>
     </Card>
   );
 }
 
 export default function InstanceOverview() {
-  const { instance, workloadName, logsHref, metricsHref, projectId, proxyId } = useInstanceOutlet();
+  const {
+    instance,
+    workloadName,
+    logsHref,
+    metricsHref,
+    projectId,
+    proxyId,
+    albHostname,
+    albDisplayName,
+    albLoading,
+  } = useInstanceOutlet();
+  const locationIndex = useLocationIndex(projectId);
 
   return (
     <>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="flex h-full flex-col gap-6">
-          <GeneralCard instance={instance} />
+          <GeneralCard
+            instance={instance}
+            projectId={projectId}
+            proxyId={proxyId}
+            albHostname={albHostname}
+            albDisplayName={albDisplayName}
+            albLoading={albLoading}
+            locationLabel={formatLocationName(instance.location, locationIndex)}
+          />
           <MetricsCard
             projectId={projectId}
             instanceName={instance.name}
@@ -267,18 +378,24 @@ export default function InstanceOverview() {
             metricsHref={metricsHref}
           />
         </div>
-        <RecentInstanceLogs logsHref={logsHref} projectId={projectId} proxyId={proxyId} />
+        <RecentInstanceLogs
+          logsHref={logsHref}
+          projectId={projectId}
+          proxyId={proxyId}
+          instanceName={instance.name}
+          albHostname={albHostname}
+        />
       </div>
 
-      <Card
-        className="w-full overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
-        data-testid="compute-plugin-instance-cli">
-        <CardContent className="p-0 sm:px-6 sm:pb-4">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <Icon icon={SquareTerminalIcon} size={20} className="text-muted-foreground" />
-            <span className="text-base font-semibold">datumctl Commands</span>
-            <span className="text-muted-foreground text-xs sm:ml-auto">CLI</span>
-          </div>
+      <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="compute-plugin-instance-cli">
+        <CardHeader size="sm" bordered>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Icon icon={SquareTerminalIcon} size={16} className="text-secondary" />
+            datumctl Commands
+          </CardTitle>
+          <CardDescription>CLI</CardDescription>
+        </CardHeader>
+        <CardContent>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
               <span className="text-muted-foreground text-xs">Get instance</span>

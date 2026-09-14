@@ -7,6 +7,7 @@
 import { InstancePageChrome } from '../components/instance-page-chrome';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { PLUGIN_ID, useInstance, usePublishedUrl } from '../lib/api';
+import { formatLocationName, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
 import InstanceLogs from './instance-logs';
 import InstanceMetrics from './instance-metrics';
@@ -40,6 +41,7 @@ function InstanceLayoutShell({
   const queryClient = useQueryClient();
   const { data: instance, isLoading, error, refetch } = useInstance(projectId, instanceName);
   const published = usePublishedUrl(projectId, workloadName ?? instance?.workloadName);
+  const locationIndex = useLocationIndex(projectId);
 
   return (
     <InstancePageChrome
@@ -52,6 +54,9 @@ function InstanceLayoutShell({
       titleName={instance?.name ?? titleName}
       workloadName={workloadName}
       instance={instance}
+      locationLabel={
+        instance?.location ? formatLocationName(instance.location, locationIndex) : undefined
+      }
       onRefresh={() => {
         void refetch();
         void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] });
@@ -76,6 +81,9 @@ function InstanceLayoutShell({
               logsHref,
               metricsHref,
               proxyId: published.data?.proxyName,
+              albHostname: published.data?.hostname,
+              albDisplayName: published.data?.displayName,
+              albLoading: published.isLoading,
             } satisfies InstanceOutletContext
           }
         />

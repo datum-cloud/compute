@@ -1,13 +1,14 @@
 /**
- * Project-scoped logs via telemetry queryapi's Loki-shaped route.
+ * Project-scoped logs via telemetry queryapi's Loki-shaped route, reached
+ * through staff-portal's `/api/internal` envelope (see `./api.ts`).
  *
- * Mirrors cloud-portal `app/resources/o11y-logs` without importing portal
- * internals. ALB identity is the HTTPProxy name (`route_name` regexp). Instance
- * stdout is matched on the same identity labels metrics use (`k8s_pod_name`,
- * `resource_name`, `pod`, `name`). Search and host filters stay client-side
- * because Envoy OTEL access logs keep an empty Body.
+ * Mirrors the consumer plugin's o11y helper. ALB identity is the HTTPProxy
+ * name (`route_name` regexp). Instance stdout is matched on the same identity
+ * labels metrics use (`k8s_pod_name`, `resource_name`, `pod`, `name`). Search
+ * and host filters stay client-side because Envoy OTEL access logs keep an
+ * empty Body.
  */
-import { ApiError, PLUGIN_ID, getProjectScopedBase } from "./api";
+import { ApiError, PLUGIN_ID, getProjectScopedBase, proxyFetchAbsolute } from "./api";
 import { useMemo } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import {
@@ -138,6 +139,17 @@ export function buildComputeLogQL(instanceName: string): string {
   return COMPUTE_LOG_IDENTITY_LABELS.map(
     (label) => `{${label}="${value}"}`,
   ).join(" or ");
+}
+
+/** Same identity `or`, matching any of the instance names. */
+export function buildComputeLogQLMany(instanceNames: readonly string[]): string {
+  const unique = [...new Set(instanceNames.filter(Boolean))];
+  if (unique.length === 0) return "";
+  if (unique.length === 1) return buildComputeLogQL(unique[0]);
+  const re = unique.map(escapeLogQLRegexp).join("|");
+  return COMPUTE_LOG_IDENTITY_LABELS.map((label) => `{${label}=~"${re}"}`).join(
+    " or ",
+  );
 }
 
 function formatDurationLabel(raw: string): string {
@@ -331,12 +343,8 @@ async function queryRange(
     limit: String(params.limit),
     direction: "backward",
   });
-  const url = `${getProjectScopedBase(params.projectId)}${O11Y_LOGS_QUERY_RANGE_PATH}?${search.toString()}`;
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) {
-    throw new ApiError(res.status, `Log query failed (${res.status})`);
-  }
-  const body = (await res.json()) as LokiQueryRangeResponse;
+  const path = `${getProjectScopedBase(params.projectId)}${O11Y_LOGS_QUERY_RANGE_PATH}?${search.toString()}`;
+  const body = await proxyFetchAbsolute<LokiQueryRangeResponse>(path);
   if (body.status === "error") {
     throw new ApiError(400, body.error || "Log query failed");
   }
@@ -422,13 +430,12 @@ export function useAlbLogs(
   });
 }
 
-function useComputeLogs(
+function useComputeLogsQuery(
   projectId: string | undefined,
-  instanceName: string | undefined,
+  query: string,
   options: UseAlbLogsOptions,
 ): UseQueryResult<LogEntry[], ApiError> {
   const { timeRange, live = false, limit = ALB_LOGS_PAGE_LIMIT, enabled = true } = options;
-  const query = instanceName ? buildComputeLogQL(instanceName) : "";
   const windowKey = live ? "live" : `${timeRange.from}/${timeRange.to}`;
 
   return useQuery({
@@ -437,12 +444,11 @@ function useComputeLogs(
       "o11y-logs",
       "compute",
       projectId,
-      instanceName,
       query,
       windowKey,
       limit,
     ],
-    enabled: enabled && !!projectId && !!instanceName,
+    enabled: enabled && !!projectId && !!query,
     queryFn: () => {
       const range = live
         ? resolveLogTimeRange(timeRange.preset ? timeRange : lastThirtyMinutes())
@@ -461,10 +467,60 @@ function useComputeLogs(
   });
 }
 
+function useComputeLogs(
+  projectId: string | undefined,
+  instanceName: string | undefined,
+  options: UseAlbLogsOptions,
+): UseQueryResult<LogEntry[], ApiError> {
+  return useComputeLogsQuery(
+    projectId,
+    instanceName ? buildComputeLogQL(instanceName) : "",
+    options,
+  );
+}
+
 export interface UseInstanceLogsResult {
   data: LogEntry[];
   isLoading: boolean;
   error: ApiError | null;
+}
+
+/**
+ * ALB access logs plus instance stdout, merged newest-first.
+ *
+ * Staff support view queries instance stdout even when no HTTPProxy is
+ * attached — crash loops and image-pull failures still write to stdout.
+ */
+export function useWorkloadLogs(
+  projectId: string | undefined,
+  proxyId: string | undefined,
+  instanceNames: readonly string[],
+  options: UseAlbLogsOptions,
+): UseInstanceLogsResult {
+  const { search, enabled = true, ...rest } = options;
+  const computeQuery = buildComputeLogQLMany(instanceNames);
+  const albEnabled = enabled && !!proxyId;
+  const computeEnabled = enabled && !!computeQuery;
+
+  const alb = useAlbLogs(projectId, proxyId, { ...rest, search: undefined, enabled: albEnabled });
+  const compute = useComputeLogsQuery(projectId, computeQuery, {
+    ...rest,
+    search: undefined,
+    enabled: computeEnabled,
+  });
+
+  const merged = useMemo(
+    () => mergeLogEntries(alb.data, compute.data),
+    [alb.data, compute.data],
+  );
+  const data = useMemo(() => filterEntries(merged, {}, search), [merged, search]);
+
+  return {
+    data,
+    isLoading:
+      (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
+    error: (alb.error as ApiError | null) ?? (compute.error as ApiError | null) ?? null,
+  };
 }
 
 /**

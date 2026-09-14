@@ -354,6 +354,7 @@ export function toInstance(raw: RawInstance): Instance {
     conditions: toConditions(conditions),
     schedulingGates: raw.spec?.controller?.schedulingGates ?? [],
     suspended: raw.status?.suspended ?? false,
+    workloadName: labels[INSTANCE_LABELS.workloadName],
   };
 }
 

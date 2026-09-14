@@ -50,11 +50,14 @@ Built for a staff member fielding "why isn't my workload starting" / "what's
 wrong with this workload" from a customer, not for general browsing —
 Overview and Instances surface raw conditions (type/status/reason/message),
 placements, network assignments, and scheduling gates, not just a coarse
-health enum. The Logs tab mounts the empty datum-ui explorer until a Loki
-query is wired; Events/Metrics stay honest "Coming Soon" placeholders. YAML
-dumps the raw resource (minus `metadata.managedFields`) as an escape hatch. All data is read client-side, polled via
-`refetchInterval` (`src/lib/api.ts`) through staff-portal's own same-origin
-proxy — no new credential, no plugin-owned backend.
+health enum. The Logs tab queries o11y Loki (ALB access logs plus instance
+stdout) through the project control-plane proxy. Metrics charts CPU, memory,
+network, and (when published) ALB traffic via staff-portal `POST /api/metrics`.
+Events stays an honest "Coming Soon" placeholder. YAML dumps the raw resource
+(minus `metadata.managedFields`) as an escape hatch. All data is read
+client-side, polled via `refetchInterval` (`src/lib/api.ts`) through
+staff-portal's own same-origin proxy — no new credential, no plugin-owned
+backend.
 
 ## Local dev
 

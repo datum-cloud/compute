@@ -108,6 +108,7 @@ export const instanceResourceSchema = z.object({
   /** Present while the instance is gated from scheduling (e.g. awaiting quota). */
   schedulingGates: z.array(z.string()).default([]),
   suspended: z.boolean().default(false),
+  workloadName: z.string().optional(),
 });
 
 export type Instance = z.infer<typeof instanceResourceSchema>;

@@ -50,6 +50,7 @@ export function InstancePageChrome({
   titleName,
   workloadName,
   instance,
+  locationLabel,
   onRefresh,
   children,
 }: {
@@ -62,6 +63,7 @@ export function InstancePageChrome({
   titleName: string;
   workloadName?: string;
   instance?: Instance | null;
+  locationLabel?: string;
   onRefresh?: () => void;
   children: React.ReactNode;
 }) {
@@ -112,7 +114,9 @@ export function InstancePageChrome({
                     <span className="text-muted-foreground" aria-hidden>
                       ·
                     </span>
-                    <span className="text-muted-foreground">{instance.location}</span>
+                    <span className="text-muted-foreground" title={instance.location}>
+                      {locationLabel ?? instance.location}
+                    </span>
                   </>
                 ) : null}
               </>
