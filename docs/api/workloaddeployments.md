@@ -119,6 +119,21 @@ WorkloadDeploymentSpec defines the desired state of WorkloadDeployment
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>networkAttachment</b></td>
+        <td>enum</td>
+        <td>
+          How a guest takes the network interface the platform gives it, resolved
+from the runtime class this deployment runs in.
+
+The class catalog is readable only where a deployment is created, so the
+answer is resolved once here and carried to the cell that acts on it. An
+empty value asks the networking layer for nothing and leaves the cell's
+own setting deciding, which is what every deployment does today.<br/>
+          <br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>replicas</b></td>
         <td>integer</td>
         <td>
@@ -960,7 +975,8 @@ used by the instance.<br/>
         <td><b>image</b></td>
         <td>string</td>
         <td>
-          The fully qualified container image name.<br/>
+          The container image to run. Must include a registry, e.g.
+"ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -1027,6 +1043,13 @@ take precedence.<br/>
         <td>object</td>
         <td>
           The resource requirements for the container, such as CPU, memory, and GPUs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontext">securityContext</a></b></td>
+        <td>object</td>
+        <td>
+          Security options for the container.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1564,6 +1587,72 @@ The resource requirements for the container, such as CPU, memory, and GPUs.
         <td>map[string]int or string</td>
         <td>
           Requests describes the minimum amount of compute resources required.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.runtime.sandbox.containers[index].securityContext
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandboxcontainersindex)</sup></sup>
+
+
+
+Security options for the container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontextcapabilities">capabilities</a></b></td>
+        <td>object</td>
+        <td>
+          The Linux capabilities to grant to or remove from the container.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.runtime.sandbox.containers[index].securityContext.capabilities
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontext)</sup></sup>
+
+
+
+The Linux capabilities to grant to or remove from the container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>add</b></td>
+        <td>[]string</td>
+        <td>
+          The capabilities to grant to the container. Each must be one that the
+selected runtime class grants. ALL is not allowed, so a container states
+exactly what it needs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>drop</b></td>
+        <td>[]string</td>
+        <td>
+          The capabilities to remove from the container. The platform already removes
+every capability, so drop is accepted for compatibility with Kubernetes
+manifests, for example drop: [ALL]. Naming a capability here also removes
+it when the runtime class would otherwise grant it by default.<br/>
         </td>
         <td>false</td>
       </tr></tbody>

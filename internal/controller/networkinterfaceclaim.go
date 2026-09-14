@@ -70,12 +70,20 @@ func instanceInterfaceName(networkInterface computev1alpha.InstanceNetworkInterf
 // is already location scoped. networkInterfaceName is left unset so the claim
 // binds the interface of its own name — the retained interface, when there is
 // one.
-func desiredNetworkInterfaceClaimSpec(networkInterface computev1alpha.InstanceNetworkInterface) networkingv1alpha.NetworkInterfaceClaimSpec {
+//
+// An empty attachment mode is left off the claim, which leaves the networking
+// API's own default in force and the data plane free to attach the interface
+// the way the cell already attaches every other one.
+func desiredNetworkInterfaceClaimSpec(
+	networkInterface computev1alpha.InstanceNetworkInterface,
+	attachmentMode networkingv1alpha.NetworkInterfaceAttachmentMode,
+) networkingv1alpha.NetworkInterfaceClaimSpec {
 	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
-		Network:       networkingv1alpha.LocalNetworkRef{Name: networkInterface.Network.Name},
-		InterfaceName: instanceInterfaceName(networkInterface),
-		IPFamilies:    append([]networkingv1alpha.IPFamily(nil), networkInterface.IPFamilies...),
-		ReclaimPolicy: networkInterface.ReclaimPolicy,
+		Network:        networkingv1alpha.LocalNetworkRef{Name: networkInterface.Network.Name},
+		InterfaceName:  instanceInterfaceName(networkInterface),
+		IPFamilies:     append([]networkingv1alpha.IPFamily(nil), networkInterface.IPFamilies...),
+		ReclaimPolicy:  networkInterface.ReclaimPolicy,
+		AttachmentMode: attachmentMode,
 	}
 
 	for _, address := range networkInterface.Addresses {

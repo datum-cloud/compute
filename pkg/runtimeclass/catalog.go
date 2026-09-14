@@ -77,43 +77,43 @@ func (c Catalog) ClaimedBy(controllerName computev1alpha.RuntimeClassControllerN
 	return claimed
 }
 
-// Acceptance is the controller's report on whether it can serve a class.
-// Acceptance is independent of whether any cell has capacity for the class.
-type Acceptance int
+// Availability is the controller's report on whether it can serve a class.
+// Availability is independent of whether any cell has capacity for the class.
+type Availability int
 
 const (
-	// AcceptancePending means no controller has reported on the class yet. A
+	// AvailabilityPending means no controller has reported on the class yet. A
 	// class stays pending between publication and the first reconcile by its
 	// provider, including during a provider rollout, so pending does not
 	// indicate a broken class.
-	AcceptancePending Acceptance = iota
+	AvailabilityPending Availability = iota
 
-	// AcceptanceAccepted means the class's controller claimed the class and can
-	// serve everything the class declares.
-	AcceptanceAccepted
+	// AvailabilityAvailable means the class's controller claimed the class and
+	// can serve everything the class declares.
+	AvailabilityAvailable
 
-	// AcceptanceRejected means the class's controller claimed the class and
-	// reported that it cannot serve what the class declares. Instances in the
-	// class do not run until the catalog or the provider changes.
-	AcceptanceRejected
+	// AvailabilityUnavailable means the class's controller claimed the class
+	// and reported that it cannot serve what the class declares. Instances in
+	// the class do not run until the catalog or the provider changes.
+	AvailabilityUnavailable
 )
 
-// AcceptanceOf returns the controller's report on a class and the
+// AvailabilityOf returns the controller's report on a class and the
 // customer-facing message the controller supplied.
-func AcceptanceOf(class *computev1alpha.RuntimeClass) (Acceptance, string) {
+func AvailabilityOf(class *computev1alpha.RuntimeClass) (Availability, string) {
 	if class == nil {
-		return AcceptancePending, ""
+		return AvailabilityPending, ""
 	}
-	condition := meta.FindStatusCondition(class.Status.Conditions, computev1alpha.RuntimeClassConditionAccepted)
+	condition := meta.FindStatusCondition(class.Status.Conditions, computev1alpha.RuntimeClassConditionAvailable)
 	if condition == nil {
-		return AcceptancePending, ""
+		return AvailabilityPending, ""
 	}
 	switch condition.Status {
 	case metav1.ConditionTrue:
-		return AcceptanceAccepted, condition.Message
+		return AvailabilityAvailable, condition.Message
 	case metav1.ConditionFalse:
-		return AcceptanceRejected, condition.Message
+		return AvailabilityUnavailable, condition.Message
 	default:
-		return AcceptancePending, condition.Message
+		return AvailabilityPending, condition.Message
 	}
 }

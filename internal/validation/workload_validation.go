@@ -30,6 +30,7 @@ func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationO
 
 	// allErrs = append(allErrs, validateWorkloadMetadata(w)...)
 	allErrs = append(allErrs, validateWorkloadSpec(w.Spec, opts)...)
+	allErrs = append(allErrs, validateWorkloadImages(w, nil)...)
 
 	return allErrs
 }
@@ -37,10 +38,44 @@ func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationO
 // ValidateWorkloadUpdate validates a workload update. It applies the
 // create-time rules, plus the rules that need the previous state.
 func ValidateWorkloadUpdate(w, oldWorkload *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
-	allErrs := ValidateWorkloadCreate(w, opts)
-
+	allErrs := validateWorkloadSpec(w.Spec, opts)
+	allErrs = append(allErrs, validateWorkloadImages(w, oldWorkload)...)
 	allErrs = append(allErrs, validateWorkloadSpecUpdate(w.Spec, oldWorkload.Spec, field.NewPath("spec"), opts)...)
 
+	return allErrs
+}
+
+// validateWorkloadImages checks that each sandbox container image has a
+// registry. oldWorkload is nil on create; on update, a container whose image
+// is unchanged from oldWorkload is skipped, so a workload already stored with
+// a bad image stays updatable (e.g. the finalizer-only patch in
+// workload_controller.go) until something actually rewrites that field.
+func validateWorkloadImages(w, oldWorkload *computev1alpha.Workload) field.ErrorList {
+	sandbox := w.Spec.Template.Spec.Runtime.Sandbox
+	if sandbox == nil {
+		return nil
+	}
+
+	oldImages := map[string]string{}
+	if oldWorkload != nil {
+		if old := oldWorkload.Spec.Template.Spec.Runtime.Sandbox; old != nil {
+			for _, c := range old.Containers {
+				oldImages[c.Name] = c.Image
+			}
+		}
+	}
+
+	containersPath := field.NewPath("spec", "template", "spec", "runtime", "sandbox", "containers")
+	var allErrs field.ErrorList
+	for i, c := range sandbox.Containers {
+		if len(c.Image) == 0 {
+			continue // reported by validateContainerCommon instead
+		}
+		if oldImage, ok := oldImages[c.Name]; ok && oldImage == c.Image {
+			continue // unchanged from the stored object
+		}
+		allErrs = append(allErrs, validateContainerImage(c.Image, containersPath.Index(i).Child("image"))...)
+	}
 	return allErrs
 }
 

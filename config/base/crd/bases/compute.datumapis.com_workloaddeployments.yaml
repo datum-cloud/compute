@@ -75,6 +75,20 @@ spec:
                 required:
                 - name
                 type: object
+              networkAttachment:
+                description: |-
+                  How a guest takes the network interface the platform gives it, resolved
+                  from the runtime class this deployment runs in.
+
+                  The class catalog is readable only where a deployment is created, so the
+                  answer is resolved once here and carried to the cell that acts on it. An
+                  empty value asks the networking layer for nothing and leaves the cell's
+                  own setting deciding, which is what every deployment does today.
+                enum:
+                - Netns
+                - Hypervisor
+                - HypervisorDeclared
+                type: string
               placementName:
                 description: The placement in the workload which is driving a deployment
                 type: string
@@ -759,8 +773,9 @@ spec:
                                         type: object
                                       type: array
                                     image:
-                                      description: The fully qualified container image
-                                        name.
+                                      description: |-
+                                        The container image to run. Must include a registry, e.g.
+                                        "ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".
                                       type: string
                                     name:
                                       description: The name of the container.
@@ -817,6 +832,48 @@ spec:
                                             x-kubernetes-int-or-string: true
                                           description: Requests describes the minimum
                                             amount of compute resources required.
+                                          type: object
+                                      type: object
+                                    securityContext:
+                                      description: Security options for the container.
+                                      properties:
+                                        capabilities:
+                                          description: The Linux capabilities to grant
+                                            to or remove from the container.
+                                          properties:
+                                            add:
+                                              description: |-
+                                                The capabilities to grant to the container. Each must be one that the
+                                                selected runtime class grants. ALL is not allowed, so a container states
+                                                exactly what it needs.
+                                              items:
+                                                description: |-
+                                                  Capability is a Linux capability name without the CAP_ prefix, for example
+                                                  CHOWN or NET_BIND_SERVICE.
+                                                maxLength: 64
+                                                minLength: 1
+                                                pattern: ^[A-Z_]+$
+                                                type: string
+                                              maxItems: 64
+                                              type: array
+                                              x-kubernetes-list-type: set
+                                            drop:
+                                              description: |-
+                                                The capabilities to remove from the container. The platform already removes
+                                                every capability, so drop is accepted for compatibility with Kubernetes
+                                                manifests, for example drop: [ALL]. Naming a capability here also removes
+                                                it when the runtime class would otherwise grant it by default.
+                                              items:
+                                                description: |-
+                                                  Capability is a Linux capability name without the CAP_ prefix, for example
+                                                  CHOWN or NET_BIND_SERVICE.
+                                                maxLength: 64
+                                                minLength: 1
+                                                pattern: ^[A-Z_]+$
+                                                type: string
+                                              maxItems: 64
+                                              type: array
+                                              x-kubernetes-list-type: set
                                           type: object
                                       type: object
                                     volumeAttachments:

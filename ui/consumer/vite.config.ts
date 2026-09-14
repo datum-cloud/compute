@@ -53,13 +53,17 @@ export default defineConfig({
         './InstanceDetail': './src/pages/instance-detail.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
-      // (react 19, react-router 7, react-query 5). singleton:true guarantees
-      // one instance — the host provides all of these, so plugin queries share
-      // the host's QueryClient cache.
+      // (react 19, react-router 8, react-query 5) — cloud-portal moved
+      // react-router 7 -> 8 in fabef049 without bumping this, which silently
+      // broke every plugin page here (Module Federation rejects a singleton
+      // whose requiredVersion the host's actual version doesn't satisfy).
+      // Keep this in lockstep with cloud-portal's package.json majors.
+      // singleton:true guarantees one instance — the host provides all of
+      // these, so plugin queries share the host's QueryClient cache.
       shared: {
         react: { singleton: true, requiredVersion: '^19.0.0' },
         'react-dom': { singleton: true, requiredVersion: '^19.0.0' },
-        'react-router': { singleton: true, requiredVersion: '^7.0.0' },
+        'react-router': { singleton: true, requiredVersion: '^8.0.0' },
         '@tanstack/react-query': { singleton: true, requiredVersion: '^5.0.0' },
         // Curated datum-ui subset shared by the host (see the host's
         // federation-host.ts DATUM_UI_SHARED). requiredVersion:false — the

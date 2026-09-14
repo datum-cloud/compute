@@ -32,6 +32,8 @@ const (
 	testDuplicateMountPath = "duplicate-mount-path"
 	testDefaultNamespace   = "default"
 	testCityCodeDFW        = "DFW"
+	testImageNoRegistry    = "nginx:latest"
+	testImageQualified     = "ghcr.io/acme/api:1.4.2"
 )
 
 func TestValidateWorkloads(t *testing.T) {
@@ -641,6 +643,57 @@ func TestValidateWorkloads(t *testing.T) {
 				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].ports[1].name"), "", ""),
 			},
 		},
+		"bare image name has no registry": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageNoRegistry
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+			},
+		},
+		"namespaced image name has no registry": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "myname/myapp:v1"
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+			},
+		},
+		"qualified image name with no tag is valid": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "ghcr.io/acme/api"
+				},
+			),
+			expectedErrors: field.ErrorList{},
+		},
+		"localhost image name is valid": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "localhost:5000/foo:bar"
+				},
+			),
+			expectedErrors: field.ErrorList{},
+		},
+		"invalid image reference syntax": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "ghcr.io/acme/UPPERCASE_REPO:v1"
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+			},
+		},
 		"network use denied": {
 			workload: MakeSandboxWorkload("test"),
 			interceptorFuncs: &interceptor.Funcs{
@@ -978,4 +1031,132 @@ func TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault(t *testing.T) {
 	if got := errs[0].Error(); !strings.Contains(got, `"`+testClassAzurite+`"`) {
 		t.Errorf("refusal should name the class the workload already runs in, got: %s", got)
 	}
+}
+
+// sandboxWorkload builds a minimal workload with the given sandbox containers,
+// enough for validateWorkloadImages, which only reads spec.template.spec.runtime.sandbox.
+func sandboxWorkload(containers ...computev1alpha.SandboxContainer) *computev1alpha.Workload {
+	w := &computev1alpha.Workload{}
+	w.Spec.Template.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{Containers: containers}
+	return w
+}
+
+func TestValidateWorkloadImages(t *testing.T) {
+	containersPath := field.NewPath("spec", "template", "spec", "runtime", "sandbox", "containers")
+
+	cases := map[string]struct {
+		workload       *computev1alpha.Workload
+		oldWorkload    *computev1alpha.Workload
+		expectedErrors field.ErrorList
+	}{
+		"create: image with no registry is rejected": {
+			workload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(0).Child("image"), "", ""),
+			},
+		},
+		"create: empty image is left to validateContainerCommon": {
+			workload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1"}),
+		},
+		"update: new container with empty image is left to validateContainerCommon": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1"}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c2", Image: testImageQualified}),
+		},
+		"update: unchanged bad image is not re-validated": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+		},
+		"update: rewriting to a different, still-bad image is rejected": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: "other:latest"}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(0).Child("image"), "", ""),
+			},
+		},
+		"update: fixing the image is fine": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageQualified}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+		},
+		"update: a container added alongside an unchanged one is still validated": {
+			workload: sandboxWorkload(
+				computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry},
+				computev1alpha.SandboxContainer{Name: "c2", Image: testImageNoRegistry},
+			),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(1).Child("image"), "", ""),
+			},
+		},
+		"update: renaming a container makes it a new entry, so its image is validated": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c2", Image: testImageNoRegistry}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(0).Child("image"), "", ""),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cmpErrs(t, tc.expectedErrors, validateWorkloadImages(tc.workload, tc.oldWorkload))
+		})
+	}
+}
+
+// TestValidateWorkloadUpdate_UnchangedImage exercises validateWorkloadImages
+// through the real entry point, ValidateWorkloadUpdate, mirroring
+// workload_controller.go's finalizer-only Update: the same spec, unqualified
+// image included, written back verbatim.
+func TestValidateWorkloadUpdate_UnchangedImage(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+					sar.GenerateName = "sar-"
+					sar.Status.Allowed = true
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		WithObjects(&networkingv1alpha.Network{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testDefaultNamespace, Name: testDefaultNamespace},
+		}).
+		Build()
+
+	oldWorkload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageNoRegistry
+	})
+	opts := WorkloadValidationOptions{
+		Client:         fakeClient,
+		Context:        context.Background(),
+		ValidLocations: []string{testCityCodeDFW},
+	}
+
+	t.Run("finalizer-style update leaving the image untouched is not rejected", func(t *testing.T) {
+		newWorkload := oldWorkload.DeepCopy()
+		o := opts
+		o.Workload = newWorkload
+		errs := ValidateWorkloadUpdate(newWorkload, oldWorkload, o)
+		if len(errs) != 0 {
+			t.Errorf("expected no errors, got: %v", errs)
+		}
+	})
+
+	t.Run("rewriting the image to a still-unqualified value is rejected", func(t *testing.T) {
+		newWorkload := oldWorkload.DeepCopy()
+		newWorkload.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "other:latest"
+		o := opts
+		o.Workload = newWorkload
+		errs := ValidateWorkloadUpdate(newWorkload, oldWorkload, o)
+		wantErrs := field.ErrorList{
+			field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+		}
+		cmpErrs(t, wantErrs, errs)
+	})
 }

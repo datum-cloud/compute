@@ -103,7 +103,7 @@ func TestDesiredNetworkInterfaceClaimSpec(t *testing.T) {
 		Addresses: []computev1alpha.InstanceNetworkInterfaceAddressRequest{
 			{Class: claimTestClass},
 		},
-	})
+	}, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared)
 
 	assert.Equal(t, claimTestNetwork, spec.Network.Name)
 	assert.Equal(t, "eth1", spec.InterfaceName)
@@ -114,10 +114,15 @@ func TestDesiredNetworkInterfaceClaimSpec(t *testing.T) {
 	assert.Empty(t, spec.NetworkInterfaceName,
 		"the claim must bind the interface of its own name so a retained one is reused")
 
+	assert.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared,
+		spec.AttachmentMode)
+
 	defaulted := desiredNetworkInterfaceClaimSpec(computev1alpha.InstanceNetworkInterface{
 		Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
-	})
+	}, "")
 	assert.Equal(t, defaultInterfaceName, defaulted.InterfaceName)
+	assert.Empty(t, defaulted.AttachmentMode,
+		"a cell that states no mode leaves the networking default in force")
 }
 
 // TestNetworkInterfaceClaimSatisfied is the regression guard for the readiness

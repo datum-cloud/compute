@@ -39,6 +39,10 @@ func validateRuntimeClassSelection(
 			allErrs = append(allErrs, field.Forbidden(classPath,
 				"runtime classes are not enabled on this control plane, so a runtime class may not be selected"))
 		}
+		// Only a runtime class grants capabilities, so with no catalog a
+		// request to add one could never be honored. A drop only reduces
+		// privilege and needs no class.
+		allErrs = append(allErrs, validateCapabilityAddsWithoutClasses(spec, fieldPath)...)
 		return allErrs
 	}
 
@@ -69,7 +73,7 @@ func validateRuntimeClassSelection(
 	// because that state is normal during a provider rollout and immediately
 	// after a class is published. If no provider ever claims the class,
 	// placement reports the workload as unplaceable.
-	if acceptance, message := runtimeclass.AcceptanceOf(selected); acceptance == runtimeclass.AcceptanceRejected {
+	if availability, message := runtimeclass.AvailabilityOf(selected); availability == runtimeclass.AvailabilityUnavailable {
 		reason := fmt.Sprintf("the %q runtime class cannot currently run instances", class)
 		if len(message) > 0 {
 			reason = fmt.Sprintf("%s: %s", reason, message)
@@ -82,6 +86,27 @@ func validateRuntimeClassSelection(
 	// catalog.
 	allErrs = append(allErrs, runtimeclass.ValidateInstanceSpec(spec, runtimeclass.CapabilitiesFrom(selected), fieldPath)...)
 
+	return allErrs
+}
+
+// validateCapabilityAddsWithoutClasses rejects every capability a container
+// adds on a control plane that publishes no runtime classes.
+func validateCapabilityAddsWithoutClasses(spec computev1alpha.InstanceSpec, fieldPath *field.Path) field.ErrorList {
+	if spec.Runtime.Sandbox == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+	containersPath := fieldPath.Child("runtime", "sandbox", "containers")
+	for i, container := range spec.Runtime.Sandbox.Containers {
+		if container.SecurityContext == nil || container.SecurityContext.Capabilities == nil ||
+			len(container.SecurityContext.Capabilities.Add) == 0 {
+			continue
+		}
+		allErrs = append(allErrs, field.Forbidden(
+			containersPath.Index(i).Child("securityContext", "capabilities", "add"),
+			"runtime classes are not enabled on this control plane, so no capability can be added"))
+	}
 	return allErrs
 }
 
