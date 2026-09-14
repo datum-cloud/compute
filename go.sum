@@ -337,8 +337,8 @@ github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 h1:ilQV1hzziu+LLM3zU
 github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78/go.mod h1:aL8wCCfTfSfmXjznFBSZNN13rSJjlIOI1fUNAtF7rmI=
 go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67 h1:Mhgt688CeTh2hX7ql61ySR3+/YHdZMgYBSFhBW7W2gA=
 go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67/go.mod h1:6skEjcE7aT8VPf/HVamA/BB6Dc9IISA6c/DdYKhqWNc=
-go.datum.net/network-services-operator v0.26.5-0.20260909170421-bcd1965a821c h1:nHFLUbR5xi2hvYuV7DtH00SPuve/uyL95Fi0ASSjHY8=
-go.datum.net/network-services-operator v0.26.5-0.20260909170421-bcd1965a821c/go.mod h1:9nuuBWdrkdnIBMaWJsWM3j4CcbKJIF1GDuCmAjdpIHo=
+go.datum.net/network-services-operator v0.26.5-0.20260911235442-196ee79e9ebf h1:kShApE3Ghq/wv4G38CFb91jMSWTwD+SiPd84yyHzffk=
+go.datum.net/network-services-operator v0.26.5-0.20260911235442-196ee79e9ebf/go.mod h1:9nuuBWdrkdnIBMaWJsWM3j4CcbKJIF1GDuCmAjdpIHo=
 go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c h1:+BQirT3wYCgv7H2lEZtAH+dpMiWu9j/Wa+c8s4jJUIA=
 go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 go.miloapis.com/milo v0.32.0 h1:TkNIQu/37d+SEquLJ5+GmdisSl+K2RT7eEC4idg6RIs=
@@ -414,8 +414,8 @@ google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa h1:
 google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa/go.mod h1:q4lMZS6kskjT5HvCPrnnypcDPVJqT/f4nfxmkE7gryY=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa h1:mZHHdPZl0dbGHCflZgAq/Q468DWVFcU2whhB2KAo8fk=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa/go.mod h1:4Hqkh8ycfw05ld/3BWL7rJOSfebL2Q+DVDeRgYgxUU8=
-google.golang.org/grpc v1.83.1 h1:HIO0+BEtBP6soyqvqC8sNUjZ7bTs+0hFQuFF+RAy++Y=
-google.golang.org/grpc v1.83.1/go.mod h1:kDyl6SKsiHKt0uylY5gtn5cEjkrIOhQOGDgIc4JGwzQ=
+google.golang.org/grpc v1.83.2 h1:EManeRomTObA0BU7I8vXgg/78uE5MJ9M8B39EX2WscU=
+google.golang.org/grpc v1.83.2/go.mod h1:YPI1hK3kDked6iHvgX3tR0y+nX/qpMFKhPgFsokw1S8=
 google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af h1:+5/Sw3GsDNlEmu7TfklWKPdQ0Ykja5VEmq2i817+jbI=
 google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=

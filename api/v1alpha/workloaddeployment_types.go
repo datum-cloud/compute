@@ -37,6 +37,17 @@ type WorkloadDeploymentSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// How a guest takes the network interface the platform gives it, resolved
+	// from the runtime class this deployment runs in.
+	//
+	// The class catalog is readable only where a deployment is created, so the
+	// answer is resolved once here and carried to the cell that acts on it. An
+	// empty value asks the networking layer for nothing and leaves the cell's
+	// own setting deciding, which is what every deployment does today.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkAttachment RuntimeClassNetworkAttachment `json:"networkAttachment,omitempty"`
 }
 
 // WorkloadDeploymentStatus defines the observed state of WorkloadDeployment

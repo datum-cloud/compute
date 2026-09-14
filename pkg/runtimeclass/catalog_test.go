@@ -113,16 +113,16 @@ func TestCatalogClaimedBy(t *testing.T) {
 	}
 }
 
-// TestAcceptanceOf separates a class no provider has reported on yet from a
+// TestAvailabilityOf separates a class no provider has reported on yet from a
 // class a provider reported it cannot serve. Only the second justifies refusing
 // a workload at admission. The first also occurs during a provider rollout.
-func TestAcceptanceOf(t *testing.T) {
-	accepted := func(status metav1.ConditionStatus, message string) *computev1alpha.RuntimeClass {
+func TestAvailabilityOf(t *testing.T) {
+	available := func(status metav1.ConditionStatus, message string) *computev1alpha.RuntimeClass {
 		c := class(testClassCitrine, false)
 		c.Status.Conditions = []metav1.Condition{{
-			Type:    computev1alpha.RuntimeClassConditionAccepted,
+			Type:    computev1alpha.RuntimeClassConditionAvailable,
 			Status:  status,
-			Reason:  computev1alpha.RuntimeClassReasonAccepted,
+			Reason:  computev1alpha.RuntimeClassReasonServed,
 			Message: message,
 		}}
 		return &c
@@ -131,27 +131,27 @@ func TestAcceptanceOf(t *testing.T) {
 
 	cases := map[string]struct {
 		class       *computev1alpha.RuntimeClass
-		want        Acceptance
+		want        Availability
 		wantMessage string
 	}{
-		"no condition yet": {class: &unreported, want: AcceptancePending},
-		"no class at all":  {want: AcceptancePending},
+		"no condition yet": {class: &unreported, want: AvailabilityPending},
+		"no class at all":  {want: AvailabilityPending},
 		"claimed and honored": {
-			class: accepted(metav1.ConditionTrue, "serving"), want: AcceptanceAccepted, wantMessage: "serving",
+			class: available(metav1.ConditionTrue, "serving"), want: AvailabilityAvailable, wantMessage: "serving",
 		},
 		"claimed and refused": {
-			class: accepted(metav1.ConditionFalse, "no disks"), want: AcceptanceRejected, wantMessage: "no disks",
+			class: available(metav1.ConditionFalse, "no disks"), want: AvailabilityUnavailable, wantMessage: "no disks",
 		},
 		"still deciding": {
-			class: accepted(metav1.ConditionUnknown, "waiting"), want: AcceptancePending, wantMessage: "waiting",
+			class: available(metav1.ConditionUnknown, "waiting"), want: AvailabilityPending, wantMessage: "waiting",
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, message := AcceptanceOf(tc.class)
+			got, message := AvailabilityOf(tc.class)
 			if got != tc.want {
-				t.Errorf("AcceptanceOf() = %v, want %v", got, tc.want)
+				t.Errorf("AvailabilityOf() = %v, want %v", got, tc.want)
 			}
 			if message != tc.wantMessage {
 				t.Errorf("message = %q, want %q", message, tc.wantMessage)

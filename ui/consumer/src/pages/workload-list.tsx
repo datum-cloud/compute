@@ -3,13 +3,33 @@
  *
  * Home layout matches the workloads wireframe: fleet summary strip + 2-column
  * cards with regions. Real compute API fields fill operational slots;
- * telemetry (Requests, Avg CPU) shows muted "Coming soon".
+ * Requests and Avg CPU come from the same Prometheus series as instance pages.
  */
 import { CliBanner, SectionCard } from "../components/cli-section";
 import { ComputeEnablementBanner } from "../components/compute-enablement-banner";
+import { MetricAreaChart, formatKpiValue } from "../components/metric-area-chart";
 import { StatStrip } from "../components/stat-strip";
 import { ErrorOrRestrictedState, LoadingSkeleton } from "../components/states";
-import { useComputeEntitlement, useWorkloads } from "../lib/api";
+import {
+  useComputeEntitlement,
+  useInstances,
+  usePublishedUrls,
+  useWorkloads,
+} from "../lib/api";
+import {
+  albRpsQuery,
+  albRpsQueryMany,
+  useInstanceMetricIdentity,
+  workloadCpuAvgQuery,
+  workloadCpuSumQuery,
+} from "../lib/metrics-queries";
+import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
+import {
+  formatLocationNames,
+  formatLocationSelector,
+  useLocationIndex,
+  type LocationIndex,
+} from "../lib/locations";
 import {
   workloadHealthToBadgeType,
   type Workload,
@@ -25,11 +45,20 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@datum-cloud/datum-ui/breadcrumb";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@datum-cloud/datum-ui/card";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
 import { Icon } from "@datum-cloud/datum-ui/icons";
 import { cn } from "@datum-cloud/datum-ui/utils";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ArrowRightIcon, HomeIcon, RocketIcon, SearchIcon } from "lucide-react";
+import { useMemo } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 
 const COMING_SOON = "Coming soon";
@@ -61,13 +90,19 @@ function statusLabel(workload: Workload): string {
   return "Unknown";
 }
 
-function regionLabel(region: WorkloadPlacementRegion): string {
-  if (region.locations.length > 0) return region.locations.join(", ");
-  if (region.locationSelector) return region.locationSelector;
+function regionLabel(region: WorkloadPlacementRegion, index: LocationIndex): string {
+  if (region.locations.length > 0) return formatLocationNames(region.locations, index);
+  if (region.locationSelector) return formatLocationSelector(region.locationSelector, index) ?? region.locationSelector;
   return region.name;
 }
 
-function FleetSummary({ workloads }: { workloads: Workload[] }) {
+function FleetSummary({
+  workloads,
+  requests,
+}: {
+  workloads: Workload[];
+  requests: string;
+}) {
   const readyInstances = workloads.reduce((sum, w) => sum + w.readyReplicas, 0);
   const desiredInstances = workloads.reduce(
     (sum, w) => sum + w.desiredReplicas,
@@ -106,8 +141,7 @@ function FleetSummary({ workloads }: { workloads: Workload[] }) {
     },
     {
       label: "Requests",
-      value: COMING_SOON,
-      className: "text-muted-foreground text-sm font-medium",
+      value: requests,
     },
   ];
 
@@ -170,9 +204,19 @@ function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
 
 function WorkloadCard({
   workload,
+  projectId,
+  instanceNames,
+  proxyId,
+  identityLabel,
+  locationIndex,
   onClick,
 }: {
   workload: Workload;
+  projectId?: string;
+  instanceNames: string[];
+  proxyId?: string;
+  identityLabel?: ReturnType<typeof useInstanceMetricIdentity>["identity"];
+  locationIndex: LocationIndex;
   onClick: () => void;
 }) {
   const updatedAt = workload.updatedAt ?? workload.createdAt;
@@ -182,83 +226,116 @@ function WorkloadCard({
       : workload.runtimeType
         ? [workload.runtimeType]
         : [];
+  const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
+  const enabled = !!projectId && !!identityLabel && instanceNames.length > 0;
+  const cpuQuery =
+    enabled && identityLabel && projectId
+      ? workloadCpuAvgQuery(projectId, identityLabel.label, instanceNames)
+      : undefined;
+  const sparkQuery =
+    enabled && identityLabel && projectId
+      ? workloadCpuSumQuery(projectId, identityLabel.label, instanceNames)
+      : undefined;
+  const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
+  const cpu = usePrometheusCard(cpuQuery, "number", { enabled });
+  const rps = usePrometheusCard(rpsQuery, "requestsPerSecond", { enabled: !!proxyId });
 
   return (
-    <div
-      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-4 rounded-xl border p-4 shadow transition-colors sm:p-5"
+    <Card
+      size="sm"
+      sectioned
+      className="hover:border-foreground/20 cursor-pointer overflow-hidden transition-colors"
       onClick={onClick}
       data-testid="compute-plugin-workload-card"
     >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <h3 className="truncate font-semibold">{workload.name}</h3>
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+          <span className="truncate font-semibold">{workload.name}</span>
           {tags.length > 0 && (
-            <span className="text-muted-foreground shrink-0 text-xs">
+            <span className="text-muted-foreground shrink-0 text-xs font-normal">
               {tags.join(" · ")}
             </span>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span
-            className={cn(
-              "size-2 rounded-full",
-              HEALTH_DOT_CLASS[workload.health],
-            )}
-          />
-          <Badge
-            type={workloadHealthToBadgeType(workload.health)}
-            theme="light"
-          >
-            {statusLabel(workload)}
-          </Badge>
-        </div>
-      </div>
-
-      <div
-        className="border-border bg-muted/40 text-muted-foreground flex h-12 items-center justify-center rounded-md border border-dashed text-xs"
-        data-testid="compute-plugin-workload-metrics-placeholder"
-      >
-        {COMING_SOON}
-      </div>
-
-      <div className="border-border grid grid-cols-3 gap-2 border-t pt-4 sm:gap-3">
-        <MetricCell
-          label="Instances"
-          value={`${workload.readyReplicas} / ${workload.desiredReplicas}`}
+        </CardTitle>
+        <CardAction>
+          <div className="flex shrink-0 items-center gap-2">
+            <span
+              className={cn("size-2 rounded-full", HEALTH_DOT_CLASS[workload.health])}
+            />
+            <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
+              {statusLabel(workload)}
+            </Badge>
+          </div>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <MetricAreaChart
+          title="CPU"
+          query={sparkQuery}
+          timeRange={timeRange}
+          format="number"
+          enabled={enabled}
+          embedded
+          height={48}
         />
-        <MetricCell label="Requests" placeholder />
-        <MetricCell label="Avg CPU" placeholder />
-      </div>
 
-      {workload.placementRegions.length > 0 && (
-        <div className="border-border flex flex-col gap-1.5 border-t pt-4">
-          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-            Locations
-          </p>
-          {workload.placementRegions.map((region) => (
-            <div
-              key={region.name}
-              className="flex items-center justify-between gap-2 text-sm"
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className={cn(
-                    "size-2 shrink-0 rounded-full",
-                    HEALTH_DOT_CLASS[region.health],
-                  )}
-                  aria-label={region.health}
-                />
-                <span className="truncate">{regionLabel(region)}</span>
-              </div>
-              <span className="text-muted-foreground shrink-0 text-xs">
-                {region.readyReplicas} / {region.desiredReplicas} healthy
-              </span>
-            </div>
-          ))}
+        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <MetricCell
+            label="Instances"
+            value={`${workload.readyReplicas} / ${workload.desiredReplicas}`}
+          />
+          <MetricCell
+            label="Requests"
+            value={
+              proxyId
+                ? (rps.data?.formattedValue ??
+                  formatKpiValue(rps.data?.value, "requestsPerSecond"))
+                : "—"
+            }
+            placeholder={!proxyId}
+          />
+          <MetricCell
+            label="Avg CPU"
+            value={
+              enabled
+                ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, "number"))
+                : "—"
+            }
+            placeholder={!enabled}
+          />
         </div>
-      )}
 
-      <div className="border-border text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs">
+        {workload.placementRegions.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+              Locations
+            </p>
+            {workload.placementRegions.map((region) => (
+              <div
+                key={region.name}
+                className="flex items-center justify-between gap-2 text-sm"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={cn(
+                      "size-2 shrink-0 rounded-full",
+                      HEALTH_DOT_CLASS[region.health],
+                    )}
+                    aria-label={region.health}
+                  />
+                  <span className="truncate" title={region.locations.join(", ") || region.locationSelector}>
+                    {regionLabel(region, locationIndex)}
+                  </span>
+                </div>
+                <span className="text-muted-foreground shrink-0 text-xs">
+                  {region.readyReplicas} / {region.desiredReplicas} healthy
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+      <CardFooter bordered className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 text-xs">
         <span>
           Updated {formatDistanceToNowStrict(updatedAt, { addSuffix: true })}
         </span>
@@ -266,8 +343,8 @@ function WorkloadCard({
           View workload
           <Icon icon={ArrowRightIcon} size={12} />
         </span>
-      </div>
-    </div>
+      </CardFooter>
+    </Card>
   );
 }
 
@@ -290,6 +367,32 @@ export default function WorkloadList() {
     error,
     refetch,
   } = useWorkloads(projectId, computeEnabled);
+  const { data: instances = [] } = useInstances(projectId, computeEnabled);
+  const { data: publishedByWorkload = {} } = usePublishedUrls(projectId, computeEnabled);
+  const { identity } = useInstanceMetricIdentity(projectId, instances[0]?.name);
+  const locationIndex = useLocationIndex(computeEnabled ? projectId : undefined);
+  const namesByWorkload = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const instance of instances) {
+      const key = instance.workloadName;
+      if (!key) continue;
+      const names = map.get(key) ?? [];
+      names.push(instance.name);
+      map.set(key, names);
+    }
+    return map;
+  }, [instances]);
+  const fleetProxyIds = useMemo(
+    () => Object.values(publishedByWorkload).map((published) => published.proxyName),
+    [publishedByWorkload],
+  );
+  const fleetRpsQuery =
+    projectId && fleetProxyIds.length > 0
+      ? albRpsQueryMany(projectId, fleetProxyIds)
+      : undefined;
+  const fleetRps = usePrometheusCard(fleetRpsQuery, "requestsPerSecond", {
+    enabled: computeEnabled && fleetProxyIds.length > 0,
+  });
 
   const isLoading = isEntitlementLoading || (computeEnabled && isWorkloadsLoading);
 
@@ -367,7 +470,15 @@ export default function WorkloadList() {
 
       {!isLoading && computeEnabled && !error && workloads && workloads.length > 0 && (
         <>
-          <FleetSummary workloads={workloads} />
+          <FleetSummary
+            workloads={workloads}
+            requests={
+              fleetProxyIds.length > 0
+                ? (fleetRps.data?.formattedValue ??
+                  formatKpiValue(fleetRps.data?.value, "requestsPerSecond"))
+                : "—"
+            }
+          />
           <div
             className="grid grid-cols-1 gap-4 lg:grid-cols-2"
             data-testid="compute-plugin-workload-grid"
@@ -376,6 +487,11 @@ export default function WorkloadList() {
               <WorkloadCard
                 key={workload.uid || workload.name}
                 workload={workload}
+                projectId={projectId}
+                instanceNames={namesByWorkload.get(workload.name) ?? []}
+                proxyId={publishedByWorkload[workload.name]?.proxyName}
+                identityLabel={identity}
+                locationIndex={locationIndex}
                 onClick={() => navigate(workloadHref(workload.name))}
               />
             ))}

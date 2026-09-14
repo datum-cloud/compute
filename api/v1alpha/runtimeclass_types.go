@@ -14,7 +14,7 @@ import (
 // can run. A cell advertises the classes it can serve separately, through
 // RuntimeClassServedLabel. The two are independent: a class can have a
 // controller and no capacity anywhere, or capacity in a cell whose controller
-// has not accepted the class.
+// does not serve the class.
 //
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=253
@@ -30,7 +30,7 @@ type RuntimeClassControllerName string
 // decline. Enumerating the features keeps a class from declaring one that no
 // provider can interpret.
 //
-// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets
+// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities
 type RuntimeClassFeature string
 
 const (
@@ -68,6 +68,11 @@ const (
 	// registry with customer-supplied credentials when pulling an instance
 	// image.
 	RuntimeClassFeatureImagePullSecrets RuntimeClassFeature = "imagePullSecrets"
+
+	// RuntimeClassFeatureContainerCapabilities is the ability to grant a sandbox
+	// container Linux capabilities it requests. A class declaring it publishes
+	// which capabilities it grants in grantableCapabilities.
+	RuntimeClassFeatureContainerCapabilities RuntimeClassFeature = "containerCapabilities"
 )
 
 // runtimeClassFeatureDescriptions maps each feature to its customer-facing
@@ -82,6 +87,7 @@ var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureDeviceVolumeAttachments: "volumes attached as raw devices",
 	RuntimeClassFeatureEnvFrom:                 "environment variables sourced from a whole ConfigMap or Secret",
 	RuntimeClassFeatureImagePullSecrets:        "image pull secrets",
+	RuntimeClassFeatureContainerCapabilities:   "container capability requests",
 }
 
 // Description returns the customer-facing phrase for the feature. It falls back
@@ -115,6 +121,29 @@ const (
 	RuntimeClassLifecycleSnapshot RuntimeClassLifecycleOperation = "Snapshot"
 )
 
+// RuntimeClassNetworkAttachment is how a guest in the class takes the network
+// interface the platform gives it. The platform reads it to wire the instance;
+// it is never handed to a runtime.
+//
+// +kubebuilder:validation:Enum=Netns;Hypervisor;HypervisorDeclared
+type RuntimeClassNetworkAttachment string
+
+const (
+	// RuntimeClassNetworkAttachmentNetns places the interface in the guest's
+	// network namespace, which is what an ordinary container takes.
+	RuntimeClassNetworkAttachmentNetns RuntimeClassNetworkAttachment = "Netns"
+
+	// RuntimeClassNetworkAttachmentHypervisor hands the interface to a
+	// hypervisor as a device that the hypervisor finds from what the node
+	// publishes.
+	RuntimeClassNetworkAttachmentHypervisor RuntimeClassNetworkAttachment = "Hypervisor"
+
+	// RuntimeClassNetworkAttachmentHypervisorDeclared hands the interface to a
+	// hypervisor as a device and has the platform state that device to the
+	// hypervisor. A runtime that reads no node state needs it.
+	RuntimeClassNetworkAttachmentHypervisorDeclared RuntimeClassNetworkAttachment = "HypervisorDeclared"
+)
+
 // RuntimeClassIsolation describes what separates a workload in the class from
 // other tenants' workloads. Multi-tenant customers report this boundary to
 // their own auditors, so the API publishes it and holds it stable across
@@ -142,6 +171,9 @@ type RuntimeClassIsolation struct {
 // the machine-readable half: submission rejects a workload that asks for a
 // feature absent here, naming the class. The compatibility statement is the
 // half a customer reads before committing an image to the tier.
+//
+// +kubebuilder:validation:XValidation:message="grantableCapabilities requires the containerCapabilities feature",rule="!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features)"
+// +kubebuilder:validation:XValidation:message="the containerCapabilities feature requires a non-empty grantableCapabilities",rule="!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0)"
 type RuntimeClassCapabilities struct {
 	// The optional parts of the instance API this class serves. Anything absent
 	// is unsupported, so a class that omits a feature rejects requests for it
@@ -151,6 +183,24 @@ type RuntimeClassCapabilities struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:Optional
 	Features []RuntimeClassFeature `json:"features,omitempty"`
+
+	// The Linux capabilities a sandbox container in this class may add. A
+	// container requesting a capability outside this set is rejected, naming the
+	// class. The platform reads this field itself and never passes it to a
+	// runtime, and each value is drawn from the closed set of Linux capability
+	// names, which excludes ALL. The class's isolation boundary justifies what it
+	// grants: a class whose guest kernel confines the workload may grant
+	// capabilities a shared-kernel class could not.
+	//
+	// A class lists capabilities here only when it declares the
+	// containerCapabilities feature, and a class declaring that feature lists at
+	// least one.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:message="grantableCapabilities must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted",rule="self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM'])"
+	// +kubebuilder:validation:Optional
+	GrantableCapabilities []Capability `json:"grantableCapabilities,omitempty"`
 
 	// What runs unmodified in this class and what does not. Customers need this
 	// statement before committing an image to the tier.
@@ -194,16 +244,21 @@ type RuntimeClassLifecycle struct {
 // billing dimensions a class is metered on, and customers are billed against
 // the catalog. Restating a price here would create a second source of truth.
 //
-// Provider-specific parameters are deliberately absent as well. Everything here
-// is what a customer is promised, and the platform reserves the right to change
-// which runtime a provider uses to keep that promise. A provider slot on this
-// object would also put runtime configuration one RBAC mistake away from a
-// tenant, which is the escape path this design closes. Provider configuration
-// stays with the provider's own deployment.
+// This object carries the contract published to a customer, plus the minimum
+// the platform itself needs to wire an instance of the class. Nothing else
+// belongs here.
+//
+// Opaque provider parameters remain deliberately absent. The platform reserves
+// the right to change which runtime a provider uses to keep the published
+// promise, and a pass-through slot on this object would put runtime
+// configuration one RBAC mistake away from a tenant, which is the escape path
+// this design closes. Provider configuration stays with the provider's own
+// deployment. A field the platform reads itself, drawn from a closed set of
+// values, reaches no runtime and is not such a slot.
 type RuntimeClassSpec struct {
 	// The controller that implements this class. A provider watches for classes
 	// carrying its own controller name, claims them, and reports through the
-	// Accepted condition whether it can honor what they declare. A class whose
+	// Available condition whether it can honor what they declare. A class whose
 	// controller never appears stays unclaimed, which this field makes visible.
 	//
 	// The field says which provider realizes the class. It does not say where
@@ -252,24 +307,46 @@ type RuntimeClassSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Lifecycle RuntimeClassLifecycle `json:"lifecycle,omitempty"`
+
+	// How a guest in this class takes the network interface the platform gives
+	// it. The provider that publishes the class states it, because only the
+	// provider knows what its runtime expects.
+	//
+	// Leaving it empty is the right answer for any class whose guests take the
+	// interface the cell already gives them, and it is what every class
+	// published today does. An empty value asks the networking layer for
+	// nothing, so the cell's own setting continues to decide. Stating a value
+	// overrides that setting for every guest in the class, in every cell, so
+	// state one only for a class whose runtime cannot use what the cell would
+	// otherwise give it.
+	//
+	// The value is resolved when a deployment is created and then fixed for the
+	// life of each instance, so correcting it here moves new instances without
+	// disturbing running ones.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkAttachment RuntimeClassNetworkAttachment `json:"networkAttachment,omitempty"`
 }
 
 // Condition types reported on a RuntimeClass.
 const (
-	// RuntimeClassConditionAccepted reports whether the controller named in
-	// spec.controllerName has claimed this class and can honor everything it
-	// declares. The condition stays Unknown until that controller reconciles
-	// the class, so a class that no controller implements is visibly
+	// RuntimeClassConditionAvailable reports whether the class is usable: the
+	// controller named in spec.controllerName has claimed it and can honor
+	// everything it declares. The condition stays Unknown until that controller
+	// reconciles the class, so a class that no controller implements is visibly
 	// unclaimed.
-	RuntimeClassConditionAccepted = "Accepted"
+	RuntimeClassConditionAvailable = "Available"
 )
 
-// Reasons for the Accepted condition. These are customer-facing: they appear
+// Reasons for the Available condition. These are customer-facing: they appear
 // when a customer asks why a tier they selected is not usable.
 const (
-	// RuntimeClassReasonAccepted is set when the class's controller has claimed
+	// RuntimeClassReasonServed is set when the class's controller has claimed
 	// it and can serve everything the class declares.
-	RuntimeClassReasonAccepted = "Accepted"
+	//
+	// The reason is unique across every condition compute explains to
+	// customers, which the explanation catalog indexes by reason alone.
+	RuntimeClassReasonServed = "Served"
 
 	// RuntimeClassReasonPending is the starting state and means no controller
 	// has reported on this class yet. Typically the provider that implements
@@ -321,11 +398,11 @@ type RuntimeClassStatus struct {
 // +kubebuilder:printcolumn:name="Display Name",type=string,JSONPath=`.spec.displayName`
 // +kubebuilder:printcolumn:name="Isolation",type=string,JSONPath=`.spec.isolation.boundary`
 // +kubebuilder:printcolumn:name="Default",type=boolean,JSONPath=`.spec.default`
-// +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=`.status.conditions[?(@.type=="Accepted")].status`
+// +kubebuilder:printcolumn:name="Available",type=string,JSONPath=`.status.conditions[?(@.type=="Available")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Controller",type=string,JSONPath=`.spec.controllerName`,priority=1
 // +kubebuilder:printcolumn:name="Startup",type=string,JSONPath=`.spec.lifecycle.typicalStartupTime`,priority=1
-// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Accepted")].message`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Available")].message`,priority=1
 type RuntimeClass struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -335,7 +412,7 @@ type RuntimeClass struct {
 
 	// Status is what the controller implementing this class reports about it.
 	//
-	// +kubebuilder:default={conditions:{{type:"Accepted",status:"Unknown",reason:"Pending",message:"Waiting for the class controller",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Available",status:"Unknown",reason:"Pending",message:"Waiting for the class controller",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
 	Status RuntimeClassStatus `json:"status,omitempty"`
 }
 

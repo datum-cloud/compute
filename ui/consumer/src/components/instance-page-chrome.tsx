@@ -26,10 +26,14 @@ const BADGE_TYPE_DOT: Record<ReturnType<typeof instanceStatusToBadgeType>, strin
   muted: 'bg-[var(--color-badge-muted)]',
 };
 
-export function instanceDetailTabs(overviewHref: string, logsHref: string): PluginTab[] {
+export function instanceDetailTabs(
+  overviewHref: string,
+  metricsHref: string,
+  logsHref: string
+): PluginTab[] {
   return [
     { label: 'Overview', href: overviewHref },
-    { label: 'Metrics' },
+    { label: 'Metrics', href: metricsHref },
     { label: 'Logs', href: logsHref },
     { label: 'Manage' },
     { label: 'Activity' },
@@ -42,9 +46,11 @@ export function InstancePageChrome({
   instancesHref,
   overviewHref,
   logsHref,
+  metricsHref,
   titleName,
   workloadName,
   instance,
+  locationLabel,
   onRefresh,
   children,
 }: {
@@ -53,9 +59,11 @@ export function InstancePageChrome({
   instancesHref: string;
   overviewHref: string;
   logsHref: string;
+  metricsHref: string;
   titleName: string;
   workloadName?: string;
   instance?: Instance | null;
+  locationLabel?: string;
   onRefresh?: () => void;
   children: React.ReactNode;
 }) {
@@ -106,7 +114,9 @@ export function InstancePageChrome({
                     <span className="text-muted-foreground" aria-hidden>
                       ·
                     </span>
-                    <span className="text-muted-foreground">{instance.location}</span>
+                    <span className="text-muted-foreground" title={instance.location}>
+                      {locationLabel ?? instance.location}
+                    </span>
                   </>
                 ) : null}
               </>
@@ -131,7 +141,7 @@ export function InstancePageChrome({
       />
 
       <PluginTabs
-        tabs={instanceDetailTabs(overviewHref, logsHref)}
+        tabs={instanceDetailTabs(overviewHref, metricsHref, logsHref)}
         testId="compute-plugin-instance-tabs"
       />
 

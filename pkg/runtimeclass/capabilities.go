@@ -39,7 +39,13 @@ const (
 	FeatureDeviceVolumeAttachments = computev1alpha.RuntimeClassFeatureDeviceVolumeAttachments
 	FeatureEnvFrom                 = computev1alpha.RuntimeClassFeatureEnvFrom
 	FeatureImagePullSecrets        = computev1alpha.RuntimeClassFeatureImagePullSecrets
+	FeatureContainerCapabilities   = computev1alpha.RuntimeClassFeatureContainerCapabilities
 )
+
+// Capability is a Linux capability name without the CAP_ prefix. It aliases the
+// API type so a class's grantable set and a container's request compare
+// directly.
+type Capability = computev1alpha.Capability
 
 // Capabilities is a runtime class's declaration of what it can serve, in the
 // form the shared validation works against. Capabilities comes from the
@@ -54,6 +60,11 @@ type Capabilities struct {
 	// absent feature is unsupported, so a class that omits a feature rejects
 	// requests for it rather than serving it by accident.
 	Features []Feature
+
+	// GrantableCapabilities are the Linux capabilities a sandbox container in
+	// the class may add. They apply only when the class declares
+	// FeatureContainerCapabilities.
+	GrantableCapabilities []Capability
 }
 
 // CapabilitiesFrom reads a class's declaration from its catalog entry.
@@ -62,9 +73,25 @@ func CapabilitiesFrom(class *computev1alpha.RuntimeClass) Capabilities {
 		return Capabilities{}
 	}
 	return Capabilities{
-		Class:    class.Name,
-		Features: class.Spec.Capabilities.Features,
+		Class:                 class.Name,
+		Features:              class.Spec.Capabilities.Features,
+		GrantableCapabilities: class.Spec.Capabilities.GrantableCapabilities,
 	}
+}
+
+// Grants reports whether a sandbox container in the class may add the
+// capability. A class that does not declare FeatureContainerCapabilities grants
+// nothing, even if it lists capabilities.
+func (c Capabilities) Grants(capability Capability) bool {
+	if !c.Supports(FeatureContainerCapabilities) {
+		return false
+	}
+	for _, granted := range c.GrantableCapabilities {
+		if granted == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // Supports reports whether the class serves the feature.

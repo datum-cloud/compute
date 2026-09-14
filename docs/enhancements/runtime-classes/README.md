@@ -255,6 +255,23 @@ one class may run its instances as containers on a host, another may provision a
 machine from a cloud provider. The platform's abstraction is the instance, not any
 particular realization of it, and this proposal does not narrow that.
 
+**Realization a neighboring system needs is published with the class.** Some classes need
+the networking layer to attach an interface differently, because their runtime is told
+about the device rather than discovering it. The provider that publishes the class states
+that alongside it, so adding a class carries its own answer and stays a single declarative
+act. Requiring an operator to edit configuration and roll a manager in every cell before a
+new class worked would make the class object documentation rather than an API.
+
+The class object holds the published contract plus the minimum the platform needs to wire
+an instance. This field is read by the platform and drawn from a closed set of values, so
+it never reaches a runtime; opaque provider parameters remain excluded. Because the
+catalog is readable where deployments are created and not in a cell, the answer is
+resolved once there and travels with the deployment, which also removes any chance of a
+deployment reaching a cell before the class does.
+
+A class that states nothing leaves the cell's own setting deciding, which is what every
+class published today does.
+
 **Capability gaps are validated, not silently dropped.** A class will not support
 everything the instance API can express — some won't support disk-backed volumes, some
 will constrain where images may be pulled from. Today an unsupported feature can be
@@ -264,6 +281,26 @@ ignoring part of a customer's request is a violation of it. Unsupported combinat
 rejected when the workload is submitted, naming the class and the unsupported feature, so
 the customer learns at apply time rather than from behavior that doesn't match what they
 asked for.
+
+**Container capabilities are a class-declared feature with a published grant.** The
+platform removes every Linux capability from a sandbox container by default, which keeps
+many stock images from starting. A container can ask for specific capabilities back in the
+shape Kubernetes manifests already use. A class opts in by declaring the feature and
+publishing the set of capabilities it grants, and a request outside that set is rejected
+at submission, naming the class and what it grants. Dropping capabilities never needs the
+feature, because it can only reduce privilege. The mechanism is the same for every class,
+so a future unikernel class can opt in the same way.
+
+What a class grants is justified by its isolation boundary. A class that shares the host
+kernel must keep its grant within the cell's security profile. A class isolated by its own
+guest kernel may sit outside that profile, because the guest confines what the profile
+protects: capabilities, running as root, privilege escalation, and syscall filtering. The
+guest does not confine anything that reaches the host, so the platform never produces host
+directory mounts, host networking, host process or IPC namespaces, or host ports for an
+instance in any class. The instance API has no way to express them, and translation
+refuses them even when a provider supplies one.
+
+Whether capability grants should be metered or reviewed per project is an open question.
 
 ## Production Readiness Review Questionnaire
 

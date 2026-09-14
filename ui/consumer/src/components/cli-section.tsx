@@ -6,7 +6,7 @@
  *  - Icons rendered via `@datum-cloud/datum-ui/icons` `Icon` wrapper.
  */
 import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { cn } from '@datum-cloud/datum-ui/utils';
@@ -60,20 +60,18 @@ export function SectionCard({
   danger?: boolean;
 }) {
   return (
-    <Card className={cn(danger && 'border-red-200 dark:border-red-900')}>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <span className={cn('shrink-0', danger ? 'text-red-500' : 'text-foreground')}>
-            {icon}
-          </span>
-          <h3 className={cn('font-semibold', danger && 'text-red-500')}>{title}</h3>
-        </div>
-        <p className="text-muted-foreground text-sm">{description}</p>
-        <div className="flex flex-col gap-2">
-          {commands.map((cmd) => (
-            <CommandBlock key={cmd} value={cmd} danger={danger} />
-          ))}
-        </div>
+    <Card size="sm" sectioned className={cn(danger && 'border-red-200 dark:border-red-900')}>
+      <CardHeader size="sm" bordered>
+        <CardTitle className={cn('flex items-center gap-2 text-sm', danger && 'text-red-500')}>
+          <span className={cn('shrink-0', danger ? 'text-red-500' : 'text-secondary')}>{icon}</span>
+          {title}
+        </CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {commands.map((cmd) => (
+          <CommandBlock key={cmd} value={cmd} danger={danger} />
+        ))}
       </CardContent>
     </Card>
   );

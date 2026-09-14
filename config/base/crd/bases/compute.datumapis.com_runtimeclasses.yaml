@@ -25,8 +25,8 @@ spec:
     - jsonPath: .spec.default
       name: Default
       type: boolean
-    - jsonPath: .status.conditions[?(@.type=="Accepted")].status
-      name: Accepted
+    - jsonPath: .status.conditions[?(@.type=="Available")].status
+      name: Available
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -39,7 +39,7 @@ spec:
       name: Startup
       priority: 1
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Accepted")].message
+    - jsonPath: .status.conditions[?(@.type=="Available")].message
       name: Message
       priority: 1
       type: string
@@ -113,16 +113,63 @@ spec:
                       - deviceVolumeAttachments
                       - envFrom
                       - imagePullSecrets
+                      - containerCapabilities
                       type: string
                     maxItems: 32
                     type: array
                     x-kubernetes-list-type: set
+                  grantableCapabilities:
+                    description: |-
+                      The Linux capabilities a sandbox container in this class may add. A
+                      container requesting a capability outside this set is rejected, naming the
+                      class. The platform reads this field itself and never passes it to a
+                      runtime, and each value is drawn from the closed set of Linux capability
+                      names, which excludes ALL. The class's isolation boundary justifies what it
+                      grants: a class whose guest kernel confines the workload may grant
+                      capabilities a shared-kernel class could not.
+
+                      A class lists capabilities here only when it declares the
+                      containerCapabilities feature, and a class declaring that feature lists at
+                      least one.
+                    items:
+                      description: |-
+                        Capability is a Linux capability name without the CAP_ prefix, for example
+                        CHOWN or NET_BIND_SERVICE.
+                      maxLength: 64
+                      minLength: 1
+                      pattern: ^[A-Z_]+$
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                    x-kubernetes-validations:
+                    - message: grantableCapabilities must name Linux capabilities,
+                        such as NET_BIND_SERVICE; ALL cannot be granted
+                      rule: self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE',
+                        'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE',
+                        'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER',
+                        'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE',
+                        'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST',
+                        'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID',
+                        'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE',
+                        'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE',
+                        'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM'])
                 type: object
+                x-kubernetes-validations:
+                - message: grantableCapabilities requires the containerCapabilities
+                    feature
+                  rule: '!has(self.grantableCapabilities) || size(self.grantableCapabilities)
+                    == 0 || (has(self.features) && ''containerCapabilities'' in self.features)'
+                - message: the containerCapabilities feature requires a non-empty
+                    grantableCapabilities
+                  rule: '!has(self.features) || !(''containerCapabilities'' in self.features)
+                    || (has(self.grantableCapabilities) && size(self.grantableCapabilities)
+                    > 0)'
               controllerName:
                 description: |-
                   The controller that implements this class. A provider watches for classes
                   carrying its own controller name, claims them, and reports through the
-                  Accepted condition whether it can honor what they declare. A class whose
+                  Available condition whether it can honor what they declare. A class whose
                   controller never appears stays unclaimed, which this field makes visible.
 
                   The field says which provider realizes the class. It does not say where
@@ -213,6 +260,28 @@ spec:
                       measure it.
                     type: string
                 type: object
+              networkAttachment:
+                description: |-
+                  How a guest in this class takes the network interface the platform gives
+                  it. The provider that publishes the class states it, because only the
+                  provider knows what its runtime expects.
+
+                  Leaving it empty is the right answer for any class whose guests take the
+                  interface the cell already gives them, and it is what every class
+                  published today does. An empty value asks the networking layer for
+                  nothing, so the cell's own setting continues to decide. Stating a value
+                  overrides that setting for every guest in the class, in every cell, so
+                  state one only for a class whose runtime cannot use what the cell would
+                  otherwise give it.
+
+                  The value is resolved when a deployment is created and then fixed for the
+                  life of each instance, so correcting it here moves new instances without
+                  disturbing running ones.
+                enum:
+                - Netns
+                - Hypervisor
+                - HypervisorDeclared
+                type: string
             required:
             - capabilities
             - controllerName
@@ -225,7 +294,7 @@ spec:
                 message: Waiting for the class controller
                 reason: Pending
                 status: Unknown
-                type: Accepted
+                type: Available
             description: Status is what the controller implementing this class reports
               about it.
             properties:

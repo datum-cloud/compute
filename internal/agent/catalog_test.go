@@ -78,6 +78,25 @@ func TestEveryCatalogEntryIsUsable(t *testing.T) {
 	}
 }
 
+// TestCatalogReasonsAreUnique guards the catalog's index, which is keyed on the
+// reason string alone and so silently keeps only the last entry for a repeated
+// reason. Reason strings are short words like "Available" or "Ready" that
+// different resources reach for independently, so a collision is easy to
+// introduce and invisible at review time: the surviving entry explains the
+// wrong resource to the customer. Pick a reason no other resource uses.
+func TestCatalogReasonsAreUnique(t *testing.T) {
+	seen := make(map[string]ReasonInfo, len(catalog))
+	for _, entry := range catalog {
+		if previous, ok := seen[entry.Reason]; ok {
+			t.Errorf("reason %q is used by two catalog entries (conditions %v and %v); "+
+				"only the last survives the byReason index",
+				entry.Reason, previous.ConditionTypes, entry.ConditionTypes)
+			continue
+		}
+		seen[entry.Reason] = entry
+	}
+}
+
 // TestPointerReasonsAreCatalogued ensures the walk's pointer set and the
 // catalog cannot drift apart.
 func TestPointerReasonsAreCatalogued(t *testing.T) {

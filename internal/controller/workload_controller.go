@@ -31,7 +31,9 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/locations"
+	"go.datum.net/compute/pkg/runtimeclass"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -60,6 +62,7 @@ type WorkloadReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=compute.datumapis.com,resources=runtimeclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
@@ -471,6 +474,39 @@ func (r *WorkloadReconciler) Finalize(ctx context.Context, obj client.Object) (f
 // getDeploymentsForWorkload returns both deployments that are desired to exist
 // for a workload, and deployments that have been orphaned and should be
 // removed.
+// networkAttachment resolves how the workload's guests take a network
+// interface, from the runtime class the workload runs in.
+//
+// The catalog is readable here and nowhere downstream, so the answer travels
+// with the deployment rather than being looked up again in a cell. A class the
+// catalog does not publish, or one that states nothing, resolves to nothing
+// and leaves the cell deciding.
+func (r *WorkloadReconciler) networkAttachment(
+	ctx context.Context,
+	upstreamClient client.Client,
+	workload *computev1alpha.Workload,
+) (computev1alpha.RuntimeClassNetworkAttachment, error) {
+	if !features.FeatureGate.Enabled(features.RuntimeClasses) {
+		return "", nil
+	}
+
+	className := workload.Spec.Template.Spec.Runtime.Class
+	if className == "" {
+		return "", nil
+	}
+
+	var classes computev1alpha.RuntimeClassList
+	if err := upstreamClient.List(ctx, &classes); err != nil {
+		return "", fmt.Errorf("failed listing runtime classes: %w", err)
+	}
+
+	class := runtimeclass.Catalog(classes.Items).Find(className)
+	if class == nil {
+		return "", nil
+	}
+	return class.Spec.NetworkAttachment, nil
+}
+
 func (r *WorkloadReconciler) getDeploymentsForWorkload(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -493,6 +529,11 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 	}
 
 	placementLocations, err := locations.ListPlacementLocations(ctx, upstreamClient, r.LocationSource)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	networkAttachment, err := r.networkAttachment(ctx, upstreamClient, workload)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -540,6 +581,8 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					Template:      workload.Spec.Template,
 					ScaleSettings: placement.ScaleSettings,
 					Replicas:      new(placement.ScaleSettings.MinReplicas),
+
+					NetworkAttachment: networkAttachment,
 				},
 			})
 		}

@@ -10,14 +10,7 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	// UNMERGED: pinned to the head of network-services-operator#411
-	// (branch proto/network-service), which adds the NetworkService API and the
-	// networkService HTTPProxy backend that `datumctl compute --http-port` needs.
-	// That PR is a draft and its branch may be force-pushed or deleted, which
-	// would break `go mod download` here. Re-pin to main as soon as it merges.
-	// The pre-411 pin was chosen for the Prepared condition, which this commit
-	// also carries.
-	go.datum.net/network-services-operator v0.26.5-0.20260909170421-bcd1965a821c
+	go.datum.net/network-services-operator v0.26.5-0.20260911235442-196ee79e9ebf
 	// Pinned by pseudo-version to the commit deployed to staging, which is the
 	// same one network-services-operator pins. The module publishes no tag yet.
 	go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c
@@ -35,7 +28,10 @@ require (
 	sigs.k8s.io/multicluster-runtime v0.23.3
 )
 
-require github.com/modelcontextprotocol/go-sdk v1.7.0
+require (
+	github.com/distribution/reference v0.6.0
+	github.com/modelcontextprotocol/go-sdk v1.7.0
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -50,7 +46,6 @@ require (
 	github.com/containerd/platforms v1.0.0-rc.4 // indirect
 	github.com/containerd/ttrpc v1.2.8 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
-	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker-credential-helpers v0.9.8 // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
@@ -162,7 +157,7 @@ require (
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.1 // indirect
+	google.golang.org/grpc v1.83.2 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

@@ -128,7 +128,8 @@ type SandboxContainer struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// The fully qualified container image name.
+	// The container image to run. Must include a registry, e.g.
+	// "ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".
 	//
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
@@ -190,7 +191,63 @@ type SandboxContainer struct {
 	// +listType=map
 	// +listMapKey=name
 	Ports []NamedPort `json:"ports,omitempty"`
+
+	// Security options for the container.
+	//
+	// +kubebuilder:validation:Optional
+	SecurityContext *SandboxSecurityContext `json:"securityContext,omitempty"`
 }
+
+// SandboxSecurityContext holds the security options a sandbox container can
+// request. It mirrors the shape of the Kubernetes container security context so
+// existing manifests carry over, and exposes only the options the platform can
+// honor in every runtime class that serves them.
+type SandboxSecurityContext struct {
+	// The Linux capabilities to grant to or remove from the container.
+	//
+	// +kubebuilder:validation:Optional
+	Capabilities *SandboxCapabilities `json:"capabilities,omitempty"`
+}
+
+// SandboxCapabilities adjusts the Linux capabilities a container runs with.
+//
+// The platform removes every capability from a sandbox container unless the
+// container requests it back. Many stock images need a few capabilities to start,
+// for example to bind a port below 1024 or to change file ownership, so a
+// container lists them in add. Each added capability must be one the selected
+// runtime class grants, and the class publishes that set.
+type SandboxCapabilities struct {
+	// The capabilities to grant to the container. Each must be one that the
+	// selected runtime class grants. ALL is not allowed, so a container states
+	// exactly what it needs.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:Optional
+	Add []Capability `json:"add,omitempty"`
+
+	// The capabilities to remove from the container. The platform already removes
+	// every capability, so drop is accepted for compatibility with Kubernetes
+	// manifests, for example drop: [ALL]. Naming a capability here also removes
+	// it when the runtime class would otherwise grant it by default.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:Optional
+	Drop []Capability `json:"drop,omitempty"`
+}
+
+// Capability is a Linux capability name without the CAP_ prefix, for example
+// CHOWN or NET_BIND_SERVICE.
+//
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=64
+// +kubebuilder:validation:Pattern=`^[A-Z_]+$`
+type Capability string
+
+// CapabilityAll names every Linux capability. A container may drop it and may
+// not add it.
+const CapabilityAll Capability = "ALL"
 
 // EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
 // used as environment variables in a container.
@@ -945,6 +1002,7 @@ type InstanceTemplateSpec struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
+// +kubebuilder:selectablefield:JSONPath=`.spec.runtime.class`
 
 // Instance is the Schema for the instances API
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

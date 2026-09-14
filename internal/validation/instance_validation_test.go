@@ -5,6 +5,7 @@ package validation
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -325,6 +326,75 @@ func TestValidateEnvFrom(t *testing.T) {
 			errs := validateEnvFrom(tc.envFrom, root)
 			cmpErrs(t, tc.expectedErrors, errs)
 		})
+	}
+}
+
+// TestValidateSandboxCapabilities covers the shape of a capability request,
+// independent of what any runtime class grants.
+func TestValidateSandboxCapabilities(t *testing.T) {
+	root := field.NewPath("securityContext", "capabilities")
+
+	cases := map[string]struct {
+		capabilities   *computev1alpha.SandboxCapabilities
+		expectedErrors field.ErrorList
+	}{
+		"no request": {},
+		"a Kubernetes-style request is accepted": {
+			capabilities: &computev1alpha.SandboxCapabilities{
+				Add:  []computev1alpha.Capability{testCapChown, testCapNetBindService},
+				Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+			},
+		},
+		"ALL may not be added": {
+			capabilities: &computev1alpha.SandboxCapabilities{
+				Add: []computev1alpha.Capability{testCapChown, computev1alpha.CapabilityAll},
+			},
+			expectedErrors: field.ErrorList{
+				field.Forbidden(root.Child("add").Index(1), ""),
+			},
+		},
+		"a CAP_ prefix is rejected in add and drop": {
+			capabilities: &computev1alpha.SandboxCapabilities{
+				Add:  []computev1alpha.Capability{testCapPrefixedChown},
+				Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll, "CAP_NET_RAW"},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(root.Child("add").Index(0), testCapPrefixedChown, ""),
+				field.Invalid(root.Child("drop").Index(1), "CAP_NET_RAW", ""),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cmpErrs(t, tc.expectedErrors, validateSandboxCapabilities(tc.capabilities, root))
+		})
+	}
+}
+
+// TestValidateContainerCommonCapabilityMessages pins the wording a customer
+// sees for a malformed capability request.
+func TestValidateContainerCommonCapabilityMessages(t *testing.T) {
+	container := computev1alpha.SandboxContainer{
+		Name:  "nginx",
+		Image: "docker.io/library/nginx:1.27",
+		SecurityContext: &computev1alpha.SandboxSecurityContext{
+			Capabilities: &computev1alpha.SandboxCapabilities{
+				Add: []computev1alpha.Capability{computev1alpha.CapabilityAll, testCapPrefixedChown},
+			},
+		},
+	}
+
+	root := field.NewPath("spec", "runtime", "sandbox", "containers").Index(0)
+	addPath := root.Child("securityContext", "capabilities", "add")
+	want := field.ErrorList{
+		field.Forbidden(addPath.Index(0), "ALL may not be added; list each capability the container needs"),
+		field.Invalid(addPath.Index(1), testCapPrefixedChown, `must omit the CAP_ prefix, for example "CHOWN"`),
+	}
+
+	got := validateContainerCommon(container, nil, root)
+	if delta := cmp.Diff(want, got, cmpopts.EquateEmpty()); delta != "" {
+		t.Errorf("errors mismatch (-want +got):\n%s", delta)
 	}
 }
 
@@ -699,5 +769,46 @@ func TestWorkloadWithReferencedDataE2E(t *testing.T) {
 	errs := ValidateWorkloadCreate(workload, opts)
 	if len(errs) != 0 {
 		t.Errorf("expected no errors, got: %v", errs)
+	}
+}
+
+// TestValidateContainerImage covers different image reference variations.
+func TestValidateContainerImage(t *testing.T) {
+	imagePath := field.NewPath("image")
+
+	cases := map[string]struct {
+		image          string
+		expectedErrors field.ErrorList
+	}{
+		"bare name has no registry": {
+			image:          testImageNoRegistry,
+			expectedErrors: field.ErrorList{field.Invalid(imagePath, "", "")},
+		},
+		"namespaced name has no registry": {
+			image:          "myname/myapp:v1",
+			expectedErrors: field.ErrorList{field.Invalid(imagePath, "", "")},
+		},
+		"invalid reference syntax": {
+			image:          "ghcr.io/acme/UPPERCASE_REPO:v1",
+			expectedErrors: field.ErrorList{field.Invalid(imagePath, "", "")},
+		},
+		"qualified with tag": {
+			image: testImageQualified,
+		},
+		"qualified without tag": {
+			image: "ghcr.io/acme/api",
+		},
+		"localhost with port": {
+			image: "localhost:5000/foo:bar",
+		},
+		"digest pinned": {
+			image: "ghcr.io/acme/api@sha256:" + strings.Repeat("a", 64),
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cmpErrs(t, tc.expectedErrors, validateContainerImage(tc.image, imagePath))
+		})
 	}
 }

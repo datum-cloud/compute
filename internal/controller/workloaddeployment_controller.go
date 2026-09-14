@@ -69,6 +69,25 @@ type WorkloadDeploymentReconciler struct {
 	LocationSource locations.Source
 }
 
+// networkAttachmentMode translates the attachment the deployment carries into
+// what the networking API calls it. The deployment holds the answer already,
+// resolved where the runtime class catalog is readable, so nothing is looked
+// up here.
+func networkAttachmentMode(
+	deployment *computev1alpha.WorkloadDeployment,
+) networkingv1alpha.NetworkInterfaceAttachmentMode {
+	switch deployment.Spec.NetworkAttachment {
+	case computev1alpha.RuntimeClassNetworkAttachmentNetns:
+		return networkingv1alpha.NetworkInterfaceAttachmentModeNetns
+	case computev1alpha.RuntimeClassNetworkAttachmentHypervisor:
+		return networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor
+	case computev1alpha.RuntimeClassNetworkAttachmentHypervisorDeclared:
+		return networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared
+	default:
+		return ""
+	}
+}
+
 func effectiveDesiredReplicas(deployment *computev1alpha.WorkloadDeployment) int32 {
 	if !deployment.DeletionTimestamp.IsZero() {
 		return 0
@@ -814,7 +833,7 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 			Name:      key.Name,
 			Labels:    labels,
 		},
-		Spec: desiredNetworkInterfaceClaimSpec(networkInterface),
+		Spec: desiredNetworkInterfaceClaimSpec(networkInterface, networkAttachmentMode(deployment)),
 	}
 
 	// The claim belongs to the instance, not the deployment: the instance going

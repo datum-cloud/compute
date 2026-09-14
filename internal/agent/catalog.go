@@ -528,8 +528,8 @@ var catalog = []ReasonInfo{
 	},
 
 	// Runtime classes. A workload selects a class to say how it should be
-	// executed; the class is Datum's catalog object, and its Accepted status is
-	// the report from the provider that implements it.
+	// executed; the class is Datum's catalog object, and its Available status
+	// is the report from the provider that implements it.
 	{
 		Reason: computev1alpha.WorkloadDeploymentReasonRuntimeClassNotServed,
 		ConditionTypes: []string{
@@ -545,15 +545,15 @@ var catalog = []ReasonInfo{
 		Skill: SkillPlacementTriage,
 	},
 	{
-		Reason:         computev1alpha.RuntimeClassReasonAccepted,
-		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAccepted},
+		Reason:         computev1alpha.RuntimeClassReasonServed,
+		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAvailable},
 		Actionability:  ActionabilityTransient,
-		Explanation: "This runtime class is ready to use. The provider behind it has confirmed it can " +
-			"serve everything the class promises.",
+		Explanation: "This runtime class is available to use. The provider behind it serves " +
+			"everything the class promises.",
 	},
 	{
 		Reason:         computev1alpha.RuntimeClassReasonPending,
-		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAccepted},
+		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAvailable},
 		Actionability:  ActionabilityTransient,
 		Explanation: "Datum has not reported back either way on this runtime class yet. That is " +
 			"expected briefly after a class is published or while the provider behind it is being " +
@@ -564,7 +564,7 @@ var catalog = []ReasonInfo{
 	},
 	{
 		Reason:         computev1alpha.RuntimeClassReasonUnsupportedFeature,
-		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAccepted},
+		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAvailable},
 		Actionability:  ActionabilityPlatform,
 		Explanation: "This runtime class promises a capability the provider behind it cannot deliver. " +
 			"The status message names the capabilities. Instances in this class will not start " +
@@ -574,7 +574,7 @@ var catalog = []ReasonInfo{
 	},
 	{
 		Reason:         computev1alpha.RuntimeClassReasonContractNotHonored,
-		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAccepted},
+		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAvailable},
 		Actionability:  ActionabilityPlatform,
 		Explanation: "The provider behind this runtime class cannot keep part of what the class " +
 			"promises, such as the isolation it declares or a lifecycle operation it offers. The " +

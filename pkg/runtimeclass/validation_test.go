@@ -21,6 +21,9 @@ const (
 	testConfigVolumeName = "config"
 	testDiskVolumeName   = "data"
 	testConfigMapName    = "settings"
+	testCapChown         = "CHOWN"
+
+	testCapNetBindService = "NET_BIND_SERVICE"
 )
 
 // envFromRejection is the rejection a narrow class returns for envFrom. It is
@@ -42,7 +45,9 @@ var fullCapabilities = Capabilities{
 		FeatureDeviceVolumeAttachments,
 		FeatureEnvFrom,
 		FeatureImagePullSecrets,
+		FeatureContainerCapabilities,
 	},
+	GrantableCapabilities: []Capability{testCapNetBindService, testCapChown},
 }
 
 // minimalCapabilities is the narrow set a fast-start class serves. It covers
@@ -301,6 +306,115 @@ func TestValidateInstanceSpec(t *testing.T) {
 				t.Errorf("unexpected rejections (-want +got):\n%s", delta)
 			}
 		})
+	}
+}
+
+// capabilityContainer is a container shaped like the nginx sandbox a customer
+// ports from a Kubernetes manifest.
+func capabilityContainer(add, drop []Capability) computev1alpha.SandboxContainer {
+	return computev1alpha.SandboxContainer{
+		Name:  testContainerName,
+		Image: "docker.io/library/nginx:1.27",
+		SecurityContext: &computev1alpha.SandboxSecurityContext{
+			Capabilities: &computev1alpha.SandboxCapabilities{Add: add, Drop: drop},
+		},
+	}
+}
+
+// TestValidateContainerCapabilities covers capability requests against the
+// class's published grantable set.
+func TestValidateContainerCapabilities(t *testing.T) {
+	addPath := field.NewPath("spec", "runtime", "sandbox", "containers").Index(0).
+		Child("securityContext", "capabilities", "add")
+
+	tests := []struct {
+		name         string
+		spec         computev1alpha.InstanceSpec
+		capabilities Capabilities
+		want         field.ErrorList
+	}{
+		{
+			name:         "a container with no security context needs no feature",
+			capabilities: minimalCapabilities,
+			spec:         sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName}),
+		},
+		{
+			name:         "adding a capability is rejected by a class without the feature",
+			capabilities: minimalCapabilities,
+			spec: sandboxSpec(capabilityContainer(
+				[]Capability{testCapChown}, []Capability{computev1alpha.CapabilityAll})),
+			want: field.ErrorList{
+				field.Forbidden(addPath,
+					`container capability requests are not supported by the "azurite" runtime class`),
+			},
+		},
+		{
+			name: "listing grantable capabilities without declaring the feature grants nothing",
+			capabilities: Capabilities{
+				Class:                 testClassAzurite,
+				Features:              []Feature{FeatureSandboxRuntime},
+				GrantableCapabilities: []Capability{testCapChown},
+			},
+			spec: sandboxSpec(capabilityContainer([]Capability{testCapChown}, nil)),
+			want: field.ErrorList{
+				field.Forbidden(addPath,
+					`container capability requests are not supported by the "azurite" runtime class`),
+			},
+		},
+		{
+			name:         "a drop-only request is accepted by a class without the feature",
+			capabilities: minimalCapabilities,
+			spec:         sandboxSpec(capabilityContainer(nil, []Capability{computev1alpha.CapabilityAll})),
+		},
+		{
+			name:         "capabilities the class grants are accepted",
+			capabilities: fullCapabilities,
+			spec: sandboxSpec(capabilityContainer(
+				[]Capability{testCapChown, testCapNetBindService}, []Capability{computev1alpha.CapabilityAll})),
+		},
+		{
+			name:         "each capability the class does not grant is rejected on its own entry",
+			capabilities: fullCapabilities,
+			spec: sandboxSpec(capabilityContainer(
+				[]Capability{"SYS_ADMIN", testCapChown, "NET_RAW"}, []Capability{computev1alpha.CapabilityAll})),
+			want: field.ErrorList{
+				field.Forbidden(addPath.Index(0),
+					`capability SYS_ADMIN is not granted by the "basalt" runtime class, which grants CHOWN, NET_BIND_SERVICE`),
+				field.Forbidden(addPath.Index(2),
+					`capability NET_RAW is not granted by the "basalt" runtime class, which grants CHOWN, NET_BIND_SERVICE`),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ValidateInstanceSpec(test.spec, test.capabilities, field.NewPath("spec"))
+			if delta := cmp.Diff(test.want, got, cmpopts.EquateEmpty()); delta != "" {
+				t.Errorf("unexpected rejections (-want +got):\n%s", delta)
+			}
+		})
+	}
+}
+
+// TestCapabilitiesFromReadsGrantableCapabilities confirms a class's published
+// grantable set reaches the check applied to its instances.
+func TestCapabilitiesFromReadsGrantableCapabilities(t *testing.T) {
+	class := &computev1alpha.RuntimeClass{
+		Spec: computev1alpha.RuntimeClassSpec{
+			Capabilities: computev1alpha.RuntimeClassCapabilities{
+				Features:              []Feature{FeatureSandboxRuntime, FeatureContainerCapabilities},
+				GrantableCapabilities: []Capability{testCapNetBindService},
+			},
+		},
+	}
+	class.Name = testClassBasalt
+
+	capabilities := CapabilitiesFrom(class)
+	if !capabilities.Grants(testCapNetBindService) {
+		t.Error("Grants(NET_BIND_SERVICE) = false, want true for a capability the class publishes")
+	}
+	if capabilities.Grants("SYS_ADMIN") {
+		t.Error("Grants(SYS_ADMIN) = true, want false for a capability the class does not publish")
 	}
 }
 

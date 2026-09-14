@@ -2,14 +2,17 @@
  * Layout for `workloads/:workloadName/instances/:instanceName/*`.
  *
  * Host mounts this as a splat page; nested routes keep breadcrumbs, title, and
- * tabs mounted while Overview / Logs swap through `<Outlet />`.
+ * tabs mounted while Overview / Logs / Metrics swap through `<Outlet />`.
  */
 import { InstancePageChrome } from '../components/instance-page-chrome';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
-import { useInstance } from '../lib/api';
+import { PLUGIN_ID, useInstance, usePublishedUrl } from '../lib/api';
+import { formatLocationName, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
 import InstanceLogs from './instance-logs';
+import InstanceMetrics from './instance-metrics';
 import InstanceOverview from './instance-overview';
+import { useQueryClient } from '@tanstack/react-query';
 import { Outlet, Route, Routes, useLocation, useParams } from 'react-router';
 
 function InstanceLayoutShell({
@@ -18,6 +21,7 @@ function InstanceLayoutShell({
   instancesHref,
   overviewHref,
   logsHref,
+  metricsHref,
   titleName,
   workloadName,
 }: {
@@ -26,6 +30,7 @@ function InstanceLayoutShell({
   instancesHref: string;
   overviewHref: string;
   logsHref: string;
+  metricsHref: string;
   titleName: string;
   workloadName?: string;
 }) {
@@ -33,7 +38,10 @@ function InstanceLayoutShell({
     projectId: string;
     instanceName: string;
   }>();
+  const queryClient = useQueryClient();
   const { data: instance, isLoading, error, refetch } = useInstance(projectId, instanceName);
+  const published = usePublishedUrl(projectId, workloadName ?? instance?.workloadName);
+  const locationIndex = useLocationIndex(projectId);
 
   return (
     <InstancePageChrome
@@ -42,10 +50,17 @@ function InstanceLayoutShell({
       instancesHref={instancesHref}
       overviewHref={overviewHref}
       logsHref={logsHref}
+      metricsHref={metricsHref}
       titleName={instance?.name ?? titleName}
       workloadName={workloadName}
       instance={instance}
-      onRefresh={() => void refetch()}>
+      locationLabel={
+        instance?.location ? formatLocationName(instance.location, locationIndex) : undefined
+      }
+      onRefresh={() => {
+        void refetch();
+        void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] });
+      }}>
       {isLoading && <LoadingSkeleton />}
 
       {!isLoading && (error || !instance) && (
@@ -62,7 +77,13 @@ function InstanceLayoutShell({
             {
               instance,
               workloadName,
+              projectId,
               logsHref,
+              metricsHref,
+              proxyId: published.data?.proxyName,
+              albHostname: published.data?.hostname,
+              albDisplayName: published.data?.displayName,
+              albLoading: published.isLoading,
             } satisfies InstanceOutletContext
           }
         />
@@ -80,8 +101,9 @@ export default function InstanceDetail() {
   const location = useLocation();
 
   const path = location.pathname.replace(/\/$/, '');
-  const overviewHref = path.endsWith('/logs') ? path.slice(0, -'/logs'.length) : path;
+  const overviewHref = path.replace(/\/(logs|metrics)$/, '');
   const logsHref = `${overviewHref}/logs`;
+  const metricsHref = `${overviewHref}/metrics`;
   const instancesHref = overviewHref.replace(/\/instances\/[^/]+$/, '');
   const workloadsHref = instancesHref.replace(/\/[^/]+$/, '');
   const projectHref = projectId ? `/project/${projectId}` : '/';
@@ -97,12 +119,14 @@ export default function InstanceDetail() {
             instancesHref={instancesHref}
             overviewHref={overviewHref}
             logsHref={logsHref}
+            metricsHref={metricsHref}
             titleName={titleName}
             workloadName={workloadName}
           />
         }>
         <Route index element={<InstanceOverview />} />
         <Route path="logs" element={<InstanceLogs />} />
+        <Route path="metrics" element={<InstanceMetrics />} />
       </Route>
     </Routes>
   );
