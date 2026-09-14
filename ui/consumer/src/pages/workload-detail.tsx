@@ -3,19 +3,32 @@
  * `WorkloadDetail`.
  *
  * Layout follows cloud-portal native overview pages (dense 2-col cards +
- * full-width sections) and the workloads mockup (stat strip, locations map,
- * instance cards). Telemetry slots show Coming soon.
+ * instance cards). The top strip and instance cards show KPI previews from the
+ * same PromQL as instance pages; full charts live on each instance's Metrics
+ * tab. The workload Metrics tab stays a placeholder — this page is not a splat
+ * route.
  *
  * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
  * inside the plugin (that double-stacks chrome vs native pages).
  */
 import { PluginTabs } from '../components/plugin-tabs';
 import { DetailList, StatusBadge } from '../components/detail-list';
+import { MetricAreaChart, formatKpiValue } from '../components/metric-area-chart';
 import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
-import { WorldMap } from '../components/world-map';
-import { useWorkload, useWorkloadInstances } from '../lib/api';
+import { usePublishedUrl, useWorkload, useWorkloadInstances, type PublishedUrl } from '../lib/api';
 import { splitSlashValue } from '../lib/format';
+import { formatLocationName, formatLocationNames, useLocationIndex } from '../lib/locations';
+import {
+  albRpsQuery,
+  cpuUsageQuery,
+  memoryUsageQuery,
+  useInstanceMetricIdentity,
+  type InstanceIdentityLabel,
+  workloadCpuAvgQuery,
+  workloadMemoryAvgQuery,
+} from '../lib/metrics-queries';
+import { lastThirtyMinutesRange, usePrometheusCard } from '../lib/prometheus';
 import {
   instanceStatusToBadgeType,
   workloadHealthToBadgeType,
@@ -31,19 +44,22 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@datum-cloud/datum-ui/card';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import { formatDistanceToNowStrict } from 'date-fns';
-import {
-  ArrowRightIcon,
-  HomeIcon,
-  MapPinIcon,
-  Settings2Icon,
-  SquareLibraryIcon,
-} from 'lucide-react';
-import { useLocation, useNavigate, useParams } from 'react-router';
+import { ArrowRightIcon, HomeIcon, Settings2Icon, SquareLibraryIcon } from 'lucide-react';
+import { useMemo } from 'react';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 
 const COMING_SOON = 'Coming soon';
 
@@ -71,47 +87,135 @@ function InstanceMetricCell({
           'mt-0.5 text-xs font-medium sm:text-sm',
           placeholder && 'text-muted-foreground font-normal'
         )}>
-        {value ?? COMING_SOON}
+        {value ?? '—'}
       </p>
     </div>
   );
 }
 
-function InstanceCard({ instance, onClick }: { instance: Instance; onClick: () => void }) {
+function InstanceCard({
+  instance,
+  projectId,
+  identityLabel,
+  requestsValue,
+  requestsPlaceholder,
+  locationLabel,
+  onClick,
+}: {
+  instance: Instance;
+  projectId?: string;
+  identityLabel?: InstanceIdentityLabel;
+  requestsValue: string;
+  requestsPlaceholder: boolean;
+  locationLabel: string;
+  onClick: () => void;
+}) {
+  const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
+  const identity = identityLabel
+    ? { label: identityLabel, value: instance.name }
+    : undefined;
+  const enabled = !!identity && !!projectId;
+  const cpuQuery = enabled && identity && projectId ? cpuUsageQuery(projectId, identity) : undefined;
+  const memoryQuery =
+    enabled && identity && projectId ? memoryUsageQuery(projectId, identity) : undefined;
+  const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
+  const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled });
+
   return (
-    <div
-      className="border-card-border bg-card hover:border-foreground/20 flex cursor-pointer flex-col gap-4 rounded-xl border p-4 shadow transition-colors sm:p-5"
+    <Card
+      size="sm"
+      sectioned
+      className="hover:border-foreground/20 cursor-pointer overflow-hidden transition-colors"
       onClick={onClick}
       data-testid="compute-plugin-instance-card">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-mono text-sm font-medium">{instance.name}</p>
-          <p className="text-muted-foreground mt-0.5 text-xs">{instance.location ?? 'Unknown location'}</p>
+      <CardHeader size="sm" bordered>
+        <CardTitle className="truncate font-mono text-sm font-medium">{instance.name}</CardTitle>
+        <CardDescription title={instance.location}>{locationLabel}</CardDescription>
+        <CardAction>
+          <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="w-fit shrink-0">
+            {instance.status}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <MetricAreaChart
+          title="CPU"
+          query={cpuQuery}
+          timeRange={timeRange}
+          format="number"
+          enabled={enabled}
+          embedded
+          height={40}
+        />
+        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <InstanceMetricCell
+            label="CPU"
+            value={enabled ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number')) : '—'}
+            placeholder={!enabled}
+          />
+          <InstanceMetricCell
+            label="Memory"
+            value={enabled ? (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes')) : '—'}
+            placeholder={!enabled}
+          />
+          <InstanceMetricCell
+            label="Requests"
+            value={requestsValue}
+            placeholder={requestsPlaceholder}
+          />
         </div>
-        <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="w-fit shrink-0">
-          {instance.status}
-        </Badge>
-      </div>
-
-      <div
-        className="border-border bg-muted/40 text-muted-foreground flex h-10 items-center justify-center rounded-md border border-dashed text-xs"
-        data-testid="compute-plugin-instance-metrics-placeholder">
-        {COMING_SOON}
-      </div>
-
-      <div className="border-border grid grid-cols-3 gap-2 border-t pt-4 sm:gap-3">
-        <InstanceMetricCell label="CPU" placeholder />
-        <InstanceMetricCell label="Memory" placeholder />
-        <InstanceMetricCell label="Requests" placeholder />
-      </div>
-
-      <div className="border-border text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs">
+      </CardContent>
+      <CardFooter bordered className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 text-xs">
         <span>Updated {formatDistanceToNowStrict(instance.createdAt, { addSuffix: true })}</span>
         <span className="flex items-center gap-1">
           View
           <Icon icon={ArrowRightIcon} size={12} />
         </span>
-      </div>
+      </CardFooter>
+    </Card>
+  );
+}
+
+function albOverviewHref(projectId: string, proxyName: string): string {
+  return `/project/${projectId}/alb/${proxyName}/overview`;
+}
+
+function LoadBalancerValue({
+  projectId,
+  published,
+  isLoading,
+}: {
+  projectId?: string;
+  published?: PublishedUrl | null;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  if (!published?.proxies.length) {
+    return <span className="text-muted-foreground">Not connected</span>;
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      {published.proxies.map((alb) => {
+        const label = alb.displayName || alb.proxyName;
+        if (!projectId) {
+          return (
+            <span key={alb.proxyName} className="text-sm">
+              {label}
+            </span>
+          );
+        }
+        return (
+          <Link
+            key={alb.proxyName}
+            to={albOverviewHref(projectId, alb.proxyName)}
+            className="text-primary text-sm hover:underline">
+            {label}
+          </Link>
+        );
+      })}
     </div>
   );
 }
@@ -120,20 +224,30 @@ function GeneralCard({
   workload,
   healthyCount,
   totalCount,
+  projectId,
+  published,
+  publishedLoading,
 }: {
   workload: Workload;
   healthyCount: number;
   totalCount: number;
+  projectId?: string;
+  published?: PublishedUrl | null;
+  publishedLoading: boolean;
 }) {
   return (
     <Card
-      className="h-full w-full gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
+      size="sm"
+      sectioned
+      className="h-full w-full overflow-hidden"
       data-testid="compute-plugin-workload-general">
-      <CardContent className="p-0 sm:px-6 sm:pb-4">
-        <div className="mb-4 flex items-center gap-2.5">
-          <Icon icon={SquareLibraryIcon} size={20} className="text-muted-foreground" />
-          <span className="text-base font-semibold">General</span>
-        </div>
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={SquareLibraryIcon} size={16} className="text-secondary" />
+          General
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none">
         <DetailList
           items={[
             {
@@ -147,6 +261,16 @@ function GeneralCard({
             {
               label: 'Resource Name',
               content: <span className="font-mono text-sm">{workload.name}</span>,
+            },
+            {
+              label: 'Load balancer',
+              content: (
+                <LoadBalancerValue
+                  projectId={projectId}
+                  published={published}
+                  isLoading={publishedLoading}
+                />
+              ),
             },
             {
               label: 'Instances',
@@ -171,18 +295,28 @@ function GeneralCard({
   );
 }
 
-function ConfigurationCard({ workload }: { workload: Workload }) {
+function ConfigurationCard({
+  workload,
+  locationLabel,
+}: {
+  workload: Workload;
+  locationLabel: string;
+}) {
   const { main: resourceShort } = splitSlashValue(workload.resources ?? '');
 
   return (
     <Card
-      className="h-full w-full gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
+      size="sm"
+      sectioned
+      className="h-full w-full overflow-hidden"
       data-testid="compute-plugin-workload-configuration">
-      <CardContent className="p-0 sm:px-6 sm:pb-4">
-        <div className="mb-4 flex items-center gap-2.5">
-          <Icon icon={Settings2Icon} size={20} className="text-muted-foreground" />
-          <span className="text-base font-semibold">Configuration</span>
-        </div>
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={Settings2Icon} size={16} className="text-secondary" />
+          Configuration
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none">
         <DetailList
           items={[
             {
@@ -218,7 +352,7 @@ function ConfigurationCard({ workload }: { workload: Workload }) {
               label: 'Locations',
               content:
                 workload.locations.length > 0 ? (
-                  workload.locations.join(', ')
+                  <span title={workload.locations.join(', ')}>{locationLabel}</span>
                 ) : (
                   <span className="text-muted-foreground">—</span>
                 ),
@@ -237,6 +371,30 @@ export default function WorkloadDetail() {
 
   const { data: workload, isLoading, error, refetch } = useWorkload(projectId, workloadName);
   const { data: instances = [] } = useWorkloadInstances(projectId, workloadName);
+  const published = usePublishedUrl(projectId, workloadName);
+  const locationIndex = useLocationIndex(projectId);
+  const instanceNames = useMemo(() => instances.map((instance) => instance.name), [instances]);
+  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(
+    projectId,
+    instanceNames[0]
+  );
+  const chartsEnabled = !identityLoading && !!identity && !!projectId && instanceNames.length > 0;
+  const cpuQuery =
+    chartsEnabled && identity && projectId
+      ? workloadCpuAvgQuery(projectId, identity.label, instanceNames)
+      : undefined;
+  const memoryQuery =
+    chartsEnabled && identity && projectId
+      ? workloadMemoryAvgQuery(projectId, identity.label, instanceNames)
+      : undefined;
+  const proxyId = published.data?.proxyName;
+  const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
+  const cpu = usePrometheusCard(cpuQuery, 'number', { enabled: chartsEnabled });
+  const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled: chartsEnabled });
+  const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
+  const requestsValue = proxyId
+    ? (rps.data?.formattedValue ?? formatKpiValue(rps.data?.value, 'requestsPerSecond'))
+    : '—';
 
   const basePath = location.pathname.replace(/\/$/, '');
   const instanceHref = (name: string) => `${basePath}/instances/${name}`;
@@ -274,18 +432,19 @@ export default function WorkloadDetail() {
         { label: 'Locations', value: String(locations.length) },
         {
           label: 'Requests',
-          value: COMING_SOON,
-          className: 'text-muted-foreground text-sm font-medium',
+          value: requestsValue,
         },
         {
           label: 'Avg CPU',
-          value: COMING_SOON,
-          className: 'text-muted-foreground text-sm font-medium',
+          value: chartsEnabled
+            ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number'))
+            : '—',
         },
         {
           label: 'Avg Memory',
-          value: COMING_SOON,
-          className: 'text-muted-foreground text-sm font-medium',
+          value: chartsEnabled
+            ? (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes'))
+            : '—',
         },
       ]
     : null;
@@ -345,26 +504,15 @@ export default function WorkloadDetail() {
               workload={workload}
               healthyCount={healthyCount}
               totalCount={totalCount}
+              projectId={projectId}
+              published={published.data}
+              publishedLoading={published.isLoading}
             />
-            <ConfigurationCard workload={workload} />
+            <ConfigurationCard
+              workload={workload}
+              locationLabel={formatLocationNames(workload.locations, locationIndex)}
+            />
           </div>
-
-          <Card
-            className="w-full overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4"
-            data-testid="compute-plugin-workload-locations">
-            <CardContent className="flex flex-col gap-4 p-0 sm:px-6 sm:pb-4">
-              <div className="flex items-center gap-2.5">
-                <Icon icon={MapPinIcon} size={20} className="text-muted-foreground" />
-                <span className="text-base font-semibold">Instance Locations</span>
-              </div>
-              <p className="text-muted-foreground text-sm">
-                {locations.length > 0
-                  ? `Locations where this workload is deployed: ${locations.join(', ')}.`
-                  : 'Locations where this workload is deployed.'}
-              </p>
-              <WorldMap className="bg-background aspect-[16/9] w-full overflow-hidden rounded-lg border sm:aspect-[2.5/1]" />
-            </CardContent>
-          </Card>
 
           {instances.length === 0 ? (
             <p className="text-muted-foreground text-sm">No running instances</p>
@@ -374,6 +522,15 @@ export default function WorkloadDetail() {
                 <InstanceCard
                   key={instance.uid || instance.name}
                   instance={instance}
+                  projectId={projectId}
+                  identityLabel={identity?.label}
+                  requestsValue={requestsValue}
+                  requestsPlaceholder={!proxyId}
+                  locationLabel={
+                    instance.location
+                      ? formatLocationName(instance.location, locationIndex)
+                      : 'Unknown location'
+                  }
                   onClick={() => navigate(instanceHref(instance.name))}
                 />
               ))}

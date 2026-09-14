@@ -52,7 +52,7 @@ export class ApiError extends Error {
   }
 }
 
-function getProjectScopedBase(projectId: string): string {
+export function getProjectScopedBase(projectId: string): string {
   // Project-scoped control-plane path, forwarded server-side by /api/proxy
   // with the user's token. Mirrors app/resources/base/utils.ts.
   return `/api/proxy/apis/resourcemanager.miloapis.com/v1alpha1/projects/${projectId}/control-plane`;
@@ -220,6 +220,24 @@ async function fetchInstance(projectId: string, instanceName: string): Promise<I
   return toInstance(raw);
 }
 
+async function fetchInstances(projectId: string): Promise<Instance[]> {
+  const body = await proxyFetch<RawInstanceList>(projectId, `${INSTANCES_PATH}?limit=100`);
+  return toInstanceList(body.items ?? []);
+}
+
+export function useInstances(
+  projectId: string | undefined,
+  enabled = true
+): UseQueryResult<Instance[], ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'instances', projectId],
+    enabled: !!projectId && enabled,
+    queryFn: () => fetchInstances(projectId as string),
+    refetchInterval: REFETCH_INTERVAL_MS,
+    retry: false,
+  });
+}
+
 export function useWorkloadInstances(
   projectId: string | undefined,
   workloadName: string | undefined
@@ -244,4 +262,193 @@ export function useInstance(
     refetchInterval: REFETCH_INTERVAL_MS,
     retry: false,
   });
+}
+
+// ── Connected ALB (HTTPProxy via NetworkService) ─────────────────────────
+//
+// A workload is on a public URL when an HTTPProxy (ALB) names a NetworkService
+// that selects the workload's interfaces. That covers both `datumctl compute
+// url` (labelled pair) and a portal ALB whose backend is the workload's
+// NetworkService. ALB logs and Envoy metrics key off the HTTPProxy name.
+// 403/404/empty are treated as "not connected" — the Logs tab stays empty
+// rather than failing the instance page.
+
+const HTTPPROXIES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/httpproxies';
+const NETWORKSERVICES_PATH =
+  '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkservices';
+
+interface RawNetworkService {
+  metadata?: { name?: string; labels?: Record<string, string> };
+  spec?: {
+    networkInterfaces?: {
+      selector?: { matchLabels?: Record<string, string> };
+    };
+  };
+}
+
+interface RawHttpProxy {
+  metadata?: {
+    name?: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
+  spec?: {
+    hostnames?: string[];
+    rules?: Array<{
+      backends?: Array<{
+        networkService?: { name?: string };
+      }>;
+    }>;
+  };
+  status?: { canonicalHostname?: string };
+}
+
+export interface ConnectedAlb {
+  /** HTTPProxy metadata.name — Envoy `gateway_name` and LogQL `route_name`. */
+  proxyName: string;
+  /** Canonical/default hostname (`status.canonicalHostname`, then spec.hostnames). */
+  hostname?: string;
+  /** Portal display name (`app.kubernetes.io/name`, then `kubernetes.io/display-name`). */
+  displayName: string;
+}
+
+export interface PublishedUrl {
+  /** First connected HTTPProxy — used by instance logs/metrics. */
+  proxyName: string;
+  hostname?: string;
+  displayName: string;
+  proxies: ConnectedAlb[];
+}
+
+async function listOrUnavailable<T>(projectId: string, path: string): Promise<T[] | null> {
+  const url = `${getProjectScopedBase(projectId)}${path}?limit=100`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (res.status === 403 || res.status === 404) {
+    return null;
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, `Request failed (${res.status}): ${path}`);
+  }
+  const body = (await res.json()) as { items?: T[] };
+  return body.items ?? [];
+}
+
+function proxyNetworkServiceNames(proxy: RawHttpProxy): string[] {
+  const names: string[] = [];
+  for (const rule of proxy.spec?.rules ?? []) {
+    for (const backend of rule.backends ?? []) {
+      if (backend.networkService?.name) names.push(backend.networkService.name);
+    }
+  }
+  return names;
+}
+
+function proxyHostname(proxy: RawHttpProxy): string | undefined {
+  return proxy.status?.canonicalHostname || proxy.spec?.hostnames?.[0];
+}
+
+function proxyDisplayName(proxy: RawHttpProxy): string {
+  const annotations = proxy.metadata?.annotations;
+  const chosen = annotations?.['app.kubernetes.io/name']?.trim();
+  const display = annotations?.['kubernetes.io/display-name']?.trim();
+  return chosen || display || proxy.metadata?.name || '';
+}
+
+function workloadNameForService(svc: RawNetworkService): string | undefined {
+  return (
+    svc.metadata?.labels?.[INSTANCE_LABELS.workloadName] ||
+    svc.spec?.networkInterfaces?.selector?.matchLabels?.[INSTANCE_LABELS.workloadName]
+  );
+}
+
+function toConnectedAlb(proxy: RawHttpProxy): ConnectedAlb | null {
+  const proxyName = proxy.metadata?.name ?? '';
+  if (!proxyName) return null;
+  return {
+    proxyName,
+    hostname: proxyHostname(proxy),
+    displayName: proxyDisplayName(proxy),
+  };
+}
+
+function publishedFromAlbs(albs: ConnectedAlb[]): PublishedUrl | null {
+  if (albs.length === 0) return null;
+  return {
+    proxyName: albs[0].proxyName,
+    hostname: albs[0].hostname,
+    displayName: albs[0].displayName,
+    proxies: albs,
+  };
+}
+
+async function fetchPublishedUrls(projectId: string): Promise<Record<string, PublishedUrl>> {
+  const [services, proxies] = await Promise.all([
+    listOrUnavailable<RawNetworkService>(projectId, NETWORKSERVICES_PATH),
+    listOrUnavailable<RawHttpProxy>(projectId, HTTPPROXIES_PATH),
+  ]);
+  if (services === null || proxies === null) return {};
+
+  const serviceNamesByWorkload = new Map<string, Set<string>>();
+  for (const svc of services) {
+    const workload = workloadNameForService(svc);
+    const name = svc.metadata?.name;
+    if (!workload || !name) continue;
+    const set = serviceNamesByWorkload.get(workload) ?? new Set<string>();
+    set.add(name);
+    serviceNamesByWorkload.set(workload, set);
+  }
+
+  const albsByWorkload = new Map<string, ConnectedAlb[]>();
+  const addAlb = (workload: string, alb: ConnectedAlb) => {
+    const list = albsByWorkload.get(workload) ?? [];
+    if (!list.some((item) => item.proxyName === alb.proxyName)) list.push(alb);
+    albsByWorkload.set(workload, list);
+  };
+
+  for (const proxy of proxies) {
+    const alb = toConnectedAlb(proxy);
+    if (!alb) continue;
+    const labelled = proxy.metadata?.labels?.[INSTANCE_LABELS.workloadName];
+    if (labelled) addAlb(labelled, alb);
+    const nsNames = proxyNetworkServiceNames(proxy);
+    for (const [workload, names] of serviceNamesByWorkload) {
+      if (nsNames.some((name) => names.has(name))) addAlb(workload, alb);
+    }
+  }
+
+  const result: Record<string, PublishedUrl> = {};
+  for (const [workload, albs] of albsByWorkload) {
+    const published = publishedFromAlbs(albs);
+    if (published) result[workload] = published;
+  }
+  return result;
+}
+
+export function usePublishedUrls(
+  projectId: string | undefined,
+  enabled = true
+): UseQueryResult<Record<string, PublishedUrl>, ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'published-urls', projectId],
+    enabled: !!projectId && enabled,
+    queryFn: () => fetchPublishedUrls(projectId as string),
+    refetchInterval: REFETCH_INTERVAL_MS,
+    retry: false,
+  });
+}
+
+export function usePublishedUrl(
+  projectId: string | undefined,
+  workloadName: string | undefined
+): { data: PublishedUrl | null | undefined; isLoading: boolean } {
+  const all = usePublishedUrls(projectId, !!workloadName);
+  return {
+    data:
+      all.data === undefined
+        ? undefined
+        : workloadName
+          ? (all.data[workloadName] ?? null)
+          : null,
+    isLoading: all.isLoading,
+  };
 }

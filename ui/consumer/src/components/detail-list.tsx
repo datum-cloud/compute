@@ -1,8 +1,10 @@
 /**
- * Field list matching cloud-portal `app/components/list/list.tsx` exactly
- * (same classes as ALB General / Configuration — do not add flex-1 on values).
+ * Field list matching cloud-portal `app/components/list/list.tsx`: datum-ui
+ * `CardField` rows so a list inside a `sectioned` Card lines up with
+ * hand-written fields (50/50 grid, inset dividers).
  */
 import { Badge } from '@datum-cloud/datum-ui/badge';
+import { CardField, CardFieldLabel, CardFieldValue } from '@datum-cloud/datum-ui/card';
 import { cn } from '@datum-cloud/datum-ui/utils';
 
 export interface DetailListItem {
@@ -28,24 +30,10 @@ export function DetailList({
       {items
         .filter((item) => !item.hidden)
         .map((item, index) => (
-          <div
-            key={index}
-            className={cn(
-              'border-border flex w-full flex-col gap-2 py-3 not-last:border-b sm:flex-row sm:items-center',
-              itemClassName,
-              item.className
-            )}>
-            <div
-              className={cn(
-                'flex min-w-0 items-center justify-start gap-1.5 text-left text-sm font-semibold sm:min-w-[200px]',
-                labelClassName
-              )}>
-              {item.label}
-            </div>
-            <div className="flex min-w-0 max-w-full justify-start overflow-hidden text-left text-sm font-normal wrap-break-word sm:justify-end sm:text-right">
-              {item.content}
-            </div>
-          </div>
+          <CardField key={index} className={cn(itemClassName, item.className)}>
+            <CardFieldLabel className={labelClassName}>{item.label}</CardFieldLabel>
+            <CardFieldValue className="min-w-0 wrap-break-word">{item.content}</CardFieldValue>
+          </CardField>
         ))}
     </div>
   );

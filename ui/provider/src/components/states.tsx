@@ -24,7 +24,7 @@ export function LoadingSkeleton() {
 export function RestrictedState({ message }: { message: string }) {
   return (
     <div data-testid="provider-plugin-restricted" className="flex flex-col gap-4">
-      <Card className="max-w-md">
+      <Card size="sm" className="max-w-md">
         <CardContent className="flex flex-col items-start gap-3">
           <LockIcon className="text-muted-foreground size-6" />
           <div>
@@ -42,7 +42,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
 
   return (
     <div data-testid="provider-plugin-error" className="flex flex-col gap-4">
-      <Card className="max-w-md">
+      <Card size="sm" className="max-w-md">
         <CardContent className="flex flex-col items-start gap-3">
           <ServerCrashIcon className="text-destructive size-6" />
           <div>

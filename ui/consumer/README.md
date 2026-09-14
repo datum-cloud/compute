@@ -17,13 +17,14 @@ is to give operators visibility into what's already running:
 - **Workload detail** (`workloads/:workloadName`) — Overview tab only: stat
   tiles, configuration, and an embedded running-instances table.
 - **Instance detail** (`workloads/:workloadName/instances/:instanceName`) —
-  Overview tab only: stat tiles (uptime, region, instance type, image),
-  network card, health conditions, runtime config.
+  Overview, Metrics, and Logs. Overview shows live CPU/memory KPIs (and ALB
+  request/p99/error KPIs when the workload is published on a URL). The Logs
+  tab is ALB access logs via the o11y Loki API when an HTTPProxy exists;
+  otherwise it stays empty. Manage/Activity remain placeholders.
 
-No deploy/edit/delete forms, and no Activity/Metrics/Settings tabs in v1 —
-those stay out of scope until there's a real telemetry/activity source to back
-them. `CliBanner`/`SectionCard` (in `src/components/cli-section.tsx`) point
-users at the equivalent `datumctl` commands wherever the portal can't do
+No deploy/edit/delete forms. Activity stays out of scope until there is a
+real activity source. `CliBanner`/`SectionCard` (in `src/components/cli-section.tsx`)
+point users at the equivalent `datumctl` commands wherever the portal can't do
 something itself.
 
 ## Relationship to cloud-portal PR #1315
@@ -128,10 +129,13 @@ server you want running:
   `workloads/:workloadName` (`WorkloadDetail`), and
   `workloads/:workloadName/instances/:instanceName/*` (`InstanceDetail`
   layout). The instance layout owns breadcrumbs / title / tabs and nests
-  Overview (index) plus Logs (`…/logs`) through `<Outlet />`. Instance pages
-  gate on `{compute.datumapis.com, instances, get}`. Overview embeds a
-  last-30-minutes `Logs.Table`; the Logs tab mounts the full explorer.
-  Entries stay empty until a Loki query is wired.
+  Overview (index), Metrics (`…/metrics`), and Logs (`…/logs`) through
+  `<Outlet />`. Instance pages gate on `{compute.datumapis.com, instances, get}`.
+  Overview embeds a last-30-minutes `Logs.Table` and live metric KPIs. The
+  Logs tab mounts the full explorer against ALB access logs when the workload
+  has a published HTTPProxy. Metrics query the portal `POST /api/prometheus`
+  VictoriaMetrics path for `datum_compute_instance_*` CPU/memory (and Envoy
+  ALB series when published).
 
 Three things stay in lockstep, same as the sample plugin:
 
@@ -154,7 +158,10 @@ ui/consumer/
   vite.config.ts          MF container "workload.compute.datumapis.com"
   public/plugin-manifest.json
   src/
-    lib/api.ts             fetch wrappers + useQuery hooks (workloads/instances)
+    lib/api.ts             fetch wrappers + useQuery hooks (workloads/instances/HTTPProxy)
+    lib/prometheus.ts       POST /api/prometheus helpers
+    lib/o11y-logs.ts        Loki query_range + ALB LogQL
+    lib/metrics-queries.ts  PromQL builders + instance identity discovery
     lib/format.ts           formatUptime / splitSlashValue (ported as-is)
     schema.ts                Zod schemas for Workload / Instance
     adapter.ts                raw K8s JSON → schema mappers
@@ -163,5 +170,8 @@ ui/consumer/
     pages/workload-list.tsx
     pages/workload-detail.tsx
     pages/instance-detail.tsx
+    pages/instance-overview.tsx
+    pages/instance-logs.tsx
+    pages/instance-metrics.tsx
     main.tsx                 standalone preview harness only
 ```

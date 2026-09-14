@@ -19,6 +19,7 @@
  *   equivalent query staff-portal's own Consumers tab runs).
  */
 import { fetchWorkloads, proxyFetchAbsolute, ApiError, PLUGIN_ID } from './api';
+import { fetchLocations, type Location } from './locations';
 import type { Workload } from '../schema';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 
@@ -249,6 +250,11 @@ export interface FleetHealth {
   /** Every workload across the fleet, sorted worst-first (severity, then most-recently-changed). */
   workloads: FleetWorkload[];
   failed: FailedProject[];
+  /**
+   * Merged Locations catalogs from the same per-project fan-out as workloads.
+   * Empty when no project could list `locations.miloapis.com`.
+   */
+  locations: Location[];
 }
 
 /**
@@ -326,12 +332,16 @@ async function fetchFleetHealth(serviceResourceName: string): Promise<FleetHealt
     MAX_CONCURRENT_PROJECT_FETCHES,
     async (project) => {
       try {
-        const workloads = await fetchWorkloads(project.name);
-        return { project, workloads, error: null as string | null };
+        const [workloads, locations] = await Promise.all([
+          fetchWorkloads(project.name),
+          fetchLocations(project.name).catch(() => [] as Location[]),
+        ]);
+        return { project, workloads, locations, error: null as string | null };
       } catch (err) {
         return {
           project,
           workloads: [] as Workload[],
+          locations: [] as Location[],
           error: err instanceof Error ? err.message : 'Failed to load workloads',
         };
       }
@@ -371,6 +381,13 @@ async function fetchFleetHealth(serviceResourceName: string): Promise<FleetHealt
     else severityCounts[w.workload.health]++;
   }
 
+  const locationsByName = new Map<string, Location>();
+  for (const location of outcomes.flatMap((o) => o.locations)) {
+    if (location.name && !locationsByName.has(location.name)) {
+      locationsByName.set(location.name, location);
+    }
+  }
+
   return {
     consumerCount: activeConsumerProjects.length,
     totalWorkloads: workloads.length,
@@ -378,6 +395,7 @@ async function fetchFleetHealth(serviceResourceName: string): Promise<FleetHealt
     severityCounts,
     workloads,
     failed,
+    locations: [...locationsByName.values()],
   };
 }
 

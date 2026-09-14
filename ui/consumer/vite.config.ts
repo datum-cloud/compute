@@ -72,6 +72,7 @@ export default defineConfig({
         '@datum-cloud/datum-ui/badge': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/button': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/card': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/empty-content': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/icons': { singleton: true, requiredVersion: false },
         // Do not share `logs`: MF colocates lucide-react / date-fns into the
         // logs loadShare chunk, so a host-provided logs module replaces those
