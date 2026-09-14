@@ -103,7 +103,7 @@ type WorkloadRenderInput struct {
 	Name         string            `json:"name" jsonschema:"Workload name, a DNS label, e.g. \"api-backend\". Cannot be changed later."`
 	Image        string            `json:"image,omitempty" jsonschema:"Fully qualified container image, e.g. \"ghcr.io/acme/api:1.4.2\". Required unless vm is set. A bare name is the most common cause of ImageUnavailable afterwards."`
 	InstanceType string            `json:"instanceType,omitempty" jsonschema:"Instance type from compute_instance_types_list. Defaults to the only one accepted today."`
-	RuntimeClass string            `json:"runtimeClass,omitempty" jsonschema:"Execution tier the instances run in, named verbatim from the RuntimeClass objects resources_list returns for compute.datumapis.com/v1alpha. Leave unset unless the person named one: the server picks its default, and the tier cannot be changed after the workload exists."`
+	RuntimeClass string            `json:"runtimeClass,omitempty" jsonschema:"Execution tier the instances run in, named verbatim from the RuntimeClass objects resources_list returns for compute.datumapis.com/v1alpha. Offer only a class whose Available status is not False. Leave unset to take the class marked default, and name that class to the person before applying: the tier cannot be changed after the workload exists. When changing an existing workload, pass the class it already has."`
 	Network      string            `json:"network,omitempty" jsonschema:"Network the instance attaches to. Defaults to \"default\"."`
 	Placements   []RenderPlacement `json:"placements" jsonschema:"Where instances run and how many. At least one is required."`
 	Ports        []RenderPort      `json:"ports,omitempty" jsonschema:"Named ports the workload serves. Each is also opened to the internet, since a port nothing can reach is not useful."`
@@ -135,10 +135,12 @@ func registerRenderTool(s *mcp.Server, deps DepsFor) {
 			"complete Workload manifest, and report what rendering it settled. Nothing is read and nothing " +
 			"is changed, so render as often as it takes to get the manifest right. Read the manifest that " +
 			"comes back rather than assuming it says what was asked for, and read the notes: they name the " +
-			"choices that cannot be changed once the workload exists, the interface's address families and " +
-			"a public IPv4 address among them. Gather the inputs from the person rather than inventing " +
-			"them: take location names from locations_list with service \"compute\" and the instance " +
-			"type from compute_instance_types_list. A placement either names locations or selects them by " +
+			"choices that cannot be changed once the workload exists, the interface's address families, " +
+			"a public IPv4 address and the runtime class among them. Gather the inputs from the person " +
+			"rather than inventing them: take location names from locations_list with service \"compute\" " +
+			"and the instance type from compute_instance_types_list. When the manifest changes an existing " +
+			"workload, read that workload first and pass its runtime class, which cannot change. " +
+			"A placement either names locations or selects them by " +
 			"topology; use a locationSelector for \"every location in a city or region\", which also picks " +
 			"up locations added later. The manifest is then passed to resources_plan and, once the person " +
 			"agrees, resources_apply. Load the workload-create skill before using this. Writes nothing.",
@@ -287,6 +289,21 @@ func renderNotes(in workloadspec.Input) []string {
 		notes = append(notes, fmt.Sprintf(
 			"No instance type was given, so every instance is %s. Per-container CPU and memory are not "+
 				"accepted: the instance type is what decides the size.", workloadspec.DefaultInstanceType))
+	}
+	// The server stamps its default class into the stored workload, so an unset
+	// class is still a final choice. It is made where the person cannot see it
+	// unless the note names it.
+	if in.RuntimeClass == "" {
+		notes = append(notes, fmt.Sprintf(
+			"No runtime class was given, so the server picks the RuntimeClass marked default when the "+
+				"workload is created, and that class cannot be changed afterwards. Find it with %s, name "+
+				"it to the person, and confirm it before this is applied. If this manifest updates an "+
+				"existing workload, render again with the class that workload already has: leaving it "+
+				"out is refused unless that class is the default.", baseToolResourcesList))
+	} else {
+		notes = append(notes, fmt.Sprintf(
+			"The instances run in runtime class %q, and that is final once the workload exists. "+
+				"Running in a different class later means creating a new workload.", in.RuntimeClass))
 	}
 	if in.Network == "" {
 		notes = append(notes, fmt.Sprintf(

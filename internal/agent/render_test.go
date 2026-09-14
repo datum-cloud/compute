@@ -135,6 +135,46 @@ func TestWorkloadRenderPassesTheRuntimeClassThrough(t *testing.T) {
 	}
 }
 
+// TestWorkloadRenderSaysTheRuntimeClassIsFinal: leaving the class out does not
+// leave it open. The server stamps its default at create and the class never
+// changes, so the notes must surface the choice either way, and an unset class
+// must also warn that an update which drops the class is refused.
+func TestWorkloadRenderSaysTheRuntimeClassIsFinal(t *testing.T) {
+	deps := fixtureDeps(fixtureReader())
+
+	_, bare, err := workloadRender(deps)(context.Background(), nil, renderInput())
+	if err != nil {
+		t.Fatalf("compute_workload_render: %v", err)
+	}
+	notes := strings.Join(bare.Notes, "\n")
+	for _, want := range []string{
+		"No runtime class was given",
+		"marked default",
+		"cannot be changed afterwards",
+		"confirm it before this is applied",
+		"existing workload",
+		baseToolResourcesList,
+	} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("notes for an unset runtime class do not mention %q:\n%s", want, notes)
+		}
+	}
+
+	in := renderInput()
+	in.RuntimeClass = "datum-sandbox"
+	_, named, err := workloadRender(deps)(context.Background(), nil, in)
+	if err != nil {
+		t.Fatalf("compute_workload_render: %v", err)
+	}
+	notes = strings.Join(named.Notes, "\n")
+	if !strings.Contains(notes, `runtime class "datum-sandbox"`) || !strings.Contains(notes, "final") {
+		t.Errorf("notes do not report the named runtime class as final:\n%s", notes)
+	}
+	if strings.Contains(notes, "No runtime class was given") {
+		t.Errorf("notes claim no runtime class was given after one was named:\n%s", notes)
+	}
+}
+
 // TestWorkloadRenderReportsAPublicAddressAsFinal: asking for IPv4 fixes the
 // address families for the life of the workload, so the note has to change
 // with the input rather than always saying the same thing.
