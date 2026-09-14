@@ -90,7 +90,7 @@ user-actionable
   Something in the workload the customer wrote, or in their project's setup.
   They can fix it. Examples: ImageUnavailable, InstanceCrashing,
   ConfigurationError, QuotaExceeded, SourceNotFound, SourceTooLarge,
-  NetworkNotFound, NoMatchingLocations.
+  NetworkNotFound, NoMatchingLocations, RuntimeClassNotServed.
 
 platform fault
   Datum's to fix. No change to the workload will help, and suggesting one wastes
@@ -173,9 +173,10 @@ Referenced data
   `referenced-data-triage`.
 
 Placement
-  A WorkloadDeployment has to know which location it is running in. Load
-  `placement-triage` — and note before you answer that every failure in this
-  area is Datum's location setup, not the customer's placement request.
+  A WorkloadDeployment has to know which location it is running in, and that
+  location has to offer the workload's runtime class. Load `placement-triage`
+  — and note before you answer that every failure in this area is Datum's
+  location setup except `RuntimeClassNotServed`, which the customer can act on.
 
 Instance runtime
   Image pulls, crash loops, and rejected configurations are reported by the
@@ -195,7 +196,8 @@ a replica count. Where it runs and how many of it there are live in the
 placement, not in the template.
 
 Some of that is settled for good at create. The workload's name, the runtime
-kind, and the network interface — its name, the address families it carries,
+kind, the runtime class (the default one when none is named), and the network
+interface — its name, the address families it carries,
 any extra addresses such as a public IPv4 one, and what becomes of those
 addresses afterwards — cannot be changed later. Getting one of them wrong means
 a new workload rather than an edit, which is why the create procedure asks
@@ -238,8 +240,9 @@ The platform's base tools fill in the rest of a create. Call locations_list
 with service "compute" for the locations this project may place a workload in —
 a location absent from it is one compute is not offered in, and placements name
 these verbatim or select them by their topology. quota_get says how much
-compute is left, resources_list reads Networks and RuntimeClasses, and
-resources_plan and resources_apply make the change.
+compute is left, resources_list reads Networks and RuntimeClasses (with
+whether each class is available and which is the default), and resources_plan
+and resources_apply make the change.
 
 Skills (load on demand) carry the procedures: workload-not-available,
 quota-triage, instance-not-ready, referenced-data-triage, placement-triage,

@@ -101,7 +101,7 @@ orientation and classification; the procedures live here and nowhere else.
 | `quota-triage` | `QuotaExceeded` vs `QuotaNoBudget` vs backend faults |
 | `instance-not-ready` | `ImageUnavailable`, `InstanceCrashing`, `ConfigurationError` |
 | `referenced-data-triage` | Missing, unauthorized, or oversized ConfigMaps/Secrets |
-| `placement-triage` | `NoMatchingLocation`, `AmbiguousServingLocation`, `LocationMismatch` |
+| `placement-triage` | `NoMatchingLocation`, `AmbiguousServingLocation`, `LocationMismatch` (Datum's), and `RuntimeClassNotServed` (the customer's) |
 | `stalled-transient` | A transient reason that has outlived its expected window |
 | `workload-create` | Deploying something new: prerequisites, the choices that are final at create, and render → plan → show → confirm → apply |
 

@@ -540,8 +540,15 @@ var catalog = []ReasonInfo{
 		Explanation: "The runtime class this workload selected is not offered in the location this " +
 			"placement targets, so nothing here can be placed. Nothing else about the workload is " +
 			"checked until this clears.",
-		Remediation: "Select a runtime class the location offers, or a location that offers this " +
-			"class. The status message names both.",
+		// Unlike the other reasons placement-triage covers, the customer can act
+		// on this one. The class cannot change on an existing workload, so the
+		// remediation offers an edit for the location and a new workload for the
+		// class.
+		Remediation: "The status message names the class and the location. Either change this " +
+			"placement to a location that offers the class, which is an edit to the workload, or " +
+			"create a new workload in a class this location offers: the runtime class of an existing " +
+			"workload cannot be changed. If this location was expected to offer the class, raise it " +
+			"with Datum.",
 		Skill: SkillPlacementTriage,
 	},
 	{
