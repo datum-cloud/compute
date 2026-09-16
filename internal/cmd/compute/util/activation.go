@@ -1,11 +1,12 @@
 package util
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 	"go.datum.net/datumctl/plugin"
-	"go.datum.net/datumctl/serviceactivation"
+	"go.miloapis.com/service-catalog/pkg/activation"
 	"k8s.io/client-go/rest"
 )
 
@@ -14,22 +15,48 @@ import (
 // or request access without first being gated on that same access.
 const gateSkipAnnotation = "compute.datumapis.com/skip-activation-gate"
 
-// ActivationConfig is the service-activation configuration for the compute
-// service. All user-facing copy is templated on these values, so the SDK prints
-// only plugin-local verbs (datumctl compute access ...).
-func ActivationConfig() serviceactivation.Config {
-	return serviceactivation.Config{
-		ObjectName:    "compute",
-		CanonicalName: "compute.datumapis.com",
-		DisplayName:   "Compute",
-		AccessCommand: "datumctl compute access",
+// ComputeServiceName is the canonical catalog name of the compute service. The
+// activation SDK builds its user-facing commands from this name, for example
+// `datumctl services enable compute.datumapis.com`.
+const ComputeServiceName = "compute.datumapis.com"
+
+// ResolveComputeService looks up the compute Service in the platform-wide
+// catalog.
+//
+// The SDK reads the enablement mode and description from the live Service
+// instead of a hand-written copy. Without the mode, the SDK treats compute as
+// self-service. The gate would then submit access requests without asking,
+// including from CI, even though compute requires provider approval.
+func ResolveComputeService(ctx context.Context) (activation.ServiceInfo, error) {
+	cfg, err := restConfig(func(apiHost string) string { return "https://" + apiHost })
+	if err != nil {
+		return activation.ServiceInfo{}, err
 	}
+	cc, err := activation.NewCatalogRESTClient(cfg)
+	if err != nil {
+		return activation.ServiceInfo{}, err
+	}
+	services, err := cc.ListServices(ctx)
+	if err != nil {
+		return activation.ServiceInfo{}, fmt.Errorf("looking up the compute service: %w", err)
+	}
+	return activation.FindService(services, ComputeServiceName)
 }
 
 // NewEntitlementClient builds a service-activation client targeting the
-// project's virtual control plane, using the datumctl-injected host and a fresh
-// credentials-helper token. This is the plugin's half of the SDK's auth seam.
-func NewEntitlementClient(project string) (serviceactivation.EntitlementClient, error) {
+// project's virtual control plane, where ServiceEntitlements live.
+func NewEntitlementClient(project string) (activation.EntitlementClient, error) {
+	cfg, err := restConfig(func(apiHost string) string { return ProjectControlPlaneURL(apiHost, project) })
+	if err != nil {
+		return nil, err
+	}
+	return activation.NewRESTClient(cfg)
+}
+
+// restConfig builds a REST config from the datumctl-injected API host and a
+// fresh credentials-helper token. This is the plugin's half of the SDK's auth
+// seam.
+func restConfig(hostURL func(apiHost string) string) (*rest.Config, error) {
 	ctx := plugin.Context()
 	if ctx.APIHost == "" {
 		return nil, fmt.Errorf("DATUM_API_HOST is not set; is this plugin running via datumctl?")
@@ -38,11 +65,10 @@ func NewEntitlementClient(project string) (serviceactivation.EntitlementClient, 
 	if err != nil {
 		return nil, fmt.Errorf("getting credentials: %w", err)
 	}
-	cfg := &rest.Config{
-		Host:        ProjectControlPlaneURL(ctx.APIHost, project),
+	return &rest.Config{
+		Host:        hostURL(ctx.APIHost),
 		BearerToken: token,
-	}
-	return serviceactivation.NewRESTClient(cfg)
+	}, nil
 }
 
 // MarkGateExempt tags a command so the activation preflight skips it and its
@@ -62,12 +88,16 @@ func RunActivationGate(cmd *cobra.Command) error {
 	if project == "" {
 		return nil
 	}
+	service, err := ResolveComputeService(cmd.Context())
+	if err != nil {
+		return err
+	}
 	ec, err := NewEntitlementClient(project)
 	if err != nil {
 		return err
 	}
-	gate := serviceactivation.Gate{
-		Config:  ActivationConfig(),
+	gate := activation.Gate{
+		Service: service,
 		Client:  ec,
 		IO:      ActivationIO(cmd),
 		Project: project,
@@ -95,8 +125,8 @@ func GateExempt(cmd *cobra.Command) bool {
 }
 
 // ActivationIO adapts a command's streams to the SDK's IOStreams.
-func ActivationIO(cmd *cobra.Command) serviceactivation.IOStreams {
-	return serviceactivation.IOStreams{
+func ActivationIO(cmd *cobra.Command) activation.IOStreams {
+	return activation.IOStreams{
 		In:  cmd.InOrStdin(),
 		Out: cmd.OutOrStdout(),
 		Err: cmd.ErrOrStderr(),

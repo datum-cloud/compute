@@ -99,8 +99,8 @@ export function useWorkloads(
 
 // ── Compute service entitlement ─────────────────────────────────────────
 //
-// Mirrors datumctl's `serviceactivation` gate: a project must have an Active
-// `ServiceEntitlement` named "compute" before the Compute API is usable. The
+// Mirrors the service catalog's activation gate (pkg/activation): a project
+// must have an Active `ServiceEntitlement` named "compute" before the Compute API is usable. The
 // entitlement is a cluster-scoped resource in the project's own control
 // plane (services.miloapis.com/v1alpha1), fetched/created through the same
 // proxy as everything else above.
