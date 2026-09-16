@@ -45,6 +45,19 @@ func TestDefaultSecurityContext(t *testing.T) {
 			stated: nil,
 			want:   nil,
 		},
+		"no class copies rather than aliases what was stated": {
+			class: nil,
+			stated: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Add: []computev1alpha.Capability{"CHOWN"},
+				},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Add: []computev1alpha.Capability{"CHOWN"},
+				},
+			},
+		},
 		"a published default is written onto a container that states nothing": {
 			class: classWithDefaults(full),
 			want: &computev1alpha.SandboxSecurityContext{
@@ -63,6 +76,51 @@ func TestDefaultSecurityContext(t *testing.T) {
 				Capabilities: &computev1alpha.SandboxCapabilities{
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
 				},
+			},
+		},
+		"a container stating adds still records the capability floor": {
+			class: classWithDefaults(full),
+			stated: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Add: []computev1alpha.Capability{"NET_BIND_SERVICE"},
+				},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Add:  []computev1alpha.Capability{"NET_BIND_SERVICE"},
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+				},
+				AllowPrivilegeEscalation: boolRef(true),
+				SeccompProfile:           runtimeDefault,
+			},
+		},
+		"an empty capability set states nothing and takes the default": {
+			class: classWithDefaults(full),
+			stated: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+					Add:  []computev1alpha.Capability{"CHOWN", "SETGID"},
+				},
+				AllowPrivilegeEscalation: boolRef(true),
+				SeccompProfile:           runtimeDefault,
+			},
+		},
+		"a container dropping one capability keeps it and gains the floor": {
+			class: classWithDefaults(full),
+			stated: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{"NET_RAW"},
+				},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{"NET_RAW", computev1alpha.CapabilityAll},
+				},
+				AllowPrivilegeEscalation: boolRef(true),
+				SeccompProfile:           runtimeDefault,
 			},
 		},
 		"a stated capability set is the whole answer": {
@@ -126,5 +184,32 @@ func TestDefaultSecurityContextDoesNotMutateInput(t *testing.T) {
 	}
 	if delta := cmp.Diff(statedBefore, stated); delta != "" {
 		t.Errorf("the stated security context was modified (-before +after):\n%s", delta)
+	}
+}
+
+// TestDefaultSecurityContextReturnsACopy checks that the result never aliases
+// what the caller passed in, including when no class resolves. A caller that
+// stored the result would otherwise be holding the same memory as the object it
+// read it from.
+func TestDefaultSecurityContextReturnsACopy(t *testing.T) {
+	stated := &computev1alpha.SandboxSecurityContext{
+		Capabilities: &computev1alpha.SandboxCapabilities{
+			Add: []computev1alpha.Capability{"CHOWN"},
+		},
+	}
+
+	for name, class := range map[string]*computev1alpha.RuntimeClass{
+		"with no class": nil,
+		"with a class":  classWithDefaults(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := DefaultSecurityContext(class, stated)
+			if got == stated {
+				t.Fatal("the result aliases the stated security context")
+			}
+			if got.Capabilities == stated.Capabilities {
+				t.Fatal("the result aliases the stated capabilities")
+			}
+		})
 	}
 }

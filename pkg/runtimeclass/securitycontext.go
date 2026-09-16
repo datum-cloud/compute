@@ -18,11 +18,17 @@ import (
 // a customer sees the capabilities, privilege escalation, and seccomp profile
 // their container runs with, and a provider runs only what the container states.
 //
-// A customer statement is the whole answer for the field it covers. Merging the
-// class default into a stated capability set would put back the invisible
-// injection this replaces, so a container that states capabilities keeps exactly
-// those. Privilege escalation and the seccomp profile default independently,
-// because each is a separate statement.
+// A customer statement is the whole answer for the capabilities it covers.
+// Merging the class default into a stated capability set would put back the
+// invisible injection this replaces, so a container that states capabilities
+// keeps exactly those. Privilege escalation and the seccomp profile default
+// independently, because each is a separate statement.
+//
+// A capability set holding neither an add nor a drop states nothing, so the two
+// ways of writing that, an absent field and an empty object, grant the same
+// capabilities. Writing only a drop does state something, and a container that
+// drops ALL receives no default grant, which is the only way to ask for no
+// capabilities at all.
 //
 // The returned value is a copy, and calling DefaultSecurityContext on its own
 // result returns an equal value, so repeated admission of an unchanged workload
@@ -32,7 +38,7 @@ func DefaultSecurityContext(
 	stated *computev1alpha.SandboxSecurityContext,
 ) *computev1alpha.SandboxSecurityContext {
 	if class == nil {
-		return stated
+		return stated.DeepCopy()
 	}
 
 	defaults := class.Spec.DefaultSecurityContext
@@ -42,14 +48,19 @@ func DefaultSecurityContext(
 		defaulted = &computev1alpha.SandboxSecurityContext{}
 	}
 
-	// Every sandbox container drops ALL regardless of class, so a container that
-	// asks for nothing still records the floor it runs at rather than leaving the
-	// customer to infer it.
-	if defaulted.Capabilities == nil {
+	switch {
+	case statesNoCapabilities(defaulted.Capabilities):
 		defaulted.Capabilities = &computev1alpha.SandboxCapabilities{
 			Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
 			Add:  defaultCapabilityAdds(defaults),
 		}
+
+	// Every sandbox container drops ALL regardless of what it states, so the
+	// floor is recorded even on a container that lists its own capabilities.
+	// Leaving it off exactly there would hide it from the customer most likely
+	// to be reading it.
+	case !slices.Contains(defaulted.Capabilities.Drop, computev1alpha.CapabilityAll):
+		defaulted.Capabilities.Drop = append(defaulted.Capabilities.Drop, computev1alpha.CapabilityAll)
 	}
 
 	if defaults != nil {
@@ -64,6 +75,13 @@ func DefaultSecurityContext(
 	}
 
 	return defaulted
+}
+
+// statesNoCapabilities reports whether a capability set asks for nothing. An
+// absent set and an empty one are the same statement, so they must not produce
+// different capabilities.
+func statesNoCapabilities(capabilities *computev1alpha.SandboxCapabilities) bool {
+	return capabilities == nil || (len(capabilities.Add) == 0 && len(capabilities.Drop) == 0)
 }
 
 // defaultCapabilityAdds returns the class's granted-by-default capabilities,
