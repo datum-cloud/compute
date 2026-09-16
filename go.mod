@@ -11,9 +11,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	go.datum.net/network-services-operator v0.26.5-0.20260911235442-196ee79e9ebf
-	// Pinned by pseudo-version to the commit deployed to staging, which is the
-	// same one network-services-operator pins. The module publishes no tag yet.
-	go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c
+	go.miloapis.com/locations v0.0.1
 	go.miloapis.com/milo v0.32.1
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sync v0.22.0
