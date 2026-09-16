@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"go.datum.net/datumctl/serviceactivation"
+	"go.miloapis.com/service-catalog/pkg/activation"
 
 	"go.datum.net/compute/internal/cmd/compute/util"
 )
@@ -43,8 +43,11 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	cfg := util.ActivationConfig()
-	state, entitlement, err := serviceactivation.Observe(cmd.Context(), ec, cfg)
+	service, err := util.ResolveComputeService(cmd.Context())
+	if err != nil {
+		return err
+	}
+	state, entitlement, err := activation.Observe(cmd.Context(), ec, service)
 	if err != nil {
 		return fmt.Errorf("checking compute access: %w", err)
 	}
@@ -52,11 +55,11 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	outputFlag, _ := cmd.Flags().GetString("output")
 	switch util.OutputFormat(outputFlag) {
 	case util.OutputJSON:
-		return util.PrintJSON(cmd.OutOrStdout(), serviceactivation.NewStatusReport(cfg, project, state, entitlement))
+		return util.PrintJSON(cmd.OutOrStdout(), activation.NewStatusReport(service, project, state, entitlement))
 	case util.OutputYAML:
-		return util.PrintYAML(cmd.OutOrStdout(), serviceactivation.NewStatusReport(cfg, project, state, entitlement))
+		return util.PrintYAML(cmd.OutOrStdout(), activation.NewStatusReport(service, project, state, entitlement))
 	default:
-		serviceactivation.RenderStatus(cmd.OutOrStdout(), cfg, project, state, entitlement)
+		activation.RenderStatus(cmd.OutOrStdout(), service, project, state, entitlement)
 		return nil
 	}
 }
@@ -82,17 +85,21 @@ func requestCommand() *cobra.Command {
 			if project == "" {
 				return fmt.Errorf("no project set — pass --project or run 'datumctl config set project <name>'")
 			}
+			service, err := util.ResolveComputeService(cmd.Context())
+			if err != nil {
+				return err
+			}
 			ec, err := util.NewEntitlementClient(project)
 			if err != nil {
 				return err
 			}
-			requester := serviceactivation.Requester{
-				Config:  util.ActivationConfig(),
+			requester := activation.Requester{
+				Service: service,
 				Client:  ec,
 				IO:      util.ActivationIO(cmd),
 				Project: project,
 			}
-			return requester.Request(cmd.Context(), serviceactivation.RequestOptions{
+			return requester.Request(cmd.Context(), activation.RequestOptions{
 				Message: message,
 				Renew:   renew,
 				Wait:    wait,

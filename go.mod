@@ -10,11 +10,9 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	go.datum.net/network-services-operator v0.26.5-0.20260911235442-196ee79e9ebf
-	// Pinned by pseudo-version to the commit deployed to staging, which is the
-	// same one network-services-operator pins. The module publishes no tag yet.
-	go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c
-	go.miloapis.com/milo v0.32.0
+	go.datum.net/network-services-operator v0.27.0
+	go.miloapis.com/locations v0.0.1
+	go.miloapis.com/milo v0.32.1
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
@@ -131,7 +129,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.miloapis.com/service-catalog v0.4.0
+	go.miloapis.com/service-catalog v0.7.0
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
@@ -184,6 +182,6 @@ require (
 	github.com/moby/buildkit v0.31.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/tonistiigi/fsutil v0.0.0-20260609091201-0257b3308df4
-	go.datum.net/datumctl v0.17.1-0.20260710003126-296c2fcbbd67
+	go.datum.net/datumctl v0.19.0
 	mvdan.cc/sh/v3 v3.12.0
 )

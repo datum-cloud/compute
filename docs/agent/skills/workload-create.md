@@ -32,7 +32,7 @@ different answer:
 
 | Check | Tool | If it fails |
 |---|---|---|
-| Compute is offered to the project | `locations_list` with service `compute` | Nothing can be placed. Datum's to enable — the user runs `datumctl compute access request`, and approval is a manual step on Datum's side. |
+| Compute is offered to the project | `locations_list` with service `compute` | Nothing can be placed. Datum's to enable — the user runs `datumctl services enable compute.datumapis.com`, and approval is a manual step on Datum's side. |
 | Somewhere to run it | `locations_list` with service `compute` | The location names it returns are the only ones a placement may name. A location missing from the list is one compute is not offered in. An empty list means nothing is available to this project yet; that is Datum's, not something the user can add. |
 | A network | `resources_list` for kind `Network` in `networking.datumapis.com/v1alpha` | `default` by convention. If the one the workload names is missing, add a Network manifest of that name to the same `resources_plan` call — the plan orders it ahead of the Workload. Say so when you show the plan, because it is a second object being created. |
 | Quota | `quota_get` with service `compute.datumapis.com` | Quota is granted by Datum and cannot be self-served. A project with none can still create a workload; its instances then sit at `QuotaGranted=False` with `QuotaNoBudget` and never start. |
@@ -324,7 +324,7 @@ catch.
 You are usually working without one. When the user is at a terminal, the same
 workload is one command, and these are theirs to run, not yours to assume:
 
-    datumctl compute access request
+    datumctl services enable compute.datumapis.com
     datumctl compute build --push --output ghcr.io/acme/api:1.4.2 .
     datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW --min=1 --port=8080
     datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW --http-port=8080
