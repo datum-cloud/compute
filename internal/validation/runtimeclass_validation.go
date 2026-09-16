@@ -43,6 +43,7 @@ func validateRuntimeClassSelection(
 		// request to add one could never be honored. A drop only reduces
 		// privilege and needs no class.
 		allErrs = append(allErrs, validateCapabilityAddsWithoutClasses(spec, fieldPath)...)
+		allErrs = append(allErrs, validatePrivilegeWideningWithoutClasses(spec, fieldPath)...)
 		return allErrs
 	}
 
@@ -106,6 +107,44 @@ func validateCapabilityAddsWithoutClasses(spec computev1alpha.InstanceSpec, fiel
 		allErrs = append(allErrs, field.Forbidden(
 			containersPath.Index(i).Child("securityContext", "capabilities", "add"),
 			"runtime classes are not enabled on this control plane, so no capability can be added"))
+	}
+	return allErrs
+}
+
+// validatePrivilegeWideningWithoutClasses rejects the security options that
+// loosen a container's confinement on a control plane that publishes no runtime
+// classes.
+//
+// A class is what states the confinement an execution tier offers, and with no
+// catalog there is nothing that could state it. Tightening confinement needs no
+// such statement, so a container may still turn privilege escalation off or ask
+// for the runtime's own seccomp profile.
+func validatePrivilegeWideningWithoutClasses(
+	spec computev1alpha.InstanceSpec,
+	fieldPath *field.Path,
+) field.ErrorList {
+	if spec.Runtime.Sandbox == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+	containersPath := fieldPath.Child("runtime", "sandbox", "containers")
+	for i, container := range spec.Runtime.Sandbox.Containers {
+		if container.SecurityContext == nil {
+			continue
+		}
+		securityPath := containersPath.Index(i).Child("securityContext")
+
+		if allowed := container.SecurityContext.AllowPrivilegeEscalation; allowed != nil && *allowed {
+			allErrs = append(allErrs, field.Forbidden(securityPath.Child("allowPrivilegeEscalation"),
+				"runtime classes are not enabled on this control plane, so privilege escalation cannot be allowed"))
+		}
+
+		if profile := container.SecurityContext.SeccompProfile; profile != nil &&
+			profile.Type == computev1alpha.SeccompProfileTypeUnconfined {
+			allErrs = append(allErrs, field.Forbidden(securityPath.Child("seccompProfile", "type"),
+				"runtime classes are not enabled on this control plane, so seccomp cannot be disabled"))
+		}
 	}
 	return allErrs
 }

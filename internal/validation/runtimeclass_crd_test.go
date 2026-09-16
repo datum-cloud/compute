@@ -199,6 +199,63 @@ func TestRuntimeClassCRD(t *testing.T) {
 		})
 	}
 
+	t.Run("a class publishes a default drawn from what it grants", func(t *testing.T) {
+		class := newCatalogEntry("defaults-within-grants")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown, testCapNetBindService}
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+				Add: []computev1alpha.Capability{testCapNetBindService},
+			},
+			AllowPrivilegeEscalation: &escalationAllowed,
+			SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+				Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+			},
+		}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	// A customer reads the default before choosing the class and reads it back
+	// on their own workload. A default naming something the class does not
+	// publish as grantable would be a capability the customer can receive but
+	// cannot ask for, so the catalog cannot express one.
+	t.Run("a class cannot grant by default what it does not publish as grantable", func(t *testing.T) {
+		class := newCatalogEntry("defaults-outside-grants")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown}
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+				Add: []computev1alpha.Capability{testCapNetBindService},
+			},
+		}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"defaultSecurityContext.capabilities.add must only name capabilities listed in capabilities.grantableCapabilities")
+	})
+
+	t.Run("a class publishing no grantable capabilities can grant none by default", func(t *testing.T) {
+		class := newCatalogEntry("defaults-without-grants")
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+				Add: []computev1alpha.Capability{testCapChown},
+			},
+		}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"defaultSecurityContext.capabilities.add must only name capabilities listed in capabilities.grantableCapabilities")
+	})
+
+	// A profile loaded from a file on the host would name a path on a machine
+	// the customer cannot see, so the schema offers no way to state one.
+	t.Run("a class cannot publish a seccomp profile the platform has no name for", func(t *testing.T) {
+		class := newCatalogEntry("invented-seccomp")
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			SeccompProfile: &computev1alpha.SandboxSeccompProfile{Type: "Localhost"},
+		}
+		require.Error(t, c.Create(ctx, class))
+	})
+
 	t.Run("a class must state its isolation boundary", func(t *testing.T) {
 		class := newCatalogEntry("no-boundary")
 		class.Spec.Isolation.Boundary = ""
@@ -220,3 +277,7 @@ func newCatalogEntry(name string) *computev1alpha.RuntimeClass {
 		},
 	}
 }
+
+// escalationAllowed is addressable so a catalog entry can publish a default
+// that allows privilege escalation.
+var escalationAllowed = true

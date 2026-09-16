@@ -327,3 +327,73 @@ func TestValidateRuntimeClassCapabilities(t *testing.T) {
 		t.Errorf("rejection should name the feature and the class, got: %s", got)
 	}
 }
+
+// confinementSpec is a sandbox whose single container states the security
+// options that loosen or tighten its confinement.
+func confinementSpec(class string, allowEscalation *bool, profile *computev1alpha.SandboxSeccompProfile) computev1alpha.InstanceSpec {
+	return computev1alpha.InstanceSpec{
+		Runtime: computev1alpha.InstanceRuntimeSpec{
+			Class: class,
+			Sandbox: &computev1alpha.SandboxRuntime{
+				Containers: []computev1alpha.SandboxContainer{{
+					Name:  "nginx",
+					Image: "docker.io/library/nginx:1.27",
+					SecurityContext: &computev1alpha.SandboxSecurityContext{
+						AllowPrivilegeEscalation: allowEscalation,
+						SeccompProfile:           profile,
+					},
+				}},
+			},
+		},
+	}
+}
+
+// TestValidateConfinementSelection verifies the security options that loosen a
+// container's confinement. A class states the confinement a tier offers, so with
+// no catalog there is nothing that could state it and a loosening request is
+// refused. Tightening needs no class and is always accepted.
+func TestValidateConfinementSelection(t *testing.T) {
+	root := field.NewPath("spec", "template", "spec")
+	securityPath := root.Child("runtime", "sandbox", "containers").Index(0).Child("securityContext")
+
+	allow, deny := true, false
+	runtimeDefault := &computev1alpha.SandboxSeccompProfile{Type: computev1alpha.SeccompProfileTypeRuntimeDefault}
+	unconfined := &computev1alpha.SandboxSeccompProfile{Type: computev1alpha.SeccompProfileTypeUnconfined}
+
+	cases := map[string]struct {
+		gate           bool
+		spec           computev1alpha.InstanceSpec
+		catalog        runtimeclass.Catalog
+		expectedErrors field.ErrorList
+	}{
+		"gate off: allowing privilege escalation is refused": {
+			spec: confinementSpec("", &allow, nil),
+			expectedErrors: field.ErrorList{
+				field.Forbidden(securityPath.Child("allowPrivilegeEscalation"), ""),
+			},
+		},
+		"gate off: disabling seccomp is refused": {
+			spec: confinementSpec("", nil, unconfined),
+			expectedErrors: field.ErrorList{
+				field.Forbidden(securityPath.Child("seccompProfile", "type"), ""),
+			},
+		},
+		"gate off: tightening confinement is accepted": {
+			spec: confinementSpec("", &deny, runtimeDefault),
+		},
+		"gate on: a class can serve either confinement": {
+			gate:    true,
+			spec:    confinementSpec(testClassBasalt, &allow, unconfined),
+			catalog: defaultCatalog(),
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, tc.gate)
+
+			opts := WorkloadValidationOptions{RuntimeClasses: tc.catalog}
+			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(tc.spec, root, opts))
+		})
+	}
+}
