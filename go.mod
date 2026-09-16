@@ -10,7 +10,7 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	go.datum.net/network-services-operator v0.26.5-0.20260911235442-196ee79e9ebf
+	go.datum.net/network-services-operator v0.27.0
 	go.miloapis.com/locations v0.0.1
 	go.miloapis.com/milo v0.32.1
 	golang.org/x/crypto v0.56.0
