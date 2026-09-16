@@ -1,0 +1,34 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: e2e-acceptance-workload
+  namespace: default
+spec:
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          containers:
+            - name: httpbin
+              image: kennethreitz/httpbin
+              ports:
+                - name: http
+                  port: 80
+      networkInterfaces:
+        - network:
+            name: e2e-acceptance-network
+          networkPolicy:
+            ingress:
+              - ports:
+                  - port: 80
+                from:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+  placements:
+    - name: central
+      cityCodes:
+        - ORD
+      scaleSettings:
+        minReplicas: 1
