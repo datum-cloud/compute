@@ -129,7 +129,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.miloapis.com/service-catalog v0.6.0
+	go.miloapis.com/service-catalog v0.7.0
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
@@ -182,6 +182,6 @@ require (
 	github.com/moby/buildkit v0.31.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/tonistiigi/fsutil v0.0.0-20260609091201-0257b3308df4
-	go.datum.net/datumctl v0.18.3
+	go.datum.net/datumctl v0.19.0
 	mvdan.cc/sh/v3 v3.12.0
 )
