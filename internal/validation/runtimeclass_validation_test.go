@@ -3,12 +3,23 @@
 package validation
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	authorizationv1 "k8s.io/api/authorization/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/utils/ptr"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
@@ -396,4 +407,142 @@ func TestValidateConfinementSelection(t *testing.T) {
 			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(tc.spec, root, opts))
 		})
 	}
+}
+
+// stampedWorkload is a workload holding the security context admission writes
+// when a class publishes a default: a capability grant, allowed privilege
+// escalation, and an unconfined seccomp profile. Every value here was written by
+// the platform, not typed by the customer.
+func stampedWorkload() *computev1alpha.Workload {
+	workload := &computev1alpha.Workload{}
+	workload.Spec.Template.Spec = confinementSpec(testClassBasalt, nil, nil)
+	workload.Spec.Template.Spec.Runtime.Sandbox.Containers[0].SecurityContext =
+		&computev1alpha.SandboxSecurityContext{
+			Capabilities: &computev1alpha.SandboxCapabilities{
+				Add:  []computev1alpha.Capability{testCapChown},
+				Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+			},
+			AllowPrivilegeEscalation: ptr.To(true),
+			SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+				Type: computev1alpha.SeccompProfileTypeUnconfined,
+			},
+		}
+	return workload
+}
+
+// TestGateOffLeavesStampedWorkloadsUpdatable covers the rollback path. Turning
+// the gate off is how an operator retreats from runtime classes, and workloads
+// already stored hold a security context the platform wrote for them. Rejecting
+// those values on update would make every such workload permanently unupdatable,
+// including the controller's finalizer patch, and so undeletable.
+func TestGateOffLeavesStampedWorkloadsUpdatable(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, false)
+	root := field.NewPath("spec", "template", "spec")
+
+	stored := stampedWorkload()
+
+	t.Run("re-submitting the stored workload unchanged is accepted", func(t *testing.T) {
+		unchanged := stored.DeepCopy()
+		opts := WorkloadValidationOptions{OldWorkload: stored}
+		if errs := validateRuntimeClassSelection(unchanged.Spec.Template.Spec, root, opts); len(errs) > 0 {
+			t.Errorf("a stored workload must stay updatable after the gate goes off, got %v", errs)
+		}
+	})
+
+	t.Run("an unrelated edit to the same workload is accepted", func(t *testing.T) {
+		edited := stored.DeepCopy()
+		edited.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "docker.io/library/nginx:1.28"
+		opts := WorkloadValidationOptions{OldWorkload: stored}
+		if errs := validateRuntimeClassSelection(edited.Spec.Template.Spec, root, opts); len(errs) > 0 {
+			t.Errorf("an unrelated edit must not be blocked by a stamped value, got %v", errs)
+		}
+	})
+
+	t.Run("newly widening confinement is still refused", func(t *testing.T) {
+		widened := stored.DeepCopy()
+		widened.Spec.Template.Spec.Runtime.Sandbox.Containers[0].
+			SecurityContext.Capabilities.Add = []computev1alpha.Capability{testCapChown, testCapNetBindService}
+		opts := WorkloadValidationOptions{OldWorkload: stored}
+		if errs := validateRuntimeClassSelection(widened.Spec.Template.Spec, root, opts); len(errs) == 0 {
+			t.Error("a customer adding a capability with the gate off must still be refused")
+		}
+	})
+
+	t.Run("creating the same workload fresh is refused", func(t *testing.T) {
+		created := stored.DeepCopy()
+		opts := WorkloadValidationOptions{}
+		if errs := validateRuntimeClassSelection(created.Spec.Template.Spec, root, opts); len(errs) == 0 {
+			t.Error("a create carries no stored value to ratchet against and must be refused")
+		}
+	})
+}
+
+// TestValidateWorkloadUpdateAfterGateOff exercises the rollback path through
+// the real entry point, mirroring workload_controller.go's finalizer-only
+// Update: the same spec, platform-stamped security context included, written
+// back verbatim. Rejecting it would leave the workload undeletable.
+func TestValidateWorkloadUpdateAfterGateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, false)
+
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+					sar.GenerateName = "sar-"
+					sar.Status.Allowed = true
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		WithObjects(&networkingv1alpha.Network{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testDefaultNamespace, Name: testDefaultNamespace},
+		}).
+		Build()
+
+	// A workload stored while the gate was on: admission stamped both the class
+	// and the security context, and the customer typed neither.
+	stored := MakeSandboxWorkload("stamped", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Runtime.Class = testClassBasalt
+		w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].SecurityContext =
+			&computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Add:  []computev1alpha.Capability{testCapChown},
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+				},
+				AllowPrivilegeEscalation: ptr.To(true),
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeUnconfined,
+				},
+			}
+	})
+
+	opts := WorkloadValidationOptions{
+		Client:         fakeClient,
+		Context:        context.Background(),
+		ValidLocations: []string{testCityCodeDFW},
+	}
+
+	t.Run("writing the stored workload back verbatim is accepted", func(t *testing.T) {
+		updated := stored.DeepCopy()
+		o := opts
+		o.Workload = updated
+		if errs := ValidateWorkloadUpdate(updated, stored, o); len(errs) != 0 {
+			t.Errorf("a stamped workload must stay updatable after the gate goes off, got: %v", errs)
+		}
+	})
+
+	t.Run("creating the same workload fresh is refused", func(t *testing.T) {
+		created := stored.DeepCopy()
+		o := opts
+		o.Workload = created
+		if errs := ValidateWorkloadCreate(created, o); len(errs) == 0 {
+			t.Error("a create carries no stored value to ratchet against and must be refused")
+		}
+	})
 }

@@ -38,6 +38,8 @@ func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationO
 // ValidateWorkloadUpdate validates a workload update. It applies the
 // create-time rules, plus the rules that need the previous state.
 func ValidateWorkloadUpdate(w, oldWorkload *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
+	opts.OldWorkload = oldWorkload
+
 	allErrs := validateWorkloadSpec(w.Spec, opts)
 	allErrs = append(allErrs, validateWorkloadImages(w, oldWorkload)...)
 	allErrs = append(allErrs, validateWorkloadSpecUpdate(w.Spec, oldWorkload.Spec, field.NewPath("spec"), opts)...)
@@ -119,6 +121,11 @@ type WorkloadValidationOptions struct {
 	Context          context.Context
 	Workload         *computev1alpha.Workload
 	ValidLocations   []string
+
+	// OldWorkload is the stored object an update is replacing, and nil on
+	// create. Rules that would reject a value the platform itself wrote consult
+	// it, so a workload already stored stays updatable and deletable.
+	OldWorkload *computev1alpha.Workload
 
 	// LocationTopologies is the topology of every location a placement may run
 	// at (Ready, with compute available), keyed by name. A placement's
