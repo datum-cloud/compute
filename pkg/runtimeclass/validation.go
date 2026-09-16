@@ -103,6 +103,10 @@ func validateSandbox(
 			allErrs = append(allErrs, unsupported(containerPath.Child("envFrom"), capabilities, FeatureEnvFrom))
 		}
 
+		// Capabilities are the only security option checked against the class.
+		// Privilege escalation and the seccomp profile are drawn from closed sets
+		// every class serving a sandbox can honor, so a class has nothing to
+		// declare about them and a request for either is never refused here.
 		allErrs = append(allErrs, validateContainerCapabilities(container.SecurityContext, capabilities,
 			containerPath.Child("securityContext", "capabilities"))...)
 
