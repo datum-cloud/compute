@@ -1,0 +1,12 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: Location
+metadata:
+  name: us-central1-a
+  labels:
+    topology.datum.net/city-code: ORD
+spec:
+  provider:
+    gcp:
+      projectId: datum-cloud-staging
+      region: us-central1
+      zone: us-central1-a

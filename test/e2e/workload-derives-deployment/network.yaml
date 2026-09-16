@@ -1,0 +1,8 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: Network
+metadata:
+  name: e2e-derived-network
+  namespace: default
+spec:
+  ipam:
+    mode: Auto
