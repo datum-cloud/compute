@@ -1,0 +1,3 @@
+# Build artifacts produced locally; not committed.
+/node_modules/
+.unikraft/
