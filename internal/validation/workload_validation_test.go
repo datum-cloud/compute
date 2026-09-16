@@ -735,7 +735,7 @@ func TestValidateWorkloads(t *testing.T) {
 			Create: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
 					// The fake client only allow a resource to be created without a name
-					sar.GenerateName = "sar-"
+					sar.GenerateName = sarGenerateName
 				}
 				return client.Create(ctx, obj, opts...)
 			},
@@ -1118,7 +1118,7 @@ func TestValidateWorkloadUpdate_UnchangedImage(t *testing.T) {
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
-					sar.GenerateName = "sar-"
+					sar.GenerateName = sarGenerateName
 					sar.Status.Allowed = true
 				}
 				return c.Create(ctx, obj, opts...)

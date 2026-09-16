@@ -376,8 +376,8 @@ func TestValidateSandboxCapabilities(t *testing.T) {
 // sees for a malformed capability request.
 func TestValidateContainerCommonCapabilityMessages(t *testing.T) {
 	container := computev1alpha.SandboxContainer{
-		Name:  "nginx",
-		Image: "docker.io/library/nginx:1.27",
+		Name:  testNginxContainerName,
+		Image: testNginxImage,
 		SecurityContext: &computev1alpha.SandboxSecurityContext{
 			Capabilities: &computev1alpha.SandboxCapabilities{
 				Add: []computev1alpha.Capability{computev1alpha.CapabilityAll, testCapPrefixedChown},
@@ -401,8 +401,14 @@ func TestValidateContainerCommonCapabilityMessages(t *testing.T) {
 // sarGenerateName is used as a GenerateName prefix on synthetic SAR objects so
 // the fake client accepts them. Extracted as a constant to satisfy goconst.
 const (
-	sarGenerateName   = "sar-"
-	testCfgName       = "cfg"
+	sarGenerateName = "sar-"
+	testCfgName     = "cfg"
+
+	// testNginxContainerName and testNginxImage name the stock container these
+	// tests build a valid spec around.
+	testNginxContainerName = "nginx"
+	testNginxImage         = "docker.io/library/nginx:1.27"
+
 	testCfgVolName    = "cfg-vol"
 	testAppConfigName = "app-config"
 )

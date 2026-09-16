@@ -29,7 +29,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 
 	full := &computev1alpha.RuntimeClassSecurityContext{
 		Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
-			Add: []computev1alpha.Capability{"SETGID", "CHOWN", "CHOWN"},
+			Add: []computev1alpha.Capability{testCapSetgid, testCapChown, testCapChown},
 		},
 		AllowPrivilegeEscalation: boolRef(true),
 		SeccompProfile:           runtimeDefault,
@@ -49,12 +49,12 @@ func TestDefaultSecurityContext(t *testing.T) {
 			class: nil,
 			stated: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Add: []computev1alpha.Capability{"CHOWN"},
+					Add: []computev1alpha.Capability{testCapChown},
 				},
 			},
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Add: []computev1alpha.Capability{"CHOWN"},
+					Add: []computev1alpha.Capability{testCapChown},
 				},
 			},
 		},
@@ -63,7 +63,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
-					Add:  []computev1alpha.Capability{"CHOWN", "SETGID"},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
 				},
 				AllowPrivilegeEscalation: boolRef(true),
 				SeccompProfile:           runtimeDefault,
@@ -82,12 +82,12 @@ func TestDefaultSecurityContext(t *testing.T) {
 			class: classWithDefaults(full),
 			stated: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Add: []computev1alpha.Capability{"NET_BIND_SERVICE"},
+					Add: []computev1alpha.Capability{testCapNetBindService},
 				},
 			},
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Add:  []computev1alpha.Capability{"NET_BIND_SERVICE"},
+					Add:  []computev1alpha.Capability{testCapNetBindService},
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
 				},
 				AllowPrivilegeEscalation: boolRef(true),
@@ -102,7 +102,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
-					Add:  []computev1alpha.Capability{"CHOWN", "SETGID"},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
 				},
 				AllowPrivilegeEscalation: boolRef(true),
 				SeccompProfile:           runtimeDefault,
@@ -112,12 +112,12 @@ func TestDefaultSecurityContext(t *testing.T) {
 			class: classWithDefaults(full),
 			stated: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Drop: []computev1alpha.Capability{"NET_RAW"},
+					Drop: []computev1alpha.Capability{testCapNetRaw},
 				},
 			},
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Drop: []computev1alpha.Capability{"NET_RAW", computev1alpha.CapabilityAll},
+					Drop: []computev1alpha.Capability{testCapNetRaw, computev1alpha.CapabilityAll},
 				},
 				AllowPrivilegeEscalation: boolRef(true),
 				SeccompProfile:           runtimeDefault,
@@ -162,7 +162,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 func TestDefaultSecurityContextDoesNotMutateInput(t *testing.T) {
 	class := classWithDefaults(&computev1alpha.RuntimeClassSecurityContext{
 		Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
-			Add: []computev1alpha.Capability{"SETGID", "CHOWN"},
+			Add: []computev1alpha.Capability{testCapSetgid, testCapChown},
 		},
 		SeccompProfile: &computev1alpha.SandboxSeccompProfile{
 			Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
@@ -172,7 +172,7 @@ func TestDefaultSecurityContextDoesNotMutateInput(t *testing.T) {
 
 	stated := &computev1alpha.SandboxSecurityContext{
 		Capabilities: &computev1alpha.SandboxCapabilities{
-			Add: []computev1alpha.Capability{"NET_BIND_SERVICE"},
+			Add: []computev1alpha.Capability{testCapNetBindService},
 		},
 	}
 	statedBefore := stated.DeepCopy()
@@ -194,7 +194,7 @@ func TestDefaultSecurityContextDoesNotMutateInput(t *testing.T) {
 func TestDefaultSecurityContextReturnsACopy(t *testing.T) {
 	stated := &computev1alpha.SandboxSecurityContext{
 		Capabilities: &computev1alpha.SandboxCapabilities{
-			Add: []computev1alpha.Capability{"CHOWN"},
+			Add: []computev1alpha.Capability{testCapChown},
 		},
 	}
 

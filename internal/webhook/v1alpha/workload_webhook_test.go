@@ -29,6 +29,11 @@ const (
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
 	testClassCitrine = "citrine"
+
+	// The capabilities these tests default and grant with.
+	testCapChown          = "CHOWN"
+	testCapNetBindService = "NET_BIND_SERVICE"
+	testCapSetgid         = "SETGID"
 )
 
 func runtimeClass(name string, isDefault bool) computev1alpha.RuntimeClass {
@@ -178,14 +183,15 @@ func TestRuntimeClassCatalogUnreachable(t *testing.T) {
 }
 
 // securityClass builds a catalog entry publishing a default security context,
-// so a test can state the class contract a container is defaulted from.
-func securityClass(name string, defaults *computev1alpha.RuntimeClassSecurityContext) computev1alpha.RuntimeClass {
-	class := runtimeClass(name, true)
+// so a test can state the class contract a container is defaulted from. The
+// entry is always the basalt fixture, so the class need not be named.
+func securityClass(defaults *computev1alpha.RuntimeClassSecurityContext) computev1alpha.RuntimeClass {
+	class := runtimeClass(testClassBasalt, true)
 	class.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{
 		computev1alpha.RuntimeClassFeatureSandboxRuntime,
 		computev1alpha.RuntimeClassFeatureContainerCapabilities,
 	}
-	class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{"CHOWN", "NET_BIND_SERVICE", "SETGID"}
+	class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown, testCapNetBindService, testCapSetgid}
 	class.Spec.DefaultSecurityContext = defaults
 	return class
 }
@@ -215,7 +221,7 @@ func boolPtr(value bool) *bool { return &value }
 func TestDefaultSecurityContext(t *testing.T) {
 	classDefaults := &computev1alpha.RuntimeClassSecurityContext{
 		Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
-			Add: []computev1alpha.Capability{"SETGID", "CHOWN"},
+			Add: []computev1alpha.Capability{testCapSetgid, testCapChown},
 		},
 		AllowPrivilegeEscalation: boolPtr(true),
 		SeccompProfile: &computev1alpha.SandboxSeccompProfile{
@@ -230,12 +236,12 @@ func TestDefaultSecurityContext(t *testing.T) {
 		want    *computev1alpha.SandboxSecurityContext
 	}{
 		"a container stating nothing records the published default": {
-			catalog: runtimeclass.Catalog{securityClass(testClassBasalt, classDefaults)},
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
 			class:   testClassBasalt,
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
-					Add:  []computev1alpha.Capability{"CHOWN", "SETGID"},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
 				},
 				AllowPrivilegeEscalation: boolPtr(true),
 				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
@@ -244,16 +250,16 @@ func TestDefaultSecurityContext(t *testing.T) {
 			},
 		},
 		"stated capabilities are kept, never merged, and still record the floor": {
-			catalog: runtimeclass.Catalog{securityClass(testClassBasalt, classDefaults)},
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
 			class:   testClassBasalt,
 			stated: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Add: []computev1alpha.Capability{"NET_BIND_SERVICE"},
+					Add: []computev1alpha.Capability{testCapNetBindService},
 				},
 			},
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
-					Add:  []computev1alpha.Capability{"NET_BIND_SERVICE"},
+					Add:  []computev1alpha.Capability{testCapNetBindService},
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
 				},
 				AllowPrivilegeEscalation: boolPtr(true),
@@ -263,7 +269,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			},
 		},
 		"an empty capability set states nothing and takes the default": {
-			catalog: runtimeclass.Catalog{securityClass(testClassBasalt, classDefaults)},
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
 			class:   testClassBasalt,
 			stated: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{},
@@ -271,7 +277,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
-					Add:  []computev1alpha.Capability{"CHOWN", "SETGID"},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
 				},
 				AllowPrivilegeEscalation: boolPtr(true),
 				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
@@ -280,7 +286,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			},
 		},
 		"dropping ALL is a statement and receives no default grant": {
-			catalog: runtimeclass.Catalog{securityClass(testClassBasalt, classDefaults)},
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
 			class:   testClassBasalt,
 			stated: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
@@ -298,7 +304,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			},
 		},
 		"a stated seccomp profile and escalation survive defaulting": {
-			catalog: runtimeclass.Catalog{securityClass(testClassBasalt, classDefaults)},
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
 			class:   testClassBasalt,
 			stated: &computev1alpha.SandboxSecurityContext{
 				AllowPrivilegeEscalation: boolPtr(false),
@@ -309,7 +315,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
 					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
-					Add:  []computev1alpha.Capability{"CHOWN", "SETGID"},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
 				},
 				AllowPrivilegeEscalation: boolPtr(false),
 				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
@@ -318,7 +324,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			},
 		},
 		"a class publishing no default still records the capability floor": {
-			catalog: runtimeclass.Catalog{securityClass(testClassBasalt, nil)},
+			catalog: runtimeclass.Catalog{securityClass(nil)},
 			class:   testClassBasalt,
 			want: &computev1alpha.SandboxSecurityContext{
 				Capabilities: &computev1alpha.SandboxCapabilities{
@@ -327,7 +333,7 @@ func TestDefaultSecurityContext(t *testing.T) {
 			},
 		},
 		"a class the catalog does not offer changes nothing": {
-			catalog: runtimeclass.Catalog{securityClass(testClassBasalt, classDefaults)},
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
 			class:   testClassCitrine,
 			want:    nil,
 		},
@@ -352,9 +358,9 @@ func TestDefaultSecurityContext(t *testing.T) {
 // stored security context takes part in the instance template hash, so a value
 // that drifted on each pass would roll instances that nothing changed.
 func TestDefaultSecurityContextIsIdempotent(t *testing.T) {
-	catalog := runtimeclass.Catalog{securityClass(testClassBasalt, &computev1alpha.RuntimeClassSecurityContext{
+	catalog := runtimeclass.Catalog{securityClass(&computev1alpha.RuntimeClassSecurityContext{
 		Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
-			Add: []computev1alpha.Capability{"SETGID", "CHOWN"},
+			Add: []computev1alpha.Capability{testCapSetgid, testCapChown},
 		},
 		AllowPrivilegeEscalation: boolPtr(false),
 		SeccompProfile: &computev1alpha.SandboxSeccompProfile{
@@ -395,7 +401,7 @@ func TestDefaultStampsSecurityContextOnCreateOnly(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, true)
 
-			class := securityClass(testClassBasalt, &computev1alpha.RuntimeClassSecurityContext{
+			class := securityClass(&computev1alpha.RuntimeClassSecurityContext{
 				AllowPrivilegeEscalation: boolPtr(true),
 			})
 			ctx := context.Background()

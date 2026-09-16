@@ -166,8 +166,8 @@ func capabilitySpec(class string, add, drop []computev1alpha.Capability) compute
 			Class: class,
 			Sandbox: &computev1alpha.SandboxRuntime{
 				Containers: []computev1alpha.SandboxContainer{{
-					Name:  "nginx",
-					Image: "docker.io/library/nginx:1.27",
+					Name:  testNginxContainerName,
+					Image: testNginxImage,
 					SecurityContext: &computev1alpha.SandboxSecurityContext{
 						Capabilities: &computev1alpha.SandboxCapabilities{Add: add, Drop: drop},
 					},
@@ -347,8 +347,8 @@ func confinementSpec(class string, allowEscalation *bool, profile *computev1alph
 			Class: class,
 			Sandbox: &computev1alpha.SandboxRuntime{
 				Containers: []computev1alpha.SandboxContainer{{
-					Name:  "nginx",
-					Image: "docker.io/library/nginx:1.27",
+					Name:  testNginxContainerName,
+					Image: testNginxImage,
 					SecurityContext: &computev1alpha.SandboxSecurityContext{
 						AllowPrivilegeEscalation: allowEscalation,
 						SeccompProfile:           profile,
@@ -494,7 +494,7 @@ func TestValidateWorkloadUpdateAfterGateOff(t *testing.T) {
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
-					sar.GenerateName = "sar-"
+					sar.GenerateName = sarGenerateName
 					sar.Status.Allowed = true
 				}
 				return c.Create(ctx, obj, opts...)
