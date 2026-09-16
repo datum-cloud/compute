@@ -282,14 +282,35 @@ rejected when the workload is submitted, naming the class and the unsupported fe
 the customer learns at apply time rather than from behavior that doesn't match what they
 asked for.
 
-**Container capabilities are a class-declared feature with a published grant.** The
-platform removes every Linux capability from a sandbox container by default, which keeps
-many stock images from starting. A container can ask for specific capabilities back in the
-shape Kubernetes manifests already use. A class opts in by declaring the feature and
-publishing the set of capabilities it grants, and a request outside that set is rejected
-at submission, naming the class and what it grants. Dropping capabilities never needs the
-feature, because it can only reduce privilege. The mechanism is the same for every class,
-so a future unikernel class can opt in the same way.
+**Container capabilities are a class-declared feature with a published grant.** A class
+opts in by declaring the feature and publishing the set of capabilities it grants, and a
+request outside that set is rejected at submission, naming the class and what it grants.
+A container asks for capabilities in the shape Kubernetes manifests already use. Dropping
+capabilities never needs the feature, because it can only reduce privilege. The mechanism
+is the same for every class, so a future unikernel class can opt in the same way.
+
+**The security configuration a class applies is published, and written onto the
+workload.** The platform chooses the capabilities, privilege escalation, and seccomp
+profile a container runs with. Choosing without writing the choice down is what turns a
+stock image the choice stops from starting into a crash loop whose only evidence is the
+container's own logs. A class publishes its default security context alongside what it
+grants, so a customer can compare tiers before committing an image to one. Admission then
+writes that default onto every container that states nothing, so `kubectl get workload -o
+yaml` shows exactly what runs, including the drop of every capability that a customer
+would otherwise have to infer. A provider runs what the workload states and chooses
+nothing of its own.
+
+A customer statement is the whole answer for the field it covers: a container that lists
+capabilities keeps exactly that list, because merging a class default into it would
+restore the invisible configuration this replaces. Privilege escalation and the seccomp
+profile default independently, since each is a separate statement. Because the values are
+stored rather than resolved on read, correcting a class moves workloads admitted after the
+change and leaves existing ones with what they were created with.
+
+The seccomp profile is drawn from a closed set: the runtime's own profile, or none. A
+profile loaded from a file on the host is deliberately absent, because naming one would
+point at a path on a machine the customer cannot see and would pass an unchecked value to
+a runtime.
 
 What a class grants is justified by its isolation boundary. A class that shares the host
 kernel must keep its grant within the cell's security profile. A class isolated by its own
@@ -301,6 +322,10 @@ instance in any class. The instance API has no way to express them, and translat
 refuses them even when a provider supplies one.
 
 Whether capability grants should be metered or reviewed per project is an open question.
+So is whether a class should publish a limit on privilege escalation and the seccomp
+profile separate from its default. Both values are drawn from closed sets that any class
+serving a sandbox can honor, so neither is refused against a class today; a class that
+needs to hold a tier to its default would need a published limit to reject against.
 
 ## Production Readiness Review Questionnaire
 
