@@ -233,6 +233,10 @@ type RuntimeClassDefaultCapabilities struct {
 // Every value is drawn from the same closed sets a customer may state on their
 // own container, so the class publishes a default a customer can read, compare
 // between tiers, and restate themselves.
+//
+// These are defaults, not a ceiling. Only capabilities are bounded by the class,
+// through grantableCapabilities. Whether a class should also publish a limit on
+// privilege escalation and the seccomp profile is an open question.
 type RuntimeClassSecurityContext struct {
 	// The Linux capabilities granted to a container that requests none.
 	//
@@ -240,8 +244,8 @@ type RuntimeClassSecurityContext struct {
 	Capabilities *RuntimeClassDefaultCapabilities `json:"capabilities,omitempty"`
 
 	// Whether a process in a container may gain more privileges than its parent
-	// when the container states nothing. A class whose isolation boundary is a
-	// guest kernel can allow it where a shared-kernel class could not.
+	// when the container states nothing. The value is a default, not a limit: a
+	// container may state the opposite and is not refused against the class.
 	//
 	// +kubebuilder:validation:Optional
 	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
@@ -363,8 +367,14 @@ type RuntimeClassSpec struct {
 	// states. A class that publishes nothing leaves a container that states
 	// nothing to the platform-wide floor, which drops every capability.
 	//
-	// Correcting the value here moves workloads admitted after the change and
-	// leaves existing workloads with the configuration they were stored with.
+	// Admission stamps these values when a workload is created and never
+	// revisits them, so correcting the value here moves workloads created after
+	// the change and leaves existing workloads with the configuration they were
+	// created with.
+	//
+	// The values are defaults rather than limits. A container may state
+	// something other than what the class publishes, and only capabilities are
+	// checked against the class, through grantableCapabilities.
 	//
 	// +kubebuilder:validation:Optional
 	DefaultSecurityContext *RuntimeClassSecurityContext `json:"defaultSecurityContext,omitempty"`

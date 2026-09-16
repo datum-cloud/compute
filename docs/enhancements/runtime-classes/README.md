@@ -322,10 +322,13 @@ instance in any class. The instance API has no way to express them, and translat
 refuses them even when a provider supplies one.
 
 Whether capability grants should be metered or reviewed per project is an open question.
-So is whether a class should publish a limit on privilege escalation and the seccomp
-profile separate from its default. Both values are drawn from closed sets that any class
-serving a sandbox can honor, so neither is refused against a class today; a class that
-needs to hold a tier to its default would need a published limit to reject against.
+Whether a class should publish a *limit* on privilege escalation and the seccomp profile,
+separate from its default, is an open question. Capabilities are bounded by the class
+through the grantable set, but the other two are defaults only: a container may state
+anything the closed enum allows and is not refused against the class. Both tiers shipped
+today are isolated by their own guest kernel, so nothing is presently exposed by that. A
+shared-kernel tier would need a published limit before it could be held to its default,
+and adding one later is a compatible change because it only narrows what is accepted.
 
 ## Production Readiness Review Questionnaire
 

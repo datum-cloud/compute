@@ -104,9 +104,10 @@ func validateSandbox(
 		}
 
 		// Capabilities are the only security option checked against the class.
-		// Privilege escalation and the seccomp profile are drawn from closed sets
-		// every class serving a sandbox can honor, so a class has nothing to
-		// declare about them and a request for either is never refused here.
+		// A class publishes a default for privilege escalation and the seccomp
+		// profile but no limit on either, so neither is refused here whatever the
+		// container states. Bounding them would need a published limit to reject
+		// against, which the class contract does not yet express.
 		allErrs = append(allErrs, validateContainerCapabilities(container.SecurityContext, capabilities,
 			containerPath.Child("securityContext", "capabilities"))...)
 

@@ -253,7 +253,7 @@ func TestRuntimeClassCRD(t *testing.T) {
 		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
 			SeccompProfile: &computev1alpha.SandboxSeccompProfile{Type: "Localhost"},
 		}
-		require.Error(t, c.Create(ctx, class))
+		require.ErrorContains(t, c.Create(ctx, class), "Unsupported value: \"Localhost\"")
 	})
 
 	t.Run("a class must state its isolation boundary", func(t *testing.T) {

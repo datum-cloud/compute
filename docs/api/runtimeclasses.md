@@ -157,8 +157,14 @@ workload states what runs and a provider runs only what the workload
 states. A class that publishes nothing leaves a container that states
 nothing to the platform-wide floor, which drops every capability.
 
-Correcting the value here moves workloads admitted after the change and
-leaves existing workloads with the configuration they were stored with.<br/>
+Admission stamps these values when a workload is created and never
+revisits them, so correcting the value here moves workloads created after
+the change and leaves existing workloads with the configuration they were
+created with.
+
+The values are defaults rather than limits. A container may state
+something other than what the class publishes, and only capabilities are
+checked against the class, through grantableCapabilities.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -323,8 +329,14 @@ workload states what runs and a provider runs only what the workload
 states. A class that publishes nothing leaves a container that states
 nothing to the platform-wide floor, which drops every capability.
 
-Correcting the value here moves workloads admitted after the change and
-leaves existing workloads with the configuration they were stored with.
+Admission stamps these values when a workload is created and never
+revisits them, so correcting the value here moves workloads created after
+the change and leaves existing workloads with the configuration they were
+created with.
+
+The values are defaults rather than limits. A container may state
+something other than what the class publishes, and only capabilities are
+checked against the class, through grantableCapabilities.
 
 <table>
     <thead>
@@ -340,8 +352,8 @@ leaves existing workloads with the configuration they were stored with.
         <td>boolean</td>
         <td>
           Whether a process in a container may gain more privileges than its parent
-when the container states nothing. A class whose isolation boundary is a
-guest kernel can allow it where a shared-kernel class could not.<br/>
+when the container states nothing. The value is a default, not a limit: a
+container may state the opposite and is not refused against the class.<br/>
         </td>
         <td>false</td>
       </tr><tr>
