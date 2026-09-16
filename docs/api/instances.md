@@ -1309,10 +1309,33 @@ Security options for the container.
         </tr>
     </thead>
     <tbody><tr>
+        <td><b>allowPrivilegeEscalation</b></td>
+        <td>boolean</td>
+        <td>
+          Whether a process in the container can gain more privileges than its
+parent. Setuid binaries and file capabilities rely on it, so an image that
+escalates at startup, such as one running ping or a privilege-dropping
+entrypoint, needs it true.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the value it runs with.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancespecruntimesandboxcontainersindexsecuritycontextcapabilities">capabilities</a></b></td>
         <td>object</td>
         <td>
           The Linux capabilities to grant to or remove from the container.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexsecuritycontextseccompprofile">seccompProfile</a></b></td>
+        <td>object</td>
+        <td>
+          The seccomp profile confining the container's system calls.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the profile it runs with.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -1354,6 +1377,38 @@ manifests, for example drop: [ALL]. Naming a capability here also removes
 it when the runtime class would otherwise grant it by default.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.runtime.sandbox.containers[index].securityContext.seccompProfile
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindexsecuritycontext)</sup></sup>
+
+
+
+The seccomp profile confining the container's system calls.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the profile it runs with.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          The kind of seccomp profile to apply.<br/>
+          <br/>
+            <i>Enum</i>: RuntimeDefault, Unconfined<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

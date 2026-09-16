@@ -309,6 +309,13 @@ func buildPorts(container *computev1alpha.SandboxContainer) []corev1.ContainerPo
 // is left out, so an explicit drop wins as it does in Kubernetes container
 // runtimes. Added capabilities are sorted so an unchanged Instance produces an
 // unchanged Pod.
+//
+// Privilege escalation and the seccomp profile carry across only when the
+// Instance states them. Admission writes the selected class's published default
+// onto a container that states nothing, so what the Instance says is the whole
+// answer and nothing is chosen here that the customer cannot read on their own
+// workload. An Instance admitted before the class published a default still
+// states neither, and keeps whichever value the container runtime applies.
 func buildSecurityContext(container *computev1alpha.SandboxContainer) *corev1.SecurityContext {
 	var requested computev1alpha.SandboxCapabilities
 	if container.SecurityContext != nil && container.SecurityContext.Capabilities != nil {
@@ -325,12 +332,29 @@ func buildSecurityContext(container *computev1alpha.SandboxContainer) *corev1.Se
 	slices.Sort(add)
 	add = slices.Compact(add)
 
-	return &corev1.SecurityContext{
+	securityContext := &corev1.SecurityContext{
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{corev1.Capability(computev1alpha.CapabilityAll)},
 			Add:  add,
 		},
 	}
+
+	if container.SecurityContext == nil {
+		return securityContext
+	}
+
+	if allowed := container.SecurityContext.AllowPrivilegeEscalation; allowed != nil {
+		escalation := *allowed
+		securityContext.AllowPrivilegeEscalation = &escalation
+	}
+
+	if profile := container.SecurityContext.SeccompProfile; profile != nil {
+		securityContext.SeccompProfile = &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileType(profile.Type),
+		}
+	}
+
+	return securityContext
 }
 
 // buildVolumeMounts maps only the attachments that name a mount path. An

@@ -5,6 +5,8 @@ package validation
 import (
 	"fmt"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -35,14 +37,27 @@ func validateRuntimeClassSelection(
 	// it. While the gate is off the control plane publishes no catalog, so a
 	// selected class would have nowhere to run.
 	if !features.FeatureGate.Enabled(features.RuntimeClasses) {
-		if len(class) > 0 {
+		// Admission stamps the selected class onto the stored workload, so a
+		// workload stored while the gate was on carries a class the customer
+		// never typed. Refusing it on the way back out would wedge the workload
+		// against every later update, so only a newly named class is refused.
+		if len(class) > 0 && class != storedRuntimeClass(opts.OldWorkload) {
 			allErrs = append(allErrs, field.Forbidden(classPath,
 				"runtime classes are not enabled on this control plane, so a runtime class may not be selected"))
 		}
 		// Only a runtime class grants capabilities, so with no catalog a
 		// request to add one could never be honored. A drop only reduces
 		// privilege and needs no class.
-		allErrs = append(allErrs, validateCapabilityAddsWithoutClasses(spec, fieldPath)...)
+		//
+		// Both rules skip a container whose security context is unchanged from
+		// the stored object. Admission writes a class's published default onto a
+		// workload, so turning the gate off leaves stored workloads holding
+		// values these rules would otherwise reject. Rejecting them would make
+		// the workload permanently unupdatable, including the controller's
+		// finalizer patch, and so undeletable.
+		stored := storedSecurityContexts(opts.OldWorkload)
+		allErrs = append(allErrs, validateCapabilityAddsWithoutClasses(spec, stored, fieldPath)...)
+		allErrs = append(allErrs, validatePrivilegeWideningWithoutClasses(spec, stored, fieldPath)...)
 		return allErrs
 	}
 
@@ -91,7 +106,11 @@ func validateRuntimeClassSelection(
 
 // validateCapabilityAddsWithoutClasses rejects every capability a container
 // adds on a control plane that publishes no runtime classes.
-func validateCapabilityAddsWithoutClasses(spec computev1alpha.InstanceSpec, fieldPath *field.Path) field.ErrorList {
+func validateCapabilityAddsWithoutClasses(
+	spec computev1alpha.InstanceSpec,
+	stored map[string]*computev1alpha.SandboxSecurityContext,
+	fieldPath *field.Path,
+) field.ErrorList {
 	if spec.Runtime.Sandbox == nil {
 		return nil
 	}
@@ -103,11 +122,95 @@ func validateCapabilityAddsWithoutClasses(spec computev1alpha.InstanceSpec, fiel
 			len(container.SecurityContext.Capabilities.Add) == 0 {
 			continue
 		}
+		if unchangedSecurityContext(container, stored) {
+			continue
+		}
 		allErrs = append(allErrs, field.Forbidden(
 			containersPath.Index(i).Child("securityContext", "capabilities", "add"),
 			"runtime classes are not enabled on this control plane, so no capability can be added"))
 	}
 	return allErrs
+}
+
+// validatePrivilegeWideningWithoutClasses rejects the security options that
+// loosen a container's confinement on a control plane that publishes no runtime
+// classes.
+//
+// The rule is scoped to the absence of a catalog, not to any per-class limit. A
+// class publishes a default for both options and no limit on either, so with the
+// gate on a container may state whatever it likes. With no catalog there is no
+// published execution tier at all, and loosening confinement outside one is
+// refused for the same reason adding a capability is.
+//
+// Tightening confinement needs no tier, so a container may still turn privilege
+// escalation off or ask for the runtime's own seccomp profile anywhere.
+func validatePrivilegeWideningWithoutClasses(
+	spec computev1alpha.InstanceSpec,
+	stored map[string]*computev1alpha.SandboxSecurityContext,
+	fieldPath *field.Path,
+) field.ErrorList {
+	if spec.Runtime.Sandbox == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+	containersPath := fieldPath.Child("runtime", "sandbox", "containers")
+	for i, container := range spec.Runtime.Sandbox.Containers {
+		if container.SecurityContext == nil {
+			continue
+		}
+		if unchangedSecurityContext(container, stored) {
+			continue
+		}
+		securityPath := containersPath.Index(i).Child("securityContext")
+
+		if allowed := container.SecurityContext.AllowPrivilegeEscalation; allowed != nil && *allowed {
+			allErrs = append(allErrs, field.Forbidden(securityPath.Child("allowPrivilegeEscalation"),
+				"runtime classes are not enabled on this control plane, so privilege escalation cannot be allowed"))
+		}
+
+		if profile := container.SecurityContext.SeccompProfile; profile != nil &&
+			profile.Type == computev1alpha.SeccompProfileTypeUnconfined {
+			allErrs = append(allErrs, field.Forbidden(securityPath.Child("seccompProfile", "type"),
+				"runtime classes are not enabled on this control plane, so seccomp cannot be disabled"))
+		}
+	}
+	return allErrs
+}
+
+// storedRuntimeClass returns the class the stored workload already selects, and
+// an empty string on create.
+func storedRuntimeClass(old *computev1alpha.Workload) string {
+	if old == nil {
+		return ""
+	}
+	return old.Spec.Template.Spec.Runtime.Class
+}
+
+// storedSecurityContexts indexes the security context of each sandbox container
+// in the stored workload by container name. It returns nil on create, where
+// every value in the request is one the customer just stated.
+func storedSecurityContexts(old *computev1alpha.Workload) map[string]*computev1alpha.SandboxSecurityContext {
+	if old == nil || old.Spec.Template.Spec.Runtime.Sandbox == nil {
+		return nil
+	}
+
+	stored := make(map[string]*computev1alpha.SandboxSecurityContext)
+	for _, container := range old.Spec.Template.Spec.Runtime.Sandbox.Containers {
+		stored[container.Name] = container.SecurityContext
+	}
+	return stored
+}
+
+// unchangedSecurityContext reports whether the container carries the security
+// context already stored for it, which makes the value one to leave alone
+// rather than one to reject.
+func unchangedSecurityContext(
+	container computev1alpha.SandboxContainer,
+	stored map[string]*computev1alpha.SandboxSecurityContext,
+) bool {
+	previous, ok := stored[container.Name]
+	return ok && apiequality.Semantic.DeepEqual(previous, container.SecurityContext)
 }
 
 // offeredClassesMessage appends the classes a caller can choose from, so a

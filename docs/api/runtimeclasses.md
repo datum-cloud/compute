@@ -65,6 +65,8 @@ they select from without reaching the platform control plane.
         <td>object</td>
         <td>
           Spec is the published contract for this execution tier.<br/>
+          <br/>
+            <i>Validations</i>:<li>!has(self.defaultSecurityContext) || !has(self.defaultSecurityContext.capabilities) || !has(self.defaultSecurityContext.capabilities.add) || self.defaultSecurityContext.capabilities.add.all(c, has(self.capabilities.grantableCapabilities) && c in self.capabilities.grantableCapabilities): defaultSecurityContext.capabilities.add must only name capabilities listed in capabilities.grantableCapabilities</li>
         </td>
         <td>false</td>
       </tr><tr>
@@ -138,6 +140,31 @@ Admission stamps the default onto a workload and never resolves it at
 read time. Moving the marker changes what new workloads get and leaves
 running ones in the tier, cost, and startup profile they were created
 with. At most one class in the catalog may set it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#runtimeclassspecdefaultsecuritycontext">defaultSecurityContext</a></b></td>
+        <td>object</td>
+        <td>
+          The security configuration the platform writes onto a sandbox container in
+this class when the customer states none. A customer reads it before
+choosing the class, and reads the same values back on their own workload
+afterwards.
+
+Publishing the default is what keeps the configuration out of the runtime's
+hands: admission stamps these values onto the stored workload, so the
+workload states what runs and a provider runs only what the workload
+states. A class that publishes nothing leaves a container that states
+nothing to the platform-wide floor, which drops every capability.
+
+Admission stamps these values when a workload is created and never
+revisits them, so correcting the value here moves workloads created after
+the change and leaves existing workloads with the configuration they were
+created with.
+
+The values are defaults rather than limits. A container may state
+something other than what the class publishes, and only capabilities are
+checked against the class, through grantableCapabilities.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -282,6 +309,127 @@ the schema would make each new tier an API change.<br/>
 customer to show an auditor.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### RuntimeClass.spec.defaultSecurityContext
+<sup><sup>[↩ Parent](#runtimeclassspec)</sup></sup>
+
+
+
+The security configuration the platform writes onto a sandbox container in
+this class when the customer states none. A customer reads it before
+choosing the class, and reads the same values back on their own workload
+afterwards.
+
+Publishing the default is what keeps the configuration out of the runtime's
+hands: admission stamps these values onto the stored workload, so the
+workload states what runs and a provider runs only what the workload
+states. A class that publishes nothing leaves a container that states
+nothing to the platform-wide floor, which drops every capability.
+
+Admission stamps these values when a workload is created and never
+revisits them, so correcting the value here moves workloads created after
+the change and leaves existing workloads with the configuration they were
+created with.
+
+The values are defaults rather than limits. A container may state
+something other than what the class publishes, and only capabilities are
+checked against the class, through grantableCapabilities.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowPrivilegeEscalation</b></td>
+        <td>boolean</td>
+        <td>
+          Whether a process in a container may gain more privileges than its parent
+when the container states nothing. The value is a default, not a limit: a
+container may state the opposite and is not refused against the class.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#runtimeclassspecdefaultsecuritycontextcapabilities">capabilities</a></b></td>
+        <td>object</td>
+        <td>
+          The Linux capabilities granted to a container that requests none.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#runtimeclassspecdefaultsecuritycontextseccompprofile">seccompProfile</a></b></td>
+        <td>object</td>
+        <td>
+          The seccomp profile confining a container that states none.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### RuntimeClass.spec.defaultSecurityContext.capabilities
+<sup><sup>[↩ Parent](#runtimeclassspecdefaultsecuritycontext)</sup></sup>
+
+
+
+The Linux capabilities granted to a container that requests none.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>add</b></td>
+        <td>[]string</td>
+        <td>
+          The capabilities granted to a container that requests none. Each must also
+appear in grantableCapabilities, so a customer reading the class sees a
+default drawn from the set they may request themselves.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM']): add must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted</li>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### RuntimeClass.spec.defaultSecurityContext.seccompProfile
+<sup><sup>[↩ Parent](#runtimeclassspecdefaultsecuritycontext)</sup></sup>
+
+
+
+The seccomp profile confining a container that states none.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          The kind of seccomp profile to apply.<br/>
+          <br/>
+            <i>Enum</i>: RuntimeDefault, Unconfined<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

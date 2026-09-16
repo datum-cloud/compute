@@ -17,13 +17,14 @@ import (
 // Fixture class names shared across these tests. They are constants so every
 // case names the same fixture the same way.
 const (
-	testContainerName    = "app"
-	testConfigVolumeName = "config"
-	testDiskVolumeName   = "data"
-	testConfigMapName    = "settings"
-	testCapChown         = "CHOWN"
-
+	testContainerName     = "app"
+	testConfigVolumeName  = "config"
+	testDiskVolumeName    = "data"
+	testConfigMapName     = "settings"
+	testCapChown          = "CHOWN"
 	testCapNetBindService = "NET_BIND_SERVICE"
+	testCapNetRaw         = "NET_RAW"
+	testCapSetgid         = "SETGID"
 )
 
 // envFromRejection is the rejection a narrow class returns for envFrom. It is
@@ -376,7 +377,7 @@ func TestValidateContainerCapabilities(t *testing.T) {
 			name:         "each capability the class does not grant is rejected on its own entry",
 			capabilities: fullCapabilities,
 			spec: sandboxSpec(capabilityContainer(
-				[]Capability{"SYS_ADMIN", testCapChown, "NET_RAW"}, []Capability{computev1alpha.CapabilityAll})),
+				[]Capability{"SYS_ADMIN", testCapChown, testCapNetRaw}, []Capability{computev1alpha.CapabilityAll})),
 			want: field.ErrorList{
 				field.Forbidden(addPath.Index(0),
 					`capability SYS_ADMIN is not granted by the "basalt" runtime class, which grants CHOWN, NET_BIND_SERVICE`),

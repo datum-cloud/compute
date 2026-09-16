@@ -207,7 +207,57 @@ type SandboxSecurityContext struct {
 	//
 	// +kubebuilder:validation:Optional
 	Capabilities *SandboxCapabilities `json:"capabilities,omitempty"`
+
+	// Whether a process in the container can gain more privileges than its
+	// parent. Setuid binaries and file capabilities rely on it, so an image that
+	// escalates at startup, such as one running ping or a privilege-dropping
+	// entrypoint, needs it true.
+	//
+	// Left unset, the selected runtime class's published default is written here
+	// at admission, so the stored container states the value it runs with.
+	//
+	// +kubebuilder:validation:Optional
+	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
+
+	// The seccomp profile confining the container's system calls.
+	//
+	// Left unset, the selected runtime class's published default is written here
+	// at admission, so the stored container states the profile it runs with.
+	//
+	// +kubebuilder:validation:Optional
+	SeccompProfile *SandboxSeccompProfile `json:"seccompProfile,omitempty"`
 }
+
+// SandboxSeccompProfile selects the seccomp profile a container runs under. It
+// mirrors the shape of the Kubernetes seccomp profile so existing manifests
+// carry over.
+type SandboxSeccompProfile struct {
+	// The kind of seccomp profile to apply.
+	//
+	// +kubebuilder:validation:Required
+	Type SeccompProfileType `json:"type"`
+}
+
+// SeccompProfileType is the kind of seccomp profile a container runs under.
+//
+// A profile loaded from a file on the host is deliberately absent. Naming one
+// would point at a path on a machine the customer cannot see, and the value
+// would have to reach a runtime unchecked. The values here are a closed set the
+// platform resolves itself.
+//
+// +kubebuilder:validation:Enum=RuntimeDefault;Unconfined
+type SeccompProfileType string
+
+const (
+	// SeccompProfileTypeRuntimeDefault applies the profile the container runtime
+	// ships, which blocks the system calls a workload has no ordinary use for.
+	SeccompProfileTypeRuntimeDefault SeccompProfileType = "RuntimeDefault"
+
+	// SeccompProfileTypeUnconfined applies no seccomp filtering. A class whose
+	// isolation boundary is a guest kernel can offer it, because the boundary
+	// does not depend on system call filtering.
+	SeccompProfileTypeUnconfined SeccompProfileType = "Unconfined"
+)
 
 // SandboxCapabilities adjusts the Linux capabilities a container runs with.
 //

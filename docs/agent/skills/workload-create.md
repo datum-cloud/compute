@@ -114,6 +114,19 @@ Read the choices with `resources_list` for kind `RuntimeClass` in
   A single environment variable read from one ConfigMap or Secret key needs no
   feature. If the class the user wants lacks one they need, say which, and
   offer a class that has it.
+- **Read `spec.defaultSecurityContext` when the user compares classes.** It is
+  the capabilities, privilege escalation, and seccomp profile the class applies
+  to a container that states none. Creation writes it onto the workload, so the
+  created object shows exactly what runs, including the drop of every
+  capability. Quote it when the user asks what their container runs with, or is
+  choosing between tiers for an image that needs a capability or a setuid
+  binary.
+
+  A container that states its own capabilities keeps exactly that list — the
+  class default is not merged in. So if the user needs one capability and the
+  class grants two by default, list every capability they want. Privilege
+  escalation and the seccomp profile are separate statements and default
+  independently.
 
 **What you cannot see: whether a location offers the class.** `Available`
 says the class works, not that every location runs it, and nothing here lists
@@ -125,7 +138,9 @@ a class other than the default, and if it happens, load `placement-triage`.
 **If the list is empty, or the kind is not there,** runtime classes are not
 turned on for this project. Leave the class unset. Naming one fails the plan on
 `spec.template.spec.runtime.class` with a message saying runtime classes are
-not enabled, and so does adding a Linux capability to a container.
+not enabled, and so does adding a Linux capability to a container, allowing
+privilege escalation, or asking for an unconfined seccomp profile. Nothing is
+written onto the workload, so the security configuration stays unstated.
 
 ## 3. Gather the inputs
 

@@ -7,12 +7,15 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
@@ -26,6 +29,11 @@ const (
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
 	testClassCitrine = "citrine"
+
+	// The capabilities these tests default and grant with.
+	testCapChown          = "CHOWN"
+	testCapNetBindService = "NET_BIND_SERVICE"
+	testCapSetgid         = "SETGID"
 )
 
 func runtimeClass(name string, isDefault bool) computev1alpha.RuntimeClass {
@@ -171,5 +179,253 @@ func TestRuntimeClassCatalogUnreachable(t *testing.T) {
 	}
 	if len(catalog) != 0 {
 		t.Errorf("catalog = %v, want nothing published", catalog.Names())
+	}
+}
+
+// securityClass builds a catalog entry publishing a default security context,
+// so a test can state the class contract a container is defaulted from. The
+// entry is always the basalt fixture, so the class need not be named.
+func securityClass(defaults *computev1alpha.RuntimeClassSecurityContext) computev1alpha.RuntimeClass {
+	class := runtimeClass(testClassBasalt, true)
+	class.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{
+		computev1alpha.RuntimeClassFeatureSandboxRuntime,
+		computev1alpha.RuntimeClassFeatureContainerCapabilities,
+	}
+	class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown, testCapNetBindService, testCapSetgid}
+	class.Spec.DefaultSecurityContext = defaults
+	return class
+}
+
+// sandboxWorkload builds a workload with one sandbox container carrying the
+// security context a customer stated.
+func sandboxWorkload(class string, stated *computev1alpha.SandboxSecurityContext) *computev1alpha.Workload {
+	workload := &computev1alpha.Workload{}
+	workload.Spec.Template.Spec.Runtime.Class = class
+	workload.Spec.Template.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
+		Containers: []computev1alpha.SandboxContainer{{
+			Name:            "api",
+			Image:           "ghcr.io/acme/api:1.4.2",
+			SecurityContext: stated,
+		}},
+	}
+	return workload
+}
+
+func boolPtr(value bool) *bool { return &value }
+
+// TestDefaultSecurityContext covers what a customer reads back on their own
+// workload. A container that states nothing records the class's published
+// default, and a container that states something keeps exactly what it stated,
+// because merging a class default into a customer's statement would put back
+// the invisible configuration this replaces.
+func TestDefaultSecurityContext(t *testing.T) {
+	classDefaults := &computev1alpha.RuntimeClassSecurityContext{
+		Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+			Add: []computev1alpha.Capability{testCapSetgid, testCapChown},
+		},
+		AllowPrivilegeEscalation: boolPtr(true),
+		SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+			Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+
+	cases := map[string]struct {
+		catalog runtimeclass.Catalog
+		class   string
+		stated  *computev1alpha.SandboxSecurityContext
+		want    *computev1alpha.SandboxSecurityContext
+	}{
+		"a container stating nothing records the published default": {
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
+			class:   testClassBasalt,
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
+				},
+				AllowPrivilegeEscalation: boolPtr(true),
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+		},
+		"stated capabilities are kept, never merged, and still record the floor": {
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
+			class:   testClassBasalt,
+			stated: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Add: []computev1alpha.Capability{testCapNetBindService},
+				},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Add:  []computev1alpha.Capability{testCapNetBindService},
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+				},
+				AllowPrivilegeEscalation: boolPtr(true),
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+		},
+		"an empty capability set states nothing and takes the default": {
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
+			class:   testClassBasalt,
+			stated: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
+				},
+				AllowPrivilegeEscalation: boolPtr(true),
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+		},
+		"dropping ALL is a statement and receives no default grant": {
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
+			class:   testClassBasalt,
+			stated: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+				},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+				},
+				AllowPrivilegeEscalation: boolPtr(true),
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+		},
+		"a stated seccomp profile and escalation survive defaulting": {
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
+			class:   testClassBasalt,
+			stated: &computev1alpha.SandboxSecurityContext{
+				AllowPrivilegeEscalation: boolPtr(false),
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeUnconfined,
+				},
+			},
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+					Add:  []computev1alpha.Capability{testCapChown, testCapSetgid},
+				},
+				AllowPrivilegeEscalation: boolPtr(false),
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeUnconfined,
+				},
+			},
+		},
+		"a class publishing no default still records the capability floor": {
+			catalog: runtimeclass.Catalog{securityClass(nil)},
+			class:   testClassBasalt,
+			want: &computev1alpha.SandboxSecurityContext{
+				Capabilities: &computev1alpha.SandboxCapabilities{
+					Drop: []computev1alpha.Capability{computev1alpha.CapabilityAll},
+				},
+			},
+		},
+		"a class the catalog does not offer changes nothing": {
+			catalog: runtimeclass.Catalog{securityClass(classDefaults)},
+			class:   testClassCitrine,
+			want:    nil,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			workload := sandboxWorkload(tc.class, tc.stated)
+
+			defaultSecurityContext(workload, tc.catalog)
+
+			got := workload.Spec.Template.Spec.Runtime.Sandbox.Containers[0].SecurityContext
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("security context mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestDefaultSecurityContextIsIdempotent checks that re-admitting an unchanged
+// workload stores an unchanged object. Defaulting runs on every update, and the
+// stored security context takes part in the instance template hash, so a value
+// that drifted on each pass would roll instances that nothing changed.
+func TestDefaultSecurityContextIsIdempotent(t *testing.T) {
+	catalog := runtimeclass.Catalog{securityClass(&computev1alpha.RuntimeClassSecurityContext{
+		Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+			Add: []computev1alpha.Capability{testCapSetgid, testCapChown},
+		},
+		AllowPrivilegeEscalation: boolPtr(false),
+		SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+			Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+		},
+	})}
+
+	workload := sandboxWorkload(testClassBasalt, nil)
+
+	defaultSecurityContext(workload, catalog)
+	once := workload.DeepCopy()
+
+	defaultSecurityContext(workload, catalog)
+
+	if diff := cmp.Diff(once, workload); diff != "" {
+		t.Errorf("second defaulting changed the workload (-first +second):\n%s", diff)
+	}
+}
+
+// TestDefaultStampsSecurityContextOnCreateOnly checks which admission
+// operations write the class default. Defaulting runs on every update, so
+// filling empty fields from the catalog on the way past would let an unrelated
+// edit move a running container onto whatever the class publishes today, and
+// would recreate its instances through the template hash.
+func TestDefaultStampsSecurityContextOnCreateOnly(t *testing.T) {
+	cases := map[string]struct {
+		operation admissionv1.Operation
+		inContext bool
+		wantStamp bool
+	}{
+		"create stamps the published default":   {operation: admissionv1.Create, inContext: true, wantStamp: true},
+		"update leaves a stored workload alone": {operation: admissionv1.Update, inContext: true},
+		"an unknown operation stamps nothing":   {inContext: false},
+		"a delete admission stamps nothing":     {operation: admissionv1.Delete, inContext: true},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, true)
+
+			class := securityClass(&computev1alpha.RuntimeClassSecurityContext{
+				AllowPrivilegeEscalation: boolPtr(true),
+			})
+			ctx := context.Background()
+			if tc.inContext {
+				ctx = admission.NewContextWithRequest(ctx, admission.Request{
+					AdmissionRequest: admissionv1.AdmissionRequest{Operation: tc.operation},
+				})
+			}
+
+			// The catalog is supplied directly so the test exercises the
+			// operation check rather than the cluster plumbing.
+			workload := sandboxWorkload(testClassBasalt, nil)
+			defaultFromCatalog(ctx, workload, runtimeclass.Catalog{class})
+
+			got := workload.Spec.Template.Spec.Runtime.Sandbox.Containers[0].SecurityContext
+			if tc.wantStamp {
+				if got == nil || got.AllowPrivilegeEscalation == nil || !*got.AllowPrivilegeEscalation {
+					t.Errorf("security context = %+v, want the class default stamped", got)
+				}
+				return
+			}
+			if got != nil {
+				t.Errorf("security context = %+v, want nothing stamped", got)
+			}
+		})
 	}
 }

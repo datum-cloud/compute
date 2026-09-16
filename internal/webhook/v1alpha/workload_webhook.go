@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -92,7 +93,7 @@ func (r *workloadWebhook) Default(ctx context.Context, workload *computev1alpha.
 		if err != nil {
 			return err
 		}
-		defaultRuntimeClass(workload, catalog)
+		defaultFromCatalog(ctx, workload, catalog)
 	}
 
 	// // TODO(jreese) review and test gateway defaulting / logic
@@ -226,6 +227,60 @@ func defaultRuntimeClass(workload *computev1alpha.Workload, catalog runtimeclass
 	}
 	if defaultClass := catalog.Default(); defaultClass != nil {
 		workload.Spec.Template.Spec.Runtime.Class = defaultClass.Name
+	}
+}
+
+// defaultFromCatalog applies the defaults drawn from the published catalog.
+//
+// The security context is stamped only when the workload is created. Defaulting
+// runs on every update, so filling each empty field from the catalog on the way
+// past would let an unrelated edit, such as a replica change, move a running
+// container onto whatever the class publishes today. The stored security context
+// also takes part in the instance template hash, so that edit would recreate
+// every instance in the workload.
+//
+// An operation this cannot determine is treated as an update, because stamping
+// privilege onto an object of unknown provenance is the worse failure. The class
+// itself is still resolved on update, which is how a workload stored before the
+// catalog existed acquires one.
+func defaultFromCatalog(ctx context.Context, workload *computev1alpha.Workload, catalog runtimeclass.Catalog) {
+	defaultRuntimeClass(workload, catalog)
+
+	request, err := admission.RequestFromContext(ctx)
+	if err != nil || request.Operation != admissionv1.Create {
+		return
+	}
+	defaultSecurityContext(workload, catalog)
+}
+
+// defaultSecurityContext writes the selected class's published security context
+// onto every sandbox container that states none, so the stored workload shows
+// exactly what its containers run with.
+//
+// The platform picks a security configuration for every container either way.
+// Leaving that pick unwritten is what turns a container the configuration stops
+// from starting into an unexplained crash loop, because the only evidence is the
+// container's own logs. Storing the pick lets a customer read it with the rest of
+// their workload, and lets a provider run what the workload states rather than a
+// configuration of its own.
+//
+// Because the value is stored and written only at creation, a later correction
+// to the class moves workloads created after the change and leaves ones already
+// stored as they are.
+func defaultSecurityContext(workload *computev1alpha.Workload, catalog runtimeclass.Catalog) {
+	sandbox := workload.Spec.Template.Spec.Runtime.Sandbox
+	if sandbox == nil {
+		return
+	}
+
+	class := catalog.Find(workload.Spec.Template.Spec.Runtime.Class)
+	if class == nil {
+		return
+	}
+
+	for i := range sandbox.Containers {
+		sandbox.Containers[i].SecurityContext = runtimeclass.DefaultSecurityContext(
+			class, sandbox.Containers[i].SecurityContext)
 	}
 }
 

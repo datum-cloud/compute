@@ -780,3 +780,87 @@ func diff(want, got any) error {
 	}
 	return nil
 }
+
+// TestBuildPodSpecCarriesStatedConfinement covers the rest of the security
+// context an Instance states. A provider runs what the Instance says and picks
+// nothing of its own, so an Instance stating neither value leaves both unset and
+// keeps the behavior of an Instance admitted before classes published a default.
+func TestBuildPodSpecCarriesStatedConfinement(t *testing.T) {
+	allow := true
+	deny := false
+
+	tests := []struct {
+		name                 string
+		securityContext      *computev1alpha.SandboxSecurityContext
+		wantAllowsEscalation *bool
+		wantSeccompProfile   *corev1.SeccompProfile
+	}{
+		{
+			name:            "an Instance stating nothing leaves both unset",
+			securityContext: nil,
+		},
+		{
+			name: "privilege escalation carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				AllowPrivilegeEscalation: &allow,
+			},
+			wantAllowsEscalation: &allow,
+		},
+		{
+			name: "refusing privilege escalation carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				AllowPrivilegeEscalation: &deny,
+			},
+			wantAllowsEscalation: &deny,
+		},
+		{
+			name: "the runtime default seccomp profile carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+			wantSeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+		{
+			name: "an unconfined seccomp profile carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeUnconfined,
+				},
+			},
+			wantSeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			container := computev1alpha.SandboxContainer{
+				Name:            testContainerName,
+				Image:           testNginxImage,
+				SecurityContext: test.securityContext,
+			}
+
+			spec, err := BuildPodSpec(newInstance(container), Options{Capabilities: runtimeclass.Capabilities{
+				Class:    testClassBasalt,
+				Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime},
+			}})
+			if err != nil {
+				t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+			}
+
+			built := spec.Containers[0].SecurityContext
+			if err := diff(test.wantAllowsEscalation, built.AllowPrivilegeEscalation); err != nil {
+				t.Errorf("allowPrivilegeEscalation: %v", err)
+			}
+			if err := diff(test.wantSeccompProfile, built.SeccompProfile); err != nil {
+				t.Errorf("seccompProfile: %v", err)
+			}
+
+			// The capability floor is unchanged by either statement.
+			if err := diff(&corev1.Capabilities{Drop: []corev1.Capability{testCapAll}}, built.Capabilities); err != nil {
+				t.Errorf("capabilities: %v", err)
+			}
+		})
+	}
+}
