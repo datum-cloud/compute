@@ -210,6 +210,48 @@ type RuntimeClassCapabilities struct {
 	Compatibility string `json:"compatibility,omitempty"`
 }
 
+// RuntimeClassDefaultCapabilities are the Linux capabilities the platform grants
+// a sandbox container in the class when the container states none.
+//
+// Only additions are published. Every sandbox container drops ALL, in every
+// class, and that is not a per-class choice.
+type RuntimeClassDefaultCapabilities struct {
+	// The capabilities granted to a container that requests none. Each must also
+	// appear in grantableCapabilities, so a customer reading the class sees a
+	// default drawn from the set they may request themselves.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:message="add must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted",rule="self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM'])"
+	// +kubebuilder:validation:Optional
+	Add []Capability `json:"add,omitempty"`
+}
+
+// RuntimeClassSecurityContext is the security configuration the platform writes
+// onto a sandbox container in the class when the customer states none.
+//
+// Every value is drawn from the same closed sets a customer may state on their
+// own container, so the class publishes a default a customer can read, compare
+// between tiers, and restate themselves.
+type RuntimeClassSecurityContext struct {
+	// The Linux capabilities granted to a container that requests none.
+	//
+	// +kubebuilder:validation:Optional
+	Capabilities *RuntimeClassDefaultCapabilities `json:"capabilities,omitempty"`
+
+	// Whether a process in a container may gain more privileges than its parent
+	// when the container states nothing. A class whose isolation boundary is a
+	// guest kernel can allow it where a shared-kernel class could not.
+	//
+	// +kubebuilder:validation:Optional
+	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
+
+	// The seccomp profile confining a container that states none.
+	//
+	// +kubebuilder:validation:Optional
+	SeccompProfile *SandboxSeccompProfile `json:"seccompProfile,omitempty"`
+}
+
 // RuntimeClassLifecycle describes what a customer can expect of an instance in
 // this class: how long it takes to start, and which operations apply to it
 // while it runs.
@@ -255,6 +297,8 @@ type RuntimeClassLifecycle struct {
 // this design closes. Provider configuration stays with the provider's own
 // deployment. A field the platform reads itself, drawn from a closed set of
 // values, reaches no runtime and is not such a slot.
+//
+// +kubebuilder:validation:XValidation:message="defaultSecurityContext.capabilities.add must only name capabilities listed in capabilities.grantableCapabilities",rule="!has(self.defaultSecurityContext) || !has(self.defaultSecurityContext.capabilities) || !has(self.defaultSecurityContext.capabilities.add) || self.defaultSecurityContext.capabilities.add.all(c, has(self.capabilities.grantableCapabilities) && c in self.capabilities.grantableCapabilities)"
 type RuntimeClassSpec struct {
 	// The controller that implements this class. A provider watches for classes
 	// carrying its own controller name, claims them, and reports through the
@@ -307,6 +351,23 @@ type RuntimeClassSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Lifecycle RuntimeClassLifecycle `json:"lifecycle,omitempty"`
+
+	// The security configuration the platform writes onto a sandbox container in
+	// this class when the customer states none. A customer reads it before
+	// choosing the class, and reads the same values back on their own workload
+	// afterwards.
+	//
+	// Publishing the default is what keeps the configuration out of the runtime's
+	// hands: admission stamps these values onto the stored workload, so the
+	// workload states what runs and a provider runs only what the workload
+	// states. A class that publishes nothing leaves a container that states
+	// nothing to the platform-wide floor, which drops every capability.
+	//
+	// Correcting the value here moves workloads admitted after the change and
+	// leaves existing workloads with the configuration they were stored with.
+	//
+	// +kubebuilder:validation:Optional
+	DefaultSecurityContext *RuntimeClassSecurityContext `json:"defaultSecurityContext,omitempty"`
 
 	// How a guest in this class takes the network interface the platform gives
 	// it. The provider that publishes the class states it, because only the
