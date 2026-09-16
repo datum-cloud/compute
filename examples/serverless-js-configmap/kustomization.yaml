@@ -1,0 +1,26 @@
+# Generates the `js-function` ConfigMap from index.js, so index.js is the single
+# source of truth -- there is no second, hand-maintained copy of the function to
+# drift. The `index.js` file becomes the ConfigMap key `index.js`, which Datum
+# mounts to /app/index.js inside the microVM.
+#
+# Apply on the PROJECT control plane (the ReferencedData resolver runs there):
+#   kubectl --context datum-project-datum-cloud -n default apply -k .
+#
+# To swap the function: edit index.js and re-apply with `-k .` -- Kustomize
+# regenerates the ConfigMap from the new file. Then `datumctl compute restart
+# serverless-js-fn` to recreate the instance and pick up the new read-only rom.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: js-function
+    files:
+      - index.js
+
+generatorOptions:
+  # Keep a stable name: the Workload references `js-function` by name and is
+  # deployed out-of-band via `datumctl compute deploy`, not through Kustomize, so
+  # Kustomize cannot rewrite the reference to a hashed name. A content-hash suffix
+  # would therefore break the mount and buys us nothing here (the instance is
+  # recreated by `datumctl compute restart`, not by a ConfigMap name change).
+  disableNameSuffixHash: true
