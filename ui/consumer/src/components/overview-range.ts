@@ -21,12 +21,17 @@ export interface OverviewRange {
   timeRange: { start: Date; end: Date };
 }
 
+/** Snap to the tick boundary so consecutive renders produce identical query keys. */
+function tickNow(): number {
+  return Math.floor(Date.now() / OVERVIEW_TICK_MS) * OVERVIEW_TICK_MS;
+}
+
 export function useOverviewRange(value: OverviewRangeValue): OverviewRange {
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(tickNow);
 
   useEffect(() => {
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), OVERVIEW_TICK_MS);
+    setNow(tickNow());
+    const timer = window.setInterval(() => setNow(tickNow()), OVERVIEW_TICK_MS);
     return () => window.clearInterval(timer);
   }, [value]);
 

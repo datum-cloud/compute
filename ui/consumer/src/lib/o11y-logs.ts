@@ -484,9 +484,11 @@ export function useInstanceLogs(
     data,
     isLoading:
       (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
+    // Only surface a stdout failure when there is no ALB stream to show;
+    // otherwise a broken stdout leg would blank access logs that loaded fine.
     error:
       (alb.error as ApiError | null) ??
-      (compute.error as ApiError | null) ??
+      (albEnabled ? null : (compute.error as ApiError | null)) ??
       null,
   };
 }

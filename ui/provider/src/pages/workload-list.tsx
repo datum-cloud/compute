@@ -16,7 +16,7 @@ import { formatLocationNames, useLocationIndex } from '../lib/locations';
 import {
   albRpsQuery,
   albRpsQueryMany,
-  identityValuesForLabel,
+  identityValues,
   useInstanceMetricIdentity,
   workloadCpuAvgQuery,
 } from '../lib/metrics-queries';
@@ -113,7 +113,7 @@ export default function WorkloadList() {
       grouped.set(key, group);
     }
     for (const [name, group] of grouped) {
-      map.set(name, identityValuesForLabel(group, label));
+      map.set(name, identityValues(group));
     }
     return map;
   }, [instances, identity?.label]);

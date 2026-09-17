@@ -106,7 +106,7 @@ export function MetricAreaChart({
   /** Skip the Card chrome so this can sit inside another card. */
   embedded?: boolean;
 }) {
-  const gradientId = useId().replace(/:/g, '');
+  const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const { data, isLoading, error } = usePrometheusChart(query, timeRange, {
     enabled: enabled && !unavailable && !!query,
   });
@@ -149,7 +149,11 @@ export function MetricAreaChart({
           No data
         </div>
       ) : (
-        <ChartContainer config={chartConfig} className="aspect-auto h-full w-full overflow-visible">
+        <ChartContainer
+          config={chartConfig}
+          className="h-full w-full overflow-visible"
+          // Inline: the host does not compile `aspect-auto`.
+          style={{ aspectRatio: 'auto' }}>
           <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <defs>
               {series.map((item, index) => {

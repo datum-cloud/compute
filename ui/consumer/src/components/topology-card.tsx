@@ -13,6 +13,7 @@ import type { ConnectedAlb } from '../lib/api';
 import { formatUptime, splitSlashValue } from '../lib/format';
 import { formatLocationName, type LocationIndex } from '../lib/locations';
 import {
+  ALB_INSTANT_WINDOW,
   albErrorRateQuery,
   albP99Query,
   albRpsQuery,
@@ -38,31 +39,34 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { WaypointsIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-/** Rate window for the ALB card's instant queries. */
-const ALB_CARD_WINDOW = '5m';
-
-/** "2Gi" / "512Mi" / "1G" → bytes, for a usage percentage. */
+/**
+ * Kubernetes quantity ("2Gi", "512Mi", "1G", "1e9", "500m") → bytes, for a
+ * usage percentage. Suffixes are case-sensitive as in k8s: `m` is milli, `M`
+ * mega; binary suffixes end in `i`.
+ */
 function parseQuantityBytes(value?: string): number | undefined {
   if (!value) return undefined;
-  const match = value.trim().match(/^([\d.]+)\s*([KMGTP]i?|[kMGTP])?B?$/i);
+  const match = value.trim().match(/^(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(Ki|Mi|Gi|Ti|Pi|Ei|[mkKMGTPE])?$/);
   if (!match) return undefined;
   const n = Number(match[1]);
   if (!Number.isFinite(n)) return undefined;
-  const unit = (match[2] ?? '').toLowerCase();
   const table: Record<string, number> = {
-    '': 1,
+    m: 1e-3,
     k: 1e3,
-    m: 1e6,
-    g: 1e9,
-    t: 1e12,
-    p: 1e15,
-    ki: 1024,
-    mi: 1024 ** 2,
-    gi: 1024 ** 3,
-    ti: 1024 ** 4,
-    pi: 1024 ** 5,
+    K: 1e3,
+    M: 1e6,
+    G: 1e9,
+    T: 1e12,
+    P: 1e15,
+    E: 1e18,
+    Ki: 1024,
+    Mi: 1024 ** 2,
+    Gi: 1024 ** 3,
+    Ti: 1024 ** 4,
+    Pi: 1024 ** 5,
+    Ei: 1024 ** 6,
   };
-  const factor = table[unit];
+  const factor = match[2] ? table[match[2]] : 1;
   return factor ? n * factor : undefined;
 }
 
@@ -99,9 +103,9 @@ function AlbBody({
   onTraffic: (proxyId: string, rps: number | undefined) => void;
 }) {
   // Instant queries: use a 5m window so low-volume bursts register (see metrics-queries).
-  const rps = usePrometheusCard(albRpsQuery(projectId, proxyId, ALB_CARD_WINDOW), 'requestsPerSecond');
-  const errors = usePrometheusCard(albErrorRateQuery(projectId, proxyId, ALB_CARD_WINDOW), 'percent');
-  const p99 = usePrometheusCard(albP99Query(projectId, proxyId, ALB_CARD_WINDOW), 'milliseconds-auto');
+  const rps = usePrometheusCard(albRpsQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'requestsPerSecond');
+  const errors = usePrometheusCard(albErrorRateQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'percent');
+  const p99 = usePrometheusCard(albP99Query(projectId, proxyId, ALB_INSTANT_WINDOW), 'milliseconds-auto');
 
   const rpsValue = rps.data?.value;
   useEffect(() => {
@@ -122,7 +126,7 @@ function AlbBody({
   return (
     <>
       <TopologyRow
-        label={`traffic · ${ALB_CARD_WINDOW}`}
+        label={`traffic · ${ALB_INSTANT_WINDOW}`}
         value={
           <>
             <Strong tone="cpt-status-success">

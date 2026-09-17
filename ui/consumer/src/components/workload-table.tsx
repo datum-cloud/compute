@@ -38,7 +38,7 @@ import {
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import type { ColumnDef } from '@tanstack/react-table';
+import type { ColumnDef, Row } from '@tanstack/react-table';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { GlobeIcon } from 'lucide-react';
 import { useCallback, useId, useMemo, type MouseEvent } from 'react';
@@ -257,7 +257,10 @@ export function WorkloadTable({
       },
       {
         id: 'instances',
-        accessorFn: (workload) => workload.desiredReplicas * 1000 + workload.readyReplicas,
+        accessorFn: (workload) => workload,
+        sortingFn: (a: Row<DataTableFeatures, Workload>, b: Row<DataTableFeatures, Workload>) =>
+          a.original.desiredReplicas - b.original.desiredReplicas ||
+          a.original.readyReplicas - b.original.readyReplicas,
         header: ({ column }) => <DataTable.ColumnHeader column={column} title="Instances" />,
         cell: ({ row }) => {
           const { readyReplicas: ready, desiredReplicas: desired } = row.original;

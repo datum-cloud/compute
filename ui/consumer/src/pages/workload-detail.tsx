@@ -26,7 +26,7 @@ import { splitSlashValue } from '../lib/format';
 import { formatLocationCountry, formatLocationName, formatLocationNames, formatLocationTooltip, useLocationIndex, type LocationIndex } from '../lib/locations';
 import {
   albRpsQuery,
-  identityValuesForLabel,
+  identityValues,
   useInstanceMetricIdentity,
 } from '../lib/metrics-queries';
 import {
@@ -66,7 +66,9 @@ import { useCallback, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 
 const COMING_SOON = 'Coming soon';
-const PANEL_HEIGHT = 'h-[27rem]';
+// Inline rather than `h-[27rem]`: the host only compiles that class because its
+// own ALB overview happens to use it today.
+const PANEL_STYLE = { height: '27rem' } as const;
 
 const WORKLOAD_TABS = [
   { label: 'Overview' },
@@ -439,7 +441,7 @@ export default function WorkloadDetail() {
   const locationIndex = useLocationIndex(projectId);
   const { identity } = useInstanceMetricIdentity(projectId, instances[0]);
   const metricKeys = useMemo(
-    () => (identity ? identityValuesForLabel(instances, identity.label) : []),
+    () => (identity ? identityValues(instances) : []),
     [instances, identity]
   );
   const proxyId = published.data?.proxyName;
@@ -553,28 +555,28 @@ export default function WorkloadDetail() {
           />
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <div className={PANEL_HEIGHT}>
+            <div style={PANEL_STYLE}>
               <LiveTrafficCard
                 projectId={projectId}
                 proxyId={proxyId}
                 range={range.timeRange}
               />
             </div>
-            <div className={PANEL_HEIGHT}>
+            <div style={PANEL_STYLE}>
               <InstancesPanel
                 instances={instances}
                 locationIndex={locationIndex}
                 onOpen={(name) => navigate(instanceHref(name))}
               />
             </div>
-            <div className={PANEL_HEIGHT}>
+            <div style={PANEL_STYLE}>
               <LocationsPanel
                 instances={instances}
                 locations={workload.locations}
                 locationIndex={locationIndex}
               />
             </div>
-            <div className={PANEL_HEIGHT}>
+            <div style={PANEL_STYLE}>
               <RecentInstanceLogs
                 logsHref={logsHref}
                 projectId={projectId}

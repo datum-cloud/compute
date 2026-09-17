@@ -32,7 +32,7 @@ function KpiCell({
   value: string;
   hint?: string;
 }) {
-  const comingSoon = value === 'Coming soon';
+  const comingSoon = value === COMING_SOON;
   return (
     <div className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</p>
@@ -97,7 +97,9 @@ export function WorkloadMetrics({
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="divide-border border-border flex divide-x overflow-x-auto overscroll-x-contain rounded-lg border">
+          <div
+            className="divide-border border-border flex divide-x overflow-x-auto rounded-lg border"
+            style={{ overscrollBehaviorX: 'contain' }}>
             <KpiCell
               label="CPU"
               value={resourceSoon ? COMING_SOON : (cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number'))}

@@ -50,7 +50,7 @@ export function WorkloadHealthStrip({
   const headline = (() => {
     if (health === 'Available') {
       return {
-        icon: <Icon icon={CircleCheckIcon} size={18} className="text-(--color-badge-success)" />,
+        icon: <Icon icon={CircleCheckIcon} size={18} style={{ color: "var(--color-badge-success)" }} />,
         title: 'Serving normally',
         detail: `${healthyCount}/${totalCount} instances · ${locationCount} ${locationCount === 1 ? 'location' : 'locations'}`,
         ring: 'var(--color-badge-success)',
@@ -58,7 +58,7 @@ export function WorkloadHealthStrip({
     }
     if (health === 'Degraded') {
       return {
-        icon: <Icon icon={TriangleAlertIcon} size={18} className="text-(--color-badge-warning)" />,
+        icon: <Icon icon={TriangleAlertIcon} size={18} style={{ color: "var(--color-badge-warning)" }} />,
         title: 'Degraded',
         detail: `${healthyCount}/${totalCount} instances available`,
         ring: 'var(--color-badge-warning)',
@@ -66,14 +66,14 @@ export function WorkloadHealthStrip({
     }
     if (health === 'Unavailable') {
       return {
-        icon: <Icon icon={TriangleAlertIcon} size={18} className="text-(--color-badge-danger)" />,
+        icon: <Icon icon={TriangleAlertIcon} size={18} style={{ color: "var(--color-badge-danger)" }} />,
         title: 'Unavailable',
         detail: totalCount === 0 ? 'No running instances' : `${healthyCount}/${totalCount} instances available`,
         ring: 'var(--color-badge-danger)',
       };
     }
     return {
-      icon: <Icon icon={RadioIcon} size={18} className="text-(--color-badge-info)" />,
+      icon: <Icon icon={RadioIcon} size={18} style={{ color: "var(--color-badge-info)" }} />,
       title: 'Waiting for status',
       detail: 'Workload health has not been reported yet.',
       ring: 'var(--color-badge-info)',

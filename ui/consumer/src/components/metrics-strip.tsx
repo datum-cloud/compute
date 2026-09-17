@@ -6,6 +6,7 @@ import {
 } from './overview-range';
 import { SparklineStatCard } from './sparkline-stat-card';
 import {
+  ALB_INSTANT_WINDOW,
   albErrorRateQuery,
   albRpsQuery,
   type InstanceIdentityLabel,
@@ -50,6 +51,11 @@ export function WorkloadMetricsStrip({
       : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
+  // Headline numbers share the topology card's instant window so the two agree.
+  const rpsHeadline =
+    projectId && proxyId ? albRpsQuery(projectId, proxyId, ALB_INSTANT_WINDOW) : undefined;
+  const errorHeadline =
+    projectId && proxyId ? albErrorRateQuery(projectId, proxyId, ALB_INSTANT_WINDOW) : undefined;
   const windowLabel = `Last ${range.shortLabel}`;
 
   return (
@@ -88,6 +94,7 @@ export function WorkloadMetricsStrip({
         <SparklineStatCard
           title="Requests"
           query={rpsQuery}
+          headlineQuery={rpsHeadline}
           format="requestsPerSecond"
           color="var(--primary)"
           timeRange={range.timeRange}
@@ -98,6 +105,7 @@ export function WorkloadMetricsStrip({
         <SparklineStatCard
           title="Error rate"
           query={errorQuery}
+          headlineQuery={errorHeadline}
           format="percent"
           color="var(--color-chart-1)"
           timeRange={range.timeRange}

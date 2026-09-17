@@ -86,22 +86,27 @@ const PACKET_HEAD = PACKET_LAYERS[0].length;
 
 function packetDuration(traffic?: number): { dur: number; idle: boolean } {
   if (!traffic || traffic <= 0 || !Number.isFinite(traffic)) return { dur: 4.2, idle: true };
-  // ~2.3s at 1 rps, ~1.7s at 10 rps, floor at 1s for busy ALBs.
-  const dur = Math.min(2.6, Math.max(1, 2.6 - Math.log10(traffic + 1) * 0.9));
+  // ~2.3s at 1 rps, ~1.7s at 10 rps, floor at 1s for busy ALBs. Rounded to
+  // 0.2s steps: changing `dur` restarts the SMIL cycle, so a jittering rps
+  // reading should not retrigger it on every poll.
+  const raw = Math.min(2.6, Math.max(1, 2.6 - Math.log10(traffic + 1) * 0.9));
+  const dur = Math.round(raw / 0.2) * 0.2;
   return { dur, idle: false };
 }
 
 const STYLES = `
-.cpt-root{position:relative;display:flex;align-items:center;justify-content:center;min-height:100%;padding:56px 32px 40px;overflow-x:auto;color:var(--card-foreground);background:color-mix(in oklab,var(--muted) 55%,var(--card))}
+.cpt-root{position:relative;display:flex;min-height:100%;padding:56px 32px 40px;overflow-x:auto;color:var(--card-foreground);background:color-mix(in oklab,var(--muted) 55%,var(--card))}
 .cpt-dots{position:absolute;inset:0;pointer-events:none;background-image:radial-gradient(circle,color-mix(in oklab,var(--foreground) 14%,transparent) 1px,transparent 1.4px);background-size:16px 16px}
 .cpt-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;color:var(--primary);overflow:visible}
 .cpt-chrome{position:absolute;top:12px;left:12px;right:12px;display:flex;align-items:center;justify-content:space-between;gap:8px;pointer-events:none;z-index:1}
 .cpt-chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);font-family:var(--font-mono);font-size:11px;line-height:1;color:var(--card-foreground);box-shadow:0 1px 2px rgb(0 0 0/.04);white-space:nowrap}
 .cpt-chip-dot{width:6px;height:6px;border-radius:9999px}
-.cpt-grid{position:relative;display:grid;align-items:start;justify-content:center}
+/* Center when it fits (margin:auto). min-width:0 + max-width:100% so the grid
+   can shrink and wrap instead of overflowing both sides of the scrollport. */
+.cpt-grid{position:relative;display:grid;align-items:start;margin:auto;min-width:0;max-width:100%}
 .cpt-ingress{display:flex;flex-direction:column;gap:24px;align-self:center}
 .cpt-primary{justify-self:center}
-.cpt-group{justify-self:center;display:flex;flex-wrap:wrap;justify-content:center;gap:16px}
+.cpt-group{min-width:0;max-width:100%;display:flex;flex-wrap:wrap;justify-content:center;gap:16px}
 .cpt-group.cpt-boxed{border:1px solid color-mix(in oklab,var(--primary) 28%,transparent);background:color-mix(in oklab,var(--primary) 4%,var(--card));border-radius:12px;padding:16px}
 .cpt-node{position:relative}
 .cpt-card{position:relative;width:264px;display:flex;flex-direction:column;border:1px solid var(--border);background:var(--card);color:var(--card-foreground);border-radius:8px;box-shadow:0 1px 2px rgb(0 0 0/.05),0 0 0 1px rgb(255 255 255/.4) inset;text-align:left;font:inherit;padding:0;margin:0;transition:border-color 160ms ease,box-shadow 160ms ease,transform 160ms cubic-bezier(.23,1,.32,1)}
@@ -160,12 +165,14 @@ const STYLES = `
 @media (prefers-reduced-motion:reduce){.cpt-flow{display:none}}
 `;
 
-function portCenter(root: DOMRect, el: Element | null): Point | null {
+function portCenter(root: HTMLElement, el: Element | null): Point | null {
   if (!el) return null;
+  const box = root.getBoundingClientRect();
   const rect = el.getBoundingClientRect();
+  // The SVG scrolls with the content, so add the container's scroll offset.
   return {
-    x: Math.round(rect.left + rect.width / 2 - root.left) + 0.5,
-    y: Math.round(rect.top + rect.height / 2 - root.top) + 0.5,
+    x: Math.round(rect.left + rect.width / 2 - box.left + root.scrollLeft) + 0.5,
+    y: Math.round(rect.top + rect.height / 2 - box.top + root.scrollTop) + 0.5,
   };
 }
 
@@ -346,20 +353,19 @@ export function TopologyCanvas({
     const instanceList = instanceIds ? instanceIds.split('\u0000') : [];
 
     const measure = () => {
-      const box = root.getBoundingClientRect();
       const next: Edge[] = [];
-      const workloadIn = portCenter(box, root.querySelector('[data-port="workload-in"]'));
-      const workloadOut = portCenter(box, root.querySelector('[data-port="workload-out"]'));
+      const workloadIn = portCenter(root, root.querySelector('[data-port="workload-in"]'));
+      const workloadOut = portCenter(root, root.querySelector('[data-port="workload-out"]'));
 
       for (const albId of albList) {
-        const from = portCenter(box, root.querySelector(`[data-port="alb-${albId}"]`));
+        const from = portCenter(root, root.querySelector(`[data-port="alb-${albId}"]`));
         if (from && workloadIn) {
           next.push({ kind: 'ingress', d: elbowH(from, workloadIn), albId, to: workloadIn });
         }
       }
 
       const targets = instanceList
-        .map((id) => portCenter(box, root.querySelector(`[data-port="instance-${id}"]`)))
+        .map((id) => portCenter(root, root.querySelector(`[data-port="instance-${id}"]`)))
         .filter((point): point is Point => point !== null);
       if (workloadOut && targets.length > 0) {
         next.push({ d: fanOut(workloadOut, targets), kind: 'fanout' });
@@ -414,7 +420,7 @@ export function TopologyCanvas({
 
           const traffic = albs.find((alb) => alb.id === edge.albId)?.traffic;
           const { dur, idle } = packetDuration(traffic);
-          const cycle = `${dur.toFixed(2)}s`;
+          const cycle = `${dur.toFixed(1)}s`;
 
           return (
             <g key={`ingress-${edge.albId}`}>
@@ -478,7 +484,7 @@ export function TopologyCanvas({
         className="cpt-grid"
         style={{
           display: 'grid',
-          gridTemplateColumns: hasIngress ? `${CARD_WIDTH}px auto` : 'auto',
+          gridTemplateColumns: hasIngress ? `${CARD_WIDTH}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
           gridTemplateRows: hasReplicas ? 'auto auto' : 'auto',
           columnGap: hasIngress ? 96 : 0,
           rowGap: 48,

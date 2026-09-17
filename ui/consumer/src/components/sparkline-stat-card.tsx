@@ -17,6 +17,7 @@ export function SparklineStatCard({
   title,
   href,
   query,
+  headlineQuery,
   format = 'number',
   color = 'var(--primary)',
   idle = false,
@@ -29,6 +30,11 @@ export function SparklineStatCard({
   title: string;
   href?: string;
   query?: string;
+  /**
+   * Instant query for the headline number when it should differ from the
+   * chart series (e.g. a wider rate window). Defaults to `query`.
+   */
+  headlineQuery?: string;
   format?: MetricFormat;
   color?: string;
   idle?: boolean;
@@ -42,7 +48,7 @@ export function SparklineStatCard({
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const enabled = !!query && !unavailable;
   const chart = usePrometheusChart(query, timeRange, { enabled });
-  const card = usePrometheusCard(query, format, { enabled });
+  const card = usePrometheusCard(headlineQuery ?? query, format, { enabled });
 
   const dataKey = chart.data?.series[0]?.name || 'value';
   const series = useMemo(() => {

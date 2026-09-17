@@ -10,7 +10,6 @@ import { ComputeEnablementBanner } from "../components/compute-enablement-banner
 import { MetricAreaChart, formatKpiValue } from "../components/metric-area-chart";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
 import { ErrorOrRestrictedState, LoadingSkeleton } from "../components/states";
-import { WorkloadTable } from "../components/workload-table";
 import {
   useComputeEntitlement,
   useInstances,
@@ -20,7 +19,7 @@ import {
 import {
   albRpsQuery,
   albRpsQueryMany,
-  identityValuesForLabel,
+  identityValues,
   useInstanceMetricIdentity,
   workloadCpuAvgQuery,
   workloadCpuSumQuery,
@@ -47,6 +46,7 @@ import {
   CardTitle,
 } from "@datum-cloud/datum-ui/card";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
+import { Skeleton } from "@datum-cloud/datum-ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@datum-cloud/datum-ui/tabs";
 import { Icon } from "@datum-cloud/datum-ui/icons";
 import { cn } from "@datum-cloud/datum-ui/utils";
@@ -59,10 +59,44 @@ import {
   Rows3Icon,
   SearchIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 
 const COMING_SOON = "Coming soon";
+
+// The table bundles datum-ui's DataTable plus @tanstack/react-table and nuqs
+// (the host shares none of them), which is most of this route's weight. Load
+// it only when the user picks the table view so card-view users don't pay.
+const WorkloadTable = lazy(() =>
+  import("../components/workload-table").then((m) => ({
+    default: m.WorkloadTable,
+  })),
+);
+
+function TableSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true">
+      <Skeleton className="h-9 w-full sm:max-w-xs" />
+      <div className="overflow-hidden rounded-lg border">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-4 border-b px-4 py-3 last:border-b-0">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-4 w-20" />
+            <Skeleton className="h-8 w-40" />
+            <Skeleton className="h-4 w-16" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 type WorkloadView = "cards" | "table";
 const VIEW_STORAGE_KEY = "compute-plugin:workload-view";
@@ -117,7 +151,7 @@ function FleetSummary({
   );
   const healthy = workloads.filter((w) => w.health === "Available").length;
 
-  const timeRange = lastThirtyMinutesRange();
+  const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
 
   return (
     <div
@@ -391,7 +425,7 @@ export default function WorkloadList() {
       grouped.set(key, group);
     }
     for (const [name, group] of grouped) {
-      map.set(name, identityValuesForLabel(group, label));
+      map.set(name, identityValues(group));
     }
     return map;
   }, [instances, identity?.label]);
@@ -510,15 +544,17 @@ export default function WorkloadList() {
             }
           />
           {view === "table" ? (
-            <WorkloadTable
-              workloads={workloads}
-              projectId={projectId}
-              publishedByWorkload={publishedByWorkload}
-              locationIndex={locationIndex}
-              workloadHref={workloadHref}
-              albHref={albHref}
-              onOpen={(name) => navigate(workloadHref(name))}
-            />
+            <Suspense fallback={<TableSkeleton />}>
+              <WorkloadTable
+                workloads={workloads}
+                projectId={projectId}
+                publishedByWorkload={publishedByWorkload}
+                locationIndex={locationIndex}
+                workloadHref={workloadHref}
+                albHref={albHref}
+                onOpen={(name) => navigate(workloadHref(name))}
+              />
+            </Suspense>
           ) : (
             <div
               className="grid grid-cols-1 gap-4 lg:grid-cols-2"

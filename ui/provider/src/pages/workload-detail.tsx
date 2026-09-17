@@ -35,7 +35,7 @@ import {
 } from '../lib/locations';
 import {
   albRpsQuery,
-  identityValuesForLabel,
+  identityValues,
   useInstanceMetricIdentity,
   workloadCpuAvgQuery,
   workloadMemoryAvgQuery,
@@ -385,7 +385,7 @@ export default function WorkloadDetail() {
     instances[0]
   );
   const metricKeys = useMemo(
-    () => (identity ? identityValuesForLabel(instances, identity.label) : []),
+    () => (identity ? identityValues(instances) : []),
     [instances, identity]
   );
   const chartsEnabled =
