@@ -3,7 +3,7 @@
  *
  * Compute stamps Location resource names (and sometimes city codes) onto
  * workloads and instances. The catalog's topology labels turn those into
- * "Ashburn, US" the same way cloud-portal's edge pages do.
+ * region codes like "us-east-1", matching cloud-portal ALB pages.
  *
  * List failures (missing IAM, API not offered) degrade to an empty catalog so
  * callers keep showing the raw name.
@@ -82,18 +82,41 @@ export function lookupLocation(name: string, index: LocationIndex): Location | u
   return index.get(normalizeKey(name)) ?? index.get(name.toLowerCase());
 }
 
-/** Compact place name: "Ashburn, US". Falls back to the resource name. */
+/** Region label shown in the portal: "us-east-1". Falls back to the resource name. */
 export function locationPlace(location: Location): string {
-  const city = location.city || location.cityCode;
-  const country = location.countryCode || location.country;
-  if (city && country && city !== country) return `${city}, ${country}`;
-  return city || country || location.name;
+  return location.region || location.locationLabel || location.name;
+}
+
+/** Country name for secondary text, when it adds something beyond the region code. */
+export function locationCountry(location: Location): string | undefined {
+  const country = location.country?.trim();
+  if (!country || country === locationPlace(location)) return undefined;
+  return country;
 }
 
 export function formatLocationName(name: string | undefined, index: LocationIndex): string {
   if (!name) return '—';
   const location = lookupLocation(name, index);
   return location ? locationPlace(location) : name;
+}
+
+export function formatLocationCountry(
+  name: string | undefined,
+  index: LocationIndex
+): string | undefined {
+  if (!name) return undefined;
+  const location = lookupLocation(name, index);
+  return location ? locationCountry(location) : undefined;
+}
+
+export function formatLocationTooltip(
+  name: string | undefined,
+  index: LocationIndex
+): string | undefined {
+  if (!name) return undefined;
+  const label = formatLocationName(name, index);
+  const country = formatLocationCountry(name, index);
+  return country ? `${label} · ${country}` : label;
 }
 
 export function formatLocationNames(

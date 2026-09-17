@@ -1,18 +1,17 @@
 /**
- * Layout for `workloads/:workloadName/instances/:instanceName/*`.
+ * Layout for `:workloadName/instances/:instanceName/*`.
  *
  * Host mounts this as a splat page; nested routes keep breadcrumbs, title, and
  * tabs mounted while Overview / Logs / Metrics swap through `<Outlet />`.
  */
 import { InstancePageChrome } from '../components/instance-page-chrome';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
-import { PLUGIN_ID, useInstance, usePublishedUrl } from '../lib/api';
-import { formatLocationName, useLocationIndex } from '../lib/locations';
+import { useInstance, usePublishedUrl } from '../lib/api';
+import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
 import InstanceLogs from './instance-logs';
 import InstanceMetrics from './instance-metrics';
 import InstanceOverview from './instance-overview';
-import { useQueryClient } from '@tanstack/react-query';
 import { Outlet, Route, Routes, useLocation, useParams } from 'react-router';
 
 function InstanceLayoutShell({
@@ -38,7 +37,6 @@ function InstanceLayoutShell({
     projectId: string;
     instanceName: string;
   }>();
-  const queryClient = useQueryClient();
   const { data: instance, isLoading, error, refetch } = useInstance(projectId, instanceName);
   const published = usePublishedUrl(projectId, workloadName ?? instance?.workloadName);
   const locationIndex = useLocationIndex(projectId);
@@ -57,10 +55,9 @@ function InstanceLayoutShell({
       locationLabel={
         instance?.location ? formatLocationName(instance.location, locationIndex) : undefined
       }
-      onRefresh={() => {
-        void refetch();
-        void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] });
-      }}>
+      locationTooltip={
+        instance?.location ? formatLocationTooltip(instance.location, locationIndex) : undefined
+      }>
       {isLoading && <LoadingSkeleton />}
 
       {!isLoading && (error || !instance) && (

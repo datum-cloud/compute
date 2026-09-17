@@ -52,7 +52,7 @@ export function StatusBadge({
       <Badge
         type={type}
         theme="light"
-        className="text-2xs flex cursor-default items-center gap-1.5 px-1 py-0.5 font-bold tracking-[0.03em] uppercase">
+        className="text-xs flex cursor-default items-center gap-1.5 px-1 py-0.5 font-medium">
         {children}
       </Badge>
     </div>

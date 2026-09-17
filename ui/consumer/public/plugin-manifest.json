@@ -18,7 +18,7 @@
         "id": "compute",
         "title": "Compute",
         "icon": "server",
-        "path": "workloads",
+        "path": "",
         "order": 10,
         "section": "build",
         "comingSoon": true,
@@ -30,7 +30,7 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": "workloads",
+        "path": "",
         "component": {
           "$codeRef": "WorkloadList"
         }
@@ -48,7 +48,7 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": "workloads/:workloadName",
+        "path": ":workloadName",
         "component": {
           "$codeRef": "WorkloadDetail"
         }
@@ -57,7 +57,7 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": "workloads/:workloadName/instances/:instanceName/*",
+        "path": ":workloadName/instances/:instanceName/*",
         "component": {
           "$codeRef": "InstanceDetail"
         }
