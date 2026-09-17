@@ -28,6 +28,11 @@ export default defineConfig({
   },
   preview: {
     port: 7778,
+    // Bind IPv4 explicitly — "localhost"-only binding resolves to IPv6-only
+    // ([::1]) on some hosts, and the portal's server-side manifest fetch to
+    // http://localhost:7778 then gets ECONNREFUSED on IPv4, silently dropping
+    // the plugin out of the registry with no visible error.
+    host: '127.0.0.1',
     strictPort: true,
     cors: true,
   },
@@ -51,6 +56,8 @@ export default defineConfig({
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
         './InstanceDetail': './src/pages/instance-detail.tsx',
+        './TryDemoHomeCard': './src/cards/try-demo-home-card.tsx',
+        './TryDemoHeaderHint': './src/cards/try-demo-header-hint.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
       // (react 19, react-router 8, react-query 5) — cloud-portal moved
