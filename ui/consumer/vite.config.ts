@@ -77,6 +77,9 @@ export default defineConfig({
         // Do not share `logs`: MF colocates lucide-react / date-fns into the
         // logs loadShare chunk, so a host-provided logs module replaces those
         // exports and crashes WorkloadDetail / related pages.
+        // `select` is shared by the host (see cloud-portal `federation-host.ts`) so
+        // the overview range control renders the same Select as ALB.
+        '@datum-cloud/datum-ui/select': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/separator': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/skeleton': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/table': { singleton: true, requiredVersion: false },

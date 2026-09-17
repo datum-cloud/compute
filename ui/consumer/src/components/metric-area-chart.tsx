@@ -42,8 +42,11 @@ function formatAxisValue(value: number, format: MetricFormat): string {
       return formatBytes(value);
     case 'bytesPerSecond':
       return `${formatBytes(value)}/s`;
-    case 'percent':
-      return `${(value * 100).toFixed(0)}%`;
+    case 'percent': {
+      // Keep one decimal below 10% so a 0.4% error rate does not read as "0%".
+      const pct = value * 100;
+      return `${pct > 0 && pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
+    }
     case 'requestsPerSecond':
       return value >= 10 ? `${value.toFixed(0)}/s` : `${value.toFixed(2)}/s`;
     case 'milliseconds':
@@ -54,9 +57,34 @@ function formatAxisValue(value: number, format: MetricFormat): string {
   }
 }
 
+function formatAxisTick(value: number, format: MetricFormat): string {
+  if (!Number.isFinite(value)) return '';
+  switch (format) {
+    case 'bytes':
+      return formatBytes(value);
+    case 'bytesPerSecond':
+      return `${formatBytes(value)}/s`;
+    case 'percent':
+      return `${(value * 100).toFixed(0)}%`;
+    case 'milliseconds':
+    case 'milliseconds-auto':
+      return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}`;
+    default:
+      return value >= 10 ? value.toFixed(0) : value.toFixed(1);
+  }
+}
+
+function axisWidth(format: MetricFormat): number {
+  return format === 'bytes' || format === 'bytesPerSecond' ? 48 : 36;
+}
+
 function formatTimeTick(timestamp: number): string {
   const date = new Date(timestamp);
   return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function seriesLabel(name: string, title: string): string {
+  return !name || name === 'Series' ? title : name;
 }
 
 export function MetricAreaChart({
@@ -66,9 +94,12 @@ export function MetricAreaChart({
   format = 'number',
   color = 'var(--primary)',
   enabled = true,
+  unavailable = false,
+  unavailableLabel = 'Coming soon',
   className,
   height = 224,
   embedded = false,
+  fill = false,
 }: {
   query: string | undefined;
   timeRange: PrometheusTimeRange;
@@ -76,14 +107,18 @@ export function MetricAreaChart({
   format?: MetricFormat;
   color?: string;
   enabled?: boolean;
+  unavailable?: boolean;
+  unavailableLabel?: string;
   className?: string;
   height?: number;
   /** Skip the Card chrome so this can sit inside another card. */
   embedded?: boolean;
+  /** Grow to the parent instead of a fixed pixel height. */
+  fill?: boolean;
 }) {
-  const gradientId = useId().replace(/:/g, '');
+  const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const { data, isLoading, error } = usePrometheusChart(query, timeRange, {
-    enabled: enabled && !!query,
+    enabled: enabled && !unavailable && !!query,
   });
   const chartData = useMemo(() => (data ? transformForRecharts(data) : []), [data]);
   const series = data?.series ?? [];
@@ -96,7 +131,7 @@ export function MetricAreaChart({
     }
     series.forEach((item, index) => {
       config[item.name] = {
-        label: item.name,
+        label: seriesLabel(item.name, title),
         color: item.color || SERIES_COLORS[index] || color,
       };
     });
@@ -104,8 +139,15 @@ export function MetricAreaChart({
   }, [series, title, color]);
 
   const body = (
-    <div style={{ height }}>
-      {isLoading ? (
+    <div
+      className={fill ? 'relative min-h-40 w-full flex-1' : undefined}
+      style={fill ? undefined : { height }}>
+      <div className={fill ? 'absolute inset-0' : 'h-full'}>
+      {unavailable ? (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
+          {unavailableLabel}
+        </div>
+      ) : isLoading ? (
         <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
           Loading…
         </div>
@@ -120,8 +162,12 @@ export function MetricAreaChart({
           No data
         </div>
       ) : (
-        <ChartContainer config={chartConfig} className="h-full w-full">
-          <AreaChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
+        <ChartContainer
+          config={chartConfig}
+          className="h-full w-full overflow-visible"
+          // Inline: the host does not compile `aspect-auto`; without it ChartContainer keeps aspect-video.
+          style={{ aspectRatio: 'auto' }}>
+          <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <defs>
               {series.map((item, index) => {
                 const stroke = item.color || SERIES_COLORS[index] || color;
@@ -152,11 +198,13 @@ export function MetricAreaChart({
               tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
             />
             <YAxis
-              tickFormatter={(value: number) => formatAxisValue(value, format)}
+              tickFormatter={(value: number) => formatAxisTick(value, format)}
               tickLine={false}
               axisLine={false}
-              width={64}
-              tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+              width={axisWidth(format)}
+              tickCount={4}
+              tickMargin={8}
+              tick={{ fill: 'var(--muted-foreground)', fontSize: 10, textAnchor: 'end' }}
             />
             <ChartTooltip
               content={({ active, payload }) => {
@@ -171,7 +219,9 @@ export function MetricAreaChart({
                           className="size-1.5 shrink-0 rounded-full"
                           style={{ background: String(point.color || 'var(--primary)') }}
                         />
-                        <span className="text-muted-foreground">{String(point.name)}</span>
+                        <span className="text-muted-foreground">
+                          {seriesLabel(String(point.name), title)}
+                        </span>
                         <span className="font-medium">
                           {formatAxisValue(Number(point.value), format)}
                         </span>
@@ -188,7 +238,7 @@ export function MetricAreaChart({
                   key={item.name}
                   type="monotone"
                   dataKey={item.name}
-                  name={item.name}
+                  name={seriesLabel(item.name, title)}
                   stroke={stroke}
                   strokeWidth={1.5}
                   fill={`url(#${gradientId}-${index})`}
@@ -201,13 +251,14 @@ export function MetricAreaChart({
           </AreaChart>
         </ChartContainer>
       )}
+      </div>
     </div>
   );
 
   if (embedded) {
     return (
       <div
-        className={className}
+        className={cn(fill && 'flex h-full min-h-0 flex-1 flex-col', className)}
         data-testid={`compute-plugin-metric-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}>
         {series.length > 1 ? (
           <div className="mb-2 flex flex-wrap items-center gap-3">
@@ -217,7 +268,7 @@ export function MetricAreaChart({
                   className="size-1.5 rounded-full"
                   style={{ background: item.color || SERIES_COLORS[index] || color }}
                 />
-                {item.name}
+                {seriesLabel(item.name, title)}
               </span>
             ))}
           </div>
@@ -245,7 +296,7 @@ export function MetricAreaChart({
                     className="size-1.5 rounded-full"
                     style={{ background: item.color || SERIES_COLORS[index] || color }}
                   />
-                  {item.name}
+                  {seriesLabel(item.name, title)}
                 </span>
               ))
             : null}

@@ -1,5 +1,5 @@
 /**
- * Shared instance layout chrome: breadcrumbs, title, refresh, and tab bar.
+ * Shared instance layout chrome: breadcrumbs, title, and tab bar.
  * Used by the splat layout at `instances/:instanceName/*`; tab bodies render
  * through the parent's `<Outlet />`.
  */
@@ -16,7 +16,7 @@ import {
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { HomeIcon, RefreshCwIcon } from 'lucide-react';
+import { HomeIcon } from 'lucide-react';
 
 /** Matches `StatusBadge` / Badge `type` solid fill tokens. */
 const BADGE_TYPE_DOT: Record<ReturnType<typeof instanceStatusToBadgeType>, string> = {
@@ -51,7 +51,7 @@ export function InstancePageChrome({
   workloadName,
   instance,
   locationLabel,
-  onRefresh,
+  locationTooltip,
   children,
 }: {
   projectHref: string;
@@ -64,7 +64,7 @@ export function InstancePageChrome({
   workloadName?: string;
   instance?: Instance | null;
   locationLabel?: string;
-  onRefresh?: () => void;
+  locationTooltip?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -95,10 +95,10 @@ export function InstancePageChrome({
 
       <PageTitle
         title={titleName}
-        titleClassName="text-primary break-all sm:break-normal"
+        titleClassName="break-all sm:break-normal"
         className="flex-col items-start gap-3 sm:flex-row sm:items-center"
         description={
-          <span className="mt-1 flex min-h-5 items-center gap-2 text-sm">
+          <span className="mt-1 flex items-center gap-2 text-sm" style={{ minHeight: '1.25rem' }}>
             {instance ? (
               <>
                 <span
@@ -114,7 +114,7 @@ export function InstancePageChrome({
                     <span className="text-muted-foreground" aria-hidden>
                       ·
                     </span>
-                    <span className="text-muted-foreground" title={instance.location}>
+                    <span className="text-muted-foreground" title={locationTooltip ?? instance.location}>
                       {locationLabel ?? instance.location}
                     </span>
                   </>
@@ -126,17 +126,6 @@ export function InstancePageChrome({
               </span>
             )}
           </span>
-        }
-        actions={
-          onRefresh ? (
-            <button
-              type="button"
-              onClick={onRefresh}
-              className="border-border hover:bg-muted inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors">
-              <Icon icon={RefreshCwIcon} size={14} />
-              Refresh
-            </button>
-          ) : undefined
         }
       />
 

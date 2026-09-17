@@ -10,7 +10,6 @@ import {
   albRpsQuery,
   cpuUsageQuery,
   memoryUsageQuery,
-  networkIoQuery,
   useInstanceMetricIdentity,
 } from '../lib/metrics-queries';
 import {
@@ -24,6 +23,8 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { ChartColumnIncreasingIcon } from 'lucide-react';
 import { useMemo } from 'react';
 
+const COMING_SOON = 'Coming soon';
+
 function KpiCell({
   label,
   value,
@@ -33,11 +34,19 @@ function KpiCell({
   value: string;
   hint?: string;
 }) {
+  const comingSoon = value === 'Coming soon';
   return (
     <div className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</p>
-      <p className="text-sm font-medium sm:text-base">{value}</p>
-      {hint ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
+      <p
+        className={
+          comingSoon
+            ? 'text-muted-foreground text-sm font-medium'
+            : 'text-sm font-medium sm:text-base'
+        }>
+        {value}
+      </p>
+      {hint && !comingSoon ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
     </div>
   );
 }
@@ -53,14 +62,10 @@ function useKpi(
 export default function InstanceMetrics() {
   const { instance, projectId, proxyId } = useInstanceOutlet();
   const timeRange = useMemo<PrometheusTimeRange>(() => lastHour(), []);
-  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(
-    projectId,
-    instance.name
-  );
+  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(projectId, instance);
 
   const cpuQuery = projectId && identity ? cpuUsageQuery(projectId, identity) : undefined;
   const memoryQuery = projectId && identity ? memoryUsageQuery(projectId, identity) : undefined;
-  const networkQuery = projectId && identity ? networkIoQuery(projectId, identity) : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
   const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
@@ -72,6 +77,13 @@ export default function InstanceMetrics() {
   const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
 
   const chartsEnabled = !identityLoading && !!identity;
+  const resourceSoon = !identityLoading && !identity;
+  const cpuValue = resourceSoon
+    ? COMING_SOON
+    : (cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number'));
+  const memoryValue = resourceSoon
+    ? COMING_SOON
+    : (memoryCard.data?.formattedValue ?? formatKpiValue(memoryCard.data?.value, 'bytes'));
 
   return (
     <div className="flex flex-col gap-6" data-testid="compute-plugin-instance-metrics-page">
@@ -83,9 +95,11 @@ export default function InstanceMetrics() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="divide-border border-border flex divide-x overflow-x-auto overscroll-x-contain rounded-lg border">
-            <KpiCell label="CPU" value={cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number')} hint="cores" />
-            <KpiCell label="Memory" value={memoryCard.data?.formattedValue ?? formatKpiValue(memoryCard.data?.value, 'bytes')} />
+          <div
+            className="divide-border border-border flex divide-x overflow-x-auto rounded-lg border"
+            style={{ overscrollBehaviorX: 'contain' }}>
+            <KpiCell label="CPU" value={cpuValue} hint="cores" />
+            <KpiCell label="Memory" value={memoryValue} />
             {proxyId ? (
               <>
                 <KpiCell
@@ -106,9 +120,9 @@ export default function InstanceMetrics() {
               </>
             ) : (
               <>
-                <KpiCell label="Requests" value="—" hint="publish a URL" />
-                <KpiCell label="p99" value="—" hint="publish a URL" />
-                <KpiCell label="Errors" value="—" hint="publish a URL" />
+                <KpiCell label="Requests" value={COMING_SOON} />
+                <KpiCell label="p99" value={COMING_SOON} />
+                <KpiCell label="Errors" value={COMING_SOON} />
               </>
             )}
           </div>
@@ -122,6 +136,7 @@ export default function InstanceMetrics() {
           timeRange={timeRange}
           format="number"
           enabled={chartsEnabled}
+          unavailable={resourceSoon}
         />
         <MetricAreaChart
           title="Memory"
@@ -129,15 +144,17 @@ export default function InstanceMetrics() {
           timeRange={timeRange}
           format="bytes"
           enabled={chartsEnabled}
+          unavailable={resourceSoon}
         />
       </div>
 
       <MetricAreaChart
         title="Network I/O"
-        query={networkQuery}
+        query={undefined}
         timeRange={timeRange}
         format="bytesPerSecond"
-        enabled={chartsEnabled}
+        enabled={false}
+        unavailable
       />
 
       {proxyId ? (

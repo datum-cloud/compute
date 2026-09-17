@@ -1,34 +1,34 @@
 /**
- * `portal.page/project` extension at `workloads/:workloadName`, exposed as
+ * `portal.page/project` extension at `:workloadName`, exposed as
  * `WorkloadDetail`.
  *
- * Layout follows cloud-portal native overview pages (dense 2-col cards +
- * instance cards). The top strip and instance cards show KPI previews from the
- * same PromQL as instance pages; full charts live on each instance's Metrics
- * tab. The workload Metrics tab stays a placeholder — this page is not a splat
- * route.
+ * Layout follows cloud-portal ALB overview pages (health strip, sparkline
+ * metrics, 2×2 dashboard). General/Configuration stay below the dashboard.
  *
  * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
  * inside the plugin (that double-stacks chrome vs native pages).
  */
 import { PluginTabs } from '../components/plugin-tabs';
 import { DetailList, StatusBadge } from '../components/detail-list';
-import { MetricAreaChart, formatKpiValue } from '../components/metric-area-chart';
-import { StatStrip, type Stat } from '../components/stat-strip';
+import { WorkloadHealthStrip } from '../components/health-strip';
+import { RecentInstanceLogs } from '../components/instance-logs';
+import { MetricAreaChart } from '../components/metric-area-chart';
+import { WorkloadMetricsStrip } from '../components/metrics-strip';
+import { TopologyCard } from '../components/topology-card';
+import {
+  DEFAULT_OVERVIEW_RANGE,
+  useOverviewRange,
+  type OverviewRangeValue,
+} from '../components/overview-range';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { usePublishedUrl, useWorkload, useWorkloadInstances, type PublishedUrl } from '../lib/api';
 import { splitSlashValue } from '../lib/format';
-import { formatLocationName, formatLocationNames, useLocationIndex } from '../lib/locations';
+import { formatLocationCountry, formatLocationName, formatLocationNames, formatLocationTooltip, useLocationIndex, type LocationIndex } from '../lib/locations';
 import {
   albRpsQuery,
-  cpuUsageQuery,
-  memoryUsageQuery,
+  identityValues,
   useInstanceMetricIdentity,
-  type InstanceIdentityLabel,
-  workloadCpuAvgQuery,
-  workloadMemoryAvgQuery,
 } from '../lib/metrics-queries';
-import { lastThirtyMinutesRange, usePrometheusCard } from '../lib/prometheus';
 import {
   instanceStatusToBadgeType,
   workloadHealthToBadgeType,
@@ -48,20 +48,27 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from '@datum-cloud/datum-ui/card';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { cn } from '@datum-cloud/datum-ui/utils';
-import { formatDistanceToNowStrict } from 'date-fns';
-import { ArrowRightIcon, HomeIcon, Settings2Icon, SquareLibraryIcon } from 'lucide-react';
-import { useMemo } from 'react';
+import {
+  ActivityIcon,
+  ArrowRightIcon,
+  GlobeIcon,
+  HomeIcon,
+  MapPinIcon,
+  Settings2Icon,
+  SquareLibraryIcon,
+} from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 
 const COMING_SOON = 'Coming soon';
+// Inline rather than `h-[27rem]`: the host only compiles that class because its
+// own ALB overview happens to use it today.
+const PANEL_STYLE = { height: '27rem' } as const;
 
 const WORKLOAD_TABS = [
   { label: 'Overview' },
@@ -70,114 +77,12 @@ const WORKLOAD_TABS = [
   { label: 'Activity' },
 ];
 
-function InstanceMetricCell({
-  label,
-  value,
-  placeholder,
-}: {
-  label: string;
-  value?: string;
-  placeholder?: boolean;
-}) {
-  return (
-    <div>
-      <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</p>
-      <p
-        className={cn(
-          'mt-0.5 text-xs font-medium sm:text-sm',
-          placeholder && 'text-muted-foreground font-normal'
-        )}>
-        {value ?? '—'}
-      </p>
-    </div>
-  );
-}
-
-function InstanceCard({
-  instance,
-  projectId,
-  identityLabel,
-  requestsValue,
-  requestsPlaceholder,
-  locationLabel,
-  onClick,
-}: {
-  instance: Instance;
-  projectId?: string;
-  identityLabel?: InstanceIdentityLabel;
-  requestsValue: string;
-  requestsPlaceholder: boolean;
-  locationLabel: string;
-  onClick: () => void;
-}) {
-  const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
-  const identity = identityLabel
-    ? { label: identityLabel, value: instance.name }
-    : undefined;
-  const enabled = !!identity && !!projectId;
-  const cpuQuery = enabled && identity && projectId ? cpuUsageQuery(projectId, identity) : undefined;
-  const memoryQuery =
-    enabled && identity && projectId ? memoryUsageQuery(projectId, identity) : undefined;
-  const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
-  const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled });
-
-  return (
-    <Card
-      size="sm"
-      sectioned
-      className="hover:border-foreground/20 cursor-pointer overflow-hidden transition-colors"
-      onClick={onClick}
-      data-testid="compute-plugin-instance-card">
-      <CardHeader size="sm" bordered>
-        <CardTitle className="truncate font-mono text-sm font-medium">{instance.name}</CardTitle>
-        <CardDescription title={instance.location}>{locationLabel}</CardDescription>
-        <CardAction>
-          <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="w-fit shrink-0">
-            {instance.status}
-          </Badge>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <MetricAreaChart
-          title="CPU"
-          query={cpuQuery}
-          timeRange={timeRange}
-          format="number"
-          enabled={enabled}
-          embedded
-          height={40}
-        />
-        <div className="grid grid-cols-3 gap-2 sm:gap-3">
-          <InstanceMetricCell
-            label="CPU"
-            value={enabled ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number')) : '—'}
-            placeholder={!enabled}
-          />
-          <InstanceMetricCell
-            label="Memory"
-            value={enabled ? (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes')) : '—'}
-            placeholder={!enabled}
-          />
-          <InstanceMetricCell
-            label="Requests"
-            value={requestsValue}
-            placeholder={requestsPlaceholder}
-          />
-        </div>
-      </CardContent>
-      <CardFooter bordered className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 text-xs">
-        <span>Updated {formatDistanceToNowStrict(instance.createdAt, { addSuffix: true })}</span>
-        <span className="flex items-center gap-1">
-          View
-          <Icon icon={ArrowRightIcon} size={12} />
-        </span>
-      </CardFooter>
-    </Card>
-  );
-}
-
 function albOverviewHref(projectId: string, proxyName: string): string {
   return `/project/${projectId}/alb/${proxyName}/overview`;
+}
+
+function albMetricsHref(projectId: string, proxyName: string): string {
+  return `/project/${projectId}/alb/${proxyName}/metrics`;
 }
 
 function LoadBalancerValue({
@@ -202,7 +107,8 @@ function LoadBalancerValue({
         const label = alb.displayName || alb.proxyName;
         if (!projectId) {
           return (
-            <span key={alb.proxyName} className="text-sm">
+            <span key={alb.proxyName} className="inline-flex items-center gap-1.5 text-sm">
+              <Icon icon={GlobeIcon} size={14} className="text-muted-foreground shrink-0" />
               {label}
             </span>
           );
@@ -211,7 +117,8 @@ function LoadBalancerValue({
           <Link
             key={alb.proxyName}
             to={albOverviewHref(projectId, alb.proxyName)}
-            className="text-primary text-sm hover:underline">
+            className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline">
+            <Icon icon={GlobeIcon} size={14} className="shrink-0" />
             {label}
           </Link>
         );
@@ -364,43 +271,201 @@ function ConfigurationCard({
   );
 }
 
+function LiveTrafficCard({
+  projectId,
+  proxyId,
+  range,
+}: {
+  projectId?: string;
+  proxyId?: string;
+  range: { start: Date; end: Date };
+}) {
+  const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
+
+  return (
+    <Card size="sm" sectioned className="flex h-full flex-col overflow-hidden">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={ActivityIcon} size={16} className="text-secondary" />
+          Live traffic
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="relative flex min-h-0 flex-1 flex-col">
+        {rpsQuery ? (
+          <MetricAreaChart
+            title="Requests"
+            query={rpsQuery}
+            timeRange={range}
+            format="requestsPerSecond"
+            enabled
+            embedded
+            fill
+          />
+        ) : (
+          <p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">
+            Coming soon
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function InstancesPanel({
+  instances,
+  locationIndex,
+  onOpen,
+}: {
+  instances: Instance[];
+  locationIndex: LocationIndex;
+  onOpen: (name: string) => void;
+}) {
+  return (
+    <Card size="sm" sectioned className="flex h-full flex-col overflow-hidden">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={SquareLibraryIcon} size={16} className="text-secondary" />
+          Instances
+        </CardTitle>
+        <CardAction>
+          <span className="text-muted-foreground text-xs tabular-nums">{instances.length}</span>
+        </CardAction>
+      </CardHeader>
+      <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
+        {instances.length === 0 ? (
+          <p className="text-muted-foreground px-4 py-6 text-sm">No running instances</p>
+        ) : (
+          <ul className="divide-border divide-y">
+            {instances.map((instance) => (
+              <li key={instance.uid || instance.name}>
+                <button
+                  type="button"
+                  className="hover:bg-muted/40 flex w-full items-center gap-3 px-4 py-3 text-left"
+                  onClick={() => onOpen(instance.name)}
+                  data-testid="compute-plugin-instance-card">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-sm">{instance.name}</span>
+                    <span
+                      className="text-muted-foreground text-xs"
+                      title={
+                        instance.location
+                          ? formatLocationTooltip(instance.location, locationIndex)
+                          : undefined
+                      }>
+                      {instance.location
+                        ? formatLocationName(instance.location, locationIndex)
+                        : 'Unknown location'}
+                    </span>
+                  </span>
+                  <Badge type={instanceStatusToBadgeType(instance.status)} theme="light" className="w-fit shrink-0">
+                    {instance.status}
+                  </Badge>
+                  <Icon icon={ArrowRightIcon} size={14} className="text-muted-foreground shrink-0" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function LocationsPanel({
+  instances,
+  locations,
+  locationIndex,
+}: {
+  instances: Instance[];
+  locations: string[];
+  locationIndex: LocationIndex;
+}) {
+  const rows = (locations.length > 0 ? locations : [...new Set(instances.map((i) => i.location).filter(Boolean))]).map(
+    (name) => {
+      const atLocation = instances.filter((instance) => instance.location === name);
+      const healthy = atLocation.filter((instance) => instance.status === 'Available').length;
+      return {
+        name,
+        label: formatLocationName(name, locationIndex),
+        country: formatLocationCountry(name, locationIndex),
+        tooltip: formatLocationTooltip(name, locationIndex),
+        healthy,
+        total: atLocation.length,
+      };
+    }
+  );
+
+  return (
+    <Card size="sm" sectioned className="flex h-full flex-col overflow-hidden">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={MapPinIcon} size={16} className="text-secondary" />
+          Locations
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
+        {rows.length === 0 ? (
+          <p className="text-muted-foreground px-4 py-6 text-sm">No locations yet</p>
+        ) : (
+          <ul className="divide-border divide-y">
+            {rows.map((row) => (
+              <li key={row.name} className="flex items-center gap-3 px-4 py-3" title={row.tooltip}>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm">{row.label}</span>
+                  {row.country ? (
+                    <span className="text-muted-foreground block truncate text-xs">{row.country}</span>
+                  ) : null}
+                </span>
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {row.total > 0 ? `${row.healthy}/${row.total}` : '—'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function WorkloadDetail() {
   const { projectId, workloadName } = useParams<{ projectId: string; workloadName: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const [rangeValue, setRangeValue] = useState<OverviewRangeValue>(DEFAULT_OVERVIEW_RANGE);
+  const range = useOverviewRange(rangeValue);
 
   const { data: workload, isLoading, error, refetch } = useWorkload(projectId, workloadName);
   const { data: instances = [] } = useWorkloadInstances(projectId, workloadName);
   const published = usePublishedUrl(projectId, workloadName);
   const locationIndex = useLocationIndex(projectId);
-  const instanceNames = useMemo(() => instances.map((instance) => instance.name), [instances]);
-  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(
-    projectId,
-    instanceNames[0]
+  const { identity } = useInstanceMetricIdentity(projectId, instances[0]);
+  const metricKeys = useMemo(
+    () => (identity ? identityValues(instances) : []),
+    [instances, identity]
   );
-  const chartsEnabled = !identityLoading && !!identity && !!projectId && instanceNames.length > 0;
-  const cpuQuery =
-    chartsEnabled && identity && projectId
-      ? workloadCpuAvgQuery(projectId, identity.label, instanceNames)
-      : undefined;
-  const memoryQuery =
-    chartsEnabled && identity && projectId
-      ? workloadMemoryAvgQuery(projectId, identity.label, instanceNames)
-      : undefined;
   const proxyId = published.data?.proxyName;
-  const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
-  const cpu = usePrometheusCard(cpuQuery, 'number', { enabled: chartsEnabled });
-  const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled: chartsEnabled });
-  const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
-  const requestsValue = proxyId
-    ? (rps.data?.formattedValue ?? formatKpiValue(rps.data?.value, 'requestsPerSecond'))
-    : '—';
+  const albLabel = published.data?.displayName || published.data?.proxyName;
 
   const basePath = location.pathname.replace(/\/$/, '');
-  const instanceHref = (name: string) => `${basePath}/instances/${name}`;
+  // Stable builders: TopologyCard memoises its node lists on these.
+  const instanceHref = useCallback((name: string) => `${basePath}/instances/${name}`, [basePath]);
+  const instanceMetricsHref = useCallback(
+    (name: string) => `${basePath}/instances/${name}/metrics`,
+    [basePath]
+  );
+  const albHrefFor = useMemo(
+    () => (projectId ? (proxyName: string) => albOverviewHref(projectId, proxyName) : undefined),
+    [projectId]
+  );
+  const albMetricsHrefFor = useMemo(
+    () => (projectId ? (proxyName: string) => albMetricsHref(projectId, proxyName) : undefined),
+    [projectId]
+  );
   const workloadsHref = basePath.replace(/\/[^/]+$/, '');
   const projectHref = projectId ? `/project/${projectId}` : '/';
   const titleName = workload?.name ?? workloadName ?? 'Workload';
+  const logsHref = instances[0] ? `${instanceHref(instances[0].name)}/logs` : basePath;
 
   const healthyCount = workload
     ? instances.length
@@ -408,46 +473,7 @@ export default function WorkloadDetail() {
       : workload.readyReplicas
     : 0;
   const totalCount = workload ? instances.length || workload.desiredReplicas : 0;
-  const allHealthy = totalCount > 0 && healthyCount === totalCount;
-
-  const locations = workload?.locations ?? [];
-
-  const stats: Stat[] | null = workload
-    ? [
-        {
-          label: 'Instances',
-          value: `${healthyCount}/${totalCount}`,
-          className: allHealthy ? 'text-green-600 dark:text-green-500' : undefined,
-        },
-        {
-          label: 'Available',
-          value: `${healthyCount} / ${totalCount}`,
-          className:
-            healthyCount < totalCount
-              ? 'text-yellow-600 dark:text-yellow-500'
-              : allHealthy
-                ? 'text-green-600 dark:text-green-500'
-                : undefined,
-        },
-        { label: 'Locations', value: String(locations.length) },
-        {
-          label: 'Requests',
-          value: requestsValue,
-        },
-        {
-          label: 'Avg CPU',
-          value: chartsEnabled
-            ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number'))
-            : '—',
-        },
-        {
-          label: 'Avg Memory',
-          value: chartsEnabled
-            ? (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes'))
-            : '—',
-        },
-      ]
-    : null;
+  const idle = !proxyId;
 
   return (
     <div data-testid="compute-plugin-workload-detail" className="flex min-w-0 flex-col gap-6">
@@ -495,9 +521,70 @@ export default function WorkloadDetail() {
         />
       )}
 
-      {!isLoading && !error && workload && stats && (
+      {!isLoading && !error && workload && (
         <>
-          <StatStrip stats={stats} testId="compute-plugin-workload-stats" />
+          <WorkloadHealthStrip
+            health={workload.health}
+            healthyCount={healthyCount}
+            totalCount={totalCount}
+            locationCount={workload.locations.length}
+            albHref={projectId && proxyId ? albOverviewHref(projectId, proxyId) : undefined}
+            albLabel={albLabel}
+          />
+
+          <WorkloadMetricsStrip
+            projectId={projectId}
+            proxyId={proxyId}
+            identityLabel={identity?.label}
+            instanceKeys={metricKeys}
+            range={range}
+            onRangeChange={setRangeValue}
+            idle={idle}
+          />
+
+          <TopologyCard
+            projectId={projectId}
+            workload={workload}
+            instances={instances}
+            albs={published.data?.proxies ?? []}
+            locationIndex={locationIndex}
+            instanceHref={instanceHref}
+            instanceMetricsHref={instanceMetricsHref}
+            albHref={albHrefFor}
+            albMetricsHref={albMetricsHrefFor}
+          />
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div style={PANEL_STYLE}>
+              <LiveTrafficCard
+                projectId={projectId}
+                proxyId={proxyId}
+                range={range.timeRange}
+              />
+            </div>
+            <div style={PANEL_STYLE}>
+              <InstancesPanel
+                instances={instances}
+                locationIndex={locationIndex}
+                onOpen={(name) => navigate(instanceHref(name))}
+              />
+            </div>
+            <div style={PANEL_STYLE}>
+              <LocationsPanel
+                instances={instances}
+                locations={workload.locations}
+                locationIndex={locationIndex}
+              />
+            </div>
+            <div style={PANEL_STYLE}>
+              <RecentInstanceLogs
+                logsHref={logsHref}
+                projectId={projectId}
+                proxyId={proxyId}
+                albHostname={published.data?.hostname}
+              />
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <GeneralCard
@@ -513,29 +600,6 @@ export default function WorkloadDetail() {
               locationLabel={formatLocationNames(workload.locations, locationIndex)}
             />
           </div>
-
-          {instances.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No running instances</p>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {instances.map((instance) => (
-                <InstanceCard
-                  key={instance.uid || instance.name}
-                  instance={instance}
-                  projectId={projectId}
-                  identityLabel={identity?.label}
-                  requestsValue={requestsValue}
-                  requestsPlaceholder={!proxyId}
-                  locationLabel={
-                    instance.location
-                      ? formatLocationName(instance.location, locationIndex)
-                      : 'Unknown location'
-                  }
-                  onClick={() => navigate(instanceHref(instance.name))}
-                />
-              ))}
-            </div>
-          )}
         </>
       )}
     </div>

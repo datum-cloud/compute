@@ -10,7 +10,6 @@ import {
   type InstanceIdentityLabel,
   workloadCpuAvgQuery,
   workloadMemoryAvgQuery,
-  workloadNetworkIoQuery,
 } from '../lib/metrics-queries';
 import {
   lastHour,
@@ -22,6 +21,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/
 import { ChartColumnIncreasingIcon } from 'lucide-react';
 import { useMemo } from 'react';
 
+const COMING_SOON = 'Coming soon';
+
 function KpiCell({
   label,
   value,
@@ -31,11 +32,19 @@ function KpiCell({
   value: string;
   hint?: string;
 }) {
+  const comingSoon = value === COMING_SOON;
   return (
     <div className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</p>
-      <p className="text-sm font-medium sm:text-base">{value}</p>
-      {hint ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
+      <p
+        className={
+          comingSoon
+            ? 'text-muted-foreground text-sm font-medium'
+            : 'text-sm font-medium sm:text-base'
+        }>
+        {value}
+      </p>
+      {hint && !comingSoon ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
     </div>
   );
 }
@@ -46,30 +55,26 @@ function useKpi(query: string | undefined, format: MetricFormat, enabled: boolea
 
 export function WorkloadMetrics({
   projectName,
-  instanceNames,
+  instanceKeys,
   identityLabel,
   identityLoading,
   proxyId,
 }: {
   projectName?: string;
-  instanceNames: readonly string[];
+  instanceKeys: readonly string[];
   identityLabel?: InstanceIdentityLabel;
   identityLoading: boolean;
   proxyId?: string;
 }) {
   const timeRange = useMemo<PrometheusTimeRange>(() => lastHour(), []);
-  const chartsEnabled = !identityLoading && !!identityLabel && !!projectName && instanceNames.length > 0;
+  const chartsEnabled = !identityLoading && !!identityLabel && !!projectName && instanceKeys.length > 0;
   const cpuQuery =
     chartsEnabled && identityLabel && projectName
-      ? workloadCpuAvgQuery(projectName, identityLabel, instanceNames)
+      ? workloadCpuAvgQuery(projectName, identityLabel, instanceKeys)
       : undefined;
   const memoryQuery =
     chartsEnabled && identityLabel && projectName
-      ? workloadMemoryAvgQuery(projectName, identityLabel, instanceNames)
-      : undefined;
-  const networkQuery =
-    chartsEnabled && identityLabel && projectName
-      ? workloadNetworkIoQuery(projectName, identityLabel, instanceNames)
+      ? workloadMemoryAvgQuery(projectName, identityLabel, instanceKeys)
       : undefined;
   const rpsQuery = projectName && proxyId ? albRpsQuery(projectName, proxyId) : undefined;
   const p99Query = projectName && proxyId ? albP99Query(projectName, proxyId) : undefined;
@@ -80,6 +85,7 @@ export function WorkloadMetrics({
   const rpsCard = useKpi(rpsQuery, 'requestsPerSecond', !!proxyId);
   const p99Card = useKpi(p99Query, 'milliseconds-auto', !!proxyId);
   const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
+  const resourceSoon = !identityLoading && !identityLabel;
 
   return (
     <div className="flex flex-col gap-6" data-testid="provider-plugin-workload-metrics">
@@ -91,15 +97,17 @@ export function WorkloadMetrics({
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="divide-border border-border flex divide-x overflow-x-auto overscroll-x-contain rounded-lg border">
+          <div
+            className="divide-border border-border flex divide-x overflow-x-auto rounded-lg border"
+            style={{ overscrollBehaviorX: 'contain' }}>
             <KpiCell
               label="CPU"
-              value={cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number')}
+              value={resourceSoon ? COMING_SOON : (cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number'))}
               hint="avg cores"
             />
             <KpiCell
               label="Memory"
-              value={memoryCard.data?.formattedValue ?? formatKpiValue(memoryCard.data?.value, 'bytes')}
+              value={resourceSoon ? COMING_SOON : (memoryCard.data?.formattedValue ?? formatKpiValue(memoryCard.data?.value, 'bytes'))}
               hint="avg"
             />
             {proxyId ? (
@@ -122,9 +130,9 @@ export function WorkloadMetrics({
               </>
             ) : (
               <>
-                <KpiCell label="Requests" value="—" hint="publish a URL" />
-                <KpiCell label="p99" value="—" hint="publish a URL" />
-                <KpiCell label="Errors" value="—" hint="publish a URL" />
+                <KpiCell label="Requests" value={COMING_SOON} />
+                <KpiCell label="p99" value={COMING_SOON} />
+                <KpiCell label="Errors" value={COMING_SOON} />
               </>
             )}
           </div>
@@ -138,6 +146,7 @@ export function WorkloadMetrics({
           timeRange={timeRange}
           format="number"
           enabled={chartsEnabled}
+          unavailable={resourceSoon}
         />
         <MetricAreaChart
           title="Memory"
@@ -145,15 +154,17 @@ export function WorkloadMetrics({
           timeRange={timeRange}
           format="bytes"
           enabled={chartsEnabled}
+          unavailable={resourceSoon}
         />
       </div>
 
       <MetricAreaChart
         title="Network I/O"
-        query={networkQuery}
+        query={undefined}
         timeRange={timeRange}
         format="bytesPerSecond"
-        enabled={chartsEnabled}
+        enabled={false}
+        unavailable
       />
 
       {proxyId ? (

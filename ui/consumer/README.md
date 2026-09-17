@@ -12,11 +12,17 @@ This is a **CLI-first** service: workload creation, deployment, scaling,
 restarts, and deletion all happen via `datumctl compute …`. The plugin's job
 is to give operators visibility into what's already running:
 
-- **Workloads** (`workloads`) — list, with health, ready count, placements,
-  age.
-- **Workload detail** (`workloads/:workloadName`) — Overview tab only: stat
-  tiles, configuration, and an embedded running-instances table.
-- **Instance detail** (`workloads/:workloadName/instances/:instanceName`) —
+Paths below are relative to the plugin mount, `/project/:projectId/services/<slug>`
+(the slug is operator-supplied; `workloads` locally). The list page is the
+mount root so URLs read `…/services/workloads/<workloadName>`, not
+`…/services/workloads/workloads/<workloadName>`.
+
+- **Workloads** (`""`, the mount root) — list, switchable between cards and a
+  table, with health, ready count, placements, activity sparkline, age.
+- **Workload detail** (`:workloadName`) — Overview tab: health strip, live
+  metric tiles, topology (load balancer → workload → instances), live traffic,
+  instances, locations and recent logs panels.
+- **Instance detail** (`:workloadName/instances/:instanceName`) —
   Overview, Metrics, and Logs. Overview shows live CPU/memory KPIs (and ALB
   request/p99/error KPIs when the workload is published on a URL). The Logs
   tab is ALB access logs via the o11y Loki API when an HTTPProxy exists;
@@ -121,13 +127,13 @@ server you want running:
   ([Build → Compute](https://www.datum.net/platform/build#compute))
   and `serviceRef: "compute.datumapis.com"` (canonical Service
   `spec.serviceName`). Projects without an Active entitlement for that service
-  still open the live `path: "workloads"` mount (request-access / enablement UI)
+  still open the live `path: ""` mount (request-access / enablement UI)
   with a Coming Soon badge; entitled projects get the same path with no badge.
   Optional `roadmapUrl` is documentation / holding-page CTA material, not the
   sidebar target.
-- **`portal.page/project`** ×3 — `workloads` (`WorkloadList`),
-  `workloads/:workloadName` (`WorkloadDetail`), and
-  `workloads/:workloadName/instances/:instanceName/*` (`InstanceDetail`
+- **`portal.page/project`** ×3 — `""` (`WorkloadList`, at the mount root),
+  `:workloadName` (`WorkloadDetail`), and
+  `:workloadName/instances/:instanceName/*` (`InstanceDetail`
   layout). The instance layout owns breadcrumbs / title / tabs and nests
   Overview (index), Metrics (`…/metrics`), and Logs (`…/logs`) through
   `<Outlet />`. Instance pages gate on `{compute.datumapis.com, instances, get}`.

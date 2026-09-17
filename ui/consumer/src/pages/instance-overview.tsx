@@ -7,14 +7,13 @@ import { DetailList, StatusBadge } from '../components/detail-list';
 import { RecentInstanceLogs } from '../components/instance-logs';
 import { MetricAreaChart, formatKpiValue } from '../components/metric-area-chart';
 import { useInstanceOutlet } from './instance-outlet-context';
-import { formatLocationName, useLocationIndex } from '../lib/locations';
+import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import {
   albErrorRateQuery,
   albP99Query,
   albRpsQuery,
   cpuUsageQuery,
   memoryUsageQuery,
-  networkIoQuery,
   useInstanceMetricIdentity,
 } from '../lib/metrics-queries';
 import { lastThirtyMinutesRange, usePrometheusCard } from '../lib/prometheus';
@@ -36,6 +35,7 @@ import {
   ChartColumnIncreasingIcon,
   CheckIcon,
   CopyIcon,
+  GlobeIcon,
   SquareLibraryIcon,
   SquareTerminalIcon,
 } from 'lucide-react';
@@ -152,6 +152,7 @@ function GeneralCard({
   albDisplayName,
   albLoading,
   locationLabel,
+  locationTooltip,
 }: {
   instance: Instance;
   projectId?: string;
@@ -160,6 +161,7 @@ function GeneralCard({
   albDisplayName?: string;
   albLoading?: boolean;
   locationLabel: string;
+  locationTooltip?: string;
 }) {
   const cpu = formatCpu(instance.cpu);
   const memory = formatMemory(instance.memory);
@@ -190,7 +192,7 @@ function GeneralCard({
             {
               label: 'Location',
               content: instance.location ? (
-                <span title={instance.location}>{locationLabel}</span>
+                <span title={locationTooltip}>{locationLabel}</span>
               ) : (
                 <span className="text-muted-foreground">—</span>
               ),
@@ -213,7 +215,8 @@ function GeneralCard({
               ) : proxyId && projectId ? (
                 <Link
                   to={`/project/${projectId}/alb/${proxyId}/overview`}
-                  className="text-primary text-sm hover:underline">
+                  className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline">
+                  <Icon icon={GlobeIcon} size={14} className="shrink-0" />
                   {albDisplayName || proxyId}
                 </Link>
               ) : (
@@ -241,17 +244,18 @@ function GeneralCard({
 
 function MetricsCard({
   projectId,
-  instanceName,
+  instance,
   proxyId,
   metricsHref,
 }: {
   projectId?: string;
-  instanceName: string;
+  instance: Instance;
   proxyId?: string;
   metricsHref: string;
 }) {
-  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(projectId, instanceName);
+  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(projectId, instance);
   const enabled = !identityLoading && !!identity && !!projectId;
+  const resourceSoon = !identityLoading && !identity;
   const cpuQuery = enabled && identity && projectId ? cpuUsageQuery(projectId, identity) : undefined;
   const memoryQuery =
     enabled && identity && projectId ? memoryUsageQuery(projectId, identity) : undefined;
@@ -260,7 +264,6 @@ function MetricsCard({
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
 
   const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
-  const networkQuery = enabled && identity && projectId ? networkIoQuery(projectId, identity) : undefined;
 
   const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
   const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled });
@@ -269,8 +272,18 @@ function MetricsCard({
   const errors = usePrometheusCard(errorQuery, 'percent', { enabled: !!proxyId });
 
   const kpis: Array<{ label: string; value: string }> = [
-    { label: 'CPU', value: cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number') },
-    { label: 'Memory', value: memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes') },
+    {
+      label: 'CPU',
+      value: resourceSoon
+        ? COMING_SOON
+        : (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number')),
+    },
+    {
+      label: 'Memory',
+      value: resourceSoon
+        ? COMING_SOON
+        : (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes')),
+    },
     {
       label: 'Requests',
       value: proxyId
@@ -309,16 +322,16 @@ function MetricsCard({
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="divide-border border-border flex divide-x overflow-x-auto overscroll-x-contain rounded-lg border [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div
+          className="divide-border border-border scrollbar-hide flex divide-x overflow-x-auto rounded-lg border"
+          style={{ overscrollBehaviorX: 'contain' }}>
           {kpis.map((kpi) => (
             <div key={kpi.label} className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
-              <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                {kpi.label}
-              </p>
+              <p className="text-muted-foreground text-xs font-medium">{kpi.label}</p>
               <p
                 className={cn(
-                  'text-xs whitespace-nowrap sm:text-sm',
-                  kpi.value === COMING_SOON && 'text-muted-foreground'
+                  'text-2xl font-semibold whitespace-nowrap tabular-nums',
+                  kpi.value === COMING_SOON && 'text-muted-foreground text-sm font-medium'
                 )}>
                 {kpi.value}
               </p>
@@ -326,15 +339,14 @@ function MetricsCard({
           ))}
         </div>
         <div>
-          <p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
-            Network I/O
-          </p>
+          <p className="text-muted-foreground mb-2 text-xs font-medium">Network I/O</p>
           <MetricAreaChart
             title="Network I/O"
-            query={networkQuery}
+            query={undefined}
             timeRange={timeRange}
             format="bytesPerSecond"
-            enabled={enabled}
+            enabled={false}
+            unavailable
             embedded
             height={144}
           />
@@ -370,10 +382,11 @@ export default function InstanceOverview() {
             albDisplayName={albDisplayName}
             albLoading={albLoading}
             locationLabel={formatLocationName(instance.location, locationIndex)}
+            locationTooltip={formatLocationTooltip(instance.location, locationIndex)}
           />
           <MetricsCard
             projectId={projectId}
-            instanceName={instance.name}
+            instance={instance}
             proxyId={proxyId}
             metricsHref={metricsHref}
           />
