@@ -77,6 +77,13 @@ spec:
     unit: s
     dimensions:
     - runtime_class
+  - name: compute.datumapis.com/instance/milli-cpu-seconds
+    displayName: Compute Instance Milli-CPU Seconds
+    description: Milli-CPU seconds consumed by a running instance.
+    kind: Cumulative
+    unit: '{millicore}.s'
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/instance/memory-seconds
     displayName: Compute Instance Memory Seconds
     description: Memory byte-seconds consumed by a running instance.
@@ -130,6 +137,7 @@ spec:
     - monitoredResourceType: compute.datumapis.com/Instance
       metrics:
       - compute.datumapis.com/instance/cpu-seconds
+      - compute.datumapis.com/instance/milli-cpu-seconds
       - compute.datumapis.com/instance/memory-seconds
       - compute.datumapis.com/instance/cpu-allocated
       - compute.datumapis.com/instance/memory-allocated
