@@ -2463,6 +2463,24 @@ are "Allocated" and "Programmed".<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          What this interface reaches outside the platform, including the source
+addresses its outbound traffic leaves on and how far each may be relied
+upon.
+
+Reported per interface rather than once for the instance. An instance with
+two interfaces egresses from each on its own addresses, so a consumer
+allow-listing an address at a destination reads the entry for the
+interface the traffic leaves from, not an instance-wide answer.
+
+Absent until something reports an address for this interface. An absent
+value says nothing has been reported yet; whether the interface is meant
+to reach anything at all is declared on its network.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancestatusnetworkinterfacesindexexternaladdressesindex">externalAddresses</a></b></td>
         <td>[]object</td>
         <td>
@@ -2673,6 +2691,129 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].egress
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+What this interface reaches outside the platform, including the source
+addresses its outbound traffic leaves on and how far each may be relied
+upon.
+
+Reported per interface rather than once for the instance. An instance with
+two interfaces egresses from each on its own addresses, so a consumer
+allow-listing an address at a destination reads the entry for the
+interface the traffic leaves from, not an instance-wide answer.
+
+Absent until something reports an address for this interface. An absent
+value says nothing has been reported yet; whether the interface is meant
+to reach anything at all is declared on its network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          internet reports the internet egress realized for this interface.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].egress.internet
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindexegress)</sup></sup>
+
+
+
+internet reports the internet egress realized for this interface.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexegressinternetsourceaddressesindex">sourceAddresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          sourceAddresses are the addresses translation writes onto outbound
+packets from this interface, with the reliance each one carries.
+
+A consumer whose destination needs an allow-list reads the answer here,
+on the interface traffic leaves from, rather than on the network. The
+network declares the intent; the interface is what carries it.
+
+An absent list means nothing has reported an address for this interface.
+It does not mean the interface reaches nothing: whether the network
+asked for egress is on the network, and whether the location could
+provide it is the network context's InternetEgressReady condition.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].egress.internet.sourceAddresses[index]
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindexegressinternet)</sup></sup>
+
+
+
+InternetEgressSourceAddress is one address outbound traffic leaves on.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>address</b></td>
+        <td>string</td>
+        <td>
+          Address is the source address translation writes, without a prefix
+length.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          Family is the address family of this source address.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>stability</b></td>
+        <td>enum</td>
+        <td>
+          Stability states how far a consumer may rely on this address before
+they act on it. It is the consumer-side projection of the serving
+class's sharing.<br/>
+          <br/>
+            <i>Enum</i>: None, Network<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
