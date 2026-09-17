@@ -70,13 +70,6 @@ spec:
   # only attach a key declared here, and a rate may only match on a declared
   # dimension. Without the declaration, per-class rates cannot be expressed and
   # events carrying the class are quarantined.
-  - name: compute.datumapis.com/instance/cpu-seconds
-    displayName: Compute Instance CPU Seconds
-    description: CPU seconds consumed by a running instance.
-    kind: Cumulative
-    unit: s
-    dimensions:
-    - runtime_class
   - name: compute.datumapis.com/instance/milli-cpu-seconds
     displayName: Compute Instance Milli-CPU Seconds
     description: Milli-CPU seconds consumed by a running instance.
@@ -136,7 +129,6 @@ spec:
     consumerDestinations:
     - monitoredResourceType: compute.datumapis.com/Instance
       metrics:
-      - compute.datumapis.com/instance/cpu-seconds
       - compute.datumapis.com/instance/milli-cpu-seconds
       - compute.datumapis.com/instance/memory-seconds
       - compute.datumapis.com/instance/cpu-allocated
