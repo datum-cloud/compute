@@ -1,5 +1,5 @@
 /**
- * `portal.page/project` extension at `workloads`, exposed as `WorkloadList`.
+ * `portal.page/project` extension at the plugin mount root, exposed as `WorkloadList`.
  *
  * Home layout matches the workloads wireframe: fleet summary strip + 2-column
  * cards with regions. Real compute API fields fill operational slots;
@@ -8,8 +8,9 @@
 import { CliBanner, SectionCard } from "../components/cli-section";
 import { ComputeEnablementBanner } from "../components/compute-enablement-banner";
 import { MetricAreaChart, formatKpiValue } from "../components/metric-area-chart";
-import { StatStrip } from "../components/stat-strip";
+import { SparklineStatCard } from "../components/sparkline-stat-card";
 import { ErrorOrRestrictedState, LoadingSkeleton } from "../components/states";
+import { WorkloadTable } from "../components/workload-table";
 import {
   useComputeEntitlement,
   useInstances,
@@ -19,23 +20,15 @@ import {
 import {
   albRpsQuery,
   albRpsQueryMany,
+  identityValuesForLabel,
   useInstanceMetricIdentity,
   workloadCpuAvgQuery,
   workloadCpuSumQuery,
 } from "../lib/metrics-queries";
 import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
-import {
-  formatLocationNames,
-  formatLocationSelector,
-  useLocationIndex,
-  type LocationIndex,
-} from "../lib/locations";
-import {
-  workloadHealthToBadgeType,
-  type Workload,
-  type WorkloadHealth,
-  type WorkloadPlacementRegion,
-} from "../schema";
+import { useLocationIndex, type LocationIndex } from "../lib/locations";
+import { HEALTH_DOT_CLASS, regionLabel, statusLabel } from "../lib/workload-presenters";
+import { workloadHealthToBadgeType, type Workload } from "../schema";
 import { Badge } from "@datum-cloud/datum-ui/badge";
 import {
   Breadcrumb,
@@ -54,46 +47,60 @@ import {
   CardTitle,
 } from "@datum-cloud/datum-ui/card";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
+import { Tabs, TabsList, TabsTrigger } from "@datum-cloud/datum-ui/tabs";
 import { Icon } from "@datum-cloud/datum-ui/icons";
 import { cn } from "@datum-cloud/datum-ui/utils";
 import { formatDistanceToNowStrict } from "date-fns";
-import { ArrowRightIcon, HomeIcon, RocketIcon, SearchIcon } from "lucide-react";
-import { useMemo } from "react";
+import {
+  ArrowRightIcon,
+  HomeIcon,
+  LayoutGridIcon,
+  RocketIcon,
+  Rows3Icon,
+  SearchIcon,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 
 const COMING_SOON = "Coming soon";
 
-const HEALTH_DOT_CLASS: Record<WorkloadHealth, string> = {
-  Available: "bg-green-500",
-  Degraded: "bg-yellow-500",
-  Unavailable: "bg-red-500",
-  Unknown: "bg-muted-foreground",
-};
+type WorkloadView = "cards" | "table";
+const VIEW_STORAGE_KEY = "compute-plugin:workload-view";
 
-function statusLabel(workload: Workload): string {
-  if (workload.health === "Available") {
-    const ready = workload.readyReplicas;
-    const desired = workload.desiredReplicas;
-    if (desired > 0 && ready === desired) return "All healthy";
-    return "Healthy";
+function readStoredView(): WorkloadView {
+  try {
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "table" ? "table" : "cards";
+  } catch {
+    return "cards";
   }
-  if (workload.health === "Degraded") {
-    const notReady = Math.max(
-      0,
-      workload.desiredReplicas - workload.readyReplicas,
-    );
-    if (notReady === 1) return "1 degraded";
-    if (notReady > 1) return `${notReady} degraded`;
-    return "Degraded";
-  }
-  if (workload.health === "Unavailable") return "Unavailable";
-  return "Unknown";
 }
 
-function regionLabel(region: WorkloadPlacementRegion, index: LocationIndex): string {
-  if (region.locations.length > 0) return formatLocationNames(region.locations, index);
-  if (region.locationSelector) return formatLocationSelector(region.locationSelector, index) ?? region.locationSelector;
-  return region.name;
+/** Cards / table switch — datum-ui's segmented Tabs, placed in the page title actions like ALB's toolbar. */
+function ViewToggle({
+  view,
+  onChange,
+}: {
+  view: WorkloadView;
+  onChange: (view: WorkloadView) => void;
+}) {
+  return (
+    <Tabs
+      value={view}
+      onValueChange={(value) => onChange(value as WorkloadView)}
+      data-testid="compute-plugin-workload-view-toggle"
+    >
+      <TabsList aria-label="Workload view" className="border-card-border border">
+        <TabsTrigger value="cards" className="gap-1.5">
+          <Icon icon={LayoutGridIcon} size={14} />
+          Cards
+        </TabsTrigger>
+        <TabsTrigger value="table" className="gap-1.5">
+          <Icon icon={Rows3Icon} size={14} />
+          Table
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
+  );
 }
 
 function FleetSummary({
@@ -109,43 +116,36 @@ function FleetSummary({
     0,
   );
   const healthy = workloads.filter((w) => w.health === "Available").length;
-  const degraded = workloads.filter((w) => w.health === "Degraded").length;
-  const errored = workloads.filter(
-    (w) => w.health === "Unavailable" || w.health === "Unknown",
-  ).length;
 
-  const stats: { label: string; value: string; className?: string }[] = [
-    { label: "Workloads", value: String(workloads.length) },
-    {
-      label: "Instances",
-      value:
-        desiredInstances > 0
-          ? `${readyInstances} / ${desiredInstances}`
-          : String(readyInstances),
-    },
-    {
-      label: "Healthy",
-      value: String(healthy),
-      className: healthy > 0 ? "text-green-600 dark:text-green-500" : undefined,
-    },
-    {
-      label: "Degraded",
-      value: String(degraded),
-      className:
-        degraded > 0 ? "text-yellow-600 dark:text-yellow-500" : undefined,
-    },
-    {
-      label: "Errored",
-      value: String(errored),
-      className: errored > 0 ? "text-red-600 dark:text-red-500" : undefined,
-    },
-    {
-      label: "Requests",
-      value: requests,
-    },
-  ];
+  const timeRange = lastThirtyMinutesRange();
 
-  return <StatStrip stats={stats} testId="compute-plugin-fleet-summary" />;
+  return (
+    <div
+      className="grid grid-cols-2 gap-6 lg:grid-cols-4"
+      data-testid="compute-plugin-fleet-summary"
+    >
+      <SparklineStatCard
+        title="Workloads"
+        value={String(workloads.length)}
+        timeRange={timeRange}
+      />
+      <SparklineStatCard
+        title="Instances"
+        value={
+          desiredInstances > 0
+            ? `${readyInstances} / ${desiredInstances}`
+            : String(readyInstances)
+        }
+        timeRange={timeRange}
+      />
+      <SparklineStatCard
+        title="Healthy"
+        value={String(healthy)}
+        timeRange={timeRange}
+      />
+      <SparklineStatCard title="Requests" value={requests} timeRange={timeRange} />
+    </div>
+  );
 }
 
 function MetricCell({
@@ -159,12 +159,10 @@ function MetricCell({
 }) {
   return (
     <div>
-      <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-        {label}
-      </p>
+      <p className="text-muted-foreground text-xs font-medium">{label}</p>
       <p
         className={cn(
-          "mt-0.5 text-xs font-medium sm:text-sm",
+          "mt-0.5 text-sm font-semibold tabular-nums",
           placeholder && "text-muted-foreground font-normal",
         )}
       >
@@ -205,7 +203,7 @@ function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
 function WorkloadCard({
   workload,
   projectId,
-  instanceNames,
+  instanceKeys,
   proxyId,
   identityLabel,
   locationIndex,
@@ -213,7 +211,7 @@ function WorkloadCard({
 }: {
   workload: Workload;
   projectId?: string;
-  instanceNames: string[];
+  instanceKeys: string[];
   proxyId?: string;
   identityLabel?: ReturnType<typeof useInstanceMetricIdentity>["identity"];
   locationIndex: LocationIndex;
@@ -227,14 +225,14 @@ function WorkloadCard({
         ? [workload.runtimeType]
         : [];
   const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
-  const enabled = !!projectId && !!identityLabel && instanceNames.length > 0;
+  const enabled = !!projectId && !!identityLabel && instanceKeys.length > 0;
   const cpuQuery =
     enabled && identityLabel && projectId
-      ? workloadCpuAvgQuery(projectId, identityLabel.label, instanceNames)
+      ? workloadCpuAvgQuery(projectId, identityLabel.label, instanceKeys)
       : undefined;
   const sparkQuery =
     enabled && identityLabel && projectId
-      ? workloadCpuSumQuery(projectId, identityLabel.label, instanceNames)
+      ? workloadCpuSumQuery(projectId, identityLabel.label, instanceKeys)
       : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
   const cpu = usePrometheusCard(cpuQuery, "number", { enabled });
@@ -244,7 +242,7 @@ function WorkloadCard({
     <Card
       size="sm"
       sectioned
-      className="hover:border-foreground/20 cursor-pointer overflow-hidden transition-colors"
+      className="cursor-pointer overflow-hidden"
       onClick={onClick}
       data-testid="compute-plugin-workload-card"
     >
@@ -275,6 +273,7 @@ function WorkloadCard({
           timeRange={timeRange}
           format="number"
           enabled={enabled}
+          unavailable={!enabled}
           embedded
           height={48}
         />
@@ -299,7 +298,7 @@ function WorkloadCard({
             value={
               enabled
                 ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, "number"))
-                : "—"
+                : COMING_SOON
             }
             placeholder={!enabled}
           />
@@ -352,6 +351,14 @@ export default function WorkloadList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const [view, setView] = useState<WorkloadView>(readStoredView);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, view);
+    } catch {
+      // Storage unavailable (private mode / quota) — the toggle still works for the session.
+    }
+  }, [view]);
 
   const {
     data: entitlement,
@@ -369,19 +376,25 @@ export default function WorkloadList() {
   } = useWorkloads(projectId, computeEnabled);
   const { data: instances = [] } = useInstances(projectId, computeEnabled);
   const { data: publishedByWorkload = {} } = usePublishedUrls(projectId, computeEnabled);
-  const { identity } = useInstanceMetricIdentity(projectId, instances[0]?.name);
+  const { identity } = useInstanceMetricIdentity(projectId, instances[0]);
   const locationIndex = useLocationIndex(computeEnabled ? projectId : undefined);
-  const namesByWorkload = useMemo(() => {
+  const keysByWorkload = useMemo(() => {
     const map = new Map<string, string[]>();
+    const label = identity?.label;
+    if (!label) return map;
+    const grouped = new Map<string, typeof instances>();
     for (const instance of instances) {
       const key = instance.workloadName;
       if (!key) continue;
-      const names = map.get(key) ?? [];
-      names.push(instance.name);
-      map.set(key, names);
+      const group = grouped.get(key) ?? [];
+      group.push(instance);
+      grouped.set(key, group);
+    }
+    for (const [name, group] of grouped) {
+      map.set(name, identityValuesForLabel(group, label));
     }
     return map;
-  }, [instances]);
+  }, [instances, identity?.label]);
   const fleetProxyIds = useMemo(
     () => Object.values(publishedByWorkload).map((published) => published.proxyName),
     [publishedByWorkload],
@@ -398,10 +411,22 @@ export default function WorkloadList() {
 
   // Build the child route path from the current URL rather than the portal's
   // internal `paths.config.ts` (unavailable to plugins) — the host mounts this
-  // page at `/project/:projectId/services/:serviceSlug/workloads`.
+  // page at `/project/:projectId/services/:serviceSlug`.
   const basePath = location.pathname.replace(/\/$/, "");
-  const workloadHref = (name: string) => `${basePath}/${name}`;
+  // Stable builders: WorkloadTable memoises its column defs on these.
+  const workloadHref = useCallback(
+    (name: string) => `${basePath}/${name}`,
+    [basePath],
+  );
   const projectHref = projectId ? `/project/${projectId}` : "/";
+  const albHref = useMemo(
+    () =>
+      projectId
+        ? (proxyName: string) =>
+            `/project/${projectId}/alb/${proxyName}/overview`
+        : undefined,
+    [projectId],
+  );
 
   return (
     <div
@@ -425,6 +450,11 @@ export default function WorkloadList() {
       <PageTitle
         title="Workloads"
         description="Groups of compute instances deployed across locations"
+        actions={
+          !isLoading && computeEnabled && !error && (workloads?.length ?? 0) > 0 ? (
+            <ViewToggle view={view} onChange={setView} />
+          ) : undefined
+        }
       />
 
       {isLoading && <LoadingSkeleton />}
@@ -479,23 +509,35 @@ export default function WorkloadList() {
                 : "—"
             }
           />
-          <div
-            className="grid grid-cols-1 gap-4 lg:grid-cols-2"
-            data-testid="compute-plugin-workload-grid"
-          >
-            {workloads.map((workload) => (
-              <WorkloadCard
-                key={workload.uid || workload.name}
-                workload={workload}
-                projectId={projectId}
-                instanceNames={namesByWorkload.get(workload.name) ?? []}
-                proxyId={publishedByWorkload[workload.name]?.proxyName}
-                identityLabel={identity}
-                locationIndex={locationIndex}
-                onClick={() => navigate(workloadHref(workload.name))}
-              />
-            ))}
-          </div>
+          {view === "table" ? (
+            <WorkloadTable
+              workloads={workloads}
+              projectId={projectId}
+              publishedByWorkload={publishedByWorkload}
+              locationIndex={locationIndex}
+              workloadHref={workloadHref}
+              albHref={albHref}
+              onOpen={(name) => navigate(workloadHref(name))}
+            />
+          ) : (
+            <div
+              className="grid grid-cols-1 gap-4 lg:grid-cols-2"
+              data-testid="compute-plugin-workload-grid"
+            >
+              {workloads.map((workload) => (
+                <WorkloadCard
+                  key={workload.uid || workload.name}
+                  workload={workload}
+                  projectId={projectId}
+                  instanceKeys={keysByWorkload.get(workload.name) ?? []}
+                  proxyId={publishedByWorkload[workload.name]?.proxyName}
+                  identityLabel={identity}
+                  locationIndex={locationIndex}
+                  onClick={() => navigate(workloadHref(workload.name))}
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>

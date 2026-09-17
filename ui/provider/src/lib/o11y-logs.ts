@@ -3,10 +3,10 @@
  * through staff-portal's `/api/internal` envelope (see `./api.ts`).
  *
  * Mirrors the consumer plugin's o11y helper. ALB identity is the HTTPProxy
- * name (`route_name` regexp). Instance stdout is matched on the same identity
- * labels metrics use (`k8s_pod_name`, `resource_name`, `pod`, `name`). Search
- * and host filters stay client-side because Envoy OTEL access logs keep an
- * empty Body.
+ * name (`route_name` regexp). Instance stdout is pinned on
+ * `datum_instance_name`. LogQL log queries take one stream selector —
+ * `{a="x"} or {b="x"}` is a metric-query form and returns 400. Search and host
+ * filters stay client-side because Envoy OTEL access logs keep an empty Body.
  */
 import { ApiError, PLUGIN_ID, getProjectScopedBase, proxyFetchAbsolute } from "./api";
 import { useMemo } from "react";
@@ -74,13 +74,8 @@ export const LOG_SOURCE_ALB = "ALB";
 export const LOG_SOURCE_INSTANCE = "Instance";
 export const LOG_SOURCE_LABEL = "source";
 
-/** Labels tried, in order, when pinning instance stdout in Loki. */
-export const COMPUTE_LOG_IDENTITY_LABELS = [
-  "k8s_pod_name",
-  "resource_name",
-  "pod",
-  "name",
-] as const;
+/** Stream label that uniquely identifies an instance's stdout in queryapi. */
+export const COMPUTE_LOG_INSTANCE_LABEL = "datum_instance_name";
 
 const COMPUTE_LOG_LABELS = [
   "severity",
@@ -133,23 +128,18 @@ export function buildAlbLogQL(
   return `{${pin}, ${buildLogQL({ matchers: extras }).slice(1)}`;
 }
 
-/** Loki `or` across identity labels; missing labels resolve to empty streams. */
+/** LogQL for one instance's stdout. One stream selector — not `or`. */
 export function buildComputeLogQL(instanceName: string): string {
-  const value = escapeLogQLQuoted(instanceName);
-  return COMPUTE_LOG_IDENTITY_LABELS.map(
-    (label) => `{${label}="${value}"}`,
-  ).join(" or ");
+  return `{${COMPUTE_LOG_INSTANCE_LABEL}="${escapeLogQLQuoted(instanceName)}"}`;
 }
 
-/** Same identity `or`, matching any of the instance names. */
+/** Pin stdout for every replica with a single regexp matcher. */
 export function buildComputeLogQLMany(instanceNames: readonly string[]): string {
   const unique = [...new Set(instanceNames.filter(Boolean))];
   if (unique.length === 0) return "";
   if (unique.length === 1) return buildComputeLogQL(unique[0]);
   const re = unique.map(escapeLogQLRegexp).join("|");
-  return COMPUTE_LOG_IDENTITY_LABELS.map((label) => `{${label}=~"${re}"}`).join(
-    " or ",
-  );
+  return `{${COMPUTE_LOG_INSTANCE_LABEL}=~"${re}"}`;
 }
 
 function formatDurationLabel(raw: string): string {
@@ -358,15 +348,7 @@ async function queryComputeRange(params: {
   end: string;
   limit: number;
 }): Promise<LogEntry[]> {
-  try {
-    return await queryRange(params, toComputeLogEntries);
-  } catch (error) {
-    // Unknown identity labels / empty LogQL should not blank the ALB stream.
-    if (error instanceof ApiError && (error.status === 400 || error.status === 404)) {
-      return [];
-    }
-    throw error;
-  }
+  return queryRange(params, toComputeLogEntries);
 }
 
 export interface UseAlbLogsOptions {
@@ -524,8 +506,9 @@ export function useWorkloadLogs(
 }
 
 /**
- * ALB access logs plus instance stdout, merged newest-first. Compute is only
- * queried when an ALB is attached so the unpublished empty state stays as-is.
+ * ALB access logs plus instance stdout, merged newest-first. Stdout is queried
+ * whenever the instance name is known — crash loops still write before a URL
+ * is published.
  */
 export function useInstanceLogs(
   projectId: string | undefined,
@@ -535,7 +518,7 @@ export function useInstanceLogs(
 ): UseInstanceLogsResult {
   const { search, enabled = true, ...rest } = options;
   const albEnabled = enabled && !!proxyId;
-  const computeEnabled = albEnabled && !!instanceName;
+  const computeEnabled = enabled && !!instanceName;
 
   const alb = useAlbLogs(projectId, proxyId, { ...rest, search: undefined, enabled: albEnabled });
   const compute = useComputeLogs(projectId, instanceName, {
@@ -552,7 +535,11 @@ export function useInstanceLogs(
 
   return {
     data,
-    isLoading: alb.isLoading || (computeEnabled && compute.isLoading),
-    error: (alb.error as ApiError | null) ?? null,
+    isLoading:
+      (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
+    error:
+      (alb.error as ApiError | null) ??
+      (compute.error as ApiError | null) ??
+      null,
   };
 }

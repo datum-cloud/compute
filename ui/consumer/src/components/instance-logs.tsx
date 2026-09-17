@@ -5,8 +5,7 @@
  * - {@link InstanceLogsExplorer} — full explorer for the Logs tab
  *
  * When the workload has a published HTTPProxy, the table merges ALB access
- * logs with instance stdout. Without one, the tab stays on the unpublished
- * empty state.
+ * logs with instance stdout. Stdout is still queried without one.
  */
 import { ApiError } from '../lib/api';
 import {
@@ -83,7 +82,7 @@ const ROW_LIMIT = ALB_LOGS_PREVIEW_LIMIT;
 
 const UNPUBLISHED_TITLE = 'No load balancer logs';
 const UNPUBLISHED_SUBTITLE =
-  'ALB and instance logs appear here when this workload is published on a public URL.';
+  'ALB access logs appear here when this workload is published on a public URL. Instance stdout still shows on the Logs tab.';
 const DENIED_MESSAGE = "You don't have permission to view load balancer logs.";
 
 function UnpublishedLogs({ className }: { className?: string }) {
@@ -140,7 +139,7 @@ function PreviewEmpty({
   const testCommand = hostname ? `curl -I https://${hostname}/` : null;
 
   return (
-    <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center lg:min-h-72">
+    <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center">
       <span className="bg-muted flex size-10 items-center justify-center rounded-full">
         <Icon icon={RadioIcon} size={18} className="text-muted-foreground" aria-hidden="true" />
       </span>
@@ -279,21 +278,21 @@ export function RecentInstanceLogs({
       </CardHeader>
       <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
         {!proxyId ? (
-          <UnpublishedLogs className="min-h-48 flex-1 lg:min-h-72" />
+          <UnpublishedLogs className="min-h-48 flex-1" />
         ) : denied ? (
           <EmptyContent
             title="Access restricted"
             subtitle={DENIED_MESSAGE}
             size="sm"
             variant="dashed"
-            className="min-h-48 flex-1 lg:min-h-72"
+            className="min-h-48 flex-1"
           />
         ) : logsQuery.isLoading ? (
-          <div className="flex h-full min-h-48 items-center justify-center lg:min-h-72">
+          <div className="flex h-full min-h-48 items-center justify-center">
             <SpinnerIcon size="sm" />
           </div>
         ) : errorMessage ? (
-          <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm lg:min-h-72">
+          <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm">
             Unable to load recent requests.
           </div>
         ) : entries.length === 0 ? (
@@ -338,7 +337,7 @@ export function InstanceLogsExplorer({
     filters,
     search,
     live,
-    enabled: !!proxyId,
+    enabled: !!proxyId || !!instanceName,
   });
 
   const visibleEntries = useMemo(
@@ -350,7 +349,7 @@ export function InstanceLogsExplorer({
   const denied = logsQuery.error instanceof ApiError && logsQuery.error.status === 403;
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
 
-  if (!proxyId) {
+  if (!proxyId && !instanceName) {
     return (
       <div
         className={cn('flex min-h-96 flex-col', className)}
@@ -400,7 +399,8 @@ export function InstanceLogsExplorer({
           onLiveChange={setLive}
           onRefresh={handleRefresh}
           className="bg-card flex min-h-0 flex-1 flex-col">
-          <Logs.Explorer className="bg-card min-h-0 flex-1" />
+          {/* Same class string as the portal's AlbLogsExplorer so the filters bar matches. */}
+          <Logs.Explorer className="bg-card **:data-[slot=logs-filters]:bg-card min-h-0 flex-1" />
         </Logs.Root>
       </CardContent>
     </Card>

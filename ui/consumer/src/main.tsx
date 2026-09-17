@@ -27,22 +27,19 @@ createRoot(document.getElementById('root')!).render(
           pages show their error state here (no portal proxy). Run the full portal to see live
           data.
         </p>
-        <MemoryRouter
-          initialEntries={['/project/demo-project/services/compute/workloads']}>
+        <MemoryRouter initialEntries={['/project/demo-project/services/workloads']}>
           <nav style={{ display: 'flex', gap: '1rem', margin: '0 0 1rem' }}>
-            <Link to="/project/demo-project/services/compute/workloads">Workloads</Link>
-            <Link to="/project/demo-project/services/compute/workloads/demo-workload">
-              Workload detail
-            </Link>
-            <Link to="/project/demo-project/services/compute/workloads/demo-workload/instances/demo-instance">
+            <Link to="/project/demo-project/services/workloads">Workloads</Link>
+            <Link to="/project/demo-project/services/workloads/demo-workload">Workload detail</Link>
+            <Link to="/project/demo-project/services/workloads/demo-workload/instances/demo-instance">
               Instance detail
             </Link>
           </nav>
           <Routes>
-            <Route path={`${base}/workloads`} element={<WorkloadList />} />
-            <Route path={`${base}/workloads/:workloadName`} element={<WorkloadDetail />} />
+            <Route path={base} element={<WorkloadList />} />
+            <Route path={`${base}/:workloadName`} element={<WorkloadDetail />} />
             <Route
-              path={`${base}/workloads/:workloadName/instances/:instanceName`}
+              path={`${base}/:workloadName/instances/:instanceName/*`}
               element={<InstanceDetail />}
             />
           </Routes>

@@ -35,6 +35,7 @@ import {
 } from '../lib/locations';
 import {
   albRpsQuery,
+  identityValuesForLabel,
   useInstanceMetricIdentity,
   workloadCpuAvgQuery,
   workloadMemoryAvgQuery,
@@ -381,17 +382,21 @@ export default function WorkloadDetail() {
   const instanceNames = useMemo(() => instances.map((instance) => instance.name), [instances]);
   const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(
     projectName,
-    instanceNames[0]
+    instances[0]
+  );
+  const metricKeys = useMemo(
+    () => (identity ? identityValuesForLabel(instances, identity.label) : []),
+    [instances, identity]
   );
   const chartsEnabled =
-    !identityLoading && !!identity && !!projectName && instanceNames.length > 0;
+    !identityLoading && !!identity && !!projectName && metricKeys.length > 0;
   const cpuQuery =
     chartsEnabled && identity && projectName
-      ? workloadCpuAvgQuery(projectName, identity.label, instanceNames)
+      ? workloadCpuAvgQuery(projectName, identity.label, metricKeys)
       : undefined;
   const memoryQuery =
     chartsEnabled && identity && projectName
-      ? workloadMemoryAvgQuery(projectName, identity.label, instanceNames)
+      ? workloadMemoryAvgQuery(projectName, identity.label, metricKeys)
       : undefined;
   const proxyId = published.data?.proxyName;
   const rpsQuery = projectName && proxyId ? albRpsQuery(projectName, proxyId) : undefined;
@@ -403,10 +408,10 @@ export default function WorkloadDetail() {
     : '—';
   const avgCpu = chartsEnabled
     ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number'))
-    : '—';
+    : 'Coming soon';
   const avgMemory = chartsEnabled
     ? (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes'))
-    : '—';
+    : 'Coming soon';
 
   const titleName = workload?.name ?? workloadName ?? 'Workload';
   const locationIndex = useLocationIndex(projectName);
@@ -469,7 +474,7 @@ export default function WorkloadDetail() {
           <TabsContent value="Metrics">
             <WorkloadMetrics
               projectName={projectName}
-              instanceNames={instanceNames}
+              instanceKeys={metricKeys}
               identityLabel={identity?.label}
               identityLoading={identityLoading}
               proxyId={proxyId}
