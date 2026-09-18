@@ -34,6 +34,11 @@ func TestGroupCommandsRejectStrayVerbs(t *testing.T) {
 			args: []string{"access", "grant"},
 			want: "unknown command \"grant\" for \"datumctl compute access\"",
 		},
+		{
+			name: "access request takes no arguments",
+			args: []string{"access", "request", "now"},
+			want: "unknown command \"now\" for \"datumctl compute access request\"",
+		},
 	}
 
 	for _, tc := range tests {

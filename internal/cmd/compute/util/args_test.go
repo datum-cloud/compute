@@ -6,10 +6,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	rootUse      = "compute"
+	workloadsUse = "workloads"
+	describeUse  = "describe"
+)
+
 func argsTestTree() *cobra.Command {
-	root := &cobra.Command{Use: "compute"}
-	workloads := &cobra.Command{Use: "workloads", Args: NoPositionalArgs, RunE: func(*cobra.Command, []string) error { return nil }}
-	workloads.AddCommand(&cobra.Command{Use: "describe", Args: cobra.ExactArgs(1)})
+	root := &cobra.Command{Use: rootUse}
+	workloads := &cobra.Command{Use: workloadsUse, Args: NoPositionalArgs, RunE: func(*cobra.Command, []string) error { return nil }}
+	workloads.AddCommand(&cobra.Command{Use: describeUse, Args: cobra.ExactArgs(1)})
 	root.AddCommand(workloads)
 	root.AddCommand(&cobra.Command{Use: "destroy", Args: cobra.ExactArgs(1)})
 	root.AddCommand(&cobra.Command{Use: "build", Aliases: []string{"b"}})
@@ -45,7 +51,7 @@ func TestNoPositionalArgs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			workloads, _, err := argsTestTree().Find([]string{"workloads"})
+			workloads, _, err := argsTestTree().Find([]string{workloadsUse})
 			if err != nil {
 				t.Fatalf("Find(workloads) = %v", err)
 			}
@@ -69,12 +75,12 @@ func TestNoPositionalArgs(t *testing.T) {
 // TestNoPositionalArgsKeepsSubcommands guards against the validator swallowing
 // a real subcommand invocation, which cobra dispatches before validating args.
 func TestNoPositionalArgsKeepsSubcommands(t *testing.T) {
-	cmd, args, err := argsTestTree().Find([]string{"workloads", "describe", "api"})
+	cmd, args, err := argsTestTree().Find([]string{workloadsUse, describeUse, "api"})
 	if err != nil {
 		t.Fatalf("Find = %v", err)
 	}
-	if cmd.Name() != "describe" {
-		t.Fatalf("resolved command = %q, want %q", cmd.Name(), "describe")
+	if cmd.Name() != describeUse {
+		t.Fatalf("resolved command = %q, want %q", cmd.Name(), describeUse)
 	}
 	if err := cmd.ValidateArgs(args); err != nil {
 		t.Errorf("ValidateArgs(%q) = %v, want nil", args, err)
