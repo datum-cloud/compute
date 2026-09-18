@@ -35,9 +35,9 @@ func (r *recorder) funcs() interceptor.Funcs {
 			r.updates = append(r.updates, kindOf(obj))
 			return c.Update(ctx, obj, opts...)
 		},
-		DeleteAllOf: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteAllOfOption) error {
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 			r.deletes = append(r.deletes, kindOf(obj))
-			return c.DeleteAllOf(ctx, obj, opts...)
+			return c.Delete(ctx, obj, opts...)
 		},
 	}
 }
@@ -225,8 +225,17 @@ func TestUnpublishRemovesTheProxyFirst(t *testing.T) {
 	}
 }
 
+// A no-op means no delete, not a delete the server happens to forgive: the
+// read is what keeps a destroy with no URL from needing delete permission it
+// never had to use.
 func TestUnpublishIsANoOpWhenNothingIsPublished(t *testing.T) {
-	c := newFakeClient(t)
+	c := interceptor.NewClient(newFakeClient(t), interceptor.Funcs{
+		Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+			t.Errorf("deleted %s for a workload that published nothing", kindOf(obj))
+			return nil
+		},
+	})
+
 	if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
 		t.Fatalf("unpublishing something that was never published is not an error, got: %v", err)
 	}

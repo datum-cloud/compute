@@ -201,7 +201,7 @@ func TestRemoveHTTPServiceSaysNothingOnACreate(t *testing.T) {
 func TestRemoveHTTPServiceReportsAFailure(t *testing.T) {
 	boom := errors.New("forbidden")
 	c := interceptor.NewClient(publishedClient(t), interceptor.Funcs{
-		DeleteAllOf: func(context.Context, client.WithWatch, client.Object, ...client.DeleteAllOfOption) error {
+		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
 			return boom
 		},
 	})

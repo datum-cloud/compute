@@ -23,11 +23,11 @@ import (
 // like from the CLI's side.
 func failDeleteOf(kind string, boom error) interceptor.Funcs {
 	return interceptor.Funcs{
-		DeleteAllOf: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteAllOfOption) error {
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 			if kindOf(obj) == kind {
 				return boom
 			}
-			return c.DeleteAllOf(ctx, obj, opts...)
+			return c.Delete(ctx, obj, opts...)
 		},
 	}
 }
@@ -125,11 +125,11 @@ func TestUnpublishRetryFinishesAPartialDelete(t *testing.T) {
 		publishedProxy(testWorkloadName, testCanonical),
 		publishedService(testWorkloadName, 8080, location("DFW", 1, 1, true)),
 	), interceptor.Funcs{
-		DeleteAllOf: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteAllOfOption) error {
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 			if fail && kindOf(obj) == kindService {
 				return errors.New("forbidden")
 			}
-			return cl.DeleteAllOf(ctx, obj, opts...)
+			return cl.Delete(ctx, obj, opts...)
 		},
 	})
 
@@ -364,4 +364,46 @@ func TestPublishDetachesWhenInterruptedMidWrite(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUnpublishNeverDeletesACollection: nothing here deletes by selector.
+// Deleting a collection is a permission of its own that project roles do not
+// grant, so the call is refused for a user who can perfectly well delete each
+// object — and it was refused on every destroy, including the destroy of a
+// workload that never published a URL at all. A collection delete reaching the
+// server is the bug, so this fails the moment one is attempted.
+func TestUnpublishNeverDeletesACollection(t *testing.T) {
+	noCollectionDeletes := func(t *testing.T) interceptor.Funcs {
+		return interceptor.Funcs{
+			DeleteAllOf: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteAllOfOption) error {
+				t.Errorf("deleted a collection of %s: the server refuses deletecollection for a project role", kindOf(obj))
+				return errors.New("deletecollection is forbidden")
+			},
+		}
+	}
+
+	t.Run("nothing published", func(t *testing.T) {
+		c := interceptor.NewClient(newFakeClient(t), noCollectionDeletes(t))
+
+		if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
+			t.Fatalf("a workload with no URL has nothing to delete, got: %v", err)
+		}
+	})
+
+	t.Run("a published URL", func(t *testing.T) {
+		c := interceptor.NewClient(newFakeClient(t,
+			publishedProxy(testWorkloadName, testCanonical),
+			publishedService(testWorkloadName, 8080, location("DFW", 1, 1, true)),
+		), noCollectionDeletes(t))
+
+		if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
+			t.Fatalf("Unpublish: %v", err)
+		}
+		if objectExists(t, c, &networkingv1alpha.HTTPProxy{}) {
+			t.Error("the URL survived unpublishing")
+		}
+		if objectExists(t, c, &networkingv1alpha.NetworkService{}) {
+			t.Error("the URL backends survived unpublishing")
+		}
+	})
 }
