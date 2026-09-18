@@ -18,6 +18,7 @@ func Command() *cobra.Command {
 		Short: "Show or request Compute service access for the current project",
 		Long: "Show the current Compute service-access state for the project, or " +
 			"request access with the request subcommand.",
+		Args: util.NoPositionalArgs,
 		RunE: runStatus,
 	}
 	util.MarkGateExempt(cmd)

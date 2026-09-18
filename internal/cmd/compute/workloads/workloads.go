@@ -52,6 +52,7 @@ there are many; JSON and YAML always carry the full list under "locations".`,
 
   # Describe a single workload
   datumctl compute workloads describe api`,
+		Args: util.NoPositionalArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runList(cmd, args)
 		},
