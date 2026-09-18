@@ -189,6 +189,215 @@ export function useRequestComputeAccess(
   });
 }
 
+// ── Demo workload: "Global Mesh" ────────────────────────────────────────
+//
+// The Workloads page's "Try the Demo!" card creates the same four objects
+// this manifest does — one unikernel instance in DFW, simulating a
+// six-region mesh (DEMO_MODE=simulate), reachable over a public HTTPProxy URL
+// so it shows up with live "Requests" metrics like any other published
+// workload. No credentials Secret is needed: the unikernel image pulls
+// anonymously. Names below are per-deploy
+// (`datum-demo-<suffix>` / `datum-demo-net-<suffix>`) rather than fixed, and
+// every object carries `app.kubernetes.io/managed-by: compute-portal-demo` —
+// see `randomDemoSuffix`/`DEMO_LABELS` below. Verified on staging 2026-09-17:
+//
+//   apiVersion: networking.datumapis.com/v1alpha
+//   kind: Network
+//   metadata: {name: datum-demo-net-<suffix>, namespace: default}
+//   spec: {ipFamilies: [IPv6], ipam: {mode: Auto}, mtu: 1440}
+//   ---
+//   apiVersion: compute.datumapis.com/v1alpha
+//   kind: Workload
+//   metadata: {name: datum-demo-<suffix>, namespace: default}
+//   spec:
+//     placements:
+//     - name: dfw
+//       locationSelector: {matchLabels: {topology.datum.net/city-code: DFW}}
+//       scaleSettings: {minReplicas: 1}
+//     template:
+//       spec:
+//         networkInterfaces:
+//         - {name: eth0, ipFamilies: [IPv6], network: {name: datum-demo-net-<suffix>}}
+//         runtime:
+//           class: unikernel
+//           resources: {instanceType: datumcloud/d1-standard-2}
+//           sandbox:
+//             containers:
+//             - name: mesh
+//               image: index.docker.io/scotwells/global-mesh-uk@sha256:6bfeb06ad16e395a6642145024427e37589c4fae33c4ca9932e10704cf7e46d9
+//               ports: [{name: http, port: 8080, protocol: TCP}]
+//               env: [{name: DEMO_MODE, value: simulate}]
+//               securityContext:
+//                 capabilities: {drop: [ALL]}
+//   ---
+//   apiVersion: networking.datumapis.com/v1alpha
+//   kind: NetworkService
+//   metadata: {name: datum-demo-<suffix>, namespace: default}
+//   spec:
+//     networkInterfaces:
+//       selector: {matchLabels: {compute.datumapis.com/workload-name: datum-demo-<suffix>}}
+//     ports: [{name: http, port: 8080, protocol: TCP}]
+//     trafficDistribution: {strategy: Nearest}
+//   ---
+//   apiVersion: networking.datumapis.com/v1alpha
+//   kind: HTTPProxy
+//   metadata: {name: datum-demo-<suffix>, namespace: default}
+//   spec:
+//     rules:
+//     - backends: [{networkService: {name: datum-demo-<suffix>, port: http}, weight: 1}]
+//       matches: [{path: {type: PathPrefix, value: /}}]
+
+const NETWORKS_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/networks';
+
+/** Marks every object this flow creates as demo-origin — e.g. `kubectl get workloads -l app.kubernetes.io/managed-by=compute-portal-demo` to find/clean them up. */
+const DEMO_LABELS = { 'app.kubernetes.io/managed-by': 'compute-portal-demo' };
+
+/** Short random suffix so each deploy gets its own Network/Workload/NetworkService/HTTPProxy
+ * names — `datumctl compute destroy workload` only removes the Workload, not the networking
+ * objects alongside it, so a fixed name would 409 on the next deploy against whatever it left behind. */
+function randomDemoSuffix(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+  }
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function demoNetworkPayload(networkName: string) {
+  return {
+    apiVersion: 'networking.datumapis.com/v1alpha',
+    kind: 'Network',
+    metadata: { name: networkName, namespace: 'default', labels: DEMO_LABELS },
+    spec: {
+      ipFamilies: ['IPv6'],
+      ipam: { mode: 'Auto' },
+      mtu: 1440,
+    },
+  };
+}
+
+function demoWorkloadPayload(workloadName: string, networkName: string) {
+  return {
+    apiVersion: 'compute.datumapis.com/v1alpha',
+    kind: 'Workload',
+    metadata: { name: workloadName, namespace: 'default', labels: DEMO_LABELS },
+    spec: {
+      placements: [
+        {
+          name: 'dfw',
+          locationSelector: { matchLabels: { 'topology.datum.net/city-code': 'DFW' } },
+          scaleSettings: { minReplicas: 1 },
+        },
+      ],
+      template: {
+        spec: {
+          networkInterfaces: [
+            { name: 'eth0', ipFamilies: ['IPv6'], network: { name: networkName } },
+          ],
+          runtime: {
+            class: 'unikernel',
+            resources: { instanceType: 'datumcloud/d1-standard-2' },
+            sandbox: {
+              containers: [
+                {
+                  name: 'mesh',
+                  image:
+                    'index.docker.io/scotwells/global-mesh-uk@sha256:6bfeb06ad16e395a6642145024427e37589c4fae33c4ca9932e10704cf7e46d9',
+                  ports: [{ name: 'http', port: 8080, protocol: 'TCP' }],
+                  env: [{ name: 'DEMO_MODE', value: 'simulate' }],
+                  securityContext: {
+                    capabilities: { drop: ['ALL'] },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function demoNetworkServicePayload(name: string, workloadName: string) {
+  return {
+    apiVersion: 'networking.datumapis.com/v1alpha',
+    kind: 'NetworkService',
+    metadata: { name, namespace: 'default', labels: DEMO_LABELS },
+    spec: {
+      networkInterfaces: {
+        selector: { matchLabels: { [INSTANCE_LABELS.workloadName]: workloadName } },
+      },
+      ports: [{ name: 'http', port: 8080, protocol: 'TCP' }],
+      trafficDistribution: { strategy: 'Nearest' },
+    },
+  };
+}
+
+function demoHttpProxyPayload(name: string, networkServiceName: string) {
+  return {
+    apiVersion: 'networking.datumapis.com/v1alpha',
+    kind: 'HTTPProxy',
+    metadata: { name, namespace: 'default', labels: DEMO_LABELS },
+    spec: {
+      rules: [
+        {
+          backends: [{ networkService: { name: networkServiceName, port: 'http' }, weight: 1 }],
+          matches: [{ path: { type: 'PathPrefix', value: '/' } }],
+        },
+      ],
+    },
+  };
+}
+
+/** POSTs one object of the demo manifest, treating 409 AlreadyExists as success (a repeat click racing itself). */
+async function applyDemoResource(projectId: string, path: string, body: unknown): Promise<void> {
+  const url = `${getProjectScopedBase(projectId)}${path}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new ApiError(res.status, `Request failed (${res.status}): ${path}`);
+  }
+}
+
+/** Deploys the Global Mesh demo under a fresh, randomly-suffixed name: Network, then
+ * Workload, then the NetworkService/HTTPProxy that publish it. Returns the Workload's name. */
+async function createDemoWorkload(projectId: string): Promise<string> {
+  const suffix = randomDemoSuffix();
+  const networkName = `datum-demo-net-${suffix}`;
+  const workloadName = `datum-demo-${suffix}`;
+
+  await applyDemoResource(projectId, NETWORKS_PATH, demoNetworkPayload(networkName));
+  await applyDemoResource(projectId, WORKLOADS_PATH, demoWorkloadPayload(workloadName, networkName));
+  await applyDemoResource(
+    projectId,
+    NETWORKSERVICES_PATH,
+    demoNetworkServicePayload(workloadName, workloadName)
+  );
+  await applyDemoResource(
+    projectId,
+    HTTPPROXIES_PATH,
+    demoHttpProxyPayload(workloadName, workloadName)
+  );
+
+  return workloadName;
+}
+
+export function useCreateDemoWorkload(
+  projectId: string | undefined
+): UseMutationResult<string, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => createDemoWorkload(projectId as string),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'workloads', projectId] });
+      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'instances', projectId] });
+      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'published-urls', projectId] });
+    },
+  });
+}
+
 export function useWorkload(
   projectId: string | undefined,
   name: string | undefined
