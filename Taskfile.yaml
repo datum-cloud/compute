@@ -566,8 +566,7 @@ tasks:
       # nothing reaches a cell.
       - |
         go mod download go.datum.net/network-services-operator
-        NSO_VERSION=$(go list -m -f '{{`{{.Version}}`}}' go.datum.net/network-services-operator)
-        NSO_CRD_PATH="$(go env GOMODCACHE)/go.datum.net/network-services-operator@${NSO_VERSION}/config/crd"
+        NSO_CRD_PATH="$(go list -m -f '{{`{{.Dir}}`}}' go.datum.net/network-services-operator)/config/crd"
         echo "NSO CRDs from: ${NSO_CRD_PATH}"
         for KC in \
           {{.KUBECONFIG_DIR}}/control-plane.yaml \
@@ -595,8 +594,7 @@ tasks:
       # environment does not install (Gateway API, Envoy Gateway, cert-manager,
       # external-dns) simply never match.
       - |
-        NSO_VERSION=$(go list -m -f '{{`{{.Version}}`}}' go.datum.net/network-services-operator)
-        NSO_FEDERATION_PATH="$(go env GOMODCACHE)/go.datum.net/network-services-operator@${NSO_VERSION}/config/federation"
+        NSO_FEDERATION_PATH="$(go list -m -f '{{`{{.Dir}}`}}' go.datum.net/network-services-operator)/config/federation"
         echo "NSO federation policy from: ${NSO_FEDERATION_PATH}"
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
           -f "${NSO_FEDERATION_PATH}/clusterpropagationpolicy.yaml" \

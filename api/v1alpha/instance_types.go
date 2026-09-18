@@ -559,6 +559,22 @@ type InstanceNetworkInterfaceStatus struct {
 	// +kubebuilder:validation:Optional
 	ExternalAddresses []InstanceNetworkInterfaceExternalAddress `json:"externalAddresses,omitempty"`
 
+	// What this interface reaches outside the platform, including the source
+	// addresses its outbound traffic leaves on and how far each may be relied
+	// upon.
+	//
+	// Reported per interface rather than once for the instance. An instance with
+	// two interfaces egresses from each on its own addresses, so a consumer
+	// allow-listing an address at a destination reads the entry for the
+	// interface the traffic leaves from, not an instance-wide answer.
+	//
+	// Absent until something reports an address for this interface. An absent
+	// value says nothing has been reported yet; whether the interface is meant
+	// to reach anything at all is declared on its network.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *networkingv1alpha.NetworkInterfaceEgressStatus `json:"egress,omitempty"`
+
 	// The observations of this interface's current state. Known condition types
 	// are "Allocated" and "Programmed".
 	//

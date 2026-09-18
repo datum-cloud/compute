@@ -1952,11 +1952,16 @@ func (r *InstanceReconciler) reconcileNetworkInterfaceStatus(
 		if apierrors.IsNotFound(err) {
 			// Report the interface by name while its claim is still being created,
 			// so the shape of the status matches the spec from the start.
-			interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, nil))
+			interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, nil, nil))
 			continue
 		}
 
-		interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, &claim))
+		boundInterface, err := r.boundNetworkInterface(ctx, clusterClient, instance.Namespace, &claim)
+		if err != nil {
+			return false, err
+		}
+
+		interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, &claim, boundInterface))
 	}
 
 	if apiequality.Semantic.DeepEqual(instance.Status.NetworkInterfaces, interfaces) {
@@ -1965,6 +1970,33 @@ func (r *InstanceReconciler) reconcileNetworkInterfaceStatus(
 
 	instance.Status.NetworkInterfaces = interfaces
 	return true, nil
+}
+
+// boundNetworkInterface reads the NetworkInterface a claim bound, for the
+// fields the claim does not repeat. It returns nil while nothing is bound, and
+// nil for an interface that has since been deleted, so a retained interface
+// disappearing under a terminating instance does not wedge the status pass.
+func (r *InstanceReconciler) boundNetworkInterface(
+	ctx context.Context,
+	clusterClient client.Client,
+	namespace string,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+) (*networkingv1alpha.NetworkInterface, error) {
+	ref := claim.Status.NetworkInterfaceRef
+	if ref == nil || ref.Name == "" {
+		return nil, nil
+	}
+
+	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
+	var networkInterface networkingv1alpha.NetworkInterface
+	if err := clusterClient.Get(ctx, key, &networkInterface); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed fetching network interface %s: %w", key, err)
+	}
+
+	return &networkInterface, nil
 }
 
 // resolveProjectID delegates to projectIDForInstance; when nil it falls back

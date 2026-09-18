@@ -68,6 +68,8 @@ github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
 github.com/cyphar/filepath-securejoin v0.6.1 h1:5CeZ1jPXEiYt3+Z6zqprSAgSWiggmpVyciv8syjIpVE=
 github.com/cyphar/filepath-securejoin v0.6.1/go.mod h1:A8hd4EnAeyujCJRrICiOWqjS1AX0a9kM5XL+NwKoYSc=
+github.com/datum-cloud/network-services-operator v0.27.2-0.20260917225730-eccf0e8922b2 h1:2yKJV4XRmoQMNM+VrOJdUgNkP1pM5z6l2P/2qF+K5yI=
+github.com/datum-cloud/network-services-operator v0.27.2-0.20260917225730-eccf0e8922b2/go.mod h1:9nuuBWdrkdnIBMaWJsWM3j4CcbKJIF1GDuCmAjdpIHo=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
@@ -337,8 +339,6 @@ github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 h1:ilQV1hzziu+LLM3zU
 github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78/go.mod h1:aL8wCCfTfSfmXjznFBSZNN13rSJjlIOI1fUNAtF7rmI=
 go.datum.net/datumctl v0.19.0 h1:e47nA0rfCVayfC4Yuta1Frf5t/c39JN/QOeQTgaMQyY=
 go.datum.net/datumctl v0.19.0/go.mod h1:KN/puWjphNMBxrHXxB2BfZHU/C09UppRZE+6grqcO0Y=
-go.datum.net/network-services-operator v0.27.0 h1:LYCUjc6i0/f3c5YXSgisnbV8gB3R8emDwNfiYapdCAo=
-go.datum.net/network-services-operator v0.27.0/go.mod h1:9nuuBWdrkdnIBMaWJsWM3j4CcbKJIF1GDuCmAjdpIHo=
 go.miloapis.com/locations v0.0.1 h1:voJKqBzyLX5x96M3+5y/ga7fgq9/+vypTizd+bBvqUY=
 go.miloapis.com/locations v0.0.1/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 go.miloapis.com/milo v0.32.1 h1:xjtJ7bGJpF3KHkpJ2UXxyHmKDa7hBmTO8G8xjELNQXY=

@@ -1354,6 +1354,74 @@ spec:
                         - type
                         type: object
                       type: array
+                    egress:
+                      description: |-
+                        What this interface reaches outside the platform, including the source
+                        addresses its outbound traffic leaves on and how far each may be relied
+                        upon.
+
+                        Reported per interface rather than once for the instance. An instance with
+                        two interfaces egresses from each on its own addresses, so a consumer
+                        allow-listing an address at a destination reads the entry for the
+                        interface the traffic leaves from, not an instance-wide answer.
+
+                        Absent until something reports an address for this interface. An absent
+                        value says nothing has been reported yet; whether the interface is meant
+                        to reach anything at all is declared on its network.
+                      properties:
+                        internet:
+                          description: internet reports the internet egress realized
+                            for this interface.
+                          properties:
+                            sourceAddresses:
+                              description: |-
+                                sourceAddresses are the addresses translation writes onto outbound
+                                packets from this interface, with the reliance each one carries.
+
+                                A consumer whose destination needs an allow-list reads the answer here,
+                                on the interface traffic leaves from, rather than on the network. The
+                                network declares the intent; the interface is what carries it.
+
+                                An absent list means nothing has reported an address for this interface.
+                                It does not mean the interface reaches nothing: whether the network
+                                asked for egress is on the network, and whether the location could
+                                provide it is the network context's InternetEgressReady condition.
+                              items:
+                                description: InternetEgressSourceAddress is one address
+                                  outbound traffic leaves on.
+                                properties:
+                                  address:
+                                    description: |-
+                                      Address is the source address translation writes, without a prefix
+                                      length.
+                                    maxLength: 39
+                                    minLength: 1
+                                    type: string
+                                  family:
+                                    description: Family is the address family of this
+                                      source address.
+                                    enum:
+                                    - IPv4
+                                    - IPv6
+                                    type: string
+                                  stability:
+                                    description: |-
+                                      Stability states how far a consumer may rely on this address before
+                                      they act on it. It is the consumer-side projection of the serving
+                                      class's sharing.
+                                    enum:
+                                    - None
+                                    - Network
+                                    type: string
+                                required:
+                                - address
+                                - family
+                                - stability
+                                type: object
+                              maxItems: 16
+                              type: array
+                          type: object
+                      type: object
                     externalAddresses:
                       description: |-
                         The addresses the interface is reachable at from outside its network, one
