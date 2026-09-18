@@ -195,9 +195,8 @@ export function useRequestComputeAccess(
 // this manifest does — one unikernel instance in DFW, simulating a
 // six-region mesh (DEMO_MODE=simulate), reachable over a public HTTPProxy URL
 // so it shows up with live "Requests" metrics like any other published
-// workload. No credentials Secret is created by this flow; it relies on a
-// `dockerhub-pull` imagePullSecret already existing in the project (avoids
-// Docker Hub anonymous pull rate limits). Names below are per-deploy
+// workload. No credentials Secret is needed: the unikernel image pulls
+// anonymously. Names below are per-deploy
 // (`datum-demo-<suffix>` / `datum-demo-net-<suffix>`) rather than fixed, and
 // every object carries `app.kubernetes.io/managed-by: compute-portal-demo` —
 // see `randomDemoSuffix`/`DEMO_LABELS` below. Verified on staging 2026-09-17:
@@ -223,7 +222,6 @@ export function useRequestComputeAccess(
 //           class: unikernel
 //           resources: {instanceType: datumcloud/d1-standard-2}
 //           sandbox:
-//             imagePullSecrets: [{name: dockerhub-pull}]
 //             containers:
 //             - name: mesh
 //               image: index.docker.io/scotwells/global-mesh-uk@sha256:6bfeb06ad16e395a6642145024427e37589c4fae33c4ca9932e10704cf7e46d9
@@ -299,7 +297,6 @@ function demoWorkloadPayload(workloadName: string, networkName: string) {
             class: 'unikernel',
             resources: { instanceType: 'datumcloud/d1-standard-2' },
             sandbox: {
-              imagePullSecrets: [{ name: 'dockerhub-pull' }],
               containers: [
                 {
                   name: 'mesh',
