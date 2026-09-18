@@ -27,11 +27,11 @@ func clientFailingToDeleteBackends(t *testing.T, objs ...client.Object) client.W
 		WithScheme(testScheme(t)).
 		WithObjects(objs...).
 		WithInterceptorFuncs(interceptor.Funcs{
-			DeleteAllOf: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteAllOfOption) error {
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 				if _, ok := obj.(*networkingv1alpha.NetworkService); ok {
 					return errors.New("forbidden")
 				}
-				return cl.DeleteAllOf(ctx, obj, opts...)
+				return cl.Delete(ctx, obj, opts...)
 			},
 		}).
 		Build()

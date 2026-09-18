@@ -388,18 +388,39 @@ func adoptMeta(existing, desired client.Object) {
 // NetworkService behind it. Deleting the service first would leave the proxy
 // reporting a missing backend for as long as the delete takes.
 //
+// Each object is read by name and deleted only if it is there, never deleted
+// by selector. A selector delete is the deletecollection permission, which
+// project roles do not grant: it failed every destroy, including a destroy
+// with no URL to remove. There is exactly one of each object per workload and
+// it carries the workload's name, so the name is all a read ever needs here.
+//
 // Objects that are not there are not an error — unpublishing something that
 // was never published is a no-op, which is what `destroy` needs.
 func Unpublish(ctx context.Context, c client.Client, workloadName string) error {
-	sel := client.MatchingLabels{computev1alpha.WorkloadNameLabel: workloadName}
-	ns := client.InNamespace(util.ResourceNamespace)
+	key := client.ObjectKey{Namespace: util.ResourceNamespace, Name: ResourceName(workloadName)}
 
-	if err := c.DeleteAllOf(ctx, &networkingv1alpha.HTTPProxy{}, ns, sel); err != nil && !notPublished(err) {
+	if err := deleteIfFound(ctx, c, key, &networkingv1alpha.HTTPProxy{}); err != nil {
 		return fmt.Errorf("removing URL for %q: %w", workloadName, err)
 	}
-	if err := c.DeleteAllOf(ctx, &networkingv1alpha.NetworkService{}, ns, sel); err != nil && !notPublished(err) {
+	if err := deleteIfFound(ctx, c, key, &networkingv1alpha.NetworkService{}); err != nil {
 		return fmt.Errorf("removing URL backends for %q: %w", workloadName, err)
 	}
 
+	return nil
+}
+
+// deleteIfFound deletes an object only once a read has found it, so nothing is
+// asked of the server for a workload that published no URL. An object that
+// disappears between the read and the delete is already what was wanted.
+func deleteIfFound(ctx context.Context, c client.Client, key client.ObjectKey, obj client.Object) error {
+	if err := c.Get(ctx, key, obj); err != nil {
+		if notPublished(err) {
+			return nil
+		}
+		return err
+	}
+	if err := c.Delete(ctx, obj); err != nil && !notPublished(err) {
+		return err
+	}
 	return nil
 }

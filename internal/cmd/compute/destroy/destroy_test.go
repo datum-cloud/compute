@@ -211,11 +211,11 @@ func TestDestroyLeftoverURLFails(t *testing.T) {
 		WithScheme(testScheme(t)).
 		WithObjects(testWorkloadObject(), publishedProxy(testCustom), publishedService()).
 		WithInterceptorFuncs(interceptor.Funcs{
-			DeleteAllOf: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteAllOfOption) error {
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 				if _, ok := obj.(*networkingv1alpha.HTTPProxy); ok {
 					return boom
 				}
-				return cl.DeleteAllOf(ctx, obj, opts...)
+				return cl.Delete(ctx, obj, opts...)
 			},
 		}).
 		Build()
