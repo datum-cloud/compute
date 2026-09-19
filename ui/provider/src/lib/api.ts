@@ -10,7 +10,7 @@
  *
  * `projectName` is resolved via `useParams()` from the host's shared
  * react-router singleton — the mount route
- * (`/customers/projects/:projectName/plugins/workloads/:workloadName`) puts
+ * (`/customers/projects/:projectName/plugins/compute/:workloadName`) puts
  * it in scope as an ancestor route param even though this plugin's own
  * declared page path only adds `:workloadName`.
  *
