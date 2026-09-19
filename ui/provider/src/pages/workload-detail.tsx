@@ -13,7 +13,7 @@
  *
  * `projectName` comes from `useParams()` resolving the ancestor route param
  * from staff-portal's project-scoped plugin mount
- * (`/customers/projects/:projectName/plugins/compute/:workloadName`) —
+ * (`/customers/projects/:projectName/plugins/:slug/:workloadName`) —
  * see `../lib/api.ts`'s header comment for why this works with no extra
  * prop/context plumbing.
  */

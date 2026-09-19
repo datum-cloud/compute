@@ -15,8 +15,15 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router';
 // that's expected here. Run the full staff-portal to see live data.
 const queryClient = new QueryClient();
 
-const base = '/customers/projects/:projectName/plugins/workloads';
-const workloadsBase = '/admin/service-catalog/:name/plugins/workloads/workloads';
+// `:slug` is a real route param here (not a fixed literal), matching the
+// host's actual mount patterns — `/customers/projects/:projectName/
+// plugins/:slug/*` and `/admin/service-catalog/:name/plugins/:slug/*`.
+// This plugin's real registered slug is "compute-datumapis-com", used below
+// so the preview matches production rather than a placeholder that has
+// twice drifted from it there (first "workloads", then "compute").
+const DEMO_SLUG = 'compute-datumapis-com';
+const base = '/customers/projects/:projectName/plugins/:slug';
+const workloadsBase = '/admin/service-catalog/:name/plugins/:slug/workloads';
 const overviewBase = '/admin/service-catalog/:name';
 
 createRoot(document.getElementById('root')!).render(
@@ -30,13 +37,13 @@ createRoot(document.getElementById('root')!).render(
           The data tabs show their error state here (no staff-portal proxy). Run the full
           staff-portal to see live data.
         </p>
-        <MemoryRouter initialEntries={['/customers/projects/demo-project/plugins/workloads']}>
+        <MemoryRouter initialEntries={[`/customers/projects/demo-project/plugins/${DEMO_SLUG}`]}>
           <nav style={{ display: 'flex', gap: '1rem', margin: '0 0 1rem' }}>
-            <Link to="/customers/projects/demo-project/plugins/workloads">Workload list</Link>
-            <Link to="/customers/projects/demo-project/plugins/workloads/demo-workload">
+            <Link to={`/customers/projects/demo-project/plugins/${DEMO_SLUG}`}>Workload list</Link>
+            <Link to={`/customers/projects/demo-project/plugins/${DEMO_SLUG}/demo-workload`}>
               Workload detail
             </Link>
-            <Link to="/admin/service-catalog/compute/plugins/workloads/workloads">
+            <Link to={`/admin/service-catalog/compute/plugins/${DEMO_SLUG}/workloads`}>
               Fleet workloads
             </Link>
             <Link to="/admin/service-catalog/compute">Service overview</Link>

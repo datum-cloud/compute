@@ -10,9 +10,12 @@
  *
  * `projectName` is resolved via `useParams()` from the host's shared
  * react-router singleton — the mount route
- * (`/customers/projects/:projectName/plugins/compute/:workloadName`) puts
+ * (`/customers/projects/:projectName/plugins/:slug/:workloadName`) puts
  * it in scope as an ancestor route param even though this plugin's own
- * declared page path only adds `:workloadName`.
+ * declared page path only adds `:workloadName`. `:slug` is this plugin's
+ * own registered slug (e.g. "compute-datumapis-com"), not a fixed literal —
+ * don't hardcode it elsewhere; read it from `useParams()` the same way
+ * (see `fleet-workloads.tsx` and `service-overview.tsx`).
  *
  * `@tanstack/react-query` is a host-shared singleton (see vite.config.ts);
  * this plugin must NOT create its own QueryClient.
@@ -354,4 +357,39 @@ export function usePublishedUrl(
           : null,
     isLoading: all.isLoading,
   };
+}
+
+interface PublicPluginListEntry {
+  slug: string;
+  manifest: { name: string };
+}
+
+/**
+ * Resolves this plugin's own registered slug by matching {@link PLUGIN_ID}
+ * against staff-portal's public plugin list (`GET /api/plugins`, session-
+ * gated but not project-scoped — a direct staff-portal endpoint, not the
+ * `/api/internal/...` K8s proxy `proxyFetch` wraps). This is the same
+ * source of truth staff-portal itself resolves a plugin's slug from (see its
+ * `findWorkloadListPluginSlug`).
+ *
+ * Only needed where this plugin renders outside a `plugins/:slug/*` mount
+ * and so can't read `:slug` off `useParams()` — currently just
+ * `ServiceOverview`, mounted directly at `/admin/service-catalog/:name` via
+ * the reserved `path: ""` override convention (see
+ * `service-overview.tsx`'s header comment). `fleet-workloads.tsx` and
+ * `workload-detail.tsx` mount under `plugins/:slug/*` and should keep
+ * reading `useParams().slug` instead — this fetch is unnecessary there.
+ */
+export function useOwnPluginSlug(): string | undefined {
+  const { data } = useQuery({
+    queryKey: [PLUGIN_ID, 'own-slug'],
+    queryFn: async () => {
+      const res = await fetch('/api/plugins', { headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new ApiError(res.status, `Request failed (${res.status}): /api/plugins`);
+      return (await res.json()) as PublicPluginListEntry[];
+    },
+    staleTime: Infinity,
+    retry: false,
+  });
+  return data?.find((p) => p.manifest.name === PLUGIN_ID)?.slug;
 }
