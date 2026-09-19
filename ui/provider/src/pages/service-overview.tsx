@@ -54,7 +54,7 @@ function PreviewRow({ entry }: { entry: FleetWorkload }) {
     <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2 text-sm last:border-b-0">
       <StatusBadge type={healthToBadgeType(workload.health)}>{workload.health}</StatusBadge>
       <Link
-        to={`/customers/projects/${project.name}/plugins/workloads/${workload.name}`}
+        to={`/customers/projects/${project.name}/plugins/compute/${workload.name}`}
         className="font-mono hover:underline">
         {workload.name}
       </Link>

@@ -100,7 +100,7 @@ function WorkloadsTable({
         header: ({ column }) => <SortableHeader column={column} title="Workload" />,
         cell: ({ row }) => (
           <Link
-            to={`/customers/projects/${row.original.project.name}/plugins/workloads/${row.original.workload.name}`}
+            to={`/customers/projects/${row.original.project.name}/plugins/compute/${row.original.workload.name}`}
             className="hover:underline">
             <span className="font-mono text-sm">{row.original.workload.name}</span>
           </Link>
