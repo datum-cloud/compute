@@ -21,11 +21,19 @@
  * plugin can't import (not federated), so this hand-wires the pieces
  * `ListTable` composes, styled to match.
  *
- * `serviceName` (the Service's resource name, e.g. "compute") comes from
- * `useParams()` resolving the ancestor route param from staff-portal's
- * service-scoped plugin mount, the same trick `WorkloadDetail` uses for
- * `projectName` — see `../lib/api.ts`'s header comment for why this works
- * with no extra prop/context plumbing.
+ * `serviceName` (the Service's resource name, e.g. "compute") and `slug`
+ * (this plugin's own registered slug, e.g. "compute-datumapis-com" — NOT
+ * necessarily the same string as `serviceName`) both come from `useParams()`
+ * resolving ancestor route params from staff-portal's service-scoped plugin
+ * mount (`/admin/service-catalog/:name/plugins/:slug/*`), the same trick
+ * `WorkloadDetail` uses for `projectName` — see `../lib/api.ts`'s header
+ * comment for why this works with no extra prop/context plumbing.
+ *
+ * The workload link below reuses `slug` rather than hardcoding a literal:
+ * this plugin's project-scoped mount (`/customers/projects/:projectName/
+ * plugins/:slug/:workloadName`) is keyed by the same registered slug, and a
+ * literal here has twice drifted from it in production (first "workloads",
+ * then "compute" — see git history on this file).
  */
 import { StatusBadge } from '../components/detail-list';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
@@ -65,9 +73,11 @@ const rowClassName = 'border-border border-b last:border-b-0 hover:bg-muted/40';
 function WorkloadsTable({
   workloads,
   locationIndex,
+  slug,
 }: {
   workloads: FleetWorkload[];
   locationIndex: LocationIndex;
+  slug: string;
 }) {
   const columns = useMemo(
     () => [
@@ -100,7 +110,7 @@ function WorkloadsTable({
         header: ({ column }) => <SortableHeader column={column} title="Workload" />,
         cell: ({ row }) => (
           <Link
-            to={`/customers/projects/${row.original.project.name}/plugins/compute/${row.original.workload.name}`}
+            to={`/customers/projects/${row.original.project.name}/plugins/${slug}/${row.original.workload.name}`}
             className="hover:underline">
             <span className="font-mono text-sm">{row.original.workload.name}</span>
           </Link>
@@ -151,7 +161,7 @@ function WorkloadsTable({
         ),
       }),
     ],
-    [locationIndex]
+    [locationIndex, slug]
   );
 
   return (
@@ -178,7 +188,7 @@ function WorkloadsTable({
 }
 
 export default function FleetWorkloads() {
-  const { name: serviceName } = useParams<{ name: string }>();
+  const { name: serviceName, slug } = useParams<{ name: string; slug: string }>();
   const { data, isLoading, error, refetch } = useFleetHealth(serviceName);
   const locationIndex = useMemo(
     () => buildLocationIndex(data?.locations ?? []),
@@ -208,7 +218,11 @@ export default function FleetWorkloads() {
               variant="dashed"
             />
           ) : (
-            <WorkloadsTable workloads={data.workloads} locationIndex={locationIndex} />
+            <WorkloadsTable
+              workloads={data.workloads}
+              locationIndex={locationIndex}
+              slug={slug ?? ''}
+            />
           )}
         </>
       )}
