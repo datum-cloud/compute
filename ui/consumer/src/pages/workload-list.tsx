@@ -72,7 +72,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 
 const COMING_SOON = "Coming soon";
 
@@ -441,7 +441,7 @@ function WorkloadCard({
   proxyId,
   identityLabel,
   locationIndex,
-  onClick,
+  href,
 }: {
   workload: Workload;
   projectId?: string;
@@ -449,7 +449,7 @@ function WorkloadCard({
   proxyId?: string;
   identityLabel?: ReturnType<typeof useInstanceMetricIdentity>["identity"];
   locationIndex: LocationIndex;
-  onClick: () => void;
+  href: string;
 }) {
   const updatedAt = workload.updatedAt ?? workload.createdAt;
   const tags =
@@ -476,8 +476,7 @@ function WorkloadCard({
     <Card
       size="sm"
       sectioned
-      className="cursor-pointer overflow-hidden"
-      onClick={onClick}
+      className="overflow-hidden"
       data-testid="compute-plugin-workload-card"
     >
       <CardHeader size="sm" bordered>
@@ -572,10 +571,16 @@ function WorkloadCard({
         <span>
           Updated {formatDistanceToNowStrict(updatedAt, { addSuffix: true })}
         </span>
-        <span className="flex items-center gap-1">
+        <Link
+          to={href}
+          // A utility only renders if the host already compiled it, and cloud-portal
+          // never generates focus-visible:underline — hence ring utilities for focus.
+          className="flex items-center gap-1 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          data-e2e="workload-card-link"
+        >
           View workload
           <Icon icon={ArrowRightIcon} size={12} />
-        </span>
+        </Link>
       </CardFooter>
     </Card>
   );
@@ -798,7 +803,7 @@ export default function WorkloadList() {
                   proxyId={publishedByWorkload[workload.name]?.proxyName}
                   identityLabel={identity}
                   locationIndex={locationIndex}
-                  onClick={() => navigate(workloadHref(workload.name))}
+                  href={workloadHref(workload.name)}
                 />
               ))}
               <TryDemoWorkloadCard projectId={projectId} onOpen={demoDialog.openDialog} />
