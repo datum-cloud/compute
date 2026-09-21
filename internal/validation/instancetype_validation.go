@@ -204,8 +204,8 @@ func validateDeprecationGracePeriod(newIT, oldIT *computev1alpha.InstanceType, o
 		return nil
 	}
 	// If the instance type is not being disabled, we don't need to validate the deprecation grace period.
-	if !(oldIT.Spec.Lifecycle.Phase == computev1alpha.InstanceTypePhaseDeprecated &&
-		newIT.Spec.Lifecycle.Phase == computev1alpha.InstanceTypePhaseDisabled) {
+	if oldIT.Spec.Lifecycle.Phase != computev1alpha.InstanceTypePhaseDeprecated ||
+		newIT.Spec.Lifecycle.Phase != computev1alpha.InstanceTypePhaseDisabled {
 		return nil
 	}
 	if req := opts.AdmissionRequest; req.DryRun != nil && *req.DryRun {

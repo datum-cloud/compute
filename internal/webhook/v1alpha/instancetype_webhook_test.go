@@ -18,6 +18,11 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
+const (
+	testTypeName = "test-type"
+	newTypeName  = "new-type"
+)
+
 // newWebhookClient builds a client seeded with the given instance types.
 func newWebhookClient(seed ...*computev1alpha.InstanceType) client.Client {
 	scheme := k8sruntime.NewScheme()
@@ -60,7 +65,7 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 		{
 			name: "valid instance type",
 			instanceType: &computev1alpha.InstanceType{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-type"},
+				ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 				Spec: computev1alpha.InstanceTypeSpec{
 					Resources: computev1alpha.InstanceTypeResources{
 						CPU:    resource.MustParse("1000m"),
@@ -76,7 +81,7 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 		{
 			name: "invalid cpu",
 			instanceType: &computev1alpha.InstanceType{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-type"},
+				ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 				Spec: computev1alpha.InstanceTypeSpec{
 					Resources: computev1alpha.InstanceTypeResources{
 						CPU:    resource.MustParse("0"),
@@ -89,7 +94,7 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 		{
 			name: "invalid memory",
 			instanceType: &computev1alpha.InstanceType{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-type"},
+				ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 				Spec: computev1alpha.InstanceTypeSpec{
 					Resources: computev1alpha.InstanceTypeResources{
 						CPU:    resource.MustParse("1000m"),
@@ -102,7 +107,7 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 		{
 			name: "invalid phase",
 			instanceType: &computev1alpha.InstanceType{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-type"},
+				ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 				Spec: computev1alpha.InstanceTypeSpec{
 					Resources: computev1alpha.InstanceTypeResources{
 						CPU:    resource.MustParse("1000m"),
@@ -118,7 +123,7 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 		{
 			name: "self referential replacement",
 			instanceType: &computev1alpha.InstanceType{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-type"},
+				ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 				Spec: computev1alpha.InstanceTypeSpec{
 					Resources: computev1alpha.InstanceTypeResources{
 						CPU:    resource.MustParse("1000m"),
@@ -126,7 +131,7 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 					},
 					Lifecycle: computev1alpha.InstanceTypeLifecycle{
 						Phase:                   computev1alpha.InstanceTypePhaseDeprecated,
-						ReplacementInstanceType: "test-type",
+						ReplacementInstanceType: testTypeName,
 					},
 				},
 			},
@@ -148,7 +153,7 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 
 func TestInstanceTypeValidation_Update(t *testing.T) {
 	oldInstanceType := &computev1alpha.InstanceType{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-type"},
+		ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 		Spec: computev1alpha.InstanceTypeSpec{
 			Resources: computev1alpha.InstanceTypeResources{
 				CPU:    resource.MustParse("1000m"),
@@ -162,7 +167,7 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 
 	// A literal copy of the type referenced as a successor.
 	successor := &computev1alpha.InstanceType{
-		ObjectMeta: metav1.ObjectMeta{Name: "new-type"},
+		ObjectMeta: metav1.ObjectMeta{Name: newTypeName},
 		Spec: computev1alpha.InstanceTypeSpec{
 			Resources: computev1alpha.InstanceTypeResources{
 				CPU:    resource.MustParse("1000m"),
@@ -178,7 +183,7 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 		tc := newInstanceTypeValidator(successor)
 		newInstanceType := oldInstanceType.DeepCopy()
 		newInstanceType.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
-		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = "new-type"
+		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = newTypeName
 
 		_, err := tc.v.ValidateUpdate(tc.ctx, oldInstanceType, newInstanceType)
 		require.NoError(t, err)
@@ -233,7 +238,7 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 		tc := newInstanceTypeValidator(successor)
 		deprecatedInstanceType := oldInstanceType.DeepCopy()
 		deprecatedInstanceType.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
-		deprecatedInstanceType.Spec.Lifecycle.ReplacementInstanceType = "new-type"
+		deprecatedInstanceType.Spec.Lifecycle.ReplacementInstanceType = newTypeName
 
 		disabledInstanceType := deprecatedInstanceType.DeepCopy()
 		disabledInstanceType.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDisabled
@@ -260,12 +265,12 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 	t.Run("invalid update - cannot leave Active while a non-disabled type references it", func(t *testing.T) {
 		// A dependent (still Active) points at test-type as its replacement.
 		dependent := activeType("dependent")
-		dependent.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		dependent.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 
 		tc := newInstanceTypeValidator(successor, dependent)
 		newInstanceType := oldInstanceType.DeepCopy()
 		newInstanceType.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
-		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = "new-type"
+		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = newTypeName
 
 		_, err := tc.v.ValidateUpdate(tc.ctx, oldInstanceType, newInstanceType)
 		require.Error(t, err)
@@ -275,14 +280,14 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 	t.Run("invalid update - lists all non-disabled referrers", func(t *testing.T) {
 		// Two separate dependents point at test-type as their replacement.
 		depA := activeType("dependent-a")
-		depA.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		depA.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 		depB := activeType("dependent-b")
-		depB.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		depB.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 
 		tc := newInstanceTypeValidator(successor, depA, depB)
 		newInstanceType := oldInstanceType.DeepCopy()
 		newInstanceType.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
-		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = "new-type"
+		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = newTypeName
 
 		_, err := tc.v.ValidateUpdate(tc.ctx, oldInstanceType, newInstanceType)
 		require.Error(t, err)
@@ -293,12 +298,12 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 		// The dependent is Disabled, so test-type is free to leave Active.
 		disabled := activeType("dependent")
 		disabled.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDisabled
-		disabled.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		disabled.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 
 		tc := newInstanceTypeValidator(successor, disabled)
 		newInstanceType := oldInstanceType.DeepCopy()
 		newInstanceType.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
-		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = "new-type"
+		newInstanceType.Spec.Lifecycle.ReplacementInstanceType = newTypeName
 
 		_, err := tc.v.ValidateUpdate(tc.ctx, oldInstanceType, newInstanceType)
 		require.NoError(t, err)
@@ -307,7 +312,7 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 
 func TestInstanceTypeValidation_Delete(t *testing.T) {
 	testType := &computev1alpha.InstanceType{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-type"},
+		ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 		Spec: computev1alpha.InstanceTypeSpec{
 			Resources: computev1alpha.InstanceTypeResources{
 				CPU:    resource.MustParse("1000m"),
@@ -328,7 +333,7 @@ func TestInstanceTypeValidation_Delete(t *testing.T) {
 	t.Run("valid delete - only disabled types reference it", func(t *testing.T) {
 		disabled := activeType("dependent")
 		disabled.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDisabled
-		disabled.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		disabled.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 
 		tc := newInstanceTypeValidator(disabled)
 		_, err := tc.v.ValidateDelete(tc.ctx, testType)
@@ -337,7 +342,7 @@ func TestInstanceTypeValidation_Delete(t *testing.T) {
 
 	t.Run("invalid delete - a non-disabled type references it", func(t *testing.T) {
 		dependent := activeType("dependent")
-		dependent.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		dependent.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 
 		tc := newInstanceTypeValidator(dependent)
 		_, err := tc.v.ValidateDelete(tc.ctx, testType)
@@ -347,9 +352,9 @@ func TestInstanceTypeValidation_Delete(t *testing.T) {
 
 	t.Run("invalid delete - lists all non-disabled referrers", func(t *testing.T) {
 		depA := activeType("dependent-a")
-		depA.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		depA.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 		depB := activeType("dependent-b")
-		depB.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		depB.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 
 		tc := newInstanceTypeValidator(depA, depB)
 		_, err := tc.v.ValidateDelete(tc.ctx, testType)
@@ -359,7 +364,7 @@ func TestInstanceTypeValidation_Delete(t *testing.T) {
 
 	t.Run("valid delete - not restricted on dry-run", func(t *testing.T) {
 		dependent := activeType("dependent")
-		dependent.Spec.Lifecycle.ReplacementInstanceType = "test-type"
+		dependent.Spec.Lifecycle.ReplacementInstanceType = testTypeName
 
 		tc := newInstanceTypeValidator(dependent)
 		dryRun := true
@@ -378,9 +383,9 @@ func TestInstanceTypeValidation_DeprecationGracePeriod(t *testing.T) {
 	// disabledType builds a Deprecated type to move to Disabled, with the given
 	// deprecation time recorded in status.
 	disabledType := func(deprecatedAt time.Time) *computev1alpha.InstanceType {
-		old := activeType("test-type")
+		old := activeType(testTypeName)
 		old.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
-		old.Spec.Lifecycle.ReplacementInstanceType = "new-type"
+		old.Spec.Lifecycle.ReplacementInstanceType = newTypeName
 		old.Status.DeprecatedAt = &metav1.Time{Time: deprecatedAt}
 		return old
 	}
@@ -415,8 +420,13 @@ func TestInstanceTypeValidation_DeprecationGracePeriod(t *testing.T) {
 			wantMsg: "cannot be disabled until",
 		},
 		{
-			name:    "disabled without recorded deprecation time",
-			old:     func() *computev1alpha.InstanceType { o := activeType("test-type"); o.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated; o.Spec.Lifecycle.ReplacementInstanceType = "new-type"; return o }(),
+			name: "disabled without recorded deprecation time",
+			old: func() *computev1alpha.InstanceType {
+				o := activeType(testTypeName)
+				o.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
+				o.Spec.Lifecycle.ReplacementInstanceType = newTypeName
+				return o
+			}(),
 			grace:   grace,
 			wantErr: true,
 			wantMsg: "deprecation time is not recorded",

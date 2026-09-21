@@ -17,7 +17,7 @@ import (
 func SetupInstanceTypeWebhookWithManager(mgr ctrl.Manager, deprecationGracePeriod time.Duration) error {
 	return ctrl.NewWebhookManagedBy(mgr, &computev1alpha.InstanceType{}).
 		WithValidator(&instanceTypeValidator{
-			client:                mgr.GetAPIReader(),
+			client:                 mgr.GetAPIReader(),
 			deprecationGracePeriod: deprecationGracePeriod,
 		}).
 		Complete()
@@ -45,9 +45,9 @@ func (v *instanceTypeValidator) validationOptions(ctx context.Context) (validati
 		return validation.InstanceTypeValidationOptions{}, err
 	}
 	return validation.InstanceTypeValidationOptions{
-		Client:                v.client,
-		AdmissionRequest:      req,
-		Context:               ctx,
+		Client:                 v.client,
+		AdmissionRequest:       req,
+		Context:                ctx,
 		DeprecationGracePeriod: v.deprecationGracePeriod,
 	}, nil
 }

@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -17,12 +16,6 @@ import (
 )
 
 var _ = Describe("InstanceType Controller", func() {
-	const (
-		timeout  = time.Second * 10
-		duration = time.Second * 10
-		interval = time.Millisecond * 250
-	)
-
 	Context("When reconciling an InstanceType", func() {
 		It("Should set Ready=True when valid and no replacement specified", func() {
 			ctx := context.Background()

@@ -478,7 +478,9 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
 			os.Exit(1)
 		}
-		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(mgr.GetLocalManager(), instanceTypeDeprecationGracePeriod); err != nil {
+		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
+			mgr.GetLocalManager(), instanceTypeDeprecationGracePeriod,
+		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
 			os.Exit(1)
 		}
