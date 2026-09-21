@@ -5,7 +5,7 @@
 import { CommandBlock } from '../components/cli-section';
 import { DetailList, StatusBadge } from '../components/detail-list';
 import { RecentInstanceLogs } from '../components/instance-logs';
-import { MetricAreaChart, formatKpiValue } from '../components/metric-area-chart';
+import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
 import { useInstanceOutlet } from './instance-outlet-context';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import {
@@ -43,6 +43,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 
 const COMING_SOON = 'Coming soon';
+const NOT_CONNECTED = 'Not connected';
 
 /** Minimal local stand-in for the portal's internal `TextCopy` / `BadgeCopy`. */
 function CopyableText({
@@ -199,6 +200,7 @@ function GeneralCard({
             },
             {
               label: 'Default Hostname',
+              hidden: !proxyId,
               className: 'group/row',
               content: albLoading ? (
                 <span className="text-muted-foreground">—</span>
@@ -253,9 +255,8 @@ function MetricsCard({
   proxyId?: string;
   metricsHref: string;
 }) {
-  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(projectId, instance);
-  const enabled = !identityLoading && !!identity && !!projectId;
-  const resourceSoon = !identityLoading && !identity;
+  const { identity, isLoading: identityLoading, isDenied: identityDenied } = useInstanceMetricIdentity(projectId, instance);
+  const enabled = !identityLoading && !identityDenied && !!identity && !!projectId;
   const cpuQuery = enabled && identity && projectId ? cpuUsageQuery(projectId, identity) : undefined;
   const memoryQuery =
     enabled && identity && projectId ? memoryUsageQuery(projectId, identity) : undefined;
@@ -274,33 +275,23 @@ function MetricsCard({
   const kpis: Array<{ label: string; value: string }> = [
     {
       label: 'CPU',
-      value: resourceSoon
-        ? COMING_SOON
-        : (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number')),
+      value: identityLoading ? 'Loading…' : formatCardValue(cpu.data, 'number'),
     },
     {
       label: 'Memory',
-      value: resourceSoon
-        ? COMING_SOON
-        : (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes')),
+      value: identityLoading ? 'Loading…' : formatCardValue(memory.data, 'bytes'),
     },
     {
       label: 'Requests',
-      value: proxyId
-        ? (rps.data?.formattedValue ?? formatKpiValue(rps.data?.value, 'requestsPerSecond'))
-        : COMING_SOON,
+      value: proxyId ? formatCardValue(rps.data, 'requestsPerSecond') : NOT_CONNECTED,
     },
     {
       label: 'p99',
-      value: proxyId
-        ? (p99.data?.formattedValue ?? formatKpiValue(p99.data?.value, 'milliseconds-auto'))
-        : COMING_SOON,
+      value: proxyId ? formatCardValue(p99.data, 'milliseconds-auto') : NOT_CONNECTED,
     },
     {
       label: 'Errors',
-      value: proxyId
-        ? (errors.data?.formattedValue ?? formatKpiValue(errors.data?.value, 'percent'))
-        : COMING_SOON,
+      value: proxyId ? formatCardValue(errors.data, 'percent') : NOT_CONNECTED,
     },
   ];
 
@@ -331,7 +322,8 @@ function MetricsCard({
               <p
                 className={cn(
                   'text-2xl font-semibold whitespace-nowrap tabular-nums',
-                  kpi.value === COMING_SOON && 'text-muted-foreground text-sm font-medium'
+                  (kpi.value === '—' || kpi.value === NOT_CONNECTED || kpi.value === 'Loading…') &&
+                    'text-muted-foreground text-sm font-medium'
                 )}>
                 {kpi.value}
               </p>
@@ -347,6 +339,7 @@ function MetricsCard({
             format="bytesPerSecond"
             enabled={false}
             unavailable
+            unavailableLabel="Not collected yet"
             embedded
             height={144}
           />
@@ -396,7 +389,6 @@ export default function InstanceOverview() {
           projectId={projectId}
           proxyId={proxyId}
           instanceName={instance.name}
-          albHostname={albHostname}
         />
       </div>
 

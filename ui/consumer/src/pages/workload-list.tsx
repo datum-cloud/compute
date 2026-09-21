@@ -7,7 +7,8 @@
  */
 import { CliBanner, SectionCard } from "../components/cli-section";
 import { ComputeEnablementBanner } from "../components/compute-enablement-banner";
-import { MetricAreaChart, formatKpiValue } from "../components/metric-area-chart";
+import { formatKpiValue } from "../components/metric-area-chart";
+import { CpuMemorySparks } from "../components/metric-sparkline";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
 import { ErrorOrRestrictedState, LoadingSkeleton } from "../components/states";
 import {
@@ -22,11 +23,13 @@ import {
   albRpsQuery,
   albRpsQueryMany,
   identityValues,
-  useInstanceMetricIdentity,
+  type InstanceIdentityLabel,
+  useProjectResourceIdentity,
   workloadCpuAvgQuery,
-  workloadCpuSumQuery,
+  workloadMemoryAvgQuery,
 } from "../lib/metrics-queries";
 import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
+import { useOverviewRange } from "../components/overview-range";
 import { useLocationIndex, type LocationIndex } from "../lib/locations";
 import { HEALTH_DOT_CLASS, regionLabel, statusLabel } from "../lib/workload-presenters";
 import { workloadHealthToBadgeType, type Workload } from "../schema";
@@ -73,8 +76,6 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
-
-const COMING_SOON = "Coming soon";
 
 // The table bundles datum-ui's DataTable plus @tanstack/react-table and nuqs
 // (the host shares none of them), which is most of this route's weight. Load
@@ -205,7 +206,7 @@ function MetricCell({
           placeholder && "text-muted-foreground font-normal",
         )}
       >
-        {value ?? COMING_SOON}
+        {value ?? "—"}
       </p>
     </div>
   );
@@ -440,6 +441,9 @@ function WorkloadCard({
   instanceKeys,
   proxyId,
   identityLabel,
+  identityLoading,
+  identityDenied,
+  timeRange,
   locationIndex,
   href,
 }: {
@@ -447,7 +451,10 @@ function WorkloadCard({
   projectId?: string;
   instanceKeys: string[];
   proxyId?: string;
-  identityLabel?: ReturnType<typeof useInstanceMetricIdentity>["identity"];
+  identityLabel?: InstanceIdentityLabel;
+  identityLoading?: boolean;
+  identityDenied?: boolean;
+  timeRange: ReturnType<typeof useOverviewRange>["timeRange"];
   locationIndex: LocationIndex;
   href: string;
 }) {
@@ -458,18 +465,16 @@ function WorkloadCard({
       : workload.runtimeType
         ? [workload.runtimeType]
         : [];
-  const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
   const enabled = !!projectId && !!identityLabel && instanceKeys.length > 0;
   const cpuQuery =
     enabled && identityLabel && projectId
-      ? workloadCpuAvgQuery(projectId, identityLabel.label, instanceKeys)
+      ? workloadCpuAvgQuery(projectId, identityLabel, instanceKeys)
       : undefined;
-  const sparkQuery =
+  const memoryQuery =
     enabled && identityLabel && projectId
-      ? workloadCpuSumQuery(projectId, identityLabel.label, instanceKeys)
+      ? workloadMemoryAvgQuery(projectId, identityLabel, instanceKeys)
       : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
-  const cpu = usePrometheusCard(cpuQuery, "number", { enabled });
   const rps = usePrometheusCard(rpsQuery, "requestsPerSecond", { enabled: !!proxyId });
 
   return (
@@ -500,18 +505,16 @@ function WorkloadCard({
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <MetricAreaChart
-          title="CPU"
-          query={sparkQuery}
+        <CpuMemorySparks
+          cpuQuery={cpuQuery}
+          memoryQuery={memoryQuery}
           timeRange={timeRange}
-          format="number"
-          enabled={enabled}
-          unavailable={!enabled}
-          embedded
-          height={48}
+          wide
+          pending={identityLoading}
+          denied={identityDenied}
         />
 
-        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        <div className="grid grid-cols-2 gap-2 sm:gap-3">
           <MetricCell
             label="Instances"
             value={`${workload.readyReplicas} / ${workload.desiredReplicas}`}
@@ -525,15 +528,6 @@ function WorkloadCard({
                 : "—"
             }
             placeholder={!proxyId}
-          />
-          <MetricCell
-            label="Avg CPU"
-            value={
-              enabled
-                ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, "number"))
-                : COMING_SOON
-            }
-            placeholder={!enabled}
           />
         </div>
 
@@ -615,12 +609,15 @@ export default function WorkloadList() {
   } = useWorkloads(projectId, computeEnabled);
   const { data: instances = [] } = useInstances(projectId, computeEnabled);
   const { data: publishedByWorkload = {} } = usePublishedUrls(projectId, computeEnabled);
-  const { identity } = useInstanceMetricIdentity(projectId, instances[0]);
+  const {
+    identityLabel,
+    isLoading: identityLoading,
+    isDenied: identityDenied,
+  } = useProjectResourceIdentity(projectId, { enabled: computeEnabled });
+  const listRange = useOverviewRange("1h");
   const locationIndex = useLocationIndex(computeEnabled ? projectId : undefined);
   const keysByWorkload = useMemo(() => {
     const map = new Map<string, string[]>();
-    const label = identity?.label;
-    if (!label) return map;
     const grouped = new Map<string, typeof instances>();
     for (const instance of instances) {
       const key = instance.workloadName;
@@ -633,7 +630,11 @@ export default function WorkloadList() {
       map.set(name, identityValues(group));
     }
     return map;
-  }, [instances, identity?.label]);
+  }, [instances]);
+  const instanceKeysByWorkload = useMemo(
+    () => Object.fromEntries(keysByWorkload),
+    [keysByWorkload]
+  );
   const fleetProxyIds = useMemo(
     () => Object.values(publishedByWorkload).map((published) => published.proxyName),
     [publishedByWorkload],
@@ -783,6 +784,11 @@ export default function WorkloadList() {
                 workloads={workloads}
                 projectId={projectId}
                 publishedByWorkload={publishedByWorkload}
+                instanceKeysByWorkload={instanceKeysByWorkload}
+                identityLabel={identityLabel}
+                identityLoading={identityLoading}
+                identityDenied={identityDenied}
+                timeRange={listRange.timeRange}
                 locationIndex={locationIndex}
                 workloadHref={workloadHref}
                 albHref={albHref}
@@ -801,7 +807,10 @@ export default function WorkloadList() {
                   projectId={projectId}
                   instanceKeys={keysByWorkload.get(workload.name) ?? []}
                   proxyId={publishedByWorkload[workload.name]?.proxyName}
-                  identityLabel={identity}
+                  identityLabel={identityLabel}
+                  identityLoading={identityLoading}
+                  identityDenied={identityDenied}
+                  timeRange={listRange.timeRange}
                   locationIndex={locationIndex}
                   href={workloadHref(workload.name)}
                 />

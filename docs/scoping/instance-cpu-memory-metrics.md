@@ -2,8 +2,10 @@
 
 Status: unikraft-provider#180 and infra#5699 have merged. The consumer/provider
 plugins now pin series on `resource_name` = `Instance.metadata.name`. Queries
-stay gated on a label-values probe, so environments that have not rolled the
-recording rules still show "Coming soon".
+stay gated on a project-wide label-values probe: if the label is missing, the
+UI shows an empty state instead of empty series. Workload and list views
+enable the join when *any* `resource_name` exists in the project, not only
+when `instances[0]` happens to be scraped.
 
 ## Join key
 
@@ -49,4 +51,5 @@ empty or the metric disappears, the recording rule or federation is still
 dropping it.
 
 Code: `ui/consumer/src/lib/metrics-queries.ts` and the provider copy
-(`useInstanceMetricIdentity`, `cpuUsageQuery`, `memoryUsageQuery`).
+(`useProjectResourceIdentity`, `useInstanceMetricIdentity`, `cpuUsageQuery`,
+`memoryUsageQuery`).
