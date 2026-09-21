@@ -430,6 +430,13 @@ func main() {
 		}
 	}
 
+	if err = (&controller.InstanceTypeReconciler{
+		Client: mgr.GetLocalManager().GetClient(),
+	}).SetupWithManager(mgr.GetLocalManager()); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "InstanceType")
+		os.Exit(1)
+	}
+
 	// The fail-loud guard above ensures federationRestConfig is non-nil when
 	// management controllers are enabled; the nil check here is defensive.
 	if enableManagementControllers && federationRestConfig != nil {
