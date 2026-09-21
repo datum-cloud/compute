@@ -181,7 +181,7 @@ function InstanceBody({
             <span className="cpt-muted">
               {[instance.cpu ? `${instance.cpu} vCPU` : null, instance.memory]
                 .filter(Boolean)
-                .join(' · ') || 'Coming soon'}
+                .join(' · ') || '—'}
             </span>
           )
         }

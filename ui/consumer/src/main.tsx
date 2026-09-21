@@ -37,7 +37,7 @@ createRoot(document.getElementById('root')!).render(
           </nav>
           <Routes>
             <Route path={base} element={<WorkloadList />} />
-            <Route path={`${base}/:workloadName`} element={<WorkloadDetail />} />
+            <Route path={`${base}/:workloadName/*`} element={<WorkloadDetail />} />
             <Route
               path={`${base}/:workloadName/instances/:instanceName/*`}
               element={<InstanceDetail />}
