@@ -13,6 +13,7 @@ kind: Kustomization
 
 resources:
   - ../../../../config/overlays/management-plane
+  - webhook-cert.yaml
 
 # Use the locally built image side-loaded into the Kind node (task e2e:image:load)
 # instead of pulling ghcr.io/datum-cloud/compute:latest from a registry.
@@ -22,35 +23,35 @@ images:
     newTag: e2e-dev
 
 patches:
-  # DEVIATION 1 (required): discovery.mode milo → single, webhook server off.
-  # See config_patch.yaml for the full rationale.
+  # DEVIATION 1 (required): discovery.mode milo → single, webhook server on
+  # with defaults. See config_patch.yaml for the full rationale.
   - path: config_patch.yaml
 
-  # DEVIATION 2 (required): drop the cert-manager CSI serving-cert volume and
-  # force IfNotPresent pulls. See deployment_patch.yaml.
+  # DEVIATION 2 (required): back the serving-cert volume with the Secret that
+  # the plain cert-manager install (webhook-cert.yaml) produces, instead of
+  # the cert-manager CSI driver used in production; force IfNotPresent pulls.
+  # See deployment_patch.yaml.
   - path: deployment_patch.yaml
 
-  # DEVIATION 3 (required): remove the admission webhook configurations.
-  # The webhook server is disabled (DEVIATION 1) because no serving cert is
-  # available in Kind, so these failurePolicy=Fail configurations would reject
-  # every Workload write. The e2e suites create WorkloadDeployments, never
-  # Workloads, so nothing here is exercised; removing the configs keeps the
-  # cluster clean rather than leaving them dangling against a dead endpoint.
-  - patch: |
-      $patch: delete
+  # DEVIATION 3 (required): point the webhook configurations' caBundle at the
+  # cert issued by webhook-cert.yaml instead of the infra-supplied CSI issuer.
+  - patch: |-
       apiVersion: admissionregistration.k8s.io/v1
       kind: ValidatingWebhookConfiguration
       metadata:
         name: compute-validating
+        annotations:
+          cert-manager.io/inject-ca-from: compute-system/compute-serving-cert
     target:
       kind: ValidatingWebhookConfiguration
       name: compute-validating
-  - patch: |
-      $patch: delete
+  - patch: |-
       apiVersion: admissionregistration.k8s.io/v1
       kind: MutatingWebhookConfiguration
       metadata:
         name: compute-mutating
+        annotations:
+          cert-manager.io/inject-ca-from: compute-system/compute-serving-cert
     target:
       kind: MutatingWebhookConfiguration
       name: compute-mutating

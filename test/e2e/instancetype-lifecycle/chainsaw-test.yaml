@@ -1,0 +1,244 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: instancetype-lifecycle
+spec:
+  description: |
+    Verifies InstanceType lifecycle validation and controller behavior.
+    This includes ensuring webhook rejections work properly for invalid
+    configurations and phase transitions, as well as testing that the
+    controller correctly sets conditions and status timestamps.
+
+  template: true
+
+  steps:
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 1. CREATION REJECTIONS
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: verify-creation-rejections
+    description: |
+      Assert that creating an InstanceType in a non-Active phase or with
+      invalid resource configurations is blocked by the validation webhook.
+    try:
+    - apply:
+        file: invalid-phase.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'new instance types must be created in Active phase')): true
+
+    - apply:
+        file: invalid-cpu.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must be greater than 0')): true
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 2. VALID CREATION & IMMUTABILITY
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: valid-creation
+    description: Create a valid Active InstanceType and assert the controller marks it Ready.
+    try:
+    - apply:
+        file: active-a.yaml
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          status:
+            conditions:
+            - type: Ready
+              status: "True"
+
+  - name: verify-immutability
+    description: Assert that CPU and Memory cannot be mutated after creation.
+    try:
+    - patch:
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cpu is immutable')): true
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          spec:
+            resources:
+              cpu: 2000m
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 3. LIFECYCLE TRANSITIONS & VALIDATIONS
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: verify-lifecycle-transitions
+    description: |
+      Assert that transitions skipping phases or omitting required replacements
+      are correctly rejected by the webhook.
+    try:
+    - patch:
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'lifecycle progression only allows Active -> Deprecated -> Disabled')): true
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          spec:
+            lifecycle:
+              phase: Disabled
+
+    - patch:
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'replacementInstanceType must be set')): true
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          spec:
+            lifecycle:
+              phase: Deprecated
+
+    - patch:
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'references a non-existent instance type')): true
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          spec:
+            lifecycle:
+              phase: Deprecated
+              replacementInstanceType: non-existent
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 4. REFERRER PROTECTIONS
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: referrer-protections
+    description: |
+      Assert that an Active InstanceType cannot be deleted or transitioned
+      out of Active if another live InstanceType references it as a replacement.
+    try:
+    - apply:
+        file: active-b.yaml
+    - patch:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-b
+          spec:
+            lifecycle:
+              replacementInstanceType: test-type-a
+
+    - delete:
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cannot be deleted while test-type-b still reference it')): true
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          name: test-type-a
+
+    - apply:
+        file: active-c.yaml
+    - patch:
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cannot be moved out of Active while test-type-b still reference it')): true
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          spec:
+            lifecycle:
+              phase: Deprecated
+              replacementInstanceType: test-type-c
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 5. VALID DOWNSTREAM TRANSITIONS & CONTROLLER BEHAVIOR
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: valid-downstream-transitions
+    description: |
+      Assert that deleting the dependent clears the way for a valid
+      transition to Deprecated, and that the controller stamps the timestamp.
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          name: test-type-b
+    - patch:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          spec:
+            lifecycle:
+              phase: Deprecated
+              replacementInstanceType: test-type-c
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          status:
+            (deprecatedAt != null): true
+
+  - name: grace-period-verification
+    description: Assert that attempting to move to Disabled prematurely is rejected.
+    try:
+    - patch:
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cannot be disabled until')): true
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: test-type-a
+          spec:
+            lifecycle:
+              phase: Disabled
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 6. CLEANUP
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: cleanup
+    description: Clean up the remaining test resources.
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          name: test-type-a
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          name: test-type-c
