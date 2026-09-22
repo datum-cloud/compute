@@ -496,12 +496,18 @@ export function useWorkloadLogs(
     [alb.data, compute.data],
   );
   const data = useMemo(() => filterEntries(merged, {}, search), [merged, search]);
+  const error =
+    merged.length > 0
+      ? null
+      : ((compute.error as ApiError | null) ??
+        (albEnabled ? (alb.error as ApiError | null) : null) ??
+        null);
 
   return {
     data,
     isLoading:
       (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
-    error: (alb.error as ApiError | null) ?? (compute.error as ApiError | null) ?? null,
+    error,
   };
 }
 
@@ -532,14 +538,17 @@ export function useInstanceLogs(
     [alb.data, compute.data],
   );
   const data = useMemo(() => filterEntries(merged, {}, search), [merged, search]);
+  const error =
+    merged.length > 0
+      ? null
+      : ((compute.error as ApiError | null) ??
+        (albEnabled ? (alb.error as ApiError | null) : null) ??
+        null);
 
   return {
     data,
     isLoading:
       (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
-    error:
-      (alb.error as ApiError | null) ??
-      (compute.error as ApiError | null) ??
-      null,
+    error,
   };
 }

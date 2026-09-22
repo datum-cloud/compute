@@ -17,7 +17,8 @@ import {
   albRpsQuery,
   albRpsQueryMany,
   identityValues,
-  useInstanceMetricIdentity,
+  type InstanceIdentityLabel,
+  useProjectResourceIdentity,
   workloadCpuAvgQuery,
 } from '../lib/metrics-queries';
 import { usePrometheusCard } from '../lib/prometheus';
@@ -48,13 +49,13 @@ function WorkloadRow({
   projectName?: string;
   instanceKeys: string[];
   proxyId?: string;
-  identityLabel?: ReturnType<typeof useInstanceMetricIdentity>['identity'];
+  identityLabel?: InstanceIdentityLabel;
   locationLabel: string;
 }) {
   const enabled = !!projectName && !!identityLabel && instanceKeys.length > 0;
   const cpuQuery =
     enabled && identityLabel && projectName
-      ? workloadCpuAvgQuery(projectName, identityLabel.label, instanceKeys)
+      ? workloadCpuAvgQuery(projectName, identityLabel, instanceKeys)
       : undefined;
   const rpsQuery = projectName && proxyId ? albRpsQuery(projectName, proxyId) : undefined;
   const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
@@ -81,7 +82,7 @@ function WorkloadRow({
       <TableCell className="text-muted-foreground">
         {enabled
           ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number'))
-          : 'Coming soon'}
+          : '—'}
       </TableCell>
       <TableCell className="text-muted-foreground" title={workload.locations.join(', ') || undefined}>
         {locationLabel}
@@ -98,12 +99,10 @@ export default function WorkloadList() {
   const { data: workloads, isLoading, error, refetch } = useWorkloads(projectName);
   const { data: instances = [] } = useInstances(projectName);
   const { data: publishedByWorkload = {} } = usePublishedUrls(projectName);
-  const { identity } = useInstanceMetricIdentity(projectName, instances[0]);
+  const { identityLabel } = useProjectResourceIdentity(projectName);
   const locationIndex = useLocationIndex(projectName);
   const keysByWorkload = useMemo(() => {
     const map = new Map<string, string[]>();
-    const label = identity?.label;
-    if (!label) return map;
     const grouped = new Map<string, typeof instances>();
     for (const instance of instances) {
       const key = instance.workloadName;
@@ -116,7 +115,7 @@ export default function WorkloadList() {
       map.set(name, identityValues(group));
     }
     return map;
-  }, [instances, identity?.label]);
+  }, [instances]);
   const fleetProxyIds = useMemo(
     () => Object.values(publishedByWorkload).map((published) => published.proxyName),
     [publishedByWorkload]
@@ -193,7 +192,7 @@ export default function WorkloadList() {
                     projectName={projectName}
                     instanceKeys={keysByWorkload.get(workload.name) ?? []}
                     proxyId={publishedByWorkload[workload.name]?.proxyName}
-                    identityLabel={identity}
+                    identityLabel={identityLabel}
                     locationLabel={formatLocationNames(workload.locations, locationIndex)}
                   />
                 ))}

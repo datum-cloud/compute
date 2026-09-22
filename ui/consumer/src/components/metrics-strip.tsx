@@ -30,7 +30,8 @@ export function WorkloadMetricsStrip({
   instanceKeys,
   range,
   onRangeChange,
-  idle = false,
+  identityLoading = false,
+  identityDenied = false,
 }: {
   projectId?: string;
   proxyId?: string;
@@ -38,9 +39,11 @@ export function WorkloadMetricsStrip({
   instanceKeys: string[];
   range: OverviewRange;
   onRangeChange: (value: OverviewRangeValue) => void;
-  idle?: boolean;
+  identityLoading?: boolean;
+  identityDenied?: boolean;
 }) {
-  const chartsEnabled = !!projectId && !!identityLabel && instanceKeys.length > 0;
+  const chartsEnabled =
+    !!projectId && !!identityLabel && instanceKeys.length > 0 && !identityDenied;
   const cpuQuery =
     chartsEnabled && identityLabel && projectId
       ? workloadCpuAvgQuery(projectId, identityLabel, instanceKeys)
@@ -65,12 +68,6 @@ export function WorkloadMetricsStrip({
           <h2 id="compute-live-metrics-heading" className="shrink-0 text-sm font-semibold">
             Live metrics
           </h2>
-          {idle ? (
-            <p className="text-muted-foreground truncate text-xs">
-              <span aria-hidden="true">· </span>
-              No data yet — metrics start streaming with the first request
-            </p>
-          ) : null}
         </div>
         <Select value={range.value} onValueChange={(value) => onRangeChange(value as OverviewRangeValue)}>
           <SelectTrigger
@@ -99,7 +96,6 @@ export function WorkloadMetricsStrip({
           color="var(--primary)"
           timeRange={range.timeRange}
           rangeLabel={windowLabel}
-          idle={idle}
           unavailable={!proxyId}
         />
         <SparklineStatCard
@@ -110,7 +106,6 @@ export function WorkloadMetricsStrip({
           color="var(--color-chart-1)"
           timeRange={range.timeRange}
           rangeLabel={windowLabel}
-          idle={idle}
           unavailable={!proxyId}
         />
         <SparklineStatCard
@@ -120,8 +115,8 @@ export function WorkloadMetricsStrip({
           color="var(--primary)"
           timeRange={range.timeRange}
           rangeLabel={windowLabel}
-          unavailable={!chartsEnabled}
-          unavailableLabel="Coming soon"
+          pending={identityLoading}
+          denied={identityDenied}
         />
         <SparklineStatCard
           title="Avg Memory"
@@ -130,8 +125,8 @@ export function WorkloadMetricsStrip({
           color="var(--color-chart-1)"
           timeRange={range.timeRange}
           rangeLabel={windowLabel}
-          unavailable={!chartsEnabled}
-          unavailableLabel="Coming soon"
+          pending={identityLoading}
+          denied={identityDenied}
         />
       </div>
     </section>

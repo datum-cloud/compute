@@ -2,7 +2,7 @@
  * Workload Metrics tab: CPU/memory always, plus ALB traffic when published.
  * Charts query staff-portal `POST /api/metrics`.
  */
-import { MetricAreaChart, formatKpiValue } from './metric-area-chart';
+import { MetricAreaChart, formatCardValue, formatKpiValue } from './metric-area-chart';
 import {
   albErrorRateQuery,
   albP99Query,
@@ -21,7 +21,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/
 import { ChartColumnIncreasingIcon } from 'lucide-react';
 import { useMemo } from 'react';
 
-const COMING_SOON = 'Coming soon';
+const NOT_CONNECTED = 'Not connected';
+const NETWORK_IO_UNAVAILABLE = 'Not collected yet';
 
 function KpiCell({
   label,
@@ -32,19 +33,19 @@ function KpiCell({
   value: string;
   hint?: string;
 }) {
-  const comingSoon = value === COMING_SOON;
+  const muted = value === '—' || value === NOT_CONNECTED || value === 'Loading…' || value === NETWORK_IO_UNAVAILABLE;
   return (
     <div className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</p>
       <p
         className={
-          comingSoon
+          muted
             ? 'text-muted-foreground text-sm font-medium'
             : 'text-sm font-medium sm:text-base'
         }>
         {value}
       </p>
-      {hint && !comingSoon ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
+      {hint && !muted ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
     </div>
   );
 }
@@ -58,16 +59,19 @@ export function WorkloadMetrics({
   instanceKeys,
   identityLabel,
   identityLoading,
+  identityDenied = false,
   proxyId,
 }: {
   projectName?: string;
   instanceKeys: readonly string[];
   identityLabel?: InstanceIdentityLabel;
   identityLoading: boolean;
+  identityDenied?: boolean;
   proxyId?: string;
 }) {
   const timeRange = useMemo<PrometheusTimeRange>(() => lastHour(), []);
-  const chartsEnabled = !identityLoading && !!identityLabel && !!projectName && instanceKeys.length > 0;
+  const chartsEnabled =
+    !identityLoading && !identityDenied && !!identityLabel && !!projectName && instanceKeys.length > 0;
   const cpuQuery =
     chartsEnabled && identityLabel && projectName
       ? workloadCpuAvgQuery(projectName, identityLabel, instanceKeys)
@@ -85,7 +89,6 @@ export function WorkloadMetrics({
   const rpsCard = useKpi(rpsQuery, 'requestsPerSecond', !!proxyId);
   const p99Card = useKpi(p99Query, 'milliseconds-auto', !!proxyId);
   const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
-  const resourceSoon = !identityLoading && !identityLabel;
 
   return (
     <div className="flex flex-col gap-6" data-testid="provider-plugin-workload-metrics">
@@ -102,12 +105,12 @@ export function WorkloadMetrics({
             style={{ overscrollBehaviorX: 'contain' }}>
             <KpiCell
               label="CPU"
-              value={resourceSoon ? COMING_SOON : (cpuCard.data?.formattedValue ?? formatKpiValue(cpuCard.data?.value, 'number'))}
+              value={identityLoading ? 'Loading…' : formatCardValue(cpuCard.data, 'number')}
               hint="avg cores"
             />
             <KpiCell
               label="Memory"
-              value={resourceSoon ? COMING_SOON : (memoryCard.data?.formattedValue ?? formatKpiValue(memoryCard.data?.value, 'bytes'))}
+              value={identityLoading ? 'Loading…' : formatCardValue(memoryCard.data, 'bytes')}
               hint="avg"
             />
             {proxyId ? (
@@ -130,9 +133,9 @@ export function WorkloadMetrics({
               </>
             ) : (
               <>
-                <KpiCell label="Requests" value={COMING_SOON} />
-                <KpiCell label="p99" value={COMING_SOON} />
-                <KpiCell label="Errors" value={COMING_SOON} />
+                <KpiCell label="Requests" value={NOT_CONNECTED} />
+                <KpiCell label="p99" value={NOT_CONNECTED} />
+                <KpiCell label="Errors" value={NOT_CONNECTED} />
               </>
             )}
           </div>
@@ -146,7 +149,8 @@ export function WorkloadMetrics({
           timeRange={timeRange}
           format="number"
           enabled={chartsEnabled}
-          unavailable={resourceSoon}
+          pending={identityLoading}
+          denied={identityDenied}
         />
         <MetricAreaChart
           title="Memory"
@@ -154,7 +158,8 @@ export function WorkloadMetrics({
           timeRange={timeRange}
           format="bytes"
           enabled={chartsEnabled}
-          unavailable={resourceSoon}
+          pending={identityLoading}
+          denied={identityDenied}
         />
       </div>
 
@@ -165,6 +170,7 @@ export function WorkloadMetrics({
         format="bytesPerSecond"
         enabled={false}
         unavailable
+        unavailableLabel={NETWORK_IO_UNAVAILABLE}
       />
 
       {proxyId ? (

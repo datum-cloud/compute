@@ -1,18 +1,19 @@
 /**
- * Instance Metrics tab: CPU/memory always, plus ALB traffic when the workload
- * is published on a URL. Charts query the portal VictoriaMetrics endpoint.
+ * Workload Metrics tab: CPU/memory aggregated across every instance, plus
+ * ALB traffic when the workload is published.
  */
 import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
 import { MetricsKpiCell, MetricsKpiRow } from '../components/metrics-kpis';
 import { MetricsTimeRangeToolbar } from '../components/metrics-toolbar';
-import { useInstanceOutlet } from './instance-outlet-context';
+import { useWorkloadOutlet } from './workload-outlet-context';
 import {
   albErrorRateQuery,
   albP99Query,
   albRpsQuery,
-  cpuUsageQuery,
-  memoryUsageQuery,
-  useInstanceMetricIdentity,
+  workloadCpuByInstanceQuery,
+  workloadCpuSumQuery,
+  workloadMemoryByInstanceQuery,
+  workloadMemorySumQuery,
 } from '../lib/metrics-queries';
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
@@ -34,28 +35,41 @@ function useKpi(query: string | undefined, format: MetricFormat, enabled: boolea
   return usePrometheusCard(query, format, { enabled: enabled && !!query });
 }
 
-export default function InstanceMetrics() {
-  const { instance, projectId, proxyId } = useInstanceOutlet();
+export default function WorkloadMetrics() {
+  const { projectId, proxyId, identityLabel, identityLoading, identityDenied, metricKeys } =
+    useWorkloadOutlet();
   const range = useMetricsTimeRange();
-  const { identity, isLoading: identityLoading, isDenied: identityDenied } =
-    useInstanceMetricIdentity(projectId, instance);
 
-  const cpuQuery = projectId && identity ? cpuUsageQuery(projectId, identity) : undefined;
-  const memoryQuery = projectId && identity ? memoryUsageQuery(projectId, identity) : undefined;
+  const chartsEnabled =
+    !identityLoading && !identityDenied && !!identityLabel && !!projectId && metricKeys.length > 0;
+  const cpuSumQuery =
+    chartsEnabled && identityLabel && projectId
+      ? workloadCpuSumQuery(projectId, identityLabel, metricKeys)
+      : undefined;
+  const memorySumQuery =
+    chartsEnabled && identityLabel && projectId
+      ? workloadMemorySumQuery(projectId, identityLabel, metricKeys)
+      : undefined;
+  const cpuByInstanceQuery =
+    chartsEnabled && identityLabel && projectId
+      ? workloadCpuByInstanceQuery(projectId, identityLabel, metricKeys)
+      : undefined;
+  const memoryByInstanceQuery =
+    chartsEnabled && identityLabel && projectId
+      ? workloadMemoryByInstanceQuery(projectId, identityLabel, metricKeys)
+      : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
   const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
 
-  const cpuCard = useKpi(cpuQuery, 'number', !identityLoading);
-  const memoryCard = useKpi(memoryQuery, 'bytes', !identityLoading);
+  const cpuCard = useKpi(cpuSumQuery, 'number', chartsEnabled);
+  const memoryCard = useKpi(memorySumQuery, 'bytes', chartsEnabled);
   const rpsCard = useKpi(rpsQuery, 'requestsPerSecond', !!proxyId);
   const p99Card = useKpi(p99Query, 'milliseconds-auto', !!proxyId);
   const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
 
-  const chartsEnabled = !identityLoading && !identityDenied && !!identity;
-
   return (
-    <div className="flex flex-col gap-6" data-testid="compute-plugin-instance-metrics-page">
+    <div className="flex flex-col gap-6" data-testid="compute-plugin-workload-metrics-page">
       <MetricsTimeRangeToolbar range={range} />
 
       <Card size="sm" sectioned className="w-full overflow-hidden">
@@ -64,11 +78,12 @@ export default function InstanceMetrics() {
             <MetricsKpiCell
               label="CPU"
               value={resourceKpi(identityLoading, cpuCard.data, 'number')}
-              hint="cores"
+              hint="total cores"
             />
             <MetricsKpiCell
               label="Memory"
               value={resourceKpi(identityLoading, memoryCard.data, 'bytes')}
+              hint="total"
             />
             {proxyId ? (
               <>
@@ -102,7 +117,7 @@ export default function InstanceMetrics() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MetricAreaChart
           title="CPU"
-          query={cpuQuery}
+          query={cpuByInstanceQuery}
           timeRange={range.timeRange}
           format="number"
           enabled={chartsEnabled}
@@ -111,7 +126,7 @@ export default function InstanceMetrics() {
         />
         <MetricAreaChart
           title="Memory"
-          query={memoryQuery}
+          query={memoryByInstanceQuery}
           timeRange={range.timeRange}
           format="bytes"
           enabled={chartsEnabled}

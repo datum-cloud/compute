@@ -50,7 +50,7 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": ":workloadName",
+        "path": ":workloadName/*",
         "component": {
           "$codeRef": "WorkloadDetail"
         }

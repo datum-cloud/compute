@@ -9,17 +9,16 @@
  * own copy (plus the `@tanstack/react-table` / `nuqs` peers). Class names are
  * identical to the host's, so it picks up the same compiled styles.
  */
-import { formatKpiValue } from './metric-area-chart';
-import { useOverviewRange } from './overview-range';
+import { CpuMemorySparks, MetricSparkline } from './metric-sparkline';
 import type { PublishedUrl } from '../lib/api';
 import type { LocationIndex } from '../lib/locations';
-import { albRpsQuery } from '../lib/metrics-queries';
 import {
-  transformForRecharts,
-  usePrometheusCard,
-  usePrometheusChart,
-  type PrometheusTimeRange,
-} from '../lib/prometheus';
+  albRpsQuery,
+  type InstanceIdentityLabel,
+  workloadCpuAvgQuery,
+  workloadMemoryAvgQuery,
+} from '../lib/metrics-queries';
+import type { PrometheusTimeRange } from '../lib/prometheus';
 import {
   HEALTH_DOT_CLASS,
   HEALTH_ORDER,
@@ -36,101 +35,15 @@ import {
   type DataTableFeatures,
 } from '@datum-cloud/datum-ui/data-table';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
-import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
+import { Icon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import type { ColumnDef, Row } from '@tanstack/react-table';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { GlobeIcon } from 'lucide-react';
-import { useCallback, useId, useMemo, type MouseEvent } from 'react';
+import { useCallback, useMemo, type MouseEvent } from 'react';
 import { Link } from 'react-router';
-import { Area, AreaChart, YAxis } from 'recharts';
 
 type WorkloadColumn = ColumnDef<DataTableFeatures, Workload, unknown>;
-
-/** Last-hour request-rate sparkline plus current rate — ALB's "Edge Activity" column. */
-function ActivitySparkline({
-  projectId,
-  proxyId,
-  timeRange,
-}: {
-  projectId: string;
-  proxyId: string;
-  timeRange: PrometheusTimeRange;
-}) {
-  const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const chart = usePrometheusChart(albRpsQuery(projectId, proxyId), timeRange);
-  // Same 1m instant window the card view's "Requests" uses, so the two views agree.
-  const card = usePrometheusCard(albRpsQuery(projectId, proxyId), 'requestsPerSecond');
-
-  const dataKey = chart.data?.series[0]?.name || 'value';
-  const rows = useMemo(() => {
-    if (!chart.data || chart.error) return [];
-    return transformForRecharts(chart.data).filter((row) => {
-      const v = row[dataKey];
-      return typeof v === 'number' && Number.isFinite(v);
-    });
-  }, [chart.data, chart.error, dataKey]);
-
-  const max = rows.reduce((m, row) => Math.max(m, Number(row[dataKey])), 0);
-  const denied = chart.error && (chart.error.status === 401 || chart.error.status === 403);
-
-  if (chart.isLoading) {
-    return (
-      <div className="flex h-8 w-40 items-center justify-center">
-        <SpinnerIcon size="sm" />
-      </div>
-    );
-  }
-  if (denied) {
-    return (
-      <span className="text-muted-foreground text-xs" title="You don't have permission to view metrics">
-        —
-      </span>
-    );
-  }
-
-  const idle = rows.length < 2 || max === 0;
-  return (
-    <div className="flex items-center gap-3">
-      <div className="h-8 w-40" aria-hidden>
-        {idle ? (
-          <div className="flex h-full items-center">
-            <div className="bg-border h-px w-full" />
-          </div>
-        ) : (
-          <AreaChart
-            data={rows}
-            responsive
-            width="100%"
-            height={32}
-            margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-            <defs>
-              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--primary)" stopOpacity={0.3} />
-                <stop offset="100%" stopColor="var(--primary)" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <YAxis hide domain={[0, max * 1.1]} />
-            <Area
-              type="monotone"
-              dataKey={dataKey}
-              stroke="var(--primary)"
-              strokeWidth={1.5}
-              fill={`url(#${gradientId})`}
-              fillOpacity={1}
-              dot={false}
-              activeDot={false}
-              isAnimationActive={false}
-            />
-          </AreaChart>
-        )}
-      </div>
-      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-        {formatKpiValue(card.data?.value, 'requestsPerSecond')}
-      </span>
-    </div>
-  );
-}
 
 /**
  * Row-click delegation, as the portal's `TableContent` does: datum-ui's
@@ -180,6 +93,11 @@ export function WorkloadTable({
   workloads,
   projectId,
   publishedByWorkload,
+  instanceKeysByWorkload,
+  identityLabel,
+  identityLoading = false,
+  identityDenied = false,
+  timeRange,
   locationIndex,
   workloadHref,
   albHref,
@@ -188,14 +106,16 @@ export function WorkloadTable({
   workloads: Workload[];
   projectId?: string;
   publishedByWorkload: Record<string, PublishedUrl>;
+  instanceKeysByWorkload: Record<string, string[]>;
+  identityLabel?: InstanceIdentityLabel;
+  identityLoading?: boolean;
+  identityDenied?: boolean;
+  timeRange: PrometheusTimeRange;
   locationIndex: LocationIndex;
   workloadHref: (name: string) => string;
   albHref?: (proxyName: string) => string;
   onOpen: (name: string) => void;
 }) {
-  // Ticks every 30s so the sparklines keep advancing while the page stays open.
-  const { timeRange } = useOverviewRange('1h');
-
   const columns = useMemo<WorkloadColumn[]>(
     () => [
       {
@@ -247,10 +167,37 @@ export function WorkloadTable({
             );
           }
           return (
-            <ActivitySparkline
-              projectId={projectId}
-              proxyId={published.proxyName}
+            <MetricSparkline
+              query={albRpsQuery(projectId, published.proxyName)}
               timeRange={timeRange}
+              format="requestsPerSecond"
+              flatWhenZero
+              emptyTitle="No load balancer connected"
+            />
+          );
+        },
+      },
+      {
+        id: 'resources',
+        header: 'CPU / Memory',
+        enableSorting: false,
+        cell: ({ row }) => {
+          const keys = instanceKeysByWorkload[row.original.name] ?? [];
+          const ready = projectId && identityLabel && keys.length > 0;
+          const cpuQuery = ready
+            ? workloadCpuAvgQuery(projectId, identityLabel, keys)
+            : undefined;
+          const memoryQuery = ready
+            ? workloadMemoryAvgQuery(projectId, identityLabel, keys)
+            : undefined;
+          return (
+            <CpuMemorySparks
+              cpuQuery={cpuQuery}
+              memoryQuery={memoryQuery}
+              timeRange={timeRange}
+              compact
+              pending={identityLoading}
+              denied={identityDenied}
             />
           );
         },
@@ -351,7 +298,7 @@ export function WorkloadTable({
         ),
       },
     ],
-    [projectId, publishedByWorkload, locationIndex, workloadHref, albHref, timeRange]
+    [projectId, publishedByWorkload, instanceKeysByWorkload, identityLabel, identityLoading, identityDenied, locationIndex, workloadHref, albHref, timeRange]
   );
 
   const searchFn = useCallback(

@@ -35,6 +35,27 @@ function formatBytes(value: number): string {
   return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+/** SI-scale CPU-style numbers so a 0.00008 domain does not label every tick 0.0. */
+function formatCompactNumber(value: number, forTick: boolean): string {
+  if (Math.abs(value) < 1e-12) return '0';
+  const sign = value < 0 ? '-' : '';
+  const n = Math.abs(value);
+
+  const scaled = (x: number, suffix: string) => {
+    const digits = x >= 10 ? 0 : forTick ? 1 : 2;
+    return `${sign}${Number(x.toFixed(digits))}${suffix}`;
+  };
+
+  if (n >= 1_000_000) return scaled(n / 1_000_000, 'M');
+  if (n >= 1000) return scaled(n / 1000, 'k');
+  if (n >= 10) return `${sign}${Math.round(n)}`;
+  if (n >= 1) return `${sign}${n.toFixed(forTick ? 1 : 2)}`;
+  if (n >= 0.01) return `${sign}${n.toFixed(2)}`;
+  if (n >= 1e-3) return scaled(n * 1e3, 'm');
+  if (n >= 1e-6) return scaled(n * 1e6, 'µ');
+  return `${sign}${n.toExponential(1)}`;
+}
+
 function formatAxisValue(value: number, format: MetricFormat): string {
   if (!Number.isFinite(value)) return '—';
   switch (format) {
@@ -53,7 +74,7 @@ function formatAxisValue(value: number, format: MetricFormat): string {
     case 'milliseconds-auto':
       return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value.toFixed(0)}ms`;
     default:
-      return value >= 10 ? value.toFixed(0) : value.toFixed(2);
+      return formatCompactNumber(value, false);
   }
 }
 
@@ -70,7 +91,7 @@ function formatAxisTick(value: number, format: MetricFormat): string {
     case 'milliseconds-auto':
       return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}`;
     default:
-      return value >= 10 ? value.toFixed(0) : value.toFixed(1);
+      return formatCompactNumber(value, true);
   }
 }
 
@@ -78,9 +99,23 @@ function axisWidth(format: MetricFormat): number {
   return format === 'bytes' || format === 'bytesPerSecond' ? 48 : 36;
 }
 
-function formatTimeTick(timestamp: number): string {
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+const TWO_DAYS_MS = 48 * 60 * 60 * 1000;
+
+function formatTimeTick(timestamp: number, rangeMs: number): string {
   const date = new Date(timestamp);
-  return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  if (rangeMs < SIX_HOURS_MS) {
+    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+  if (rangeMs < TWO_DAYS_MS) {
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function seriesLabel(name: string, title: string): string {
@@ -95,7 +130,9 @@ export function MetricAreaChart({
   color = 'var(--primary)',
   enabled = true,
   unavailable = false,
-  unavailableLabel = 'Coming soon',
+  unavailableLabel = 'No data',
+  pending = false,
+  denied = false,
   className,
   height = 224,
   embedded = false,
@@ -109,6 +146,10 @@ export function MetricAreaChart({
   enabled?: boolean;
   unavailable?: boolean;
   unavailableLabel?: string;
+  /** Identity probe (or similar) is still in flight — show Loading instead of No data. */
+  pending?: boolean;
+  /** Identity probe (or similar) returned 401/403. */
+  denied?: boolean;
   className?: string;
   height?: number;
   /** Skip the Card chrome so this can sit inside another card. */
@@ -118,10 +159,15 @@ export function MetricAreaChart({
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const { data, isLoading, error } = usePrometheusChart(query, timeRange, {
-    enabled: enabled && !unavailable && !!query,
+    enabled: enabled && !unavailable && !denied && !pending && !!query,
   });
   const chartData = useMemo(() => (data ? transformForRecharts(data) : []), [data]);
   const series = data?.series ?? [];
+  const rangeMs = Math.max(1, timeRange.end.getTime() - timeRange.start.getTime());
+  const xDomain = useMemo<[number, number]>(
+    () => [timeRange.start.getTime(), timeRange.end.getTime()],
+    [timeRange.start, timeRange.end]
+  );
 
   const chartConfig: ChartConfig = useMemo(() => {
     const config: ChartConfig = {};
@@ -132,7 +178,7 @@ export function MetricAreaChart({
     series.forEach((item, index) => {
       config[item.name] = {
         label: seriesLabel(item.name, title),
-        color: item.color || SERIES_COLORS[index] || color,
+        color: item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color,
       };
     });
     return config;
@@ -143,7 +189,15 @@ export function MetricAreaChart({
       className={fill ? 'relative min-h-40 w-full flex-1' : undefined}
       style={fill ? undefined : { height }}>
       <div className={fill ? 'absolute inset-0' : 'h-full'}>
-      {unavailable ? (
+      {denied ? (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
+          You don't have permission to view metrics
+        </div>
+      ) : pending ? (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
+          Loading…
+        </div>
+      ) : unavailable ? (
         <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
           {unavailableLabel}
         </div>
@@ -167,10 +221,13 @@ export function MetricAreaChart({
           className="h-full w-full overflow-visible"
           // Inline: the host does not compile `aspect-auto`; without it ChartContainer keeps aspect-video.
           style={{ aspectRatio: 'auto' }}>
-          <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <AreaChart
+            key={`${xDomain[0]}-${xDomain[1]}`}
+            data={chartData}
+            margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <defs>
               {series.map((item, index) => {
-                const stroke = item.color || SERIES_COLORS[index] || color;
+                const stroke = item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color;
                 return (
                   <linearGradient
                     key={item.name}
@@ -190,8 +247,9 @@ export function MetricAreaChart({
               dataKey="timestamp"
               type="number"
               scale="time"
-              domain={['dataMin', 'dataMax']}
-              tickFormatter={formatTimeTick}
+              domain={xDomain}
+              allowDataOverflow
+              tickFormatter={(value: number) => formatTimeTick(value, rangeMs)}
               tickLine={false}
               axisLine={false}
               minTickGap={24}
@@ -212,7 +270,7 @@ export function MetricAreaChart({
                 const ts = Number(payload[0]?.payload?.timestamp);
                 return (
                   <div className="border-border bg-background rounded-md border px-2 py-1 text-xs shadow-sm">
-                    <div className="text-muted-foreground">{formatTimeTick(ts)}</div>
+                    <div className="text-muted-foreground">{formatTimeTick(ts, rangeMs)}</div>
                     {payload.map((point) => (
                       <div key={String(point.dataKey)} className="flex items-center gap-2">
                         <span
@@ -232,7 +290,7 @@ export function MetricAreaChart({
               }}
             />
             {series.map((item, index) => {
-              const stroke = item.color || SERIES_COLORS[index] || color;
+              const stroke = item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color;
               return (
                 <Area
                   key={item.name}
@@ -266,7 +324,7 @@ export function MetricAreaChart({
               <span key={item.name} className="text-muted-foreground flex items-center gap-1.5 text-xs">
                 <span
                   className="size-1.5 rounded-full"
-                  style={{ background: item.color || SERIES_COLORS[index] || color }}
+                  style={{ background: item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color }}
                 />
                 {seriesLabel(item.name, title)}
               </span>
@@ -294,7 +352,7 @@ export function MetricAreaChart({
                   className="text-muted-foreground flex items-center gap-1.5 text-xs font-normal">
                   <span
                     className="size-1.5 rounded-full"
-                    style={{ background: item.color || SERIES_COLORS[index] || color }}
+                    style={{ background: item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color }}
                   />
                   {seriesLabel(item.name, title)}
                 </span>
@@ -310,4 +368,13 @@ export function MetricAreaChart({
 export function formatKpiValue(value: number | undefined, format: MetricFormat): string {
   if (value === undefined || !Number.isFinite(value)) return '—';
   return formatAxisValue(value, format);
+}
+
+/** Portal card `formattedValue` rounds tiny CPU to "0"; keep local SI formatting. */
+export function formatCardValue(
+  data: { value?: number; formattedValue?: string } | undefined,
+  format: MetricFormat
+): string {
+  if (format === 'number') return formatKpiValue(data?.value, format);
+  return data?.formattedValue ?? formatKpiValue(data?.value, format);
 }

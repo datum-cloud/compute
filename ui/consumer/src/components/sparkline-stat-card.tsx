@@ -1,4 +1,4 @@
-import { formatKpiValue } from './metric-area-chart';
+import { formatCardValue, formatKpiValue } from './metric-area-chart';
 import {
   transformForRecharts,
   usePrometheusCard,
@@ -23,6 +23,8 @@ export function SparklineStatCard({
   idle = false,
   unavailable = false,
   unavailableLabel = 'Not connected',
+  pending = false,
+  denied: identityDenied = false,
   timeRange,
   rangeLabel,
   value,
@@ -40,13 +42,15 @@ export function SparklineStatCard({
   idle?: boolean;
   unavailable?: boolean;
   unavailableLabel?: string;
+  pending?: boolean;
+  denied?: boolean;
   timeRange: PrometheusTimeRange;
   rangeLabel?: string;
   /** Static headline when this card is a count, not a PromQL series. */
   value?: string;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const enabled = !!query && !unavailable;
+  const enabled = !!query && !unavailable && !identityDenied && !pending;
   const chart = usePrometheusChart(query, timeRange, { enabled });
   const card = usePrometheusCard(headlineQuery ?? query, format, { enabled });
 
@@ -81,11 +85,12 @@ export function SparklineStatCard({
     if (unavailable) return unavailableLabel;
     const last = [...series].reverse().find((row) => typeof row[dataKey] === 'number')?.[dataKey];
     if (typeof last === 'number') return formatKpiValue(last, format);
-    return card.data?.formattedValue ?? formatKpiValue(card.data?.value, format);
+    return formatCardValue(card.data, format);
   })();
 
-  const isLoading = enabled && (chart.isLoading || card.isLoading);
+  const isLoading = pending || (enabled && (chart.isLoading || card.isLoading));
   const denied =
+    identityDenied ||
     (chart.error && (chart.error.status === 401 || chart.error.status === 403)) ||
     (card.error && (card.error.status === 401 || card.error.status === 403));
   const showIdle = idle && !unavailable && !denied && !isLoading;
