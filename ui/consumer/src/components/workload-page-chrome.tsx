@@ -16,7 +16,7 @@ import {
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { HomeIcon } from 'lucide-react';
-import { useLocation } from 'react-router';
+import { Link } from 'react-router';
 
 export function workloadDetailTabs(overviewHref: string, metricsHref: string): PluginTab[] {
   return [
@@ -44,21 +44,22 @@ export function WorkloadPageChrome({
   workload?: Workload | null;
   children: React.ReactNode;
 }) {
-  const { pathname } = useLocation();
-  const onMetrics = pathname === metricsHref || pathname.startsWith(`${metricsHref}/`);
-
   return (
     <div data-testid="compute-plugin-workload-detail" className="flex min-w-0 flex-col gap-6">
       <Breadcrumb className="min-w-0 overflow-x-auto">
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
-            <BreadcrumbLink href={projectHref}>
-              <Icon icon={HomeIcon} size={16} />
+            <BreadcrumbLink asChild>
+              <Link to={projectHref}>
+                <Icon icon={HomeIcon} size={16} />
+              </Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
-            <BreadcrumbLink href={workloadsHref}>Workloads</BreadcrumbLink>
+            <BreadcrumbLink asChild>
+              <Link to={workloadsHref}>Workloads</Link>
+            </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem className="min-w-0">
@@ -68,10 +69,10 @@ export function WorkloadPageChrome({
       </Breadcrumb>
 
       <PageTitle
-        title={titleName}
-        titleClassName="break-all sm:break-normal"
+        title="Workload"
         className="flex-col items-start gap-3 sm:flex-row sm:items-center"
-        description={onMetrics ? 'Workload metrics' : 'Workload overview'}
+        description={titleName}
+        descriptionClassName="break-all"
         actions={
           workload ? (
             <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">

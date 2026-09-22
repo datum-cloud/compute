@@ -17,6 +17,7 @@ import {
   useWorkloadLogs,
 } from '../lib/o11y-logs';
 import { Badge } from '@datum-cloud/datum-ui/badge';
+import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import {
   Card,
   CardAction,
@@ -42,7 +43,7 @@ import {
 } from '@datum-cloud/datum-ui/logs';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { LogsIcon } from 'lucide-react';
+import { CheckIcon, CopyIcon, LogsIcon, RadioIcon } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 
@@ -82,12 +83,48 @@ const ROW_LIMIT = ALB_LOGS_PREVIEW_LIMIT;
 const NO_LOGS_TITLE = 'No logs';
 const DENIED_MESSAGE = "You don't have permission to view logs.";
 
+/** Illustration empty state. `h-full` overrides EmptyContent's fixed `h-48` so it fills the card. */
 function NoLogs({ className }: { className?: string }) {
   return (
-    <div className={className} style={{ borderRadius: 0 }}>
-      <EmptyContent title={NO_LOGS_TITLE} size="sm" variant="minimal" />
+    <div className={cn('flex h-full min-h-0 flex-1', className)} style={{ borderRadius: 0 }}>
+      <EmptyContent title={NO_LOGS_TITLE} size="sm" variant="minimal" className="h-full w-full flex-1" />
     </div>
   );
+}
+
+/** Same first-request prompt as the cloud-portal ALB overview logs card. */
+function AlbLogsEmpty({ hostname }: { hostname: string }) {
+  const command = `curl -I https://${hostname}/`;
+  const [copied, copy] = useCopyToClipboard();
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center">
+      <span className="bg-muted flex size-10 items-center justify-center rounded-full">
+        <Icon icon={RadioIcon} size={18} className="text-muted-foreground" aria-hidden="true" />
+      </span>
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">Waiting for the first request…</p>
+        <p className="text-muted-foreground max-w-xs text-xs">
+          Send a test request and it will appear here live.
+        </p>
+      </div>
+      <div className="bg-muted/60 border-border flex w-full max-w-sm items-center gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-left">
+        <code className="min-w-0 flex-1 font-mono text-xs break-all">{command}</code>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-md"
+          aria-label="Copy test request command"
+          onClick={() => void copy(command, { withToast: true })}>
+          <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LogsEmpty({ hostname, className }: { hostname?: string; className?: string }) {
+  if (hostname) return <AlbLogsEmpty hostname={hostname} />;
+  return <NoLogs className={className} />;
 }
 
 function isLogsDenied(error: unknown): boolean {
@@ -180,6 +217,7 @@ export function RecentInstanceLogs({
   logsHref,
   projectId,
   proxyId,
+  albHostname,
   instanceName,
   instanceNames,
   className,
@@ -187,6 +225,8 @@ export function RecentInstanceLogs({
   logsHref: string;
   projectId?: string;
   proxyId?: string;
+  /** Set when a load balancer is attached. Empty results then show the curl prompt. */
+  albHostname?: string;
   instanceName?: string;
   instanceNames?: readonly string[];
   className?: string;
@@ -206,6 +246,8 @@ export function RecentInstanceLogs({
   const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
   const entries = (logsQuery.data ?? []).slice(0, ROW_LIMIT);
+  const waitingForRequest =
+    !!albHostname && !logsQuery.isLoading && !denied && !errorMessage && entries.length === 0;
 
   return (
     <Card
@@ -218,6 +260,15 @@ export function RecentInstanceLogs({
           <Icon icon={LogsIcon} size={16} className="text-secondary" />
           Logs
           {entries.length > 0 ? <LivePulse /> : null}
+          {waitingForRequest ? (
+            <Badge
+              type="muted"
+              theme="solid"
+              className="h-5 gap-1.5 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap">
+              <span className="bg-muted-foreground/60 size-1.5 rounded-full" aria-hidden="true" />
+              Idle
+            </Badge>
+          ) : null}
         </CardTitle>
         <CardDescription className="text-xs">Most recent · last 30 min</CardDescription>
         <CardAction>
@@ -226,7 +277,7 @@ export function RecentInstanceLogs({
           </Link>
         </CardAction>
       </CardHeader>
-      <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
+      <CardContent padding="none" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {denied ? (
           <EmptyContent
             title="Access restricted"
@@ -244,7 +295,7 @@ export function RecentInstanceLogs({
             Unable to load logs.
           </div>
         ) : entries.length === 0 ? (
-          <NoLogs className="min-h-48 flex-1" />
+          <LogsEmpty hostname={albHostname} className="min-h-48" />
         ) : (
           <ul className="divide-border divide-y">
             {entries.map((entry) => (
@@ -300,9 +351,9 @@ export function InstanceLogsExplorer({
   if (!proxyId && !instanceName) {
     return (
       <div
-        className={cn('flex min-h-96 flex-col', className)}
+        className={cn('flex min-h-96 flex-1 flex-col', className)}
         data-testid="compute-plugin-instance-logs-explorer">
-        <NoLogs className="min-h-96 flex-1" />
+        <NoLogs className="min-h-96" />
       </div>
     );
   }
