@@ -12,6 +12,13 @@ vars:
   # Chainsaw version for e2e testing (kyverno/chainsaw)
   CHAINSAW_VERSION: v0.2.15
 
+  # cert-manager Helm chart version, installed into the control-plane cluster
+  # to back the InstanceType/Workload admission webhook's serving cert. Kind
+  # has no CSI driver of its own, so this is a plain cert-manager install
+  # (controller + cainjector), not the csi.cert-manager.io driver used in
+  # production.
+  CERT_MANAGER_VERSION: v1.16.2
+
   # Local tool directory (mirrors Makefile convention)
   LOCALBIN: '{{.ROOT_DIR}}/bin'
   KARMADACTL: '{{.ROOT_DIR}}/bin/karmadactl'
@@ -89,6 +96,7 @@ tasks:
       - task: e2e:karmada:install
       - task: e2e:karmada:configure
       - task: e2e:karmada:join-clusters
+      - task: e2e:cert-manager:install
       - task: e2e:crds:install
 
   e2e:down:
@@ -180,7 +188,7 @@ tasks:
       - test -f {{.CHAINSAW}}
 
   e2e:tools:helm-repo:
-    desc: "Add/update karmada-charts Helm repository"
+    desc: "Add/update karmada-charts and jetstack Helm repositories"
     cmds:
       - |
         if ! helm repo list 2>/dev/null | grep -q karmada-charts; then
@@ -188,8 +196,15 @@ tasks:
           echo "Added karmada-charts Helm repository"
         fi
         helm repo update karmada-charts
+      - |
+        if ! helm repo list 2>/dev/null | grep -q jetstack; then
+          helm repo add jetstack https://charts.jetstack.io
+          echo "Added jetstack Helm repository"
+        fi
+        helm repo update jetstack
     status:
       - helm repo list 2>/dev/null | grep -q karmada-charts
+      - helm repo list 2>/dev/null | grep -q jetstack
 
   # ════════════════════════════════════════════════════════════════════════
   #  Kind cluster management
@@ -520,6 +535,34 @@ tasks:
           infra.datum.net/gateways=enabled \
           --overwrite
         echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/location={{.CITY_CODE}} and infra.datum.net/gateways=enabled"
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  cert-manager (backs the admission webhook's serving cert)
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:cert-manager:install:
+    desc: "Install cert-manager into the control-plane cluster (idempotent)"
+    deps: [e2e:tools:helm-repo]
+    cmds:
+      - |
+        if kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml -n cert-manager get deploy cert-manager &>/dev/null; then
+          echo "cert-manager already present — waiting for it to become Available..."
+        else
+          echo "Installing cert-manager {{.CERT_MANAGER_VERSION}} via Helm..."
+          helm install cert-manager jetstack/cert-manager \
+            --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            --namespace cert-manager \
+            --create-namespace \
+            --version {{.CERT_MANAGER_VERSION}} \
+            --set crds.enabled=true \
+            --wait \
+            --timeout 5m \
+            || echo "Helm --wait did not settle in time; will wait on the deployments directly below"
+        fi
+      - |
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml -n cert-manager \
+          wait --for=condition=Available --timeout=180s \
+          deploy/cert-manager deploy/cert-manager-webhook deploy/cert-manager-cainjector
 
   # ════════════════════════════════════════════════════════════════════════
   #  CRD installation
