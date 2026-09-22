@@ -2,8 +2,8 @@
  * `portal.page/project` extension at `:workloadName/*`, exposed as
  * `WorkloadDetail`. Overview is the index; Metrics lives at `metrics`.
  *
- * Layout follows cloud-portal ALB overview pages (health strip, sparkline
- * metrics, 2×2 dashboard). General/Configuration stay below the dashboard.
+ * Layout: health strip, topology, full-width logs, then live traffic and
+ * instances. General/Configuration stay below.
  *
  * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
  * inside the plugin (that double-stacks chrome vs native pages).
@@ -12,18 +12,20 @@ import { DetailList, StatusBadge } from '../components/detail-list';
 import { WorkloadHealthStrip } from '../components/health-strip';
 import { RecentInstanceLogs } from '../components/instance-logs';
 import { MetricAreaChart } from '../components/metric-area-chart';
-import { WorkloadMetricsStrip } from '../components/metrics-strip';
 import { TopologyCard } from '../components/topology-card';
 import { WorkloadPageChrome } from '../components/workload-page-chrome';
 import {
   DEFAULT_OVERVIEW_RANGE,
+  OVERVIEW_RANGE_OPTIONS,
   useOverviewRange,
+  type OverviewRange,
   type OverviewRangeValue,
 } from '../components/overview-range';
-import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
+import { WorkloadMetricsSkeleton, WorkloadOverviewSkeleton } from '../components/skeletons';
+import { ErrorOrRestrictedState } from '../components/states';
 import { usePublishedUrl, useWorkload, useWorkloadInstances, type PublishedUrl } from '../lib/api';
 import { splitSlashValue } from '../lib/format';
-import { formatLocationCountry, formatLocationName, formatLocationNames, formatLocationTooltip, useLocationIndex, type LocationIndex } from '../lib/locations';
+import { formatLocationName, formatLocationNames, formatLocationTooltip, useLocationIndex, type LocationIndex } from '../lib/locations';
 import {
   albRpsQuery,
   identityValues,
@@ -48,10 +50,17 @@ import {
 } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@datum-cloud/datum-ui/select';
+import {
   ActivityIcon,
   ArrowRightIcon,
   GlobeIcon,
-  MapPinIcon,
+  HistoryIcon,
   Settings2Icon,
   SquareLibraryIcon,
 } from 'lucide-react';
@@ -261,10 +270,12 @@ function LiveTrafficCard({
   projectId,
   proxyId,
   range,
+  onRangeChange,
 }: {
   projectId?: string;
   proxyId?: string;
-  range: { start: Date; end: Date };
+  range: OverviewRange;
+  onRangeChange: (value: OverviewRangeValue) => void;
 }) {
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
 
@@ -275,13 +286,32 @@ function LiveTrafficCard({
           <Icon icon={ActivityIcon} size={16} className="text-secondary" />
           Live traffic
         </CardTitle>
+        <CardAction>
+          <Select value={range.value} onValueChange={(value) => onRangeChange(value as OverviewRangeValue)}>
+            <SelectTrigger
+              className="bg-card h-8 w-auto gap-2 text-xs"
+              aria-label="Live traffic time range"
+              data-e2e="compute-overview-range"
+              data-testid="compute-plugin-overview-range">
+              <Icon icon={HistoryIcon} size={14} className="text-muted-foreground" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {OVERVIEW_RANGE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value} className="text-xs">
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </CardAction>
       </CardHeader>
       <CardContent className="relative flex min-h-0 flex-1 flex-col">
         {rpsQuery ? (
           <MetricAreaChart
             title="Requests"
             query={rpsQuery}
-            timeRange={range}
+            timeRange={range.timeRange}
             format="requestsPerSecond"
             enabled
             embedded
@@ -357,63 +387,6 @@ function InstancesPanel({
   );
 }
 
-function LocationsPanel({
-  instances,
-  locations,
-  locationIndex,
-}: {
-  instances: Instance[];
-  locations: string[];
-  locationIndex: LocationIndex;
-}) {
-  const rows = (locations.length > 0 ? locations : [...new Set(instances.map((i) => i.location).filter(Boolean))]).map(
-    (name) => {
-      const atLocation = instances.filter((instance) => instance.location === name);
-      const healthy = atLocation.filter((instance) => instance.status === 'Available').length;
-      return {
-        name,
-        label: formatLocationName(name, locationIndex),
-        country: formatLocationCountry(name, locationIndex),
-        tooltip: formatLocationTooltip(name, locationIndex),
-        healthy,
-        total: atLocation.length,
-      };
-    }
-  );
-
-  return (
-    <Card size="sm" sectioned className="flex h-full flex-col overflow-hidden">
-      <CardHeader size="sm" bordered>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <Icon icon={MapPinIcon} size={16} className="text-secondary" />
-          Locations
-        </CardTitle>
-      </CardHeader>
-      <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
-        {rows.length === 0 ? (
-          <p className="text-muted-foreground px-4 py-6 text-sm">No locations yet</p>
-        ) : (
-          <ul className="divide-border divide-y">
-            {rows.map((row) => (
-              <li key={row.name} className="flex items-center gap-3 px-4 py-3" title={row.tooltip}>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm">{row.label}</span>
-                  {row.country ? (
-                    <span className="text-muted-foreground block truncate text-xs">{row.country}</span>
-                  ) : null}
-                </span>
-                <span className="text-muted-foreground text-xs tabular-nums">
-                  {row.total > 0 ? `${row.healthy}/${row.total}` : '—'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 function WorkloadLayoutShell({
   projectHref,
   workloadsHref,
@@ -427,6 +400,7 @@ function WorkloadLayoutShell({
   metricsHref: string;
   titleName: string;
 }) {
+  const { pathname } = useLocation();
   const { projectId, workloadName } = useParams<{ projectId: string; workloadName: string }>();
   const { data: workload, isLoading, error, refetch } = useWorkload(projectId, workloadName);
   const { data: instances = [] } = useWorkloadInstances(projectId, workloadName);
@@ -449,7 +423,12 @@ function WorkloadLayoutShell({
       metricsHref={metricsHref}
       titleName={workload?.name ?? titleName}
       workload={workload}>
-      {isLoading && <LoadingSkeleton />}
+      {isLoading &&
+        (pathname === metricsHref || pathname.startsWith(`${metricsHref}/`) ? (
+          <WorkloadMetricsSkeleton />
+        ) : (
+          <WorkloadOverviewSkeleton />
+        ))}
 
       {!isLoading && (error || !workload) && (
         <ErrorOrRestrictedState
@@ -494,10 +473,6 @@ function WorkloadOverview() {
     published,
     publishedLoading,
     locationIndex,
-    identityLabel,
-    identityLoading,
-    identityDenied,
-    metricKeys,
     instanceNames,
     overviewHref,
   } = useWorkloadOutlet();
@@ -539,17 +514,6 @@ function WorkloadOverview() {
         albLabel={albLabel}
       />
 
-      <WorkloadMetricsStrip
-        projectId={projectId}
-        proxyId={proxyId}
-        identityLabel={identityLabel}
-        instanceKeys={metricKeys}
-        range={range}
-        onRangeChange={setRangeValue}
-        identityLoading={identityLoading}
-        identityDenied={identityDenied}
-      />
-
       <TopologyCard
         projectId={projectId}
         workload={workload}
@@ -562,30 +526,30 @@ function WorkloadOverview() {
         albMetricsHref={albMetricsHrefFor}
       />
 
+      <div style={PANEL_STYLE}>
+        <RecentInstanceLogs
+          logsHref={logsHref}
+          projectId={projectId}
+          proxyId={proxyId}
+          albHostname={published?.hostname}
+          instanceNames={instanceNames}
+        />
+      </div>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div style={PANEL_STYLE}>
-          <LiveTrafficCard projectId={projectId} proxyId={proxyId} range={range.timeRange} />
+          <LiveTrafficCard
+            projectId={projectId}
+            proxyId={proxyId}
+            range={range}
+            onRangeChange={setRangeValue}
+          />
         </div>
         <div style={PANEL_STYLE}>
           <InstancesPanel
             instances={instances}
             locationIndex={locationIndex}
             onOpen={(name) => navigate(instanceHref(name))}
-          />
-        </div>
-        <div style={PANEL_STYLE}>
-          <LocationsPanel
-            instances={instances}
-            locations={workload.locations}
-            locationIndex={locationIndex}
-          />
-        </div>
-        <div style={PANEL_STYLE}>
-          <RecentInstanceLogs
-            logsHref={logsHref}
-            projectId={projectId}
-            proxyId={proxyId}
-            instanceNames={instanceNames}
           />
         </div>
       </div>

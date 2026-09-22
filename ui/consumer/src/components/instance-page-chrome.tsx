@@ -4,7 +4,7 @@
  * through the parent's `<Outlet />`.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
-import { instanceStatusToBadgeType, type Instance } from '../schema';
+import { type Instance } from '../schema';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -15,16 +15,8 @@ import {
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
-import { cn } from '@datum-cloud/datum-ui/utils';
 import { HomeIcon } from 'lucide-react';
-
-/** Matches `StatusBadge` / Badge `type` solid fill tokens. */
-const BADGE_TYPE_DOT: Record<ReturnType<typeof instanceStatusToBadgeType>, string> = {
-  success: 'bg-[var(--color-badge-success)]',
-  warning: 'bg-[var(--color-badge-warning)]',
-  danger: 'bg-[var(--color-badge-danger)]',
-  muted: 'bg-[var(--color-badge-muted)]',
-};
+import { Link } from 'react-router';
 
 export function instanceDetailTabs(
   overviewHref: string,
@@ -72,18 +64,22 @@ export function InstancePageChrome({
       <Breadcrumb className="min-w-0 overflow-x-auto">
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
-            <BreadcrumbLink href={projectHref}>
-              <Icon icon={HomeIcon} size={16} />
+            <BreadcrumbLink asChild>
+              <Link to={projectHref}>
+                <Icon icon={HomeIcon} size={16} />
+              </Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
-            <BreadcrumbLink href={workloadsHref}>Workloads</BreadcrumbLink>
+            <BreadcrumbLink asChild>
+              <Link to={workloadsHref}>Workloads</Link>
+            </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem className="min-w-0">
-            <BreadcrumbLink href={instancesHref} className="truncate">
-              {workloadName ?? 'Workload'}
+            <BreadcrumbLink asChild className="truncate">
+              <Link to={instancesHref}>{workloadName ?? 'Workload'}</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
@@ -94,37 +90,27 @@ export function InstancePageChrome({
       </Breadcrumb>
 
       <PageTitle
-        title={titleName}
-        titleClassName="break-all sm:break-normal"
+        title="Instance"
         className="flex-col items-start gap-3 sm:flex-row sm:items-center"
         description={
-          <span className="mt-1 flex items-center gap-2 text-sm" style={{ minHeight: '1.25rem' }}>
-            {instance ? (
+          <span className="break-all">
+            {titleName}
+            {locationLabel ? (
               <>
-                <span
-                  className={cn(
-                    'size-2 shrink-0 rounded-full',
-                    BADGE_TYPE_DOT[instanceStatusToBadgeType(instance.status)]
-                  )}
-                  aria-hidden
-                />
-                <span>{instance.status}</span>
-                {instance.location ? (
-                  <>
-                    <span className="text-muted-foreground" aria-hidden>
-                      ·
-                    </span>
-                    <span className="text-muted-foreground" title={locationTooltip ?? instance.location}>
-                      {locationLabel ?? instance.location}
-                    </span>
-                  </>
-                ) : null}
+                <span className="text-muted-foreground" aria-hidden>
+                  {' '}
+                  ·{' '}
+                </span>
+                <span className="text-muted-foreground" title={locationTooltip}>
+                  {locationLabel}
+                </span>
               </>
-            ) : (
+            ) : !instance ? (
               <span className="invisible" aria-hidden>
-                Pending
+                {' '}
+                · Location
               </span>
-            )}
+            ) : null}
           </span>
         }
       />

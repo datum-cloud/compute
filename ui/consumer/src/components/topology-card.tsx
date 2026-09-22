@@ -248,12 +248,14 @@ export function TopologyCard({
     () =>
       instances.map((instance) => {
         const type = instance.instanceType ? splitSlashValue(instance.instanceType).main : undefined;
+        const location = instance.location
+          ? formatLocationName(instance.location, locationIndex)
+          : undefined;
         return {
           id: instance.name,
           title: instance.name,
-          location: instance.location
-            ? formatLocationName(instance.location, locationIndex)
-            : undefined,
+          location,
+          group: location,
           status: instanceStatusToBadgeType(instance.status),
           statusLabel: instance.status,
           href: instanceHref(instance.name),
@@ -311,8 +313,9 @@ export function TopologyCard({
           <span className="text-muted-foreground text-xs">{summary}</span>
         </CardAction>
       </CardHeader>
-      {/* Inline min-height: the host does not compile `min-h-[22rem]`. */}
-      <CardContent padding="none" className="relative" style={{ minHeight: '22rem' }}>
+      {/* Inline height: the host does not compile `h-[28rem]`. The canvas fills
+          this frame and pans inside it, so the card does not grow with the tree. */}
+      <CardContent padding="none" className="relative" style={{ height: '28rem' }}>
         <TopologyCanvas
           workload={{
             id: workload.name,

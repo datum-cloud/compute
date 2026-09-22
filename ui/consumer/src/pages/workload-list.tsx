@@ -10,7 +10,8 @@ import { ComputeEnablementBanner } from "../components/compute-enablement-banner
 import { formatKpiValue } from "../components/metric-area-chart";
 import { CpuMemorySparks } from "../components/metric-sparkline";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
-import { ErrorOrRestrictedState, LoadingSkeleton } from "../components/states";
+import { WorkloadListCardsSkeleton, WorkloadListTableSkeleton } from "../components/skeletons";
+import { ErrorOrRestrictedState } from "../components/states";
 import {
   useComputeEntitlement,
   useCreateDemoWorkload,
@@ -53,7 +54,6 @@ import {
   CardTitle,
 } from "@datum-cloud/datum-ui/card";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
-import { Skeleton } from "@datum-cloud/datum-ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@datum-cloud/datum-ui/tabs";
 import { toast } from "@datum-cloud/datum-ui/toast";
 import { Icon } from "@datum-cloud/datum-ui/icons";
@@ -85,24 +85,6 @@ const WorkloadTable = lazy(() =>
     default: m.WorkloadTable,
   })),
 );
-
-function TableSkeleton() {
-  return (
-    <div className="space-y-6" aria-busy="true">
-      <Skeleton className="h-9 w-full sm:max-w-xs" />
-      <div className="overflow-hidden rounded-lg border">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="flex items-center gap-4 border-b px-4 py-3 last:border-b-0">
-            <Skeleton className="h-4 w-40" />
-            <Skeleton className="h-4 w-20" />
-            <Skeleton className="h-8 w-40" />
-            <Skeleton className="h-4 w-16" />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 type WorkloadView = "cards" | "table";
 const VIEW_STORAGE_KEY = "compute-plugin:workload-view";
@@ -699,8 +681,10 @@ export default function WorkloadList() {
       <Breadcrumb className="min-w-0 overflow-x-auto">
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
-            <BreadcrumbLink href={projectHref}>
-              <Icon icon={HomeIcon} size={16} />
+            <BreadcrumbLink asChild>
+              <Link to={projectHref}>
+                <Icon icon={HomeIcon} size={16} />
+              </Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
@@ -714,13 +698,14 @@ export default function WorkloadList() {
         title="Workloads"
         description="Groups of compute instances deployed across locations"
         actions={
-          !isLoading && computeEnabled && !error && (workloads?.length ?? 0) > 0 ? (
+          computeEnabled && !error && (isWorkloadsLoading || (workloads?.length ?? 0) > 0) ? (
             <ViewToggle view={view} onChange={setView} />
           ) : undefined
         }
       />
 
-      {isLoading && <LoadingSkeleton />}
+      {isLoading &&
+        (view === "table" ? <WorkloadListTableSkeleton /> : <WorkloadListCardsSkeleton />)}
 
       {!isEntitlementLoading && entitlementError && (
         <ErrorOrRestrictedState
@@ -779,7 +764,7 @@ export default function WorkloadList() {
             }
           />
           {view === "table" ? (
-            <Suspense fallback={<TableSkeleton />}>
+            <Suspense fallback={<WorkloadListTableSkeleton summary={false} />}>
               <WorkloadTable
                 workloads={workloads}
                 projectId={projectId}

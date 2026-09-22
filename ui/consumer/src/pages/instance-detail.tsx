@@ -5,7 +5,12 @@
  * tabs mounted while Overview / Logs / Metrics swap through `<Outlet />`.
  */
 import { InstancePageChrome } from '../components/instance-page-chrome';
-import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
+import {
+  InstanceLogsSkeleton,
+  InstanceMetricsSkeleton,
+  InstanceOverviewSkeleton,
+} from '../components/skeletons';
+import { ErrorOrRestrictedState } from '../components/states';
 import { useInstance, usePublishedUrl } from '../lib/api';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
@@ -33,6 +38,7 @@ function InstanceLayoutShell({
   titleName: string;
   workloadName?: string;
 }) {
+  const { pathname } = useLocation();
   const { projectId, instanceName } = useParams<{
     projectId: string;
     instanceName: string;
@@ -58,7 +64,14 @@ function InstanceLayoutShell({
       locationTooltip={
         instance?.location ? formatLocationTooltip(instance.location, locationIndex) : undefined
       }>
-      {isLoading && <LoadingSkeleton />}
+      {isLoading &&
+        (pathname === metricsHref || pathname.startsWith(`${metricsHref}/`) ? (
+          <InstanceMetricsSkeleton />
+        ) : pathname === logsHref || pathname.startsWith(`${logsHref}/`) ? (
+          <InstanceLogsSkeleton />
+        ) : (
+          <InstanceOverviewSkeleton />
+        ))}
 
       {!isLoading && (error || !instance) && (
         <ErrorOrRestrictedState

@@ -388,6 +388,7 @@ export default function InstanceOverview() {
           logsHref={logsHref}
           projectId={projectId}
           proxyId={proxyId}
+          albHostname={albHostname}
           instanceName={instance.name}
         />
       </div>
