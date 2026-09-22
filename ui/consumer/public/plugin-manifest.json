@@ -82,6 +82,9 @@
           "$codeRef": "TryDemoHomeCard"
         },
         "order": 50
+      },
+      "requirements": {
+        "serviceRef": "compute.datumapis.com"
       }
     },
     {
