@@ -14,10 +14,14 @@ import (
 )
 
 // SetupInstanceTypeWebhookWithManager sets up the webhook with the Manager.
-func SetupInstanceTypeWebhookWithManager(mgr ctrl.Manager, deprecationGracePeriod time.Duration) error {
+// catalog reads the cluster holding the instance type catalog, which is not the
+// cluster mgr runs against when discovery goes through Milo.
+func SetupInstanceTypeWebhookWithManager(
+	mgr ctrl.Manager, catalog client.Reader, deprecationGracePeriod time.Duration,
+) error {
 	return ctrl.NewWebhookManagedBy(mgr, &computev1alpha.InstanceType{}).
 		WithValidator(&instanceTypeValidator{
-			client:                 mgr.GetAPIReader(),
+			client:                 catalog,
 			deprecationGracePeriod: deprecationGracePeriod,
 		}).
 		Complete()
