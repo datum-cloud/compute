@@ -10,7 +10,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
@@ -79,9 +82,17 @@ func (r *InstanceTypeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *InstanceTypeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+// SetupWithManager runs the controller in mgr but watches InstanceTypes in
+// catalog, the cluster holding the instance type catalog, which is not the
+// cluster mgr runs against when discovery goes through Milo. r.Client must
+// point at catalog as well.
+func (r *InstanceTypeReconciler) SetupWithManager(mgr ctrl.Manager, catalog cluster.Cluster) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&computev1alpha.InstanceType{}).
+		Named("instancetype").
+		WatchesRawSource(source.Kind(
+			catalog.GetCache(),
+			&computev1alpha.InstanceType{},
+			&handler.TypedEnqueueRequestForObject[*computev1alpha.InstanceType]{},
+		)).
 		Complete(r)
 }
