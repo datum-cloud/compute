@@ -10,3 +10,4 @@ resources:
   - workload-deployment.yaml
   - instance.yaml
   - runtime-class.yaml
+  - instance-type.yaml
