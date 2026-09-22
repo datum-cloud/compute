@@ -41,6 +41,7 @@ rules:
   - compute.datumapis.com
   resources:
   - instances
+  - instancetypes
   - workloaddeployments
   - workloads
   verbs:
@@ -55,6 +56,7 @@ rules:
   - compute.datumapis.com
   resources:
   - instances/finalizers
+  - instancetypes/finalizers
   - workloaddeployments/finalizers
   - workloads/finalizers
   verbs:
@@ -63,6 +65,7 @@ rules:
   - compute.datumapis.com
   resources:
   - instances/status
+  - instancetypes/status
   - workloaddeployments/status
   - workloads/status
   verbs:

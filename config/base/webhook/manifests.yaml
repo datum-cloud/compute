@@ -36,6 +36,27 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-compute-datumapis-com-v1alpha-instancetype
+  failurePolicy: Fail
+  name: vinstancetype.kb.io
+  rules:
+  - apiGroups:
+    - compute.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - instancetypes
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-compute-datumapis-com-v1alpha-workload
   failurePolicy: Fail
   name: vworkload.kb.io

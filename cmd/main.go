@@ -126,7 +126,7 @@ func main() {
 	var federationContext string
 	var enableManagementControllers bool
 	var enableCellControllers bool
-
+	var instanceTypeDeprecationGracePeriod time.Duration
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -142,6 +142,8 @@ func main() {
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector).")
 	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", false,
 		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler).")
+	flag.DurationVar(&instanceTypeDeprecationGracePeriod, "instance-type-deprecation-grace-period", 60*24*time.Hour,
+		"Minimum time (e.g. 1440h) an InstanceType must remain Deprecated before it can be Disabled.")
 
 	var featureGatesFlag string
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
@@ -430,6 +432,13 @@ func main() {
 		}
 	}
 
+	if err = (&controller.InstanceTypeReconciler{
+		Client: mgr.GetLocalManager().GetClient(),
+	}).SetupWithManager(mgr.GetLocalManager()); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "InstanceType")
+		os.Exit(1)
+	}
+
 	// The fail-loud guard above ensures federationRestConfig is non-nil when
 	// management controllers are enabled; the nil check here is defensive.
 	if enableManagementControllers && federationRestConfig != nil {
@@ -467,6 +476,12 @@ func main() {
 	if serverConfig.WebhookServer != nil {
 		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr, serverConfig.LocationSource); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
+			os.Exit(1)
+		}
+		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
+			mgr.GetLocalManager(), instanceTypeDeprecationGracePeriod,
+		); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
 			os.Exit(1)
 		}
 	}
