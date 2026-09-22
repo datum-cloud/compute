@@ -10,8 +10,7 @@
     "WorkloadList": "./src/pages/workload-list.tsx",
     "WorkloadDetail": "./src/pages/workload-detail.tsx",
     "InstanceDetail": "./src/pages/instance-detail.tsx",
-    "TryDemoHomeCard": "./src/cards/try-demo-home-card.tsx",
-    "TryDemoHeaderHint": "./src/cards/try-demo-header-hint.tsx"
+    "TryDemoHomeCard": "./src/cards/try-demo-home-card.tsx"
   },
   "extensions": [
     {
@@ -80,15 +79,6 @@
         "title": "New In Compute",
         "component": {
           "$codeRef": "TryDemoHomeCard"
-        },
-        "order": 50
-      }
-    },
-    {
-      "type": "portal.header/project",
-      "properties": {
-        "component": {
-          "$codeRef": "TryDemoHeaderHint"
         },
         "order": 50
       }
