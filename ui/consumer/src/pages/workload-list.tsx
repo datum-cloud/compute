@@ -560,7 +560,7 @@ function WorkloadCard({
           href={href}
           type="secondary"
           theme="outline"
-          size="small"
+          size="xs"
           icon={<Icon icon={ArrowRightIcon} size={12} />}
           iconPosition="right"
           data-e2e="workload-card-link"
