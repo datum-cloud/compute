@@ -174,7 +174,7 @@ spec:
         apiGroup: resourcemanager.miloapis.com
         kind: Project
       unit: instance
-      defaultLimit: 10
+      defaultLimit: 100
     - name: compute-vcpus
       displayName: vCPUs
       description: Maximum total vCPUs (in millicores) allocatable to instances within a project.
@@ -183,7 +183,7 @@ spec:
         apiGroup: resourcemanager.miloapis.com
         kind: Project
       unit: millicore
-      defaultLimit: 40000
+      defaultLimit: 400000
     - name: compute-memory
       displayName: Memory
       description: Maximum total memory (in MiB) allocatable to instances within a project.
@@ -192,4 +192,4 @@ spec:
         apiGroup: resourcemanager.miloapis.com
         kind: Project
       unit: MiB
-      defaultLimit: 81920
+      defaultLimit: 819200
