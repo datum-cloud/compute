@@ -35,7 +35,7 @@ import { useLocationIndex, type LocationIndex } from "../lib/locations";
 import { HEALTH_DOT_CLASS, regionLabel, statusLabel } from "../lib/workload-presenters";
 import { workloadHealthToBadgeType, type Workload } from "../schema";
 import { Badge } from "@datum-cloud/datum-ui/badge";
-import { Button } from "@datum-cloud/datum-ui/button";
+import { Button, LinkButton } from "@datum-cloud/datum-ui/button";
 import { Dialog } from "@datum-cloud/datum-ui/dialog";
 import {
   Breadcrumb,
@@ -468,7 +468,15 @@ function WorkloadCard({
     >
       <CardHeader size="sm" bordered>
         <CardTitle className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-          <span className="truncate font-semibold">{workload.name}</span>
+          <Link
+            to={href}
+            // A utility only renders if the host already compiled it, and cloud-portal
+            // never generates focus-visible:underline — hence ring utilities for focus.
+            className="truncate font-semibold hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            data-e2e="workload-card-name-link"
+          >
+            {workload.name}
+          </Link>
           {tags.length > 0 && (
             <span className="text-muted-foreground shrink-0 text-xs font-normal">
               {tags.join(" · ")}
@@ -547,16 +555,18 @@ function WorkloadCard({
         <span>
           Updated {formatDistanceToNowStrict(updatedAt, { addSuffix: true })}
         </span>
-        <Link
-          to={href}
-          // A utility only renders if the host already compiled it, and cloud-portal
-          // never generates focus-visible:underline — hence ring utilities for focus.
-          className="flex items-center gap-1 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        <LinkButton
+          as={Link}
+          href={href}
+          type="secondary"
+          theme="outline"
+          size="small"
+          icon={<Icon icon={ArrowRightIcon} size={12} />}
+          iconPosition="right"
           data-e2e="workload-card-link"
         >
           View workload
-          <Icon icon={ArrowRightIcon} size={12} />
-        </Link>
+        </LinkButton>
       </CardFooter>
     </Card>
   );
