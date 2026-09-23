@@ -60,6 +60,34 @@ const (
 	//
 	// alpha: v0.1
 	RuntimeClasses featuregate.Feature = "RuntimeClasses"
+
+	// InstanceTypes controls whether the compute operator maintains and
+	// accepts instance types.
+	//
+	// The controller and webhook now read and maintain instance types in each
+	// project's own control plane, through the multicluster manager, rather
+	// than in one shared cluster. A project only carries the InstanceType CRD
+	// once the compute ServiceConfiguration's provisioning has reached it
+	// (datum-infra), so the two sides of this need to roll out together.
+	//
+	// The controller is not registered while the gate is off: unlike the
+	// webhook, its startup blocks on a cache sync, and a project without the
+	// CRD yet would wedge that sync (this is what crashed the manager in
+	// staging before the project-plane read was added).
+	//
+	// The webhook is always registered, so a stray write can never be
+	// silently admitted unvalidated. Instead it rejects every InstanceType
+	// create, update, and delete with an explained reason while the gate is
+	// off, the same way RuntimeClasses gates a selection instead of leaving
+	// it unenforced.
+	//
+	// The gate defaults to disabled so this can roll out to every environment
+	// safely; deployments opt in per-environment, once the datum-infra
+	// provisioning change has also reached that environment, with
+	// --feature-gates=InstanceTypes=true.
+	//
+	// alpha: v0.1
+	InstanceTypes featuregate.Feature = "InstanceTypes"
 )
 
 // MutableFeatureGate is the mutable feature gate for the compute operator.
@@ -77,6 +105,7 @@ func init() {
 	if err := MutableFeatureGate.Add(map[featuregate.Feature]featuregate.FeatureSpec{
 		NetworkingIntegration: {Default: false, PreRelease: featuregate.Alpha},
 		RuntimeClasses:        {Default: false, PreRelease: featuregate.Alpha},
+		InstanceTypes:         {Default: false, PreRelease: featuregate.Alpha},
 	}); err != nil {
 		panic(err)
 	}

@@ -169,6 +169,7 @@ func main() {
 	setupLog.Info("feature gates",
 		"NetworkingIntegration", features.FeatureGate.Enabled(features.NetworkingIntegration),
 		"RuntimeClasses", features.FeatureGate.Enabled(features.RuntimeClasses),
+		"InstanceTypes", features.FeatureGate.Enabled(features.InstanceTypes),
 	)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
@@ -434,7 +435,7 @@ func main() {
 
 	// Instance types live in project control planes, which only the management
 	// manager engages; cells read instance types but don't maintain them.
-	if enableManagementControllers {
+	if enableManagementControllers && features.FeatureGate.Enabled(features.InstanceTypes) {
 		if err = (&controller.InstanceTypeReconciler{}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "InstanceType")
 			os.Exit(1)
@@ -480,6 +481,8 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
 			os.Exit(1)
 		}
+		// Always registered, regardless of InstanceTypes: the gate is checked
+		// inside validation, which rejects every write with an explained reason
 		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
 			mgr, instanceTypeDeprecationGracePeriod,
 		); err != nil {

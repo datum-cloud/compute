@@ -11,11 +11,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/features"
 )
 
 const (
@@ -59,6 +61,8 @@ func newInstanceTypeValidator(seed ...*computev1alpha.InstanceType) *instanceTyp
 }
 
 func TestInstanceTypeValidation_Create(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, true)
+
 	tc := newInstanceTypeValidator()
 	v := tc.v
 	ctx := tc.ctx
@@ -158,6 +162,8 @@ func TestInstanceTypeValidation_Create(t *testing.T) {
 }
 
 func TestInstanceTypeValidation_Update(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, true)
+
 	oldInstanceType := &computev1alpha.InstanceType{
 		ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 		Spec: computev1alpha.InstanceTypeSpec{
@@ -317,6 +323,8 @@ func TestInstanceTypeValidation_Update(t *testing.T) {
 }
 
 func TestInstanceTypeValidation_Delete(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, true)
+
 	testType := &computev1alpha.InstanceType{
 		ObjectMeta: metav1.ObjectMeta{Name: testTypeName},
 		Spec: computev1alpha.InstanceTypeSpec{
@@ -384,6 +392,8 @@ func TestInstanceTypeValidation_Delete(t *testing.T) {
 }
 
 func TestInstanceTypeValidation_DeprecationGracePeriod(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, true)
+
 	const grace = 60 * 24 * time.Hour
 
 	// disabledType builds a Deprecated type to move to Disabled, with the given
@@ -472,6 +482,37 @@ func TestInstanceTypeValidation_DeprecationGracePeriod(t *testing.T) {
 
 // activeType builds an Active instance type that may be referenced as a
 // successor.
+// TestInstanceTypeValidation_GateOff verifies that the webhook itself, not
+// just the validation package it delegates to, rejects every write while the
+// InstanceTypes gate is off — exercising the same v.reader(ctx) lookup and
+// admission.Request plumbing a real request goes through.
+func TestInstanceTypeValidation_GateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, false)
+
+	tc := newInstanceTypeValidator()
+	valid := activeType(testTypeName)
+
+	t.Run("create", func(t *testing.T) {
+		_, err := tc.v.ValidateCreate(tc.ctx, valid)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "instance types are not enabled on this control plane")
+	})
+
+	t.Run("update", func(t *testing.T) {
+		newIT := valid.DeepCopy()
+		newIT.Spec.Resources.CPU = resource.MustParse("2000m") // would otherwise fail immutability
+		_, err := tc.v.ValidateUpdate(tc.ctx, valid, newIT)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "instance types are not enabled on this control plane")
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		_, err := tc.v.ValidateDelete(tc.ctx, valid)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "instance types are not enabled on this control plane")
+	})
+}
+
 func activeType(name string) *computev1alpha.InstanceType {
 	return &computev1alpha.InstanceType{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
