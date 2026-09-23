@@ -57,7 +57,6 @@ export default defineConfig({
         './WorkloadDetail': './src/pages/workload-detail.tsx',
         './InstanceDetail': './src/pages/instance-detail.tsx',
         './TryDemoHomeCard': './src/cards/try-demo-home-card.tsx',
-        './TryDemoHeaderHint': './src/cards/try-demo-header-hint.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
       // (react 19, react-router 8, react-query 5) — cloud-portal moved
