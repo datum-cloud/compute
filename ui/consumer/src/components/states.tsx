@@ -5,28 +5,12 @@
  * written fresh here since a plugin has no server loader. See `lib/api.ts`'s
  * `ApiError` for how a 403 response reaches these.
  *
- * `LoadingSkeleton` is content-only — pages must keep breadcrumbs / titles /
- * tabs mounted and only swap the data region for this skeleton. Never wrap
- * the whole page.
+ * Page chrome stays mounted. Loading placeholders live in `skeletons.tsx`.
  */
 import { ApiError } from '../lib/api';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { LockIcon, ServerCrashIcon } from 'lucide-react';
-
-/** Content-area placeholder only (fleet strip + cards). No page chrome. */
-export function LoadingSkeleton() {
-  return (
-    <div data-testid="compute-plugin-loading" className="flex flex-col gap-4">
-      <Skeleton className="h-14 w-full rounded-xl" />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Skeleton className="h-44 w-full rounded-xl" />
-        <Skeleton className="h-44 w-full rounded-xl" />
-      </div>
-    </div>
-  );
-}
 
 export function RestrictedState({ message }: { message: string }) {
   return (

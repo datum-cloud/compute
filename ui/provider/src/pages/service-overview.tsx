@@ -23,11 +23,20 @@
  * `serviceName` comes from `useParams()` resolving the ancestor route param
  * from staff-portal's service detail route — see `../lib/api.ts`'s header
  * comment for why this works with no extra prop/context plumbing.
+ *
+ * This page is mounted directly at `/admin/service-catalog/:name` (the
+ * reserved `path: ""` override convention), NOT under a `plugins/:slug/*`
+ * route, so unlike `fleet-workloads.tsx` it has no `:slug` route param to
+ * read — `PreviewRow`'s workload link instead resolves this plugin's own
+ * slug via `useOwnPluginSlug()` (`../lib/api.ts`), not a hardcoded literal:
+ * one has twice drifted from production here (first "workloads", then
+ * "compute" — see git history on this file).
  */
 import { StatusBadge } from '../components/detail-list';
 import { FailedProjectsNotice, FleetStats } from '../components/fleet-summary';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { useFleetHealth, type FleetWorkload } from '../lib/fleet-health';
+import { useOwnPluginSlug } from '../lib/api';
 import {
   useServiceCatalogDetails,
   type MeterMetric,
@@ -48,13 +57,13 @@ import { Link, useParams } from 'react-router';
 /** How many of the worst unhealthy workloads to preview — full list is the Workloads tab. */
 const PREVIEW_COUNT = 5;
 
-function PreviewRow({ entry }: { entry: FleetWorkload }) {
+function PreviewRow({ entry, slug }: { entry: FleetWorkload; slug: string | undefined }) {
   const { project, workload, message, statusSince } = entry;
   return (
     <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2 text-sm last:border-b-0">
       <StatusBadge type={healthToBadgeType(workload.health)}>{workload.health}</StatusBadge>
       <Link
-        to={`/customers/projects/${project.name}/plugins/workloads/${workload.name}`}
+        to={`/customers/projects/${project.name}/plugins/${slug ?? ''}/${workload.name}`}
         className="font-mono hover:underline">
         {workload.name}
       </Link>
@@ -267,6 +276,7 @@ export default function ServiceOverview() {
   const { name: serviceName } = useParams<{ name: string }>();
   const { data, isLoading, error, refetch } = useFleetHealth(serviceName);
   const { data: catalog, error: catalogError } = useServiceCatalogDetails(serviceName);
+  const slug = useOwnPluginSlug();
   const unhealthy = data?.workloads.filter((w) => w.workload.health !== 'Available') ?? [];
 
   return (
@@ -325,6 +335,7 @@ export default function ServiceOverview() {
                   <PreviewRow
                     key={`${entry.project.name}/${entry.workload.uid || entry.workload.name}`}
                     entry={entry}
+                    slug={slug}
                   />
                 ))}
               </div>

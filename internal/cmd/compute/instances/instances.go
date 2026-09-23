@@ -45,6 +45,7 @@ Use the describe subcommand for full details on a single instance.`,
 
   # Describe a single instance
   datumctl compute instances describe api-dfw-0`,
+		Args: util.NoPositionalArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runList(cmd, opts)
 		},

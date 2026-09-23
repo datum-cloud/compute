@@ -133,6 +133,15 @@ export function buildComputeLogQL(instanceName: string): string {
   return `{${COMPUTE_LOG_INSTANCE_LABEL}="${escapeLogQLQuoted(instanceName)}"}`;
 }
 
+/** Pin stdout for every replica with a single regexp matcher. */
+export function buildComputeLogQLMany(instanceNames: readonly string[]): string {
+  const unique = [...new Set(instanceNames.filter(Boolean))];
+  if (unique.length === 0) return "";
+  if (unique.length === 1) return buildComputeLogQL(unique[0]);
+  const re = unique.map(escapeLogQLRegexp).join("|");
+  return `{${COMPUTE_LOG_INSTANCE_LABEL}=~"${re}"}`;
+}
+
 function formatDurationLabel(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed || /[a-z]/i.test(trimmed)) return trimmed;
@@ -407,13 +416,12 @@ export function useAlbLogs(
   });
 }
 
-function useComputeLogs(
+function useComputeLogsQuery(
   projectId: string | undefined,
-  instanceName: string | undefined,
+  query: string,
   options: UseAlbLogsOptions,
 ): UseQueryResult<LogEntry[], ApiError> {
   const { timeRange, live = false, limit = ALB_LOGS_PAGE_LIMIT, enabled = true } = options;
-  const query = instanceName ? buildComputeLogQL(instanceName) : "";
   const windowKey = live ? "live" : `${timeRange.from}/${timeRange.to}`;
 
   return useQuery({
@@ -422,12 +430,11 @@ function useComputeLogs(
       "o11y-logs",
       "compute",
       projectId,
-      instanceName,
       query,
       windowKey,
       limit,
     ],
-    enabled: enabled && !!projectId && !!instanceName,
+    enabled: enabled && !!projectId && !!query,
     queryFn: () => {
       const range = live
         ? resolveLogTimeRange(timeRange.preset ? timeRange : lastThirtyMinutes())
@@ -446,10 +453,64 @@ function useComputeLogs(
   });
 }
 
+function useComputeLogs(
+  projectId: string | undefined,
+  instanceName: string | undefined,
+  options: UseAlbLogsOptions,
+): UseQueryResult<LogEntry[], ApiError> {
+  return useComputeLogsQuery(
+    projectId,
+    instanceName ? buildComputeLogQL(instanceName) : "",
+    options,
+  );
+}
+
 export interface UseInstanceLogsResult {
   data: LogEntry[];
   isLoading: boolean;
   error: ApiError | null;
+}
+
+/**
+ * ALB access logs plus stdout from every named instance, merged newest-first.
+ * Stdout is queried even when no HTTPProxy is attached.
+ */
+export function useWorkloadLogs(
+  projectId: string | undefined,
+  proxyId: string | undefined,
+  instanceNames: readonly string[],
+  options: UseAlbLogsOptions,
+): UseInstanceLogsResult {
+  const { search, enabled = true, ...rest } = options;
+  const computeQuery = buildComputeLogQLMany(instanceNames);
+  const albEnabled = enabled && !!proxyId;
+  const computeEnabled = enabled && !!computeQuery;
+
+  const alb = useAlbLogs(projectId, proxyId, { ...rest, search: undefined, enabled: albEnabled });
+  const compute = useComputeLogsQuery(projectId, computeQuery, {
+    ...rest,
+    search: undefined,
+    enabled: computeEnabled,
+  });
+
+  const merged = useMemo(
+    () => mergeLogEntries(alb.data, compute.data),
+    [alb.data, compute.data],
+  );
+  const data = useMemo(() => filterEntries(merged, {}, search), [merged, search]);
+  const error =
+    merged.length > 0
+      ? null
+      : ((compute.error as ApiError | null) ??
+        (albEnabled ? (alb.error as ApiError | null) : null) ??
+        null);
+
+  return {
+    data,
+    isLoading:
+      (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
+    error,
+  };
 }
 
 /**
@@ -479,16 +540,18 @@ export function useInstanceLogs(
     [alb.data, compute.data],
   );
   const data = useMemo(() => filterEntries(merged, {}, search), [merged, search]);
+  const error =
+    merged.length > 0
+      ? null
+      : ((compute.error as ApiError | null) ??
+        (albEnabled ? (alb.error as ApiError | null) : null) ??
+        null);
 
   return {
     data,
     isLoading:
       (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
-    // Only surface a stdout failure when there is no ALB stream to show;
-    // otherwise a broken stdout leg would blank access logs that loaded fine.
-    error:
-      (alb.error as ApiError | null) ??
-      (albEnabled ? null : (compute.error as ApiError | null)) ??
-      null,
+    // Prefer stdout when ALB fails; only surface an error when nothing loaded.
+    error,
   };
 }

@@ -1,0 +1,10 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceType
+metadata:
+  name: test-type-invalid
+spec:
+  resources:
+    cpu: 0
+    memory: 1Gi
+  lifecycle:
+    phase: Active

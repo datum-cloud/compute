@@ -3,23 +3,19 @@
  *
  * CPU/memory series are `datum_compute_instance_*`, federated into the portal
  * VictoriaMetrics with `resourcemanager_datumapis_com_project_name`. Federation
- * drops `pod`/`name`. Unikraft labels them with `instance_uuid` (same value as
- * `container_id`), which is the unikernel UUID, not Instance.metadata.uid.
- * There is no instance name on these series, so PromQL can only pin an instance
- * when that Unikraft UUID is known.
+ * drops `pod`/`name`. unikraft-provider#180 / infra#5699 join the Pod's
+ * `upstream.instance` label (Instance.metadata.name) onto those series as
+ * `resource_name`. Identity is that label; the probe below checks it is
+ * present before we query, so environments that have not rolled the rules
+ * still show an empty state instead of empty series.
  *
- * Per-instance CPU/memory is therefore intentionally OFF today: identity only
- * resolves if `Instance.metadata.uid` ever shows up as `instance_uuid` (the
- * probe below), which it currently does not. Until federation keeps `pod`/`name`
- * or Instance status exposes the Unikraft UUID, the UI shows requested
- * resources and "Coming soon" rather than guessing at series.
+ * There is no workload name on the series. Workload CPU/memory is the same
+ * selector with every instance name we already have from the API.
  *
  * ALB series match cloud-portal edge metrics: Envoy `gateway_name` = HTTPProxy
  * name. Those charts are workload-scoped, not per-instance.
  */
-import { PLUGIN_ID } from './api';
-import { fetchPrometheusLabelValues } from './prometheus';
-import { useQuery } from '@tanstack/react-query';
+import { isPrometheusDenied, usePrometheusLabelValues } from './prometheus';
 
 export const CPU_METRIC = 'datum_compute_instance_cpu_usage_seconds_total';
 export const MEMORY_METRIC = 'datum_compute_instance_memory_working_set_bytes';
@@ -28,8 +24,8 @@ export const ENVOY_RQ_TIME_METRIC = 'envoy_vhost_vcluster_upstream_rq_time_bucke
 
 export const REGION_LABEL = 'label_topology_kubernetes_io_region';
 
-/** Labels that can pin an instance series (see header: only `instance_uuid` survives federation). */
-export const INSTANCE_IDENTITY_LABELS = ['instance_uuid'] as const;
+/** Labels that can pin an instance series (see header). */
+export const INSTANCE_IDENTITY_LABELS = ['resource_name'] as const;
 
 export type InstanceIdentityLabel = (typeof INSTANCE_IDENTITY_LABELS)[number];
 
@@ -85,9 +81,6 @@ export function memoryUsageQuery(projectId: string, identity: InstanceMetricIden
   return `sum(${MEMORY_METRIC}${instanceSelector(projectId, identity)})`;
 }
 
-
-
-
 export function workloadCpuAvgQuery(
   projectId: string,
   label: InstanceIdentityLabel,
@@ -118,6 +111,36 @@ export function workloadMemoryAvgQuery(
   return `avg(${MEMORY_METRIC}${sel})`;
 }
 
+export function workloadMemorySumQuery(
+  projectId: string,
+  label: InstanceIdentityLabel,
+  names: readonly string[]
+): string | undefined {
+  const sel = scopedInstanceSelector(projectId, label, names);
+  if (!sel) return undefined;
+  return `sum(${MEMORY_METRIC}${sel})`;
+}
+
+/** One series per instance so the workload Metrics tab can show every replica. */
+export function workloadCpuByInstanceQuery(
+  projectId: string,
+  label: InstanceIdentityLabel,
+  names: readonly string[]
+): string | undefined {
+  const sel = scopedInstanceSelector(projectId, label, names);
+  if (!sel) return undefined;
+  return `sum by (${label}) (rate(${CPU_METRIC}${sel}[2m]))`;
+}
+
+export function workloadMemoryByInstanceQuery(
+  projectId: string,
+  label: InstanceIdentityLabel,
+  names: readonly string[]
+): string | undefined {
+  const sel = scopedInstanceSelector(projectId, label, names);
+  if (!sel) return undefined;
+  return `sum by (${label}) (${MEMORY_METRIC}${sel})`;
+}
 
 function albSelector(projectId: string, proxyId: string, extra: Record<string, string> = {}): string {
   const labels: string[] = [
@@ -177,40 +200,55 @@ export function albRpsByClassQuery(projectId: string, proxyId: string): string {
   );
 }
 
-/** Values to match against `instance_uuid` for a set of instances. */
+/** Instance names to match against `resource_name` for a set of instances. */
 export function identityValues(instances: readonly InstanceIdentitySource[]): string[] {
-  return [...new Set(instances.map((instance) => instance.uid).filter(Boolean))];
+  return [...new Set(instances.map((instance) => instance.name).filter(Boolean))];
+}
+
+export interface ProjectResourceIdentity {
+  /** Present when the join label exists on federated series. */
+  identityLabel: InstanceIdentityLabel | undefined;
+  resourceNames: string[];
+  isLoading: boolean;
+  isDenied: boolean;
 }
 
 /**
- * Pin an instance only when its Kubernetes UID appears as `instance_uuid` on
- * federated series. Unikraft currently uses a different UUID and does not
- * publish pod/name, so identity stays unset rather than widening to a region.
+ * Project-wide probe for `resource_name`. Workload and list views use this so
+ * one unswept replica cannot hide series for every other instance.
+ */
+export function useProjectResourceIdentity(
+  projectId: string | undefined,
+  options?: { enabled?: boolean }
+): ProjectResourceIdentity {
+  const match = projectId ? instanceSeriesMatch(projectId) : undefined;
+  const enabled = (options?.enabled ?? true) && !!projectId && !!match;
+  const names = usePrometheusLabelValues('resource_name', match, { enabled });
+  const isDenied = isPrometheusDenied(names.error);
+  return {
+    identityLabel: !isDenied && (names.data?.length ?? 0) > 0 ? 'resource_name' : undefined,
+    resourceNames: names.data ?? [],
+    isLoading: enabled && names.isLoading,
+    isDenied,
+  };
+}
+
+/**
+ * Pin an instance when its metadata.name appears as `resource_name` on
+ * federated `datum_compute_instance_*` series.
  */
 export function useInstanceMetricIdentity(
   projectId: string | undefined,
   instance: InstanceIdentitySource | undefined
-): { identity: InstanceMetricIdentity | undefined; isLoading: boolean } {
-  const match = projectId ? instanceSeriesMatch(projectId) : undefined;
-  const uuids = useQuery({
-    queryKey: [PLUGIN_ID, 'prometheus-labels', 'instance_uuid', match],
-    enabled: !!projectId && !!instance && !!match,
-    queryFn: () => fetchPrometheusLabelValues('instance_uuid', match as string),
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
-
-  if (!instance) {
-    return { identity: undefined, isLoading: false };
-  }
-
-  if (uuids.isLoading) {
-    return { identity: undefined, isLoading: true };
-  }
-
-  if (instance.uid && uuids.data?.includes(instance.uid)) {
-    return { identity: { label: 'instance_uuid', value: instance.uid }, isLoading: false };
-  }
-
-  return { identity: undefined, isLoading: false };
+): {
+  identity: InstanceMetricIdentity | undefined;
+  isLoading: boolean;
+  isDenied: boolean;
+} {
+  const probe = useProjectResourceIdentity(projectId, { enabled: !!instance });
+  const identity =
+    instance?.name && probe.resourceNames.includes(instance.name)
+      ? { label: 'resource_name' as const, value: instance.name }
+      : undefined;
+  return { identity, isLoading: probe.isLoading, isDenied: probe.isDenied };
 }

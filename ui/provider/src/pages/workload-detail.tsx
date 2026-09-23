@@ -13,14 +13,14 @@
  *
  * `projectName` comes from `useParams()` resolving the ancestor route param
  * from staff-portal's project-scoped plugin mount
- * (`/customers/projects/:projectName/plugins/workloads/:workloadName`) —
+ * (`/customers/projects/:projectName/plugins/:slug/:workloadName`) —
  * see `../lib/api.ts`'s header comment for why this works with no extra
  * prop/context plumbing.
  */
 import type { RawWorkload } from '../adapter';
 import { ConditionsTable } from '../components/conditions-table';
 import { DetailList, StatusBadge } from '../components/detail-list';
-import { formatKpiValue } from '../components/metric-area-chart';
+import { formatCardValue } from '../components/metric-area-chart';
 import { StatStrip, type Stat } from '../components/stat-strip';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { WorkloadLogsExplorer } from '../components/workload-logs';
@@ -36,7 +36,7 @@ import {
 import {
   albRpsQuery,
   identityValues,
-  useInstanceMetricIdentity,
+  useProjectResourceIdentity,
   workloadCpuAvgQuery,
   workloadMemoryAvgQuery,
 } from '../lib/metrics-queries';
@@ -380,23 +380,21 @@ export default function WorkloadDetail() {
   const { data: raw } = useWorkloadRaw(projectName, workloadName);
   const published = usePublishedUrl(projectName, workloadName);
   const instanceNames = useMemo(() => instances.map((instance) => instance.name), [instances]);
-  const { identity, isLoading: identityLoading } = useInstanceMetricIdentity(
-    projectName,
-    instances[0]
-  );
-  const metricKeys = useMemo(
-    () => (identity ? identityValues(instances) : []),
-    [instances, identity]
-  );
+  const {
+    identityLabel,
+    isLoading: identityLoading,
+    isDenied: identityDenied,
+  } = useProjectResourceIdentity(projectName);
+  const metricKeys = useMemo(() => identityValues(instances), [instances]);
   const chartsEnabled =
-    !identityLoading && !!identity && !!projectName && metricKeys.length > 0;
+    !identityLoading && !identityDenied && !!identityLabel && !!projectName && metricKeys.length > 0;
   const cpuQuery =
-    chartsEnabled && identity && projectName
-      ? workloadCpuAvgQuery(projectName, identity.label, metricKeys)
+    chartsEnabled && identityLabel && projectName
+      ? workloadCpuAvgQuery(projectName, identityLabel, metricKeys)
       : undefined;
   const memoryQuery =
-    chartsEnabled && identity && projectName
-      ? workloadMemoryAvgQuery(projectName, identity.label, metricKeys)
+    chartsEnabled && identityLabel && projectName
+      ? workloadMemoryAvgQuery(projectName, identityLabel, metricKeys)
       : undefined;
   const proxyId = published.data?.proxyName;
   const rpsQuery = projectName && proxyId ? albRpsQuery(projectName, proxyId) : undefined;
@@ -404,14 +402,10 @@ export default function WorkloadDetail() {
   const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled: chartsEnabled });
   const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
   const requestsValue = proxyId
-    ? (rps.data?.formattedValue ?? formatKpiValue(rps.data?.value, 'requestsPerSecond'))
+    ? formatCardValue(rps.data, 'requestsPerSecond')
     : '—';
-  const avgCpu = chartsEnabled
-    ? (cpu.data?.formattedValue ?? formatKpiValue(cpu.data?.value, 'number'))
-    : 'Coming soon';
-  const avgMemory = chartsEnabled
-    ? (memory.data?.formattedValue ?? formatKpiValue(memory.data?.value, 'bytes'))
-    : 'Coming soon';
+  const avgCpu = identityLoading ? 'Loading…' : formatCardValue(cpu.data, 'number');
+  const avgMemory = identityLoading ? 'Loading…' : formatCardValue(memory.data, 'bytes');
 
   const titleName = workload?.name ?? workloadName ?? 'Workload';
   const locationIndex = useLocationIndex(projectName);
@@ -475,8 +469,9 @@ export default function WorkloadDetail() {
             <WorkloadMetrics
               projectName={projectName}
               instanceKeys={metricKeys}
-              identityLabel={identity?.label}
+              identityLabel={identityLabel}
               identityLoading={identityLoading}
+              identityDenied={identityDenied}
               proxyId={proxyId}
             />
           </TabsContent>

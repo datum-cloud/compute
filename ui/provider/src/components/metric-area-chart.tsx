@@ -35,6 +35,27 @@ function formatBytes(value: number): string {
   return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+/** SI-scale CPU-style numbers so a 0.00008 domain does not label every tick 0.0. */
+function formatCompactNumber(value: number, forTick: boolean): string {
+  if (Math.abs(value) < 1e-12) return '0';
+  const sign = value < 0 ? '-' : '';
+  const n = Math.abs(value);
+
+  const scaled = (x: number, suffix: string) => {
+    const digits = x >= 10 ? 0 : forTick ? 1 : 2;
+    return `${sign}${Number(x.toFixed(digits))}${suffix}`;
+  };
+
+  if (n >= 1_000_000) return scaled(n / 1_000_000, 'M');
+  if (n >= 1000) return scaled(n / 1000, 'k');
+  if (n >= 10) return `${sign}${Math.round(n)}`;
+  if (n >= 1) return `${sign}${n.toFixed(forTick ? 1 : 2)}`;
+  if (n >= 0.01) return `${sign}${n.toFixed(2)}`;
+  if (n >= 1e-3) return scaled(n * 1e3, 'm');
+  if (n >= 1e-6) return scaled(n * 1e6, 'µ');
+  return `${sign}${n.toExponential(1)}`;
+}
+
 function formatAxisValue(value: number, format: MetricFormat): string {
   if (!Number.isFinite(value)) return '—';
   switch (format) {
@@ -50,7 +71,7 @@ function formatAxisValue(value: number, format: MetricFormat): string {
     case 'milliseconds-auto':
       return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value.toFixed(0)}ms`;
     default:
-      return value >= 10 ? value.toFixed(0) : value.toFixed(2);
+      return formatCompactNumber(value, false);
   }
 }
 
@@ -67,7 +88,7 @@ function formatAxisTick(value: number, format: MetricFormat): string {
     case 'milliseconds-auto':
       return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}`;
     default:
-      return value >= 10 ? value.toFixed(0) : value.toFixed(1);
+      return formatCompactNumber(value, true);
   }
 }
 
@@ -88,7 +109,9 @@ export function MetricAreaChart({
   color = 'var(--primary)',
   enabled = true,
   unavailable = false,
-  unavailableLabel = 'Coming soon',
+  unavailableLabel = 'No data',
+  pending = false,
+  denied = false,
   className,
   height = 224,
   embedded = false,
@@ -101,6 +124,8 @@ export function MetricAreaChart({
   enabled?: boolean;
   unavailable?: boolean;
   unavailableLabel?: string;
+  pending?: boolean;
+  denied?: boolean;
   className?: string;
   height?: number;
   /** Skip the Card chrome so this can sit inside another card. */
@@ -108,7 +133,7 @@ export function MetricAreaChart({
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const { data, isLoading, error } = usePrometheusChart(query, timeRange, {
-    enabled: enabled && !unavailable && !!query,
+    enabled: enabled && !unavailable && !denied && !pending && !!query,
   });
   const chartData = useMemo(() => (data ? transformForRecharts(data) : []), [data]);
   const series = data?.series ?? [];
@@ -130,7 +155,15 @@ export function MetricAreaChart({
 
   const body = (
     <div style={{ height }}>
-      {unavailable ? (
+      {denied ? (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
+          You don't have permission to view metrics
+        </div>
+      ) : pending ? (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
+          Loading…
+        </div>
+      ) : unavailable ? (
         <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
           {unavailableLabel}
         </div>
@@ -294,4 +327,13 @@ export function MetricAreaChart({
 export function formatKpiValue(value: number | undefined, format: MetricFormat): string {
   if (value === undefined || !Number.isFinite(value)) return '—';
   return formatAxisValue(value, format);
+}
+
+/** Portal card `formattedValue` rounds tiny CPU to "0"; keep local SI formatting. */
+export function formatCardValue(
+  data: { value?: number; formattedValue?: string } | undefined,
+  format: MetricFormat
+): string {
+  if (format === 'number') return formatKpiValue(data?.value, format);
+  return data?.formattedValue ?? formatKpiValue(data?.value, format);
 }

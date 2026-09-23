@@ -126,7 +126,7 @@ func main() {
 	var federationContext string
 	var enableManagementControllers bool
 	var enableCellControllers bool
-
+	var instanceTypeDeprecationGracePeriod time.Duration
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -142,6 +142,8 @@ func main() {
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector).")
 	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", false,
 		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler).")
+	flag.DurationVar(&instanceTypeDeprecationGracePeriod, "instance-type-deprecation-grace-period", 60*24*time.Hour,
+		"Minimum time (e.g. 1440h) an InstanceType must remain Deprecated before it can be Disabled.")
 
 	var featureGatesFlag string
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
@@ -263,6 +265,15 @@ func main() {
 	}
 
 	setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
+
+	catalogCluster, err := newCatalogCluster(serverConfig, deploymentCluster, scheme)
+	if err != nil {
+		setupLog.Error(err, "unable to set up instance type catalog cluster")
+		os.Exit(1)
+	}
+	if catalogCluster != deploymentCluster {
+		runnables = append(runnables, catalogCluster)
+	}
 
 	ctx := ctrl.SetupSignalHandler()
 
@@ -430,6 +441,16 @@ func main() {
 		}
 	}
 
+	// The catalog is a management-plane concern; cells only read instance types.
+	if enableManagementControllers {
+		if err = (&controller.InstanceTypeReconciler{
+			Client: catalogCluster.GetClient(),
+		}).SetupWithManager(mgr.GetLocalManager(), catalogCluster); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InstanceType")
+			os.Exit(1)
+		}
+	}
+
 	// The fail-loud guard above ensures federationRestConfig is non-nil when
 	// management controllers are enabled; the nil check here is defensive.
 	if enableManagementControllers && federationRestConfig != nil {
@@ -467,6 +488,12 @@ func main() {
 	if serverConfig.WebhookServer != nil {
 		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr, serverConfig.LocationSource); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
+			os.Exit(1)
+		}
+		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
+			mgr.GetLocalManager(), catalogCluster.GetAPIReader(), instanceTypeDeprecationGracePeriod,
+		); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
 			os.Exit(1)
 		}
 	}
@@ -528,6 +555,30 @@ func main() {
 		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
+}
+
+// newCatalogCluster returns the cluster holding the instance type catalog. The
+// catalog is platform-wide rather than owned by a project, so through Milo it
+// lives in Milo's root control plane (where compute's CRDs are installed), not
+// in the cluster this manager runs in, which carries no compute CRDs at all.
+func newCatalogCluster(
+	serverConfig config.WorkloadOperator,
+	deploymentCluster cluster.Cluster,
+	scheme *runtime.Scheme,
+) (cluster.Cluster, error) {
+	if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo {
+		return deploymentCluster, nil
+	}
+
+	rootRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+	}
+
+	return cluster.New(rootRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+		o.Cache.DefaultTransform = cache.TransformStripManagedFields()
+	})
 }
 
 func initializeClusterDiscovery(

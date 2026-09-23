@@ -1,0 +1,22 @@
+# Instance types are an operator-managed catalog, not a customer-authored
+# resource (see protected-resources/instance-type.yaml), so write access is
+# its own narrow, staff-only role rather than folded into compute-admin:
+# bound to the InstanceType kind specifically for the staff-users group (see
+# datum-infra's staff-compute-instancetype-admin PolicyBinding), not granted
+# to customers at any tier.
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: compute.datumapis.com-instancetype-staff-admin
+  annotations:
+    kubernetes.io/display-name: Instance Type Staff Admin
+    kubernetes.io/description: "Staff-only: manage the instance type catalog (create, update, retire)"
+spec:
+  launchStage: Beta
+  inheritedRoles:
+    - name: compute.datumapis.com-instancetype-viewer
+  includedPermissions:
+    - compute.datumapis.com/instancetypes.create
+    - compute.datumapis.com/instancetypes.update
+    - compute.datumapis.com/instancetypes.patch
+    - compute.datumapis.com/instancetypes.delete

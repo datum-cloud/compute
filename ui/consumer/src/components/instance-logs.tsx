@@ -1,11 +1,11 @@
 /**
  * Instance log surfaces built on `@datum-cloud/datum-ui/logs`.
  *
- * - {@link RecentInstanceLogs} — ALB-style live feed on Overview
+ * - {@link RecentInstanceLogs} — live feed on Overview (stdout, plus ALB when published)
  * - {@link InstanceLogsExplorer} — full explorer for the Logs tab
  *
- * When the workload has a published HTTPProxy, the table merges ALB access
- * logs with instance stdout. Stdout is still queried without one.
+ * Instance stdout is always queried. ALB access logs are merged in when the
+ * workload has a published HTTPProxy.
  */
 import { ApiError } from '../lib/api';
 import {
@@ -14,9 +14,10 @@ import {
   filterCombinedLogs,
   LOG_SOURCE_ALB,
   useInstanceLogs,
+  useWorkloadLogs,
 } from '../lib/o11y-logs';
 import { Badge } from '@datum-cloud/datum-ui/badge';
-import { Button } from '@datum-cloud/datum-ui/button';
+import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import {
   Card,
   CardAction,
@@ -26,7 +27,6 @@ import {
   CardTitle,
 } from '@datum-cloud/datum-ui/card';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
-import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import {
   httpStatusBadgeType,
@@ -80,21 +80,55 @@ const EXPLORER_COLUMNS: readonly LogColumnSpec[] = [
 
 const ROW_LIMIT = ALB_LOGS_PREVIEW_LIMIT;
 
-const UNPUBLISHED_TITLE = 'No load balancer logs';
-const UNPUBLISHED_SUBTITLE =
-  'ALB access logs appear here when this workload is published on a public URL. Instance stdout still shows on the Logs tab.';
-const DENIED_MESSAGE = "You don't have permission to view load balancer logs.";
+const NO_LOGS_TITLE = 'No logs';
+const DENIED_MESSAGE = "You don't have permission to view logs.";
 
-function UnpublishedLogs({ className }: { className?: string }) {
+/** Illustration empty state. `h-full` overrides EmptyContent's fixed `h-48` so it fills the card. */
+function NoLogs({ className }: { className?: string }) {
   return (
-    <EmptyContent
-      title={UNPUBLISHED_TITLE}
-      subtitle={UNPUBLISHED_SUBTITLE}
-      size="sm"
-      variant="dashed"
-      className={className}
-    />
+    <div className={cn('flex h-full min-h-0 flex-1', className)} style={{ borderRadius: 0 }}>
+      <EmptyContent title={NO_LOGS_TITLE} size="sm" variant="minimal" className="h-full w-full flex-1" />
+    </div>
   );
+}
+
+/** Same first-request prompt as the cloud-portal ALB overview logs card. */
+function AlbLogsEmpty({ hostname }: { hostname: string }) {
+  const command = `curl -I https://${hostname}/`;
+  const [copied, copy] = useCopyToClipboard();
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center">
+      <span className="bg-muted flex size-10 items-center justify-center rounded-full">
+        <Icon icon={RadioIcon} size={18} className="text-muted-foreground" aria-hidden="true" />
+      </span>
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">Waiting for the first request…</p>
+        <p className="text-muted-foreground max-w-xs text-xs">
+          Send a test request and it will appear here live.
+        </p>
+      </div>
+      <div className="bg-muted/60 border-border flex w-full max-w-sm items-center gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-left">
+        <code className="min-w-0 flex-1 font-mono text-xs break-all">{command}</code>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-md"
+          aria-label="Copy test request command"
+          onClick={() => void copy(command, { withToast: true })}>
+          <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LogsEmpty({ hostname, className }: { hostname?: string; className?: string }) {
+  if (hostname) return <AlbLogsEmpty hostname={hostname} />;
+  return <NoLogs className={className} />;
+}
+
+function isLogsDenied(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
 }
 
 function relativeAge(date: Date): string {
@@ -106,18 +140,6 @@ function relativeAge(date: Date): string {
     .replace(/ days?/, 'd')} ago`;
 }
 
-function IdleChip() {
-  return (
-    <Badge
-      type="muted"
-      theme="solid"
-      className="h-5 gap-1.5 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap">
-      <span className="bg-muted-foreground/60 size-1.5 rounded-full" aria-hidden="true" />
-      Idle
-    </Badge>
-  );
-}
-
 function LivePulse() {
   return (
     <span
@@ -127,43 +149,6 @@ function LivePulse() {
       <span className="size-2.5 rounded-full shadow-[0_0_0_3px_rgba(34,197,94,0.4)]" />
       <span className="absolute size-2.5 animate-pulse rounded-full bg-green-500" />
     </span>
-  );
-}
-
-function PreviewEmpty({
-  hostname,
-}: {
-  hostname?: string;
-}) {
-  const [copied, copy] = useCopyToClipboard();
-  const testCommand = hostname ? `curl -I https://${hostname}/` : null;
-
-  return (
-    <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center">
-      <span className="bg-muted flex size-10 items-center justify-center rounded-full">
-        <Icon icon={RadioIcon} size={18} className="text-muted-foreground" aria-hidden="true" />
-      </span>
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium">Waiting for the first request…</p>
-        <p className="text-muted-foreground max-w-xs text-xs">
-          Send a test request and it will appear here live.
-        </p>
-      </div>
-      {testCommand ? (
-        <div className="bg-muted/60 border-border flex w-full max-w-sm items-center gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-left">
-          <code className="min-w-0 flex-1 font-mono text-xs break-all">{testCommand}</code>
-          <Button
-            type="quaternary"
-            theme="borderless"
-            size="xs"
-            className="text-muted-foreground size-6 shrink-0 p-0"
-            aria-label="Copy test request command"
-            onClick={() => void copy(testCommand, { withToast: true })}>
-            <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
-          </Button>
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -227,34 +212,42 @@ function RequestRow({ entry, logsHref }: { entry: LogEntry; logsHref: string }) 
   );
 }
 
-/** ALB-style live feed for the instance Overview card. */
+/** Live feed for instance and workload Overview cards. */
 export function RecentInstanceLogs({
   logsHref,
   projectId,
   proxyId,
-  instanceName,
   albHostname,
+  instanceName,
+  instanceNames,
   className,
 }: {
   logsHref: string;
   projectId?: string;
   proxyId?: string;
-  instanceName?: string;
+  /** Set when a load balancer is attached. Empty results then show the curl prompt. */
   albHostname?: string;
+  instanceName?: string;
+  instanceNames?: readonly string[];
   className?: string;
 }) {
   const [timeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
-  const logsQuery = useInstanceLogs(projectId, proxyId, instanceName, {
+  const names = useMemo(
+    () => instanceNames ?? (instanceName ? [instanceName] : []),
+    [instanceName, instanceNames]
+  );
+  const logsQuery = useWorkloadLogs(projectId, proxyId, names, {
     timeRange,
     limit: ROW_LIMIT,
-    live: !!proxyId,
-    enabled: !!proxyId,
+    live: true,
+    enabled: names.length > 0 || !!proxyId,
   });
 
-  const denied = logsQuery.error instanceof ApiError && logsQuery.error.status === 403;
+  const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
   const entries = (logsQuery.data ?? []).slice(0, ROW_LIMIT);
-  const empty = !logsQuery.isLoading && !denied && !errorMessage && entries.length === 0;
+  const waitingForRequest =
+    !!albHostname && !logsQuery.isLoading && !denied && !errorMessage && entries.length === 0;
 
   return (
     <Card
@@ -265,9 +258,17 @@ export function RecentInstanceLogs({
       <CardHeader size="sm" bordered>
         <CardTitle className="flex items-center gap-2 text-sm">
           <Icon icon={LogsIcon} size={16} className="text-secondary" />
-          Live requests
+          Logs
           {entries.length > 0 ? <LivePulse /> : null}
-          {proxyId && empty ? <IdleChip /> : null}
+          {waitingForRequest ? (
+            <Badge
+              type="muted"
+              theme="solid"
+              className="h-5 gap-1.5 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap">
+              <span className="bg-muted-foreground/60 size-1.5 rounded-full" aria-hidden="true" />
+              Idle
+            </Badge>
+          ) : null}
         </CardTitle>
         <CardDescription className="text-xs">Most recent · last 30 min</CardDescription>
         <CardAction>
@@ -276,10 +277,8 @@ export function RecentInstanceLogs({
           </Link>
         </CardAction>
       </CardHeader>
-      <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
-        {!proxyId ? (
-          <UnpublishedLogs className="min-h-48 flex-1" />
-        ) : denied ? (
+      <CardContent padding="none" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {denied ? (
           <EmptyContent
             title="Access restricted"
             subtitle={DENIED_MESSAGE}
@@ -293,10 +292,10 @@ export function RecentInstanceLogs({
           </div>
         ) : errorMessage ? (
           <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm">
-            Unable to load recent requests.
+            Unable to load logs.
           </div>
         ) : entries.length === 0 ? (
-          <PreviewEmpty hostname={albHostname} />
+          <LogsEmpty hostname={albHostname} className="min-h-48" />
         ) : (
           <ul className="divide-border divide-y">
             {entries.map((entry) => (
@@ -346,15 +345,15 @@ export function InstanceLogsExplorer({
   );
   const facets = useMemo(() => combinedLogFacets(logsQuery.data ?? []), [logsQuery.data]);
 
-  const denied = logsQuery.error instanceof ApiError && logsQuery.error.status === 403;
+  const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
 
   if (!proxyId && !instanceName) {
     return (
       <div
-        className={cn('flex min-h-96 flex-col', className)}
+        className={cn('flex min-h-96 flex-1 flex-col', className)}
         data-testid="compute-plugin-instance-logs-explorer">
-        <UnpublishedLogs className="min-h-96 flex-1" />
+        <NoLogs className="min-h-96" />
       </div>
     );
   }

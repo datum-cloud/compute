@@ -1,0 +1,19 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: compute.datumapis.com-instancetype
+spec:
+  serviceRef:
+    name: "compute.datumapis.com"
+  kind: InstanceType
+  plural: instancetypes
+  singular: instancetype
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+    - updateStatus

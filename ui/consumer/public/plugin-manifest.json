@@ -49,7 +49,7 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": ":workloadName",
+        "path": ":workloadName/*",
         "component": {
           "$codeRef": "WorkloadDetail"
         }
@@ -81,6 +81,9 @@
           "$codeRef": "TryDemoHomeCard"
         },
         "order": 50
+      },
+      "requirements": {
+        "serviceRef": "compute.datumapis.com"
       }
     }
   ]

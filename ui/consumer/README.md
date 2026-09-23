@@ -19,14 +19,15 @@ mount root so URLs read `…/services/workloads/<workloadName>`, not
 
 - **Workloads** (`""`, the mount root) — list, switchable between cards and a
   table, with health, ready count, placements, activity sparkline, age.
-- **Workload detail** (`:workloadName`) — Overview tab: health strip, live
+- **Workload detail** (`:workloadName/*`) — Overview tab: health strip, live
   metric tiles, topology (load balancer → workload → instances), live traffic,
-  instances, locations and recent logs panels.
-- **Instance detail** (`:workloadName/instances/:instanceName`) —
+  instances, locations and recent logs panels. Metrics is nested at
+  `…/metrics`.
+- **Instance detail** (`:workloadName/instances/:instanceName/*`) —
   Overview, Metrics, and Logs. Overview shows live CPU/memory KPIs (and ALB
   request/p99/error KPIs when the workload is published on a URL). The Logs
-  tab is ALB access logs via the o11y Loki API when an HTTPProxy exists;
-  otherwise it stays empty. Manage/Activity remain placeholders.
+  tab always queries instance stdout; ALB access logs are merged in when an
+  HTTPProxy exists. Manage/Activity remain placeholders.
 
 No deploy/edit/delete forms. Activity stays out of scope until there is a
 real activity source. `CliBanner`/`SectionCard` (in `src/components/cli-section.tsx`)
@@ -132,11 +133,12 @@ server you want running:
   Optional `roadmapUrl` is documentation / holding-page CTA material, not the
   sidebar target.
 - **`portal.page/project`** ×3 — `""` (`WorkloadList`, at the mount root),
-  `:workloadName` (`WorkloadDetail`), and
+  `:workloadName/*` (`WorkloadDetail`), and
   `:workloadName/instances/:instanceName/*` (`InstanceDetail`
   layout). The instance layout owns breadcrumbs / title / tabs and nests
   Overview (index), Metrics (`…/metrics`), and Logs (`…/logs`) through
-  `<Outlet />`. Instance pages gate on `{compute.datumapis.com, instances, get}`.
+  `<Outlet />`. The workload splat does the same for Overview and Metrics.
+  Instance pages gate on `{compute.datumapis.com, instances, get}`.
   Overview embeds a last-30-minutes `Logs.Table` and live metric KPIs. The
   Logs tab mounts the full explorer against ALB access logs when the workload
   has a published HTTPProxy. Metrics query the portal `POST /api/prometheus`
