@@ -43,11 +43,17 @@ type instanceTypeTestCase struct {
 	ctx context.Context
 }
 
+// fixedReader stands in for the project control plane a request is admitted
+// into, returning c whatever the request.
+func fixedReader(c client.Reader) func(context.Context) (client.Reader, error) {
+	return func(context.Context) (client.Reader, error) { return c, nil }
+}
+
 // newInstanceTypeValidator builds the validator and context for a request
 // admitted against a client seeded with the given instance types.
 func newInstanceTypeValidator(seed ...*computev1alpha.InstanceType) *instanceTypeTestCase {
 	return &instanceTypeTestCase{
-		v:   &instanceTypeValidator{client: newWebhookClient(seed...)},
+		v:   &instanceTypeValidator{reader: fixedReader(newWebhookClient(seed...))},
 		ctx: admission.NewContextWithRequest(context.Background(), admission.Request{}),
 	}
 }
@@ -448,7 +454,7 @@ func TestInstanceTypeValidation_DeprecationGracePeriod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			v := &instanceTypeValidator{client: newWebhookClient(), deprecationGracePeriod: tt.grace}
+			v := &instanceTypeValidator{reader: fixedReader(newWebhookClient()), deprecationGracePeriod: tt.grace}
 			ctx := admission.NewContextWithRequest(context.Background(), admission.Request{})
 			if tt.request != nil {
 				ctx = admission.NewContextWithRequest(ctx, admission.Request{AdmissionRequest: *tt.request})

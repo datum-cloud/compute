@@ -266,15 +266,6 @@ func main() {
 
 	setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
 
-	catalogCluster, err := newCatalogCluster(serverConfig, deploymentCluster, scheme)
-	if err != nil {
-		setupLog.Error(err, "unable to set up instance type catalog cluster")
-		os.Exit(1)
-	}
-	if catalogCluster != deploymentCluster {
-		runnables = append(runnables, catalogCluster)
-	}
-
 	ctx := ctrl.SetupSignalHandler()
 
 	deploymentClusterClient := deploymentCluster.GetClient()
@@ -441,11 +432,10 @@ func main() {
 		}
 	}
 
-	// The catalog is a management-plane concern; cells only read instance types.
+	// Instance types live in project control planes, which only the management
+	// manager engages; cells read instance types but don't maintain them.
 	if enableManagementControllers {
-		if err = (&controller.InstanceTypeReconciler{
-			Client: catalogCluster.GetClient(),
-		}).SetupWithManager(mgr.GetLocalManager(), catalogCluster); err != nil {
+		if err = (&controller.InstanceTypeReconciler{}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "InstanceType")
 			os.Exit(1)
 		}
@@ -491,7 +481,7 @@ func main() {
 			os.Exit(1)
 		}
 		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
-			mgr.GetLocalManager(), catalogCluster.GetAPIReader(), instanceTypeDeprecationGracePeriod,
+			mgr, instanceTypeDeprecationGracePeriod,
 		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
 			os.Exit(1)
@@ -555,30 +545,6 @@ func main() {
 		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
-}
-
-// newCatalogCluster returns the cluster holding the instance type catalog. The
-// catalog is platform-wide rather than owned by a project, so through Milo it
-// lives in Milo's root control plane (where compute's CRDs are installed), not
-// in the cluster this manager runs in, which carries no compute CRDs at all.
-func newCatalogCluster(
-	serverConfig config.WorkloadOperator,
-	deploymentCluster cluster.Cluster,
-	scheme *runtime.Scheme,
-) (cluster.Cluster, error) {
-	if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo {
-		return deploymentCluster, nil
-	}
-
-	rootRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
-	if err != nil {
-		return nil, fmt.Errorf("unable to get discovery rest config: %w", err)
-	}
-
-	return cluster.New(rootRestConfig, func(o *cluster.Options) {
-		o.Scheme = scheme
-		o.Cache.DefaultTransform = cache.TransformStripManagedFields()
-	})
 }
 
 func initializeClusterDiscovery(
