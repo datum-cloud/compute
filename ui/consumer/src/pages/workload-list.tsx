@@ -214,7 +214,7 @@ function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
         title="List & inspect workloads"
         description="Confirm your workload deployed successfully and inspect its current health and placement status."
         commands={[
-          "datumctl compute workloads list",
+          "datumctl compute workloads",
           "datumctl compute workloads describe <name>",
         ]}
       />

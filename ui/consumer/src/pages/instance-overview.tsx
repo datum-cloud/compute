@@ -404,27 +404,17 @@ export default function InstanceOverview() {
         <CardContent>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
-              <span className="text-muted-foreground text-xs">Get instance</span>
-              <CommandBlock value={`datumctl compute instances get ${instance.name}`} />
+              <span className="text-muted-foreground text-xs">Describe instance</span>
+              <CommandBlock value={`datumctl compute instances describe ${instance.name}`} />
             </div>
             <div className="flex flex-col gap-1.5">
               <span className="text-muted-foreground text-xs">List instances</span>
               <CommandBlock
                 value={
                   workloadName
-                    ? `datumctl compute instances list --workload=${workloadName}`
-                    : 'datumctl compute instances list'
+                    ? `datumctl compute instances --workload=${workloadName}`
+                    : 'datumctl compute instances'
                 }
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <span className="text-muted-foreground text-xs">View logs</span>
-              <CommandBlock value={`datumctl compute instances logs ${instance.name} --follow`} />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <span className="text-muted-foreground text-xs">Describe</span>
-              <CommandBlock
-                value={`datumctl compute instances describe ${instance.name} --output yaml`}
               />
             </div>
           </div>
