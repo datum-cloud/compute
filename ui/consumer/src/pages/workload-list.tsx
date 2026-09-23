@@ -56,11 +56,14 @@ import {
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
 import { Tabs, TabsList, TabsTrigger } from "@datum-cloud/datum-ui/tabs";
 import { toast } from "@datum-cloud/datum-ui/toast";
+import { useCopyToClipboard } from "@datum-cloud/datum-ui/hooks";
 import { Icon } from "@datum-cloud/datum-ui/icons";
 import { cn } from "@datum-cloud/datum-ui/utils";
 import { formatDistanceToNowStrict } from "date-fns";
 import {
   ArrowRightIcon,
+  CheckIcon,
+  CopyIcon,
   HomeIcon,
   LayoutGridIcon,
   RocketIcon,
@@ -458,6 +461,7 @@ function WorkloadCard({
       : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
   const rps = usePrometheusCard(rpsQuery, "requestsPerSecond", { enabled: !!proxyId });
+  const [copied, copy] = useCopyToClipboard();
 
   return (
     <Card
@@ -468,15 +472,31 @@ function WorkloadCard({
     >
       <CardHeader size="sm" bordered>
         <CardTitle className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
-          <Link
-            to={href}
-            // A utility only renders if the host already compiled it, and cloud-portal
-            // never generates focus-visible:underline — hence ring utilities for focus.
-            className="truncate font-semibold hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-            data-e2e="workload-card-name-link"
-          >
-            {workload.name}
-          </Link>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Link
+              to={href}
+              // A utility only renders if the host already compiled it, and cloud-portal
+              // never generates focus-visible:underline — hence ring utilities for focus.
+              className="truncate font-semibold hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              data-e2e="workload-card-name-link"
+            >
+              {workload.name}
+            </Link>
+            <button
+              type="button"
+              className="text-muted-foreground inline-flex shrink-0 items-center focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              aria-label={copied ? "Copied" : `Copy ${workload.name}`}
+              title="Copy name"
+              onClick={() => void copy(workload.name, { withToast: true })}
+              data-e2e="workload-card-copy-name"
+            >
+              <Icon
+                icon={copied ? CheckIcon : CopyIcon}
+                size={12}
+                className={cn("shrink-0", !copied && "opacity-60")}
+              />
+            </button>
+          </span>
           {tags.length > 0 && (
             <span className="text-muted-foreground shrink-0 text-xs font-normal">
               {tags.join(" · ")}
