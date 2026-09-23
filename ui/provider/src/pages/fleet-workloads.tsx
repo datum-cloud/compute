@@ -13,13 +13,14 @@
  * sortable/paginated drill-down across every workload, not a second
  * dashboard.
  *
- * Built directly on datum-ui's headless `@datum-cloud/datum-ui/data-table`
- * (sort/paginate) rather than the raw `Table` primitives the project-scoped
- * pages use — staff-portal's own list pages (Organizations,
- * the Consumers tab on this same service page) are all built on this same
- * primitive via a host-only `ListTable` wrapper (`app/features/milo`) this
- * plugin can't import (not federated), so this hand-wires the pieces
- * `ListTable` composes, styled to match.
+ * Built on datum-ui's `DataTable.ListPanel`/`DataTable.ListPagination`
+ * (the shared "list table" surface, `density="compact"`) rather than the raw
+ * `Table` primitives the project-scoped pages use — staff-portal's own list
+ * pages (Organizations, the Consumers tab on this same service page) are
+ * built on the same `ListPanel` piece via a host-only `ListTable` wrapper
+ * (`app/features/milo`) this plugin can't import (not federated), but
+ * `ListPanel` itself ships in datum-ui, so both sides render identically
+ * without this plugin duplicating any styling.
  *
  * `serviceName` (the Service's resource name, e.g. "compute") and `slug`
  * (this plugin's own registered slug, e.g. "compute-datumapis-com" — NOT
@@ -63,12 +64,8 @@ const columnHelper = createColumnHelper<FleetWorkload>();
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function SortableHeader({ column, title }: { column: any; title: string }) {
-  return <DataTable.ColumnHeader column={column} title={title} />;
+  return <DataTable.ColumnHeader column={column} title={title} density="compact" />;
 }
-
-const cellClassName = 'px-3 py-2 text-sm';
-const headerCellClassName = 'px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide';
-const rowClassName = 'border-border border-b last:border-b-0 hover:bg-muted/40';
 
 function WorkloadsTable({
   workloads,
@@ -173,16 +170,9 @@ function WorkloadsTable({
       columns={columns as ColumnDef<FleetWorkload, unknown>[]}
       getRowId={(row) => `${row.project.name}/${row.workload.uid || row.workload.name}`}
       pageSize={25}
-      className="border-border flex flex-col gap-3 overflow-hidden rounded-lg border">
-      <DataTable.Content
-        headerCellClassName={headerCellClassName}
-        rowClassName={rowClassName}
-        cellClassName={cellClassName}
-        emptyMessage="No workloads."
-      />
-      <div className="px-2 pb-2">
-        <DataTable.Pagination pageSizes={[10, 25, 50, 100]} />
-      </div>
+      className="flex flex-col gap-3">
+      <DataTable.ListPanel search={false} emptyMessage="No workloads." />
+      <DataTable.ListPagination pageSizes={[10, 25, 50, 100]} resourceLabel="workloads" />
     </DataTable.Client>
   );
 }
