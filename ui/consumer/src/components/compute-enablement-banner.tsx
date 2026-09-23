@@ -23,9 +23,9 @@ const COPY: Record<BannerState, { title: string; description: string; icon: Reac
     cta: 'Enable Compute',
   },
   PendingApproval: {
-    title: 'Compute access is pending approval',
+    title: 'Your request is pending',
     description:
-      'A request to enable Compute for this project has been sent to the service provider and is awaiting approval.',
+      'Thanks for requesting access to Compute. We will be in touch shortly with a response.',
     icon: <Icon icon={ClockIcon} size={32} className="text-primary shrink-0" />,
     cta: 'Enable Compute',
   },

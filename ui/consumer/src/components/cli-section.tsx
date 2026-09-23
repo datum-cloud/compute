@@ -121,7 +121,7 @@ export function CliBanner({ title, description }: { title: string; description: 
       actions={
         <>
           <a
-            href="https://docs.datum.net/cli/install"
+            href="https://www.datum.net/docs/datumctl/quickstart"
             target="_blank"
             rel="noreferrer"
             className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors">
@@ -129,7 +129,7 @@ export function CliBanner({ title, description }: { title: string; description: 
             Install CLI
           </a>
           <a
-            href="https://docs.datum.net/cli"
+            href="https://www.datum.net/docs/datumctl/overview"
             target="_blank"
             rel="noreferrer"
             className="border-border hover:bg-muted inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors">
