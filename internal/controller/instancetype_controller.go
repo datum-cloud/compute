@@ -101,22 +101,6 @@ func (r *InstanceTypeReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			// Instance types live in project control planes, never in the
 			// management cluster this manager runs against.
 			mcbuilder.WithEngageWithLocalCluster(false),
-			// A project plane that does not serve the kind is skipped rather
-			// than watched: watching it would block this controller's cache
-			// sync, and with it the whole manager's startup.
-			mcbuilder.WithClusterFilter(servedKindClusterFilter("instance type", servesInstanceTypeKind)),
 		).
 		Complete(r)
-}
-
-// servesInstanceTypeKind reports whether a control plane serves InstanceType.
-func servesInstanceTypeKind(mapper meta.RESTMapper) (bool, error) {
-	gvk := computev1alpha.GroupVersion.WithKind("InstanceType")
-	if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
-		if meta.IsNoMatchError(err) || errors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
 }
