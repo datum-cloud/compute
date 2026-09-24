@@ -85,7 +85,7 @@ func TestResolveNetworkInterfaces(t *testing.T) {
 			name:      "update of a multi-network workload with a network is refused",
 			existing:  storedWorkloadOnNetworks(networkBackend, defaultNetworkName),
 			requested: networkBackend,
-			wantErr:   []string{"more than one network", "manifest", "-f"},
+			wantErr:   []string{"more than one network", wantManifest, "-f"},
 		},
 	}
 

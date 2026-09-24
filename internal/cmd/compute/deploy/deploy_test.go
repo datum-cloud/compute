@@ -34,7 +34,15 @@ const (
 	httpPortFlag = "--http-port=8080"
 	noHTTPFlag   = "--no-http"
 
+	// testInstanceType is the instance type the control plane records on a
+	// stored workload, matching the package default.
+	testInstanceType = "datumcloud/d1-standard-2"
+
+	// testManifestFile is the -f argument, standing in for any manifest.
+	testManifestFile = "workload.yaml"
+
 	wantPortRange = "between 1 and 65535"
+	wantManifest  = "manifest"
 )
 
 // TestValidateFlags is the migration matrix: which flag combinations the
@@ -75,12 +83,12 @@ func TestValidateFlags(t *testing.T) {
 		},
 		{
 			name:    "http-port with a manifest",
-			args:    []string{"-f", "workload.yaml", httpPortFlag},
+			args:    []string{"-f", testManifestFile, httpPortFlag},
 			wantErr: "--http-port cannot be combined with -f",
 		},
 		{
 			name:    "no-http with a manifest",
-			args:    []string{"-f", "workload.yaml", noHTTPFlag},
+			args:    []string{"-f", testManifestFile, noHTTPFlag},
 			wantErr: "--no-http cannot be combined with -f",
 		},
 		{
@@ -441,7 +449,7 @@ func workload() *computev1alpha.Workload {
 func workloadWithPorts(ports ...computev1alpha.NamedPort) computev1alpha.Workload {
 	w := workload()
 	w.Spec.Template.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{
-		Containers: []computev1alpha.SandboxContainer{{Name: "app", Image: "ghcr.io/acme/api:1", Ports: ports}},
+		Containers: []computev1alpha.SandboxContainer{{Name: containerName, Image: "ghcr.io/acme/api:1", Ports: ports}},
 	}
 	return *w
 }

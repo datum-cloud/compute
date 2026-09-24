@@ -20,7 +20,7 @@ const (
 // admission, with the runtime class and the interface defaults recorded.
 func storedWorkload(class string) *computev1alpha.Workload {
 	w := workloadWithPorts()
-	w.Spec.Template.Spec.Runtime.Resources = computev1alpha.InstanceRuntimeResources{InstanceType: "datumcloud/d1-standard-2"}
+	w.Spec.Template.Spec.Runtime.Resources = computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType}
 	w.Spec.Template.Spec.Runtime.Class = class
 
 	created, _ := resolveNetworkInterfaces(workload(), true, "")

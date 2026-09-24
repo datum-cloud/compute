@@ -16,14 +16,52 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+const (
+	// The configuration configuredWorkload carries, and the flags that
+	// produce it. Named after what each one is to the workload, since the
+	// tests assert on both the parsed edits and the resolved spec.
+	envLogLevel       = "LOG_LEVEL"
+	envAllowedOrigins = "ALLOWED_ORIGINS"
+	logLevelDebug     = "debug"
+
+	envFromConfigMap = "app-config"
+	envFromSecret    = "api-keys"
+
+	configMapVolume = "app-files"
+	secretVolume    = "tls-cert"
+	appMountPath    = "/etc/app"
+	tlsMountPath    = "/etc/tls"
+	orphanVolume    = "orphan"
+
+	labelTeam = "team"
+	testTeam  = "platform"
+
+	allowedOriginsValue = "a.example,b.example"
+
+	envFlag       = "--env"
+	configMapFlag = "--configmap"
+	labelFlag     = "--label"
+
+	envAFlag             = "--env=A=1"
+	envFromConfigMapFlag = "--env-from-configmap=app"
+	configMapMountFlag   = "--configmap=app-files:/etc/app"
+	secretMountFlag      = "--secret=tls-cert:/etc/tls"
+
+	// Fragments every rejection message is expected to carry, so a reworded
+	// error still has to say the same thing.
+	wantNameEmpty = "name is empty"
+	wantRepeated  = "more than once"
+	wantNotValid  = "not valid"
+)
+
 // configuredWorkload is a workload as the control plane returns it after a
 // deploy that set environment variables, imported a ConfigMap and a Secret,
 // mounted both, and labelled the workload: defaulted interface, recorded
 // runtime class, resource version, and the paired volumes and attachments an
 // applied spec always carries.
 func configuredWorkload() *computev1alpha.Workload {
-	appPath := "/etc/app"
-	tlsPath := "/etc/tls"
+	appPath := appMountPath
+	tlsPath := tlsMountPath
 
 	return &computev1alpha.Workload{
 		ObjectMeta: metav1.ObjectMeta{
@@ -31,32 +69,32 @@ func configuredWorkload() *computev1alpha.Workload {
 			Namespace:       util.ResourceNamespace,
 			UID:             types.UID("11111111-2222-3333-4444-555555555555"),
 			ResourceVersion: "4218",
-			Labels:          map[string]string{"team": "platform", "tier": "api"},
+			Labels:          map[string]string{labelTeam: testTeam, "tier": "api"},
 		},
 		Spec: computev1alpha.WorkloadSpec{
 			Template: computev1alpha.InstanceTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"team": "platform", "tier": "api"},
+					Labels: map[string]string{labelTeam: testTeam, "tier": "api"},
 				},
 				Spec: computev1alpha.InstanceSpec{
 					Runtime: computev1alpha.InstanceRuntimeSpec{
-						Resources: computev1alpha.InstanceRuntimeResources{InstanceType: "datumcloud/d1-standard-2"},
+						Resources: computev1alpha.InstanceRuntimeResources{InstanceType: testInstanceType},
 						Class:     classGeneralPurpose,
 						Sandbox: &computev1alpha.SandboxRuntime{
 							Containers: []computev1alpha.SandboxContainer{{
-								Name:  "app",
+								Name:  containerName,
 								Image: testImage,
 								Env: []corev1.EnvVar{
-									{Name: "LOG_LEVEL", Value: "info"},
-									{Name: "ALLOWED_ORIGINS", Value: "a.example,b.example"},
+									{Name: envLogLevel, Value: "info"},
+									{Name: envAllowedOrigins, Value: allowedOriginsValue},
 								},
 								EnvFrom: []computev1alpha.EnvFromSource{
-									{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: "app-config"}},
-									{Prefix: "SECRET_", SecretRef: &computev1alpha.SecretEnvSource{Name: "api-keys"}},
+									{ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: envFromConfigMap}},
+									{Prefix: "SECRET_", SecretRef: &computev1alpha.SecretEnvSource{Name: envFromSecret}},
 								},
 								VolumeAttachments: []computev1alpha.VolumeAttachment{
-									{Name: "app-files", MountPath: &appPath},
-									{Name: "tls-cert", MountPath: &tlsPath},
+									{Name: configMapVolume, MountPath: &appPath},
+									{Name: secretVolume, MountPath: &tlsPath},
 								},
 								Ports: []computev1alpha.NamedPort{{Name: httpPortName, Port: 8080}},
 							}},
@@ -70,17 +108,17 @@ func configuredWorkload() *computev1alpha.Workload {
 					}},
 					Volumes: []computev1alpha.InstanceVolume{
 						{
-							Name: "app-files",
+							Name: configMapVolume,
 							VolumeSource: computev1alpha.VolumeSource{
 								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: "app-files"},
+									LocalObjectReference: corev1.LocalObjectReference{Name: configMapVolume},
 								},
 							},
 						},
 						{
-							Name: "tls-cert",
+							Name: secretVolume,
 							VolumeSource: computev1alpha.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{SecretName: "tls-cert"},
+								Secret: &corev1.SecretVolumeSource{SecretName: secretVolume},
 							},
 						},
 					},
@@ -131,17 +169,17 @@ func TestParseConfigEditsSyntax(t *testing.T) {
 		{
 			name: "env set",
 			args: []string{"--env=LOG_LEVEL=debug"},
-			want: configEdits{env: []envEdit{{name: "LOG_LEVEL", value: "debug"}}},
+			want: configEdits{env: []envEdit{{name: envLogLevel, value: logLevelDebug}}},
 		},
 		{
 			name: "env value keeps its commas",
 			args: []string{"--env=ALLOWED_ORIGINS=a.example,b.example"},
-			want: configEdits{env: []envEdit{{name: "ALLOWED_ORIGINS", value: "a.example,b.example"}}},
+			want: configEdits{env: []envEdit{{name: envAllowedOrigins, value: allowedOriginsValue}}},
 		},
 		{
 			name: "env value may be empty",
 			args: []string{"--env=LOG_LEVEL="},
-			want: configEdits{env: []envEdit{{name: "LOG_LEVEL"}}},
+			want: configEdits{env: []envEdit{{name: envLogLevel}}},
 		},
 		{
 			name: "env value may contain an equals sign",
@@ -156,22 +194,22 @@ func TestParseConfigEditsSyntax(t *testing.T) {
 		{
 			name: "env remove",
 			args: []string{"--env=LOG_LEVEL-"},
-			want: configEdits{env: []envEdit{{name: "LOG_LEVEL", remove: true}}},
+			want: configEdits{env: []envEdit{{name: envLogLevel, remove: true}}},
 		},
 		{
 			name: "env repeats",
-			args: []string{"--env=A=1", "--env=B=2"},
+			args: []string{envAFlag, "--env=B=2"},
 			want: configEdits{env: []envEdit{{name: "A", value: "1"}, {name: "B", value: "2"}}},
 		},
 		{
 			name: "env from configmap",
 			args: []string{"--env-from-configmap=app-config"},
-			want: configEdits{envFrom: []envFromEdit{{kind: sourceConfigMap, name: "app-config"}}},
+			want: configEdits{envFrom: []envFromEdit{{kind: sourceConfigMap, name: envFromConfigMap}}},
 		},
 		{
 			name: "env from secret with a prefix",
 			args: []string{"--env-from-secret=api-keys:SECRET_"},
-			want: configEdits{envFrom: []envFromEdit{{kind: sourceSecret, name: "api-keys", prefix: "SECRET_"}}},
+			want: configEdits{envFrom: []envFromEdit{{kind: sourceSecret, name: envFromSecret, prefix: "SECRET_"}}},
 		},
 		{
 			name: "env from the same configmap under two prefixes",
@@ -184,42 +222,42 @@ func TestParseConfigEditsSyntax(t *testing.T) {
 		{
 			name: "env from remove",
 			args: []string{"--env-from-secret=api-keys-"},
-			want: configEdits{envFrom: []envFromEdit{{kind: sourceSecret, name: "api-keys", remove: true}}},
+			want: configEdits{envFrom: []envFromEdit{{kind: sourceSecret, name: envFromSecret, remove: true}}},
 		},
 		{
 			name: "configmap mount",
-			args: []string{"--configmap=app-files:/etc/app"},
-			want: configEdits{mounts: []mountEdit{{kind: sourceConfigMap, name: "app-files", mountPath: "/etc/app"}}},
+			args: []string{configMapMountFlag},
+			want: configEdits{mounts: []mountEdit{{kind: sourceConfigMap, name: configMapVolume, mountPath: appMountPath}}},
 		},
 		{
 			name: "secret mount",
-			args: []string{"--secret=tls-cert:/etc/tls"},
-			want: configEdits{mounts: []mountEdit{{kind: sourceSecret, name: "tls-cert", mountPath: "/etc/tls"}}},
+			args: []string{secretMountFlag},
+			want: configEdits{mounts: []mountEdit{{kind: sourceSecret, name: secretVolume, mountPath: tlsMountPath}}},
 		},
 		{
 			name: "mount path keeps its commas",
 			args: []string{"--configmap=app-files:/etc/a,b"},
-			want: configEdits{mounts: []mountEdit{{kind: sourceConfigMap, name: "app-files", mountPath: "/etc/a,b"}}},
+			want: configEdits{mounts: []mountEdit{{kind: sourceConfigMap, name: configMapVolume, mountPath: "/etc/a,b"}}},
 		},
 		{
 			name: "mount remove",
 			args: []string{"--configmap=app-files-"},
-			want: configEdits{mounts: []mountEdit{{kind: sourceConfigMap, name: "app-files", remove: true}}},
+			want: configEdits{mounts: []mountEdit{{kind: sourceConfigMap, name: configMapVolume, remove: true}}},
 		},
 		{
 			name: "label set",
 			args: []string{"--label=team=platform"},
-			want: configEdits{labels: []labelEdit{{key: "team", value: "platform"}}},
+			want: configEdits{labels: []labelEdit{{key: labelTeam, value: testTeam}}},
 		},
 		{
 			name: "qualified label key",
 			args: []string{"--label=example.com/team=platform"},
-			want: configEdits{labels: []labelEdit{{key: "example.com/team", value: "platform"}}},
+			want: configEdits{labels: []labelEdit{{key: "example.com/team", value: testTeam}}},
 		},
 		{
 			name: "label remove",
 			args: []string{"--label=team-"},
-			want: configEdits{labels: []labelEdit{{key: "team", remove: true}}},
+			want: configEdits{labels: []labelEdit{{key: labelTeam, remove: true}}},
 		},
 		{
 			name: "no config flags is no edits",
@@ -250,37 +288,37 @@ func TestParseConfigEditsRejects(t *testing.T) {
 		{
 			name:    "env without a value",
 			args:    []string{"--env=LOG_LEVEL"},
-			wantErr: []string{"--env", "LOG_LEVEL", "KEY=VALUE", "KEY-"},
+			wantErr: []string{envFlag, envLogLevel, "KEY=VALUE", "KEY-"},
 		},
 		{
 			name:    "env with an empty name",
 			args:    []string{"--env==debug"},
-			wantErr: []string{"--env", "name is empty"},
+			wantErr: []string{envFlag, wantNameEmpty},
 		},
 		{
 			name:    "env name is not a variable name",
 			args:    []string{"--env=log-level=debug"},
-			wantErr: []string{"--env", "log-level", "valid environment variable name"},
+			wantErr: []string{envFlag, "log-level", "valid environment variable name"},
 		},
 		{
 			name:    "env named twice",
-			args:    []string{"--env=A=1", "--env=A=2"},
-			wantErr: []string{"--env A", "more than once"},
+			args:    []string{envAFlag, "--env=A=2"},
+			wantErr: []string{"--env A", wantRepeated},
 		},
 		{
 			name:    "env set and removed in one deploy",
-			args:    []string{"--env=A=1", "--env=A-"},
-			wantErr: []string{"--env A", "more than once"},
+			args:    []string{envAFlag, "--env=A-"},
+			wantErr: []string{"--env A", wantRepeated},
 		},
 		{
 			name:    "env from with an empty name",
 			args:    []string{"--env-from-configmap=:PREFIX_"},
-			wantErr: []string{"--env-from-configmap", "name is empty"},
+			wantErr: []string{"--env-from-configmap", wantNameEmpty},
 		},
 		{
 			name:    "env from name is not a DNS label",
 			args:    []string{"--env-from-secret=Api_Keys"},
-			wantErr: []string{"--env-from-secret", "Api_Keys", "not valid"},
+			wantErr: []string{"--env-from-secret", "Api_Keys", wantNotValid},
 		},
 		{
 			name:    "env from prefix is not a C identifier",
@@ -289,68 +327,68 @@ func TestParseConfigEditsRejects(t *testing.T) {
 		},
 		{
 			name:    "env from repeated exactly",
-			args:    []string{"--env-from-configmap=app", "--env-from-configmap=app"},
-			wantErr: []string{"--env-from-configmap app", "more than once"},
+			args:    []string{envFromConfigMapFlag, envFromConfigMapFlag},
+			wantErr: []string{"--env-from-configmap app", wantRepeated},
 		},
 		{
 			name:    "mount without a path",
 			args:    []string{"--configmap=app-files"},
-			wantErr: []string{"--configmap", "NAME:/mount/path", "NAME-"},
+			wantErr: []string{configMapFlag, "NAME:/mount/path", "NAME-"},
 		},
 		{
 			name:    "mount with an empty name",
 			args:    []string{"--secret=:/etc/tls"},
-			wantErr: []string{"--secret", "name is empty"},
+			wantErr: []string{"--secret", wantNameEmpty},
 		},
 		{
 			name:    "mount with an empty path",
 			args:    []string{"--configmap=app-files:"},
-			wantErr: []string{"--configmap", "mount path is empty"},
+			wantErr: []string{configMapFlag, "mount path is empty"},
 		},
 		{
 			name:    "relative mount path",
 			args:    []string{"--configmap=app-files:etc/app"},
-			wantErr: []string{"--configmap", "etc/app", "must be absolute"},
+			wantErr: []string{configMapFlag, "etc/app", "must be absolute"},
 		},
 		{
 			name:    "mount name is not a DNS label",
 			args:    []string{"--secret=TLS_Cert:/etc/tls"},
-			wantErr: []string{"--secret", "TLS_Cert", "not valid"},
+			wantErr: []string{"--secret", "TLS_Cert", wantNotValid},
 		},
 		{
 			name:    "one source mounted at two paths",
 			args:    []string{"--configmap=app-files:/etc/a", "--configmap=app-files:/etc/b"},
-			wantErr: []string{"--configmap", "app-files", "more than once"},
+			wantErr: []string{configMapFlag, configMapVolume, wantRepeated},
 		},
 		{
 			name:    "two sources at one path",
 			args:    []string{"--configmap=a:/etc/app", "--configmap=b:/etc/app"},
-			wantErr: []string{"--configmap", "/etc/app", "own path"},
+			wantErr: []string{configMapFlag, appMountPath, "own path"},
 		},
 		{
 			name:    "label without a value",
 			args:    []string{"--label=team"},
-			wantErr: []string{"--label", "key=value", "key-"},
+			wantErr: []string{labelFlag, "key=value", "key-"},
 		},
 		{
 			name:    "label with an empty key",
 			args:    []string{"--label==platform"},
-			wantErr: []string{"--label", "key is empty"},
+			wantErr: []string{labelFlag, "key is empty"},
 		},
 		{
 			name:    "label key is not qualified",
 			args:    []string{"--label=a/b/c=platform"},
-			wantErr: []string{"--label", "not valid"},
+			wantErr: []string{labelFlag, wantNotValid},
 		},
 		{
 			name:    "label value is not a label value",
 			args:    []string{"--label=team=-platform"},
-			wantErr: []string{"--label", "-platform", "not valid"},
+			wantErr: []string{labelFlag, "-platform", wantNotValid},
 		},
 		{
 			name:    "label named twice",
 			args:    []string{"--label=team=a", "--label=team=b"},
-			wantErr: []string{"--label team", "more than once"},
+			wantErr: []string{"--label team", wantRepeated},
 		},
 	}
 
@@ -386,11 +424,11 @@ func TestConfigFlagsRejectedWithManifest(t *testing.T) {
 		arg       string
 		wantField string
 	}{
-		{arg: "--env=A=1", wantField: "containers[].env"},
-		{arg: "--env-from-configmap=app", wantField: "envFrom[].configMapRef"},
+		{arg: envAFlag, wantField: "containers[].env"},
+		{arg: envFromConfigMapFlag, wantField: "envFrom[].configMapRef"},
 		{arg: "--env-from-secret=api-keys", wantField: "envFrom[].secretRef"},
-		{arg: "--configmap=app-files:/etc/app", wantField: "volumes[].configMap"},
-		{arg: "--secret=tls-cert:/etc/tls", wantField: "volumes[].secret"},
+		{arg: configMapMountFlag, wantField: "volumes[].configMap"},
+		{arg: secretMountFlag, wantField: "volumes[].secret"},
 		{arg: "--label=team=platform", wantField: "spec.template.metadata.labels"},
 	}
 
@@ -447,7 +485,7 @@ func TestCarriesConfigForward(t *testing.T) {
 func TestCreateStartsEmpty(t *testing.T) {
 	cfg := configFrom(t, workload(), true, "--env=LOG_LEVEL=debug")
 
-	want := []corev1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}
+	want := []corev1.EnvVar{{Name: envLogLevel, Value: logLevelDebug}}
 	if !reflect.DeepEqual(cfg.env, want) {
 		t.Errorf("env on create = %+v, want %+v", cfg.env, want)
 	}
@@ -464,8 +502,8 @@ func TestMergeOverExisting(t *testing.T) {
 	cfg := configFrom(t, configuredWorkload(), false, "--env=LOG_LEVEL=debug", "--env=REGION=us-east-1")
 
 	want := []corev1.EnvVar{
-		{Name: "LOG_LEVEL", Value: "debug"},
-		{Name: "ALLOWED_ORIGINS", Value: "a.example,b.example"},
+		{Name: envLogLevel, Value: logLevelDebug},
+		{Name: envAllowedOrigins, Value: allowedOriginsValue},
 		{Name: "REGION", Value: "us-east-1"},
 	}
 	if !reflect.DeepEqual(cfg.env, want) {
@@ -483,19 +521,19 @@ func TestExplicitRemoval(t *testing.T) {
 		"--label=tier-",
 	)
 
-	if len(cfg.env) != 1 || cfg.env[0].Name != "ALLOWED_ORIGINS" {
+	if len(cfg.env) != 1 || cfg.env[0].Name != envAllowedOrigins {
 		t.Errorf("env after removing LOG_LEVEL = %+v, want only ALLOWED_ORIGINS", cfg.env)
 	}
-	if len(cfg.envFrom) != 1 || envFromName(cfg.envFrom[0]) != "app-config" {
+	if len(cfg.envFrom) != 1 || envFromName(cfg.envFrom[0]) != envFromConfigMap {
 		t.Errorf("envFrom after removing api-keys = %+v, want only app-config", cfg.envFrom)
 	}
-	if len(cfg.volumes) != 1 || cfg.volumes[0].Name != "tls-cert" {
+	if len(cfg.volumes) != 1 || cfg.volumes[0].Name != secretVolume {
 		t.Errorf("volumes after unmounting app-files = %+v, want only tls-cert", cfg.volumes)
 	}
-	if len(cfg.attachments) != 1 || cfg.attachments[0].Name != "tls-cert" {
+	if len(cfg.attachments) != 1 || cfg.attachments[0].Name != secretVolume {
 		t.Errorf("attachments after unmounting app-files = %+v, want only tls-cert", cfg.attachments)
 	}
-	wantLabels := map[string]string{"team": "platform"}
+	wantLabels := map[string]string{labelTeam: testTeam}
 	if !reflect.DeepEqual(cfg.templateLabels, wantLabels) || !reflect.DeepEqual(cfg.workloadLabels, wantLabels) {
 		t.Errorf("labels after removing tier = workload %v, template %v, want %v",
 			cfg.workloadLabels, cfg.templateLabels, wantLabels)
@@ -517,29 +555,29 @@ func TestRemovingWhatIsNotThere(t *testing.T) {
 // with: a configMap uses `name` and a secret uses `secretName`, and the two
 // are not interchangeable.
 func TestMountSourceAsymmetry(t *testing.T) {
-	cfg := configFrom(t, workload(), true, "--configmap=app-files:/etc/app", "--secret=tls-cert:/etc/tls")
+	cfg := configFrom(t, workload(), true, configMapMountFlag, secretMountFlag)
 
-	appPath := "/etc/app"
-	tlsPath := "/etc/tls"
+	appPath := appMountPath
+	tlsPath := tlsMountPath
 	wantVolumes := []computev1alpha.InstanceVolume{
 		{
-			Name: "app-files",
+			Name: configMapVolume,
 			VolumeSource: computev1alpha.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "app-files"},
+					LocalObjectReference: corev1.LocalObjectReference{Name: configMapVolume},
 				},
 			},
 		},
 		{
-			Name: "tls-cert",
+			Name: secretVolume,
 			VolumeSource: computev1alpha.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{SecretName: "tls-cert"},
+				Secret: &corev1.SecretVolumeSource{SecretName: secretVolume},
 			},
 		},
 	}
 	wantAttachments := []computev1alpha.VolumeAttachment{
-		{Name: "app-files", MountPath: &appPath},
-		{Name: "tls-cert", MountPath: &tlsPath},
+		{Name: configMapVolume, MountPath: &appPath},
+		{Name: secretVolume, MountPath: &tlsPath},
 	}
 
 	if !reflect.DeepEqual(cfg.volumes, wantVolumes) {
@@ -555,8 +593,8 @@ func TestMountSourceAsymmetry(t *testing.T) {
 // written together.
 func TestEveryVolumeIsAttached(t *testing.T) {
 	cases := [][]string{
-		{"--configmap=app-files:/etc/app"},
-		{"--secret=tls-cert:/etc/tls"},
+		{configMapMountFlag},
+		{secretMountFlag},
 		{"--configmap=a:/etc/a", "--secret=b:/etc/b", "--configmap=c:/etc/c"},
 		{"--configmap=app-files-"},
 		{"--secret=tls-cert:/srv/tls"},
@@ -603,7 +641,7 @@ func TestMountRemountKeepsThePair(t *testing.T) {
 		t.Fatalf("remount changed the volume count: %+v / %+v", cfg.volumes, cfg.attachments)
 	}
 	for _, a := range cfg.attachments {
-		if a.Name == "tls-cert" && *a.MountPath != "/srv/tls" {
+		if a.Name == secretVolume && *a.MountPath != "/srv/tls" {
 			t.Errorf("tls-cert mounted at %s, want /srv/tls", *a.MountPath)
 		}
 	}
@@ -636,7 +674,7 @@ func TestResolveContainerConfigRejects(t *testing.T) {
 			name:     "a new mount collides with a path already in use",
 			existing: configuredWorkload(),
 			args:     []string{"--configmap=extra:/etc/tls"},
-			wantErr:  []string{"/etc/tls", "tls-cert", "extra"},
+			wantErr:  []string{tlsMountPath, secretVolume, "extra"},
 		},
 	}
 
@@ -663,17 +701,17 @@ func TestUnattachedVolumesAreDropped(t *testing.T) {
 	existing := configuredWorkload()
 	existing.Spec.Template.Spec.Volumes = append(existing.Spec.Template.Spec.Volumes,
 		computev1alpha.InstanceVolume{
-			Name: "orphan",
+			Name: orphanVolume,
 			VolumeSource: computev1alpha.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "orphan"},
+					LocalObjectReference: corev1.LocalObjectReference{Name: orphanVolume},
 				},
 			},
 		})
 
 	cfg := configFrom(t, existing, false)
 	for _, v := range cfg.volumes {
-		if v.Name == "orphan" {
+		if v.Name == orphanVolume {
 			t.Fatalf("an unattached volume was carried forward: %+v", cfg.volumes)
 		}
 	}
@@ -686,7 +724,7 @@ func TestPlanConfigLines(t *testing.T) {
 	lines := strings.Join(planConfigLines(configFrom(t, configuredWorkload(), false, "--env=REGION=us-east-1")), "\n")
 
 	for _, want := range []string{
-		"Environment:", "3 variables", "LOG_LEVEL", "ALLOWED_ORIGINS", "REGION",
+		"Environment:", "3 variables", envLogLevel, envAllowedOrigins, "REGION",
 		"Environment from:", "configMap/app-config", "secret/api-keys as SECRET_*",
 		"Mounts:", "configMap/app-files → /etc/app", "secret/tls-cert → /etc/tls",
 		"Labels:", "team=platform", "tier=api",

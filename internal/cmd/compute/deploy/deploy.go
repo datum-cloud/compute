@@ -44,6 +44,15 @@ const (
 	// defaultNetworkName is the network a new workload's interface joins when
 	// --network is not set.
 	defaultNetworkName = "default"
+
+	// containerName is the name of the single container a flag deploy writes.
+	// It is fixed so a redeploy edits that container rather than appending a
+	// second one beside it.
+	containerName = "app"
+
+	// defaultInstanceType is the instance type a workload runs on when
+	// --instance-type is not set.
+	defaultInstanceType = "datumcloud/d1-standard-2"
 )
 
 // errPortRenamed is the one-release migration for --port. It is an error and
@@ -358,6 +367,48 @@ func resolveLocationSelector(opts *options) (*metav1.LabelSelector, error) {
 	return nil, nil
 }
 
+// specInputs carries the values deployFromFlags resolves before it rewrites
+// the workload spec.
+type specInputs struct {
+	instanceType      string
+	runtimeClass      string
+	networkInterfaces []computev1alpha.InstanceNetworkInterface
+	config            *containerConfig
+}
+
+// resolveSpecInputs resolves the parts of the spec that read the stored
+// workload: the instance type it runs on, its runtime class, the networks it
+// attaches to, and its container configuration with this deploy's edits
+// merged over what is already there.
+//
+// Merging rather than replacing is what keeps a routine image bump from
+// emptying a container's environment or unmounting its config. Resolving all
+// of it up front is what keeps a value the control plane refuses from being
+// reported after "Apply?" has already been answered.
+func resolveSpecInputs(workload *computev1alpha.Workload, creating bool, opts *options) (*specInputs, error) {
+	inputs := &specInputs{instanceType: opts.instanceType}
+	if inputs.instanceType == "" {
+		inputs.instanceType = defaultInstanceType
+	}
+
+	var err error
+	if inputs.runtimeClass, err = resolveRuntimeClass(workload, creating, opts.runtimeClass); err != nil {
+		return nil, err
+	}
+	if inputs.networkInterfaces, err = resolveNetworkInterfaces(workload, creating, opts.network); err != nil {
+		return nil, err
+	}
+
+	edits, err := parseConfigEdits(opts)
+	if err != nil {
+		return nil, err
+	}
+	if inputs.config, err = resolveContainerConfig(workload, creating, edits); err != nil {
+		return nil, err
+	}
+	return inputs, nil
+}
+
 func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) error {
 	project := util.ProjectFromCmd(cmd)
 	if project == "" {
@@ -369,10 +420,6 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	locationSelector, err := resolveLocationSelector(opts)
 	if err != nil {
 		return err
-	}
-	instanceType := opts.instanceType
-	if instanceType == "" {
-		instanceType = "datumcloud/d1-standard-2"
 	}
 
 	c, err := util.NewClient(project)
@@ -416,27 +463,14 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		httpPort = declaredHTTPPort(&workload)
 	}
 
-	// Checked before the plan and the prompt, because the control plane
-	// refuses a class change and saying so after "Apply?" wastes the answer.
-	runtimeClass, err := resolveRuntimeClass(&workload, creating, opts.runtimeClass)
+	inputs, err := resolveSpecInputs(&workload, creating, opts)
 	if err != nil {
 		return err
 	}
-	networkInterfaces, err := resolveNetworkInterfaces(&workload, creating, opts.network)
-	if err != nil {
-		return err
-	}
-	// Read off the fetched workload before the spec is rewritten, so this
-	// deploy's env, mounts, and labels are merged over what is already there
-	// rather than replacing it.
-	configEdits, err := parseConfigEdits(opts)
-	if err != nil {
-		return err
-	}
-	config, err := resolveContainerConfig(&workload, creating, configEdits)
-	if err != nil {
-		return err
-	}
+	runtimeClass := inputs.runtimeClass
+	networkInterfaces := inputs.networkInterfaces
+	config := inputs.config
+
 	// Checked once the workload is resolved, so a redeploy checks the network
 	// the workload is attached to and never offers to create "default" for a
 	// workload that is not on it.
@@ -450,7 +484,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	// Build spec.
 	tcp := corev1.ProtocolTCP
 	container := computev1alpha.SandboxContainer{
-		Name:              "app",
+		Name:              containerName,
 		Image:             opts.image,
 		Env:               config.env,
 		EnvFrom:           config.envFrom,
@@ -490,7 +524,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 			Spec: computev1alpha.InstanceSpec{
 				Runtime: computev1alpha.InstanceRuntimeSpec{
 					Resources: computev1alpha.InstanceRuntimeResources{
-						InstanceType: instanceType,
+						InstanceType: inputs.instanceType,
 					},
 					Sandbox: &computev1alpha.SandboxRuntime{
 						Containers: []computev1alpha.SandboxContainer{container},
