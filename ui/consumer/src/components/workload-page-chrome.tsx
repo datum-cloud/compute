@@ -3,8 +3,9 @@
  * Used by the splat layout at `:workloadName/*`.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
-import { workloadHealthToBadgeType, type Workload } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
+import { WorkloadStatusBadge } from './workload-status-badge';
+import type { Workload } from '../schema';
+import { Button } from '@datum-cloud/datum-ui/button';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -15,7 +16,7 @@ import {
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { HomeIcon } from 'lucide-react';
+import { HomeIcon, Trash2Icon } from 'lucide-react';
 import { Link } from 'react-router';
 
 export function workloadDetailTabs(overviewHref: string, metricsHref: string): PluginTab[] {
@@ -34,6 +35,7 @@ export function WorkloadPageChrome({
   metricsHref,
   titleName,
   workload,
+  onDelete,
   children,
 }: {
   projectHref: string;
@@ -42,6 +44,8 @@ export function WorkloadPageChrome({
   metricsHref: string;
   titleName: string;
   workload?: Workload | null;
+  /** Omitted when the user can't delete this workload — the button is hidden. */
+  onDelete?: () => void;
   children: React.ReactNode;
 }) {
   return (
@@ -75,9 +79,20 @@ export function WorkloadPageChrome({
         descriptionClassName="break-all"
         actions={
           workload ? (
-            <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
-              {workload.health}
-            </Badge>
+            <div className="flex items-center gap-2">
+              <WorkloadStatusBadge workload={workload} label={workload.health} dot={false} />
+              {onDelete && (
+                <Button
+                  type="danger"
+                  theme="outline"
+                  size="xs"
+                  icon={<Icon icon={Trash2Icon} size={12} />}
+                  onClick={onDelete}
+                  data-e2e="workload-delete">
+                  Delete
+                </Button>
+              )}
+            </div>
           ) : undefined
         }
       />

@@ -590,13 +590,13 @@ function publishedFromAlbs(albs: ConnectedAlb[]): PublishedUrl | null {
   };
 }
 
-async function fetchPublishedUrls(projectId: string): Promise<Record<string, PublishedUrl>> {
-  const [services, proxies] = await Promise.all([
-    listOrUnavailable<RawNetworkService>(projectId, NETWORKSERVICES_PATH),
-    listOrUnavailable<RawHttpProxy>(projectId, HTTPPROXIES_PATH),
-  ]);
-  if (services === null || proxies === null) return {};
-
+/**
+ * Which HTTPProxies reach which workload. Shared by the published-URL lookup
+ * and the delete dialog so both agree on what "connected" means: a proxy
+ * labelled with the workload's name, or one whose backend names a
+ * NetworkService that selects the workload's interfaces.
+ */
+function indexWorkloadProxies(services: RawNetworkService[], proxies: RawHttpProxy[]) {
   const serviceNamesByWorkload = new Map<string, Set<string>>();
   for (const svc of services) {
     const workload = workloadNameForService(svc);
@@ -607,26 +607,37 @@ async function fetchPublishedUrls(projectId: string): Promise<Record<string, Pub
     serviceNamesByWorkload.set(workload, set);
   }
 
-  const albsByWorkload = new Map<string, ConnectedAlb[]>();
-  const addAlb = (workload: string, alb: ConnectedAlb) => {
-    const list = albsByWorkload.get(workload) ?? [];
-    if (!list.some((item) => item.proxyName === alb.proxyName)) list.push(alb);
-    albsByWorkload.set(workload, list);
+  const proxiesByWorkload = new Map<string, RawHttpProxy[]>();
+  const addProxy = (workload: string, proxy: RawHttpProxy) => {
+    const list = proxiesByWorkload.get(workload) ?? [];
+    if (!list.some((item) => item.metadata?.name === proxy.metadata?.name)) list.push(proxy);
+    proxiesByWorkload.set(workload, list);
   };
 
   for (const proxy of proxies) {
-    const alb = toConnectedAlb(proxy);
-    if (!alb) continue;
-    const labelled = proxy.metadata?.labels?.[INSTANCE_LABELS.workloadName];
-    if (labelled) addAlb(labelled, alb);
+    if (!proxy.metadata?.name) continue;
+    const labelled = proxy.metadata.labels?.[INSTANCE_LABELS.workloadName];
+    if (labelled) addProxy(labelled, proxy);
     const nsNames = proxyNetworkServiceNames(proxy);
     for (const [workload, names] of serviceNamesByWorkload) {
-      if (nsNames.some((name) => names.has(name))) addAlb(workload, alb);
+      if (nsNames.some((name) => names.has(name))) addProxy(workload, proxy);
     }
   }
 
+  return { serviceNamesByWorkload, proxiesByWorkload };
+}
+
+async function fetchPublishedUrls(projectId: string): Promise<Record<string, PublishedUrl>> {
+  const [services, proxies] = await Promise.all([
+    listOrUnavailable<RawNetworkService>(projectId, NETWORKSERVICES_PATH),
+    listOrUnavailable<RawHttpProxy>(projectId, HTTPPROXIES_PATH),
+  ]);
+  if (services === null || proxies === null) return {};
+
+  const { proxiesByWorkload } = indexWorkloadProxies(services, proxies);
   const result: Record<string, PublishedUrl> = {};
-  for (const [workload, albs] of albsByWorkload) {
+  for (const [workload, workloadProxies] of proxiesByWorkload) {
+    const albs = workloadProxies.map(toConnectedAlb).filter((alb): alb is ConnectedAlb => !!alb);
     const published = publishedFromAlbs(albs);
     if (published) result[workload] = published;
   }
@@ -660,4 +671,284 @@ export function usePublishedUrl(
           : null,
     isLoading: all.isLoading,
   };
+}
+
+// ── Delete workload ──────────────────────────────────────────────────────
+//
+// Deleting the Workload tears down everything the compute controllers made
+// for it (deployments, instances, interface claims, bindings). The ALB
+// (HTTPProxy + the NetworkService behind it) and the Network are separate,
+// user-created objects that nothing cleans up, so the delete dialog offers
+// them as opt-in extras.
+
+export interface RelatedAlb extends ConnectedAlb {
+  /** Backend NetworkServices that select this workload — removed with the ALB. */
+  serviceNames: string[];
+  /** A backend routes to something other than this workload's services. */
+  sharedWithOtherWorkloads: boolean;
+}
+
+export interface RelatedNetwork {
+  name: string;
+  /** Other workloads whose template attaches to this network. */
+  sharedWith: string[];
+}
+
+export interface WorkloadRelatedResources {
+  albs: RelatedAlb[];
+  networks: RelatedNetwork[];
+  /** NetworkService name → every HTTPProxy that backends to it, so a service
+   * still used by an ALB the user keeps is not deleted out from under it. */
+  serviceProxies: Record<string, string[]>;
+}
+
+async function fetchWorkloadRelatedResources(
+  projectId: string,
+  workload: Workload
+): Promise<WorkloadRelatedResources> {
+  const [services, proxies, workloads] = await Promise.all([
+    listOrUnavailable<RawNetworkService>(projectId, NETWORKSERVICES_PATH),
+    listOrUnavailable<RawHttpProxy>(projectId, HTTPPROXIES_PATH),
+    fetchWorkloads(projectId),
+  ]);
+
+  const networks = workload.networks.map((name) => ({
+    name,
+    sharedWith: workloads
+      .filter((other) => other.name !== workload.name && other.networks.includes(name))
+      .map((other) => other.name),
+  }));
+
+  if (services === null || proxies === null) {
+    return { albs: [], networks, serviceProxies: {} };
+  }
+
+  const { serviceNamesByWorkload, proxiesByWorkload } = indexWorkloadProxies(services, proxies);
+  const ownServices = serviceNamesByWorkload.get(workload.name) ?? new Set<string>();
+
+  const serviceProxies: Record<string, string[]> = {};
+  for (const proxy of proxies) {
+    const proxyName = proxy.metadata?.name;
+    if (!proxyName) continue;
+    for (const svc of proxyNetworkServiceNames(proxy)) {
+      (serviceProxies[svc] ??= []).push(proxyName);
+    }
+  }
+
+  const albs: RelatedAlb[] = [];
+  for (const proxy of proxiesByWorkload.get(workload.name) ?? []) {
+    const alb = toConnectedAlb(proxy);
+    if (!alb) continue;
+    const backends = proxyNetworkServiceNames(proxy);
+    albs.push({
+      ...alb,
+      serviceNames: backends.filter((name) => ownServices.has(name)),
+      sharedWithOtherWorkloads: backends.some((name) => !ownServices.has(name)),
+    });
+  }
+
+  return { albs, networks, serviceProxies };
+}
+
+export function useWorkloadRelatedResources(
+  projectId: string | undefined,
+  workload: Workload | undefined
+): UseQueryResult<WorkloadRelatedResources, ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'workload-related', projectId, workload?.name],
+    enabled: !!projectId && !!workload,
+    queryFn: () => fetchWorkloadRelatedResources(projectId as string, workload as Workload),
+    retry: false,
+  });
+}
+
+// ── Delete permissions ───────────────────────────────────────────────────
+//
+// Same answers as the portal's `useResourcePermissions({ scope: 'project' })`
+// (app/modules/rbac): a resource-level SelfSubjectAccessReview in the
+// project's `default` namespace, failing closed. The host's RBAC hooks aren't
+// exposed to plugins, so the SSARs go through the control-plane proxy like
+// every other call here. One query per page, not per row.
+
+const SSAR_PATH = '/apis/authorization.k8s.io/v1/selfsubjectaccessreviews';
+const PERMISSION_STALE_MS = 5 * 60_000;
+
+async function canDelete(projectId: string, group: string, resource: string): Promise<boolean> {
+  const res = await fetch(`${getProjectScopedBase(projectId)}${SSAR_PATH}`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      apiVersion: 'authorization.k8s.io/v1',
+      kind: 'SelfSubjectAccessReview',
+      spec: { resourceAttributes: { group, resource, verb: 'delete', namespace: 'default' } },
+    }),
+  });
+  if (!res.ok) return false;
+  const body = (await res.json()) as { status?: { allowed?: boolean; denied?: boolean } };
+  return !!body.status?.allowed && !body.status?.denied;
+}
+
+export interface DeletePermissions {
+  canDeleteWorkload: boolean;
+  canDeleteAlb: boolean;
+  canDeleteNetworkService: boolean;
+  canDeleteNetwork: boolean;
+}
+
+const NO_DELETE_PERMISSIONS: DeletePermissions = {
+  canDeleteWorkload: false,
+  canDeleteAlb: false,
+  canDeleteNetworkService: false,
+  canDeleteNetwork: false,
+};
+
+async function fetchDeletePermissions(projectId: string): Promise<DeletePermissions> {
+  const [canDeleteWorkload, canDeleteAlb, canDeleteNetworkService, canDeleteNetwork] =
+    await Promise.all([
+      canDelete(projectId, 'compute.datumapis.com', 'workloads'),
+      canDelete(projectId, 'networking.datumapis.com', 'httpproxies'),
+      canDelete(projectId, 'networking.datumapis.com', 'networkservices'),
+      canDelete(projectId, 'networking.datumapis.com', 'networks'),
+    ]);
+  return { canDeleteWorkload, canDeleteAlb, canDeleteNetworkService, canDeleteNetwork };
+}
+
+export function useDeletePermissions(
+  projectId: string | undefined
+): DeletePermissions & { isLoading: boolean } {
+  const query = useQuery({
+    queryKey: [PLUGIN_ID, 'permissions', projectId],
+    enabled: !!projectId,
+    queryFn: () => fetchDeletePermissions(projectId as string),
+    staleTime: PERMISSION_STALE_MS,
+    retry: false,
+  });
+  // Pending (including disabled) reads as loading so nothing flashes in and out.
+  return { ...(query.data ?? NO_DELETE_PERMISSIONS), isLoading: query.isPending };
+}
+
+// ── Delete mutation ──────────────────────────────────────────────────────
+
+/** DELETEs one object; a 404 means it's already gone, which is what we wanted. */
+async function proxyDelete(projectId: string, path: string): Promise<void> {
+  const res = await fetch(`${getProjectScopedBase(projectId)}${path}`, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new ApiError(res.status, `Request failed (${res.status}): ${path}`);
+  }
+}
+
+export type RelatedKind = 'alb' | 'network';
+
+export interface DeleteWorkloadInput {
+  workloadName: string;
+  /** HTTPProxy names the user ticked. */
+  albs: string[];
+  /** Network names the user ticked. */
+  networks: string[];
+  related: WorkloadRelatedResources;
+  canDeleteNetworkService: boolean;
+}
+
+export interface DeleteWorkloadResult {
+  failed: { kind: RelatedKind; name: string; error: ApiError }[];
+}
+
+async function deleteWorkload(
+  projectId: string,
+  input: DeleteWorkloadInput
+): Promise<DeleteWorkloadResult> {
+  // The Workload goes first: if that is refused, nothing else is touched.
+  await proxyDelete(projectId, `${WORKLOADS_PATH}/${input.workloadName}`);
+
+  const failed: DeleteWorkloadResult['failed'] = [];
+  const attempt = async (kind: RelatedKind, name: string, run: () => Promise<void>) => {
+    try {
+      await run();
+    } catch (error) {
+      failed.push({
+        kind,
+        name,
+        error: error instanceof ApiError ? error : new ApiError(0, String(error)),
+      });
+    }
+  };
+
+  const selected = new Set(input.albs);
+  for (const alb of input.related.albs.filter((item) => selected.has(item.proxyName))) {
+    await attempt('alb', alb.proxyName, async () => {
+      await proxyDelete(projectId, `${HTTPPROXIES_PATH}/${alb.proxyName}`);
+      if (!input.canDeleteNetworkService) return;
+      for (const svc of alb.serviceNames) {
+        // Keep a service another, un-ticked ALB still routes to.
+        const users = input.related.serviceProxies[svc] ?? [];
+        if (users.some((proxy) => !selected.has(proxy))) continue;
+        await proxyDelete(projectId, `${NETWORKSERVICES_PATH}/${svc}`);
+      }
+    });
+  }
+
+  // The Network's in-use finalizer holds it in Terminating until the workload's
+  // bindings are released, so it's safe to ask right away.
+  for (const network of input.networks) {
+    await attempt('network', network, () => proxyDelete(projectId, `${NETWORKS_PATH}/${network}`));
+  }
+
+  return { failed };
+}
+
+/**
+ * cloud-portal's own query-key roots for the objects a workload delete can
+ * remove or orphan. The host's cache is shared with this plugin (see the top
+ * of this file), so invalidating these makes the ALB pages refetch on their
+ * next mount instead of showing a deleted ALB, or a workload link that now
+ * 404s. Mirrors `httpProxyKeys.all`, `networkServiceKeys.all` and
+ * `computeWorkloadKeys.all` in cloud-portal's `app/resources/*`.
+ */
+const HOST_QUERY_ROOTS = [['http-proxies'], ['network-services'], ['compute-workloads']] as const;
+
+type DeleteWorkloadContext = { previous?: Workload[] };
+
+export function useDeleteWorkload(
+  projectId: string | undefined
+): UseMutationResult<DeleteWorkloadResult, ApiError, DeleteWorkloadInput, DeleteWorkloadContext> {
+  const queryClient = useQueryClient();
+  const listKey = [PLUGIN_ID, 'workloads', projectId];
+  return useMutation({
+    mutationFn: (input) => deleteWorkload(projectId as string, input),
+    // Show "Deleting" straight away: the detail page navigates to the list on
+    // confirm, before the DELETE has returned for the next poll to pick up.
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: listKey });
+      const previous = queryClient.getQueryData<Workload[]>(listKey);
+      queryClient.setQueryData<Workload[]>(listKey, (list) =>
+        list?.map((item) => (item.name === input.workloadName ? { ...item, deleting: true } : item))
+      );
+      return { previous };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previous) queryClient.setQueryData(listKey, context.previous);
+    },
+    onSettled: (_data, _error, input) => {
+      for (const key of ['workloads', 'instances', 'published-urls', 'workload-related']) {
+        void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, key, projectId] });
+      }
+      for (const queryKey of HOST_QUERY_ROOTS) {
+        void queryClient.invalidateQueries({ queryKey: [...queryKey] });
+      }
+      const detailKeys = [
+        [PLUGIN_ID, 'workload', projectId, input.workloadName],
+        [PLUGIN_ID, 'workload-instances', projectId, input.workloadName],
+      ];
+      for (const queryKey of detailKeys) void queryClient.cancelQueries({ queryKey });
+      // Drop the detail cache once the page has navigated away, so a later
+      // visit doesn't render the deleted workload from cache first. Doing it
+      // now would make the still-mounted detail page refetch into a 404.
+      setTimeout(() => {
+        for (const queryKey of detailKeys) queryClient.removeQueries({ queryKey, type: 'inactive' });
+      }, 0);
+    },
+  });
 }

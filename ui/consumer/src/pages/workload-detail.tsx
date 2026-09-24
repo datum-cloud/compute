@@ -14,6 +14,7 @@ import { RecentInstanceLogs } from '../components/instance-logs';
 import { MetricAreaChart } from '../components/metric-area-chart';
 import { TopologyCard } from '../components/topology-card';
 import { WorkloadPageChrome } from '../components/workload-page-chrome';
+import { DeleteWorkloadDialog, useDeleteWorkloadDialog } from '../components/delete-workload-dialog';
 import {
   DEFAULT_OVERVIEW_RANGE,
   OVERVIEW_RANGE_OPTIONS,
@@ -23,7 +24,13 @@ import {
 } from '../components/overview-range';
 import { WorkloadMetricsSkeleton, WorkloadOverviewSkeleton } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
-import { usePublishedUrl, useWorkload, useWorkloadInstances, type PublishedUrl } from '../lib/api';
+import {
+  useDeletePermissions,
+  usePublishedUrl,
+  useWorkload,
+  useWorkloadInstances,
+  type PublishedUrl,
+} from '../lib/api';
 import { splitSlashValue } from '../lib/format';
 import { formatLocationName, formatLocationNames, formatLocationTooltip, useLocationIndex, type LocationIndex } from '../lib/locations';
 import {
@@ -414,6 +421,13 @@ function WorkloadLayoutShell({
   const metricKeys = useMemo(() => identityValues(instances), [instances]);
   const instanceNames = useMemo(() => instances.map((instance) => instance.name), [instances]);
   const proxyId = published.data?.proxyName;
+  const navigate = useNavigate();
+  const permissions = useDeletePermissions(projectId);
+  const deleteDialog = useDeleteWorkloadDialog();
+  // Hidden (not disabled) without permission, per the portal's RBAC conventions.
+  const canDelete =
+    !isLoading && !error && !!workload && !workload.deleting &&
+    !permissions.isLoading && permissions.canDeleteWorkload;
 
   return (
     <WorkloadPageChrome
@@ -422,7 +436,17 @@ function WorkloadLayoutShell({
       overviewHref={overviewHref}
       metricsHref={metricsHref}
       titleName={workload?.name ?? titleName}
-      workload={workload}>
+      workload={workload}
+      onDelete={canDelete && workload ? () => deleteDialog.show(workload) : undefined}>
+      <DeleteWorkloadDialog
+        projectId={projectId}
+        workload={deleteDialog.workload}
+        open={deleteDialog.open}
+        permissions={permissions}
+        onClose={deleteDialog.close}
+        onDeleted={() => navigate(workloadsHref)}
+      />
+
       {isLoading &&
         (pathname === metricsHref || pathname.startsWith(`${metricsHref}/`) ? (
           <WorkloadMetricsSkeleton />

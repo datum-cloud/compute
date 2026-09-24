@@ -10,6 +10,7 @@
  * identical to the host's, so it picks up the same compiled styles.
  */
 import { CpuMemorySparks, MetricSparkline } from './metric-sparkline';
+import { WorkloadStatusBadge } from './workload-status-badge';
 import type { PublishedUrl } from '../lib/api';
 import type { LocationIndex } from '../lib/locations';
 import {
@@ -24,9 +25,8 @@ import {
   HEALTH_ORDER,
   imageShortName,
   regionLabel,
-  statusLabel,
 } from '../lib/workload-presenters';
-import { workloadHealthToBadgeType, type Workload } from '../schema';
+import type { Workload } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
 import {
   DataTable,
@@ -126,7 +126,7 @@ export function WorkloadTable({
           <div className="flex min-w-0 flex-col" style={{ minWidth: 160 }}>
             <Link
               to={workloadHref(row.original.name)}
-              className="truncate font-medium hover:underline"
+              className={cn('truncate font-medium hover:underline', row.original.deleting && 'text-muted-foreground')}
               title={row.original.name}
               data-e2e="workload-name">
               {row.original.name}
@@ -141,17 +141,7 @@ export function WorkloadTable({
         id: 'status',
         accessorFn: (workload) => HEALTH_ORDER[workload.health],
         header: ({ column }) => <DataTable.ColumnHeader column={column} title="Status" />,
-        cell: ({ row }) => (
-          <div className="flex items-center gap-2">
-            <span
-              className={cn('size-2 shrink-0 rounded-full', HEALTH_DOT_CLASS[row.original.health])}
-              aria-hidden
-            />
-            <Badge type={workloadHealthToBadgeType(row.original.health)} theme="light">
-              {statusLabel(row.original)}
-            </Badge>
-          </div>
-        ),
+        cell: ({ row }) => <WorkloadStatusBadge workload={row.original} />,
       },
       {
         id: 'activity',
