@@ -185,7 +185,7 @@ export function CliBanner({
             Install CLI
           </a>
           <a
-            href="https://www.datum.net/docs/datumctl"
+            href="https://www.datum.net/docs/datumctl/overview"
             target="_blank"
             rel="noreferrer"
             className="border-border hover:bg-muted inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors"

@@ -19,8 +19,8 @@ metadata:
   namespace: compute-system
 spec:
   dnsNames:
-    - compute-webhook.compute-system.svc
-    - compute-webhook.compute-system.svc.cluster.local
+    - webhook-service.compute-system.svc
+    - webhook-service.compute-system.svc.cluster.local
   issuerRef:
     kind: Issuer
     name: selfsigned-issuer
