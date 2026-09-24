@@ -11,9 +11,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
+
+// reconcileInstanceTypeInProject reconciles the named InstanceType the way the
+// controller does in production: through the multicluster manager, scoped to
+// one project control plane, here backed by the envtest API server.
+func reconcileInstanceTypeInProject(ctx context.Context, name string) error {
+	const project = "project-a"
+	reconciler := &InstanceTypeReconciler{mgr: newFakeMCManager(project, newFakeCluster(k8sClient))}
+	_, err := reconciler.Reconcile(ctx, mcreconcile.Request{
+		ClusterName: project,
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: name}},
+	})
+	return err
+}
 
 var _ = Describe("InstanceType Controller", func() {
 	Context("When reconciling an InstanceType", func() {
@@ -37,13 +51,7 @@ var _ = Describe("InstanceType Controller", func() {
 
 			Expect(k8sClient.Create(ctx, instanceType)).Should(Succeed())
 
-			reconciler := &InstanceTypeReconciler{
-				Client: k8sClient,
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{Name: instanceType.Name},
-			})
+			err := reconcileInstanceTypeInProject(ctx, instanceType.Name)
 			Expect(err).NotTo(HaveOccurred())
 
 			var fetched computev1alpha.InstanceType
@@ -75,13 +83,7 @@ var _ = Describe("InstanceType Controller", func() {
 
 			Expect(k8sClient.Create(ctx, instanceType)).Should(Succeed())
 
-			reconciler := &InstanceTypeReconciler{
-				Client: k8sClient,
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{Name: instanceType.Name},
-			})
+			err := reconcileInstanceTypeInProject(ctx, instanceType.Name)
 			Expect(err).NotTo(HaveOccurred())
 
 			var fetched computev1alpha.InstanceType
@@ -130,13 +132,7 @@ var _ = Describe("InstanceType Controller", func() {
 
 			Expect(k8sClient.Create(ctx, instanceType)).Should(Succeed())
 
-			reconciler := &InstanceTypeReconciler{
-				Client: k8sClient,
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{Name: instanceType.Name},
-			})
+			err := reconcileInstanceTypeInProject(ctx, instanceType.Name)
 			Expect(err).NotTo(HaveOccurred())
 
 			var fetched computev1alpha.InstanceType

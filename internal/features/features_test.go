@@ -76,3 +76,39 @@ func TestRuntimeClasses_ExplicitlyEnabled(t *testing.T) {
 		t.Error("RuntimeClasses = false after Set=true, want true")
 	}
 }
+
+// TestInstanceTypes_DefaultDisabled verifies that the InstanceTypes feature
+// gate defaults to disabled, so the InstanceType controller and webhook are
+// not registered until an environment has the datum-infra provisioning
+// change in place and opts in.
+func TestInstanceTypes_DefaultDisabled(t *testing.T) {
+	// Copy the gate so the test does not depend on mutations to global state.
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(InstanceTypes) {
+		t.Error("InstanceTypes default = true, want false")
+	}
+}
+
+// TestInstanceTypes_CanBeDisabled verifies that setting InstanceTypes=false
+// keeps the controller and webhook unregistered.
+func TestInstanceTypes_CanBeDisabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InstanceTypes=false"); err != nil {
+		t.Fatalf("Set(InstanceTypes=false): %v", err)
+	}
+	if gate.Enabled(InstanceTypes) {
+		t.Error("InstanceTypes = true after Set=false, want false")
+	}
+}
+
+// TestInstanceTypes_ExplicitlyEnabled verifies that setting
+// InstanceTypes=true turns the controller and webhook on.
+func TestInstanceTypes_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InstanceTypes=true"); err != nil {
+		t.Fatalf("Set(InstanceTypes=true): %v", err)
+	}
+	if !gate.Enabled(InstanceTypes) {
+		t.Error("InstanceTypes = false after Set=true, want true")
+	}
+}

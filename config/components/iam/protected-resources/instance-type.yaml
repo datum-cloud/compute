@@ -17,3 +17,6 @@ spec:
     - patch
     - delete
     - updateStatus
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

@@ -8,31 +8,43 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/validation"
+	computewebhook "go.datum.net/compute/internal/webhook"
 )
 
 // SetupInstanceTypeWebhookWithManager sets up the webhook with the Manager.
-// catalog reads the cluster holding the instance type catalog, which is not the
-// cluster mgr runs against when discovery goes through Milo.
-func SetupInstanceTypeWebhookWithManager(
-	mgr ctrl.Manager, catalog client.Reader, deprecationGracePeriod time.Duration,
-) error {
-	return ctrl.NewWebhookManagedBy(mgr, &computev1alpha.InstanceType{}).
+func SetupInstanceTypeWebhookWithManager(mgr mcmanager.Manager, deprecationGracePeriod time.Duration) error {
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &computev1alpha.InstanceType{}).
 		WithValidator(&instanceTypeValidator{
-			client:                 catalog,
+			reader:                 projectReader(mgr),
 			deprecationGracePeriod: deprecationGracePeriod,
 		}).
 		Complete()
 }
 
+// projectReader returns a reader for the project control plane a request is
+// admitted into. It reads the API server directly, so the replacement and
+// referrer checks see writes the cache may not have caught up with.
+func projectReader(mgr mcmanager.Manager) func(context.Context) (client.Reader, error) {
+	return func(ctx context.Context) (client.Reader, error) {
+		cl, err := mgr.GetCluster(ctx, multicluster.ClusterName(computewebhook.ClusterNameFromContext(ctx)))
+		if err != nil {
+			return nil, err
+		}
+		return cl.GetAPIReader(), nil
+	}
+}
+
 // +kubebuilder:webhook:path=/validate-compute-datumapis-com-v1alpha-instancetype,mutating=false,failurePolicy=fail,sideEffects=None,groups=compute.datumapis.com,resources=instancetypes,verbs=create;update;delete,versions=v1alpha,name=vinstancetype.kb.io,admissionReviewVersions=v1
 
 type instanceTypeValidator struct {
-	// client reads the control plane so validation can confirm that the
-	// instance type a lifecycle references actually exists.
-	client client.Reader
+	// reader returns a reader for the project control plane the request is
+	// admitted into, so validation can check the other instance types there.
+	reader func(context.Context) (client.Reader, error)
 
 	// deprecationGracePeriod is the minimum time a type must remain Deprecated
 	// before it can be Disabled.
@@ -48,8 +60,12 @@ func (v *instanceTypeValidator) validationOptions(ctx context.Context) (validati
 	if err != nil {
 		return validation.InstanceTypeValidationOptions{}, err
 	}
+	reader, err := v.reader(ctx)
+	if err != nil {
+		return validation.InstanceTypeValidationOptions{}, err
+	}
 	return validation.InstanceTypeValidationOptions{
-		Client:                 v.client,
+		Client:                 reader,
 		AdmissionRequest:       req,
 		Context:                ctx,
 		DeprecationGracePeriod: v.deprecationGracePeriod,
