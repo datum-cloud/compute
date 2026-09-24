@@ -186,4 +186,4 @@ require (
 	mvdan.cc/sh/v3 v3.12.0
 )
 
-replace go.datum.net/network-services-operator => github.com/datum-cloud/network-services-operator v0.27.2-0.20260917225730-eccf0e8922b2
+replace go.datum.net/network-services-operator => github.com/datum-cloud/network-services-operator v0.27.2-0.20260924225138-f78ee4cb7f7f
