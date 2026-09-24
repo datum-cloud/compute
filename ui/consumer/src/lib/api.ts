@@ -515,8 +515,10 @@ interface RawHttpProxy {
 export interface ConnectedAlb {
   /** HTTPProxy metadata.name — Envoy `gateway_name` and LogQL `route_name`. */
   proxyName: string;
-  /** Canonical/default hostname (`status.canonicalHostname`, then spec.hostnames). */
+  /** Default hostname (`status.canonicalHostname`, else the first custom hostname). */
   hostname?: string;
+  /** User-attached hostnames (`spec.hostnames`), excluding the displayed default. */
+  customHostnames: string[];
   /** Portal display name (`app.kubernetes.io/name`, then `kubernetes.io/display-name`). */
   displayName: string;
 }
@@ -556,6 +558,18 @@ function proxyHostname(proxy: RawHttpProxy): string | undefined {
   return proxy.status?.canonicalHostname || proxy.spec?.hostnames?.[0];
 }
 
+function proxyCustomHostnames(proxy: RawHttpProxy, displayed?: string): string[] {
+  const seen = new Set<string>();
+  const hosts: string[] = [];
+  for (const raw of proxy.spec?.hostnames ?? []) {
+    const host = raw.trim();
+    if (!host || host === displayed || seen.has(host)) continue;
+    seen.add(host);
+    hosts.push(host);
+  }
+  return hosts;
+}
+
 function proxyDisplayName(proxy: RawHttpProxy): string {
   const annotations = proxy.metadata?.annotations;
   const chosen = annotations?.['app.kubernetes.io/name']?.trim();
@@ -573,9 +587,11 @@ function workloadNameForService(svc: RawNetworkService): string | undefined {
 function toConnectedAlb(proxy: RawHttpProxy): ConnectedAlb | null {
   const proxyName = proxy.metadata?.name ?? '';
   if (!proxyName) return null;
+  const hostname = proxyHostname(proxy);
   return {
     proxyName,
-    hostname: proxyHostname(proxy),
+    hostname,
+    customHostnames: proxyCustomHostnames(proxy, hostname),
     displayName: proxyDisplayName(proxy),
   };
 }

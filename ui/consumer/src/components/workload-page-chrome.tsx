@@ -3,8 +3,6 @@
  * Used by the splat layout at `:workloadName/*`.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
-import { workloadHealthToBadgeType, type Workload } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -18,11 +16,16 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { HomeIcon } from 'lucide-react';
 import { Link } from 'react-router';
 
-export function workloadDetailTabs(overviewHref: string, metricsHref: string): PluginTab[] {
+export function workloadDetailTabs(
+  overviewHref: string,
+  metricsHref: string,
+  logsHref: string
+): PluginTab[] {
   return [
     { label: 'Overview', href: overviewHref },
     { label: 'Deployments' },
     { label: 'Metrics', href: metricsHref },
+    { label: 'Logs', href: logsHref },
     { label: 'Activity' },
   ];
 }
@@ -32,16 +35,16 @@ export function WorkloadPageChrome({
   workloadsHref,
   overviewHref,
   metricsHref,
+  logsHref,
   titleName,
-  workload,
   children,
 }: {
   projectHref: string;
   workloadsHref: string;
   overviewHref: string;
   metricsHref: string;
+  logsHref: string;
   titleName: string;
-  workload?: Workload | null;
   children: React.ReactNode;
 }) {
   return (
@@ -73,17 +76,10 @@ export function WorkloadPageChrome({
         className="flex-col items-start gap-3 sm:flex-row sm:items-center"
         description={titleName}
         descriptionClassName="break-all"
-        actions={
-          workload ? (
-            <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
-              {workload.health}
-            </Badge>
-          ) : undefined
-        }
       />
 
       <PluginTabs
-        tabs={workloadDetailTabs(overviewHref, metricsHref)}
+        tabs={workloadDetailTabs(overviewHref, metricsHref, logsHref)}
         testId="compute-plugin-workload-tabs"
       />
 

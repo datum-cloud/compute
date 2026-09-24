@@ -11,6 +11,7 @@ import { ApiError } from '../lib/api';
 import {
   ALB_LOGS_PREVIEW_LIMIT,
   combinedLogFacets,
+  COMPUTE_LOG_INSTANCE_LABEL,
   filterCombinedLogs,
   LOG_SOURCE_ALB,
   useInstanceLogs,
@@ -29,6 +30,7 @@ import {
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import {
+  facetsFromEntries,
   httpStatusBadgeType,
   lastThirtyMinutes,
   logRequestHost,
@@ -220,6 +222,7 @@ export function RecentInstanceLogs({
   albHostname,
   instanceName,
   instanceNames,
+  upstreamIPs,
   className,
 }: {
   logsHref: string;
@@ -229,6 +232,8 @@ export function RecentInstanceLogs({
   albHostname?: string;
   instanceName?: string;
   instanceNames?: readonly string[];
+  /** In-network IPs for the instance path; pins ALB rows to this replica. */
+  upstreamIPs?: readonly string[];
   className?: string;
 }) {
   const [timeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
@@ -236,12 +241,21 @@ export function RecentInstanceLogs({
     () => instanceNames ?? (instanceName ? [instanceName] : []),
     [instanceName, instanceNames]
   );
-  const logsQuery = useWorkloadLogs(projectId, proxyId, names, {
+  const instanceScoped = !!instanceName && instanceNames === undefined;
+  const instanceLogs = useInstanceLogs(projectId, proxyId, instanceName, {
     timeRange,
     limit: ROW_LIMIT,
     live: true,
-    enabled: names.length > 0 || !!proxyId,
+    enabled: instanceScoped,
+    upstreamIPs,
   });
+  const workloadLogs = useWorkloadLogs(projectId, proxyId, names, {
+    timeRange,
+    limit: ROW_LIMIT,
+    live: true,
+    enabled: !instanceScoped && (names.length > 0 || !!proxyId),
+  });
+  const logsQuery = instanceScoped ? instanceLogs : workloadLogs;
 
   const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
@@ -313,11 +327,13 @@ export function InstanceLogsExplorer({
   projectId,
   proxyId,
   instanceName,
+  upstreamIPs,
   className,
 }: {
   projectId?: string;
   proxyId?: string;
   instanceName?: string;
+  upstreamIPs?: readonly string[];
   className?: string;
 }) {
   const [filters, setFilters] = useState<LogFilters>({});
@@ -337,6 +353,7 @@ export function InstanceLogsExplorer({
     search,
     live,
     enabled: !!proxyId || !!instanceName,
+    upstreamIPs,
   });
 
   const visibleEntries = useMemo(
@@ -399,6 +416,153 @@ export function InstanceLogsExplorer({
           onRefresh={handleRefresh}
           className="bg-card flex min-h-0 flex-1 flex-col">
           {/* Same class string as the portal's AlbLogsExplorer so the filters bar matches. */}
+          <Logs.Explorer className="bg-card **:data-[slot=logs-filters]:bg-card min-h-0 flex-1" />
+        </Logs.Root>
+      </CardContent>
+    </Card>
+  );
+}
+
+const INSTANCE_COLUMN: LogColumn = {
+  id: 'instance',
+  header: 'Instance',
+  size: 'hug',
+  className: 'text-muted-foreground truncate font-mono text-xs',
+  cell: ({ entry }) => {
+    const name = entry.labels[COMPUTE_LOG_INSTANCE_LABEL];
+    if (!name) return '—';
+    return (
+      <span className="block truncate" style={{ maxWidth: '10rem' }} title={name}>
+        {name}
+      </span>
+    );
+  },
+};
+
+const WORKLOAD_EXPLORER_COLUMNS: readonly LogColumnSpec[] = [
+  'time',
+  SOURCE_COLUMN,
+  INSTANCE_COLUMN,
+  'status',
+  'host',
+  DETAIL_COLUMN,
+];
+
+function filterWorkloadExplorerLogs(entries: readonly LogEntry[], filters: LogFilters): LogEntry[] {
+  const names = filters[COMPUTE_LOG_INSTANCE_LABEL];
+  const rest = { ...filters };
+  delete rest[COMPUTE_LOG_INSTANCE_LABEL];
+  let result = filterCombinedLogs(entries, rest);
+  if (!names?.length) return result;
+  return result.filter((entry) =>
+    names.includes(entry.labels[COMPUTE_LOG_INSTANCE_LABEL] ?? '')
+  );
+}
+
+/** ALB access logs plus stdout from every instance on the workload. */
+export function WorkloadLogsExplorer({
+  projectId,
+  proxyId,
+  instanceNames,
+  className,
+}: {
+  projectId?: string;
+  proxyId?: string;
+  instanceNames: readonly string[];
+  className?: string;
+}) {
+  const [filters, setFilters] = useState<LogFilters>({});
+  const [search, setSearch] = useState('');
+  const [live, setLive] = useState(false);
+  const [timeRange, setTimeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
+
+  const handleRefresh = useCallback(() => {
+    setTimeRange((current) =>
+      current.preset ? resolveLogTimeRange(current) : lastThirtyMinutes()
+    );
+  }, []);
+
+  const queryFilters = useMemo(() => {
+    if (!filters[COMPUTE_LOG_INSTANCE_LABEL]) return filters;
+    const rest = { ...filters };
+    delete rest[COMPUTE_LOG_INSTANCE_LABEL];
+    return rest;
+  }, [filters]);
+
+  const logsQuery = useWorkloadLogs(projectId, proxyId, instanceNames, {
+    timeRange,
+    filters: queryFilters,
+    search,
+    live,
+    enabled: !!proxyId || instanceNames.length > 0,
+  });
+
+  const visibleEntries = useMemo(
+    () => filterWorkloadExplorerLogs(logsQuery.data ?? [], filters),
+    [logsQuery.data, filters]
+  );
+  const facets = useMemo(() => {
+    const entries = logsQuery.data ?? [];
+    const instance = facetsFromEntries(entries, [COMPUTE_LOG_INSTANCE_LABEL]).map((facet) => ({
+      ...facet,
+      label: 'Instance',
+    }));
+    return [...combinedLogFacets(entries), ...instance];
+  }, [logsQuery.data]);
+
+  const denied = isLogsDenied(logsQuery.error);
+  const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
+
+  if (!proxyId && instanceNames.length === 0) {
+    return (
+      <div
+        className={cn('flex min-h-96 flex-1 flex-col', className)}
+        data-testid="compute-plugin-workload-logs-explorer">
+        <NoLogs className="min-h-96" />
+      </div>
+    );
+  }
+
+  if (denied) {
+    return (
+      <div
+        className={cn('flex min-h-96 flex-col', className)}
+        data-testid="compute-plugin-workload-logs-explorer">
+        <EmptyContent
+          title="Access restricted"
+          subtitle={DENIED_MESSAGE}
+          size="sm"
+          variant="dashed"
+          className="min-h-96 flex-1"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <Card
+      size="sm"
+      sectioned
+      className={cn('flex min-h-96 flex-col overflow-hidden', className)}
+      style={{ minHeight: '32rem' }}
+      data-testid="compute-plugin-workload-logs-explorer">
+      <CardContent padding="none" className="flex min-h-0 flex-1 flex-col">
+        <Logs.Root
+          entries={visibleEntries}
+          facets={facets}
+          timeRange={timeRange}
+          filters={filters}
+          search={search}
+          live={live}
+          isLoading={logsQuery.isLoading}
+          error={errorMessage}
+          columns={[...WORKLOAD_EXPLORER_COLUMNS]}
+          onTimeRangeChange={setTimeRange}
+          onFiltersChange={setFilters}
+          onSearchChange={setSearch}
+          onLiveChange={setLive}
+          onRefresh={handleRefresh}
+          className="bg-card flex min-h-0 flex-1 flex-col">
           <Logs.Explorer className="bg-card **:data-[slot=logs-filters]:bg-card min-h-0 flex-1" />
         </Logs.Root>
       </CardContent>
