@@ -185,3 +185,5 @@ require (
 	go.datum.net/datumctl v0.19.0
 	mvdan.cc/sh/v3 v3.12.0
 )
+
+replace go.datum.net/network-services-operator => github.com/datum-cloud/network-services-operator v0.27.2-0.20260924225138-f78ee4cb7f7f

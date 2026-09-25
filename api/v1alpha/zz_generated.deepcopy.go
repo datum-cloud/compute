@@ -495,6 +495,11 @@ func (in *InstanceNetworkInterfaceStatus) DeepCopyInto(out *InstanceNetworkInter
 		*out = make([]InstanceNetworkInterfaceExternalAddress, len(*in))
 		copy(*out, *in)
 	}
+	if in.Egress != nil {
+		in, out := &in.Egress, &out.Egress
+		*out = new(apiv1alpha.NetworkInterfaceEgressStatus)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))

@@ -136,9 +136,14 @@ func networkInterfaceClaimRejection(claim *networkingv1alpha.NetworkInterfaceCla
 
 // instanceNetworkInterfaceStatus projects a claim's published addresses onto the
 // instance status entry for one interface.
+//
+// boundInterface is the NetworkInterface the claim bound, when it could be
+// read. It carries the fields the claim does not repeat, and is nil while no
+// interface is bound.
 func instanceNetworkInterfaceStatus(
 	interfaceName string,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
+	boundInterface *networkingv1alpha.NetworkInterface,
 ) computev1alpha.InstanceNetworkInterfaceStatus {
 	status := computev1alpha.InstanceNetworkInterfaceStatus{Name: interfaceName}
 	if claim == nil {
@@ -172,6 +177,18 @@ func instanceNetworkInterfaceStatus(
 	}
 	if len(status.ExternalAddresses) > 0 {
 		status.Assignments.ExternalIP = new(status.ExternalAddresses[0].Address)
+	}
+
+	// Egress is published on the interface rather than repeated on the claim, so
+	// it is read from the bound object. Only a reported address is copied: a
+	// consumer who allow-lists an egress address at a destination is worse served
+	// by an empty block that reads as an answer than by no block at all.
+	if boundInterface != nil {
+		if egress := boundInterface.Status.Egress; egress != nil &&
+			egress.Internet != nil &&
+			len(egress.Internet.SourceAddresses) > 0 {
+			status.Egress = egress.DeepCopy()
+		}
 	}
 
 	// Only the conditions describing the interface itself are mirrored. Bound and
