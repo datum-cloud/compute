@@ -44,6 +44,15 @@ const (
 	// defaultNetworkName is the network a new workload's interface joins when
 	// --network is not set.
 	defaultNetworkName = "default"
+
+	// containerName is the name of the single container a flag deploy writes.
+	// It is fixed so a redeploy edits that container rather than appending a
+	// second one beside it.
+	containerName = "app"
+
+	// defaultInstanceType is the instance type a workload runs on when
+	// --instance-type is not set.
+	defaultInstanceType = "datumcloud/d1-standard-2"
 )
 
 // errPortRenamed is the one-release migration for --port. It is an error and
@@ -68,6 +77,17 @@ type options struct {
 	port             int32
 	file             string
 	yes              bool
+
+	// Every one of these is a repeatable StringArray rather than a
+	// StringSlice: an environment value, a mount path, and a label value may
+	// all legitimately contain a comma, which a StringSlice would split into
+	// two unusable halves.
+	env              []string
+	envFromConfigMap []string
+	envFromSecret    []string
+	configMaps       []string
+	secrets          []string
+	labels           []string
 }
 
 // Command returns the deploy command.
@@ -115,7 +135,18 @@ network does not exist, deploy offers to create it. A workload stays on its
 network: omitting --network on an existing workload keeps its network, and
 naming a different one is refused. To move a workload, destroy it and deploy
 it again, or deploy under a new name. A workload attached to more than one
-network is managed with a manifest.`,
+network is managed with a manifest.
+
+Use --env to set environment variables, --env-from-configmap and
+--env-from-secret to import every key of a ConfigMap or Secret, and --configmap
+and --secret to mount one into the container's filesystem. Use --label to label
+the workload and the instances it creates; a label is part of the instance
+template, so setting or removing one replaces the workload's instances.
+
+All of these carry forward. A deploy that does not mention a variable, an
+import, a mount, or a label keeps the one the workload already has, so a
+routine image bump changes nothing else. Remove one explicitly with a trailing
+"-": --env KEY-, --env-from-secret NAME-, --configmap NAME-, --label key-.`,
 		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1,eu-west-1 --min=2 --http-port=8080
@@ -137,6 +168,24 @@ network is managed with a manifest.`,
 
   # Attach a new workload to a network other than "default"
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --network=backend
+
+  # Set environment variables (repeat --env; values may contain commas)
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --env=LOG_LEVEL=debug --env=ALLOWED_ORIGINS=a.example,b.example
+
+  # Remove an environment variable, keeping the rest
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --env=LOG_LEVEL-
+
+  # Import every key of a ConfigMap and a Secret, the Secret's under a prefix
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --env-from-configmap=app-config --env-from-secret=api-keys:SECRET_
+
+  # Mount a ConfigMap and a Secret into the filesystem
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --configmap=app-config:/etc/app --secret=tls-cert:/etc/tls
+
+  # Unmount a Secret
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --secret=tls-cert-
+
+  # Label the workload and its instances
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --label=team=platform --label=tier=api
 
   # Deploy to every location in one or more cities
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW,IAD
@@ -167,6 +216,12 @@ network is managed with a manifest.`,
 	cmd.Flags().Int32Var(&opts.min, "min", 1, "Minimum number of instances per location")
 	cmd.Flags().Int32Var(&opts.httpPort, "http-port", 0, "Port the container serves HTTP on; publishes the workload on a Datum-managed HTTPS URL")
 	cmd.Flags().BoolVar(&opts.noHTTP, "no-http", false, "Remove the workload's HTTP service, and with it its URL")
+	cmd.Flags().StringArrayVar(&opts.env, "env", nil, "Set an environment variable as KEY=VALUE, or remove one as KEY-; repeatable. Variables not named here are kept")
+	cmd.Flags().StringArrayVar(&opts.envFromConfigMap, "env-from-configmap", nil, "Import every key of a ConfigMap as NAME, or NAME:PREFIX_ to prefix the variable names; NAME- removes the import; repeatable")
+	cmd.Flags().StringArrayVar(&opts.envFromSecret, "env-from-secret", nil, "Import every key of a Secret as NAME, or NAME:PREFIX_ to prefix the variable names; NAME- removes the import; repeatable")
+	cmd.Flags().StringArrayVar(&opts.configMaps, "configmap", nil, "Mount a ConfigMap as NAME:/mount/path, or remove a mount as NAME-; repeatable")
+	cmd.Flags().StringArrayVar(&opts.secrets, "secret", nil, "Mount a Secret as NAME:/mount/path, or remove a mount as NAME-; repeatable")
+	cmd.Flags().StringArrayVar(&opts.labels, "label", nil, "Set a label as key=value, or remove one as key-, on both the workload and its instances; repeatable. Setting one replaces the workload's instances")
 	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Path to a workload manifest file")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Skip confirmation prompts")
 	_ = cmd.RegisterFlagCompletionFunc("location", util.CompletePlacementLocations)
@@ -210,11 +265,29 @@ func validateFlags(cmd *cobra.Command, opts *options) error {
 			return fmt.Errorf("--runtime-class cannot be combined with -f: set spec.template.spec.runtime.class in the manifest instead")
 		case opts.network != "":
 			return fmt.Errorf("--network cannot be combined with -f: set spec.template.spec.networkInterfaces[].network.name in the manifest instead")
+		case len(opts.env) > 0:
+			return fmt.Errorf("--env cannot be combined with -f: set spec.template.spec.runtime.sandbox.containers[].env in the manifest instead")
+		case len(opts.envFromConfigMap) > 0:
+			return fmt.Errorf("--env-from-configmap cannot be combined with -f: set spec.template.spec.runtime.sandbox.containers[].envFrom[].configMapRef in the manifest instead")
+		case len(opts.envFromSecret) > 0:
+			return fmt.Errorf("--env-from-secret cannot be combined with -f: set spec.template.spec.runtime.sandbox.containers[].envFrom[].secretRef in the manifest instead")
+		case len(opts.configMaps) > 0:
+			return fmt.Errorf("--configmap cannot be combined with -f: set spec.template.spec.volumes[].configMap and the container's volumeAttachments in the manifest instead")
+		case len(opts.secrets) > 0:
+			return fmt.Errorf("--secret cannot be combined with -f: set spec.template.spec.volumes[].secret and the container's volumeAttachments in the manifest instead")
+		case len(opts.labels) > 0:
+			return fmt.Errorf("--label cannot be combined with -f: set metadata.labels and spec.template.metadata.labels in the manifest instead")
 		}
 	}
 
 	if httpPortSet && (opts.httpPort < 1 || opts.httpPort > 65535) {
 		return fmt.Errorf("--http-port must be between 1 and 65535, got %d", opts.httpPort)
+	}
+
+	// Parsed here, with the rest of the flag checks, so a malformed value is
+	// reported before a client is built and before anything is created.
+	if _, err := parseConfigEdits(opts); err != nil {
+		return err
 	}
 
 	return nil
@@ -294,6 +367,48 @@ func resolveLocationSelector(opts *options) (*metav1.LabelSelector, error) {
 	return nil, nil
 }
 
+// specInputs carries the values deployFromFlags resolves before it rewrites
+// the workload spec.
+type specInputs struct {
+	instanceType      string
+	runtimeClass      string
+	networkInterfaces []computev1alpha.InstanceNetworkInterface
+	config            *containerConfig
+}
+
+// resolveSpecInputs resolves the parts of the spec that read the stored
+// workload: the instance type it runs on, its runtime class, the networks it
+// attaches to, and its container configuration with this deploy's edits
+// merged over what is already there.
+//
+// Merging rather than replacing is what keeps a routine image bump from
+// emptying a container's environment or unmounting its config. Resolving all
+// of it up front is what keeps a value the control plane refuses from being
+// reported after "Apply?" has already been answered.
+func resolveSpecInputs(workload *computev1alpha.Workload, creating bool, opts *options) (*specInputs, error) {
+	inputs := &specInputs{instanceType: opts.instanceType}
+	if inputs.instanceType == "" {
+		inputs.instanceType = defaultInstanceType
+	}
+
+	var err error
+	if inputs.runtimeClass, err = resolveRuntimeClass(workload, creating, opts.runtimeClass); err != nil {
+		return nil, err
+	}
+	if inputs.networkInterfaces, err = resolveNetworkInterfaces(workload, creating, opts.network); err != nil {
+		return nil, err
+	}
+
+	edits, err := parseConfigEdits(opts)
+	if err != nil {
+		return nil, err
+	}
+	if inputs.config, err = resolveContainerConfig(workload, creating, edits); err != nil {
+		return nil, err
+	}
+	return inputs, nil
+}
+
 func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) error {
 	project := util.ProjectFromCmd(cmd)
 	if project == "" {
@@ -305,10 +420,6 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	locationSelector, err := resolveLocationSelector(opts)
 	if err != nil {
 		return err
-	}
-	instanceType := opts.instanceType
-	if instanceType == "" {
-		instanceType = "datumcloud/d1-standard-2"
 	}
 
 	c, err := util.NewClient(project)
@@ -352,16 +463,14 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		httpPort = declaredHTTPPort(&workload)
 	}
 
-	// Checked before the plan and the prompt, because the control plane
-	// refuses a class change and saying so after "Apply?" wastes the answer.
-	runtimeClass, err := resolveRuntimeClass(&workload, creating, opts.runtimeClass)
+	inputs, err := resolveSpecInputs(&workload, creating, opts)
 	if err != nil {
 		return err
 	}
-	networkInterfaces, err := resolveNetworkInterfaces(&workload, creating, opts.network)
-	if err != nil {
-		return err
-	}
+	runtimeClass := inputs.runtimeClass
+	networkInterfaces := inputs.networkInterfaces
+	config := inputs.config
+
 	// Checked once the workload is resolved, so a redeploy checks the network
 	// the workload is attached to and never offers to create "default" for a
 	// workload that is not on it.
@@ -375,8 +484,11 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	// Build spec.
 	tcp := corev1.ProtocolTCP
 	container := computev1alpha.SandboxContainer{
-		Name:  "app",
-		Image: opts.image,
+		Name:              containerName,
+		Image:             opts.image,
+		Env:               config.env,
+		EnvFrom:           config.envFrom,
+		VolumeAttachments: config.attachments,
 	}
 	portName := ""
 	if httpPort > 0 {
@@ -403,12 +515,16 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		},
 	}
 
+	workload.Labels = nonEmptyLabels(config.workloadLabels)
 	workload.Spec = computev1alpha.WorkloadSpec{
 		Template: computev1alpha.InstanceTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: nonEmptyLabels(config.templateLabels),
+			},
 			Spec: computev1alpha.InstanceSpec{
 				Runtime: computev1alpha.InstanceRuntimeSpec{
 					Resources: computev1alpha.InstanceRuntimeResources{
-						InstanceType: instanceType,
+						InstanceType: inputs.instanceType,
 					},
 					Sandbox: &computev1alpha.SandboxRuntime{
 						Containers: []computev1alpha.SandboxContainer{container},
@@ -416,6 +532,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 					Class: runtimeClass,
 				},
 				NetworkInterfaces: networkInterfaces,
+				Volumes:           config.volumes,
 			},
 		},
 		Placements: []computev1alpha.WorkloadPlacement{placement},
@@ -427,6 +544,9 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		fmt.Fprintln(out, planLine("Runtime class", runtimeClass))
 	}
 	fmt.Fprintln(out, planLine("Network", strings.Join(networks, ", ")))
+	for _, line := range planConfigLines(config) {
+		fmt.Fprintln(out, line)
+	}
 
 	removedURL := planHTTPService(ctx, out, c, workloadName, httpPort, opts, creating)
 

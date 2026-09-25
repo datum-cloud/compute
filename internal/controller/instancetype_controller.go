@@ -9,29 +9,37 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/source"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-// InstanceTypeReconciler reconciles an InstanceType object
+// InstanceTypeReconciler reconciles the InstanceTypes in each project control
+// plane. The catalog reaches a project through the compute ServiceConfiguration
+// when the project activates compute, so every project holds its own copy and
+// this controller maintains each copy's status in that project.
 type InstanceTypeReconciler struct {
-	client.Client
+	mgr mcmanager.Manager
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instancetypes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instancetypes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instancetypes/finalizers,verbs=update
 
-func (r *InstanceTypeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+func (r *InstanceTypeReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
+
+	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	c := cl.GetClient()
 
 	var instanceType computev1alpha.InstanceType
-	if err := r.Get(ctx, req.NamespacedName, &instanceType); err != nil {
+	if err := c.Get(ctx, req.NamespacedName, &instanceType); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -58,7 +66,7 @@ func (r *InstanceTypeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if rep := instanceType.Spec.Lifecycle.ReplacementInstanceType; rep != "" {
 		var replacement computev1alpha.InstanceType
-		if err := r.Get(ctx, types.NamespacedName{Name: rep}, &replacement); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: rep}, &replacement); err != nil {
 			if errors.IsNotFound(err) {
 				readyCondition.Status = metav1.ConditionFalse
 				readyCondition.Reason = "ReplacementNotFound"
@@ -74,7 +82,7 @@ func (r *InstanceTypeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	meta.SetStatusCondition(&instanceType.Status.Conditions, readyCondition)
-	if err := r.Status().Update(ctx, &instanceType); err != nil {
+	if err := c.Status().Update(ctx, &instanceType); err != nil {
 		logger.Error(err, "unable to update InstanceType status")
 		return ctrl.Result{}, err
 	}
@@ -82,17 +90,17 @@ func (r *InstanceTypeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager runs the controller in mgr but watches InstanceTypes in
-// catalog, the cluster holding the instance type catalog, which is not the
-// cluster mgr runs against when discovery goes through Milo. r.Client must
-// point at catalog as well.
-func (r *InstanceTypeReconciler) SetupWithManager(mgr ctrl.Manager, catalog cluster.Cluster) error {
-	return ctrl.NewControllerManagedBy(mgr).
+// SetupWithManager watches InstanceTypes in every engaged project control
+// plane.
+func (r *InstanceTypeReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	r.mgr = mgr
+
+	return mcbuilder.ControllerManagedBy(mgr).
 		Named("instancetype").
-		WatchesRawSource(source.Kind(
-			catalog.GetCache(),
-			&computev1alpha.InstanceType{},
-			&handler.TypedEnqueueRequestForObject[*computev1alpha.InstanceType]{},
-		)).
+		For(&computev1alpha.InstanceType{},
+			// Instance types live in project control planes, never in the
+			// management cluster this manager runs against.
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		Complete(r)
 }
