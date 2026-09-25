@@ -59,6 +59,10 @@ export const workloadResourceSchema = z.object({
   locations: z.array(z.string()).default([]),
   resources: z.string().optional(),
   replicasPerRegion: z.number().optional(),
+  /** Networks the instance template attaches to (`networkInterfaces[].network.name`). */
+  networks: z.array(z.string()).default([]),
+  /** Set once `metadata.deletionTimestamp` is — the finalizer is tearing the workload down. */
+  deleting: z.boolean().default(false),
 });
 
 export type Workload = z.infer<typeof workloadResourceSchema>;

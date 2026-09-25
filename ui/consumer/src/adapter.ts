@@ -35,6 +35,7 @@ interface RawObjectMeta {
   namespace?: string;
   resourceVersion?: string;
   creationTimestamp?: string;
+  deletionTimestamp?: string;
   labels?: Record<string, string>;
 }
 
@@ -88,7 +89,12 @@ interface RawWorkloadPlacementStatus {
 export interface RawWorkload {
   metadata?: RawObjectMeta;
   spec?: {
-    template?: { spec?: { runtime?: RawRuntime } };
+    template?: {
+      spec?: {
+        runtime?: RawRuntime;
+        networkInterfaces?: Array<{ network?: { name?: string } }>;
+      };
+    };
     placements?: RawWorkloadPlacement[];
   };
   status?: {
@@ -275,6 +281,12 @@ function toPlacementRegions(
   });
 }
 
+/** Distinct network names across the template's interfaces, in declaration order. */
+function deriveNetworks(interfaces?: Array<{ network?: { name?: string } }>): string[] {
+  const names = (interfaces ?? []).map((iface) => iface.network?.name).filter(Boolean) as string[];
+  return [...new Set(names)];
+}
+
 export function toWorkload(raw: RawWorkload): Workload {
   const conditions = raw.status?.conditions ?? [];
   const placements = raw.spec?.placements ?? [];
@@ -304,6 +316,8 @@ export function toWorkload(raw: RawWorkload): Workload {
     locations: workloadLocations(placements, raw.status?.placements ?? []),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),
+    networks: deriveNetworks(raw.spec?.template?.spec?.networkInterfaces),
+    deleting: !!raw.metadata?.deletionTimestamp,
     conditions: conditions.map((c) => ({
       type: c.type ?? '',
       status: c.status ?? 'Unknown',

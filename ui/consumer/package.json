@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Compute service Portal Plugin: read-only workload/instance operational dashboard, a Module Federation remote reading data exclusively through the portal's Milo control-plane proxy. Workload creation stays in datumctl (CLI-first).",
+  "description": "Compute service Portal Plugin: workload/instance operational dashboard with workload delete, a Module Federation remote reading data exclusively through the portal's Milo control-plane proxy. Workload creation stays in datumctl (CLI-first).",
   "scripts": {
     "dev": "vite",
     "preview": "vite preview",

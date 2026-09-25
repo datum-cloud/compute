@@ -10,6 +10,7 @@ import { ComputeEnablementBanner } from "../components/compute-enablement-banner
 import { formatKpiValue } from "../components/metric-area-chart";
 import { CpuMemorySparks } from "../components/metric-sparkline";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
+import { WorkloadStatusBadge } from "../components/workload-status-badge";
 import { WorkloadListCardsSkeleton, WorkloadListTableSkeleton } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
 import {
@@ -32,8 +33,8 @@ import {
 import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
 import { useOverviewRange } from "../components/overview-range";
 import { useLocationIndex, type LocationIndex } from "../lib/locations";
-import { HEALTH_DOT_CLASS, regionLabel, statusLabel } from "../lib/workload-presenters";
-import { workloadHealthToBadgeType, type Workload } from "../schema";
+import { HEALTH_DOT_CLASS, regionLabel } from "../lib/workload-presenters";
+import type { Workload } from "../schema";
 import { Badge } from "@datum-cloud/datum-ui/badge";
 import { Button, LinkButton } from "@datum-cloud/datum-ui/button";
 import { Dialog } from "@datum-cloud/datum-ui/dialog";
@@ -504,17 +505,11 @@ function WorkloadCard({
           )}
         </CardTitle>
         <CardAction>
-          <div className="flex shrink-0 items-center gap-2">
-            <span
-              className={cn("size-2 rounded-full", HEALTH_DOT_CLASS[workload.health])}
-            />
-            <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
-              {statusLabel(workload)}
-            </Badge>
-          </div>
+          <WorkloadStatusBadge workload={workload} />
         </CardAction>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      {/* Dimmed while deleting: the numbers are the last ones before teardown. */}
+      <CardContent className={cn("flex flex-col gap-4", workload.deleting && "opacity-50")}>
         <CpuMemorySparks
           cpuQuery={cpuQuery}
           memoryQuery={memoryQuery}
@@ -573,7 +568,9 @@ function WorkloadCard({
       </CardContent>
       <CardFooter bordered className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 text-xs">
         <span>
-          Updated {formatDistanceToNowStrict(updatedAt, { addSuffix: true })}
+          {workload.deleting
+            ? "Deleting — instances are being stopped"
+            : `Updated ${formatDistanceToNowStrict(updatedAt, { addSuffix: true })}`}
         </span>
         <LinkButton
           as={Link}

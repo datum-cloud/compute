@@ -15,6 +15,7 @@ import { RecentInstanceLogs } from "../components/instance-logs";
 import { MetricAreaChart } from "../components/metric-area-chart";
 import { TopologyCard } from "../components/topology-card";
 import { WorkloadPageChrome } from "../components/workload-page-chrome";
+import { DeleteWorkloadDialog, useDeleteWorkloadDialog } from "../components/delete-workload-dialog";
 import {
   DEFAULT_OVERVIEW_RANGE,
   OVERVIEW_RANGE_OPTIONS,
@@ -29,6 +30,7 @@ import {
 } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
 import {
+  useDeletePermissions,
   usePublishedUrl,
   useWorkload,
   useWorkloadInstances,
@@ -506,6 +508,13 @@ function WorkloadLayoutShell({
     [instances],
   );
   const proxyId = published.data?.proxyName;
+  const navigate = useNavigate();
+  const permissions = useDeletePermissions(projectId);
+  const deleteDialog = useDeleteWorkloadDialog();
+  // Hidden (not disabled) without permission, per the portal's RBAC conventions.
+  const canDelete =
+    !isLoading && !error && !!workload && !workload.deleting &&
+    !permissions.isLoading && permissions.canDeleteWorkload;
 
   return (
     <WorkloadPageChrome
@@ -515,7 +524,16 @@ function WorkloadLayoutShell({
       metricsHref={metricsHref}
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
-    >
+      onDelete={canDelete && workload ? () => deleteDialog.show(workload) : undefined}>
+      <DeleteWorkloadDialog
+        projectId={projectId}
+        workload={deleteDialog.workload}
+        open={deleteDialog.open}
+        permissions={permissions}
+        onClose={deleteDialog.close}
+        onDeleted={() => navigate(workloadsHref)}
+      />
+
       {isLoading &&
         (pathname === logsHref || pathname.startsWith(`${logsHref}/`) ? (
           <InstanceLogsSkeleton />
