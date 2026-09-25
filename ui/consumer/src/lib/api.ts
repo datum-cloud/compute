@@ -192,10 +192,10 @@ export function useRequestComputeAccess(
 // ── Demo workload: "Global Mesh" ────────────────────────────────────────
 //
 // The Workloads page's "Try the Demo!" card creates the same four objects
-// this manifest does — one unikernel instance in DFW, simulating a
+// this manifest does — one general-purpose (Kata VM) instance in DFW, simulating a
 // six-region mesh (DEMO_MODE=simulate), reachable over a public HTTPProxy URL
 // so it shows up with live "Requests" metrics like any other published
-// workload. No credentials Secret is needed: the unikernel image pulls
+// workload. No credentials Secret is needed: the image pulls
 // anonymously. Names below are per-deploy
 // (`datum-demo-<suffix>` / `datum-demo-net-<suffix>`) rather than fixed, and
 // every object carries `app.kubernetes.io/managed-by: compute-portal-demo` —
@@ -219,7 +219,7 @@ export function useRequestComputeAccess(
 //         networkInterfaces:
 //         - {name: eth0, ipFamilies: [IPv6], network: {name: datum-demo-net-<suffix>}}
 //         runtime:
-//           class: unikernel
+//           class: general-purpose
 //           resources: {instanceType: datumcloud/d1-standard-2}
 //           sandbox:
 //             containers:
@@ -294,14 +294,13 @@ function demoWorkloadPayload(workloadName: string, networkName: string) {
             { name: 'eth0', ipFamilies: ['IPv6'], network: { name: networkName } },
           ],
           runtime: {
-            class: 'unikernel',
+            class: 'general-purpose',
             resources: { instanceType: 'datumcloud/d1-standard-2' },
             sandbox: {
               containers: [
                 {
                   name: 'mesh',
-                  image:
-                    'index.docker.io/scotwells/global-mesh-uk@sha256:6bfeb06ad16e395a6642145024427e37589c4fae33c4ca9932e10704cf7e46d9',
+                  image: 'ghcr.io/datum-labs/compute-network-demo:main',
                   ports: [{ name: 'http', port: 8080, protocol: 'TCP' }],
                   env: [{ name: 'DEMO_MODE', value: 'simulate' }],
                   securityContext: {
