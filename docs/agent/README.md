@@ -17,6 +17,7 @@ assistant owns the document schema that carries it.
 | `skills/*.md` | Skills. Reviewed, step-by-step triage procedures, loaded on demand. |
 | `embed.go` | Embeds both into the binary, so `cmd/compute-mcp` can serve them with no files to mount beside it. |
 | `../../internal/agent` | The reason catalog and the diagnosis walk that back the tools. |
+| `../../config/components/assistant-capability` | Registration. The `CapabilityBinding` that tells an entitled project's assistant that all of the above exists. |
 
 ## Status
 
@@ -40,6 +41,38 @@ compute is offered, `quota_get` for what is left, `resources_list` for
 Networks and RuntimeClasses, and `resources_validate`, `resources_plan` and
 `resources_apply` for the change itself. The plan token and the confirmation
 step live there, once, for every service.
+
+## Registration
+
+Publishing the content above is only half of it — an assistant has to be told it
+exists. That declaration is a **`CapabilityBinding`**
+(`capabilities.assistant.miloapis.com/v1alpha1`), and it lives in
+`config/components/assistant-capability/`. It names the knowledge URL, the
+reviewed tool allow-list, and the seven skills, so adding a skill under
+`skills/` and registering it are one change in one repository.
+
+It used to be neither. The same document lived as raw JSON in the infra
+repository, mounted into the assistant as a fixture file — compute's provider
+content sitting where compute's team neither reviewed nor versioned it.
+
+Two properties of the object decide where it is applied, and both are easy to
+get wrong:
+
+- **It is cluster-scoped, and it goes in a project control plane.** A Milo
+  project is a virtual control plane, so an object written through a project's
+  control-plane path is already inside that project. The plane is the tenancy
+  boundary; there is no `metadata.namespace` and adding one would mean the
+  assistant never finds it. One apply entitles one project.
+- **The CRD itself is global, the objects are not.** Milo exempts CRD
+  *definitions* from project partitioning, so the assistant's own deployment
+  registers the kind once for every project plane. Only the instance data is
+  per-project.
+
+At scale this is the service catalog's job: its projection controller
+materializes one binding per (project, entitled service) and deletes it when
+entitlement is revoked. `metadata.name` is therefore the *agent* name that
+controller uses, so it converges on this object rather than creating a second
+one that would collide tool-for-tool.
 
 ## HTTP surface
 

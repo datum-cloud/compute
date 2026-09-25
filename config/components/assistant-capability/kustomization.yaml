@@ -1,0 +1,9 @@
+# Compute's registration with the Patch assistant — the docs, tools, and guides
+# it offers a customer's assistant.
+#
+# Goes into a customer's project, not the cluster compute itself runs in.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - capability-binding.yaml

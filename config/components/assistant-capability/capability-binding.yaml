@@ -1,0 +1,115 @@
+# What compute offers an AI assistant: docs to read, tools to call, and
+# step-by-step guides to follow.
+#
+# Applied to one customer's project at a time. Adding a guide under
+# docs/agent/skills/ means adding it here too, or nobody sees it.
+apiVersion: capabilities.assistant.miloapis.com/v1alpha1
+kind: CapabilityBinding
+metadata:
+  # Matches the agent name the service catalog uses, so the two don't create
+  # duplicates later.
+  name: compute-diagnostics-agent
+  labels:
+    app.kubernetes.io/name: compute-diagnostics-agent
+    app.kubernetes.io/part-of: compute.datumapis.com
+spec:
+  # Matches the catalog entry in ../service-catalog/service.yaml.
+  serviceRef:
+    name: compute-datumapis-com
+  # Tool usage is billed against this name, so a typo bills the wrong service.
+  serviceName: compute.datumapis.com
+  serviceAgentRef:
+    name: compute-diagnostics-agent
+  # Our own version stamp for the content below. Bump it whenever that content
+  # changes, so we can tell which version a customer actually saw.
+  configurationVersion: v1
+  # Where compute's team reads reports of things the assistant couldn't do.
+  # Remove it and those reports have nowhere to go.
+  reportingProject: datum-cloud
+
+  knowledge:
+    # Served by cmd/compute-mcp straight from docs/agent/. If it's ever
+    # unreachable the assistant carries on without it.
+    sources:
+      - type: LLMDocs
+        title: Compute resource model and condition semantics
+        url: http://compute-mcp.compute-system.svc.cluster.local:8080/llms-full.txt
+    # Short explanations of compute's main resources, so the assistant can
+    # answer basic questions without fetching anything.
+    concepts:
+      - gvk:
+          group: compute.datumapis.com
+          kind: Workload
+        summary: "A customer's declared compute intent: an instance template plus one or more placements. Availability aggregates upward from its deployments."
+      - gvk:
+          group: compute.datumapis.com
+          kind: WorkloadDeployment
+        summary: "One Workload projected onto one cell/location. Where location, city code, and referenced-data resolution are settled."
+      - gvk:
+          group: compute.datumapis.com
+          kind: Instance
+        summary: "A single running unit within a deployment. Carries the most specific conditions: Ready, Available, Programmed, QuotaGranted, ReferencedDataReady."
+
+  tools:
+    mcpServers:
+      # Tools appear to the assistant as "compute__<tool>", so they can't clash
+      # with another service's.
+      - name: compute
+        # Points straight at compute-mcp, which is fine in staging.
+        #
+        # Production needs this changed to the AI gateway address instead.
+        # Going direct there means the call isn't billed, doesn't carry the
+        # customer's identity, and will simply be refused.
+        endpoint: http://compute-mcp.compute-system.svc.cluster.local:8080/mcp
+        toolSelector:
+          # The approved list. Anything not named here is never offered to the
+          # assistant, even if compute-mcp serves it.
+          include:
+            # Looking things up and diagnosing them.
+            - compute_workloads_list
+            - compute_workloads_get
+            - compute_instances_list
+            - compute_workload_diagnose
+            - compute_reason_explain
+            # Helping plan a new workload. Neither of these changes anything.
+            - compute_instance_types_list
+            - compute_workload_render
+        # None of compute's tools change a customer's resources. Left explicit
+        # so the next person adding one has to think about it.
+        mutating: []
+
+  # Triage guides. Only the name and description below are shown to the
+  # assistant; the full guide is fetched only when it's relevant, so having
+  # seven costs almost nothing.
+  skills:
+    - name: workload-not-available
+      description: Triage a compute Workload that is not available, from symptom to root cause and owner
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-not-available.md
+    - name: quota-triage
+      description: Distinguish QuotaExceeded, QuotaNoBudget, PendingEvaluation and quota backend faults, and act on each
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/quota-triage.md
+    - name: instance-not-ready
+      description: Diagnose ImageUnavailable, InstanceCrashing, ConfigurationError and stuck Provisioning on compute Instances
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/instance-not-ready.md
+    - name: referenced-data-triage
+      description: 'Resolve ReferencedDataReady failures: missing, unauthorized, or oversized ConfigMaps and Secrets'
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/referenced-data-triage.md
+    - name: placement-triage
+      description: Handle NoMatchingLocation, AmbiguousServingLocation and CityCodeMismatch — all platform faults
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/placement-triage.md
+    - name: stalled-transient
+      description: Recognize a provider job wedged in transient and act on the stalled actionability state rather than waiting it out
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/stalled-transient.md
+    - name: workload-create
+      description: 'Deploy something new: prerequisites, the choices that are final at create, and render, plan, show, confirm, then apply'
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-create.md
+
+  authority:
+    # Reads run as the person asking, so this grants no access they don't
+    # already have. "*" covers every compute resource, because diagnosing one
+    # problem usually crosses several.
+    reads:
+      - gvk:
+          group: compute.datumapis.com
+          kind: "*"
+    maxTaskDurationSeconds: 60
