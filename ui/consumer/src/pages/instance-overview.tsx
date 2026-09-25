@@ -390,6 +390,7 @@ export default function InstanceOverview() {
           proxyId={proxyId}
           albHostname={albHostname}
           instanceName={instance.name}
+          upstreamIPs={instance.internalIPs}
         />
       </div>
 

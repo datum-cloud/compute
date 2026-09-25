@@ -3,8 +3,6 @@
  * Used by the splat layout at `:workloadName/*`.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
-import { WorkloadStatusBadge } from './workload-status-badge';
-import type { Workload } from '../schema';
 import { Button } from '@datum-cloud/datum-ui/button';
 import {
   Breadcrumb,
@@ -19,11 +17,16 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { HomeIcon, Trash2Icon } from 'lucide-react';
 import { Link } from 'react-router';
 
-export function workloadDetailTabs(overviewHref: string, metricsHref: string): PluginTab[] {
+export function workloadDetailTabs(
+  overviewHref: string,
+  metricsHref: string,
+  logsHref: string
+): PluginTab[] {
   return [
     { label: 'Overview', href: overviewHref },
     { label: 'Deployments' },
     { label: 'Metrics', href: metricsHref },
+    { label: 'Logs', href: logsHref },
     { label: 'Activity' },
   ];
 }
@@ -33,8 +36,8 @@ export function WorkloadPageChrome({
   workloadsHref,
   overviewHref,
   metricsHref,
+  logsHref,
   titleName,
-  workload,
   onDelete,
   children,
 }: {
@@ -42,8 +45,8 @@ export function WorkloadPageChrome({
   workloadsHref: string;
   overviewHref: string;
   metricsHref: string;
+  logsHref: string;
   titleName: string;
-  workload?: Workload | null;
   /** Omitted when the user can't delete this workload — the button is hidden. */
   onDelete?: () => void;
   children: React.ReactNode;
@@ -78,27 +81,22 @@ export function WorkloadPageChrome({
         description={titleName}
         descriptionClassName="break-all"
         actions={
-          workload ? (
-            <div className="flex items-center gap-2">
-              <WorkloadStatusBadge workload={workload} label={workload.health} dot={false} />
-              {onDelete && (
-                <Button
-                  type="danger"
-                  theme="outline"
-                  size="xs"
-                  icon={<Icon icon={Trash2Icon} size={12} />}
-                  onClick={onDelete}
-                  data-e2e="workload-delete">
-                  Delete
-                </Button>
-              )}
-            </div>
+          onDelete ? (
+            <Button
+              type="danger"
+              theme="outline"
+              size="xs"
+              icon={<Icon icon={Trash2Icon} size={12} />}
+              onClick={onDelete}
+              data-e2e="workload-delete">
+              Delete
+            </Button>
           ) : undefined
         }
       />
 
       <PluginTabs
-        tabs={workloadDetailTabs(overviewHref, metricsHref)}
+        tabs={workloadDetailTabs(overviewHref, metricsHref, logsHref)}
         testId="compute-plugin-workload-tabs"
       />
 
