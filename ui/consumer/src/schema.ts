@@ -121,6 +121,8 @@ export const instanceResourceSchema = z.object({
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
   externalIP: z.string().optional(),
   internalIP: z.string().optional(),
+  /** Host-route in-network IPs Envoy may dial (`upstream_host`), v4 and v6. */
+  internalIPs: z.array(z.string()).default([]),
   conditions: z.array(instanceConditionSchema).default([]),
 });
 
