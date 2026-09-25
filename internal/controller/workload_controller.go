@@ -33,6 +33,7 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/locations"
+	"go.datum.net/compute/pkg/instancetypecatalog"
 	"go.datum.net/compute/pkg/runtimeclass"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -63,6 +64,7 @@ type WorkloadReconciler struct {
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=runtimeclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=compute.datumapis.com,resources=instancetypes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
@@ -407,6 +409,8 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 
 	apimeta.SetStatusCondition(&newWorkloadStatus.Conditions, availableCondition)
 
+	reconcileInstanceTypeCondition(ctx, upstreamClient, workload, newWorkloadStatus)
+
 	newWorkloadStatus.Deployments = totalDeployments
 	newWorkloadStatus.Replicas = totalReplicas
 	newWorkloadStatus.CurrentReplicas = totalCurrentReplicas
@@ -425,6 +429,56 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	}
 
 	return nil
+}
+
+// reconcileInstanceTypeCondition reports the lifecycle phase of the instance
+// type a workload selects as a status condition. A workload on a deprecated
+// type gains InstanceTypeDeprecated, on a disabled type InstanceTypeDisabled,
+// each carrying the migration guidance the admission webhook announces. The
+// conditions are only ever set, never cleared: a workload whose type cannot be
+// read, or one that names no type at all, keeps whatever conditions it already
+// has, matching the platform convention that status conditions never regress.
+//
+// upstreamClient is the workload's project-plane client; InstanceTypes are
+// cluster-scoped, so the lookup is a plain Get by name.
+func reconcileInstanceTypeCondition(
+	ctx context.Context,
+	upstreamClient client.Client,
+	workload *computev1alpha.Workload,
+	newWorkloadStatus *computev1alpha.WorkloadStatus,
+) {
+	instanceTypeName := workload.Spec.Template.Spec.Runtime.Resources.InstanceType
+	if len(instanceTypeName) == 0 {
+		return
+	}
+
+	instanceType := &computev1alpha.InstanceType{}
+	if err := upstreamClient.Get(ctx, types.NamespacedName{Name: instanceTypeName}, instanceType); err != nil {
+		// A type that cannot be read (not yet projected, or deleted) leaves the
+		// prior conditions untouched; the next reconcile retries the lookup once
+		// the type appears.
+		log.FromContext(ctx).V(1).Info("skipping instance type condition, type is not readable",
+			"instanceType", instanceTypeName, "error", err)
+		return
+	}
+
+	phase := instanceType.Spec.Lifecycle.Phase
+	if phase != computev1alpha.InstanceTypePhaseDeprecated && phase != computev1alpha.InstanceTypePhaseDisabled {
+		return
+	}
+
+	conditionType := computev1alpha.InstanceTypeConditionDeprecated
+	if phase == computev1alpha.InstanceTypePhaseDisabled {
+		conditionType = computev1alpha.InstanceTypeConditionDisabled
+	}
+
+	apimeta.SetStatusCondition(&newWorkloadStatus.Conditions, metav1.Condition{
+		Type:               conditionType,
+		Status:             metav1.ConditionTrue,
+		Reason:             conditionType,
+		Message:            instancetypecatalog.LifecycleRecommendedMessage(phase, instanceTypeName, instanceType.Spec.Lifecycle.ReplacementInstanceType),
+		ObservedGeneration: workload.Generation,
+	})
 }
 
 var errWorkloadHasDeployments = errors.New("workload has deployments")

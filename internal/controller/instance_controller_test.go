@@ -2387,11 +2387,118 @@ func TestResolveInstanceResources(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cpu, mem, resolved := resolveInstanceResources(tt.instance)
+			cpu, mem, resolved, err := resolveInstanceResources(context.Background(), tt.instance, nil)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResolved, resolved, "resolved mismatch")
 			assert.Equal(t, tt.wantCPU, cpu, "cpuMillicores mismatch")
 			assert.Equal(t, tt.wantMem, mem, "memMiB mismatch")
 		})
+	}
+}
+
+// TestResolveInstanceResourcesFromPublishedType verifies that a published
+// InstanceType object sized the claim before the hardcoded catalog is
+// consulted, and that only a positive published size wins.
+func TestResolveInstanceResourcesFromPublishedType(t *testing.T) {
+	instance := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					InstanceType: "datumcloud/custom-4x8",
+				},
+			},
+		},
+	}
+
+	reader := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		if name != "datumcloud/custom-4x8" {
+			return nil, nil
+		}
+		return &computev1alpha.InstanceType{
+			Spec: computev1alpha.InstanceTypeSpec{
+				Resources: computev1alpha.InstanceTypeResources{
+					CPU:    resource.MustParse("4000m"),
+					Memory: resource.MustParse("8Gi"),
+				},
+			},
+		}, nil
+	}
+
+	cpu, mem, resolved, err := resolveInstanceResources(context.Background(), instance, reader)
+	require.NoError(t, err)
+	assert.True(t, resolved, "a published InstanceType must resolve the sizing")
+	assert.Equal(t, int64(4000), cpu, "cpuMillicores mismatch")
+	assert.Equal(t, int64(8192), mem, "memMiB mismatch")
+
+	// A type that is not found falls through to the hardcoded catalog.
+	missing := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					InstanceType: "datumcloud/not-published",
+				},
+			},
+		},
+	}
+	notFound := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		return nil, nil
+	}
+	cpu, mem, resolved, err = resolveInstanceResources(context.Background(), missing, notFound)
+	require.NoError(t, err)
+	assert.False(t, resolved, "an unpublished type with no explicit sizing must stay unresolved")
+	assert.Equal(t, int64(0), cpu)
+	assert.Equal(t, int64(0), mem)
+
+	// A failed read is a transient error, not a silent count-only claim.
+	failing := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		return nil, errors.New("catalog unavailable")
+	}
+	_, _, _, err = resolveInstanceResources(context.Background(), instance, failing)
+	require.Error(t, err, "a failed InstanceType read must surface as an error")
+
+	// A type published with a zero dimension falls through to the hardcoded
+	// catalog rather than claiming an empty amount. The fallback only resolves a
+	// name the hardcoded catalog knows, so this instance selects d1-standard-2.
+	zeroInstance := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					InstanceType: instanceTypeD1Standard2,
+				},
+			},
+		},
+	}
+	zero := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		return &computev1alpha.InstanceType{
+			Spec: computev1alpha.InstanceTypeSpec{
+				Resources: computev1alpha.InstanceTypeResources{
+					CPU:    resource.MustParse("0"),
+					Memory: resource.MustParse("8Gi"),
+				},
+			},
+		}, nil
+	}
+	cpu, mem, resolved, err = resolveInstanceResources(context.Background(), zeroInstance, zero)
+	require.NoError(t, err)
+	assert.True(t, resolved, "a zero CPU type falls through to the hardcoded catalog, which resolves d1-standard-2")
+	assert.Equal(t, int64(1000), cpu)
+	assert.Equal(t, int64(2048), mem)
+}
+
+// instanceTypeFromTestScheme builds the InstanceType object the published-type
+// sizing test seeds into the fake cluster.
+func instanceTypeFromTestScheme(name string, cpuMillicores int64, memMiB int64) *computev1alpha.InstanceType {
+	return &computev1alpha.InstanceType{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: computev1alpha.InstanceTypeSpec{
+			Resources: computev1alpha.InstanceTypeResources{
+				CPU:    *resource.NewMilliQuantity(cpuMillicores, resource.DecimalSI),
+				Memory: *resource.NewQuantity(memMiB*1024*1024, resource.BinarySI),
+			},
+			Lifecycle: computev1alpha.InstanceTypeLifecycle{
+				Phase: computev1alpha.InstanceTypePhaseActive,
+			},
+		},
 	}
 }
 
@@ -2455,9 +2562,13 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 		},
 	}
 
+	// Publish the InstanceType the instance selects into the cell, so the claim
+	// is sized from the CRD (path 3) rather than the hardcoded catalog (path 4).
+	published := instanceTypeFromTestScheme(instanceTypeD1Standard2, 1000, 2048)
+
 	projectClient := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(instance, deployment).
+		WithObjects(instance, deployment, published).
 		WithStatusSubresource(&computev1alpha.Instance{}).
 		Build()
 

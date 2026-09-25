@@ -46,7 +46,6 @@ func TestValidateWorkloads(t *testing.T) {
 		"basic fields create": {
 			workload: &computev1alpha.Workload{},
 			expectedErrors: field.ErrorList{
-				field.NotSupported(field.NewPath("spec.template.spec.runtime.resources"), "", []string{}),
 				field.Required(field.NewPath("spec.template.spec.runtime"), ""),
 				field.Required(field.NewPath("spec.template.spec.networkInterfaces"), ""),
 				field.Required(field.NewPath("spec.placements"), ""),
@@ -808,9 +807,10 @@ func MakeSandboxWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload 
 						},
 					},
 					Runtime: computev1alpha.InstanceRuntimeSpec{
-						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: defaultInstanceType,
-						},
+						// InstanceType is left empty: with the feature gate off
+						// (the test default) a workload passes validation without
+						// naming one, and the platform runs it on the hardcoded
+						// fallback type.
 						Sandbox: &computev1alpha.SandboxRuntime{
 							Containers: []computev1alpha.SandboxContainer{
 								{
@@ -865,9 +865,8 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 						},
 					},
 					Runtime: computev1alpha.InstanceRuntimeSpec{
-						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: defaultInstanceType,
-						},
+						// See MakeSandboxWorkload: instanceType stays empty so the
+						// workload passes validation under the default (gate off).
 						VirtualMachine: &computev1alpha.VirtualMachineRuntime{
 							VolumeAttachments: []computev1alpha.VolumeAttachment{
 								{

@@ -81,6 +81,20 @@ func makeWDWithAvailCond(name string, status metav1.ConditionStatus, reason, mes
 	return d
 }
 
+// newTestInstanceType builds an InstanceType object at the given lifecycle for
+// workload status-condition tests.
+func newTestInstanceType(name string, phase computev1alpha.InstanceTypeLifecyclePhase, replacement string) *computev1alpha.InstanceType {
+	return &computev1alpha.InstanceType{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: computev1alpha.InstanceTypeSpec{
+			Lifecycle: computev1alpha.InstanceTypeLifecycle{
+				Phase:                   phase,
+				ReplacementInstanceType: replacement,
+			},
+		},
+	}
+}
+
 // runReconcileWorkloadStatus is a minimal harness that calls reconcileWorkloadStatus
 // directly, using a fake client, and returns the resulting Available condition from
 // the workload's updated status.
@@ -273,6 +287,109 @@ func TestReconcileWorkloadStatus_ObservedGeneration(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, gen, cond.ObservedGeneration,
 		"Available condition ObservedGeneration must equal workload.Generation")
+}
+
+// TestReconcileInstanceTypeCondition_Deprecated verifies that a workload on a
+// deprecated instance type gains the InstanceTypeDeprecated condition carrying
+// the migration guidance published on the type.
+func TestReconcileInstanceTypeCondition_Deprecated(t *testing.T) {
+	workload := makeWorkload(4)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud/d1-standard-2"
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		"datumcloud/d1-standard-2", computev1alpha.InstanceTypePhaseDeprecated, "datumcloud/d1-standard-4"))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+	require.NotNil(t, cond, "InstanceTypeDeprecated condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, computev1alpha.InstanceTypeConditionDeprecated, cond.Reason)
+	assert.Contains(t, cond.Message, "datumcloud/d1-standard-4")
+	assert.Equal(t, workload.Generation, cond.ObservedGeneration)
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled),
+		"a deprecated type must not also set the disabled condition")
+}
+
+// TestReconcileInstanceTypeCondition_Disabled verifies that a workload on a
+// disabled instance type gains the InstanceTypeDisabled condition carrying the
+// published replacement guidance.
+func TestReconcileInstanceTypeCondition_Disabled(t *testing.T) {
+	workload := makeWorkload(2)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud/d1-standard-2"
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		"datumcloud/d1-standard-2", computev1alpha.InstanceTypePhaseDisabled, "datumcloud/d1-standard-4"))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+	require.NotNil(t, cond, "InstanceTypeDisabled condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, computev1alpha.InstanceTypeConditionDisabled, cond.Reason)
+	assert.Contains(t, cond.Message, "datumcloud/d1-standard-4")
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated),
+		"a disabled type must not also set the deprecated condition")
+}
+
+// TestReconcileInstanceTypeCondition_DisabledWithoutReplacement uses the
+// no-replacement wording when the type lists no successor.
+func TestReconcileInstanceTypeCondition_DisabledWithoutReplacement(t *testing.T) {
+	workload := makeWorkload(1)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud/d1-standard-2"
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		"datumcloud/d1-standard-2", computev1alpha.InstanceTypePhaseDisabled, ""))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "lists no replacement")
+}
+
+// TestReconcileInstanceTypeCondition_NeverCleared verifies the instance type
+// conditions are only ever set, never cleared or invented: an Active type, a
+// type that cannot be read, and a workload naming no type all leave any prior
+// conditions exactly as they were.
+func TestReconcileInstanceTypeCondition_NeverCleared(t *testing.T) {
+	tests := []struct {
+		name         string
+		instanceType string
+		objs         []client.Object
+	}{
+		{name: "active type invents nothing",
+			instanceType: "datumcloud/d1-standard-2",
+			objs: []client.Object{newTestInstanceType(
+				"datumcloud/d1-standard-2", computev1alpha.InstanceTypePhaseActive, "")}},
+		{name: "unreadable type invents nothing",
+			instanceType: "datumcloud/d1-standard-2",
+			objs:         nil},
+		{name: "empty type invents nothing",
+			instanceType: "",
+			objs:         nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workload := makeWorkload(1)
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = tc.instanceType
+
+			status := &computev1alpha.WorkloadStatus{
+				Conditions: []metav1.Condition{
+					{Type: computev1alpha.InstanceTypeConditionDeprecated, Status: metav1.ConditionTrue, Reason: "previous-reason"},
+				},
+			}
+			reconcileInstanceTypeCondition(context.Background(), newProjectFakeClient(tc.objs...), workload, status)
+
+			prior := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+			require.NotNil(t, prior, "a pre-existing condition must never be cleared")
+			assert.Equal(t, "previous-reason", prior.Reason)
+			assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled))
+		})
+	}
 }
 
 // TestMergeDeploymentMetadata_PreservesForeignAnnotation verifies that merging

@@ -19,6 +19,7 @@ import (
 	"go.datum.net/compute/internal/locations"
 	"go.datum.net/compute/internal/validation"
 	computewebhook "go.datum.net/compute/internal/webhook"
+	"go.datum.net/compute/pkg/instancetypecatalog"
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
@@ -150,6 +151,11 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 		return nil, err
 	}
 
+	instanceTypes, err := r.instanceTypeCatalogWhenEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	opts := validation.WorkloadValidationOptions{
 		Context:            ctx,
 		Client:             clusterClient,
@@ -158,13 +164,14 @@ func (r *workloadWebhook) ValidateCreate(ctx context.Context, workload *computev
 		ValidLocations:     ready.names,
 		LocationTopologies: ready.topologies,
 		RuntimeClasses:     runtimeClasses,
+		InstanceTypes:      instanceTypes,
 	}
 
 	if errs := validation.ValidateWorkloadCreate(workload, opts); len(errs) > 0 {
 		return nil, errors.NewInvalid(workload.GroupVersionKind().GroupKind(), workload.Name, errs)
 	}
 
-	return nil, nil
+	return workloadInstanceTypeWarnings(true, workload, instanceTypes), nil
 }
 
 func (r *workloadWebhook) ValidateUpdate(ctx context.Context, oldWorkload *computev1alpha.Workload, newWorkload *computev1alpha.Workload) (admission.Warnings, error) {
@@ -193,6 +200,11 @@ func (r *workloadWebhook) ValidateUpdate(ctx context.Context, oldWorkload *compu
 		return nil, err
 	}
 
+	instanceTypes, err := r.instanceTypeCatalogWhenEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	opts := validation.WorkloadValidationOptions{
 		Context:            ctx,
 		Client:             clusterClient,
@@ -201,13 +213,14 @@ func (r *workloadWebhook) ValidateUpdate(ctx context.Context, oldWorkload *compu
 		ValidLocations:     ready.names,
 		LocationTopologies: ready.topologies,
 		RuntimeClasses:     runtimeClasses,
+		InstanceTypes:      instanceTypes,
 	}
 
 	if errs := validation.ValidateWorkloadUpdate(newWorkload, oldWorkload, opts); len(errs) > 0 {
 		return nil, errors.NewInvalid(newWorkload.GroupVersionKind().GroupKind(), newWorkload.Name, errs)
 	}
 
-	return nil, nil
+	return workloadInstanceTypeWarnings(false, newWorkload, instanceTypes), nil
 }
 
 func (r *workloadWebhook) ValidateDelete(_ context.Context, _ *computev1alpha.Workload) (admission.Warnings, error) {
@@ -326,4 +339,77 @@ func (r *workloadWebhook) runtimeClassCatalogWhenEnabled(ctx context.Context) (r
 		return nil, nil
 	}
 	return r.runtimeClassCatalog(ctx)
+}
+
+// instanceTypeCatalog lists the instance types published to the control plane
+// the request is admitted into. The platform projects the catalog read-only
+// into every project control plane, so validation uses the same catalog the
+// customer reads.
+//
+// A read failure rejects the request. Storing a workload that selects an
+// instance type no provider runs surfaces later as a workload that is never
+// placed.
+func (r *workloadWebhook) instanceTypeCatalog(ctx context.Context) (instancetypecatalog.Catalog, error) {
+	clusterClient, err := r.clusterClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return instanceTypeCatalog(ctx, clusterClient)
+}
+
+func instanceTypeCatalog(ctx context.Context, clusterClient client.Client) (instancetypecatalog.Catalog, error) {
+	var types computev1alpha.InstanceTypeList
+	if err := clusterClient.List(ctx, &types); err != nil {
+		return nil, fmt.Errorf("failed to list instance types: %w", err)
+	}
+
+	return types.Items, nil
+}
+
+// instanceTypeCatalogWhenEnabled lists the catalog only when instance type
+// selection is enabled. With the gate off, a control plane that has never
+// published a type admits workloads as before.
+func (r *workloadWebhook) instanceTypeCatalogWhenEnabled(ctx context.Context) (instancetypecatalog.Catalog, error) {
+	if !features.FeatureGate.Enabled(features.InstanceTypes) {
+		return nil, nil
+	}
+	return r.instanceTypeCatalog(ctx)
+}
+
+// workloadInstanceTypeWarnings returns the admission warnings that accompany an
+// accepted workload selecting an instance type. Validation rejects before
+// warnings are collected, so every warning here accompanies a workload that is
+// stored.
+//
+// The catalog is empty when selection is disabled or nothing is published, in
+// which case there is nothing to warn about.
+func workloadInstanceTypeWarnings(isCreate bool, workload *computev1alpha.Workload, catalog instancetypecatalog.Catalog) admission.Warnings {
+	if len(catalog) == 0 {
+		return nil
+	}
+
+	selected := workload.Spec.Template.Spec.Runtime.Resources.InstanceType
+	if len(selected) == 0 {
+		// No type means the platform's hardcoded fallback applies. The fallback
+		// is a migration convenience, not a published tier, so flag it on create
+		// so the author can name a real one.
+		if isCreate {
+			return admission.Warnings{
+				"no instance type selected; the workload will run on the platform's default instance type",
+			}
+		}
+		return nil
+	}
+
+	t := catalog.Find(selected)
+	if t == nil {
+		// Unknown types are rejected before warnings surface.
+		return nil
+	}
+
+	if t.Spec.Lifecycle.Phase != computev1alpha.InstanceTypePhaseDeprecated {
+		return nil
+	}
+
+	return admission.Warnings{instancetypecatalog.DeprecatedMessage(selected, t.Spec.Lifecycle.ReplacementInstanceType)}
 }

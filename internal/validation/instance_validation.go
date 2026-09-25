@@ -26,9 +26,6 @@ const (
 
 	// defaultImageName is the only currently supported container image.
 	defaultImageName = "datumcloud/ubuntu-2204-lts"
-
-	// defaultInstanceType is the only currently supported instance type.
-	defaultInstanceType = "datumcloud/d1-standard-2"
 )
 
 func validateInstanceTemplate(
@@ -87,6 +84,7 @@ func validateInstanceSpec(
 
 	allErrs = append(allErrs, validateInstanceRuntimeSpec(spec.Runtime, volumes, fieldPath.Child("runtime"))...)
 	allErrs = append(allErrs, validateRuntimeClassSelection(spec, fieldPath, opts)...)
+	allErrs = append(allErrs, validateInstanceTypeSelection(spec, fieldPath, opts)...)
 	allErrs = append(allErrs, validateInstanceNetworkInterfaces(spec.NetworkInterfaces, fieldPath.Child("networkInterfaces"), opts)...)
 	allErrs = append(allErrs, validateReferencedDataAccess(spec, fieldPath, opts)...)
 
@@ -995,10 +993,11 @@ func validateNamedPorts(ports []computev1alpha.NamedPort, fieldPath *field.Path)
 func validateInstanceRuntimeResources(resources computev1alpha.InstanceRuntimeResources, fieldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// TODO(jreese) look up available instance types
-	if resources.InstanceType != defaultInstanceType {
-		allErrs = append(allErrs, field.NotSupported(fieldPath, resources.InstanceType, []string{defaultInstanceType}))
-	}
+	// instanceType is validated against the project's InstanceType catalog by
+	// validateInstanceTypeSelection, which has the catalog and the admission
+	// context. With no catalog (gate off, or a storage path that skipped the
+	// webhook) the selection is left alone so previously-stored workloads stay
+	// updatable.
 
 	if resources.Requests != nil {
 		allErrs = append(allErrs, field.Forbidden(fieldPath.Child("requests"), "not implemented"))
