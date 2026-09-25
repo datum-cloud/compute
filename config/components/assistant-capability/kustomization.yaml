@@ -1,0 +1,14 @@
+# Compute's registration with the Patch assistant.
+#
+# This is the provider side of the Datum AI Agent Framework: compute declares
+# the knowledge, tools, and skills it contributes to an entitled project's
+# assistant. Compute owns what is published here; the assistant owns the schema
+# that carries it (capabilities.assistant.miloapis.com/v1alpha1).
+#
+# Applied to a Milo PROJECT control plane, not to the workload cluster where
+# compute's manager runs — see the header on capability-binding.yaml.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - capability-binding.yaml
