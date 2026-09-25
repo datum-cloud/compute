@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
@@ -166,13 +165,7 @@ func runList(cmd *cobra.Command, opts *listOptions) error {
 			wlName = labelWLName
 		} else {
 			// At least one label absent — fall back to WorkloadDeployment lookup.
-			// Prefer the explicit WorkloadDeploymentNameLabel; fall back to
-			// deriving the WD name from the Instance name for existing instances
-			// that predate the label.
-			depName := inst.Labels[computev1alpha.WorkloadDeploymentNameLabel]
-			if depName == "" {
-				depName = wdNameFromInstanceName(inst.Name)
-			}
+			depName := deploymentNameForInstance(&inst)
 			if dep, ok := deploymentMap[depName]; ok {
 				location = dep.Spec.LocationRef.Name
 				if labelWLName != "" {
@@ -325,12 +318,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		placementName = labelPlacement
 	} else {
 		// At least one label absent — fall back to WorkloadDeployment Get.
-		// Prefer the WorkloadDeploymentNameLabel; fall back to deriving the WD
-		// name from the Instance name for existing instances that lack the label.
-		depName := inst.Labels[computev1alpha.WorkloadDeploymentNameLabel]
-		if depName == "" {
-			depName = wdNameFromInstanceName(inst.Name)
-		}
+		depName := deploymentNameForInstance(&inst)
 		if depName != "" {
 			var dep computev1alpha.WorkloadDeployment
 			if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: depName}, &dep); err == nil {
@@ -450,30 +438,20 @@ func networkSummary(ifaces []computev1alpha.InstanceNetworkInterfaceStatus) stri
 	return fmt.Sprintf("External: %s  Internal: %s", extIP, intIP)
 }
 
-// wdNameFromInstanceName derives the WorkloadDeployment name from an Instance
-// name by stripping the trailing "-<ordinal>" suffix. Instance names follow the
-// convention "<wd-name>-<ordinal>" (e.g. "my-api-default-dfw-0" → "my-api-default-dfw").
-// This is used as a fallback when WorkloadDeploymentNameLabel is absent on older
-// instances that predate that label.
-//
-// If the name has no trailing numeric segment (not a standard instance name),
-// the original name is returned unchanged so callers can handle it gracefully.
-func wdNameFromInstanceName(instanceName string) string {
-	idx := strings.LastIndex(instanceName, "-")
-	if idx < 0 {
-		return instanceName
+// deploymentNameForInstance returns the name of the WorkloadDeployment that
+// owns the instance, read from WorkloadDeploymentNameLabel or, failing that,
+// the instance's WorkloadDeployment owner reference. Returns "" when neither is
+// set.
+func deploymentNameForInstance(inst *computev1alpha.Instance) string {
+	if name := inst.Labels[computev1alpha.WorkloadDeploymentNameLabel]; name != "" {
+		return name
 	}
-	suffix := instanceName[idx+1:]
-	// The suffix must be entirely numeric digits to qualify as an ordinal.
-	for _, r := range suffix {
-		if !unicode.IsDigit(r) {
-			return instanceName
+	for _, owner := range inst.OwnerReferences {
+		if owner.Kind == "WorkloadDeployment" && owner.APIVersion == computev1alpha.GroupVersion.String() {
+			return owner.Name
 		}
 	}
-	if suffix == "" {
-		return instanceName
-	}
-	return instanceName[:idx]
+	return ""
 }
 
 // formatEnvVar renders a single EnvVar for display.

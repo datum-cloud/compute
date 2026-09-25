@@ -2,7 +2,8 @@ package stateful
 
 import (
 	"strconv"
-	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
@@ -13,24 +14,25 @@ func needsUpdate(instance *v1alpha.Instance, instanceTemplateHash string) bool {
 		instance.Spec.Controller.TemplateHash != instanceTemplateHash
 }
 
-// getInstanceOrdinal returns the ordinal of the instance, or -1 if the instance
-// does not have an ordinal.
-func getInstanceOrdinal(name string) int {
-	lastDash := strings.LastIndex(name, "-")
-	if lastDash == -1 {
+// getInstanceOrdinal returns the ordinal recorded in the instance's
+// InstanceIndexLabel, or -1 if the label is absent or not a non-negative
+// integer.
+func getInstanceOrdinal(obj metav1.Object) int {
+	value, ok := obj.GetLabels()[v1alpha.InstanceIndexLabel]
+	if !ok {
 		return -1
 	}
 
-	ordinal := -1
-	if i, err := strconv.Atoi(name[lastDash+1:]); err == nil {
-		ordinal = i
+	ordinal, err := strconv.Atoi(value)
+	if err != nil || ordinal < 0 {
+		return -1
 	}
 
 	return ordinal
 }
 
 func ascendingOrdinal(a, b instancecontrol.Action) int {
-	if getInstanceOrdinal(a.Object.GetName()) < getInstanceOrdinal(b.Object.GetName()) {
+	if getInstanceOrdinal(a.Object) < getInstanceOrdinal(b.Object) {
 		return -1
 	} else {
 		return 1
@@ -38,7 +40,7 @@ func ascendingOrdinal(a, b instancecontrol.Action) int {
 }
 
 func descendingOrdinal(a, b instancecontrol.Action) int {
-	if getInstanceOrdinal(a.Object.GetName()) > getInstanceOrdinal(b.Object.GetName()) {
+	if getInstanceOrdinal(a.Object) > getInstanceOrdinal(b.Object) {
 		return -1
 	} else {
 		return 1
