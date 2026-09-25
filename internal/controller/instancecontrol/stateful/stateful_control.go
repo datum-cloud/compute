@@ -3,6 +3,7 @@ package stateful
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 
@@ -74,15 +75,24 @@ func (c *statefulControl) GetActions(
 	// highest -> lowest
 	var deleteActions []instancecontrol.Action
 
+	// Instances that cannot hold a slot. Deleted before anything else so a
+	// replacement can take the name.
+	var strayActions []instancecontrol.Action
+
 	// Instances that are desired to exist. We do not currently support the
 	// concept of a partition, so will fill the entire slice.
 	desiredInstances := make([]*v1alpha.Instance, desiredReplicas)
 
 	for _, instance := range currentInstances {
-		instanceIndex := getInstanceOrdinal(instance.Name)
-		if instanceIndex >= len(desiredInstances) {
+		instanceIndex := getInstanceOrdinal(&instance)
+		switch {
+		case instanceIndex < 0:
+			strayActions = append(strayActions, instancecontrol.NewDeleteAction(&instance))
+		case instanceIndex >= len(desiredInstances):
 			deleteActions = append(deleteActions, instancecontrol.NewDeleteAction(&instance))
-		} else {
+		case desiredInstances[instanceIndex] != nil:
+			strayActions = append(strayActions, instancecontrol.NewDeleteAction(&instance))
+		default:
 			desiredInstances[instanceIndex] = &instance
 		}
 	}
@@ -93,7 +103,7 @@ func (c *statefulControl) GetActions(
 		if desiredInstances[i] == nil {
 			desiredInstances[i] = &v1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      deployment.Spec.Template.Labels,
+					Labels:      maps.Clone(deployment.Spec.Template.Labels),
 					Annotations: deployment.Spec.Template.Annotations,
 					Name:        fmt.Sprintf("%s-%d", deployment.Name, i),
 					Namespace:   deployment.Namespace,
@@ -128,7 +138,7 @@ func (c *statefulControl) GetActions(
 				SchedulingGates: gates,
 			}
 
-			addInstanceControllerLabels(desiredInstances[i], getInstanceOrdinal(desiredInstances[i].Name), deployment)
+			addInstanceControllerLabels(desiredInstances[i], int(i), deployment)
 
 			if err := controllerutil.SetControllerReference(deployment, desiredInstances[i], scheme); err != nil {
 				return nil, fmt.Errorf("failed to set controller reference: %w", err)
@@ -177,13 +187,13 @@ func (c *statefulControl) GetActions(
 	// and is emitted outside the ordered rollout decision so it never gates or
 	// reorders instance creation/updates.
 	var patchLabelActions []instancecontrol.Action
-	for _, instance := range desiredInstances {
+	for i, instance := range desiredInstances {
 		if instance.CreationTimestamp.IsZero() || !instance.DeletionTimestamp.IsZero() {
 			// Skip instances that don't exist yet or are being deleted.
 			continue
 		}
 
-		desiredLabels := desiredControllerLabels(getInstanceOrdinal(instance.Name), deployment)
+		desiredLabels := desiredControllerLabels(i, deployment)
 		if labelsNeedBackfill(instance.Labels, desiredLabels) {
 			base := instance.DeepCopy()
 			patched := instance.DeepCopy()
@@ -200,7 +210,7 @@ func (c *statefulControl) GetActions(
 	slices.SortFunc(recreateActions, descendingOrdinal)
 	slices.SortFunc(deleteActions, descendingOrdinal)
 
-	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions))
+	actions := make([]instancecontrol.Action, 0, len(strayActions)+len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions))
 
 	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
 	case v1alpha.OrderedReadyInstanceManagementPolicyType:
@@ -210,11 +220,11 @@ func (c *statefulControl) GetActions(
 		//
 		// For instance, we may have instance 0 that needs to wait to be ready, but
 		// instance 1 wants to be created.
-		actions = append(actions, createActions...)
-		actions = append(actions, waitActions...)
+		ordered := slices.Concat(createActions, waitActions)
+		slices.SortFunc(ordered, ascendingOrdinal)
 
-		slices.SortFunc(actions, ascendingOrdinal)
-
+		actions = append(actions, strayActions...)
+		actions = append(actions, ordered...)
 		actions = append(actions, recreateActions...)
 		actions = append(actions, deleteActions...)
 
