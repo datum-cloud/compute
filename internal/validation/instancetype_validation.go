@@ -12,7 +12,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/features"
 )
+
+func instanceTypesDisabledError(fldPath *field.Path) field.ErrorList {
+	return field.ErrorList{field.Forbidden(fldPath,
+		"instance types are not enabled on this control plane")}
+}
 
 // InstanceTypeValidationOptions carries what InstanceType validation needs to
 // check references across objects. The Client reads the control plane, and the
@@ -30,8 +36,12 @@ type InstanceTypeValidationOptions struct {
 
 // ValidateInstanceTypeCreate validates an InstanceType on creation.
 func ValidateInstanceTypeCreate(it *computev1alpha.InstanceType, opts InstanceTypeValidationOptions) field.ErrorList {
-	allErrs := field.ErrorList{}
 	fldPath := field.NewPath("spec")
+	if !features.FeatureGate.Enabled(features.InstanceTypes) {
+		return instanceTypesDisabledError(fldPath)
+	}
+
+	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, validateInstanceTypeSpec(it.Spec, fldPath, it.Name, opts, true)...)
 
 	// An instance type must be created in Active phase
@@ -44,8 +54,12 @@ func ValidateInstanceTypeCreate(it *computev1alpha.InstanceType, opts InstanceTy
 
 // ValidateInstanceTypeUpdate validates an InstanceType on update.
 func ValidateInstanceTypeUpdate(newIT, oldIT *computev1alpha.InstanceType, opts InstanceTypeValidationOptions) field.ErrorList {
-	allErrs := field.ErrorList{}
 	fldPath := field.NewPath("spec")
+	if !features.FeatureGate.Enabled(features.InstanceTypes) {
+		return instanceTypesDisabledError(fldPath)
+	}
+
+	allErrs := field.ErrorList{}
 	// Only re-verify the replacement when the reference changed: a successor that
 	// is already stored was validated when it was set, so an unrelated edit must
 	// not be rejected because that successor has since retired.
@@ -180,6 +194,10 @@ func nonDisabledReferrers(name string, opts InstanceTypeValidationOptions) ([]st
 // deleted while a live (non-Disabled) successor still references it as a
 // replacement.
 func ValidateInstanceTypeDelete(it *computev1alpha.InstanceType, opts InstanceTypeValidationOptions) field.ErrorList {
+	if !features.FeatureGate.Enabled(features.InstanceTypes) {
+		return instanceTypesDisabledError(field.NewPath("metadata", "name"))
+	}
+
 	referrers, err := nonDisabledReferrers(it.Name, opts)
 	if err != nil {
 		return field.ErrorList{field.InternalError(field.NewPath("metadata"), err)}

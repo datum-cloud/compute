@@ -1,6 +1,6 @@
 # Runbook: Compute controller reconcile storm
 
-**Alerts:** `ComputeControllerReconcileStorm`, `ComputeControllerWorkqueueAddStorm`
+**Alert:** `ComputeControllerReconcileStorm`
 **Severity:** warning
 **Component:** compute controllers (`compute-system/compute-manager`)
 
@@ -19,7 +19,7 @@ including any controller added later. **The firing `controller` / `name` label
 tells you which controller is storming and therefore where to look.**
 
 Each reconcile **succeeds**, so error-based alerting stays silent. The tell is a
-high reconcile / enqueue rate while the workqueue stays drained (depth ~0) and
+high reconcile rate while the workqueue stays mostly drained (low average depth) and
 the number of objects for that controller's resource is small and stable.
 
 Left unchecked, this wastes control-plane CPU and apiserver capacity and adds
@@ -54,8 +54,8 @@ to focus on the storming controller.
    )
    ```
 
-2. **Enqueue rate vs. queue depth** — the smoking gun. A high add rate with a
-   depth pinned near zero means items are re-added as fast as they drain. Note
+2. **Enqueue rate vs. queue depth** — the corroborating signal. A high add rate
+   with a low average depth means items are re-added as fast as they drain. Note
    the workqueue metrics label the controller as `name`, not `controller`:
 
    ```promql
@@ -66,8 +66,8 @@ to focus on the storming controller.
      ) * 60
    )
 
-   # depth stays ~0 the whole time
-   max by (name) (workqueue_depth{job="compute-metrics"})
+   # average depth stays low; brief spikes do not invalidate the signal
+   avg by (name) (avg_over_time(workqueue_depth{job="compute-metrics"}[5m]))
    ```
 
 3. **Object count is tiny and stable** — confirms the rate is not just real work

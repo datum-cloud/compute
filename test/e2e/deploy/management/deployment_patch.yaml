@@ -20,6 +20,9 @@ spec:
       containers:
         - name: manager
           imagePullPolicy: IfNotPresent
+          env:
+            - name: FEATURE_GATES
+              value: InstanceTypes=true
       volumes:
         - name: webhook-server-tls
           csi: null
