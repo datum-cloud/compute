@@ -489,6 +489,18 @@ var catalog = []ReasonInfo{
 		Skill:       SkillQuotaTriage,
 	},
 	{
+		Reason: computev1alpha.WorkloadDeploymentReasonInstanceRejected,
+		ConditionTypes: []string{
+			computev1alpha.WorkloadDeploymentAvailable,
+			computev1alpha.WorkloadDeploymentReplicasReady,
+			computev1alpha.WorkloadAvailable,
+		},
+		Actionability: ActionabilityPlatform,
+		Explanation: "Datum accepted the workload but could not start an instance for it, and retrying " +
+			"will not help. The status message quotes the error word for word.",
+		Remediation: "Raise this with Datum and include the status message.",
+	},
+	{
 		Reason:         computev1alpha.WorkloadReasonNetworkNotFound,
 		ConditionTypes: []string{computev1alpha.WorkloadAvailable},
 		Actionability:  ActionabilityUser,
