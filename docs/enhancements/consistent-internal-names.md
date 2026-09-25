@@ -93,6 +93,16 @@ Every internal object derived from a workload in one location is named:
 The full workload, placement and location names stay on each object as labels. Operators
 and tools find objects by those labels or by ownership, never by parsing a name.
 
+### Instance ordinals
+
+Instance names keep their number at the end. Instances are created lowest number first and
+removed highest number first, so scaling down always removes the newest ones, and an
+instance keeps its name when it is replaced. That keeps dashboards, logs and support
+conversations pointing at the same instance.
+
+The number is also stored as a label, and code reads it from there. Nothing recovers the
+number or the deployment by splitting an instance name.
+
 ### Rollout
 
 1. **Report failures and validate names.** Ship the failure reason in workload status and
@@ -102,10 +112,10 @@ and tools find objects by those labels or by ownership, never by parsing a name.
    and location instead of by name, and create new ones in the new format. Controllers that
    report instance status back to the customer look deployments up by ownership, not by a
    name label.
-3. **Migrate running workloads.** For each existing deployment, start the replacement under
-   its new name, wait until it is healthy, then remove the old one. Production has 18
-   deployments across 9 projects as of 2026-09-25, so this is a small, controlled move
-   with no downtime.
+3. **Recreate running workloads.** Compute carries no compatibility code for the old names.
+   Operators recreate the compute resources on each edge cell once the new naming ships,
+   and every workload comes back under the new format. Production has 18 deployments
+   across 9 projects as of 2026-09-25, so each affected instance restarts once.
 4. **Test the edges.** End-to-end tests with a 63-character workload name, a 63-character
    placement name, the longest location name and 10 or more replicas, on both runtimes.
 
@@ -113,8 +123,8 @@ and tools find objects by those labels or by ownership, never by parsing a name.
 
 | Risk | Mitigation |
 |---|---|
-| Migration restarts customer instances | Make-before-break: the new instance is healthy before the old one is removed |
-| Instance names change for the 9 affected projects | Instances are replaced during migration anyway; the workload name is unchanged |
+| Recreating edge resources restarts customer instances | Schedule the recreate per cell and announce it to the 9 affected projects |
+| Instance names change for the 9 affected projects | The workload name is unchanged, and instances restart once either way |
 | Something parses instance or deployment names, for example to recover the location | Audit the portals, CLI and metrics before phase 3; the location moves to a field |
 | Stricter create-time validation rejects names accepted today | Names over 63 characters never ran; the rare shorter name with dots is rejected only on create. Call out the change in release notes |
 
@@ -131,6 +141,5 @@ and tools find objects by those labels or by ownership, never by parsing a name.
 
 ## Open Questions
 
-- Should the migration run automatically on upgrade, or as a one-time operator step?
 - Should workload names also start with a letter, so providers can use them directly as
   service names?
