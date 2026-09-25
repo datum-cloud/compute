@@ -23,7 +23,7 @@ metadata:
 spec:
   runtime:
     resources:
-      instanceType: datumcloud/d1-standard-2
+      instanceType: datumcloud-d1-standard-2
   networkInterfaces:
   - network:
       name: test-network

@@ -186,7 +186,7 @@ takes:
 These are the ones that cost a round trip. Check the rendered manifest against
 this list before you plan.
 
-1. **One instance type.** `datumcloud/d1-standard-2` is the only one accepted
+1. **One instance type.** `datumcloud-d1-standard-2` is the only one accepted
    today. `compute_instance_types_list` is the check; anything else is rejected
    outright.
 

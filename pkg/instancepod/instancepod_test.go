@@ -609,12 +609,12 @@ func TestContainerResources(t *testing.T) {
 		},
 		{
 			name:         "an unknown instance type falls back to memory only",
-			instanceType: "datumcloud/d1-standard-64",
+			instanceType: "datumcloud-d1-standard-64",
 			wantMemory:   "1Gi",
 		},
 		{
 			name:             "the class may raise the memory fallback",
-			instanceType:     "datumcloud/d1-standard-64",
+			instanceType:     "datumcloud-d1-standard-64",
 			defaultMemoryMiB: 2048,
 			wantMemory:       testMemory2Gi,
 		},

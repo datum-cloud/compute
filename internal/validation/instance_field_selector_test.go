@@ -39,7 +39,7 @@ func fsTestInstance(name, class string) *computev1alpha.Instance {
 			Runtime: computev1alpha.InstanceRuntimeSpec{
 				Class: class,
 				Resources: computev1alpha.InstanceRuntimeResources{
-					InstanceType: "datumcloud/d1-standard-2",
+					InstanceType: "datumcloud-d1-standard-2",
 				},
 			},
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{
@@ -113,7 +113,7 @@ func TestInstanceRuntimeClassFieldSelector(t *testing.T) {
 	t.Run("an undeclared field is not selectable", func(t *testing.T) {
 		var instances computev1alpha.InstanceList
 		err := c.List(ctx, &instances, client.InNamespace(fsTestNamespace),
-			client.MatchingFields{"spec.runtime.resources.instanceType": "datumcloud/d1-standard-2"})
+			client.MatchingFields{"spec.runtime.resources.instanceType": "datumcloud-d1-standard-2"})
 		require.ErrorContains(t, err, "field label not supported")
 	})
 }

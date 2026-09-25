@@ -98,7 +98,7 @@ And in `describe`, with per-location backend health — the view that makes mult
 $ datumctl compute workloads describe api
 
 Workload     api                             project: acme-prod
-Type         sandbox/datumcloud/d1-standard-2
+Type         sandbox/datumcloud-d1-standard-2
 Updated      4m ago
 
 Health       Available

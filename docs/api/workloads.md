@@ -1012,7 +1012,7 @@ A virtual machine runtime will be provided all requested resources.
         <td>
           Full or partial URL of the instance type resource to use for this instance.
 
-For example: `datumcloud/d1-standard-2`
+For example: `datumcloud-d1-standard-2`
 
 May be combined with `resources` to allow for custom instance types for
 instance families that support customization. Instance types which support

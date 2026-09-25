@@ -8,7 +8,7 @@
 
 ## Summary
 
-When a customer configures a compute workload on Datum, they choose how much computing power it needs by selecting a standard instance type (such as `datumcloud/d1-standard-2`). Today, the platform has no single authoritative definition of what an instance type actually provides:
+When a customer configures a compute workload on Datum, they choose how much computing power it needs by selecting a standard instance type (such as `datumcloud-d1-standard-2`). Today, the platform has no single authoritative definition of what an instance type actually provides:
 
 - Sizing is implied across independent components: the management plane hardcodes numbers to claim tenant quota, runtime providers (like `unikraft-provider`) hardcode numbers to size downstream Pods and microVMs, and infrastructure providers translate names directly into cloud machine types.
 - These definitions are synced only by comments and good intentions. They will drift. When they drift, a customer might be charged for 2 vCPUs, their quota ledger reflects 2 vCPUs, but the running microVM only receives 1 vCPU — or vice versa.
@@ -57,8 +57,8 @@ The authoritative catalog sits at the foundation of the Compute control plane. I
 
 ### User Stories
 
-- **Standard Tier Deployment:** A developer specifies `instanceType: datumcloud/d1-standard-2`. Compute looks up the catalog, confirms it provides 1 vCPU and 2 GiB RAM, claims exactly that against the project's quota, and passes the instance to the Unikraft provider, which spins up a microVM with identical guarantees.
-- **Operator Introduces a New Tier:** The platform team decides to offer a memory-optimized tier (`datumcloud/m1-standard-4` with 2 vCPUs and 16 GiB RAM). They apply a new `InstanceType` manifest to the cluster. Instantly, validation accepts it, `datumctl` lists it, and workloads can schedule it without any code releases.
+- **Standard Tier Deployment:** A developer specifies `instanceType: datumcloud-d1-standard-2`. Compute looks up the catalog, confirms it provides 1 vCPU and 2 GiB RAM, claims exactly that against the project's quota, and passes the instance to the Unikraft provider, which spins up a microVM with identical guarantees.
+- **Operator Introduces a New Tier:** The platform team decides to offer a memory-optimized tier (`datumcloud-m1-standard-4` with 2 vCPUs and 16 GiB RAM). They apply a new `InstanceType` manifest to the cluster. Instantly, validation accepts it, `datumctl` lists it, and workloads can schedule it without any code releases.
 - **Quota & Billing Confidence:** An operator auditing tenant usage observes that the project's quota ledger matches the sum of active instance allocations bit-for-bit, eliminating hidden billing leaks or over-commit surprises.
 
 ---
@@ -77,7 +77,7 @@ sequenceDiagram
     participant Quota as Milo Quota Ledger
     participant Runtime as Unikraft Provider
 
-    Customer->>API: Submit Workload (instanceType: datumcloud/d1-standard-2)
+    Customer->>API: Submit Workload (instanceType: datumcloud-d1-standard-2)
     API->>Catalog: Validate tier exists and is Active
     API-->>Customer: Accepted (SchedulingGate: Quota)
     Manager->>Catalog: Resolve precise vCPU (millicores) and Memory (MiB)
@@ -122,10 +122,12 @@ spec:
   # Lifecycle management declared by operator
   lifecycle:
     phase: Active                     # Active | Deprecated | Disabled
-    replacementInstanceType: ""        # Optional successor tier (e.g., datumcloud/d2-standard-2) when Deprecated or Disabled
+    replacementInstanceType: ""        # Optional successor tier (e.g., datumcloud-d2-standard-2) when Deprecated or Disabled
 
-  # Default selection when a workload omits instanceType
-  default: true
+  # There is deliberately no spec.default: an instance type is never designated
+  # the default by the catalog. A workload that omits instanceType keeps running
+  # on the platform's hardcoded fallback (datumcloud-d1-standard-2) for backwards
+  # compatibility; customers are expected to name a tier explicitly.
 
 status:
   # Observed status reported by the controller
@@ -140,8 +142,8 @@ status:
 The operator manages tier sunsetting through `spec.lifecycle`:
 
 - **`Active`**: The instance type is available for all new and existing workloads.
-- **`Deprecated`**: The tier is being phased out. Existing running instances continue undisturbed (and can scale down), but new workload deployments are rejected at admission with an actionable message pointing to `replacementInstanceType`.
-- **`Disabled`**: The tier is decommissioned (e.g., physical host hardware retired). Both new deployments and restarting instances are blocked, and admission reports an error directing the user to update their specification to `replacementInstanceType`.
+- **`Deprecated`**: The tier is being phased out. Existing running instances continue undisturbed, and new workloads that name the tier are still **accepted** at admission — but with an admission warning pointing to `replacementInstanceType`, so the migration is visible rather than silently blocked.
+- **`Disabled`**: The tier is decommissioned (e.g., physical host hardware retired). New workloads naming the tier are **rejected** at admission, and the workload's `InstanceTypeDisabled` condition reports an error directing the user to update their specification to `replacementInstanceType`.
 
 > [!NOTE]
 > Whenever an `InstanceType` transitions into a `Deprecated` or `Disabled` phase, a warning condition is raised in **`workload.status.conditions`** (such as `InstanceTypeDeprecated` or `InstanceTypeDisabled`) on all workloads referencing that tier. Following standard Kubernetes condition conventions, this gives developers, CLI dashboards, and deployment pipelines immediate visibility alongside the recommended migration target:
@@ -151,7 +153,7 @@ The operator manages tier sunsetting through `spec.lifecycle`:
 >     - type: InstanceTypeDeprecated
 >       status: "True"
 >       reason: InstanceTypeDeprecated
->       message: "InstanceType 'datumcloud/d1-standard-2' is deprecated; please migrate to 'datumcloud/d2-standard-2'."
+>       message: "InstanceType 'datumcloud-d1-standard-2' is deprecated; please migrate to 'datumcloud-d2-standard-2'."
 >       lastTransitionTime: "2026-09-18T16:00:00Z"
 >       observedGeneration: 2
 > ```
@@ -172,10 +174,10 @@ spec:
       runtime:
         class: unikraft
         resources:
-          instanceType: datumcloud/d1-standard-2
+          instanceType: datumcloud-d1-standard-2
 ```
 
-If `instanceType` is omitted, the platform applies the default `InstanceType` designated with `spec.default: true` (e.g. `datumcloud/d1-standard-2`).
+If `instanceType` is omitted, the platform keeps the workload running on the hardcoded fallback tier `datumcloud-d1-standard-2` for backwards compatibility; no catalog field designates a default. The admission webhook warns when a new workload omits the field, since customers are expected to name a tier explicitly.
 
 ### 3. Quota and Downstream Provider Alignment
 
@@ -197,7 +199,7 @@ If `instanceType` is omitted, the platform applies the default `InstanceType` de
   4. This provides a **Guaranteed QoS class** and ensures the running microVM exactly reflects what the quota ledger reserved.
 
 - **Infrastructure Provider Machine-Type Mapping (`infra-provider-gcp` and equivalents):**
-  Today, an instance type's size is only *implied* by its mapping to a cloud machine type (e.g. `datumcloud/d1-standard-2` → GCP `n2-standard-2`); nothing declares that the two actually match. To close this gap:
+  Today, an instance type's size is only *implied* by its mapping to a cloud machine type (e.g. `datumcloud-d1-standard-2` → GCP `n2-standard-2`); nothing declares that the two actually match. To close this gap:
   1. Each `InstanceType` carries a `status.providerMappings` (or an equivalent per-provider annotation) listing, per infrastructure provider, the underlying machine type / node pool selector that satisfies that tier's `spec.resources`.
   2. Infrastructure providers resolve the target machine type by reading this mapping from the catalog rather than re-deriving it from the `InstanceType` name or hardcoding a name-to-machine-type table locally.
   3. A validating admission or reconciler check flags any `InstanceType` whose declared `spec.resources` (vCPU/memory) don't fit within the capacity of its mapped machine type for a given provider, catching drift between the catalog's promised envelope and what the underlying hardware actually offers *before* it reaches a customer workload.

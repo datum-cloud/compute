@@ -11,7 +11,7 @@ spec:
     spec:
       runtime:
         resources:
-          instanceType: datumcloud/d1-standard-2
+          instanceType: datumcloud-d1-standard-2
         sandbox:
           containers:
             - name: netdata

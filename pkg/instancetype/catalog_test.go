@@ -26,7 +26,7 @@ func TestCatalogSizing(t *testing.T) {
 		},
 		{
 			name:         "unknown instance type yields no sizing",
-			instanceType: "datumcloud/d1-standard-64",
+			instanceType: "datumcloud-d1-standard-64",
 			wantFound:    false,
 		},
 		{
@@ -50,7 +50,7 @@ func TestCatalogSizing(t *testing.T) {
 }
 
 func TestCatalogName(t *testing.T) {
-	if D1Standard2 != "datumcloud/d1-standard-2" {
+	if D1Standard2 != "datumcloud-d1-standard-2" {
 		t.Errorf("instance type name changed to %q; the name is a customer-facing API value", D1Standard2)
 	}
 }

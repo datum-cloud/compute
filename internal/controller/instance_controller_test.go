@@ -2205,7 +2205,7 @@ func TestReconcileInstanceReadyCondition_ProviderSubConditionSurfacing(t *testin
 // TestResolveInstanceResources verifies the three-tier sizing precedence:
 // explicit container Limits > instance-level Requests > instanceType catalog.
 func TestResolveInstanceResources(t *testing.T) {
-	// d1Standard2 is the canonical catalog entry for datumcloud/d1-standard-2
+	// d1Standard2 is the canonical catalog entry for datumcloud-d1-standard-2
 	// (1 vCPU = 1000 millicores, 2 GiB = 2048 MiB) — the platform-declared quota
 	// size for the instance type.
 	const (
@@ -2333,7 +2333,7 @@ func TestResolveInstanceResources(t *testing.T) {
 				Spec: computev1alpha.InstanceSpec{
 					Runtime: computev1alpha.InstanceRuntimeSpec{
 						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/unknown-type-99",
+							InstanceType: "datumcloud-unknown-type-99",
 						},
 					},
 				},
@@ -2404,14 +2404,14 @@ func TestResolveInstanceResourcesFromPublishedType(t *testing.T) {
 		Spec: computev1alpha.InstanceSpec{
 			Runtime: computev1alpha.InstanceRuntimeSpec{
 				Resources: computev1alpha.InstanceRuntimeResources{
-					InstanceType: "datumcloud/custom-4x8",
+					InstanceType: "datumcloud-custom-4x8",
 				},
 			},
 		},
 	}
 
 	reader := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
-		if name != "datumcloud/custom-4x8" {
+		if name != "datumcloud-custom-4x8" {
 			return nil, nil
 		}
 		return &computev1alpha.InstanceType{
@@ -2435,7 +2435,7 @@ func TestResolveInstanceResourcesFromPublishedType(t *testing.T) {
 		Spec: computev1alpha.InstanceSpec{
 			Runtime: computev1alpha.InstanceRuntimeSpec{
 				Resources: computev1alpha.InstanceRuntimeResources{
-					InstanceType: "datumcloud/not-published",
+					InstanceType: "datumcloud-not-published",
 				},
 			},
 		},

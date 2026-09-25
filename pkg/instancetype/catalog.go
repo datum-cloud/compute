@@ -12,7 +12,7 @@ package instancetype
 import "sort"
 
 // D1Standard2 is the catalog's baseline instance type name.
-const D1Standard2 = "datumcloud/d1-standard-2"
+const D1Standard2 = "datumcloud-d1-standard-2"
 
 // Resources are the dimensions a named instance type is sized at.
 type Resources struct {
@@ -26,7 +26,7 @@ type Resources struct {
 
 // catalog holds the platform-declared sizes, which are not derived from any
 // infrastructure provider's machine type. For example, infra-provider-gcp maps
-// datumcloud/d1-standard-2 to the GCP n2-standard-2 machine type, but that
+// datumcloud-d1-standard-2 to the GCP n2-standard-2 machine type, but that
 // mapping does not define the size here.
 //
 // The map stays unexported and is reached only through Lookup, so no consumer

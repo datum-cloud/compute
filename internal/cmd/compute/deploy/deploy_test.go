@@ -36,7 +36,7 @@ const (
 
 	// testInstanceType is the instance type the control plane records on a
 	// stored workload, matching the package default.
-	testInstanceType = "datumcloud/d1-standard-2"
+	testInstanceType = "datumcloud-d1-standard-2"
 
 	// testManifestFile is the -f argument, standing in for any manifest.
 	testManifestFile = "workload.yaml"

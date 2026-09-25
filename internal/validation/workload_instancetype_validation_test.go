@@ -63,11 +63,11 @@ func TestValidateInstanceTypeSelectionGateOff(t *testing.T) {
 			selected: "",
 		},
 		"the hardcoded fallback type is allowed": {
-			selected: "datumcloud/d1-standard-2",
+			selected: "datumcloud-d1-standard-2",
 		},
 		"a type the hardcoded catalog does not serve is refused": {
 			selected:       testSelectionTypeAzurite,
-			expectedErrors: field.ErrorList{field.NotSupported(selectionTypePath(), testSelectionTypeAzurite, []string{"datumcloud/d1-standard-2"})},
+			expectedErrors: field.ErrorList{field.NotSupported(selectionTypePath(), testSelectionTypeAzurite, []string{"datumcloud-d1-standard-2"})},
 		},
 		"a stored type the hardcoded catalog does not serve stays updatable": {
 			selected: testSelectionTypeAzurite,
