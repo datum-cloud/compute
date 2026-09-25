@@ -236,7 +236,7 @@ function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
 type DemoPhase = "confirm" | "creating" | "waiting" | "ready" | "error";
 
 const DEMO_PHASE_COPY: Record<DemoPhase, string> = {
-  confirm: "This deploys a running workload into your project — one instance in DFW, usually live within a minute.",
+  confirm: "This deploys a running workload into your project — one instance in US-central-1, usually live within a minute.",
   creating: "Deploying your workload…",
   waiting: "Your workload is coming up in the background. You can wait here or head to its page now — it'll keep coming up either way.",
   ready: "Your workload is live.",
