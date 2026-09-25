@@ -4,15 +4,21 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -1183,4 +1189,143 @@ func TestWDAvailableCondition_AnnotationMalformedJSON(t *testing.T) {
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
 		"malformed annotation must be silently ignored; fallback to InstancesProvisioning")
+}
+
+// ─── Instance rejection reporting ─────────────────────────────────────────────
+
+var wdTestInstanceGroupKind = schema.GroupKind{Group: computev1alpha.GroupVersion.Group, Kind: "Instance"}
+
+// newRejectingWDClient returns a project client that fails every Instance
+// create with createErr.
+func newRejectingWDClient(deployment *computev1alpha.WorkloadDeployment, createErr error) client.Client {
+	return fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithObjects(deployment).
+		WithStatusSubresource(deployment).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*computev1alpha.Instance); ok {
+					return createErr
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+}
+
+func wdControllerTestRequest() mcreconcile.Request {
+	return mcreconcile.Request{
+		ClusterName: testCluster,
+		Request: ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: wdControllerTestName, Namespace: wdControllerTestNS},
+		},
+	}
+}
+
+// TestWorkloadDeploymentReconcile_ReportsRejectedInstance verifies that an
+// Instance the API server refuses to accept is reported on the deployment's
+// status, with the API server's message, and still requeues.
+func TestWorkloadDeploymentReconcile_ReportsRejectedInstance(t *testing.T) {
+	t.Parallel()
+
+	invalid := apierrors.NewInvalid(
+		wdTestInstanceGroupKind,
+		"test-wd-0",
+		field.ErrorList{field.Invalid(field.NewPath("metadata", "labels"), "x", "must be no more than 63 bytes")},
+	)
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "invalid", err: invalid},
+		{name: "forbidden", err: apierrors.NewForbidden(
+			schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "instances"},
+			"test-wd-0", errors.New("denied by admission webhook"))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := wdControllerTestDeployment(1)
+			deployment.Finalizers = []string{workloadControllerFinalizer}
+			deployment.Generation = 4
+			cl := newRejectingWDClient(deployment, tt.err)
+			r := newTestWDReconciler(cl)
+
+			_, err := r.Reconcile(context.Background(), wdControllerTestRequest())
+			require.Error(t, err, "a rejected instance must still requeue")
+
+			var updated computev1alpha.WorkloadDeployment
+			require.NoError(t, cl.Get(context.Background(), wdControllerTestRequest().NamespacedName, &updated))
+
+			wantMessage := tt.err.(apierrors.APIStatus).Status().Message
+			for _, condType := range []string{computev1alpha.WorkloadDeploymentAvailable, computev1alpha.WorkloadDeploymentReplicasReady} {
+				cond := apimeta.FindStatusCondition(updated.Status.Conditions, condType)
+				require.NotNil(t, cond, "%s must be set", condType)
+				assert.Equal(t, metav1.ConditionFalse, cond.Status, condType)
+				assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstanceRejected, cond.Reason, condType)
+				assert.Contains(t, cond.Message, wantMessage, condType)
+				assert.NotContains(t, cond.Message, "failed to create", "the message must carry the API error, not the controller's wrapping")
+				assert.Equal(t, int64(4), cond.ObservedGeneration, condType)
+			}
+		})
+	}
+}
+
+// TestWorkloadDeploymentReconcile_TransientInstanceErrorNotReported verifies
+// that an error expected to clear on retry does not replace the deployment's
+// status with a rejection.
+func TestWorkloadDeploymentReconcile_TransientInstanceErrorNotReported(t *testing.T) {
+	t.Parallel()
+
+	deployment := wdControllerTestDeployment(1)
+	deployment.Finalizers = []string{workloadControllerFinalizer}
+	cl := newRejectingWDClient(deployment, apierrors.NewServiceUnavailable("apiserver is shutting down"))
+	r := newTestWDReconciler(cl)
+
+	_, err := r.Reconcile(context.Background(), wdControllerTestRequest())
+	require.Error(t, err)
+
+	var updated computev1alpha.WorkloadDeployment
+	require.NoError(t, cl.Get(context.Background(), wdControllerTestRequest().NamespacedName, &updated))
+	for _, cond := range updated.Status.Conditions {
+		assert.NotEqual(t, computev1alpha.WorkloadDeploymentReasonInstanceRejected, cond.Reason,
+			"a transient error must not be reported as a rejection on %s", cond.Type)
+	}
+}
+
+// TestSetInstanceRejectedConditions_ServingDeploymentStaysAvailable verifies
+// that a rejection while another instance is ready leaves the deployment
+// Available and reports the shortfall on ReplicasReady only.
+func TestSetInstanceRejectedConditions_ServingDeploymentStaysAvailable(t *testing.T) {
+	t.Parallel()
+
+	deployment := wdControllerTestDeployment(2)
+	apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+		Type:   computev1alpha.WorkloadDeploymentAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: computev1alpha.WorkloadDeploymentReasonStableInstanceFound,
+	})
+
+	ready := wdControllerTestInstance("test-wd-0")
+	apimeta.SetStatusCondition(&ready.Status.Conditions, metav1.Condition{
+		Type:   computev1alpha.InstanceReady,
+		Status: metav1.ConditionTrue,
+		Reason: wdTestReasonReady,
+	})
+	rejected := wdControllerTestInstance("test-wd-1")
+	action := instancecontrol.NewCreateAction(&rejected)
+
+	setInstanceRejectedConditions(deployment, action, []computev1alpha.Instance{ready},
+		apierrors.NewInvalid(wdTestInstanceGroupKind, "test-wd-1", nil))
+
+	assert.True(t, apimeta.IsStatusConditionTrue(deployment.Status.Conditions, computev1alpha.WorkloadDeploymentAvailable),
+		"a deployment with a ready instance must stay available")
+	replicasReady := apimeta.FindStatusCondition(deployment.Status.Conditions, computev1alpha.WorkloadDeploymentReplicasReady)
+	require.NotNil(t, replicasReady)
+	assert.Equal(t, metav1.ConditionFalse, replicasReady.Status)
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstanceRejected, replicasReady.Reason)
+	assert.Contains(t, replicasReady.Message, `"test-wd-1"`)
 }

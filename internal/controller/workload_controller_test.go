@@ -199,6 +199,31 @@ func TestReconcileWorkloadStatus_MixedReasons(t *testing.T) {
 		"QuotaNotGranted (priority 3) must beat InstancesProvisioning (priority 1)")
 }
 
+// TestReconcileWorkloadStatus_InstanceRejectedOutranksTransient verifies that a
+// deployment whose instances the API server rejects names the workload's
+// blocker over deployments that are only slow to start or awaiting data.
+func TestReconcileWorkloadStatus_InstanceRejectedOutranksTransient(t *testing.T) {
+	workload := makeWorkload(1)
+	const rejectedMsg = `Create of instance "wd-b-0" was rejected: metadata.labels: must be no more than 63 bytes`
+	placements := map[string][]computev1alpha.WorkloadDeployment{
+		testPlacementA: {
+			makeWDWithAvailCond("wd-a", metav1.ConditionFalse,
+				computev1alpha.WorkloadDeploymentReasonInstancesProvisioning,
+				"Instances are being provisioned"),
+			makeWDWithAvailCond("wd-b", metav1.ConditionFalse,
+				computev1alpha.WorkloadDeploymentReasonInstanceRejected, rejectedMsg),
+			makeWDWithAvailCond("wd-c", metav1.ConditionFalse,
+				computev1alpha.ReferencedDataReasonSourceNotFound, testMsgConfigMapNotFound),
+		},
+	}
+
+	cond := runReconcileWorkloadStatus(t, workload, placements)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstanceRejected, cond.Reason)
+	assert.Equal(t, rejectedMsg, cond.Message)
+}
+
 // TestReconcileWorkloadStatus_OneAvailableDeployment verifies that when at
 // least one deployment is Available=True, the Workload reports Available=True
 // regardless of other deployments' blocking reasons.
@@ -352,6 +377,10 @@ func TestWorkloadBlockingReasonPriority(t *testing.T) {
 		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
 		// Priority 6
 		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
+		{computev1alpha.WorkloadReasonNoMatchingLocations, 6},
+		{computev1alpha.WorkloadDeploymentReasonInstanceRejected, 6},
+		// Priority 7
+		{computev1alpha.WorkloadDeploymentReasonRuntimeClassNotServed, 7},
 	}
 
 	for _, tt := range tests {

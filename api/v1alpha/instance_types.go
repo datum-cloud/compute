@@ -1024,6 +1024,13 @@ const (
 	// Workload.Available when quota is blocking one or more instances.
 	WorkloadDeploymentReasonQuotaNotGranted = "QuotaNotGranted"
 
+	// WorkloadDeploymentReasonInstanceRejected is set on WorkloadDeployment.Available
+	// and Workload.Available when the API server refuses to create or update an
+	// Instance, for example because a generated name or label is invalid. Retrying
+	// the same request fails the same way, so the deployment stays blocked until
+	// the workload or platform changes. The message carries the API error.
+	WorkloadDeploymentReasonInstanceRejected = "InstanceRejected"
+
 	// WorkloadReasonNoAvailablePlacements is set on Workload.Available when all
 	// placements report no available deployments. Used as the last-resort default.
 	WorkloadReasonNoAvailablePlacements = "NoAvailablePlacements"

@@ -752,8 +752,9 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 //	3 - QuotaNotGranted / PendingQuota (operator action may be needed)
 //	4 - ReferencedDataNotReady / AwaitingPropagation / Resolving (transient)
 //	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
-//	6 - NetworkNotFound        (hard error; user action required)
-//	7 - NetworkFailedToCreate  (hard infra error)
+//	6 - NetworkNotFound / NoMatchingLocations / InstanceRejected (hard error;
+//	    retrying cannot clear it)
+//	7 - RuntimeClassNotServed  (no cell can accept the deployment)
 func workloadBlockingReasonPriority(reason string) int {
 	switch reason {
 	case computev1alpha.WorkloadReasonNoAvailablePlacements,
@@ -775,7 +776,8 @@ func workloadBlockingReasonPriority(reason string) int {
 		computev1alpha.ReferencedDataReasonSourceUnauthorized:
 		return 5
 	case computev1alpha.WorkloadReasonNetworkNotFound,
-		computev1alpha.WorkloadReasonNoMatchingLocations:
+		computev1alpha.WorkloadReasonNoMatchingLocations,
+		computev1alpha.WorkloadDeploymentReasonInstanceRejected:
 		return 6
 	// This reason outranks every other blocker. No cell can accept the
 	// deployment, so nothing else can make progress, and the user resolves the
