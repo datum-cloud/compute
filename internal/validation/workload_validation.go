@@ -28,10 +28,26 @@ import (
 func ValidateWorkloadCreate(w *computev1alpha.Workload, opts WorkloadValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// allErrs = append(allErrs, validateWorkloadMetadata(w)...)
+	allErrs = append(allErrs, validateWorkloadName(w.Name)...)
 	allErrs = append(allErrs, validateWorkloadSpec(w.Spec, opts)...)
 	allErrs = append(allErrs, validateWorkloadImages(w, nil)...)
 
+	return allErrs
+}
+
+// validateWorkloadName requires a DNS-1123 label, so every name derived from
+// the workload stays within the limits of the objects that run it. Only
+// creates are checked, so workloads stored under older rules stay updatable.
+func validateWorkloadName(name string) field.ErrorList {
+	namePath := field.NewPath("metadata", "name")
+	if len(name) == 0 {
+		return field.ErrorList{field.Required(namePath, "")}
+	}
+
+	var allErrs field.ErrorList
+	for _, msg := range apimachineryvalidation.NameIsDNSLabel(name, false) {
+		allErrs = append(allErrs, field.Invalid(namePath, name, msg))
+	}
 	return allErrs
 }
 
