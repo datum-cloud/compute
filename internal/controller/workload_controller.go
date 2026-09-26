@@ -33,6 +33,7 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/locations"
+	"go.datum.net/compute/internal/naming"
 	"go.datum.net/compute/pkg/runtimeclass"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -208,30 +209,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	for _, desiredDeployment := range desired {
 		logger.Info("ensuring workload deployment", "deployment_name", desiredDeployment.Name)
 
-		deployment := &computev1alpha.WorkloadDeployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: desiredDeployment.Namespace,
-				Name:      desiredDeployment.Name,
-			},
-		}
-
-		_, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), deployment, func() error {
-			if deployment.CreationTimestamp.IsZero() {
-				logger.Info("creating deployment", "deployment_name", deployment.Name)
-				if err := controllerutil.SetControllerReference(&workload, deployment, cl.GetScheme()); err != nil {
-					return fmt.Errorf("failed to set controller on workload deployment: %w", err)
-				}
-			} else {
-				logger.Info("updating deployment", "deployment_name", deployment.Name)
-			}
-
-			mergeDeploymentMetadata(deployment, &desiredDeployment)
-
-			// TODO(jreese) consider how this plays well with autoscaling
-			deployment.Spec = desiredDeployment.Spec
-			return nil
-		})
-
+		deployment, err := upsertWorkloadDeployment(ctx, cl.GetClient(), &workload, &desiredDeployment)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed mutating workload deployment: %w", err)
 		}
@@ -243,6 +221,50 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	}
 
 	return ctrl.Result{}, r.reconcileWorkloadStatus(ctx, cl.GetClient(), &workload, placementDeployments)
+}
+
+// upsertWorkloadDeployment creates or updates the deployment named by desired. It
+// refuses to update a deployment that belongs to a different workload.
+func upsertWorkloadDeployment(
+	ctx context.Context,
+	upstreamClient client.Client,
+	workload *computev1alpha.Workload,
+	desired *computev1alpha.WorkloadDeployment,
+) (*computev1alpha.WorkloadDeployment, error) {
+	logger := log.FromContext(ctx)
+
+	deployment := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: desired.Namespace,
+			Name:      desired.Name,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, upstreamClient, deployment, func() error {
+		if owner := deployment.Spec.WorkloadRef.UID; owner != "" && owner != workload.UID {
+			return fmt.Errorf("workload deployment %q belongs to workload UID %q, not %q",
+				deployment.Name, owner, workload.UID)
+		}
+
+		if deployment.CreationTimestamp.IsZero() {
+			logger.Info("creating deployment", "deployment_name", deployment.Name)
+			if err := controllerutil.SetControllerReference(workload, deployment, upstreamClient.Scheme()); err != nil {
+				return fmt.Errorf("failed to set controller on workload deployment: %w", err)
+			}
+		} else {
+			logger.Info("updating deployment", "deployment_name", deployment.Name)
+		}
+
+		mergeDeploymentMetadata(deployment, desired)
+
+		// TODO(jreese) consider how this plays well with autoscaling
+		deployment.Spec = desired.Spec
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return deployment, nil
 }
 
 func (r *WorkloadReconciler) reconcileWorkloadStatus(
@@ -521,12 +543,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		return nil, nil, err
 	}
 
-	existingDeployments := sets.Set[string]{}
 	desiredDeployments := sets.Set[string]{}
-
-	for _, deployment := range deployments.Items {
-		existingDeployments.Insert(deployment.Name)
-	}
 
 	placementLocations, err := locations.ListPlacementLocations(ctx, upstreamClient, r.LocationSource)
 	if err != nil {
@@ -554,11 +571,7 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		}
 
 		for _, locationName := range locationNames {
-			// TODO(jreese) should we use GenerateName for deployments and identify
-			// them via labels instead? Would help with race conditions on workload
-			// recreation.
-
-			deploymentName := fmt.Sprintf("%s-%s-%s", workload.Name, placement.Name, strings.ToLower(locationName))
+			deploymentName := naming.DeploymentName(workload.Name, workload.UID, placement.Name, locationName)
 			desiredDeployments.Insert(deploymentName)
 
 			desired = append(desired, computev1alpha.WorkloadDeployment{
@@ -588,12 +601,9 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 		}
 	}
 
-	// Collect orphans
-	for _, name := range existingDeployments.Difference(desiredDeployments).UnsortedList() {
-		for _, deployment := range deployments.Items {
-			if name == deployment.Name {
-				orphaned = append(orphaned, deployment)
-			}
+	for _, deployment := range deployments.Items {
+		if !desiredDeployments.Has(deployment.Name) {
+			orphaned = append(orphaned, deployment)
 		}
 	}
 
