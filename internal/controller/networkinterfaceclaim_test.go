@@ -103,7 +103,7 @@ func TestDesiredNetworkInterfaceClaimSpec(t *testing.T) {
 		Addresses: []computev1alpha.InstanceNetworkInterfaceAddressRequest{
 			{Class: claimTestClass},
 		},
-	}, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared)
+	}, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared, "web-0")
 
 	assert.Equal(t, claimTestNetwork, spec.Network.Name)
 	assert.Equal(t, "eth1", spec.InterfaceName)
@@ -117,9 +117,16 @@ func TestDesiredNetworkInterfaceClaimSpec(t *testing.T) {
 	assert.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared,
 		spec.AttachmentMode)
 
+	require.NotNil(t, spec.AttachedTo)
+	assert.Equal(t, &networkingv1alpha.AttachedToRef{
+		APIGroup: computev1alpha.GroupVersion.Group,
+		Kind:     "Instance",
+		Name:     "web-0",
+	}, spec.AttachedTo)
+
 	defaulted := desiredNetworkInterfaceClaimSpec(computev1alpha.InstanceNetworkInterface{
 		Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
-	}, "")
+	}, "", "web-1")
 	assert.Equal(t, defaultInterfaceName, defaulted.InterfaceName)
 	assert.Empty(t, defaulted.AttachmentMode,
 		"a cell that states no mode leaves the networking default in force")
