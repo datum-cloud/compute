@@ -219,7 +219,7 @@ spec:
           #
           # When customizing an instance type the value will be in the form
           # `<instanceFamily>-custom`.
-          instanceType: datumcloud/d1-standard-2
+          instanceType: datumcloud-d1-standard-2
 
           # Directly specifying desired resources.
           #
@@ -489,7 +489,7 @@ spec:
     spec:
       runtime:
         resources:
-          instanceType: datumcloud/d1-standard-2
+          instanceType: datumcloud-d1-standard-2
         sandbox:
           containers:
             - name: httpbin
@@ -516,7 +516,7 @@ spec:
     spec:
       runtime:
         resources:
-          instanceType: datumcloud/d1-standard-2
+          instanceType: datumcloud-d1-standard-2
         virtualMachine:
           volumeAttachments:
             - name: boot

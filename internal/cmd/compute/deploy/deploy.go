@@ -52,7 +52,7 @@ const (
 
 	// defaultInstanceType is the instance type a workload runs on when
 	// --instance-type is not set.
-	defaultInstanceType = "datumcloud/d1-standard-2"
+	defaultInstanceType = "datumcloud-d1-standard-2"
 )
 
 // errPortRenamed is the one-release migration for --port. It is an error and
@@ -207,7 +207,7 @@ routine image bump changes nothing else. Remove one explicitly with a trailing
 	cmd.Flags().StringVar(&opts.image, "image", "", "Container image to deploy (e.g. ghcr.io/acme/api:1.4.2); also the push destination when --build is set")
 	cmd.Flags().StringVar(&opts.build, "build", "", "Build and push the image from this directory before deploying (default \".\" if given with no value)")
 	cmd.Flags().Lookup("build").NoOptDefVal = "."
-	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud/d1-standard-2", "Instance type (e.g. datumcloud/d1-standard-2)")
+	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud-d1-standard-2", "Instance type (e.g. datumcloud-d1-standard-2)")
 	cmd.Flags().StringVar(&opts.runtimeClass, "runtime-class", "", "Runtime class the workload's Instances run in (e.g. general-purpose, unikernel); defaults to the platform default and cannot be changed after the workload is created")
 	cmd.Flags().StringVar(&opts.network, "network", "", "Network a new workload's Instances attach to (default \"default\"); cannot be changed after the workload is created")
 	cmd.Flags().StringSliceVar(&opts.locations, "location", nil, "One or more locations to deploy to (e.g. us-east-1,eu-west-1)")

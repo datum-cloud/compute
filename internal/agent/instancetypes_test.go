@@ -36,8 +36,8 @@ func TestInstanceTypesListOffersOnlyWhatValidationAccepts(t *testing.T) {
 
 	// The one supported type today, with the sizing quota is accounted against.
 	first := out.InstanceTypes[0]
-	if first.Name != "datumcloud/d1-standard-2" || first.VCPU != 1 || first.MemoryMiB != 2048 {
-		t.Errorf("first type = %+v, want datumcloud/d1-standard-2 at 1 vCPU / 2048 MiB", first)
+	if first.Name != "datumcloud-d1-standard-2" || first.VCPU != 1 || first.MemoryMiB != 2048 {
+		t.Errorf("first type = %+v, want datumcloud-d1-standard-2 at 1 vCPU / 2048 MiB", first)
 	}
 }
 
