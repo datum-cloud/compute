@@ -65,7 +65,10 @@ func DeprecatedMessage(name, replacement string) string {
 // wording is defined once.
 func DisabledMessage(name, replacement string) string {
 	if len(replacement) == 0 {
-		return fmt.Sprintf("InstanceType '%s' is disabled and lists no replacement; please update your workload to another instance type", name)
+		return fmt.Sprintf(
+			"InstanceType '%s' is disabled and lists no replacement; please update your workload to another instance type",
+			name,
+		)
 	}
 	return fmt.Sprintf("InstanceType '%s' is disabled; please update your workload to '%s'.", name, replacement)
 }

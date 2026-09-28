@@ -89,9 +89,9 @@ func makeWDWithAvailCond(name string, status metav1.ConditionStatus, reason, mes
 
 // newTestInstanceType builds an InstanceType object at the given lifecycle for
 // workload status-condition tests.
-func newTestInstanceType(name string, phase computev1alpha.InstanceTypeLifecyclePhase, replacement string) *computev1alpha.InstanceType {
+func newTestInstanceType(phase computev1alpha.InstanceTypeLifecyclePhase, replacement string) *computev1alpha.InstanceType {
 	return &computev1alpha.InstanceType{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: instancetype.D1Standard2},
 		Spec: computev1alpha.InstanceTypeSpec{
 			Lifecycle: computev1alpha.InstanceTypeLifecycle{
 				Phase:                   phase,
@@ -301,10 +301,10 @@ func TestReconcileWorkloadStatus_ObservedGeneration(t *testing.T) {
 func TestReconcileInstanceTypeCondition_Deprecated(t *testing.T) {
 	enableInstanceTypes(t)
 	workload := makeWorkload(4)
-	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud-d1-standard-2"
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
 
 	cl := newProjectFakeClient(newTestInstanceType(
-		"datumcloud-d1-standard-2", computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
+		computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
 
 	status := &computev1alpha.WorkloadStatus{}
 	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
@@ -325,10 +325,10 @@ func TestReconcileInstanceTypeCondition_Deprecated(t *testing.T) {
 func TestReconcileInstanceTypeCondition_Disabled(t *testing.T) {
 	enableInstanceTypes(t)
 	workload := makeWorkload(2)
-	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud-d1-standard-2"
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
 
 	cl := newProjectFakeClient(newTestInstanceType(
-		"datumcloud-d1-standard-2", computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4"))
+		computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4"))
 
 	status := &computev1alpha.WorkloadStatus{}
 	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
@@ -347,10 +347,10 @@ func TestReconcileInstanceTypeCondition_Disabled(t *testing.T) {
 func TestReconcileInstanceTypeCondition_DisabledWithoutReplacement(t *testing.T) {
 	enableInstanceTypes(t)
 	workload := makeWorkload(1)
-	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud-d1-standard-2"
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
 
 	cl := newProjectFakeClient(newTestInstanceType(
-		"datumcloud-d1-standard-2", computev1alpha.InstanceTypePhaseDisabled, ""))
+		computev1alpha.InstanceTypePhaseDisabled, ""))
 
 	status := &computev1alpha.WorkloadStatus{}
 	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
@@ -391,18 +391,18 @@ func TestReconcileInstanceTypeCondition_FollowsPhase(t *testing.T) {
 	}{
 		{name: "an active type drops the condition",
 			objs: []client.Object{newTestInstanceType(
-				"datumcloud-d1-standard-2", computev1alpha.InstanceTypePhaseActive, "")}},
+				computev1alpha.InstanceTypePhaseActive, "")}},
 		{name: "an unpublished type drops the condition",
 			objs: nil},
 		{name: "a type moved on to disabled swaps the condition",
 			objs: []client.Object{newTestInstanceType(
-				"datumcloud-d1-standard-2", computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4")},
+				computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4")},
 			wantDisabled: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			workload := makeWorkload(1)
-			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud-d1-standard-2"
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
 
 			status := priorDeprecatedStatus()
 			reconcileInstanceTypeCondition(context.Background(), newProjectFakeClient(tc.objs...), workload, status)
@@ -436,7 +436,7 @@ func TestReconcileInstanceTypeCondition_UnreadableKeepsPrior(t *testing.T) {
 		Build()
 
 	workload := makeWorkload(1)
-	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud-d1-standard-2"
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
 
 	status := priorDeprecatedStatus()
 	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
@@ -459,7 +459,7 @@ func TestReconcileInstanceTypeCondition_ResolvesTypeName(t *testing.T) {
 			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = selected
 
 			cl := newProjectFakeClient(newTestInstanceType(
-				instancetype.D1Standard2, computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
+				computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
 
 			status := &computev1alpha.WorkloadStatus{}
 			reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
@@ -488,7 +488,7 @@ func TestReconcileInstanceTypeCondition_GateOff(t *testing.T) {
 		Build()
 
 	workload := makeWorkload(1)
-	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = "datumcloud-d1-standard-2"
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
 
 	status := priorDeprecatedStatus()
 	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
@@ -521,7 +521,7 @@ func TestEnqueueWorkloadsOnInstanceType(t *testing.T) {
 
 	requests := enqueueWorkloadsOnInstanceType(context.Background(), cl, "project", instancetype.D1Standard2)
 
-	var names []string
+	names := make([]string, 0, len(requests))
 	for _, r := range requests {
 		assert.Equal(t, multicluster.ClusterName("project"), r.ClusterName)
 		names = append(names, r.Name)

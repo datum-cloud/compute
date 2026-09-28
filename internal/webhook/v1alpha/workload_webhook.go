@@ -376,6 +376,8 @@ func (r *workloadWebhook) instanceTypeCatalogWhenEnabled(ctx context.Context) (i
 	return r.instanceTypeCatalog(ctx)
 }
 
+const warningNoInstanceTypeSelected = "no instance type selected; the workload will run on the platform's default instance type"
+
 // workloadInstanceTypeWarnings returns the admission warnings that accompany an
 // accepted workload selecting an instance type. Validation rejects before
 // warnings are collected, so every warning here accompanies a workload that is
@@ -396,7 +398,7 @@ func workloadInstanceTypeWarnings(isCreate bool, workload *computev1alpha.Worklo
 		// so the author can name a real one.
 		if isCreate {
 			return admission.Warnings{
-				"no instance type selected; the workload will run on the platform's default instance type",
+				warningNoInstanceTypeSelected,
 			}
 		}
 		return nil

@@ -13,6 +13,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/pkg/instancetype"
 )
 
 const (
@@ -39,7 +40,7 @@ func fsTestInstance(name, class string) *computev1alpha.Instance {
 			Runtime: computev1alpha.InstanceRuntimeSpec{
 				Class: class,
 				Resources: computev1alpha.InstanceRuntimeResources{
-					InstanceType: "datumcloud-d1-standard-2",
+					InstanceType: instancetype.D1Standard2,
 				},
 			},
 			NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{
@@ -113,7 +114,7 @@ func TestInstanceRuntimeClassFieldSelector(t *testing.T) {
 	t.Run("an undeclared field is not selectable", func(t *testing.T) {
 		var instances computev1alpha.InstanceList
 		err := c.List(ctx, &instances, client.InNamespace(fsTestNamespace),
-			client.MatchingFields{"spec.runtime.resources.instanceType": "datumcloud-d1-standard-2"})
+			client.MatchingFields{"spec.runtime.resources.instanceType": instancetype.D1Standard2})
 		require.ErrorContains(t, err, "field label not supported")
 	})
 }

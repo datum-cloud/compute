@@ -477,7 +477,7 @@ func TestWorkloadInstanceTypeWarnings(t *testing.T) {
 			selected: "",
 			isCreate: true,
 			want: []string{
-				"no instance type selected; the workload will run on the platform's default instance type",
+				warningNoInstanceTypeSelected,
 			},
 		},
 		"a retired name finds the deprecated type that replaced it": {
@@ -528,7 +528,7 @@ func TestWorkloadInstanceTypeWarnings(t *testing.T) {
 				instanceType(testTypeAzurite, computev1alpha.InstanceTypePhaseActive, ""),
 			},
 			want: []string{
-				"no instance type selected; the workload will run on the platform's default instance type",
+				warningNoInstanceTypeSelected,
 			},
 		},
 		"an empty selection is silent on update": {

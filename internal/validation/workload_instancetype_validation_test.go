@@ -13,6 +13,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
+	"go.datum.net/compute/pkg/instancetype"
 	"go.datum.net/compute/pkg/instancetypecatalog"
 )
 
@@ -63,16 +64,16 @@ func TestValidateInstanceTypeSelectionGateOff(t *testing.T) {
 			selected: "",
 		},
 		"the hardcoded fallback type is allowed": {
-			selected: "datumcloud-d1-standard-2",
+			selected: instancetype.D1Standard2,
 		},
 		// Clients and manifests written before the rename still send the old
 		// name, which was the only one accepted then.
 		"the fallback type's retired name is still allowed on create": {
-			selected: "datumcloud/d1-standard-2",
+			selected: instancetype.LegacyD1Standard2,
 		},
 		"a type the hardcoded catalog does not serve is refused": {
 			selected:       testSelectionTypeAzurite,
-			expectedErrors: field.ErrorList{field.NotSupported(selectionTypePath(), testSelectionTypeAzurite, []string{"datumcloud-d1-standard-2"})},
+			expectedErrors: field.ErrorList{field.NotSupported(selectionTypePath(), testSelectionTypeAzurite, []string{instancetype.D1Standard2})},
 		},
 		"a stored type the hardcoded catalog does not serve stays updatable": {
 			selected: testSelectionTypeAzurite,
@@ -139,15 +140,15 @@ func TestValidateInstanceTypeSelectionGateOn(t *testing.T) {
 		// An object name cannot contain '/', so the retired name can only be
 		// matched through the type published under its new name.
 		"a retired name selects the type published under its new name": {
-			selected: "datumcloud/d1-standard-2",
+			selected: instancetype.LegacyD1Standard2,
 			catalog: instancetypecatalog.Catalog{
-				selectionType("datumcloud-d1-standard-2", computev1alpha.InstanceTypePhaseActive, ""),
+				selectionType(instancetype.D1Standard2, computev1alpha.InstanceTypePhaseActive, ""),
 			},
 		},
 		"a retired name is refused when the type under its new name is disabled": {
-			selected: "datumcloud/d1-standard-2",
+			selected: instancetype.LegacyD1Standard2,
 			catalog: instancetypecatalog.Catalog{
-				selectionType("datumcloud-d1-standard-2", computev1alpha.InstanceTypePhaseDisabled, testSelectionTypeAzurite),
+				selectionType(instancetype.D1Standard2, computev1alpha.InstanceTypePhaseDisabled, testSelectionTypeAzurite),
 			},
 			expectedErrors: field.ErrorList{field.Forbidden(selectionTypePath(), "")},
 		},
