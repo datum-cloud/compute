@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -34,7 +35,9 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/quota"
+	"go.datum.net/compute/pkg/instancetype"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
@@ -2205,7 +2208,7 @@ func TestReconcileInstanceReadyCondition_ProviderSubConditionSurfacing(t *testin
 // TestResolveInstanceResources verifies the three-tier sizing precedence:
 // explicit container Limits > instance-level Requests > instanceType catalog.
 func TestResolveInstanceResources(t *testing.T) {
-	// d1Standard2 is the canonical catalog entry for datumcloud/d1-standard-2
+	// d1Standard2 is the canonical catalog entry for datumcloud-d1-standard-2
 	// (1 vCPU = 1000 millicores, 2 GiB = 2048 MiB) — the platform-declared quota
 	// size for the instance type.
 	const (
@@ -2333,7 +2336,7 @@ func TestResolveInstanceResources(t *testing.T) {
 				Spec: computev1alpha.InstanceSpec{
 					Runtime: computev1alpha.InstanceRuntimeSpec{
 						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/unknown-type-99",
+							InstanceType: "datumcloud-unknown-type-99",
 						},
 					},
 				},
@@ -2387,11 +2390,118 @@ func TestResolveInstanceResources(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cpu, mem, resolved := resolveInstanceResources(tt.instance)
+			cpu, mem, resolved, err := resolveInstanceResources(context.Background(), tt.instance, nil)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResolved, resolved, "resolved mismatch")
 			assert.Equal(t, tt.wantCPU, cpu, "cpuMillicores mismatch")
 			assert.Equal(t, tt.wantMem, mem, "memMiB mismatch")
 		})
+	}
+}
+
+// TestResolveInstanceResourcesFromPublishedType verifies that a published
+// InstanceType object sized the claim before the hardcoded catalog is
+// consulted, and that only a positive published size wins.
+func TestResolveInstanceResourcesFromPublishedType(t *testing.T) {
+	instance := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					InstanceType: "datumcloud-custom-4x8",
+				},
+			},
+		},
+	}
+
+	reader := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		if name != "datumcloud-custom-4x8" {
+			return nil, nil
+		}
+		return &computev1alpha.InstanceType{
+			Spec: computev1alpha.InstanceTypeSpec{
+				Resources: computev1alpha.InstanceTypeResources{
+					CPU:    resource.MustParse("4000m"),
+					Memory: resource.MustParse("8Gi"),
+				},
+			},
+		}, nil
+	}
+
+	cpu, mem, resolved, err := resolveInstanceResources(context.Background(), instance, reader)
+	require.NoError(t, err)
+	assert.True(t, resolved, "a published InstanceType must resolve the sizing")
+	assert.Equal(t, int64(4000), cpu, "cpuMillicores mismatch")
+	assert.Equal(t, int64(8192), mem, "memMiB mismatch")
+
+	// A type that is not found falls through to the hardcoded catalog.
+	missing := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					InstanceType: "datumcloud-not-published",
+				},
+			},
+		},
+	}
+	notFound := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		return nil, nil
+	}
+	cpu, mem, resolved, err = resolveInstanceResources(context.Background(), missing, notFound)
+	require.NoError(t, err)
+	assert.False(t, resolved, "an unpublished type with no explicit sizing must stay unresolved")
+	assert.Equal(t, int64(0), cpu)
+	assert.Equal(t, int64(0), mem)
+
+	// A failed read is a transient error, not a silent count-only claim.
+	failing := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		return nil, errors.New("catalog unavailable")
+	}
+	_, _, _, err = resolveInstanceResources(context.Background(), instance, failing)
+	require.Error(t, err, "a failed InstanceType read must surface as an error")
+
+	// A type published with a zero dimension falls through to the hardcoded
+	// catalog rather than claiming an empty amount. The fallback only resolves a
+	// name the hardcoded catalog knows, so this instance selects d1-standard-2.
+	zeroInstance := &computev1alpha.Instance{
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{
+					InstanceType: instanceTypeD1Standard2,
+				},
+			},
+		},
+	}
+	zero := func(_ context.Context, name string) (*computev1alpha.InstanceType, error) {
+		return &computev1alpha.InstanceType{
+			Spec: computev1alpha.InstanceTypeSpec{
+				Resources: computev1alpha.InstanceTypeResources{
+					CPU:    resource.MustParse("0"),
+					Memory: resource.MustParse("8Gi"),
+				},
+			},
+		}, nil
+	}
+	cpu, mem, resolved, err = resolveInstanceResources(context.Background(), zeroInstance, zero)
+	require.NoError(t, err)
+	assert.True(t, resolved, "a zero CPU type falls through to the hardcoded catalog, which resolves d1-standard-2")
+	assert.Equal(t, int64(1000), cpu)
+	assert.Equal(t, int64(2048), mem)
+}
+
+// instanceTypeFromTestScheme builds the InstanceType object the published-type
+// sizing test seeds into the fake cluster.
+func instanceTypeFromTestScheme(name string, cpuMillicores int64, memMiB int64) *computev1alpha.InstanceType {
+	return &computev1alpha.InstanceType{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: computev1alpha.InstanceTypeSpec{
+			Resources: computev1alpha.InstanceTypeResources{
+				CPU:    *resource.NewMilliQuantity(cpuMillicores, resource.DecimalSI),
+				Memory: *resource.NewQuantity(memMiB*1024*1024, resource.BinarySI),
+			},
+			Lifecycle: computev1alpha.InstanceTypeLifecycle{
+				Phase: computev1alpha.InstanceTypePhaseActive,
+			},
+		},
 	}
 }
 
@@ -2455,6 +2565,9 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 		},
 	}
 
+	// With the InstanceTypes gate at its default (off), the claim is sized from
+	// the hardcoded catalog (path 4). TestReconcileQuotaClaim_SizingSource covers
+	// which published InstanceType is read when the gate is on.
 	projectClient := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(instance, deployment).
@@ -2502,6 +2615,163 @@ func TestReconcileQuotaClaim_RequestsIncludeVCPUsAndMemory(t *testing.T) {
 		"d1-standard-2 must claim 1000 millicores (1 vCPU)")
 	assert.Equal(t, int64(2048), byType["compute.datumapis.com/memory"],
 		"d1-standard-2 must claim 2048 MiB (2 GiB)")
+}
+
+// TestReconcileQuotaClaim_SizingSource verifies where a claim's vCPU and memory
+// come from for an instance sized by instanceType alone. With the gate on, the
+// InstanceType is read from the project control plane that owns the instance
+// (the client the claim is written with), never from the cell. With the gate
+// off, no InstanceType is read and only the hardcoded catalog sizes the claim,
+// which also resolves the retired name instances stored before the rename carry.
+func TestReconcileQuotaClaim_SizingSource(t *testing.T) {
+	const customType = "datumcloud-custom-4x8"
+
+	tests := []struct {
+		name         string
+		gate         bool
+		instanceType string
+		inProject    []client.Object
+		inCell       []client.Object
+		wantVCPUs    int64
+		wantMemory   int64
+	}{
+		{name: "gate on reads the type the project publishes",
+			gate: true, instanceType: customType,
+			inProject: []client.Object{instanceTypeFromTestScheme(customType, 4000, 8192)},
+			wantVCPUs: 4000, wantMemory: 8192},
+		{name: "gate on ignores a type found only in the cell",
+			gate: true, instanceType: customType,
+			inCell:    []client.Object{instanceTypeFromTestScheme(customType, 4000, 8192)},
+			wantVCPUs: 0, wantMemory: 0},
+		{name: "gate on falls back to the hardcoded catalog for an unpublished type",
+			gate: true, instanceType: instanceTypeD1Standard2,
+			wantVCPUs: 1000, wantMemory: 2048},
+		{name: "gate off does not read the published type",
+			gate: false, instanceType: customType,
+			inProject: []client.Object{instanceTypeFromTestScheme(customType, 4000, 8192)},
+			wantVCPUs: 0, wantMemory: 0},
+		{name: "gate off sizes the retired name from the hardcoded catalog",
+			gate: false, instanceType: instancetype.LegacyD1Standard2,
+			wantVCPUs: 1000, wantMemory: 2048},
+		{name: "gate on sizes the retired name from the type published under its new name",
+			gate: true, instanceType: instancetype.LegacyD1Standard2,
+			inProject: []client.Object{instanceTypeFromTestScheme(instanceTypeD1Standard2, 3000, 6144)},
+			wantVCPUs: 3000, wantMemory: 6144},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, tc.gate)
+
+			const (
+				clusterName  = "test-project"
+				namespace    = "default"
+				instanceName = "claim-sizing-test"
+			)
+			s := newTestScheme(t)
+
+			instance := &computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       instanceName,
+					Namespace:  namespace,
+					Finalizers: []string{instanceQuotaFinalizer, instanceControllerFinalizer},
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: testComputeAPIVersion,
+						Kind:       kindWorkloadDeploymentTest,
+						Name:       testOwnerDeploymentName,
+						UID:        testUIDString,
+						Controller: func() *bool { b := true; return &b }(),
+					}},
+				},
+				Spec: computev1alpha.InstanceSpec{
+					Controller: &computev1alpha.InstanceController{
+						SchedulingGates: []computev1alpha.SchedulingGate{
+							{Name: instancecontrol.QuotaSchedulingGate.String()},
+						},
+					},
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						Resources: computev1alpha.InstanceRuntimeResources{InstanceType: tc.instanceType},
+					},
+					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{},
+				},
+			}
+			deployment := &computev1alpha.WorkloadDeployment{
+				ObjectMeta: metav1.ObjectMeta{Name: testOwnerDeploymentName, Namespace: namespace, UID: testUIDString},
+			}
+
+			cellClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(append([]client.Object{instance, deployment}, tc.inCell...)...).
+				WithStatusSubresource(&computev1alpha.Instance{}).
+				Build()
+			quotaClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(tc.inProject...).
+				WithStatusSubresource(&quotav1alpha1.ResourceClaim{}).
+				Build()
+
+			qm := quota.New(nil)
+			qm.StoreClient(clusterName, quotaClient)
+
+			r := &InstanceReconciler{
+				mgr:                &fakeMCManager{clusters: map[string]cluster.Cluster{clusterName: newFakeCluster(cellClient)}},
+				scheme:             s,
+				quotaClientManager: qm,
+				edgeClusterName:    testEdgeClusterName,
+				projectIDForInstance: func(_ context.Context, cn multicluster.ClusterName, _ *computev1alpha.Instance) (string, error) {
+					return string(cn), nil
+				},
+				recorder: &capturingEventRecorder{},
+			}
+			r.finalizers = finalizer.NewFinalizers()
+			require.NoError(t, r.finalizers.Register(instanceControllerFinalizer, r))
+
+			_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+				Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}},
+				ClusterName: clusterName,
+			})
+			require.NoError(t, err)
+
+			var claim quotav1alpha1.ResourceClaim
+			require.NoError(t, quotaClient.Get(context.Background(),
+				types.NamespacedName{Namespace: namespace, Name: instanceQuotaClaimNamePrefix + instanceName}, &claim))
+			byType := make(map[string]int64, len(claim.Spec.Requests))
+			for _, req := range claim.Spec.Requests {
+				byType[req.ResourceType] = req.Amount
+			}
+			assert.Equal(t, int64(1), byType[quotaResourceTypeInstances])
+			assert.Equal(t, tc.wantVCPUs, byType["compute.datumapis.com/vcpus"])
+			assert.Equal(t, tc.wantMemory, byType["compute.datumapis.com/memory"])
+		})
+	}
+}
+
+// TestInstanceTypeReaderFromClient verifies the reader treats a project that
+// does not serve the InstanceType kind yet like one that does not publish the
+// type, so sizing falls back instead of blocking every instance, and that it
+// reads a retired name under the name that replaced it.
+func TestInstanceTypeReaderFromClient(t *testing.T) {
+	s := newTestScheme(t)
+
+	noKind := fake.NewClientBuilder().
+		WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return &apimeta.NoKindMatchError{GroupKind: computev1alpha.GroupVersion.WithKind("InstanceType").GroupKind()}
+			},
+		}).
+		Build()
+	got, err := instanceTypeReaderFromClient(noKind)(context.Background(), instanceTypeD1Standard2)
+	require.NoError(t, err, "a project without the kind must not block sizing")
+	assert.Nil(t, got)
+
+	published := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(instanceTypeFromTestScheme(instanceTypeD1Standard2, 1000, 2048)).
+		Build()
+	got, err = instanceTypeReaderFromClient(published)(context.Background(), instancetype.LegacyD1Standard2)
+	require.NoError(t, err)
+	require.NotNil(t, got, "the retired name must find the type published under its new name")
+	assert.Equal(t, instanceTypeD1Standard2, got.Name)
 }
 
 // TestReconcileQuotaClaim_RuntimeClassLabel verifies that reconcileQuotaClaim

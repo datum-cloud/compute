@@ -193,9 +193,13 @@ func nonDisabledReferrers(name string, opts InstanceTypeValidationOptions) ([]st
 // ValidateInstanceTypeDelete validates an InstanceType on deletion: it cannot be
 // deleted while a live (non-Disabled) successor still references it as a
 // replacement.
+//
+// Deletion is allowed while the gate is off. Nothing reads the catalog then, so
+// removing a type cannot strand a workload, and refusing would leave objects
+// published while the gate was on impossible to clean up.
 func ValidateInstanceTypeDelete(it *computev1alpha.InstanceType, opts InstanceTypeValidationOptions) field.ErrorList {
 	if !features.FeatureGate.Enabled(features.InstanceTypes) {
-		return instanceTypesDisabledError(field.NewPath("metadata", "name"))
+		return nil
 	}
 
 	referrers, err := nonDisabledReferrers(it.Name, opts)

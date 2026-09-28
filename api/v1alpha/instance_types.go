@@ -413,14 +413,18 @@ type VolumeAttachment struct {
 type InstanceRuntimeResources struct {
 	// Full or partial URL of the instance type resource to use for this instance.
 	//
-	// For example: `datumcloud/d1-standard-2`
+	// For example: `datumcloud-d1-standard-2`
 	//
 	// May be combined with `resources` to allow for custom instance types for
 	// instance families that support customization. Instance types which support
 	// customization will appear in the form `<project>/<instanceFamily>-custom`.
 	//
-	// +kubebuilder:validation:Required
-	InstanceType string `json:"instanceType"`
+	// When omitted, the instance runs on the platform's default instance type,
+	// `datumcloud-d1-standard-2`, for compatibility with workloads written
+	// before instance types could be chosen.
+	//
+	// +kubebuilder:validation:Optional
+	InstanceType string `json:"instanceType,omitempty"`
 
 	// Describes adjustments to the resources defined by the instance type.
 	//

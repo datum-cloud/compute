@@ -101,7 +101,6 @@ rules:
   resources:
   - locationbindings
   - networkinterfaces
-  - networks
   - servinglocations
   verbs:
   - get
@@ -127,6 +126,15 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networks
+  verbs:
+  - get
+  - list
+  - use
+  - watch
 - apiGroups:
   - quota.miloapis.com
   resources:

@@ -483,9 +483,10 @@ func TestInstanceTypeValidation_DeprecationGracePeriod(t *testing.T) {
 // activeType builds an Active instance type that may be referenced as a
 // successor.
 // TestInstanceTypeValidation_GateOff verifies that the webhook itself, not
-// just the validation package it delegates to, rejects every write while the
-// InstanceTypes gate is off — exercising the same v.reader(ctx) lookup and
-// admission.Request plumbing a real request goes through.
+// just the validation package it delegates to, rejects creates and updates
+// while the InstanceTypes gate is off and still admits deletes — exercising the
+// same v.reader(ctx) lookup and admission.Request plumbing a real request goes
+// through.
 func TestInstanceTypeValidation_GateOff(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, false)
 
@@ -508,8 +509,7 @@ func TestInstanceTypeValidation_GateOff(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		_, err := tc.v.ValidateDelete(tc.ctx, valid)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "instance types are not enabled on this control plane")
+		require.NoError(t, err)
 	})
 }
 

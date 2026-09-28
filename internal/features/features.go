@@ -77,9 +77,14 @@ const (
 	//
 	// The webhook is always registered, so a stray write can never be
 	// silently admitted unvalidated. Instead it rejects every InstanceType
-	// create, update, and delete with an explained reason while the gate is
-	// off, the same way RuntimeClasses gates a selection instead of leaving
-	// it unenforced.
+	// create and update with an explained reason while the gate is off, the
+	// same way RuntimeClasses gates a selection instead of leaving it
+	// unenforced. Deletes are allowed, so types published while the gate was
+	// on can still be removed.
+	//
+	// While the gate is off nothing reads InstanceType objects: admission,
+	// quota sizing, and the workload controller use the hardcoded catalog in
+	// pkg/instancetype alone, and no InstanceType watch is registered.
 	//
 	// The gate defaults to disabled so this can roll out to every environment
 	// safely; deployments opt in per-environment, once the datum-infra

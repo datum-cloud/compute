@@ -601,13 +601,17 @@ A virtual machine runtime will be provided all requested resources.
         <td>
           Full or partial URL of the instance type resource to use for this instance.
 
-For example: `datumcloud/d1-standard-2`
+For example: `datumcloud-d1-standard-2`
 
 May be combined with `resources` to allow for custom instance types for
 instance families that support customization. Instance types which support
-customization will appear in the form `<project>/<instanceFamily>-custom`.<br/>
+customization will appear in the form `<project>/<instanceFamily>-custom`.
+
+When omitted, the instance runs on the platform's default instance type,
+`datumcloud-d1-standard-2`, for compatibility with workloads written
+before instance types could be chosen.<br/>
         </td>
-        <td>true</td>
+        <td>false</td>
       </tr><tr>
         <td><b>requests</b></td>
         <td>map[string]int or string</td>

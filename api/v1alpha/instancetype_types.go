@@ -89,6 +89,19 @@ const (
 	InstanceTypeConditionReady = "Ready"
 )
 
+// Condition types and reasons surfaced on Workload status when the referenced
+// InstanceType leaves the Active phase. The type and reason share the same
+// string, so a client can match on either without knowing the other.
+const (
+	// InstanceTypeConditionDeprecated is set on a Workload's status.conditions
+	// when the InstanceType it references has phase Deprecated, so developers
+	// see the migration target without reading the catalog themselves.
+	InstanceTypeConditionDeprecated = "InstanceTypeDeprecated"
+	// InstanceTypeConditionDisabled is set on a Workload's status.conditions
+	// when the InstanceType it references has phase Disabled.
+	InstanceTypeConditionDisabled = "InstanceTypeDisabled"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
