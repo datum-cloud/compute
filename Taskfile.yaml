@@ -138,6 +138,19 @@ tasks:
           {{.CLI_ARGS}} \
           test/e2e/
 
+  e2e:test:path:
+    desc: "Run only the suite(s) under a given test/e2e/<dir> (e.g. task e2e:test:path DIR=instance-types) — deterministic, no regex"
+    deps: [e2e:tools:chainsaw]
+    requires:
+      vars: [DIR]
+    cmds:
+      - |
+        KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
+        {{.CHAINSAW}} test \
+          --config test/e2e/chainsaw-config.yaml \
+          test/e2e/{{.DIR}} \
+          {{.CLI_ARGS}}
+
   # ════════════════════════════════════════════════════════════════════════
   #  Tool installation
   # ════════════════════════════════════════════════════════════════════════

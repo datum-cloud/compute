@@ -1,0 +1,26 @@
+# Scenario D: a Workload naming a tier that has reached Disabled after its grace
+# period. Admission rejects it with the migration message directing the author
+# to replacementInstanceType.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: instance-types-wl-disabled
+spec:
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud-d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: docker.io/library/nginx:latest
+      networkInterfaces:
+      - network:
+          name: default
+  placements:
+  - name: default
+    locations:
+    - name: dfw
+    scaleSettings:
+      minReplicas: 1

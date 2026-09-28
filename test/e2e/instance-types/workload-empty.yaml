@@ -1,0 +1,28 @@
+# Scenario B: a Workload that omits instanceType. Per the design decision there
+# is no catalog-marked default, so admission must NOT reject the empty value:
+# it is the legacy fallback and keeps running on datumcloud-d1-standard-2, which
+# the render path stamps onto the downstream WLD. The resources block must be
+# present (the CRD schema requires runtime.resources) but instanceType is left
+# empty inside it.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: instance-types-wl-empty
+spec:
+  template:
+    spec:
+      runtime:
+        resources: {}
+        sandbox:
+          containers:
+            - name: app
+              image: docker.io/library/nginx:latest
+      networkInterfaces:
+      - network:
+          name: default
+  placements:
+  - name: default
+    locations:
+    - name: dfw
+    scaleSettings:
+      minReplicas: 1
