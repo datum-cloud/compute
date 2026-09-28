@@ -348,6 +348,7 @@ export interface RawInstance {
 }
 
 export interface RawInstanceList {
+  metadata?: { continue?: string };
   items?: RawInstance[];
 }
 

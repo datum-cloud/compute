@@ -3,7 +3,8 @@
  *
  * Home layout matches the workloads wireframe: fleet summary strip + 2-column
  * cards with regions. Real compute API fields fill operational slots;
- * Requests and Avg CPU come from the same Prometheus series as instance pages.
+ * Requests and CPU / memory totals come from the same Prometheus series (and
+ * the same sum across instances) as the workload Metrics tab.
  */
 import { CliBanner, SectionCard } from "../components/cli-section";
 import { ComputeEnablementBanner } from "../components/compute-enablement-banner";
@@ -27,8 +28,8 @@ import {
   identityValues,
   type InstanceIdentityLabel,
   useProjectResourceIdentity,
-  workloadCpuAvgQuery,
-  workloadMemoryAvgQuery,
+  workloadCpuSumQuery,
+  workloadMemorySumQuery,
 } from "../lib/metrics-queries";
 import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
 import { useOverviewRange } from "../components/overview-range";
@@ -454,11 +455,11 @@ function WorkloadCard({
   const enabled = !!projectId && !!identityLabel && instanceKeys.length > 0;
   const cpuQuery =
     enabled && identityLabel && projectId
-      ? workloadCpuAvgQuery(projectId, identityLabel, instanceKeys)
+      ? workloadCpuSumQuery(projectId, identityLabel, instanceKeys)
       : undefined;
   const memoryQuery =
     enabled && identityLabel && projectId
-      ? workloadMemoryAvgQuery(projectId, identityLabel, instanceKeys)
+      ? workloadMemorySumQuery(projectId, identityLabel, instanceKeys)
       : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
   const rps = usePrometheusCard(rpsQuery, "requestsPerSecond", { enabled: !!proxyId });

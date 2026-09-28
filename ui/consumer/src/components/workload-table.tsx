@@ -16,8 +16,8 @@ import type { LocationIndex } from '../lib/locations';
 import {
   albRpsQuery,
   type InstanceIdentityLabel,
-  workloadCpuAvgQuery,
-  workloadMemoryAvgQuery,
+  workloadCpuSumQuery,
+  workloadMemorySumQuery,
 } from '../lib/metrics-queries';
 import type { PrometheusTimeRange } from '../lib/prometheus';
 import {
@@ -175,10 +175,10 @@ export function WorkloadTable({
           const keys = instanceKeysByWorkload[row.original.name] ?? [];
           const ready = projectId && identityLabel && keys.length > 0;
           const cpuQuery = ready
-            ? workloadCpuAvgQuery(projectId, identityLabel, keys)
+            ? workloadCpuSumQuery(projectId, identityLabel, keys)
             : undefined;
           const memoryQuery = ready
-            ? workloadMemoryAvgQuery(projectId, identityLabel, keys)
+            ? workloadMemorySumQuery(projectId, identityLabel, keys)
             : undefined;
           return (
             <CpuMemorySparks
