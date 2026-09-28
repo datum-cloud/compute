@@ -8,6 +8,7 @@
  * Search and host filters stay client-side because Envoy OTEL access logs keep
  * an empty Body.
  */
+import { hostRouteIP } from "../adapter";
 import { ApiError, PLUGIN_ID, getProjectScopedBase } from "./api";
 import { useMemo } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
@@ -117,15 +118,87 @@ export function albLogMatchers(
   return rest;
 }
 
+/** Host-route IPs an ALB may dial for this instance. */
+export function instanceUpstreamIPs(input: {
+  internalIP?: string;
+  internalIPs?: readonly string[];
+}): string[] {
+  const seen = new Set<string>();
+  const ips: string[] = [];
+  for (const raw of [...(input.internalIPs ?? []), input.internalIP]) {
+    const ip = hostRouteIP(raw);
+    if (!ip || seen.has(ip)) continue;
+    seen.add(ip);
+    ips.push(ip);
+  }
+  return ips;
+}
+
+/** Envoy `%UPSTREAM_HOST%` host (no port). Empty, `-`, and unix sockets are unset. */
+export function parseUpstreamHostIP(
+  upstreamHost: string | undefined,
+): string | undefined {
+  const raw = upstreamHost?.trim();
+  if (!raw || raw === "-" || raw.startsWith("unix:")) return undefined;
+  if (raw.startsWith("[")) {
+    const end = raw.indexOf("]");
+    if (end <= 1) return undefined;
+    return raw.slice(1, end);
+  }
+  const lastColon = raw.lastIndexOf(":");
+  if (lastColon <= 0) return undefined;
+  return raw.slice(0, lastColon);
+}
+
+/** True when `labels.upstream_host` names one of `ips`. */
+export function albUpstreamHostMatches(
+  upstreamHost: string | undefined,
+  ips: readonly string[],
+): boolean {
+  const host = parseUpstreamHostIP(upstreamHost);
+  if (!host || ips.length === 0) return false;
+  return ips.includes(host);
+}
+
+export function buildAlbUpstreamHostRegexp(ips: readonly string[]): string {
+  return ips
+    .flatMap((ip) => {
+      const escaped = escapeLogQLRegexp(ip);
+      if (ip.includes(":")) {
+        return [`\\[${escaped}\\]:[0-9]+`, `${escaped}:[0-9]+`];
+      }
+      return [`${escaped}:[0-9]+`];
+    })
+    .join("|");
+}
+
+export function filterAlbLogsByUpstreamHost(
+  entries: readonly LogEntry[],
+  ips: readonly string[],
+): LogEntry[] {
+  return entries.filter((entry) => {
+    if (entry.labels[LOG_SOURCE_LABEL] === LOG_SOURCE_INSTANCE) return true;
+    return albUpstreamHostMatches(entry.labels.upstream_host, ips);
+  });
+}
+
 export function buildAlbLogQL(
   proxyId: string,
   extraFilters?: LogFilters,
+  upstreamIPs?: readonly string[],
 ): string {
   const extras = albLogMatchers(proxyId, extraFilters);
   const pin = `route_name=~"${escapeLogQLQuoted(albRouteNameRegexp(proxyId))}"`;
+  const parts = [pin];
+  if (upstreamIPs && upstreamIPs.length > 0) {
+    parts.push(
+      `upstream_host=~"${escapeLogQLQuoted(buildAlbUpstreamHostRegexp(upstreamIPs))}"`,
+    );
+  }
+  const prefix = parts.join(", ");
   const hasExtras = Object.values(extras).some((values) => values.length > 0);
-  if (!hasExtras) return `{${pin}}`;
-  return `{${pin}, ${buildLogQL({ matchers: extras }).slice(1)}`;
+  if (!hasExtras) return `{${prefix}}`;
+  return `{${prefix}, ${buildLogQL({ matchers: extras }).slice(1)}`;
 }
 
 /** LogQL for one instance's stdout. One stream selector — not `or`. */
@@ -189,6 +262,9 @@ function toComputeLogEntries(response: LokiQueryRangeResponse): LogEntry[] {
       ...entry,
       labels: {
         ...pickComputeLogLabels(entry.labels),
+        ...(entry.labels[COMPUTE_LOG_INSTANCE_LABEL]
+          ? { [COMPUTE_LOG_INSTANCE_LABEL]: entry.labels[COMPUTE_LOG_INSTANCE_LABEL] }
+          : {}),
         [LOG_SOURCE_LABEL]: LOG_SOURCE_INSTANCE,
       },
     }));
@@ -362,6 +438,8 @@ export interface UseAlbLogsOptions {
   live?: boolean;
   limit?: number;
   enabled?: boolean;
+  /** When set, pin ALB LogQL to these in-network IPs (`upstream_host`). */
+  upstreamIPs?: readonly string[];
 }
 
 function logsRetry(failureCount: number, error: ApiError) {
@@ -386,9 +464,10 @@ export function useAlbLogs(
     live = false,
     limit = ALB_LOGS_PAGE_LIMIT,
     enabled = true,
+    upstreamIPs,
   } = options;
 
-  const query = proxyId ? buildAlbLogQL(proxyId, filters) : "";
+  const query = proxyId ? buildAlbLogQL(proxyId, filters, upstreamIPs) : "";
   const windowKey = live ? "live" : `${timeRange.from}/${timeRange.to}`;
 
   return useQuery({
@@ -524,20 +603,33 @@ export function useInstanceLogs(
   instanceName: string | undefined,
   options: UseAlbLogsOptions,
 ): UseInstanceLogsResult {
-  const { search, enabled = true, ...rest } = options;
-  const albEnabled = enabled && !!proxyId;
+  const { search, enabled = true, upstreamIPs, ...rest } = options;
+  const ips = useMemo(
+    () => instanceUpstreamIPs({ internalIPs: upstreamIPs }),
+    [upstreamIPs],
+  );
+  const albEnabled = enabled && !!proxyId && ips.length > 0;
   const computeEnabled = enabled && !!instanceName;
 
-  const alb = useAlbLogs(projectId, proxyId, { ...rest, search: undefined, enabled: albEnabled });
+  const alb = useAlbLogs(projectId, proxyId, {
+    ...rest,
+    search: undefined,
+    enabled: albEnabled,
+    upstreamIPs: ips,
+  });
   const compute = useComputeLogs(projectId, instanceName, {
     ...rest,
     search: undefined,
     enabled: computeEnabled,
   });
 
+  const albRows = useMemo(
+    () => filterAlbLogsByUpstreamHost(alb.data ?? [], ips),
+    [alb.data, ips],
+  );
   const merged = useMemo(
-    () => mergeLogEntries(alb.data, compute.data),
-    [alb.data, compute.data],
+    () => mergeLogEntries(albRows, compute.data),
+    [albRows, compute.data],
   );
   const data = useMemo(() => filterEntries(merged, {}, search), [merged, search]);
   const error =

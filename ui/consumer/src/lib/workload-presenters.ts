@@ -20,6 +20,7 @@ export const HEALTH_ORDER: Record<WorkloadHealth, number> = {
 };
 
 export function statusLabel(workload: Workload): string {
+  if (workload.deleting) return 'Deleting';
   if (workload.health === 'Available') {
     const ready = workload.readyReplicas;
     const desired = workload.desiredReplicas;

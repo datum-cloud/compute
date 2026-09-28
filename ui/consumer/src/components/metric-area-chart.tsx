@@ -8,13 +8,15 @@
 import {
   transformForRecharts,
   usePrometheusChart,
+  type ChartSeries,
   type MetricFormat,
   type PrometheusTimeRange,
 } from '../lib/prometheus';
-import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
+import { busiestSeries, nextHiddenSeries, type SeriesLegendModifiers } from '../lib/series-view';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { ChartContainer, ChartTooltip, type ChartConfig } from '@datum-cloud/datum-ui/chart';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { useId, useMemo } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts';
 
 const SERIES_COLORS = [
@@ -118,8 +120,66 @@ function formatTimeTick(timestamp: number, rangeMs: number): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function seriesLabel(name: string, title: string): string {
-  return !name || name === 'Series' ? title : name;
+function seriesLabel(name: string, title: string, labels?: Record<string, string>): string {
+  if (!name || name === 'Series') return title;
+  return labels?.[name] ?? name;
+}
+
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
+/** Past this many lines, stacked gradient fills turn to mud; draw lines only. */
+const MAX_FILLED_SERIES = 3;
+
+function SeriesLegend({
+  series,
+  title,
+  labels,
+  hidden,
+  colorFor,
+  onToggle,
+  className,
+}: {
+  series: ChartSeries[];
+  title: string;
+  labels?: Record<string, string>;
+  hidden: ReadonlySet<string>;
+  colorFor: (item: ChartSeries, index: number) => string;
+  onToggle: (name: string, modifiers: SeriesLegendModifiers) => void;
+  className?: string;
+}) {
+  if (series.length < 2) return null;
+  return (
+    // Inline cap: the host does not compile `max-h-*` arbitrary values.
+    <div
+      className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 overflow-y-auto', className)}
+      style={{ maxHeight: 64 }}>
+      {series.map((item, index) => {
+        const isHidden = hidden.has(item.name);
+        return (
+          <button
+            key={item.name}
+            type="button"
+            title={`${item.name} · Click to isolate · Shift-click to hide`}
+            onMouseDown={(event) => {
+              if (event.shiftKey) event.preventDefault();
+            }}
+            onClick={(event) => onToggle(item.name, event)}
+            className={cn(
+              'inline-flex items-center gap-1.5 text-xs whitespace-nowrap select-none',
+              isHidden
+                ? 'text-muted-foreground/50 line-through'
+                : 'text-muted-foreground hover:text-foreground'
+            )}>
+            <span
+              className={cn('size-1.5 shrink-0 rounded-full', isHidden && 'opacity-40')}
+              style={{ background: colorFor(item, index) }}
+            />
+            {seriesLabel(item.name, title, labels)}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export function MetricAreaChart({
@@ -137,6 +197,8 @@ export function MetricAreaChart({
   height = 224,
   embedded = false,
   fill = false,
+  maxSeries,
+  seriesLabels,
 }: {
   query: string | undefined;
   timeRange: PrometheusTimeRange;
@@ -156,13 +218,32 @@ export function MetricAreaChart({
   embedded?: boolean;
   /** Grow to the parent instead of a fixed pixel height. */
   fill?: boolean;
+  /** Draw only the series with the highest peaks, and say how many were left out. */
+  maxSeries?: number;
+  /** Display names keyed by series name (the full name stays in the legend tooltip). */
+  seriesLabels?: Record<string, string>;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const { data, isLoading, error } = usePrometheusChart(query, timeRange, {
     enabled: enabled && !unavailable && !denied && !pending && !!query,
   });
   const chartData = useMemo(() => (data ? transformForRecharts(data) : []), [data]);
-  const series = data?.series ?? [];
+  const allSeries = data?.series ?? [];
+  const series = useMemo(() => busiestSeries(data?.series ?? [], maxSeries), [data, maxSeries]);
+  const omitted = allSeries.length - series.length;
+  const [hiddenState, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+  const seriesNames = useMemo(() => series.map((item) => item.name), [series]);
+  // The isolated series can drop out of the busiest set on a refetch; show
+  // everything again rather than an empty chart.
+  const hidden = seriesNames.every((name) => hiddenState.has(name)) ? EMPTY_SET : hiddenState;
+  const onToggle = useCallback(
+    (name: string, modifiers: SeriesLegendModifiers) =>
+      setHidden((prev) => nextHiddenSeries(seriesNames, prev, name, modifiers)),
+    [seriesNames]
+  );
+  const filled = series.length <= MAX_FILLED_SERIES;
+  const colorFor = (item: ChartSeries, index: number) =>
+    item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color;
   const rangeMs = Math.max(1, timeRange.end.getTime() - timeRange.start.getTime());
   const xDomain = useMemo<[number, number]>(
     () => [timeRange.start.getTime(), timeRange.end.getTime()],
@@ -177,12 +258,12 @@ export function MetricAreaChart({
     }
     series.forEach((item, index) => {
       config[item.name] = {
-        label: seriesLabel(item.name, title),
+        label: seriesLabel(item.name, title, seriesLabels),
         color: item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color,
       };
     });
     return config;
-  }, [series, title, color]);
+  }, [series, title, color, seriesLabels]);
 
   const body = (
     <div
@@ -227,7 +308,7 @@ export function MetricAreaChart({
             margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <defs>
               {series.map((item, index) => {
-                const stroke = item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color;
+                const stroke = colorFor(item, index);
                 return (
                   <linearGradient
                     key={item.name}
@@ -271,35 +352,39 @@ export function MetricAreaChart({
                 return (
                   <div className="border-border bg-background rounded-md border px-2 py-1 text-xs shadow-sm">
                     <div className="text-muted-foreground">{formatTimeTick(ts, rangeMs)}</div>
-                    {payload.map((point) => (
+                    {[...payload]
+                      // A series with no sample here sorts last instead of scrambling the order.
+                      .sort((a, b) => (Number(b.value) || -Infinity) - (Number(a.value) || -Infinity))
+                      .map((point) => (
                       <div key={String(point.dataKey)} className="flex items-center gap-2">
                         <span
                           className="size-1.5 shrink-0 rounded-full"
                           style={{ background: String(point.color || 'var(--primary)') }}
                         />
                         <span className="text-muted-foreground">
-                          {seriesLabel(String(point.name), title)}
+                          {/* Full series name: the legend's short label needs a lookup. */}
+                          {seriesLabel(String(point.dataKey), title)}
                         </span>
                         <span className="font-medium">
                           {formatAxisValue(Number(point.value), format)}
                         </span>
                       </div>
-                    ))}
+                      ))}
                   </div>
                 );
               }}
             />
             {series.map((item, index) => {
-              const stroke = item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color;
+              if (hidden.has(item.name)) return null;
               return (
                 <Area
                   key={item.name}
                   type="monotone"
                   dataKey={item.name}
-                  name={seriesLabel(item.name, title)}
-                  stroke={stroke}
+                  name={seriesLabel(item.name, title, seriesLabels)}
+                  stroke={colorFor(item, index)}
                   strokeWidth={1.5}
-                  fill={`url(#${gradientId}-${index})`}
+                  fill={filled ? `url(#${gradientId}-${index})` : 'none'}
                   fillOpacity={1}
                   dot={false}
                   isAnimationActive={false}
@@ -313,24 +398,33 @@ export function MetricAreaChart({
     </div>
   );
 
+  const legend = (
+    <SeriesLegend
+      series={series}
+      title={title}
+      labels={seriesLabels}
+      hidden={hidden}
+      colorFor={colorFor}
+      onToggle={onToggle}
+      className="mb-2"
+    />
+  );
+  const omittedNote =
+    omitted > 0 ? (
+      <span
+        className="text-muted-foreground text-xs font-normal whitespace-nowrap"
+        title="Ranked by peak in this window. Filter by instance to chart others.">
+        Busiest {series.length} of {allSeries.length}
+      </span>
+    ) : null;
+
   if (embedded) {
     return (
       <div
         className={cn(fill && 'flex h-full min-h-0 flex-1 flex-col', className)}
         data-testid={`compute-plugin-metric-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}>
-        {series.length > 1 ? (
-          <div className="mb-2 flex flex-wrap items-center gap-3">
-            {series.map((item, index) => (
-              <span key={item.name} className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                <span
-                  className="size-1.5 rounded-full"
-                  style={{ background: item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color }}
-                />
-                {seriesLabel(item.name, title)}
-              </span>
-            ))}
-          </div>
-        ) : null}
+        {omittedNote ? <div className="mb-1">{omittedNote}</div> : null}
+        {legend}
         {body}
       </div>
     );
@@ -343,24 +437,13 @@ export function MetricAreaChart({
       className={cn('overflow-hidden', className)}
       data-testid={`compute-plugin-metric-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}>
       <CardHeader size="sm" bordered>
-        <CardTitle className="flex items-center gap-3 text-sm">
-          {title}
-          {series.length > 1
-            ? series.map((item, index) => (
-                <span
-                  key={item.name}
-                  className="text-muted-foreground flex items-center gap-1.5 text-xs font-normal">
-                  <span
-                    className="size-1.5 rounded-full"
-                    style={{ background: item.color || SERIES_COLORS[index % SERIES_COLORS.length] || color }}
-                  />
-                  {seriesLabel(item.name, title)}
-                </span>
-              ))
-            : null}
-        </CardTitle>
+        <CardTitle className="text-sm">{title}</CardTitle>
+        {omittedNote ? <CardAction>{omittedNote}</CardAction> : null}
       </CardHeader>
-      <CardContent>{body}</CardContent>
+      <CardContent>
+        {legend}
+        {body}
+      </CardContent>
     </Card>
   );
 }

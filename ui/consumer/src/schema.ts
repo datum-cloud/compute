@@ -59,6 +59,10 @@ export const workloadResourceSchema = z.object({
   locations: z.array(z.string()).default([]),
   resources: z.string().optional(),
   replicasPerRegion: z.number().optional(),
+  /** Networks the instance template attaches to (`networkInterfaces[].network.name`). */
+  networks: z.array(z.string()).default([]),
+  /** Set once `metadata.deletionTimestamp` is — the finalizer is tearing the workload down. */
+  deleting: z.boolean().default(false),
 });
 
 export type Workload = z.infer<typeof workloadResourceSchema>;
@@ -121,6 +125,8 @@ export const instanceResourceSchema = z.object({
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
   externalIP: z.string().optional(),
   internalIP: z.string().optional(),
+  /** Host-route in-network IPs Envoy may dial (`upstream_host`), v4 and v6. */
+  internalIPs: z.array(z.string()).default([]),
   conditions: z.array(instanceConditionSchema).default([]),
 });
 

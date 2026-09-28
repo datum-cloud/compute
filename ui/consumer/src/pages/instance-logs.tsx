@@ -12,6 +12,7 @@ export default function InstanceLogs() {
       projectId={projectId}
       proxyId={proxyId}
       instanceName={instance.name}
+      upstreamIPs={instance.internalIPs}
       className="bg-card"
     />
   );

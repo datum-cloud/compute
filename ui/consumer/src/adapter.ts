@@ -35,6 +35,7 @@ interface RawObjectMeta {
   namespace?: string;
   resourceVersion?: string;
   creationTimestamp?: string;
+  deletionTimestamp?: string;
   labels?: Record<string, string>;
 }
 
@@ -88,7 +89,12 @@ interface RawWorkloadPlacementStatus {
 export interface RawWorkload {
   metadata?: RawObjectMeta;
   spec?: {
-    template?: { spec?: { runtime?: RawRuntime } };
+    template?: {
+      spec?: {
+        runtime?: RawRuntime;
+        networkInterfaces?: Array<{ network?: { name?: string } }>;
+      };
+    };
     placements?: RawWorkloadPlacement[];
   };
   status?: {
@@ -275,6 +281,12 @@ function toPlacementRegions(
   });
 }
 
+/** Distinct network names across the template's interfaces, in declaration order. */
+function deriveNetworks(interfaces?: Array<{ network?: { name?: string } }>): string[] {
+  const names = (interfaces ?? []).map((iface) => iface.network?.name).filter(Boolean) as string[];
+  return [...new Set(names)];
+}
+
 export function toWorkload(raw: RawWorkload): Workload {
   const conditions = raw.status?.conditions ?? [];
   const placements = raw.spec?.placements ?? [];
@@ -304,6 +316,8 @@ export function toWorkload(raw: RawWorkload): Workload {
     locations: workloadLocations(placements, raw.status?.placements ?? []),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),
+    networks: deriveNetworks(raw.spec?.template?.spec?.networkInterfaces),
+    deleting: !!raw.metadata?.deletionTimestamp,
     conditions: conditions.map((c) => ({
       type: c.type ?? '',
       status: c.status ?? 'Unknown',
@@ -328,11 +342,13 @@ export interface RawInstance {
     conditions?: RawCondition[];
     networkInterfaces?: {
       assignments?: { networkIP?: string; externalIP?: string };
+      addresses?: { address?: string }[];
     }[];
   };
 }
 
 export interface RawInstanceList {
+  metadata?: { continue?: string };
   items?: RawInstance[];
 }
 
@@ -388,12 +404,52 @@ function resolveInstanceResources(runtime?: RawRuntime): {
   return { cpu, memory };
 }
 
+/**
+ * Host-route in-network address. `/32` and `/128` strip to the bare IP;
+ * delegated prefixes (`/96`, …) are not a single host and are skipped.
+ */
+export function hostRouteIP(address?: string): string | undefined {
+  const trimmed = address?.trim();
+  if (!trimmed) return undefined;
+  const slash = trimmed.lastIndexOf("/");
+  if (slash === -1) return isBareIP(trimmed) ? trimmed : undefined;
+  const ip = trimmed.slice(0, slash);
+  const bits = Number(trimmed.slice(slash + 1));
+  if (!isBareIP(ip) || !Number.isInteger(bits)) return undefined;
+  const bitLen = ip.includes(":") ? 128 : 32;
+  if (bits !== bitLen) return undefined;
+  return ip;
+}
+
+function isBareIP(value: string): boolean {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return true;
+  return value.includes(":") && !value.includes("/");
+}
+
+/** In-network host IPs the ALB may dial. Never includes external addresses. */
+export function collectInstanceInternalIPs(raw: RawInstance): string[] {
+  const seen = new Set<string>();
+  const ips: string[] = [];
+  const add = (value?: string) => {
+    const ip = hostRouteIP(value);
+    if (!ip || seen.has(ip)) return;
+    seen.add(ip);
+    ips.push(ip);
+  };
+  for (const iface of raw.status?.networkInterfaces ?? []) {
+    for (const address of iface.addresses ?? []) add(address.address);
+    add(iface.assignments?.networkIP);
+  }
+  return ips;
+}
+
 export function toInstance(raw: RawInstance): Instance {
   const labels = raw.metadata?.labels ?? {};
   const assignments = raw.status?.networkInterfaces?.[0]?.assignments;
   const container = raw.spec?.runtime?.sandbox?.containers?.[0];
   const conditions = raw.status?.conditions ?? [];
   const { cpu, memory } = resolveInstanceResources(raw.spec?.runtime);
+  const internalIPs = collectInstanceInternalIPs(raw);
 
   return {
     uid: raw.metadata?.uid ?? '',
@@ -414,6 +470,7 @@ export function toInstance(raw: RawInstance): Instance {
     status: deriveInstanceStatus(conditions),
     externalIP: assignments?.externalIP,
     internalIP: assignments?.networkIP,
+    internalIPs,
     conditions: conditions.map((c) => ({
       type: c.type ?? '',
       status: c.status ?? 'Unknown',

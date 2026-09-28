@@ -13,27 +13,32 @@ import (
 )
 
 func Command() *cobra.Command {
-	var min int32
+	var min, max, cpuPercent, memoryPercent int32
 
 	cmd := &cobra.Command{
-		Use:     "scale <workload-name>",
-		Short:   "Adjust the minimum replica count for a workload",
-		Args:    cobra.ExactArgs(1),
-		Example: `  datumctl compute scale api --min=4`,
+		Use:   "scale <workload-name>",
+		Short: "Adjust replica counts or autoscaling settings for a workload",
+		Args:  cobra.ExactArgs(1),
+		Example: `  datumctl compute scale api --min=4
+  datumctl compute scale api --max=10 --cpu-percent=70
+  datumctl compute scale api --max=0   # disable autoscaling`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runScale(cmd, args, min)
+			return runScale(cmd, args, min, max, cpuPercent, memoryPercent)
 		},
 		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
-	cmd.Flags().Int32Var(&min, "min", 0, "Minimum number of instances per location")
-	_ = cmd.MarkFlagRequired("min")
+	util.AddScaleFlags(cmd, &min, &max, &cpuPercent, &memoryPercent, 0)
 
 	return cmd
 }
 
-func runScale(cmd *cobra.Command, args []string, min int32) error {
-	if min <= 0 {
+func runScale(cmd *cobra.Command, args []string, min, max, cpuPercent, memoryPercent int32) error {
+	flags := cmd.Flags()
+	if !flags.Changed("min") && !flags.Changed("max") && !flags.Changed("cpu-percent") && !flags.Changed("memory-percent") {
+		return fmt.Errorf("at least one of --min, --max, --cpu-percent, or --memory-percent must be set")
+	}
+	if flags.Changed("min") && min <= 0 {
 		return fmt.Errorf("min replicas must be at least 1")
 	}
 
@@ -61,16 +66,24 @@ func runScale(cmd *cobra.Command, args []string, min int32) error {
 	}
 
 	for i := range workload.Spec.Placements {
-		workload.Spec.Placements[i].ScaleSettings.MinReplicas = min
+		placement := &workload.Spec.Placements[i]
+
+		merged, err := util.MergeScaleSettings(cmd, placement.ScaleSettings, min, max, cpuPercent, memoryPercent)
+		if err != nil {
+			return fmt.Errorf("placement %q: %w", placement.Name, err)
+		}
+
+		placement.ScaleSettings = merged
 	}
 
 	if err := c.Update(ctx, &workload); err != nil {
 		return fmt.Errorf("updating workload: %w", err)
 	}
 
+	first := workload.Spec.Placements[0].ScaleSettings
 	fmt.Fprintf(cmd.OutOrStdout(),
-		"Scaled workload %q — min replicas set to %d across %d placement(s).\nRun 'datumctl compute rollout %s' to watch progress.\n",
-		workloadName, min, len(workload.Spec.Placements), workloadName,
+		"Scaled workload %q — %s across %d placement(s).\nRun 'datumctl compute rollout %s' to watch progress.\n",
+		workloadName, util.FormatScaleSettings(first), len(workload.Spec.Placements), workloadName,
 	)
 
 	return nil

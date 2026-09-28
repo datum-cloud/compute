@@ -1,15 +1,20 @@
 /**
  * Workload Metrics tab: CPU/memory aggregated across every instance, plus
- * ALB traffic when the workload is published.
+ * ALB traffic when the workload is published. Region / instance filters
+ * scope the CPU and memory numbers; the per-instance charts draw the busiest
+ * few replicas until specific instances are picked.
  */
+import { InstanceFilters } from '../components/instance-filters';
 import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
 import { MetricsKpiCell, MetricsKpiRow } from '../components/metrics-kpis';
 import { MetricsTimeRangeToolbar } from '../components/metrics-toolbar';
 import { useWorkloadOutlet } from './workload-outlet-context';
+import { useInstanceFilters } from '../lib/instance-filters';
 import {
   albErrorRateQuery,
   albP99Query,
   albRpsQuery,
+  identityValues,
   workloadCpuByInstanceQuery,
   workloadCpuSumQuery,
   workloadMemoryByInstanceQuery,
@@ -17,10 +22,13 @@ import {
 } from '../lib/metrics-queries';
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
+import { MAX_INSTANCE_SERIES, shortInstanceLabels } from '../lib/series-view';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { useMemo } from 'react';
 
 const NOT_CONNECTED = 'Not connected';
 const NETWORK_IO_UNAVAILABLE = 'Not collected yet';
+const NO_MATCHING_INSTANCES = 'No instances match these filters';
 
 function resourceKpi(
   loading: boolean,
@@ -36,9 +44,27 @@ function useKpi(query: string | undefined, format: MetricFormat, enabled: boolea
 }
 
 export default function WorkloadMetrics() {
-  const { projectId, proxyId, identityLabel, identityLoading, identityDenied, metricKeys } =
-    useWorkloadOutlet();
+  const {
+    projectId,
+    proxyId,
+    instances,
+    locationIndex,
+    identityLabel,
+    identityLoading,
+    identityDenied,
+  } = useWorkloadOutlet();
   const range = useMetricsTimeRange();
+  const filters = useInstanceFilters(instances, locationIndex);
+  const metricKeys = useMemo(() => identityValues(filters.matching), [filters.matching]);
+  // Labels come from every instance so a series keeps its name as filters change.
+  const seriesLabels = useMemo(
+    () => shortInstanceLabels(instances.map((instance) => instance.name)),
+    [instances]
+  );
+  const noMatch = filters.isFiltered && filters.matching.length === 0;
+  const scopeHint = filters.isFiltered
+    ? `${filters.matching.length} of ${instances.length} instances`
+    : undefined;
 
   const chartsEnabled =
     !identityLoading && !identityDenied && !!identityLabel && !!projectId && metricKeys.length > 0;
@@ -70,20 +96,27 @@ export default function WorkloadMetrics() {
 
   return (
     <div className="flex flex-col gap-6" data-testid="compute-plugin-workload-metrics-page">
-      <MetricsTimeRangeToolbar range={range} />
+      <MetricsTimeRangeToolbar
+        range={range}
+        filters={
+          instances.length > 1 ? (
+            <InstanceFilters filters={filters} />
+          ) : null
+        }
+      />
 
       <Card size="sm" sectioned className="w-full overflow-hidden">
         <CardContent>
           <MetricsKpiRow>
             <MetricsKpiCell
               label="CPU"
-              value={resourceKpi(identityLoading, cpuCard.data, 'number')}
-              hint="total cores"
+              value={noMatch ? '—' : resourceKpi(identityLoading, cpuCard.data, 'number')}
+              hint={scopeHint ? `cores · ${scopeHint}` : 'total cores'}
             />
             <MetricsKpiCell
               label="Memory"
-              value={resourceKpi(identityLoading, memoryCard.data, 'bytes')}
-              hint="total"
+              value={noMatch ? '—' : resourceKpi(identityLoading, memoryCard.data, 'bytes')}
+              hint={scopeHint ?? 'total'}
             />
             {proxyId ? (
               <>
@@ -123,6 +156,10 @@ export default function WorkloadMetrics() {
           enabled={chartsEnabled}
           pending={identityLoading}
           denied={identityDenied}
+          unavailable={noMatch}
+          unavailableLabel={NO_MATCHING_INSTANCES}
+          maxSeries={filters.instancesPicked ? undefined : MAX_INSTANCE_SERIES}
+          seriesLabels={seriesLabels}
         />
         <MetricAreaChart
           title="Memory"
@@ -132,6 +169,10 @@ export default function WorkloadMetrics() {
           enabled={chartsEnabled}
           pending={identityLoading}
           denied={identityDenied}
+          unavailable={noMatch}
+          unavailableLabel={NO_MATCHING_INSTANCES}
+          maxSeries={filters.instancesPicked ? undefined : MAX_INSTANCE_SERIES}
+          seriesLabels={seriesLabels}
         />
       </div>
 

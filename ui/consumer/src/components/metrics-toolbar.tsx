@@ -1,15 +1,18 @@
 import { type useMetricsTimeRange } from '../lib/metrics-time-range';
 import { DateTimeRangePicker, getBrowserTimezone } from '@datum-cloud/datum-ui/picker';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 
 type MetricsTimeRange = ReturnType<typeof useMetricsTimeRange>;
 
 export function MetricsTimeRangeToolbar({
   range,
+  filters,
   className,
 }: {
   range: MetricsTimeRange;
+  /** Left-aligned filter controls, like the ALB metrics toolbar. */
+  filters?: ReactNode;
   className?: string;
 }) {
   const timezone = useMemo(() => getBrowserTimezone(), []);
@@ -20,6 +23,7 @@ export function MetricsTimeRangeToolbar({
         'flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-end',
         className
       )}>
+      {filters ? <div className="sm:mr-auto">{filters}</div> : null}
       <DateTimeRangePicker
         value={range.pickerValue}
         onChange={(value) =>

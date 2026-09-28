@@ -7,6 +7,8 @@
  * `datum_instance_name`. LogQL log queries take one stream selector —
  * `{a="x"} or {b="x"}` is a metric-query form and returns 400. Search and host
  * filters stay client-side because Envoy OTEL access logs keep an empty Body.
+ * Instance-scoped ALB pin (`upstream_host` vs in-network IPs) is consumer-only;
+ * this staff explorer stays workload-wide.
  */
 import { ApiError, PLUGIN_ID, getProjectScopedBase, proxyFetchAbsolute } from "./api";
 import { useMemo } from "react";

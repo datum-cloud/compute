@@ -1,16 +1,16 @@
 # Compute Portal Plugin
 
-A read-only operational dashboard for the compute service (`compute.datumapis.com`),
+An operational dashboard for the compute service (`compute.datumapis.com`),
 shipped as a **Module Federation remote** that the cloud portal loads at
 runtime — the [Portal Plugin System](https://github.com/datum-cloud/cloud-portal/blob/main/docs/enhancements/portal-plugin-system.md).
 Structural template: [`examples/sample-plugin/`](https://github.com/datum-cloud/cloud-portal/tree/main/examples/sample-plugin)
 in the `cloud-portal` repo.
 
-## Scope — v1 is read-only
+## Scope — visibility, plus delete
 
-This is a **CLI-first** service: workload creation, deployment, scaling,
-restarts, and deletion all happen via `datumctl compute …`. The plugin's job
-is to give operators visibility into what's already running:
+This is a **CLI-first** service: workload creation, deployment, scaling and
+restarts all happen via `datumctl compute …`. The plugin's job is to give
+operators visibility into what's already running, and to delete workloads:
 
 Paths below are relative to the plugin mount, `/project/:projectId/services/<slug>`
 (the slug is operator-supplied; `workloads` locally). The list page is the
@@ -29,7 +29,16 @@ mount root so URLs read `…/services/workloads/<workloadName>`, not
   tab always queries instance stdout; ALB access logs are merged in when an
   HTTPProxy exists. Manage/Activity remain placeholders.
 
-No deploy/edit/delete forms. Activity stays out of scope until there is a
+**Delete** is in the workload detail page header.
+The confirmation dialog (`src/components/delete-workload-dialog.tsx`) also
+offers the workload's Application Load Balancers (HTTPProxy plus the
+NetworkService behind it) and Networks as opt-in extras, because deleting the
+Workload doesn't remove them. Anything shared with another workload can't be
+ticked. Following the portal's RBAC conventions, the delete action is
+hidden when a `delete` SelfSubjectAccessReview on `workloads` fails, and
+extras the user can't delete are disabled with a tooltip.
+
+No deploy/edit forms. Activity stays out of scope until there is a
 real activity source. `CliBanner`/`SectionCard` (in `src/components/cli-section.tsx`)
 point users at the equivalent `datumctl` commands wherever the portal can't do
 something itself.
