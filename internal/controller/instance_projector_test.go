@@ -4,17 +4,33 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
+	toolscache "k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllertest"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -459,4 +475,177 @@ func isNotFound(err error) bool {
 		return false // object exists — not the "not found" case
 	}
 	return client.IgnoreNotFound(err) == nil
+}
+
+func TestInstanceProjector_RunsOnlyOnLeader(t *testing.T) {
+	t.Parallel()
+
+	lock := &fakeLeaseLock{identity: "this-replica", holder: "other-replica"}
+	federationCache, reconciled := startProjectorManager(t, lock)
+
+	select {
+	case <-federationCache.watched:
+		t.Fatal("projector started watching Instances while another replica held the lease")
+	case key := <-reconciled:
+		t.Fatalf("projector reconciled %s while another replica held the lease", key)
+	case <-time.After(2 * time.Second):
+	}
+	require.Positive(t, lock.gets(), "the replica never attempted to acquire the lease")
+
+	lock.release()
+
+	select {
+	case <-federationCache.watched:
+	case <-time.After(10 * time.Second):
+		t.Fatal("projector did not start after this replica became leader")
+	}
+	federationCache.informer.Add(projTestKarmadaInstance(nil))
+
+	select {
+	case key := <-reconciled:
+		assert.Equal(t, projectorRequest().NamespacedName, key)
+	case <-time.After(10 * time.Second):
+		t.Fatal("projector did not reconcile after this replica became leader")
+	}
+}
+
+func startProjectorManager(t *testing.T, lock resourcelock.Interface) (*watchSignallingCache, <-chan types.NamespacedName) {
+	t.Helper()
+
+	scheme := newKarmadaScheme()
+	leaseDuration := 2 * time.Second
+	renewDeadline := time.Second
+	retryPeriod := 100 * time.Millisecond
+
+	mgr, err := manager.New(&rest.Config{Host: "https://127.0.0.1:1"}, manager.Options{
+		Scheme:                              scheme,
+		Metrics:                             metricsserver.Options{BindAddress: "0"},
+		LeaderElection:                      true,
+		LeaderElectionID:                    "instance-projector-test",
+		LeaderElectionNamespace:             "default",
+		LeaderElectionResourceLockInterface: lock,
+		LeaseDuration:                       &leaseDuration,
+		RenewDeadline:                       &renewDeadline,
+		RetryPeriod:                         &retryPeriod,
+		Controller:                          ctrlconfig.Controller{SkipNameValidation: new(true)},
+	})
+	require.NoError(t, err)
+
+	federationCache := &watchSignallingCache{
+		FakeInformers: &informertest.FakeInformers{Scheme: scheme},
+		watched:       make(chan struct{}),
+	}
+	reconciled := make(chan types.NamespacedName, 100)
+	federationClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(_ context.Context, _ client.WithWatch, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+				reconciled <- key
+				return apierrors.NewNotFound(schema.GroupResource{}, key.Name)
+			},
+		}).
+		Build()
+
+	r := &InstanceProjector{FederationClient: federationClient}
+	require.NoError(t, r.SetupWithManager(mgr, &fakeFederationCluster{cache: federationCache}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = mgr.Start(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	return federationCache, reconciled
+}
+
+type fakeFederationCluster struct {
+	cluster.Cluster
+	cache cache.Cache
+}
+
+func (f *fakeFederationCluster) GetCache() cache.Cache { return f.cache }
+
+type watchSignallingCache struct {
+	*informertest.FakeInformers
+	watched  chan struct{}
+	once     sync.Once
+	informer *controllertest.FakeInformer
+}
+
+func (c *watchSignallingCache) GetInformer(ctx context.Context, obj client.Object, opts ...cache.InformerGetOption) (cache.Informer, error) {
+	informer, err := c.FakeInformers.GetInformer(ctx, obj, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &watchSignallingInformer{FakeInformer: informer.(*controllertest.FakeInformer), cache: c}, nil
+}
+
+type watchSignallingInformer struct {
+	*controllertest.FakeInformer
+	cache *watchSignallingCache
+}
+
+func (i *watchSignallingInformer) AddEventHandlerWithOptions(
+	h toolscache.ResourceEventHandler, opts toolscache.HandlerOptions,
+) (toolscache.ResourceEventHandlerRegistration, error) {
+	reg, err := i.FakeInformer.AddEventHandlerWithOptions(h, opts)
+	i.cache.once.Do(func() {
+		i.cache.informer = i.FakeInformer
+		close(i.cache.watched)
+	})
+	return reg, err
+}
+
+type fakeLeaseLock struct {
+	identity string
+
+	mu       sync.Mutex
+	holder   string
+	getCalls int
+}
+
+func (l *fakeLeaseLock) Get(context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.getCalls++
+	record := resourcelock.LeaderElectionRecord{
+		HolderIdentity:       l.holder,
+		LeaseDurationSeconds: 3600,
+	}
+	raw, err := json.Marshal(record)
+	return &record, raw, err
+}
+
+func (l *fakeLeaseLock) Create(_ context.Context, ler resourcelock.LeaderElectionRecord) error {
+	return l.Update(context.Background(), ler)
+}
+
+func (l *fakeLeaseLock) Update(_ context.Context, ler resourcelock.LeaderElectionRecord) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.holder = ler.HolderIdentity
+	return nil
+}
+
+func (l *fakeLeaseLock) RecordEvent(string) {}
+
+func (l *fakeLeaseLock) Identity() string { return l.identity }
+
+func (l *fakeLeaseLock) Describe() string { return "fake/instance-projector-test" }
+
+func (l *fakeLeaseLock) release() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.holder = ""
+}
+
+func (l *fakeLeaseLock) gets() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.getCalls
 }

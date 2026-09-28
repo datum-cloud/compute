@@ -845,23 +845,21 @@ func ignoreCanceled(err error) error {
 }
 
 // setupManagementControllers wires the WorkloadDeploymentFederator and
-// InstanceProjector onto mgr. It returns any additional Runnable objects that
-// must be started alongside the main manager (the federation manager used by
-// InstanceProjector). Called only when management controllers are enabled and
-// a federation REST config is available.
+// InstanceProjector onto mgr. It returns the federation cluster as a Runnable
+// that must be started alongside the main manager. Called only when management
+// controllers are enabled and a federation REST config is available.
 func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
-	// The federation manager provides a cached, watchable handle to the Karmada
+	// The federation cluster provides a cached, watchable handle to the Karmada
 	// federation control plane. It backs the InstanceProjector's Instance watch
 	// and the WorkloadDeploymentFederator's downstream WorkloadDeployment status
-	// watch. A manager.Manager embeds a cluster.Cluster, so it can be passed
-	// directly anywhere a watchable federation cluster source is required.
-	federationMgr, err := manager.New(federationRestConfig, manager.Options{
-		Scheme:  scheme,
-		Cache:   cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
-		Metrics: metricsserver.Options{BindAddress: "0"},
+	// watch. Its cache runs on every replica; the controllers that consume it are
+	// registered on mgr and so run only on the elected leader.
+	federationCluster, err := cluster.New(federationRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+		o.Cache.DefaultTransform = cache.TransformStripManagedFields()
 	})
 	if err != nil {
-		return nil, fmt.Errorf("federation manager: %w", err)
+		return nil, fmt.Errorf("federation cluster: %w", err)
 	}
 
 	// The federator watches both the project WD (via the multicluster manager)
@@ -870,7 +868,7 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// immediately instead of on the next informer resync.
 	federator := &controller.WorkloadDeploymentFederator{
 		FederationClient:      federationClient,
-		FederationCluster:     federationMgr,
+		FederationCluster:     federationCluster,
 		RuntimeClassesEnabled: features.FeatureGate.Enabled(features.RuntimeClasses),
 	}
 	if err := federator.SetupWithManager(mgr); err != nil {
@@ -883,11 +881,11 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	if err = (&controller.InstanceProjector{
 		FederationClient: federationClient,
 		MCManager:        mgr,
-	}).SetupWithManager(federationMgr); err != nil {
+	}).SetupWithManager(mgr.GetLocalManager(), federationCluster); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
 	}
 
-	return []manager.Runnable{federationMgr}, nil
+	return []manager.Runnable{federationCluster}, nil
 }
 
 // computeWatchProviderClaims reports whether the direct ResourceClaim watch
