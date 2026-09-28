@@ -81,16 +81,6 @@ export function memoryUsageQuery(projectId: string, identity: InstanceMetricIden
   return `sum(${MEMORY_METRIC}${instanceSelector(projectId, identity)})`;
 }
 
-export function workloadCpuAvgQuery(
-  projectId: string,
-  label: InstanceIdentityLabel,
-  names: readonly string[]
-): string | undefined {
-  const sel = scopedInstanceSelector(projectId, label, names);
-  if (!sel) return undefined;
-  return `avg(rate(${CPU_METRIC}${sel}[2m]))`;
-}
-
 export function workloadCpuSumQuery(
   projectId: string,
   label: InstanceIdentityLabel,
@@ -99,16 +89,6 @@ export function workloadCpuSumQuery(
   const sel = scopedInstanceSelector(projectId, label, names);
   if (!sel) return undefined;
   return `sum(rate(${CPU_METRIC}${sel}[2m]))`;
-}
-
-export function workloadMemoryAvgQuery(
-  projectId: string,
-  label: InstanceIdentityLabel,
-  names: readonly string[]
-): string | undefined {
-  const sel = scopedInstanceSelector(projectId, label, names);
-  if (!sel) return undefined;
-  return `avg(${MEMORY_METRIC}${sel})`;
 }
 
 export function workloadMemorySumQuery(

@@ -429,9 +429,18 @@ async function fetchInstance(projectId: string, instanceName: string): Promise<I
   return toInstance(raw);
 }
 
+/** Every instance in the project. Pages through `continue` so large fleets are not cut off at one page. */
 async function fetchInstances(projectId: string): Promise<Instance[]> {
-  const body = await proxyFetch<RawInstanceList>(projectId, `${INSTANCES_PATH}?limit=100`);
-  return toInstanceList(body.items ?? []);
+  const items: NonNullable<RawInstanceList['items']> = [];
+  let token: string | undefined;
+  do {
+    const query = new URLSearchParams({ limit: '500' });
+    if (token) query.set('continue', token);
+    const body = await proxyFetch<RawInstanceList>(projectId, `${INSTANCES_PATH}?${query.toString()}`);
+    items.push(...(body.items ?? []));
+    token = body.metadata?.continue || undefined;
+  } while (token);
+  return toInstanceList(items);
 }
 
 export function useInstances(

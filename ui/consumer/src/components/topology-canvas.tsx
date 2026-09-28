@@ -2,8 +2,10 @@
  * Static topology diagram: ALBs → workload → instances.
  *
  * Layout is an upside-down tree: the workload is the root, region groups sit
- * in a row beneath it, and instances sit in a row inside each region. The
- * load balancer hangs off the workload's left. The frame pans by dragging the
+ * in a row beneath it, and instances wrap into a few columns inside each
+ * region. Large groups show their unhealthy instances first and fold the rest
+ * into a "+N more" card that expands in place. The load balancer hangs off
+ * the workload's left. The frame pans by dragging the
  * background and zooms with a pinch or the corner buttons.
  * Connectors are orthogonal SVG paths measured from port elements.
  *
@@ -20,6 +22,7 @@ import {
   CheckIcon,
   CopyIcon,
   GlobeIcon,
+  LayersIcon,
   LocateFixedIcon,
   MinusIcon,
   PlusIcon,
@@ -77,7 +80,16 @@ type Edge =
   | { kind: 'fanout'; d: string };
 
 const CARD_WIDTH = 264;
+const CARD_GAP = 16;
 const ALB_GAP = 96;
+
+/**
+ * Columns per group, and how many cards a group shows before folding the rest
+ * into a "+N more" card. Several regions side by side get narrower groups so
+ * the tree stays close to the frame's aspect ratio and fits at a readable zoom.
+ */
+const SINGLE_GROUP_LAYOUT = { columns: 4, limit: 8 } as const;
+const MULTI_GROUP_LAYOUT = { columns: 2, limit: 4 } as const;
 const MIN_SCALE = 0.4;
 const MAX_SCALE = 2.5;
 
@@ -128,9 +140,20 @@ const STYLES = `
 .cpt-replicas{display:flex;flex-direction:row;align-items:flex-start;justify-content:center;gap:48px;width:max-content}
 .cpt-group{position:relative;flex:0 0 auto;width:max-content;display:flex;flex-direction:column;align-items:stretch;gap:12px}
 .cpt-group.cpt-boxed{border:1px solid color-mix(in oklab,var(--primary) 28%,transparent);background:color-mix(in oklab,var(--primary) 4%,var(--card));border-radius:12px;padding:16px}
-.cpt-group-cards{display:flex;flex-direction:row;flex-wrap:nowrap;justify-content:center;gap:16px}
+.cpt-group-cards{display:flex;flex-direction:row;flex-wrap:wrap;justify-content:center;gap:16px}
 .cpt-group-label{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12px;font-weight:500;line-height:1.25}
+.cpt-group-meta{display:flex;align-items:baseline;gap:10px}
 .cpt-group-count{color:var(--muted-foreground);font-weight:400;font-variant-numeric:tabular-nums}
+.cpt-group-toggle{padding:0;border:0;background:transparent;font:inherit;font-weight:500;color:var(--primary)}
+.cpt-group-toggle:hover{text-decoration:underline}
+.cpt-group-toggle:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:2px}
+.cpt-more{width:264px;min-height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:16px;border:1px dashed color-mix(in oklab,var(--primary) 35%,var(--border));border-radius:8px;background:color-mix(in oklab,var(--card) 70%,transparent);color:var(--card-foreground);font:inherit;text-align:center;transition:border-color 160ms ease,background-color 160ms ease,transform 160ms cubic-bezier(.23,1,.32,1)}
+.cpt-more:hover{border-color:color-mix(in oklab,var(--primary) 60%,var(--border));background:color-mix(in oklab,var(--primary) 5%,var(--card))}
+.cpt-more:active{transform:scale(.985)}
+.cpt-more:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.cpt-more-title{font-size:13px;font-weight:600;line-height:1.25}
+.cpt-more-sub{font-size:12px;line-height:1.25;color:var(--muted-foreground)}
+.cpt-more-cta{font-size:12px;font-weight:500;color:var(--primary)}
 .cpt-node{position:relative}
 /* No white inset ring: it vanishes on a light card and reads as a second bottom stroke in dark mode. */
 .cpt-card{position:relative;width:264px;display:flex;flex-direction:column;border:1px solid var(--border);background:var(--card);color:var(--card-foreground);border-radius:8px;box-shadow:0 1px 2px rgb(0 0 0/.05);text-align:left;font:inherit;padding:0;margin:0;transition:border-color 160ms ease,box-shadow 160ms ease,transform 160ms cubic-bezier(.23,1,.32,1)}
@@ -394,6 +417,35 @@ type InstanceGroup = {
   instances: TopologyInstance[];
 };
 
+const STATUS_PRIORITY: Record<TopologyStatus, number> = {
+  danger: 0,
+  warning: 1,
+  muted: 2,
+  success: 3,
+};
+
+/** Unhealthy first so they survive folding, then natural name order (…-2 before …-10). */
+function byAttention(a: TopologyInstance, b: TopologyInstance): number {
+  return (
+    STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status] ||
+    a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' })
+  );
+}
+
+/** "48 Available · 1 Pending" for the folded instances. */
+function statusSummary(instances: TopologyInstance[]): string {
+  const counts = new Map<string, number>();
+  for (const instance of [...instances].sort(byAttention)) {
+    counts.set(instance.statusLabel, (counts.get(instance.statusLabel) ?? 0) + 1);
+  }
+  return [...counts].map(([label, count]) => `${count} ${label}`).join(' · ');
+}
+
+function cardsWidth(count: number, columns: number): number {
+  const cols = Math.max(1, Math.min(count, columns));
+  return cols * CARD_WIDTH + (cols - 1) * CARD_GAP;
+}
+
 /**
  * One unlabeled box when every instance shares a region (or none do).
  * Labeled boxes once two or more regions appear. Instances with no location
@@ -442,22 +494,47 @@ export function TopologyCanvas({
   const [view, setView] = useState<View>({ x: 0, y: 0, scale: 1 });
   const [panning, setPanning] = useState(false);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   viewRef.current = view;
+
+  const groups = instanceGroups(instances);
+  const branchToGroups = groups.length > 1;
+  const { columns, limit } = branchToGroups ? MULTI_GROUP_LAYOUT : SINGLE_GROUP_LAYOUT;
+  const laidOut = groups.map((group) => {
+    const key = group.label ?? 'all';
+    const sorted = [...group.instances].sort(byAttention);
+    const foldable = sorted.length > limit;
+    const open = foldable && expanded.has(key);
+    const shown = foldable && !open ? sorted.slice(0, limit - 1) : sorted;
+    const folded = foldable && !open ? sorted.slice(limit - 1) : [];
+    const cardCount = shown.length + (folded.length > 0 ? 1 : 0);
+    return { ...group, key, shown, folded, foldable, open, cardCount };
+  });
+  // One trunk per group once cards wrap, so drops never cross a card row.
+  const groupPorts = branchToGroups || laidOut.some((group) => group.cardCount > columns);
+
+  const toggleGroup = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   // Key the measurement on node identity, not array identity: the parent
   // rebuilds `albs`/`instances` whenever live metrics tick, and geometry
-  // only changes when nodes are added/removed or regrouped (ResizeObserver
-  // covers size).
+  // only changes when nodes are added/removed, regrouped, reordered by
+  // status or folded (ResizeObserver covers size).
   const albIds = albs.map((alb) => alb.id).join('\u0000');
-  const instanceIds = instances.map((instance) => instance.id).join('\u0000');
-  const groupKey = instances.map((instance) => instance.group ?? '').join('\u0000');
-  const layoutKey = `${workload.id}\u0000${albIds}\u0000${instanceIds}\u0000${groupKey}`;
+  const shownKey = laidOut
+    .map((group) => `${group.key}:${group.shown.map((i) => i.id).join(',')}:${group.folded.length}`)
+    .join('\u0000');
+  const layoutKey = `${workload.id}\u0000${albIds}\u0000${shownKey}`;
 
   useLayoutEffect(() => {
     const world = worldRef.current;
     if (!world) return;
     const albList = albIds ? albIds.split('\u0000') : [];
-    const instanceList = instanceIds ? instanceIds.split('\u0000') : [];
 
     const measure = () => {
       const next: Edge[] = [];
@@ -471,11 +548,11 @@ export function TopologyCanvas({
         }
       }
 
-      const groupPorts = [...world.querySelectorAll<Element>('[data-port^="group-"]')];
+      const groupEls = [...world.querySelectorAll<Element>('[data-port^="group-"]')];
       const targetEls =
-        groupPorts.length > 0
-          ? groupPorts
-          : instanceList.map((id) => world.querySelector(`[data-port="instance-${id}"]`));
+        groupEls.length > 0
+          ? groupEls
+          : [...world.querySelectorAll<Element>('[data-port^="instance-"]')];
       const targets = targetEls
         .map((el) => portCenter(world, el))
         .filter((point): point is Point => point !== null);
@@ -496,7 +573,7 @@ export function TopologyCanvas({
     observer.observe(world);
     for (const el of world.querySelectorAll('.cpt-node, .cpt-group')) observer.observe(el);
     return () => observer.disconnect();
-  }, [albIds, instanceIds, groupKey, workload.id]);
+  }, [albIds, shownKey, workload.id]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -568,8 +645,6 @@ export function TopologyCanvas({
 
   const hasIngress = albs.length > 0;
   const hasReplicas = instances.length > 0;
-  const groups = instanceGroups(instances);
-  const branchToGroups = groups.length > 1;
 
   const zoomBy = (factor: number) => {
     const viewport = viewportRef.current;
@@ -772,21 +847,31 @@ export function TopologyCanvas({
 
         {hasReplicas ? (
           <div className="cpt-replicas">
-            {groups.map((group) => {
-              const key = group.label ?? 'all';
+            {laidOut.map((group) => {
+              const showLabel = !!group.label || group.foldable;
               return (
               <div
-                key={key}
+                key={group.key}
                 className={`cpt-group${group.label || group.instances.length > 1 ? ' cpt-boxed' : ''}`}>
-                {branchToGroups ? <Port id={`group-${key}`} side="top" /> : null}
-                {group.label ? (
+                {groupPorts ? <Port id={`group-${group.key}`} side="top" /> : null}
+                {showLabel ? (
                   <div className="cpt-group-label">
-                    <span>{group.label}</span>
-                    <span className="cpt-group-count">{instanceCountLabel(group.instances.length)}</span>
+                    <span>{group.label ?? 'Instances'}</span>
+                    <span className="cpt-group-meta">
+                      <span className="cpt-group-count">{instanceCountLabel(group.instances.length)}</span>
+                      {group.open ? (
+                        <button
+                          type="button"
+                          className="cpt-group-toggle"
+                          onClick={() => toggleGroup(group.key)}>
+                          Show fewer
+                        </button>
+                      ) : null}
+                    </span>
                   </div>
                 ) : null}
-                <div className="cpt-group-cards">
-                  {group.instances.map((instance) => (
+                <div className="cpt-group-cards" style={{ width: cardsWidth(group.cardCount, columns) }}>
+                  {group.shown.map((instance) => (
                     <div key={instance.id} className="cpt-node">
                       <GraphCard>
                         <CardHead
@@ -814,9 +899,23 @@ export function TopologyCanvas({
                           }
                         />
                       </GraphCard>
-                      {branchToGroups ? null : <Port id={`instance-${instance.id}`} side="top" />}
+                      {groupPorts ? null : <Port id={`instance-${instance.id}`} side="top" />}
                     </div>
                   ))}
+                  {group.folded.length > 0 ? (
+                    <button
+                      type="button"
+                      className="cpt-more"
+                      onClick={() => toggleGroup(group.key)}
+                      aria-label={`Show all ${group.instances.length} instances${group.label ? ` in ${group.label}` : ''}`}>
+                      <span className="cpt-icon cpt-icon-primary">
+                        <Icon icon={LayersIcon} size={15} />
+                      </span>
+                      <span className="cpt-more-title">+{group.folded.length} more</span>
+                      <span className="cpt-more-sub">{statusSummary(group.folded)}</span>
+                      <span className="cpt-more-cta">Show all</span>
+                    </button>
+                  ) : null}
                 </div>
               </div>
               );
