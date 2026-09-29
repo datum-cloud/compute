@@ -17,7 +17,7 @@ assistant owns the document schema that carries it.
 | `skills/*.md` | Skills. Reviewed, step-by-step triage procedures, loaded on demand. |
 | `embed.go` | Embeds both into the binary, so `cmd/compute-mcp` can serve them with no files to mount beside it. |
 | `../../internal/agent` | The reason catalog and the diagnosis walk that back the tools. |
-| `../../config/components/assistant-capability` | Registration. The `CapabilityBinding` that tells an entitled project's assistant that all of the above exists. |
+| `../../config/components/assistant-capability` | Registration. The agent customers talk to, and the content it offers them. |
 
 ## Status
 
@@ -45,34 +45,31 @@ step live there, once, for every service.
 ## Registration
 
 Publishing the content above is only half of it — an assistant has to be told it
-exists. That declaration is a **`CapabilityBinding`**
-(`capabilities.assistant.miloapis.com/v1alpha1`), and it lives in
-`config/components/assistant-capability/`. It names the knowledge URL, the
-reviewed tool allow-list, and the seven skills, so adding a skill under
-`skills/` and registering it are one change in one repository.
+exists, and only for customers entitled to compute. Two objects in
+`config/components/assistant-capability/` do that:
 
-It used to be neither. The same document lived as raw JSON in the infra
-repository, mounted into the assistant as a fixture file — compute's provider
-content sitting where compute's team neither reviewed nor versioned it.
+| Object | Role |
+|---|---|
+| `ServiceAgent` | The agent a customer's assistant talks to. Published means customers can get it. |
+| `ServiceAgentConfiguration` | What it offers: the knowledge URL, the approved tool list, and the seven guides. |
 
-Two properties of the object decide where it is applied, and both are easy to
-get wrong:
+Adding a guide under `skills/` and registering it are one change in one
+repository. It used to be neither — the same content lived as raw JSON in the
+infra repository, mounted into the assistant as a fixture file, where compute's
+team neither reviewed nor versioned it, and where every project got it whether
+entitled or not.
 
-- **It is cluster-scoped, and it goes in a project control plane.** A Milo
-  project is a virtual control plane, so an object written through a project's
-  control-plane path is already inside that project. The plane is the tenancy
-  boundary; there is no `metadata.namespace` and adding one would mean the
-  assistant never finds it. One apply entitles one project.
-- **The CRD itself is global, the objects are not.** Milo exempts CRD
-  *definitions* from project partitioning, so the assistant's own deployment
-  registers the kind once for every project plane. Only the instance data is
-  per-project.
+Two things are worth knowing:
 
-At scale this is the service catalog's job: its projection controller
-materializes one binding per (project, entitled service) and deletes it when
-entitlement is revoked. `metadata.name` is therefore the *agent* name that
-controller uses, so it converges on this object rather than creating a second
-one that would collide tool-for-tool.
+- **Content changes ship as a new configuration object, not an edit.** The
+  newest Published one wins. That is what lets us say which version a customer
+  actually saw.
+- **Compute does not write anything into customer projects.** The service
+  catalog copies the content into each entitled project, as the object the
+  assistant reads there. Entitlement decides who gets it; nothing here does.
+
+Both objects are applied to the Milo control plane alongside
+`config/components/service-catalog/`.
 
 ## HTTP surface
 
