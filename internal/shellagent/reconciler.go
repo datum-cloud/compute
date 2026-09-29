@@ -150,11 +150,19 @@ func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceCon
 			"The instance already has %d open sessions, the most it allows.", a.cfg.SlotsPerInstance))
 	}
 
-	if err := addFinalizer(ctx, a.hub, hub); err != nil {
-		return ctrl.Result{}, errors.Join(err, a.releaseSlot(ctx, held))
-	}
-	if err := addFinalizer(ctx, a.cell, cell); err != nil {
-		return ctrl.Result{}, errors.Join(err, a.releaseSlot(ctx, held))
+	for _, f := range []struct {
+		c client.Client
+		s *computev1alpha.InstanceConsoleSession
+	}{{a.hub, hub}, {a.cell, cell}} {
+		if err := addFinalizer(ctx, f.c, f.s); err != nil {
+			if relErr := a.releaseSlot(ctx, held); relErr != nil {
+				return ctrl.Result{}, relErr
+			}
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+			return ctrl.Result{}, err
+		}
 	}
 
 	now := a.now()
@@ -172,7 +180,7 @@ func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceCon
 			return ctrl.Result{}, relErr
 		}
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 		return ctrl.Result{}, err
 	}
