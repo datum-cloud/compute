@@ -36,8 +36,8 @@ supports) · [Federated Deployment Scheduling](../federated-deployment-schedulin
 
 Let users open a live shell inside a running instance from the CLI or the Cloud
 Portal, so they can see and fix problems where they happen. It works the same
-for general-purpose and unikernel instances. Access follows the project's existing
-permissions, and every session is short-lived and recorded.
+for general-purpose and unikernel instances. Access follows the project's
+existing permissions, and every session is short-lived and recorded.
 
 ## Motivation
 
@@ -121,28 +121,36 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 
 ### Guardrails
 
-| Guardrail | Effect |
-|---|---|
-| Permission on session creation | Only users granted it (admins by default) can open shells |
-| One-time key | Nothing to leak or rotate; deleting the session revokes it |
-| One connection, one command | A session can't be reused or turned into a different command |
-| Short-lived | Must connect within 60 seconds; lasts at most one hour |
-| Per-instance limit | At most three shells per instance at a time |
-| Clear endings | Users see why a session ended; the audit log records it |
-| Cleanup | A shell's processes end with its session, even if the connection drops |
-| Isolation | The internet-facing tunnel endpoint holds no credentials and can reach only its agent |
+- **Permission on session creation:** Only users granted it (admins by default)
+  can open shells
+- **One-time key:** Nothing to leak or rotate; deleting the session revokes it
+- **One connection, one command:** A session can't be reused or turned into a
+  different command
+- **Short-lived:** Must connect within 60 seconds; lasts at most one hour
+- **Per-instance limit:** At most three shells per instance at a time
+- **Clear endings:** Users see why a session ended; the audit log records it
+- **Cleanup:** A shell's processes end with its session, even if the connection
+  drops
+- **Isolation:** The internet-facing tunnel endpoint holds no credentials and
+  can reach only its agent
 
 ### Risks and Mitigations
 
-| Risk | Mitigation |
-|---|---|
-| A shell is a powerful form of access | Admin-only permission, short sessions, audit of every session, one command per session |
-| The Go iroh library has one maintainer | Pin the version; test it against the Rust tunnel endpoint in CI; keep a small Rust helper as a fallback |
-| Relay distance adds latency | Use Datum's regional relays; measure session start from real networks before preview |
-| The browser client is a large download | Load it only when a terminal opens (about 3 MB compressed); cache it between visits |
-| Abandoned sessions hold capacity | Connect deadline, per-instance limit and automatic cleanup when an agent stops |
-| Runtimes behave differently inside | A shell check when each session is claimed; an instance without a usable shell is refused with a clear reason. Verify process cleanup and scale-to-zero behaviour on unikernels in staging |
-| Security review | Review the key, isolation and cleanup model with the platform security owners before preview |
+- **A shell is a powerful form of access:** Admin-only permission, short
+  sessions, audit of every session, one command per session
+- **The Go iroh library has one maintainer:** Pin the version; test it against
+  the Rust tunnel endpoint in CI; keep a small Rust helper as a fallback
+- **Relay distance adds latency:** Use Datum's regional relays; measure session
+  start from real networks before preview
+- **The browser client is a large download:** Load it only when a terminal opens
+  (about 3 MB compressed); cache it between visits
+- **Abandoned sessions hold capacity:** Connect deadline, per-instance limit and
+  automatic cleanup when an agent stops
+- **Runtimes behave differently inside:** A shell check when each session is
+  claimed; an instance without a usable shell is refused with a clear reason.
+  Verify process cleanup and scale-to-zero behaviour on unikernels in staging
+- **Security review:** Review the key, isolation and cleanup model with the
+  platform security owners before preview
 
 ## Design Details
 
@@ -204,12 +212,12 @@ cells through the normal release tag.
 
 ### Dependencies
 
-| Dependency | Impact of an outage |
-|---|---|
-| Relays | New and open shells in the affected region fail; instances are unaffected |
-| Federation to cells | New sessions are not delivered; open shells continue |
-| Kata runtime | Shells fail for Kata instances on the affected node |
-| Unikraft exec plugin | Shells fail for unikernel instances on the affected node |
+- **Relays:** New and open shells in the affected region fail; instances are
+  unaffected
+- **Federation to cells:** New sessions are not delivered; open shells continue
+- **Kata runtime:** Shells fail for Kata instances on the affected node
+- **Unikraft exec plugin:** Shells fail for unikernel instances on the affected
+  node
 
 ### Scalability
 
@@ -218,12 +226,10 @@ bounded by the per-instance limit and session lifetime.
 
 ### Troubleshooting
 
-| Failure | What the user sees |
-|---|---|
-| Instance not running or missing | `InstanceNotFound` before connecting |
-| Image has no shell | `NoShell` before connecting |
-| Agent restarting | A maintenance warning, then "start a new session" |
-| Agent crashed | `AgentLost`; the shell's processes are cleaned up |
+- **Instance not running or missing:** `InstanceNotFound` before connecting
+- **Image has no shell:** `NoShell` before connecting
+- **Agent restarting:** A maintenance warning, then "start a new session"
+- **Agent crashed:** `AgentLost`; the shell's processes are cleaned up
 
 ## Implementation History
 
@@ -241,13 +247,16 @@ bounded by the per-instance limit and session lifetime.
 
 ## Alternatives
 
-| Alternative | Why not |
-|---|---|
-| Proxy shells through the control plane | Puts every keystroke through the core and needs an inbound path into cells |
-| Reach cells through the federation hub's cluster proxy | Cells connect outward only, and it would give the core cluster-admin reach into every cell |
-| A tunnel into the instance's private network (SSH) | Needs software in the image and breaks when the network is the thing being debugged |
-| Store a long-lived key per user | Adds registration, rotation and revocation for no gain over a key per session |
-| Reuse the Datum Connect desktop client | No local API, not distributed as a CLI, and licensed incompatibly with datumctl |
+- **Proxy shells through the control plane:** Puts every keystroke through the
+  core and needs an inbound path into cells
+- **Reach cells through the federation hub's cluster proxy:** Cells connect
+  outward only, and it would give the core cluster-admin reach into every cell
+- **A tunnel into the instance's private network (SSH):** Needs software in the
+  image and breaks when the network is the thing being debugged
+- **Store a long-lived key per user:** Adds registration, rotation and
+  revocation for no gain over a key per session
+- **Reuse the Datum Connect desktop client:** No local API, not distributed as a
+  CLI, and licensed incompatibly with datumctl
 
 ## Infrastructure Needed
 
