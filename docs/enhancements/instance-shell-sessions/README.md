@@ -162,9 +162,6 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
 
 ### Proposed API
 
-The [implementation contract](./implementation-contract.md) fixes the
-interfaces between the pieces of work.
-
 `InstanceConsoleSession` is a project-scoped
 `compute.datumapis.com/v1alpha` resource. A client creates one resource for one
 command in one container. Deleting it revokes the session.
