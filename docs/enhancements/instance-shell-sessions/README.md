@@ -149,6 +149,9 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 - **Runtimes behave differently inside:** A shell check when each session is
   claimed; an instance without a usable shell is refused with a clear reason.
   Verify process cleanup and scale-to-zero behaviour on unikernels in staging
+- **Cells depend on Datum Connect releases:** Pin each cell to a released CLI
+  image, and run the shell session tests against new Connect releases before
+  cells take them.
 - **Security review:** Review the key, isolation and cleanup model with the
   platform security owners before preview
 
@@ -180,13 +183,19 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 A local prototype on a Kata cell proved this design end to end, including
 crash recovery, the per-instance limit, clean endings and network isolation.
 
-<<[UNRESOLVED open decisions]>>
-- Which team owns the shell agent and tunnel endpoint.
-- Whether tunnel keys live in Secret Manager or are generated and kept in each
-  cell.
-- Whether the tunnel endpoint reuses the Datum Connect code or is a small
-  dedicated binary.
-<<[/UNRESOLVED]>>
+### Decisions
+
+- **Ownership:** compute owns both the shell agent and the tunnel endpoint. They
+  depend on the session API, runtime capability and routing that compute
+  already owns, and work the same across the Kata and Unikraft providers.
+- **Tunnel keys:** each tunnel endpoint generates its key on first start and
+  keeps it in a secret local to its cell. The key identifies the endpoint to
+  clients but grants no access on its own, so a leak is confined to one cell.
+  Rotating it means deleting the secret; open shells on that endpoint end and
+  users start new sessions.
+- **Tunnel code:** the tunnel endpoint runs the Datum Connect CLI, so shells
+  and Datum Connect share one tunnel implementation. That CLI needs a released
+  container image and a clean-shutdown fix before cells can run it.
 
 ## Production Readiness Review Questionnaire
 
@@ -263,6 +272,8 @@ bounded by the per-instance limit and session lifetime.
 - A shell agent and tunnel endpoint deployed to each compute cell, with
   network policy limiting both.
 - The Unikraft exec policy enabled on cells that run unikernel instances.
+- A released container image of the Datum Connect CLI, including the fix that
+  lets it shut down cleanly.
 - Relays served over TLS, with browser access allowed on their latency probe, so
   portal terminals can connect.
 - Relay capacity and placement reviewed for interactive traffic.

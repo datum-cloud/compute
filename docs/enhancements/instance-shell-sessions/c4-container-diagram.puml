@@ -14,7 +14,7 @@ Container(client, "Client", "datumctl compute or Cloud Portal", "The CLI or the 
 System_Boundary(cell, "Compute cell") {
     Container(instance, "Instance", "Kata VM or Unikraft unikernel", "Runs the user's workload; the shell runs inside it")
     Container(agent, "Shell agent", "compute", "Claims sessions, enforces limits, checks the client's key, runs the shell and cleans up")
-    Container(listen, "Tunnel endpoint", "iroh listen node", "Receives the encrypted connection; holds no cluster credentials")
+    Container(listen, "Tunnel endpoint", "Datum Connect CLI", "Receives the encrypted connection; holds no cluster credentials")
 }
 
 System_Boundary(core, "Datum control plane") {
