@@ -16,6 +16,13 @@ rules:
   - apiGroups: ["compute.datumapis.com"]
     resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Compute delivers each shell session as a copy in the hub namespace of its
+  # instance's deployment, reads back the status the cell's shell agent writes
+  # there, and removes the copy when the session goes. After an unconfirmed
+  # cleanup it releases the agent's finalizer, which is an update.
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instanceconsolesessions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Compute asks for a network's presence in a location by writing a
   # NetworkBinding on the hub. NSO turns every binding for the same network and
   # location into one shared NetworkContext and propagates it to the cells

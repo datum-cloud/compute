@@ -1,0 +1,18 @@
+# The cell's shell agent writes a session's status straight onto the hub copy,
+# and compute's session controller reads it from there. Aggregation keeps the
+# hub copy's status as it is, so Karmada never overwrites what the agent wrote
+# with the status of a cell copy, which nothing writes.
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: instanceconsolesession
+spec:
+  target:
+    apiVersion: compute.datumapis.com/v1alpha
+    kind: InstanceConsoleSession
+  customizations:
+    statusAggregation:
+      luaScript: |
+        function AggregateStatus(desiredObj, statusItems)
+          return desiredObj
+        end
