@@ -1,0 +1,10 @@
+# Instance shell sessions for a cell, opt-in and separate from the cell
+# overlay: that overlay moves everything into compute-system, and the shell
+# service must stay in compute-shell-system, whose name is part of every
+# session's connection target.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+components:
+  - ../../components/shell-agent
+  - ../../components/shell-agent-cilium
