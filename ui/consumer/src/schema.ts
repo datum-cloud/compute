@@ -122,6 +122,10 @@ export const instanceResourceSchema = z.object({
   memory: z.string().optional(),
   image: z.string().optional(),
   ports: z.array(z.string()).default([]),
+  /** Sandbox container names, in spec order. Empty for virtual machines. */
+  containers: z.array(z.string()).default([]),
+  /** RuntimeClass the instance names; unset selects the catalog default. */
+  runtimeClass: z.string().optional(),
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
   externalIP: z.string().optional(),
   internalIP: z.string().optional(),
