@@ -796,16 +796,21 @@ export function useWorkloadRelatedResources(
 // every other call here. One query per page, not per row.
 
 const SSAR_PATH = '/apis/authorization.k8s.io/v1/selfsubjectaccessreviews';
-const PERMISSION_STALE_MS = 5 * 60_000;
+export const PERMISSION_STALE_MS = 5 * 60_000;
 
-async function canDelete(projectId: string, group: string, resource: string): Promise<boolean> {
+export async function canPerform(
+  projectId: string,
+  group: string,
+  resource: string,
+  verb: string
+): Promise<boolean> {
   const res = await fetch(`${getProjectScopedBase(projectId)}${SSAR_PATH}`, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({
       apiVersion: 'authorization.k8s.io/v1',
       kind: 'SelfSubjectAccessReview',
-      spec: { resourceAttributes: { group, resource, verb: 'delete', namespace: 'default' } },
+      spec: { resourceAttributes: { group, resource, verb, namespace: 'default' } },
     }),
   });
   if (!res.ok) return false;
@@ -830,10 +835,10 @@ const NO_DELETE_PERMISSIONS: DeletePermissions = {
 async function fetchDeletePermissions(projectId: string): Promise<DeletePermissions> {
   const [canDeleteWorkload, canDeleteAlb, canDeleteNetworkService, canDeleteNetwork] =
     await Promise.all([
-      canDelete(projectId, 'compute.datumapis.com', 'workloads'),
-      canDelete(projectId, 'networking.datumapis.com', 'httpproxies'),
-      canDelete(projectId, 'networking.datumapis.com', 'networkservices'),
-      canDelete(projectId, 'networking.datumapis.com', 'networks'),
+      canPerform(projectId, 'compute.datumapis.com', 'workloads', 'delete'),
+      canPerform(projectId, 'networking.datumapis.com', 'httpproxies', 'delete'),
+      canPerform(projectId, 'networking.datumapis.com', 'networkservices', 'delete'),
+      canPerform(projectId, 'networking.datumapis.com', 'networks', 'delete'),
     ]);
   return { canDeleteWorkload, canDeleteAlb, canDeleteNetworkService, canDeleteNetwork };
 }

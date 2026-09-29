@@ -12,12 +12,16 @@ import {
 } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
 import { useInstance, usePublishedUrl } from '../lib/api';
+import { useShellAvailable } from '../lib/use-shell-available';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
 import InstanceLogs from './instance-logs';
 import InstanceMetrics from './instance-metrics';
 import InstanceOverview from './instance-overview';
+import { lazy, Suspense } from 'react';
 import { Outlet, Route, Routes, useLocation, useParams } from 'react-router';
+
+const InstanceShellPage = lazy(() => import('./instance-shell'));
 
 function InstanceLayoutShell({
   projectHref,
@@ -26,6 +30,7 @@ function InstanceLayoutShell({
   overviewHref,
   logsHref,
   metricsHref,
+  shellHref,
   titleName,
   workloadName,
 }: {
@@ -35,6 +40,7 @@ function InstanceLayoutShell({
   overviewHref: string;
   logsHref: string;
   metricsHref: string;
+  shellHref: string;
   titleName: string;
   workloadName?: string;
 }) {
@@ -46,6 +52,7 @@ function InstanceLayoutShell({
   const { data: instance, isLoading, error, refetch } = useInstance(projectId, instanceName);
   const published = usePublishedUrl(projectId, workloadName ?? instance?.workloadName);
   const locationIndex = useLocationIndex(projectId);
+  const shellAvailable = useShellAvailable(projectId, instance);
 
   return (
     <InstancePageChrome
@@ -55,6 +62,7 @@ function InstanceLayoutShell({
       overviewHref={overviewHref}
       logsHref={logsHref}
       metricsHref={metricsHref}
+      shellHref={shellAvailable ? shellHref : undefined}
       titleName={instance?.name ?? titleName}
       workloadName={workloadName}
       instance={instance}
@@ -90,6 +98,7 @@ function InstanceLayoutShell({
               projectId,
               logsHref,
               metricsHref,
+              shellAvailable,
               proxyId: published.data?.proxyName,
               albHostname: published.data?.hostname,
               albDisplayName: published.data?.displayName,
@@ -111,9 +120,10 @@ export default function InstanceDetail() {
   const location = useLocation();
 
   const path = location.pathname.replace(/\/$/, '');
-  const overviewHref = path.replace(/\/(logs|metrics)$/, '');
+  const overviewHref = path.replace(/\/(logs|metrics|shell)$/, '');
   const logsHref = `${overviewHref}/logs`;
   const metricsHref = `${overviewHref}/metrics`;
+  const shellHref = `${overviewHref}/shell`;
   const instancesHref = overviewHref.replace(/\/instances\/[^/]+$/, '');
   const workloadsHref = instancesHref.replace(/\/[^/]+$/, '');
   const projectHref = projectId ? `/project/${projectId}` : '/';
@@ -130,6 +140,7 @@ export default function InstanceDetail() {
             overviewHref={overviewHref}
             logsHref={logsHref}
             metricsHref={metricsHref}
+            shellHref={shellHref}
             titleName={titleName}
             workloadName={workloadName}
           />
@@ -137,6 +148,14 @@ export default function InstanceDetail() {
         <Route index element={<InstanceOverview />} />
         <Route path="logs" element={<InstanceLogs />} />
         <Route path="metrics" element={<InstanceMetrics />} />
+        <Route
+          path="shell"
+          element={
+            <Suspense fallback={null}>
+              <InstanceShellPage />
+            </Suspense>
+          }
+        />
       </Route>
     </Routes>
   );

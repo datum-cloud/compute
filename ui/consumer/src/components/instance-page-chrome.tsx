@@ -21,12 +21,14 @@ import { Link } from 'react-router';
 export function instanceDetailTabs(
   overviewHref: string,
   metricsHref: string,
-  logsHref: string
+  logsHref: string,
+  shellHref?: string
 ): PluginTab[] {
   return [
     { label: 'Overview', href: overviewHref },
     { label: 'Metrics', href: metricsHref },
     { label: 'Logs', href: logsHref },
+    ...(shellHref ? [{ label: 'Shell', href: shellHref }] : []),
     { label: 'Manage' },
     { label: 'Activity' },
   ];
@@ -39,6 +41,7 @@ export function InstancePageChrome({
   overviewHref,
   logsHref,
   metricsHref,
+  shellHref,
   titleName,
   workloadName,
   instance,
@@ -52,6 +55,7 @@ export function InstancePageChrome({
   overviewHref: string;
   logsHref: string;
   metricsHref: string;
+  shellHref?: string;
   titleName: string;
   workloadName?: string;
   instance?: Instance | null;
@@ -116,7 +120,7 @@ export function InstancePageChrome({
       />
 
       <PluginTabs
-        tabs={instanceDetailTabs(overviewHref, metricsHref, logsHref)}
+        tabs={instanceDetailTabs(overviewHref, metricsHref, logsHref, shellHref)}
         testId="compute-plugin-instance-tabs"
       />
 

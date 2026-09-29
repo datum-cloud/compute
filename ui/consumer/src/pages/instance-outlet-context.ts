@@ -11,6 +11,8 @@ export type InstanceOutletContext = {
   projectId?: string;
   logsHref: string;
   metricsHref: string;
+  /** Undefined while the permission and runtime class checks load. */
+  shellAvailable?: boolean;
   /** HTTPProxy name when an ALB backs this workload's NetworkService. */
   proxyId?: string;
   /** Canonical/default hostname of the connected ALB, when known. */
