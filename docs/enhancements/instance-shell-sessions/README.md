@@ -260,12 +260,9 @@ records outlive the resource.
   selected image contains a supported shell and the requested executable
   before accepting a session:
   - **General-purpose (Kata):** The runtime supports exec natively.
-  - **Unikernel (Unikraft):** The Unikraft exec plugin provides exec when the
-    cell's exec policy enables it.
-- **Existing Unikraft instances.** The provider advertises `exec` only after
-  Kraftlet activates the plugin. The provider first requests dynamic activation;
-  if the capability does not appear before the reconciliation deadline, it
-  recreates the instance. It does not advertise `exec` before activation.
+  - **Unikernel (Unikraft):** The Unikraft exec plugin is on by default for
+    every instance. The provider's exec policy is `always` in every cell that
+    runs unikernel instances.
 - **Routing.** Instances record which cell runs them, and sessions follow the
   same federation path as the workloads they target.
 - **Audit record.** The Project API audit pipeline records session creation
@@ -314,8 +311,7 @@ crash recovery, the per-instance limit, clean endings and network isolation.
 ### Feature enablement and rollback
 
 - **Enable / disable:** a compute feature gate and the `exec` feature on each
-  runtime class control the feature. Setting the Unikraft provider's exec
-  policy to `always` enables that runtime. Disabling any applicable switch
+  runtime class control the feature. Disabling either switch
   stops new sessions; open sessions end with a clear reason and their processes
   are cleaned up.
 - **Rollback:** Disable the feature without changing instances or workloads.
@@ -324,8 +320,8 @@ crash recovery, the per-instance limit, clean endings and network isolation.
 
 Staging cells first, then a preview for selected projects, then production
 cells through the normal release tag. Before preview, staging must validate the
-latency goal and verify Unikraft behavior for new and existing instances,
-missing shells, process cleanup and scale-to-zero.
+latency goal and verify Unikraft behavior for missing shells, process cleanup,
+idle sessions and scale-to-zero.
 
 ### Monitoring requirements
 
@@ -401,8 +397,8 @@ simultaneous session creation, reservation release and agent failover.
 
 - A shell agent and tunnel endpoint deployed to each compute cell, with
   network policy limiting both.
-- The Unikraft provider exec policy set to `always` in cells that advertise the
-  capability.
+- The Unikraft provider exec policy set to `always` in every cell that runs
+  unikernel instances.
 - The session-create permission added to the default project-admin role.
 - An activity policy that maps session creation and lifecycle events into the
   project activity log.
