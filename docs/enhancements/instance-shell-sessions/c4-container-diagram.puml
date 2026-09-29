@@ -26,12 +26,12 @@ System_Boundary(core, "Datum control plane") {
 
 Rel_R(user, client, "")
 Rel(client, api, "1. Creates a session", "HTTPS")
-Rel_Back(api, fed, "2. Watches sessions")
+Rel_R(fed, api, "2. Watches sessions")
 Rel(fed, agent, "3. Delivers the session")
 Rel(client, relay, "4. Connects", "QUIC")
-Rel(relay, listen, "Forwards")
+Rel_L(relay, listen, "Forwards")
 Rel(listen, agent, "Hands over the stream")
-Rel_L(agent, instance, "5. Runs the shell", "via the instance's runtime")
+Rel(agent, instance, "5. Runs the shell", "via the instance's runtime")
 
 SHOW_LEGEND()
 @enduml
