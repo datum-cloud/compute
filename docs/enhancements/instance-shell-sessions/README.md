@@ -21,7 +21,7 @@ supports) · [Federated Deployment Scheduling](../federated-deployment-schedulin
   - [Non-goals](#non-goals)
 - [Proposal](#proposal)
   - [What it looks like](#what-it-looks-like)
-  - [User story](#user-story)
+  - [User stories](#user-stories)
   - [Architecture](#architecture)
   - [Guardrails](#guardrails)
   - [Risks and mitigations](#risks-and-mitigations)
@@ -82,13 +82,18 @@ a terminal in the browser.
 
 *Illustrative only; exact commands and UI are to be designed.*
 
-### User story
+### User stories
 
-#### Inspect a misbehaving instance
+#### A developer inspects a misbehaving instance
 
 A developer sees that an API fails in one location. They choose an affected
 instance, open a shell and trace the problem to a stale configuration file and
 a failing DNS lookup.
+
+#### An AI agent investigates a failure
+
+An authorized operations agent detects a failed health check, creates a session
+through the API, runs a targeted diagnostic command and reports its findings.
 
 ### Architecture
 
@@ -104,7 +109,8 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 
 - **Permission on session creation:** Creating `InstanceConsoleSession`
   resources requires the new session-create permission. The default
-  project-admin role gets it; viewer roles do not
+  project-admin role gets it; viewer roles do not. AI agent identities require
+  an explicit grant
 - **Single-use session:** The first authenticated connection consumes the
   session and can run only the requested command. The agent rejects replays and
   command changes; deleting the session closes an active connection
@@ -161,13 +167,13 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
   AgentLost, TooManySessions, NoShell, InstanceNotRunning, InstanceNotFound and
   Invalid, each with a user-facing message.
 - **Audit record.** The Project API audit pipeline records session creation
-  with the requesting user as the actor. The compute session controller emits
-  start and end events, where the actor is the controller. All three events
-  include the session UID, project, instance and container, so the activity API
-  and Cloud Portal can present one timeline with the requester, timestamps and
-  ending reason. The events follow the project's audit-log retention policy
-  and do not depend on the session resource. This requires a new activity
-  policy, not Milo code changes.
+  with the requesting user or service identity as the actor. The compute
+  session controller emits start and end events, where the actor is the
+  controller. All three events include the session UID, project, instance and
+  container, so the activity API and Cloud Portal can present one timeline with
+  the requester, timestamps and ending reason. The events follow the project's
+  audit-log retention policy and do not depend on the session resource. This
+  requires a new activity policy, not Milo code changes.
 - **Session cleanup.** The session controller deletes a terminal session
   resource 24 hours after its end time.
 - **Concurrency.** Before claiming a session, an agent atomically acquires one
