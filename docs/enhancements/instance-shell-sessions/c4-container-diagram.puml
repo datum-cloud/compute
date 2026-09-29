@@ -9,9 +9,9 @@ LAYOUT_LEFT_RIGHT()
 
 Person(user, "Compute user", "Opens a shell in one of their instances from the CLI or the portal")
 
-Container(client, "Client", "datumctl compute or Cloud Portal", "The CLI or the portal's browser terminal. Creates the session with a one-time key, connects to the cell and runs the terminal")
-
 Container_Ext(relay, "Relay", "Datum iroh relay", "Forwards encrypted traffic; the user and the cell both connect outward to it")
+
+Container(client, "Client", "datumctl compute or Cloud Portal", "The CLI or the portal's browser terminal. Creates the session with a one-time key, connects to the cell and runs the terminal")
 
 System_Boundary(cell, "Compute cell") {
     Container(listen, "Tunnel endpoint", "iroh listen node", "Receives the encrypted connection; holds no cluster credentials")
@@ -29,9 +29,9 @@ Rel(client, api, "1. Creates a session", "HTTPS")
 Rel_R(fed, api, "2. Watches sessions")
 Rel(fed, agent, "3. Delivers the session")
 Rel(client, relay, "4. Connects", "QUIC")
-Rel_L(relay, listen, "Forwards")
-Rel(listen, agent, "Hands over the stream")
-Rel(agent, instance, "5. Runs the shell", "via the instance's runtime")
+Rel(relay, listen, "Forwards")
+Rel_R(listen, agent, "Hands over the stream")
+Rel_R(agent, instance, "5. Runs the shell", "via the instance's runtime")
 
 SHOW_LEGEND()
 @enduml
