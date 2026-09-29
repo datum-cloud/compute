@@ -5,7 +5,7 @@
 
 title Instance Shell Sessions - Containers\nAccess is decided centrally; the shell travels straight to the cell
 
-LAYOUT_LEFT_RIGHT()
+LAYOUT_TOP_DOWN()
 
 Person(user, "Compute user", "Opens a shell in one of their instances from the CLI or the portal")
 

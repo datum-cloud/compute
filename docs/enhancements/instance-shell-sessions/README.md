@@ -119,29 +119,6 @@ inbound connections.
 
 Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 
-| Container | Responsibility |
-|---|---|
-| **datumctl compute** | Creates the session with a key generated for it, then connects and runs the terminal. The key is never stored. |
-| **Cloud Portal** | Offers **Open shell** on an instance, creates the session on the user's behalf, and runs the same tunnel client in the browser, with a key generated in the tab. |
-| **Project API** | Decides who may open a shell (a new permission on Instance, granted to admins only), stores sessions and records them in the audit log. |
-| **Compute controllers** | Send each session to the cell that runs the instance and report its status back to the project. |
-| **Relay** | Forwards encrypted traffic between the user and the cell. Both sides connect outward, so cells need no open ports. |
-| **Tunnel endpoint** | The cell's internet-facing piece. It holds no credentials and can reach only its shell agent and the relays. |
-| **Shell agent** | Claims sessions, checks the instance can take one, verifies the client holds the session's key, runs the shell, and ends its processes when the session ends. |
-| **Instance** | The user's Kata VM or Unikraft unikernel. The shell reaches it through the instance's runtime, never through the instance's network. |
-
-A session moves through five steps:
-
-1. The user runs `datumctl compute exec` or chooses **Open shell** in the
-   portal. The client creates a session naming the instance, the command and
-   the public half of a key it just generated.
-2. The Project API checks the user may open shells in this project.
-3. Compute delivers the session to the cell running the instance, where a
-   shell agent claims it and publishes where to connect.
-4. The client connects through the relay and proves it holds the session's key.
-5. The agent starts the shell. When the user exits, the session expires or it
-   is revoked, the agent ends the shell's processes and records how it ended.
-
 ### Guardrails
 
 | Guardrail | Effect |
