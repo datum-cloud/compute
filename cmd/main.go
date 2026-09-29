@@ -849,8 +849,9 @@ func ignoreCanceled(err error) error {
 	return err
 }
 
-// setupManagementControllers wires the WorkloadDeploymentFederator and
-// InstanceProjector onto mgr. It returns the federation cluster as a Runnable
+// setupManagementControllers wires the WorkloadDeploymentFederator,
+// InstanceProjector and, behind its feature gate, the InstanceConsoleSession
+// controller onto mgr. It returns the federation cluster as a Runnable
 // that must be started alongside the main manager. Called only when management
 // controllers are enabled and a federation REST config is available.
 func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
@@ -872,9 +873,10 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// aggregated downstream by Karmada is mirrored back to the project WD
 	// immediately instead of on the next informer resync.
 	federator := &controller.WorkloadDeploymentFederator{
-		FederationClient:      federationClient,
-		FederationCluster:     federationCluster,
-		RuntimeClassesEnabled: features.FeatureGate.Enabled(features.RuntimeClasses),
+		FederationClient:       federationClient,
+		FederationCluster:      federationCluster,
+		RuntimeClassesEnabled:  features.FeatureGate.Enabled(features.RuntimeClasses),
+		ConsoleSessionsEnabled: features.FeatureGate.Enabled(features.InstanceConsoleSessions),
 	}
 	if err := federator.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
@@ -888,6 +890,20 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		MCManager:        mgr,
 	}).SetupWithManager(mgr.GetLocalManager(), federationCluster); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
+	}
+
+	if features.FeatureGate.Enabled(features.InstanceConsoleSessions) {
+		reportingInstance, err := os.Hostname()
+		if err != nil || reportingInstance == "" {
+			reportingInstance = "compute-manager"
+		}
+		if err := (&controller.InstanceConsoleSessionReconciler{
+			FederationClient:  federationClient,
+			FederationCluster: federationCluster,
+			ReportingInstance: reportingInstance,
+		}).SetupWithManager(mgr); err != nil {
+			return nil, fmt.Errorf("InstanceConsoleSession: %w", err)
+		}
 	}
 
 	return []manager.Runnable{federationCluster}, nil
