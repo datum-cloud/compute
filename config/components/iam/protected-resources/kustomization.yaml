@@ -11,3 +11,4 @@ resources:
   - instance.yaml
   - runtime-class.yaml
   - instance-type.yaml
+  - instance-console-session.yaml
