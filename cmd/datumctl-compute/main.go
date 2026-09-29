@@ -9,6 +9,7 @@ import (
 	"go.miloapis.com/service-catalog/pkg/activation"
 
 	"go.datum.net/compute/internal/cmd/compute"
+	"go.datum.net/compute/internal/cmd/compute/util"
 )
 
 // version is set at build time via ldflags.
@@ -26,6 +27,14 @@ func main() {
 	err := compute.Command().Execute()
 	if err == nil {
 		return
+	}
+
+	var exitErr *util.ExitError
+	if errors.As(err, &exitErr) {
+		if exitErr.Err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", exitErr.Err)
+		}
+		os.Exit(exitErr.Code)
 	}
 
 	// The activation SDK already wrote its user-facing copy to stderr; only
