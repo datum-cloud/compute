@@ -105,6 +105,17 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+CONSOLE_WASM ?= bin/console-session.wasm
+CONSOLE_WASM_EXEC ?= bin/console-session-wasm_exec.js
+
+.PHONY: build-console-wasm
+build-console-wasm: ## Build the browser console session client and report its size.
+	GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o $(CONSOLE_WASM) ./cmd/console-wasm
+	install -m 0644 "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $(CONSOLE_WASM_EXEC)
+	@echo "$(CONSOLE_WASM): $$(wc -c < $(CONSOLE_WASM) | tr -d ' ') bytes raw," \
+		"$$(gzip -9c $(CONSOLE_WASM) | wc -c | tr -d ' ') gzip," \
+		"$$(if command -v brotli >/dev/null; then brotli -c $(CONSOLE_WASM) | wc -c | tr -d ' '; else echo n/a; fi) brotli"
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go -health-probe-bind-address 0 --server-config ./config/overlays/dev/config.yaml
