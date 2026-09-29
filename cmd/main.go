@@ -170,6 +170,7 @@ func main() {
 		"NetworkingIntegration", features.FeatureGate.Enabled(features.NetworkingIntegration),
 		"RuntimeClasses", features.FeatureGate.Enabled(features.RuntimeClasses),
 		"InstanceTypes", features.FeatureGate.Enabled(features.InstanceTypes),
+		"InstanceConsoleSessions", features.FeatureGate.Enabled(features.InstanceConsoleSessions),
 	)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
@@ -487,6 +488,10 @@ func main() {
 			mgr, instanceTypeDeprecationGracePeriod,
 		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
+			os.Exit(1)
+		}
+		if err = computev1alphawebhooks.SetupInstanceConsoleSessionWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceConsoleSession")
 			os.Exit(1)
 		}
 	}

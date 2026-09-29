@@ -74,4 +74,10 @@ const (
 	// this annotation on its local copy and sets Status.Suspended itself, which
 	// then aggregates back up to the hub normally.
 	SuspendedAnnotation = AnnotationNamespace + "/suspended"
+
+	// InstanceConsoleSessionRequesterAnnotation records who created an
+	// InstanceConsoleSession. Admission sets it from the authenticated request
+	// and overwrites any value the client supplied, so the session's start and
+	// end events can name the requester.
+	InstanceConsoleSessionRequesterAnnotation = AnnotationNamespace + "/requester"
 )
