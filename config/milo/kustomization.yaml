@@ -1,0 +1,10 @@
+# This kustomization program is used to create all of the Milo platform resources
+# including ActivityPolicy configurations for activity timelines.
+#
+# This is created as a component so it can be included with other
+# kustomizations in project control planes.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - activity/
