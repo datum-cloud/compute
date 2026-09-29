@@ -1,77 +1,94 @@
 @startuml sequence-diagram
 
-skinparam backgroundColor white
+skinparam backgroundColor #F6F6F5
 skinparam sequence {
-    ArrowColor #334155
-    ActorBorderColor #334155
-    ActorFontColor #0F172A
-    LifeLineBorderColor #94A3B8
-    ParticipantBackgroundColor #F8FAFC
-    ParticipantBorderColor #334155
-    ParticipantFontColor #0F172A
+    ArrowColor #0C1D31
+    ActorBackgroundColor #F5D5D5
+    ActorBorderColor #0C1D31
+    ActorFontColor #0C1D31
+    LifeLineBorderColor #4D6356
+    ParticipantBackgroundColor #D5E5F5
+    ParticipantBorderColor #0C1D31
+    ParticipantFontColor #0C1D31
 }
-
-title Instance shell session - End-to-end flow
 
 actor "Client\n(datumctl, portal, or AI agent)" as p_client
 participant "Project API" as p_api
-participant "Activity system" as p_activity
+participant "Activity pipeline\n(ActivityPolicy)" as p_activity
 participant "Compute controllers" as p_controllers
 participant "Shell agent" as p_agent
 participant "Tunnel endpoint" as p_tunnel
 participant "Datum relay" as p_relay
 participant "Instance runtime" as p_runtime
 
+p_tunnel -> p_relay: Maintain long-lived outbound relay path
+
 p_client -> p_client: Generate an ephemeral key pair
-p_client -> p_api: Create InstanceConsoleSession\n(target, command, public key, TTL)
+p_client -> p_api: Create session\n(target, command, public key, TTL)
 p_api -> p_api: Authorize and validate
 
-alt Request rejected
+alt API rejects request
     p_api --> p_client: 4xx with an actionable reason
-else Request accepted
-    p_api -> p_activity: Record creation with requester identity
+else API accepts request
+    p_api -> p_activity: Send creation audit event\nwith requester identity
     p_api --> p_client: Session resource
 
     p_controllers -> p_api: Watch new session
     p_controllers -> p_agent: Deliver session to target cell
     p_agent -> p_agent: Validate runtime, instance, container,\ncommand, deadline, and capacity
-    p_agent -> p_agent: Acquire an atomic instance reservation
-    p_agent -> p_controllers: Publish endpoint and deadlines
-    p_controllers -> p_api: Update session status to Ready
-    p_api --> p_client: Ready condition and connection details
 
-    p_tunnel -> p_relay: Open outbound relay path
-    p_client -> p_relay: Connect with endpoint ID and client key
-    p_relay -> p_tunnel: Forward encrypted QUIC stream
-    p_tunnel -> p_agent: Hand over stream
-    p_agent -> p_agent: Match public key and consume session
-    p_agent -> p_runtime: Execute command in target container
-    p_runtime --> p_agent: Command started
-    p_agent -> p_controllers: Publish startedAt
-    p_controllers -> p_activity: Record session start
+    alt Cell rejects request
+        p_agent -> p_controllers: Publish terminal reason\n(TooManySessions, NoShell, CommandUnavailable,\nInstanceNotRunning, or Invalid)
+        p_controllers -> p_api: Update terminal status and create event
+        p_api -> p_activity: Send lifecycle event\nwith controller identity
+        p_api --> p_client: Terminal reason
+    else Cell accepts request
+        p_agent -> p_agent: Acquire atomic instance reservation
+        p_agent -> p_controllers: Publish endpoint and connectBefore
+        p_controllers -> p_api: Set Ready=True, reason=SessionReady
+        p_api --> p_client: Connection details and deadline
 
-    loop Until exit, expiry, revocation, or failure
-        p_client -> p_relay: Encrypted input
-        p_relay -> p_tunnel: Forward input
-        p_tunnel -> p_agent: Forward input
-        p_agent -> p_runtime: Write input
-        p_runtime --> p_agent: Read output
-        p_agent --> p_tunnel: Forward output
-        p_tunnel --> p_relay: Forward encrypted output
-        p_relay --> p_client: Encrypted output
+        alt connectBefore passes
+            p_agent -> p_agent: Release instance reservation
+            p_agent -> p_controllers: Publish NotConnected
+            p_controllers -> p_api: Update terminal status and create event
+            p_api -> p_activity: Send lifecycle event\nwith controller identity
+            p_api --> p_client: NotConnected
+        else Client connects in time
+            p_client -> p_relay: Connect with endpoint ID and client key
+            p_relay -> p_tunnel: Forward encrypted QUIC stream
+            p_tunnel -> p_agent: Hand over stream
+            p_agent -> p_agent: Match public key and consume session
+            p_agent -> p_runtime: Execute command in target container
+            p_runtime --> p_agent: Command started
+            p_agent -> p_controllers: Publish Connected and startedAt
+            p_controllers -> p_api: Update status and create start event
+            p_api -> p_activity: Send lifecycle event\nwith controller identity
+
+            loop Until exit, expiry, revocation, or failure
+                p_client -> p_relay: Encrypted input
+                p_relay -> p_tunnel: Forward input
+                p_tunnel -> p_agent: Forward input
+                p_agent -> p_runtime: Write input
+                p_runtime --> p_agent: Read output
+                p_agent --> p_tunnel: Forward output
+                p_tunnel --> p_relay: Forward encrypted output
+                p_relay --> p_client: Encrypted output
+            end
+
+            alt Command exits
+                p_runtime --> p_agent: Exit code
+            else Session ends externally
+                p_agent -> p_runtime: Stop session process group
+                p_runtime --> p_agent: Process group stopped
+            end
+            p_agent -> p_agent: Release instance reservation
+            p_agent -> p_controllers: Publish terminal status
+            p_controllers -> p_api: Update status and create end event
+            p_api -> p_activity: Send lifecycle event\nwith controller identity
+            p_api --> p_client: Terminal status
+        end
     end
-
-    alt Command exits
-        p_runtime --> p_agent: Exit code
-    else Session ends externally
-        p_agent -> p_runtime: Stop the session process group
-        p_runtime --> p_agent: Process group stopped
-    end
-    p_agent -> p_agent: Release instance reservation
-    p_agent -> p_controllers: Publish terminal status
-    p_controllers -> p_api: Update reason, timestamps, and exit code
-    p_controllers -> p_activity: Record session end
-    p_api --> p_client: Terminal status
 
     ... 24 hours after the session ends ...
     p_controllers -> p_api: Delete session resource

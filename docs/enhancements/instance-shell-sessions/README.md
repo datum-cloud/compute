@@ -34,8 +34,8 @@ supports) · [Federated Deployment Scheduling](../federated-deployment-schedulin
 
 ## Summary
 
-Let users open a live shell inside a running instance from the CLI or the Cloud
-Portal to inspect its state and run diagnostic commands.
+Let users and customer-controlled AI agents open a live shell or run a one-off
+command inside a running instance to inspect its state and diagnose problems.
 
 ## Motivation
 
@@ -50,12 +50,14 @@ have found a problem in the portal and have nowhere to go from there.
 
 ### Goals
 
-- A user with the right permission can open an interactive shell in a running
-  general-purpose (Kata) or unikernel (Unikraft) instance whose image contains
-  one. Both runtimes use the same CLI and portal workflow.
-- The p95 time from accepted session creation to the first prompt is less than
-  five seconds on supported production networks.
-- The project activity log provides a complete history of shell access.
+- A user or customer-controlled AI agent with the right permission can run an
+  interactive shell or one-off command in a running general-purpose (Kata) or
+  unikernel (Unikraft) instance. Both runtimes use the same API and client
+  workflow when the runtime and image meet the session requirements.
+- The p95 time from accepted session creation to an interactive prompt or
+  noninteractive process start is less than five seconds on supported
+  production networks.
+- The project activity log provides a complete history of session access.
 - Every session ends with an actionable explanation.
 - When a session ends, the platform stops every process that it started. File
   writes and other changes inside the instance remain until the instance is
@@ -90,14 +92,15 @@ A developer sees that an API fails in one location. They choose an affected
 instance, open a shell and trace the problem to a stale configuration file and
 a failing DNS lookup.
 
-#### An AI agent investigates a failure
+#### A customer's AI agent investigates a failure
 
-An authorized operations agent detects a failed health check, creates a session
-through the API, runs a targeted diagnostic command and reports its findings.
+A customer-controlled AI agent detects a failed health check, creates a session
+through the API with its project service identity, runs a targeted diagnostic
+command and reports its findings.
 
 ### Architecture
 
-After session creation, shell traffic travels straight from the user to the
+After session creation, command traffic travels straight from the client to the
 cell that runs the instance. Traffic is encrypted end to end, the control plane
 is not in the data path and cells accept no inbound connections.
 
@@ -107,8 +110,8 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 
 #### End-to-end flow
 
-The client can be `datumctl`, the Cloud Portal or an authorized AI agent. Each
-uses the same API and data path.
+The client can be `datumctl`, the Cloud Portal or a customer-controlled AI
+agent. Each uses the same API and data path.
 
 ![Instance shell session sequence](./sequence-diagram.png)
 
@@ -123,8 +126,11 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
 - **Single-use session:** The first authenticated connection consumes the
   session and can run only the requested command. The agent rejects replays and
   command changes; deleting the session closes an active connection
-- **Short-lived:** Must connect within 60 seconds; lasts at most one hour
-- **Per-instance limit:** At most three shells can run in an instance at once
+- **Short-lived:** The cell gives clients a 60-second connection window and
+  limits command execution to one hour
+- **Per-instance limit:** At most three sessions can run in an instance at once
+- **Creation rate:** Preview defaults limit each identity to 10 new sessions
+  per minute and each project to 30; operators can lower these limits
 - **Isolation:** Cell network policy lets the tunnel endpoint reach only its
   agent
 
@@ -139,7 +145,10 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
 - **Client library maintenance depends on one person:** Pin the Go iroh version;
   test it against the Rust tunnel endpoint in CI; keep a small Rust helper as a
   fallback
-- **Relay distance adds latency:** Route clients through Datum's regional relays
+- **Relay distance can miss the five-second p95 goal:** Review relay placement
+  and capacity; do not enable preview in a region until staging meets the goal
+- **Automated clients can overload session control paths:** Enforce identity,
+  project and per-instance limits; alert on sustained rejection volume
 - **The browser client is a large download:** Load it only when a terminal opens
   (about 3 MB compressed); cache it between visits
 - **A Datum Connect regression breaks shells:** Qualify each release in CI
@@ -160,9 +169,6 @@ apiVersion: compute.datumapis.com/v1alpha
 kind: InstanceConsoleSession
 metadata:
   # Clients use generateName because each resource represents one invocation.
-  # Deleting an active resource revokes it. A finalizer keeps the resource until
-  # the process stops and its reservation and audit event are complete. The
-  # cleanup controller deletes terminal resources after 24 hours.
   generateName: web-0-
 spec:
   # The whole spec is immutable. To change a request, delete it and create one.
@@ -178,20 +184,25 @@ spec:
   containerName: app
 
   # Required argument vector, not a shell string. It accepts 1–64 elements and
-  # at most 16 KiB in total.
+  # at most 16 KiB in total. The image must contain this executable and a
+  # supported shell, which the agent uses to manage the process group.
   command: ["sh"]
 
-  # true allocates a pseudoterminal and connects standard input. false closes
-  # input and keeps standard output and error separate for agents and scripts.
+  # Optional; defaults to false. Keeps standard input open when true, including
+  # without a terminal.
+  stdin: true
+
+  # Optional; defaults to false. Allocates a pseudoterminal and merges output
+  # streams when true. false preserves separate standard output and error.
   terminal: true
 
   # Required 32-byte iroh public key as 64 lowercase hexadecimal characters.
   # The private key remains in client memory and never enters the API.
   clientPublicKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-  # Optional execution lifetime. Defaults to 1h and cannot exceed 1h. The
-  # client still has only 60 seconds after Ready=True to connect.
-  ttl: 1h
+  # Optional command lifetime, measured from startedAt. Defaults to 15m and
+  # cannot exceed 1h.
+  ttl: 15m
 status:
   # All status fields are output only.
   connection:
@@ -200,23 +211,22 @@ status:
     relayURLs:
       - https://iroh-relay.us-central-1.datumconnect.net
 
-  # Connection and execution deadlines set when the cell claims the session.
+  # Absolute deadline set from the shell agent's clock when it publishes the
+  # connectable status. Status propagation consumes part of the 60-second
+  # window, so clients should connect immediately.
   connectBefore: "2026-09-29T18:01:00Z"
-  expiresAt: "2026-09-29T19:00:00Z"
 
-  # Set as the command advances through its lifecycle.
+  # Set when the command starts and calculated as startedAt plus spec.ttl.
   # startedAt: "2026-09-29T18:00:10Z"
+  # expiresAt: "2026-09-29T18:15:10Z"
   # endedAt: "2026-09-29T18:04:32Z"
 
   # Set only when the runtime reports a normal process exit. datumctl returns
   # this value; without one, it returns nonzero and shows the condition reason.
   # exitCode: 0
 
-  # Ready is the only condition type. It is Unknown while pending, True when
-  # the client can connect and False after rejection or termination. A terminal
-  # condition never changes. Terminal reasons are Completed, Expired, Revoked,
-  # NotConnected, AgentShutdown, AgentLost, TooManySessions, NoShell,
-  # InstanceNotRunning, InstanceNotFound and Invalid.
+  # Ready is Unknown while pending, True while connectable or connected, and
+  # False after rejection or termination. reason identifies the exact phase.
   conditions:
     - type: Ready
       status: "True"
@@ -226,18 +236,36 @@ status:
       observedGeneration: 1
 ```
 
-### Runtime and lifecycle
+### Session lifecycle
 
-- **Runtime capability.** Runtime classes advertise shell support, and sessions
-  for classes without the `exec` feature are refused. The agent also checks
-  that the selected image contains the requested command before accepting a
-  session:
+A session moves through `Pending`, `SessionReady` and `Connected`, then reaches
+one immutable terminal state. Terminal reasons are `Completed`, `Expired`,
+`Revoked`, `NotConnected`, `AgentShutdown`, `AgentLost`, `TooManySessions`,
+`NoShell`, `CommandUnavailable`, `InstanceNotRunning`, `InstanceNotFound`,
+and `Invalid`. The client uses the condition reason to distinguish a session
+waiting for a connection from one whose command is running.
+
+Deleting an active session revokes it. A finalizer waits up to five minutes for
+the cell to stop the process and release its reservation. If the cell does not
+confirm cleanup, the controller records `CleanupUnconfirmed` and removes the
+finalizer; it never reports cleanup as confirmed. This cleanup outcome is a
+lifecycle event, not a replacement for the immutable terminal reason. The
+cleanup controller deletes terminal session resources after 24 hours. Audit
+records outlive the resource.
+
+### Runtime and routing
+
+- **Runtime capability.** Runtime classes advertise the `exec` feature, and
+  sessions for classes without it are refused. The agent also checks that the
+  selected image contains a supported shell and the requested executable
+  before accepting a session:
   - **General-purpose (Kata):** The runtime supports exec natively.
   - **Unikernel (Unikraft):** The Unikraft exec plugin provides exec when the
     cell's exec policy enables it.
-- **Existing Unikraft instances.** The provider reconciles its exec annotation
-  onto existing instance Pods. Kraftlet must activate the plugin without
-  recreating the instance; otherwise, existing instances require recreation.
+- **Existing Unikraft instances.** The provider advertises `exec` only after
+  Kraftlet activates the plugin. The provider first requests dynamic activation;
+  if the capability does not appear before the reconciliation deadline, it
+  recreates the instance. It does not advertise `exec` before activation.
 - **Routing.** Instances record which cell runs them, and sessions follow the
   same federation path as the workloads they target.
 - **Audit record.** The Project API audit pipeline records session creation
@@ -267,13 +295,15 @@ crash recovery, the per-instance limit, clean endings and network isolation.
 - **Tunnel keys:** the shell agent creates an endpoint identity key and stores
   it in a secret local to its cell. The tunnel endpoint mounts the secret
   read-only and has no Kubernetes API credentials. The key identifies the
-  endpoint to clients but does not authorize a shell, so a leak is confined to
-  one cell. The agent rotates the secret; open shells on that endpoint end and
-  users start new sessions.
+  endpoint to clients but does not authorize a session, so a leak is confined to
+  one cell. The agent rotates the secret every 30 days and immediately after
+  suspected compromise. Rotation ends open sessions on that endpoint with
+  `AgentShutdown`; clients can create new sessions.
 - **Scale-to-zero:** opening a shell does not wake an instance. A session for a
-  stopped instance fails before connecting and tells the user to start an
-  instance. This avoids changing workload scale or incurring cost as a side
-  effect of a diagnostic action.
+  stopped instance fails before connecting and tells the user to select a
+  running instance or raise the workload's minimum replica count. This avoids
+  changing workload scale or incurring cost as a side effect of a diagnostic
+  action.
 - **Tunnel code:** the tunnel endpoint runs the Datum Connect CLI, so shells
   and Datum Connect share one tunnel implementation. Its license prevents
   linking it into `datumctl`; it does not prevent cells from running it as a
@@ -283,7 +313,7 @@ crash recovery, the per-instance limit, clean endings and network isolation.
 
 ### Feature enablement and rollback
 
-- **Enable / disable:** a compute feature gate and the shell capability on each
+- **Enable / disable:** a compute feature gate and the `exec` feature on each
   runtime class control the feature. Setting the Unikraft provider's exec
   policy to `always` enables that runtime. Disabling any applicable switch
   stops new sessions; open sessions end with a clear reason and their processes
@@ -301,29 +331,41 @@ missing shells, process cleanup and scale-to-zero.
 
 - **For users:** each session's `Ready` condition and reason.
 - **For operators:** sessions opened, active and ended by reason; time from
-  creation to first output; agent health per cell.
+  creation to the first interactive prompt, or to process start and first byte
+  for a noninteractive command; agent health per cell.
 
 ### Dependencies
 
-- **Relays:** New and open shells in the affected region fail; instances are
+- **Relays:** New and open sessions in the affected region fail; instances are
   unaffected
-- **Federation to cells:** New sessions are not delivered; open shells continue
-- **Kata runtime:** Shells fail for Kata instances on the affected node
-- **Unikraft exec plugin:** Shells fail for unikernel instances on the affected
+- **Federation to cells:** New sessions are not delivered; open sessions continue
+- **Kata runtime:** Sessions fail for Kata instances on the affected node
+- **Unikraft exec plugin:** Sessions fail for unikernel instances on the affected
   node
+- **Project API:** New sessions cannot be created; open data paths continue.
+  Controllers retry terminal status and event updates
+- **Activity system:** Sessions continue and the Project API audit record
+  remains authoritative. Activity views can lag until event delivery recovers
 
 ### Scalability
 
-One new API type, one object per session, created only on user action and
+One new API type, one object per session, created only on a client request and
 bounded by the per-instance limit and cleanup policy. Tests must cover
 simultaneous session creation, reservation release and agent failover.
 
 ### Troubleshooting
 
-- **Instance not running:** Explain that the user needs a running instance.
+- **Instance not running:** Tell the user to select a running instance or raise
+  the workload's minimum replica count.
 - **Instance missing:** Prompt the user to refresh the instance list.
-- **Image has no shell:** Tell the user to deploy an image with a supported
-  shell.
+- **Shell or command unavailable:** Tell the user to deploy an image with a
+  supported shell and the requested executable.
+- **Too many sessions:** Show the limit and ask the user to close a session or
+  wait for one to end.
+- **Relay unreachable:** Retry another advertised relay and report a regional
+  connectivity issue if none work.
+- **Agent restart or crash:** Show `AgentShutdown` or `AgentLost`, then let the
+  user create a new session.
 
 ## Implementation history
 
@@ -332,7 +374,13 @@ simultaneous session creation, reservation release and agent failover.
 
 ## Drawbacks
 
-- Operating cost and failure surface grow in every cell.
+- Every cell runs an agent and tunnel endpoint, which adds operating cost and
+  another failure surface.
+- Relays carry interactive traffic and need regional capacity.
+- Commands can mutate a running workload, so authorization and auditing
+  require more scrutiny than read-only diagnostics.
+- The browser client adds download weight, and automated clients add API and
+  audit volume.
 
 ## Alternatives
 
@@ -353,6 +401,11 @@ simultaneous session creation, reservation release and agent failover.
 
 - A shell agent and tunnel endpoint deployed to each compute cell, with
   network policy limiting both.
+- The Unikraft provider exec policy set to `always` in cells that advertise the
+  capability.
+- The session-create permission added to the default project-admin role.
+- An activity policy that maps session creation and lifecycle events into the
+  project activity log.
 - A released container image of the Datum Connect CLI, including the fix that
   lets it shut down cleanly.
 - Relays served over TLS, with browser access allowed on their latency probe, so
