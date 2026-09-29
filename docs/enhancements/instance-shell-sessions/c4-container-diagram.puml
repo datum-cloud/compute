@@ -9,14 +9,12 @@ LAYOUT_LEFT_RIGHT()
 
 Person(user, "Compute user", "Opens a shell in one of their instances from the CLI or the portal")
 
-Container_Ext(relay, "Relay", "Datum iroh relay", "Forwards encrypted traffic; the user and the cell both connect outward to it")
-
 Container(client, "Client", "datumctl compute or Cloud Portal", "The CLI or the portal's browser terminal. Creates the session with a one-time key, connects to the cell and runs the terminal")
 
 System_Boundary(cell, "Compute cell") {
-    Container(listen, "Tunnel endpoint", "iroh listen node", "Receives the encrypted connection; holds no cluster credentials")
-    Container(agent, "Shell agent", "compute", "Claims sessions, enforces limits, checks the client's key, runs the shell and cleans up")
     Container(instance, "Instance", "Kata VM or Unikraft unikernel", "Runs the user's workload; the shell runs inside it")
+    Container(agent, "Shell agent", "compute", "Claims sessions, enforces limits, checks the client's key, runs the shell and cleans up")
+    Container(listen, "Tunnel endpoint", "iroh listen node", "Receives the encrypted connection; holds no cluster credentials")
 }
 
 System_Boundary(core, "Datum control plane") {
@@ -24,14 +22,18 @@ System_Boundary(core, "Datum control plane") {
     Container(fed, "Compute controllers", "compute", "Send each session to the cell running the instance and report its status back")
 }
 
+Container_Ext(relay, "Relay", "Datum iroh relay", "Forwards encrypted traffic; the user and the cell both connect outward to it")
+
 Rel_R(user, client, "")
+Rel(client, relay, "4. Connects", "QUIC")
 Rel(client, api, "1. Creates a session", "HTTPS")
 Rel_R(fed, api, "2. Watches sessions")
 Rel(fed, agent, "3. Delivers the session")
-Rel(client, relay, "4. Connects", "QUIC")
 Rel(relay, listen, "Forwards")
-Rel_R(listen, agent, "Hands over the stream")
-Rel_R(agent, instance, "5. Runs the shell", "via the instance's runtime")
+Rel_L(listen, agent, "Hands over the stream")
+Rel_L(agent, instance, "5. Runs the shell", "via the instance's runtime")
+
+Lay_U(api, relay)
 
 SHOW_LEGEND()
 @enduml
