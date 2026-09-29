@@ -132,6 +132,11 @@ spec:
     description: Memory allocated across all instances.
     kind: Gauge
     unit: MiB
+  - name: compute.datumapis.com/instanceconsolesessions
+    displayName: Compute Shell Sessions
+    description: Number of open shell sessions into instances.
+    kind: Gauge
+    unit: '{session}'
   billing:
     consumerDestinations:
     - monitoredResourceType: compute.datumapis.com/Instance
@@ -156,6 +161,11 @@ spec:
         kind: Workload
       metricCosts:
         compute.datumapis.com/workloads: 1
+    - selector:
+        apiGroup: compute.datumapis.com
+        kind: InstanceConsoleSession
+      metricCosts:
+        compute.datumapis.com/instanceconsolesessions: 1
     limits:
     - name: compute-workloads
       displayName: Workloads
@@ -193,3 +203,14 @@ spec:
         kind: Project
       unit: MiB
       defaultLimit: 81920
+    # Sessions end and are deleted within an hour, so this bounds how many
+    # shells a project holds open at once rather than how many it opens.
+    - name: compute-instanceconsolesessions
+      displayName: Shell sessions
+      description: Maximum number of shell sessions that can be open into instances within a project.
+      metric: compute.datumapis.com/instanceconsolesessions
+      consumerType:
+        apiGroup: resourcemanager.miloapis.com
+        kind: Project
+      unit: session
+      defaultLimit: 100
