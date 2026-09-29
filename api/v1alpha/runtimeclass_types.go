@@ -30,7 +30,7 @@ type RuntimeClassControllerName string
 // decline. Enumerating the features keeps a class from declaring one that no
 // provider can interpret.
 //
-// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities
+// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;exec
 type RuntimeClassFeature string
 
 const (
@@ -73,6 +73,11 @@ const (
 	// container Linux capabilities it requests. A class declaring it publishes
 	// which capabilities it grants in grantableCapabilities.
 	RuntimeClassFeatureContainerCapabilities RuntimeClassFeature = "containerCapabilities"
+
+	// RuntimeClassFeatureExec is the ability to run a command in a running
+	// instance's container through an InstanceConsoleSession, such as an
+	// interactive shell.
+	RuntimeClassFeatureExec RuntimeClassFeature = "exec"
 )
 
 // runtimeClassFeatureDescriptions maps each feature to its customer-facing
@@ -88,6 +93,7 @@ var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureEnvFrom:                 "environment variables sourced from a whole ConfigMap or Secret",
 	RuntimeClassFeatureImagePullSecrets:        "image pull secrets",
 	RuntimeClassFeatureContainerCapabilities:   "container capability requests",
+	RuntimeClassFeatureExec:                    "shell sessions into running instances",
 }
 
 // Description returns the customer-facing phrase for the feature. It falls back

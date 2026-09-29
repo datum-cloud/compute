@@ -249,7 +249,7 @@ statement before committing an image to the tier.<br/>
 is unsupported, so a class that omits a feature rejects requests for it
 rather than serving it by accident.<br/>
           <br/>
-            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets, containerCapabilities<br/>
+            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets, containerCapabilities, exec<br/>
         </td>
         <td>false</td>
       </tr><tr>

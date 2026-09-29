@@ -146,6 +146,14 @@ func TestRuntimeClassCRD(t *testing.T) {
 		require.Error(t, c.Create(ctx, class))
 	})
 
+	t.Run("a class can offer shell sessions", func(t *testing.T) {
+		class := newCatalogEntry("offers-exec")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureExec)
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
 	t.Run("a class serving capability requests publishes what it grants", func(t *testing.T) {
 		class := newCatalogEntry("grants-capabilities")
 		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,

@@ -112,3 +112,26 @@ func TestInstanceTypes_ExplicitlyEnabled(t *testing.T) {
 		t.Error("InstanceTypes = false after Set=true, want true")
 	}
 }
+
+// TestInstanceConsoleSessions_DefaultDisabled verifies that the
+// InstanceConsoleSessions feature gate defaults to disabled, so no environment
+// accepts a shell session before its cells run the shell agent.
+func TestInstanceConsoleSessions_DefaultDisabled(t *testing.T) {
+	// Copy the gate so the test does not depend on mutations to global state.
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(InstanceConsoleSessions) {
+		t.Error("InstanceConsoleSessions default = true, want false")
+	}
+}
+
+// TestInstanceConsoleSessions_ExplicitlyEnabled verifies that setting
+// InstanceConsoleSessions=true turns shell sessions on.
+func TestInstanceConsoleSessions_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InstanceConsoleSessions=true"); err != nil {
+		t.Fatalf("Set(InstanceConsoleSessions=true): %v", err)
+	}
+	if !gate.Enabled(InstanceConsoleSessions) {
+		t.Error("InstanceConsoleSessions = false after Set=true, want true")
+	}
+}
