@@ -447,6 +447,10 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 // class) pair. Only deployments in the class are selected, and only cells that
 // advertise they serve the class are targeted. An empty runtimeClass adds no
 // class selector, so cells that advertise no class remain eligible.
+//
+// The policy selects deployments only. Referenced data travels as the
+// deployment's declared dependencies, which is what lets one shared companion
+// reach several locations at once.
 func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 	ctx context.Context,
 	downstreamNS string,
@@ -469,45 +473,43 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 
 	result, err := controllerutil.CreateOrPatch(ctx, r.FederationClient, pp, func() error {
 		pp.Spec = karmadapolicyv1alpha1.PropagationSpec{
-			// Select WorkloadDeployments by location label, plus ALL
-			// companion ConfigMaps and Secrets in this namespace that carry the
-			// referenced-data label. The label selector on ConfigMap/Secret is
-			// location-agnostic — companions are shared across locations when
-			// multiple WDs reference the same source. Karmada propagates the
-			// entire set to matching clusters in one policy, so companions
-			// co-arrive with their WorkloadDeployment.
+			// Companion ConfigMaps and Secrets are deliberately NOT selected
+			// here. A companion is shared: one object per referenced source,
+			// used by every deployment in the namespace that references it. A
+			// policy claim is exclusive and sticky to the first claimant, so
+			// naming a companion on each location's policy delivers it to one
+			// location and silently starves the rest.
 			//
-			// Using separate ResourceSelectors for each kind (WorkloadDeployment,
-			// ConfigMap, Secret) is the idiomatic Karmada pattern for
-			// multi-kind propagation within a single policy.
+			// PropagateDeps hands companion delivery to the engine instead. The
+			// dependency-interpretation hook on the WorkloadDeployment
+			// interpreter reads the expected-referenced-data annotation, and the
+			// engine maintains an attached binding per companion whose
+			// destinations are the union of every referencing deployment's
+			// placements. No policy claims a companion, so there is no claim to
+			// win or lose, and delivery still reaches only cells that run a
+			// referencing workload.
+			//
+			// The hub has to run karmada-controller-manager with
+			// --feature-gates=PropagateDeps=true. The Karmada Helm chart pins
+			// the gate off, overriding the upstream default, so a hub installed
+			// from the chart without an explicit override ignores this field:
+			// companions stay on the hub and every instance that references
+			// data holds its gate with AwaitingPropagation.
+			//
+			// Upgrading a namespace that already has companion selectors
+			// briefly removes the delivered copies: the engine strips the claim
+			// and deletes the derived binding for an object a policy no longer
+			// selects, and re-delivery goes through a new attached binding.
+			// Both are driven by this single policy update, so the gap is short,
+			// but it is a gap. Setting both fields in one write is deliberate —
+			// splitting them across reconciles would widen it.
+			PropagateDeps: true,
 			ResourceSelectors: []karmadapolicyv1alpha1.ResourceSelector{
 				{
 					APIVersion: computev1alpha.GroupVersion.String(),
 					Kind:       kindWorkloadDeployment,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: deploymentLabels,
-					},
-				},
-				{
-					// Propagate companion ConfigMaps alongside WorkloadDeployments.
-					// The referenced-data label is the only selector needed; there
-					// is no per-location partitioning of companions.
-					APIVersion: corev1.SchemeGroupVersion.String(),
-					Kind:       kindConfigMap,
-					LabelSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
-						},
-					},
-				},
-				{
-					// Propagate companion Secrets alongside WorkloadDeployments.
-					APIVersion: corev1.SchemeGroupVersion.String(),
-					Kind:       kindSecret,
-					LabelSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
-						},
 					},
 				},
 			},

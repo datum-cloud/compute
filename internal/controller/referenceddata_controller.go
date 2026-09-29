@@ -75,11 +75,19 @@ const (
 // dev/test environments and is NOT used in any management-plane federation
 // wiring on this branch.
 //
-// downstreamCompanionWriter: uses Milo's MappedNamespaceResourceStrategy to
-// write companions into the `ns-{project-uid}` namespace on the Karmada hub
-// so they are propagated to cells alongside the WorkloadDeployment. The
-// federator's PropagationPolicy always includes ConfigMap/Secret selectors
-// matching the referenced-data label.
+// downstreamCompanionWriter: writes companions into the `ns-{project-uid}`
+// namespace on the Karmada hub, from where the federation engine delivers them
+// to every cell running a deployment that declares them as a dependency.
+//
+// It resolves the hub namespace with Milo's MappedNamespaceResourceStrategy but
+// writes with a plain hub client, and must keep doing so. The strategy client
+// stamps meta.datumapis.com/upstream-namespace on what it writes, and the
+// network-services-operator's cluster-wide policy claims every ConfigMap and
+// Secret carrying that label with conflictResolution: Overwrite, targeting all
+// gateway-enabled clusters. A companion written through the strategy client
+// would be claimed by that policy and broadcast to cells that run no workload
+// referencing it, putting project secrets on the most exposed tier of the
+// platform.
 type companionWriter interface {
 	// ApplyConfigMap creates or updates the companion ConfigMap.
 	//
@@ -178,14 +186,15 @@ func (w *localCompanionWriter) GetSecret(ctx context.Context, namespace, name st
 }
 
 // downstreamCompanionWriter implements companionWriter by materialising
-// companions into the `ns-{project-uid}` namespace on the Karmada hub using
-// MappedNamespaceResourceStrategy. Companions written here are propagated to
-// cells via the always-on referenced-data ResourceSelectors in the location
-// PropagationPolicy.
+// companions into the `ns-{project-uid}` namespace on the Karmada hub.
+// Companions written here reach cells as the declared dependencies of the
+// deployments that reference them, so no PropagationPolicy names them.
 //
 // The downstreamNamespace field is pre-computed by the controller from the
-// strategy so that every CRUD call uses the same stable name without needing
-// to resolve it repeatedly.
+// MappedNamespaceResourceStrategy so that every CRUD call uses the same stable
+// name without needing to resolve it repeatedly. The writes themselves go
+// through hubClient rather than the strategy client; see companionWriter for
+// why that distinction is load-bearing.
 type downstreamCompanionWriter struct {
 	// hubClient is a client.Client pointed at the Karmada federation control
 	// plane (the same client used by WorkloadDeploymentFederator).
@@ -606,6 +615,18 @@ func (r *ReferencedDataController) resolveAndValidateSources(
 
 	for _, ref := range refs {
 		optional := isOptionalRef(ref, tmpl)
+
+		// Checked before reading the source: an unpropagatable name is terminal
+		// whether or not the object exists, and it is never skipped for an
+		// optional reference. Skipping would deliver nothing while reporting
+		// success, and the instance would fail at mount time instead.
+		if len(ref.Name) > referenceddata.MaxCompanionNameLength {
+			return nil, &conditionError{
+				reason:  computev1alpha.ReferencedDataReasonSourceNameTooLong,
+				message: fmt.Sprintf("%s %q in namespace %q has a %d-character name; referenced data cannot be delivered to a cell for a name longer than %d characters", ref.Kind, ref.Name, ref.Namespace, len(ref.Name), referenceddata.MaxCompanionNameLength),
+			}
+		}
+
 		src, sz, cerr := r.resolveOneSource(ctx, reader, projectID, ref)
 		if cerr != nil {
 			// Skip optional sources that are missing or unauthorized.

@@ -1,0 +1,509 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: referenced-data-multi-location
+spec:
+  description: |
+    Validates that referenced data shared by workloads in DIFFERENT locations
+    reaches EVERY location that runs a referencing workload.
+
+    referenced-data-mounts covers one location. This suite is the regression
+    guard for the multi-location shape: two WorkloadDeployments, one in dfw and
+    one in ord, share one ConfigMap, one Secret and one image pull credential.
+    The resolver writes a single companion per source object, so delivery has to
+    fan that one object out to both cells.
+
+    The delivery mechanism is Karmada's native dependency propagation:
+    propagateDeps on each location's PropagationPolicy, plus the
+    dependencyInterpretation hook on the WorkloadDeployment interpreter, which
+    reads the expected-referenced-data annotation. The engine maintains an
+    attached binding per companion whose destinations are the union of every
+    referencing deployment's placements, so no policy ever claims a companion.
+
+    Both deployments carry the same workloadRef and placementName, which is what
+    the Workload controller produces when a single placement resolves to two
+    locations. That is the cheapest way a user reaches this shape.
+
+    [Hop 1] Source ConfigMap, Secret and pull credential created in the project
+            namespace (control-plane, Chainsaw default cluster).
+
+    [Hop 2] Both WorkloadDeployments are created. The ReferencedDataController
+            materialises ONE companion per source in ns-{project-uid} on the
+            Karmada hub, ref-counted by both deployments, and stamps the
+            expected-referenced-data annotation on each deployment.
+
+    [Hop 3] Each location's PropagationPolicy carries propagateDeps and selects
+            WorkloadDeployments only. Companions are not named by any policy.
+
+    [Hop 4] The companions reach BOTH pop-dfw and pop-ord. This is the assertion
+            that fails when delivery rides per-location policy selectors: policy
+            claiming is exclusive, so exactly one location receives the shared
+            companion and the other waits on data that never arrives.
+
+    [Hop 5] Each cell creates its Instance and clears the ReferencedData gate,
+            proving the data landed where the workload actually runs.
+
+    Scope: cross-plane DELIVERY to both cells, up to the gate-cleared Instance.
+    Env-var injection and file mounting are the provider+kubelet layer and are
+    not asserted here, matching referenced-data-mounts.
+
+    Prerequisites:
+    - task e2e:up completed: control-plane + Karmada + pop-dfw + pop-ord, with
+      the management and both cell operators deployed in-cluster.
+    - the cell operators run with featureFlags.enableReferencedDataGate: true
+      (test/e2e/deploy/cell/config_patch.yaml).
+    - tmp/e2e/kubeconfigs/downstream.yaml exists.
+
+  template: true
+
+  steps:
+
+  # ─── Hop 1: create the shared source data ──────────────────────────────────
+
+  - name: create-source-data
+    description: |
+      Create the ConfigMap, Secret and image pull credential that both
+      deployments reference.
+    try:
+    - apply:
+        file: source-configmap.yaml
+    - apply:
+        file: source-secret.yaml
+    - apply:
+        file: source-pull-secret.yaml
+
+  # ─── Hop 2: create both deployments; assert one shared companion set ───────
+
+  - name: create-workload-deployments
+    description: Create the dfw-placed and ord-placed WorkloadDeployments.
+    try:
+    - apply:
+        file: workload-deployment-dfw.yaml
+    - apply:
+        file: workload-deployment-ord.yaml
+
+  - name: assert-both-deployments-ready
+    description: |
+      Assert the resolver stamped the expected-referenced-data annotation on both
+      deployments and reported ReferencedDataReady=True for each. A deployment
+      whose annotation never arrives cannot gate-clear on its cell, so this
+      pins the resolver before any delivery assertion.
+    try:
+    # The condition asserts come first because a script runs once with no retry,
+    # so it can only check state something else has already waited for.
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-multiloc-dfw-wd
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-multiloc-ord-wd
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+    - script:
+        timeout: 120s
+        content: |
+          for WD in test-multiloc-dfw-wd test-multiloc-ord-wd; do
+            ANNO=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+              get workloaddeployment "$WD" \
+              --namespace "$NAMESPACE" \
+              -o jsonpath='{.metadata.annotations.compute\.datumapis\.com/expected-referenced-data}')
+            if [ -z "$ANNO" ] || [ "$ANNO" = "[]" ]; then
+              echo "ERROR: $WD expected-referenced-data annotation missing or empty: '$ANNO'"
+              exit 1
+            fi
+            echo "$WD annotation: $ANNO"
+          done
+
+  - name: assert-companions-shared-on-hub
+    description: |
+      Assert exactly one companion exists per source object on the hub and that
+      its ref-count annotation names BOTH deployments. Two companions per source
+      would mean the resolver started partitioning by location, which the
+      delivery design does not do and consumer references could not resolve.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-config
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-secret
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-registry-creds
+            labels:
+              compute.datumapis.com/referenced-data: "true"
+    # The ref-count annotation is what makes the companion shared rather than
+    # duplicated, and it is also what a union-based delivery mechanism has to
+    # agree with. Assert both deployment keys are present on every companion.
+    - script:
+        timeout: 120s
+        content: |
+          DOWNSTREAM_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          fail=0
+          for KIND_NAME in configmap/shared-config secret/shared-secret secret/shared-registry-creds; do
+            REFS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/karmada.yaml \
+              get "$KIND_NAME" \
+              --namespace "$DOWNSTREAM_NS" \
+              -o jsonpath='{.metadata.annotations.compute\.datumapis\.com/referenced-by}')
+            echo "$KIND_NAME referenced-by: $REFS"
+            for WD in test-multiloc-dfw-wd test-multiloc-ord-wd; do
+              if ! echo "$REFS" | grep -q "$NAMESPACE/$WD"; then
+                echo "ERROR: $KIND_NAME ref-count is missing $NAMESPACE/$WD"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
+  # ─── Hop 3: assert the policies delegate companion delivery to the engine ──
+
+  - name: assert-policies-propagate-dependencies
+    description: |
+      Assert both location policies set propagateDeps and select only
+      WorkloadDeployments. A ConfigMap or Secret selector here is the defect
+      this suite guards: two policies naming the same companion means one claims
+      it and the other never delivers it.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($downstreamNS)
+            name: location-dfw
+          spec:
+            propagateDeps: true
+            # Chainsaw matches list length exactly, so a single entry here also
+            # asserts the absence of the companion selectors.
+            resourceSelectors:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              labelSelector:
+                matchLabels:
+                  topology.datum.net/location: dfw
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($downstreamNS)
+            name: location-ord
+          spec:
+            propagateDeps: true
+            resourceSelectors:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              labelSelector:
+                matchLabels:
+                  topology.datum.net/location: ord
+
+  - name: assert-no-policy-claims-a-companion
+    description: |
+      Assert no PropagationPolicy has claimed the companions. Karmada stamps the
+      claiming policy's name on the object it owns, so an empty claim is the
+      positive signal that delivery is running through attached bindings, where
+      destinations are unioned, rather than through exclusive policy claiming.
+    cluster: downstream
+    try:
+    - script:
+        timeout: 120s
+        content: |
+          DOWNSTREAM_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          fail=0
+          for KIND_NAME in configmap/shared-config secret/shared-secret secret/shared-registry-creds; do
+            CLAIM=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/karmada.yaml \
+              get "$KIND_NAME" \
+              --namespace "$DOWNSTREAM_NS" \
+              -o jsonpath='{.metadata.annotations.propagationpolicy\.karmada\.io/name}')
+            if [ -n "$CLAIM" ]; then
+              echo "ERROR: $KIND_NAME is claimed by PropagationPolicy '$CLAIM'; a claimed companion reaches only that policy's clusters"
+              fail=1
+            else
+              echo "$KIND_NAME is unclaimed, as dependency propagation requires"
+            fi
+          done
+          exit $fail
+
+  # ─── Hop 4: the core assertion — companions on BOTH cells ──────────────────
+
+  - name: assert-companions-on-pop-dfw
+    description: Assert all three companions reached the dfw cell.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-multiloc-dfw-wd
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-config
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-secret
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-registry-creds
+
+  - name: assert-companions-on-pop-ord
+    description: |
+      Assert the SAME three companions also reached the ord cell. Delivery to
+      one cell and not the other is the whole defect, and which cell loses
+      depends on which policy claimed the companion first, so this assertion
+      and the dfw one are both required.
+    cluster: pop-ord
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-multiloc-ord-wd
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-config
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-secret
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: ($downstreamNS)
+            name: shared-registry-creds
+
+  - name: assert-companion-data-matches-source-on-both-cells
+    description: |
+      Assert the delivered copies carry the source payload on both cells. Object
+      presence alone would pass on an empty copy, which mounts as an empty file
+      and fails the workload at runtime rather than at delivery.
+    try:
+    - script:
+        timeout: 120s
+        content: |
+          DOWNSTREAM_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          fail=0
+          for CELL in pop-dfw pop-ord; do
+            KC="../../../tmp/e2e/kubeconfigs/${CELL}.yaml"
+            LOG_LEVEL=$(kubectl --kubeconfig="$KC" get configmap shared-config \
+              --namespace "$DOWNSTREAM_NS" -o jsonpath='{.data.log\.level}')
+            if [ "$LOG_LEVEL" != "debug" ]; then
+              echo "ERROR: $CELL shared-config log.level is '$LOG_LEVEL', want 'debug'"
+              fail=1
+            fi
+            PW=$(kubectl --kubeconfig="$KC" get secret shared-secret \
+              --namespace "$DOWNSTREAM_NS" -o jsonpath='{.data.db\.password}' | base64 -d)
+            if [ "$PW" != "shared-db-password" ]; then
+              echo "ERROR: $CELL shared-secret db.password did not match the source"
+              fail=1
+            fi
+            TYPE=$(kubectl --kubeconfig="$KC" get secret shared-registry-creds \
+              --namespace "$DOWNSTREAM_NS" -o jsonpath='{.type}')
+            if [ "$TYPE" != "kubernetes.io/dockerconfigjson" ]; then
+              echo "ERROR: $CELL shared-registry-creds type is '$TYPE', want kubernetes.io/dockerconfigjson"
+              fail=1
+            fi
+            echo "$CELL carries all three companions with source payloads"
+          done
+          exit $fail
+
+  # ─── Hop 5: both cells clear their gate ────────────────────────────────────
+
+  - name: assert-instance-ready-on-pop-dfw
+    description: |
+      Assert the dfw cell created its Instance and reported the referenced data
+      ready. The gate is the user-visible consequence of delivery: on a cell
+      that never receives the companion it holds with AwaitingPropagation and
+      reads as a routine wait.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 240s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-multiloc-dfw-wd-0
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+
+  - name: assert-instance-ready-on-pop-ord
+    description: |
+      Assert the ord cell did the same. Under the retired delivery path this is
+      the assertion that hangs on AwaitingPropagation, because the companion was
+      claimed for dfw.
+    cluster: pop-ord
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 240s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-multiloc-ord-wd-0
+          (status.conditions[?type == 'ReferencedDataReady'] | [0]):
+            status: "True"
+            reason: "Ready"
+
+  - name: assert-referenced-data-gate-cleared-on-both-cells
+    description: |
+      Assert the gate itself is gone from both Instances, not just that the
+      condition flipped. A gate left in place holds the instance even with the
+      condition True.
+    try:
+    - script:
+        timeout: 240s
+        content: |
+          DOWNSTREAM_NS=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}')
+          fail=0
+          check() {
+            CELL=$1; INSTANCE=$2
+            KC="../../../tmp/e2e/kubeconfigs/${CELL}.yaml"
+            GATES=$(kubectl --kubeconfig="$KC" get instance "$INSTANCE" \
+              --namespace "$DOWNSTREAM_NS" \
+              -o jsonpath='{.spec.controller.schedulingGates[*].name}' 2>/dev/null)
+            READY=$(kubectl --kubeconfig="$KC" get instance "$INSTANCE" \
+              --namespace "$DOWNSTREAM_NS" \
+              -o jsonpath='{.status.conditions[?(@.type=="ReferencedDataReady")].status}' 2>/dev/null)
+            if echo "$GATES" | grep -qw "ReferencedData"; then
+              echo "ERROR: $CELL/$INSTANCE still carries the ReferencedData gate: '$GATES'"
+              return 1
+            fi
+            if [ "$READY" != "True" ]; then
+              echo "ERROR: $CELL/$INSTANCE ReferencedDataReady is '$READY', want True"
+              return 1
+            fi
+            echo "$CELL/$INSTANCE gate cleared, ReferencedDataReady=True"
+            return 0
+          }
+          check pop-dfw test-multiloc-dfw-wd-0 || fail=1
+          check pop-ord test-multiloc-ord-wd-0 || fail=1
+          exit $fail

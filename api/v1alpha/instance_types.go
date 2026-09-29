@@ -858,6 +858,13 @@ const (
 	// exceed the allowed size limit.
 	ReferencedDataReasonSourceTooLarge = "SourceTooLarge"
 
+	// ReferencedDataReasonSourceNameTooLong indicates a referenced object's name
+	// leaves no room for the suffix the federation engine appends when it names
+	// the object's binding, so the data could never reach a cell. Renaming the
+	// source is the only fix, which is why this is reported rather than worked
+	// around by shortening the delivered copy.
+	ReferencedDataReasonSourceNameTooLong = "SourceNameTooLong"
+
 	// ReferencedDataReasonReady indicates all referenced data has been resolved
 	// and is present on the cell.
 	ReferencedDataReasonReady = "Ready"

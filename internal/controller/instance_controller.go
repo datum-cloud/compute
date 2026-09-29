@@ -772,7 +772,8 @@ func isTerminalReferencedDataReason(reason string) bool {
 	switch reason {
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized,
-		computev1alpha.ReferencedDataReasonSourceTooLarge:
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong:
 		return true
 	}
 	return false
@@ -1748,6 +1749,7 @@ func instanceBlockingReasonPriority(reason string) int {
 		computev1alpha.InstanceReadyReasonConfigurationError,
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized:
 		// Hard runtime errors are user-actionable (wrong image, crashing app, bad
 		// config) and rank highest among non-infra reasons so they are not buried

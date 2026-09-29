@@ -18,8 +18,8 @@ spec:
             Companions are NOT written to the control-plane cluster.
 
     [Hop 3] Karmada hub holds the companion ConfigMap + Secret in ns-{project-uid},
-            propagated by the always-on label selector in the location-dfw
-            PropagationPolicy (which includes ConfigMap and Secret selectors).
+            delivered as the deployment's declared dependencies: the location-dfw
+            PropagationPolicy sets propagateDeps and names no companion.
 
     [Hop 4] Karmada propagates the WD + companions to pop-dfw.
             Companions appear in ns-{project-uid} on the cell alongside the WD.
@@ -195,10 +195,12 @@ spec:
             labels:
               compute.datumapis.com/referenced-data: "true"
 
-  - name: assert-propagation-policy-has-companion-selectors
+  - name: assert-propagation-policy-delegates-companion-delivery
     description: |
-      Assert the PropagationPolicy location-dfw on the hub includes ConfigMap and
-      Secret resource selectors so companions co-propagate with the WD.
+      Assert the PropagationPolicy location-dfw sets propagateDeps and names no
+      ConfigMap or Secret. Companions reach the cell as the deployment's
+      declared dependencies, which is what lets one shared companion serve
+      several locations; a selector here would claim it for this location alone.
     cluster: downstream
     try:
     - script:
@@ -218,6 +220,7 @@ spec:
             namespace: ($downstreamNS)
             name: location-dfw
           spec:
+            propagateDeps: true
             resourceSelectors:
             - apiVersion: compute.datumapis.com/v1alpha
               kind: WorkloadDeployment
@@ -225,18 +228,6 @@ spec:
               labelSelector:
                 matchLabels:
                   topology.datum.net/location: dfw
-            - apiVersion: v1
-              kind: ConfigMap
-              namespace: ($downstreamNS)
-              labelSelector:
-                matchLabels:
-                  compute.datumapis.com/referenced-data: "true"
-            - apiVersion: v1
-              kind: Secret
-              namespace: ($downstreamNS)
-              labelSelector:
-                matchLabels:
-                  compute.datumapis.com/referenced-data: "true"
 
   # ─── Hop 4: assert companions propagated to pop-dfw cell ───────────────────
 
@@ -344,7 +335,7 @@ spec:
           GATES=$(kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
             get instance test-refdata-wd-0 \
             --namespace "$DOWNSTREAMS_NS" \
-            -o jsonpath='{.spec.schedulingGates[*].name}')
+            -o jsonpath='{.spec.controller.schedulingGates[*].name}')
           if echo "$GATES" | grep -qw "ReferencedData"; then
             echo "ERROR: ReferencedData gate still present in schedulingGates: '$GATES'"
             exit 1

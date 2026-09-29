@@ -28,8 +28,14 @@ const (
 
 	// ReferencedDataLabel is stamped on companion ConfigMaps and Secrets
 	// materialized by the ReferencedDataController, and on WorkloadDeployments
-	// that reference external ConfigMaps or Secrets. Used as a label selector
-	// by the Karmada PropagationPolicy to propagate companions to cells.
+	// that reference external ConfigMaps or Secrets.
+	//
+	// It identifies companions to the controllers that read them: the cell-side
+	// scheduling gate lists labeled objects to decide whether the data it
+	// expects has arrived, and companion cleanup scopes its informer cache with
+	// it. Propagation does not use the label — a companion reaches cells as a
+	// deployment's declared dependency, named by the
+	// expected-referenced-data annotation rather than matched by a selector.
 	ReferencedDataLabel = LabelNamespace + "/referenced-data"
 
 	// ReferencedDataLabelValue is the value used for ReferencedDataLabel.

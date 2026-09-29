@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-config
+  # namespace injected by Chainsaw from ($namespace)
+data:
+  app.properties: "environment=multi-location"
+  log.level: "debug"

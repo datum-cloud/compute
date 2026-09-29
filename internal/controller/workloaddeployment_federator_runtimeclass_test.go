@@ -157,9 +157,13 @@ func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 				Namespace: testKarmadaNSStr,
 			}, &pp), "PropagationPolicy %q should exist", tt.wantPolicyName)
 
-			// The companion selectors ignore runtime class. Companions are
-			// shared by every deployment in the namespace.
-			require.Len(t, pp.Spec.ResourceSelectors, 3)
+			// Runtime class narrows which deployments the policy selects, and
+			// nothing else. Companions are shared by every deployment in the
+			// namespace regardless of class, so they are delivered as
+			// dependencies rather than named here — two class policies in one
+			// location would otherwise contend for the same companion.
+			require.Len(t, pp.Spec.ResourceSelectors, 1)
+			assert.True(t, pp.Spec.PropagateDeps)
 			wdSel := pp.Spec.ResourceSelectors[0]
 			require.NotNil(t, wdSel.LabelSelector)
 			assert.Equal(t, testFederatorLocation, wdSel.LabelSelector.MatchLabels[locationLabel])
