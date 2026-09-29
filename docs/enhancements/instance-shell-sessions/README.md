@@ -34,8 +34,9 @@ supports) · [Federated Deployment Scheduling](../federated-deployment-schedulin
 
 ## Summary
 
-Let users open a live shell inside a running instance from the CLI, so they can
-see and fix problems where they happen. Access follows the project's existing
+Let users open a live shell inside a running instance from the CLI or the Cloud
+Portal, so they can see and fix problems where they happen. It works the same
+for general-purpose and unikernel instances. Access follows the project's existing
 permissions, and every session is short-lived and recorded.
 
 ## Motivation
@@ -46,12 +47,15 @@ command means changing and redeploying the workload, which is slow and can
 hide the problem being investigated.
 
 Getting into a running instance is something every major hosting platform
-offers. Without it, Datum Compute feels hard to debug.
+offers. Without it, Datum Compute feels hard to debug, especially for users who
+have found a problem in the portal and have nowhere to go from there.
 
 ### Goals
 
 - A user with the right permission can open an interactive shell in a running
-  instance of the general-purpose (Kata) runtime class with one command.
+  instance of the general-purpose (Kata) or unikernel (Unikraft) runtime class
+  with one command, or with one click in the Cloud Portal, and the experience
+  is the same on both runtimes.
 - Opening a shell takes about as long as starting a command on the runtime
   itself; the platform adds no noticeable delay.
 - Access is granted per project through existing permissions, and every
@@ -62,9 +66,7 @@ offers. Without it, Datum Compute feels hard to debug.
 
 ### Non-Goals
 
-- Shells from the Cloud Portal. The same client works in a browser, so this can
-  follow without changing anything on the cell side.
-- Other runtime classes (unikernel, virtual machines).
+- The virtual machine runtime class.
 - Attaching to an instance's main process, port forwarding or file transfer.
 - Recording the contents of a session (keystrokes and output).
 
@@ -78,7 +80,10 @@ $ datumctl compute exec web-0 -- sh
 / # exit
 ```
 
-*Illustrative only; exact commands are to be designed.*
+In the Cloud Portal, an instance's page gets an **Open shell** action that opens
+a terminal in the browser.
+
+*Illustrative only; exact commands and UI are to be designed.*
 
 ### User Stories
 
@@ -92,6 +97,11 @@ workload without redeploying to investigate.
 
 An operator runs a database migration from inside an instance, using the
 instance's own network access and configuration, then exits.
+
+#### Story 3: from the portal to a fix
+
+A user notices an unhealthy instance on its portal page, opens a shell from the
+same page, confirms a full disk and clears it, without switching tools.
 
 #### Story 3: controlled access
 
@@ -112,21 +122,23 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 | Container | Responsibility |
 |---|---|
 | **datumctl compute** | Creates the session with a key generated for it, then connects and runs the terminal. The key is never stored. |
+| **Cloud Portal** | Offers **Open shell** on an instance, creates the session on the user's behalf, and runs the same tunnel client in the browser, with a key generated in the tab. |
 | **Project API** | Decides who may open a shell (a new permission on Instance, granted to admins only), stores sessions and records them in the audit log. |
 | **Compute controllers** | Send each session to the cell that runs the instance and report its status back to the project. |
 | **Relay** | Forwards encrypted traffic between the user and the cell. Both sides connect outward, so cells need no open ports. |
 | **Tunnel endpoint** | The cell's internet-facing piece. It holds no credentials and can reach only its shell agent and the relays. |
 | **Shell agent** | Claims sessions, checks the instance can take one, verifies the client holds the session's key, runs the shell, and ends its processes when the session ends. |
-| **Instance** | The user's Kata VM. The shell reaches it through the runtime, never through the instance's network. |
+| **Instance** | The user's Kata VM or Unikraft unikernel. The shell reaches it through the instance's runtime, never through the instance's network. |
 
 A session moves through five steps:
 
-1. The user runs `datumctl compute exec`. The CLI creates a session naming the
-   instance, the command and the public half of a key it just generated.
+1. The user runs `datumctl compute exec` or chooses **Open shell** in the
+   portal. The client creates a session naming the instance, the command and
+   the public half of a key it just generated.
 2. The Project API checks the user may open shells in this project.
 3. Compute delivers the session to the cell running the instance, where a
    shell agent claims it and publishes where to connect.
-4. The CLI connects through the relay and proves it holds the session's key.
+4. The client connects through the relay and proves it holds the session's key.
 5. The agent starts the shell. When the user exits, the session expires or it
    is revoked, the agent ends the shell's processes and records how it ended.
 
@@ -150,7 +162,9 @@ A session moves through five steps:
 | A shell is a powerful form of access | Admin-only permission, short sessions, audit of every session, one command per session |
 | The Go iroh library has one maintainer | Pin the version; test it against the Rust tunnel endpoint in CI; keep a small Rust helper as a fallback |
 | Relay distance adds latency | Use Datum's regional relays; measure session start from real networks before preview |
+| The browser client is a large download | Load it only when a terminal opens (about 3 MB compressed); cache it between visits |
 | Abandoned sessions hold capacity | Connect deadline, per-instance limit and automatic cleanup when an agent stops |
+| Runtimes behave differently inside | A shell check when each session is claimed; an instance without a usable shell is refused with a clear reason. Verify process cleanup and scale-to-zero behaviour on unikernels in staging |
 | Security review | Review the key, isolation and cleanup model with the platform security owners before preview |
 
 ## Design Details
@@ -160,8 +174,15 @@ A session moves through five steps:
   and a time-to-live. Its spec cannot change after creation. Its status says
   which agent took it, where to connect, when it must connect by, when it
   expires, and a single `Ready` condition whose reason records how it ended.
-- **Runtime capability.** Runtime classes advertise shell support. Sessions for
-  instances of other classes are refused.
+- **Runtime capability.** Runtime classes advertise shell support, and sessions
+  for classes without it are refused. The shell agent works through each
+  provider's instances the same way, so a runtime needs no shell-specific code
+  in compute:
+  - **General-purpose (Kata):** supported by the runtime natively.
+  - **Unikernel (Unikraft):** supported by the Unikraft exec plugin, which the
+    unikraft provider already enables per cell through its exec policy.
+- **Instances that are not running.** A unikernel instance scaled to zero, or
+  any stopped instance, cannot take a session; the user is told why.
 - **Routing.** Instances record which cell runs them, and sessions follow the
   same federation path as the workloads they target.
 - **Ending reasons.** Completed, Expired, Revoked, NotConnected, AgentShutdown,
@@ -210,7 +231,8 @@ cells through the normal release tag.
 |---|---|
 | Relays | New and open shells in the affected region fail; instances are unaffected |
 | Federation to cells | New sessions are not delivered; open shells continue |
-| Kata runtime | Shells fail for instances on the affected node |
+| Kata runtime | Shells fail for Kata instances on the affected node |
+| Unikraft exec plugin | Shells fail for unikernel instances on the affected node |
 
 ### Scalability
 
@@ -228,7 +250,10 @@ bounded by the per-instance limit and session lifetime.
 
 ## Implementation History
 
-- 2026-09-29: Local prototype on a Kata cell; this document drafted.
+- 2026-09-29: Local prototype on a Kata cell, from the CLI and from a browser
+  (Chromium and WebKit); this document drafted. The
+  unikernel path relies on the Unikraft exec plugin the unikraft provider
+  already supports.
 
 ## Drawbacks
 
@@ -249,7 +274,10 @@ bounded by the per-instance limit and session lifetime.
 
 ## Infrastructure Needed
 
-- A shell agent and tunnel endpoint deployed to each Kata cell, with network
-  policy limiting both.
+- A shell agent and tunnel endpoint deployed to each compute cell, with
+  network policy limiting both.
+- The Unikraft exec policy enabled on cells that run unikernel instances.
+- Relays served over TLS, with browser access allowed on their latency probe, so
+  portal terminals can connect.
 - Relay capacity and placement reviewed for interactive traffic.
 - Audit logging of session creation in the Project API's audit policy.

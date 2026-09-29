@@ -7,10 +7,11 @@ title Instance Shell Sessions - Containers\nAccess is decided centrally; the she
 
 LAYOUT_LEFT_RIGHT()
 
-Person(user, "Compute user", "Opens a shell in one of their instances")
+Person(user, "Compute user", "Opens a shell in one of their instances from the CLI or the portal")
 
-System_Boundary(client, "User's machine") {
+System_Boundary(client, "User's device") {
     Container(cli, "datumctl compute", "Go CLI plugin", "Creates the session with a one-time key, connects to the cell and runs the terminal")
+    Container(portal, "Cloud Portal", "Web app with in-browser tunnel client", "Offers Open shell on an instance, creates the session for the user and runs the terminal in the browser")
 }
 
 Container_Ext(relay, "Relay", "Datum iroh relay", "Forwards encrypted traffic; the user and the cell both connect outward to it")
@@ -18,7 +19,7 @@ Container_Ext(relay, "Relay", "Datum iroh relay", "Forwards encrypted traffic; t
 System_Boundary(cell, "Compute cell") {
     Container(listen, "Tunnel endpoint", "iroh listen node", "Receives the encrypted connection; holds no cluster credentials")
     Container(agent, "Shell agent", "compute", "Claims sessions, enforces limits, checks the client's key, runs the shell and cleans up")
-    Container(instance, "Instance", "Kata VM", "Runs the user's workload; the shell runs inside it")
+    Container(instance, "Instance", "Kata VM or Unikraft unikernel", "Runs the user's workload; the shell runs inside it")
 }
 
 System_Boundary(core, "Datum control plane") {
@@ -27,13 +28,16 @@ System_Boundary(core, "Datum control plane") {
 }
 
 Rel(user, cli, "Runs a command")
+Rel(user, portal, "Chooses Open shell")
+Rel(portal, api, "1. Creates a session", "HTTPS")
+Rel(portal, relay, "4. Connects", "QUIC over WebSocket")
 Rel(cli, api, "1. Creates a session", "HTTPS")
 Rel_Back(api, fed, "2. Watches sessions")
 Rel(fed, agent, "3. Delivers the session")
 Rel(cli, relay, "4. Connects", "QUIC")
 Rel(relay, listen, "Forwards")
 Rel(listen, agent, "Hands over the stream")
-Rel(agent, instance, "5. Runs the shell", "exec via kubelet")
+Rel(agent, instance, "5. Runs the shell", "via the instance's runtime")
 
 SHOW_LEGEND()
 @enduml
