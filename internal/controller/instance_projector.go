@@ -10,9 +10,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
@@ -38,9 +41,9 @@ import (
 // owner-gated, so an object the projector cannot resolve is not something for it
 // to clean up.
 //
-// The controller is registered with a standard manager.Manager pointed at the
-// upstream Karmada control plane — NOT the multicluster-runtime manager — so
-// informer watches are scoped to the upstream control plane.
+// The controller is registered on the leader-elected local manager so only the
+// elected replica writes projections, and watches Instances through the
+// federation cluster's cache, which runs on every replica.
 type InstanceProjector struct {
 	// FederationClient reads Instance objects from the Karmada federation control
 	// plane (configured via --federation-kubeconfig). Must be set before
@@ -178,12 +181,16 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager registers the InstanceProjector with upstreamMgr, a standard
-// manager.Manager configured against the upstream Karmada/federation control plane
-// REST config. FederationClient and MCManager must be set before calling this method.
-func (r *InstanceProjector) SetupWithManager(upstreamMgr manager.Manager) error {
-	return ctrl.NewControllerManagedBy(upstreamMgr).
-		For(&computev1alpha.Instance{}).
+// SetupWithManager registers the InstanceProjector on mgr, which must be the
+// leader-elected local manager, watching Instances from federationCluster.
+// FederationClient and MCManager must be set before calling this method.
+func (r *InstanceProjector) SetupWithManager(mgr manager.Manager, federationCluster cluster.Cluster) error {
+	return ctrl.NewControllerManagedBy(mgr).
 		Named("instance-projector").
+		WatchesRawSource(source.Kind(
+			federationCluster.GetCache(),
+			&computev1alpha.Instance{},
+			&handler.TypedEnqueueRequestForObject[*computev1alpha.Instance]{},
+		)).
 		Complete(r)
 }
