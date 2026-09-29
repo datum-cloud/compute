@@ -908,7 +908,14 @@ May be combined with `resources` to allow for custom instance types for
 instance families that support customization. Instance types which support
 customization will appear in the form `<project>/<instanceFamily>-custom`.
 
-When omitted, the instance runs on the platform's default instance type,
+A new Workload that omits this field has it filled in automatically at
+creation, with the instance type the compute operator is configured to
+default to. This is an operator decision, not a value any InstanceType
+declares about itself: no catalog entry is ever marked as the default.
+
+A Workload stored before this defaulting existed, or created while the
+operator had no default configured, keeps this field empty; the
+instance then runs on the platform's hardcoded fallback instance type,
 `datumcloud-d1-standard-2`, for compatibility with workloads written
 before instance types could be chosen.<br/>
         </td>

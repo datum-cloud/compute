@@ -24,12 +24,15 @@ import (
 )
 
 // SetupWorkloadWebhookWithManager will setup the manager to manage workload
-// webhooks
-func SetupWorkloadWebhookWithManager(mgr mcmanager.Manager, locationSource locations.Source) error {
+// webhooks. instanceTypeDefault is the instance type stamped onto a new
+// Workload that names none; an empty value leaves the field empty, as before
+// this defaulting existed.
+func SetupWorkloadWebhookWithManager(mgr mcmanager.Manager, locationSource locations.Source, instanceTypeDefault string) error {
 
 	webhook := &workloadWebhook{
-		mgr:            mgr,
-		locationSource: locationSource,
+		mgr:                 mgr,
+		locationSource:      locationSource,
+		instanceTypeDefault: instanceTypeDefault,
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &computev1alpha.Workload{}).
@@ -47,6 +50,11 @@ func SetupWorkloadWebhookWithManager(mgr mcmanager.Manager, locationSource locat
 type workloadWebhook struct {
 	mgr            mcmanager.Manager
 	locationSource locations.Source
+
+	// instanceTypeDefault is the instance type stamped onto a new Workload
+	// that names none. Empty means the operator has configured no default;
+	// the field is then left empty, same as before defaulting existed.
+	instanceTypeDefault string
 }
 
 // readyLocations describes the locations a placement may run at: the
@@ -96,6 +104,12 @@ func (r *workloadWebhook) Default(ctx context.Context, workload *computev1alpha.
 		}
 		defaultFromCatalog(ctx, workload, catalog)
 	}
+
+	// Unconditional on features.InstanceTypes: the value stamped is the same
+	// platform baseline the hardcoded fallback already implies with the gate
+	// off, so this only makes explicit in storage what was previously
+	// implicit downstream.
+	r.defaultInstanceTypeSelection(ctx, workload)
 
 	// // TODO(jreese) review and test gateway defaulting / logic
 	// if gw := workload.Spec.Gateway; gw != nil {
@@ -295,6 +309,34 @@ func defaultSecurityContext(workload *computev1alpha.Workload, catalog runtimecl
 		sandbox.Containers[i].SecurityContext = runtimeclass.DefaultSecurityContext(
 			class, sandbox.Containers[i].SecurityContext)
 	}
+}
+
+// defaultInstanceTypeSelection stamps the operator-configured default
+// instance type onto a Workload's runtime resources when it names none, so
+// what is stored is never ambiguous about what it runs on. There is
+// deliberately no default marked on InstanceType itself — which type new
+// workloads land on is an operator decision (r.instanceTypeDefault), not
+// something a tier declares about itself.
+//
+// Written only at creation: defaulting on every update would let an
+// unrelated edit move a running workload onto whatever the operator
+// configures today, the same risk instanceType's update-immutability already
+// guards against. A workload stored before this flag existed, or created
+// while it was empty, keeps its empty field — the hardcoded platform
+// fallback (pkg/instancetype.D1Standard2) continues to apply for it exactly
+// as before; nothing here changes that path.
+func (r *workloadWebhook) defaultInstanceTypeSelection(ctx context.Context, workload *computev1alpha.Workload) {
+	if len(r.instanceTypeDefault) == 0 {
+		return
+	}
+	if len(workload.Spec.Template.Spec.Runtime.Resources.InstanceType) > 0 {
+		return
+	}
+	request, err := admission.RequestFromContext(ctx)
+	if err != nil || request.Operation != admissionv1.Create {
+		return
+	}
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = r.instanceTypeDefault
 }
 
 // runtimeClassCatalog lists the runtime classes published to the control plane

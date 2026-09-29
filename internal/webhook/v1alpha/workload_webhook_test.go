@@ -457,6 +457,67 @@ func TestDefaultStampsSecurityContextOnCreateOnly(t *testing.T) {
 	}
 }
 
+// TestDefaultInstanceTypeSelection covers the operator-configured instance
+// type default, mirroring TestDefaultStampsSecurityContextOnCreateOnly's
+// operation-guard table: the value is stamped only on a genuine Create, never
+// overwrites an explicit choice, and a webhook configured with no default is
+// a no-op.
+func TestDefaultInstanceTypeSelection(t *testing.T) {
+	cases := map[string]struct {
+		operation    admissionv1.Operation
+		inContext    bool
+		configured   string
+		selected     string
+		wantSelected string
+	}{
+		"create stamps the configured default": {
+			operation: admissionv1.Create, inContext: true,
+			configured: instancetype.D1Standard2, wantSelected: instancetype.D1Standard2,
+		},
+		"update leaves a stored workload alone": {
+			operation: admissionv1.Update, inContext: true,
+			configured: instancetype.D1Standard2, wantSelected: "",
+		},
+		"an unknown operation stamps nothing": {
+			inContext: false, configured: instancetype.D1Standard2, wantSelected: "",
+		},
+		"a delete admission stamps nothing": {
+			operation: admissionv1.Delete, inContext: true,
+			configured: instancetype.D1Standard2, wantSelected: "",
+		},
+		"an explicit selection is never overwritten": {
+			operation: admissionv1.Create, inContext: true,
+			configured: instancetype.D1Standard2, selected: "datumcloud-d2-standard-2",
+			wantSelected: "datumcloud-d2-standard-2",
+		},
+		"no configured default is a no-op": {
+			operation: admissionv1.Create, inContext: true,
+			configured: "", wantSelected: "",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.inContext {
+				ctx = admission.NewContextWithRequest(ctx, admission.Request{
+					AdmissionRequest: admissionv1.AdmissionRequest{Operation: tc.operation},
+				})
+			}
+
+			webhook := &workloadWebhook{instanceTypeDefault: tc.configured}
+			workload := &computev1alpha.Workload{}
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = tc.selected
+
+			webhook.defaultInstanceTypeSelection(ctx, workload)
+
+			if got := workload.Spec.Template.Spec.Runtime.Resources.InstanceType; got != tc.wantSelected {
+				t.Errorf("instanceType = %q, want %q", got, tc.wantSelected)
+			}
+		})
+	}
+}
+
 // TestWorkloadInstanceTypeWarnings covers the admission warnings that accompany
 // an accepted workload. Validation rejects before warnings are collected, so
 // this table only exercises workloads that would be stored.

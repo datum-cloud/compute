@@ -52,6 +52,7 @@ import (
 	quotametrics "go.datum.net/compute/internal/quota"
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
+	"go.datum.net/compute/pkg/instancetype"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	infrastructurev1alpha1 "go.miloapis.com/milo/pkg/apis/infrastructure/v1alpha1"
@@ -127,6 +128,7 @@ func main() {
 	var enableManagementControllers bool
 	var enableCellControllers bool
 	var instanceTypeDeprecationGracePeriod time.Duration
+	var instanceTypeDefault string
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -144,6 +146,12 @@ func main() {
 		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler).")
 	flag.DurationVar(&instanceTypeDeprecationGracePeriod, "instance-type-deprecation-grace-period", 60*24*time.Hour,
 		"Minimum time (e.g. 1440h) an InstanceType must remain Deprecated before it can be Disabled.")
+	flag.StringVar(&instanceTypeDefault, "instance-type-default", instancetype.D1Standard2,
+		"Instance type stamped onto a new Workload's runtime resources when it names none. "+
+			"Not a field on InstanceType: which type new workloads land on by default is an "+
+			"operator decision, not something a tier declares about itself. Empty disables "+
+			"defaulting; an omitted instanceType is still admitted and runs on the platform's "+
+			"hardcoded fallback.")
 
 	var featureGatesFlag string
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
@@ -477,7 +485,9 @@ func main() {
 	}
 
 	if serverConfig.WebhookServer != nil {
-		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr, serverConfig.LocationSource); err != nil {
+		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(
+			mgr, serverConfig.LocationSource, instanceTypeDefault,
+		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
 			os.Exit(1)
 		}

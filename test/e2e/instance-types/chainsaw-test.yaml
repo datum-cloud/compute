@@ -5,8 +5,10 @@
 # Scenarios:
 #   A. An Active catalog tier admits a Workload, the render stamps the type onto
 #      the WLD, and a downstream Instance is projected back to the control plane.
-#   B. A Workload that omits instanceType is ADMITTED (legacy fallback, no
-#      catalog-marked default) and the rendered WLD gains datumcloud-d1-standard-2.
+#   B. A Workload that omits instanceType is ADMITTED (no catalog-marked
+#      default); the mutating webhook stamps the operator-configured default
+#      (datumcloud-d1-standard-2) onto the stored Workload at creation, and the
+#      rendered WLD carries it through.
 #   C. A Deprecated tier still admits a new Workload; the controller surfaces
 #      InstanceTypeDeprecated on the Workload.
 #   D. After the (lowered 90s) deprecation grace period, a Disabled tier rejects
@@ -125,11 +127,27 @@ spec:
   - name: omitted-type-admitted
     description: |
       A Workload that omits instanceType is admitted (there is no catalog-marked
-      default per the design decision), and the render path stamps the hardcoded
-      fallback onto the downstream WLD.
+      default per the design decision; the default is operator configuration,
+      applied by the mutating webhook at creation). The stored Workload gets
+      the operator-configured default stamped on immediately, and the render
+      path carries it through to the downstream WLD.
     try:
     - apply:
         file: workload-empty.yaml
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Workload
+          metadata:
+            namespace: ($namespace)
+            name: instance-types-wl-empty
+          spec:
+            template:
+              spec:
+                runtime:
+                  resources:
+                    instanceType: datumcloud-d1-standard-2
     - assert:
         timeout: 120s
         resource:
