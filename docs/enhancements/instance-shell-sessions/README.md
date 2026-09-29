@@ -162,6 +162,9 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
 
 ### Proposed API
 
+The [implementation contract](./implementation-contract.md) fixes the
+interfaces between the pieces of work.
+
 `InstanceConsoleSession` is a project-scoped
 `compute.datumapis.com/v1alpha` resource. A client creates one resource for one
 command in one container. Deleting it revokes the session.
@@ -212,6 +215,8 @@ status:
     endpointID: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
     relayURLs:
       - https://iroh-relay.us-central-1.datumconnect.net
+    # host:port the client names when it opens the tunnel stream.
+    target: exec-agent-0.exec-agent.compute-shell-system.svc.cluster.local:7777
 
   # Absolute deadline set from the shell agent's clock when it publishes the
   # connectable status. Status propagation consumes part of the 60-second
