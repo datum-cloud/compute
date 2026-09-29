@@ -1,0 +1,18 @@
+# Gives each agent the stable name its paired endpoint proxies to,
+# exec-agent-<n>.exec-agent.compute-shell-system.svc.cluster.local, which is
+# also the target clients name. A draining agent keeps its name so clients get
+# its refusal rather than a lookup failure.
+apiVersion: v1
+kind: Service
+metadata:
+  name: exec-agent
+  namespace: compute-shell-system
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: exec-agent
+  ports:
+    - name: exec
+      port: 7777
+      targetPort: exec
