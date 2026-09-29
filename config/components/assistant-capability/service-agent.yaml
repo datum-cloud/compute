@@ -11,9 +11,12 @@ metadata:
     app.kubernetes.io/name: compute-diagnostics-agent
     app.kubernetes.io/part-of: compute.datumapis.com
 spec:
-  # The catalog entry in ../service-catalog/service.yaml.
+  # Must match the NAME of the catalog entry in
+  # ../service-catalog/service.yaml, which is "compute" — not the reverse-DNS
+  # service name. Get it wrong and nothing reports it: the agent simply never
+  # reaches any customer.
   serviceRef:
-    name: compute-datumapis-com
+    name: compute
   phase: Published
   displayName: Compute diagnostics
   description: |
