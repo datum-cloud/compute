@@ -105,6 +105,15 @@ is not in the data path and cells accept no inbound connections.
 
 Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 
+#### End-to-end flow
+
+The client can be `datumctl`, the Cloud Portal or an authorized AI agent. Each
+uses the same API and data path.
+
+![Instance shell session sequence](./sequence-diagram.png)
+
+Source: [sequence-diagram.puml](./sequence-diagram.puml)
+
 ### Guardrails
 
 - **Permission on session creation:** Creating `InstanceConsoleSession`
@@ -140,21 +149,92 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
 
 ## Design details
 
-- **Session request.** A new `InstanceConsoleSession` in the project names the
-  instance, container, command, whether it needs a terminal, the client's
-  public key and a time-to-live. Its spec cannot change after creation.
-- **Container selection.** The CLI and portal select the only container in a
-  single-container instance. The user must select a container when an instance
-  has more than one.
-- **Session status.** Status says which agent claimed the session, where to
-  connect, the connection deadline, and the start, end and expiration times. A
-  single `Ready` condition records the current state. Terminal status includes
-  the ending reason and, when the command exits normally, its exit code.
-  `datumctl` returns that code to its caller. Without one, it returns a nonzero
-  code and shows the reason.
+### Proposed API
+
+`InstanceConsoleSession` is a project-scoped
+`compute.datumapis.com/v1alpha` resource. A client creates one resource for one
+command in one container. Deleting it revokes the session.
+
+```yaml
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceConsoleSession
+metadata:
+  generateName: web-0-
+spec:
+  instanceRef:
+    name: web-0
+    uid: 3d39d44d-93fb-4d78-a14a-d76a9876aa71
+  containerName: app
+  command: ["sh"]
+  terminal: true
+  clientPublicKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  ttl: 1h
+status:
+  connection:
+    endpointID: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    relayURLs:
+      - https://iroh-relay.us-central-1.datumconnect.net
+  connectBefore: "2026-09-29T18:01:00Z"
+  expiresAt: "2026-09-29T19:00:00Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: SessionReady
+      message: "Connect before 2026-09-29T18:01:00Z"
+      lastTransitionTime: "2026-09-29T18:00:01Z"
+      observedGeneration: 1
+```
+
+The request fields have these semantics:
+
+- **`instanceRef`** includes the name and UID of an instance in the same
+  project. Requiring the UID prevents a session from reaching a replacement
+  instance that reused the name.
+- **`containerName`** is required. The CLI and portal fill it automatically for
+  a single-container instance and require a choice when several exist.
+- **`command`** is a required argument vector, not a shell string. It contains
+  1–64 elements and at most 16 KiB in total.
+- **`terminal`** requests a pseudoterminal and connects standard input. When
+  false, the command receives no input and returns separate standard output and
+  error streams, which is the default path for AI agents and automation.
+- **`clientPublicKey`** is the client's 32-byte iroh public key encoded as 64
+  lowercase hexadecimal characters. The corresponding private key never enters
+  the API.
+- **`ttl`** defaults to one hour and cannot exceed one hour. The client still
+  has only 60 seconds after the session becomes ready to connect.
+
+Admission rejects an unknown instance or container, a mismatched instance UID,
+an empty command, an invalid key, or a TTL outside the allowed range. The whole
+spec is immutable. A client changes a request by deleting it and creating
+another one.
+
+The status fields are output only:
+
+- **`connection`** contains the tunnel endpoint's public identity and relay
+  URLs. It contains no bearer credential.
+- **`connectBefore`** and **`expiresAt`** define the connection and execution
+  deadlines. **`startedAt`** and **`endedAt`** appear as the command advances.
+- **`exitCode`** appears only when the runtime reports a normal process exit.
+  `datumctl` returns it to its caller. Without one, `datumctl` returns a nonzero
+  code and shows the condition reason.
+- **`Ready`** is the only condition type. It is `Unknown` while the request is
+  pending, `True` when the client can connect and `False` after rejection or
+  termination. Terminal reasons are `Completed`, `Expired`, `Revoked`,
+  `NotConnected`, `AgentShutdown`, `AgentLost`, `TooManySessions`, `NoShell`,
+  `InstanceNotRunning`, `InstanceNotFound` and `Invalid`.
+
+A ready session never returns to pending, and terminal status does not change.
+The controller holds a finalizer while a session can own a process or
+reservation. Deleting an active session sets `Revoked`, stops the process,
+records the end event and releases the finalizer. The cleanup controller can
+then remove a terminal resource after 24 hours without changing its status.
+
+### Runtime and lifecycle
+
 - **Runtime capability.** Runtime classes advertise shell support, and sessions
-  for classes without it are refused. The agent also checks that the selected
-  image contains the requested command before accepting a session:
+  for classes without the `exec` feature are refused. The agent also checks
+  that the selected image contains the requested command before accepting a
+  session:
   - **General-purpose (Kata):** The runtime supports exec natively.
   - **Unikernel (Unikraft):** The Unikraft exec plugin provides exec when the
     cell's exec policy enables it.
@@ -163,9 +243,6 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
   recreating the instance; otherwise, existing instances require recreation.
 - **Routing.** Instances record which cell runs them, and sessions follow the
   same federation path as the workloads they target.
-- **Ending reasons.** Completed, Expired, Revoked, NotConnected, AgentShutdown,
-  AgentLost, TooManySessions, NoShell, InstanceNotRunning, InstanceNotFound and
-  Invalid, each with a user-facing message.
 - **Audit record.** The Project API audit pipeline records session creation
   with the requesting user or service identity as the actor. The compute
   session controller emits start and end events, where the actor is the
@@ -174,8 +251,6 @@ Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
   the requester, timestamps and ending reason. The events follow the project's
   audit-log retention policy and do not depend on the session resource. This
   requires a new activity policy, not Milo code changes.
-- **Session cleanup.** The session controller deletes a terminal session
-  resource 24 hours after its end time.
 - **Concurrency.** Before claiming a session, an agent atomically acquires one
   of three per-instance reservations by using Kubernetes resource-version
   checks. It releases the reservation when the session ends. The surviving
