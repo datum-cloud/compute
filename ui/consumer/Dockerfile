@@ -12,18 +12,30 @@
 # mounted at /etc/tls by the Deployment (see
 # config/components/consumer-ui-plugin/deployment.yaml) — the same mount
 # path serve.ts reads from.
+#
+# The build context is the repository root so the shell's wasm client can be
+# built from the Go sources with `make build-console-wasm`. A tree without that
+# target yields a plugin without the client, which hides the Shell tab.
+
+FROM --platform=$BUILDPLATFORM golang:1.26 AS console-wasm
+WORKDIR /workspace
+COPY . .
+RUN mkdir -p bin && \
+  if grep -q '^build-console-wasm:' Makefile; then make build-console-wasm; fi
 
 FROM oven/bun:1 AS build
 WORKDIR /app
-COPY package.json bun.lock ./
+COPY ui/consumer/package.json ui/consumer/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY . .
+COPY ui/consumer/ .
+COPY --from=console-wasm /workspace/bin/ /console-wasm/
+ENV CONSOLE_WASM_DIR=/console-wasm
 RUN bun run build
 
 FROM oven/bun:1-slim
 WORKDIR /app
 COPY --from=build /app/dist ./dist
-COPY serve.ts ./
+COPY ui/consumer/serve.ts ./
 USER bun
 EXPOSE 8443
 CMD ["bun", "run", "serve.ts"]
