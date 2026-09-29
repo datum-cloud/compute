@@ -1,9 +1,11 @@
-# Compute's registration with the Patch assistant — the docs, tools, and guides
-# it offers a customer's assistant.
+# Compute's registration with the Patch assistant: the agent customers talk to,
+# and the docs, tools and guides it offers them.
 #
-# Goes into a customer's project, not the cluster compute itself runs in.
+# Applied to the Milo control plane alongside ../service-catalog. The catalog
+# copies the content into each entitled project; entitlement decides who gets it.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
 resources:
-  - capability-binding.yaml
+  - service-agent.yaml
+  - service-agent-configuration.yaml
