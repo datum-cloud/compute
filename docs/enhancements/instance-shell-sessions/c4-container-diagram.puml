@@ -1,0 +1,39 @@
+@startuml c4-container-diagram
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+!include https://raw.githubusercontent.com/datum-cloud/enhancements/main/enhancements/datum-theme.puml
+
+title Instance Shell Sessions - Containers\nAccess is decided centrally; the shell travels straight to the cell
+
+LAYOUT_LEFT_RIGHT()
+
+Person(user, "Compute user", "Opens a shell in one of their instances")
+
+System_Boundary(client, "User's machine") {
+    Container(cli, "datumctl compute", "Go CLI plugin", "Creates the session with a one-time key, connects to the cell and runs the terminal")
+}
+
+Container_Ext(relay, "Relay", "Datum iroh relay", "Forwards encrypted traffic; the user and the cell both connect outward to it")
+
+System_Boundary(cell, "Compute cell") {
+    Container(listen, "Tunnel endpoint", "iroh listen node", "Receives the encrypted connection; holds no cluster credentials")
+    Container(agent, "Shell agent", "compute", "Claims sessions, enforces limits, checks the client's key, runs the shell and cleans up")
+    Container(instance, "Instance", "Kata VM", "Runs the user's workload; the shell runs inside it")
+}
+
+System_Boundary(core, "Datum control plane") {
+    Container(api, "Project API", "Milo", "Checks the user's permission, stores sessions, records them in the audit log")
+    Container(fed, "Compute controllers", "compute", "Send each session to the cell running the instance and report its status back")
+}
+
+Rel(user, cli, "Runs a command")
+Rel(cli, api, "1. Creates a session", "HTTPS")
+Rel_Back(api, fed, "2. Watches sessions")
+Rel(fed, agent, "3. Delivers the session")
+Rel(cli, relay, "4. Connects", "QUIC")
+Rel(relay, listen, "Forwards")
+Rel(listen, agent, "Hands over the stream")
+Rel(agent, instance, "5. Runs the shell", "exec via kubelet")
+
+SHOW_LEGEND()
+@enduml
