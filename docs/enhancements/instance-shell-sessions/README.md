@@ -159,23 +159,64 @@ command in one container. Deleting it revokes the session.
 apiVersion: compute.datumapis.com/v1alpha
 kind: InstanceConsoleSession
 metadata:
+  # Clients use generateName because each resource represents one invocation.
+  # Deleting an active resource revokes it. A finalizer keeps the resource until
+  # the process stops and its reservation and audit event are complete. The
+  # cleanup controller deletes terminal resources after 24 hours.
   generateName: web-0-
 spec:
+  # The whole spec is immutable. To change a request, delete it and create one.
+
+  # Required name and UID of an Instance in the same project. The UID prevents
+  # the session from reaching a replacement Instance that reused the name.
   instanceRef:
     name: web-0
     uid: 3d39d44d-93fb-4d78-a14a-d76a9876aa71
+
+  # Required exact container name. Clients fill this automatically when the
+  # Instance has one container and require a choice when it has several.
   containerName: app
+
+  # Required argument vector, not a shell string. It accepts 1–64 elements and
+  # at most 16 KiB in total.
   command: ["sh"]
+
+  # true allocates a pseudoterminal and connects standard input. false closes
+  # input and keeps standard output and error separate for agents and scripts.
   terminal: true
+
+  # Required 32-byte iroh public key as 64 lowercase hexadecimal characters.
+  # The private key remains in client memory and never enters the API.
   clientPublicKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+  # Optional execution lifetime. Defaults to 1h and cannot exceed 1h. The
+  # client still has only 60 seconds after Ready=True to connect.
   ttl: 1h
 status:
+  # All status fields are output only.
   connection:
+    # Public endpoint identity and relay addresses; neither is a bearer secret.
     endpointID: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
     relayURLs:
       - https://iroh-relay.us-central-1.datumconnect.net
+
+  # Connection and execution deadlines set when the cell claims the session.
   connectBefore: "2026-09-29T18:01:00Z"
   expiresAt: "2026-09-29T19:00:00Z"
+
+  # Set as the command advances through its lifecycle.
+  # startedAt: "2026-09-29T18:00:10Z"
+  # endedAt: "2026-09-29T18:04:32Z"
+
+  # Set only when the runtime reports a normal process exit. datumctl returns
+  # this value; without one, it returns nonzero and shows the condition reason.
+  # exitCode: 0
+
+  # Ready is the only condition type. It is Unknown while pending, True when
+  # the client can connect and False after rejection or termination. A terminal
+  # condition never changes. Terminal reasons are Completed, Expired, Revoked,
+  # NotConnected, AgentShutdown, AgentLost, TooManySessions, NoShell,
+  # InstanceNotRunning, InstanceNotFound and Invalid.
   conditions:
     - type: Ready
       status: "True"
@@ -184,50 +225,6 @@ status:
       lastTransitionTime: "2026-09-29T18:00:01Z"
       observedGeneration: 1
 ```
-
-The request fields have these semantics:
-
-- **`instanceRef`** includes the name and UID of an instance in the same
-  project. Requiring the UID prevents a session from reaching a replacement
-  instance that reused the name.
-- **`containerName`** is required. The CLI and portal fill it automatically for
-  a single-container instance and require a choice when several exist.
-- **`command`** is a required argument vector, not a shell string. It contains
-  1–64 elements and at most 16 KiB in total.
-- **`terminal`** requests a pseudoterminal and connects standard input. When
-  false, the command receives no input and returns separate standard output and
-  error streams, which is the default path for AI agents and automation.
-- **`clientPublicKey`** is the client's 32-byte iroh public key encoded as 64
-  lowercase hexadecimal characters. The corresponding private key never enters
-  the API.
-- **`ttl`** defaults to one hour and cannot exceed one hour. The client still
-  has only 60 seconds after the session becomes ready to connect.
-
-Admission rejects an unknown instance or container, a mismatched instance UID,
-an empty command, an invalid key, or a TTL outside the allowed range. The whole
-spec is immutable. A client changes a request by deleting it and creating
-another one.
-
-The status fields are output only:
-
-- **`connection`** contains the tunnel endpoint's public identity and relay
-  URLs. It contains no bearer credential.
-- **`connectBefore`** and **`expiresAt`** define the connection and execution
-  deadlines. **`startedAt`** and **`endedAt`** appear as the command advances.
-- **`exitCode`** appears only when the runtime reports a normal process exit.
-  `datumctl` returns it to its caller. Without one, `datumctl` returns a nonzero
-  code and shows the condition reason.
-- **`Ready`** is the only condition type. It is `Unknown` while the request is
-  pending, `True` when the client can connect and `False` after rejection or
-  termination. Terminal reasons are `Completed`, `Expired`, `Revoked`,
-  `NotConnected`, `AgentShutdown`, `AgentLost`, `TooManySessions`, `NoShell`,
-  `InstanceNotRunning`, `InstanceNotFound` and `Invalid`.
-
-A ready session never returns to pending, and terminal status does not change.
-The controller holds a finalizer while a session can own a process or
-reservation. Deleting an active session sets `Revoked`, stops the process,
-records the end event and releases the finalizer. The cleanup controller can
-then remove a terminal resource after 24 hours without changing its status.
 
 ### Runtime and lifecycle
 
