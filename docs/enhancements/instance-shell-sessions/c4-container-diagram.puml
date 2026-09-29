@@ -5,7 +5,7 @@
 
 title Instance Shell Sessions - Containers\nAccess is decided centrally; the shell travels straight to the cell
 
-LAYOUT_TOP_DOWN()
+LAYOUT_LEFT_RIGHT()
 
 Person(user, "Compute user", "Opens a shell in one of their instances from the CLI or the portal")
 
@@ -27,17 +27,16 @@ System_Boundary(core, "Datum control plane") {
     Container(fed, "Compute controllers", "compute", "Send each session to the cell running the instance and report its status back")
 }
 
-Rel(user, cli, "Runs a command")
-Rel(user, portal, "Chooses Open shell")
-Rel(portal, api, "1. Creates a session", "HTTPS")
-Rel(portal, relay, "4. Connects", "QUIC over WebSocket")
+Rel_L(user, client, "")
 Rel(cli, api, "1. Creates a session", "HTTPS")
+Rel(portal, api, "1. Creates a session", "HTTPS")
 Rel_Back(api, fed, "2. Watches sessions")
 Rel(fed, agent, "3. Delivers the session")
 Rel(cli, relay, "4. Connects", "QUIC")
+Rel(portal, relay, "4. Connects", "QUIC over WebSocket")
 Rel(relay, listen, "Forwards")
 Rel(listen, agent, "Hands over the stream")
-Rel(agent, instance, "5. Runs the shell", "via the instance's runtime")
+Rel_L(agent, instance, "5. Runs the shell", "via the instance's runtime")
 
 SHOW_LEGEND()
 @enduml
