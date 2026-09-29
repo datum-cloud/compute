@@ -10,6 +10,25 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-compute-datumapis-com-v1alpha-instanceconsolesession
+  failurePolicy: Fail
+  name: minstanceconsolesession.kb.io
+  rules:
+  - apiGroups:
+    - compute.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - CREATE
+    resources:
+    - instanceconsolesessions
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-compute-datumapis-com-v1alpha-workload
   failurePolicy: Fail
   name: mworkload.kb.io
@@ -30,6 +49,25 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
 webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-compute-datumapis-com-v1alpha-instanceconsolesession
+  failurePolicy: Fail
+  name: vinstanceconsolesession.kb.io
+  rules:
+  - apiGroups:
+    - compute.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - CREATE
+    resources:
+    - instanceconsolesessions
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:
