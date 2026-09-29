@@ -25,7 +25,7 @@ p_tunnel -> p_relay: Maintain long-lived outbound relay path
 
 p_client -> p_client: Generate an ephemeral key pair
 p_client -> p_api: Create session\n(target, command, public key, TTL)
-p_api -> p_api: Authorize and validate
+p_api -> p_api: Authorize, validate\nand claim session quota
 
 alt API rejects request
     p_api --> p_client: 4xx with an actionable reason
@@ -90,8 +90,7 @@ else API accepts request
         end
     end
 
-    ... 24 hours after the session ends ...
-    p_controllers -> p_api: Delete session resource
+    p_controllers -> p_api: Delete session resource\nand release its quota
 end
 
 @enduml

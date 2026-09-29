@@ -129,8 +129,9 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
 - **Short-lived:** The cell gives clients a 60-second connection window and
   limits command execution to one hour
 - **Per-instance limit:** At most three sessions can run in an instance at once
-- **Creation rate:** Preview defaults limit each identity to 10 new sessions
-  per minute and each project to 30; operators can lower these limits
+- **Session quota:** Each project can hold at most 100 sessions at once. The
+  quota system enforces this when a session is created, and projects can
+  request more
 - **Isolation:** Cell network policy lets the tunnel endpoint reach only its
   agent
 
@@ -147,8 +148,9 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
   fallback
 - **Relay distance can miss the five-second p95 goal:** Review relay placement
   and capacity; do not enable preview in a region until staging meets the goal
-- **Automated clients can overload session control paths:** Enforce identity,
-  project and per-instance limits; alert on sustained rejection volume
+- **Automated clients can overload session control paths:** Enforce the
+  project session quota and per-instance limit; alert on sustained quota
+  denials
 - **The browser client is a large download:** Load it only when a terminal opens
   (about 3 MB compressed); cache it between visits
 - **A Datum Connect regression breaks shells:** Qualify each release in CI
@@ -249,9 +251,13 @@ Deleting an active session revokes it. A finalizer waits up to five minutes for
 the cell to stop the process and release its reservation. If the cell does not
 confirm cleanup, the controller records `CleanupUnconfirmed` and removes the
 finalizer; it never reports cleanup as confirmed. This cleanup outcome is a
-lifecycle event, not a replacement for the immutable terminal reason. The
-cleanup controller deletes terminal session resources after 24 hours. Audit
-records outlive the resource.
+lifecycle event, not a replacement for the immutable terminal reason.
+
+The controller deletes a session as soon as it reaches a terminal state and its
+end event is recorded, which releases its quota. A connected client receives
+the ending reason and exit code in the stream's closing message. A client whose
+session ended before it connected reads them from the session's final state.
+Audit records outlive the resource.
 
 ### Runtime and routing
 
@@ -345,9 +351,10 @@ idle sessions and scale-to-zero.
 
 ### Scalability
 
-One new API type, one object per session, created only on a client request and
-bounded by the per-instance limit and cleanup policy. Tests must cover
-simultaneous session creation, reservation release and agent failover.
+One new API type, one object per open session, created only on a client
+request and bounded by the project session quota and per-instance limit.
+Sessions are deleted as soon as they end. Tests must cover simultaneous session
+creation, quota release, reservation release and agent failover.
 
 ### Troubleshooting
 
@@ -358,6 +365,8 @@ simultaneous session creation, reservation release and agent failover.
   supported shell and the requested executable.
 - **Too many sessions:** Show the limit and ask the user to close a session or
   wait for one to end.
+- **Session quota reached:** Tell the user the project has too many open
+  sessions and ask them to close one or retry shortly.
 - **Relay unreachable:** Retry another advertised relay and report a regional
   connectivity issue if none work.
 - **Agent restart or crash:** Show `AgentShutdown` or `AgentLost`, then let the
@@ -400,6 +409,7 @@ simultaneous session creation, reservation release and agent failover.
 - The Unikraft provider exec policy set to `always` in every cell that runs
   unikernel instances.
 - The session-create permission added to the default project-admin role.
+- A quota claim policy for sessions, with a default of 100 per project.
 - An activity policy that maps session creation and lifecycle events into the
   project activity log.
 - A released container image of the Datum Connect CLI, including the fix that
