@@ -406,7 +406,7 @@ func TestInstanceConsoleSessionStatusCopy(t *testing.T) {
 	session, ok = env.projectSession(t)
 	require.True(t, ok)
 	hubCopy, _ := env.hubSession(t)
-	assert.Equal(t, hubCopy.Status, session.Status)
+	assert.Equal(t, hubCopy.Status, withoutRecordedEvents(session.Status))
 	assert.True(t, session.DeletionTimestamp.IsZero())
 
 	events := env.events(t)
@@ -1269,7 +1269,59 @@ func TestInstanceConsoleSessionRetriesAnEventThatFailedToRecord(t *testing.T) {
 	assert.Contains(t, env.events(t), EventReasonSessionEnded)
 	session, ok = env.projectSession(t)
 	require.True(t, ok)
-	assert.Equal(t, sessionEventRecorded, session.Annotations[sessionEventMarkerAnnotation(EventReasonSessionEnded)])
+	entry := sessionRecordedEvent(session, EventReasonSessionEnded)
+	require.NotNil(t, entry)
+	assert.True(t, entry.Recorded)
+}
+
+func TestInstanceConsoleSessionRequesterCannotSuppressEvents(t *testing.T) {
+	session := testSession()
+	session.Annotations["compute.datumapis.com/sessionstarted-event"] = "recorded"
+	session.Annotations["compute.datumapis.com/sessionended-event"] = "recorded"
+	session.Annotations["compute.datumapis.com/recorded-events"] = "SessionStarted,SessionEnded"
+	env := newSessionTestEnv(t,
+		[]client.Object{session, testSessionInstanceObj(), testFederatedProjectWD()},
+		[]client.Object{testHubWD(testRuntimeClass)},
+	)
+	env.reconcile(t)
+	claimOnHub(t, env)
+	env.reconcile(t)
+	startOnHub(t, env)
+	env.reconcile(t)
+	endOnHub(t, env, computev1alpha.InstanceConsoleSessionReasonCompleted, ptr.To(int32(0)))
+	env.reconcile(t)
+	env.reconcile(t)
+
+	events := env.events(t)
+	assert.Contains(t, events, EventReasonSessionStarted, "metadata a requester can set must not keep the start out of the activity log")
+	assert.Contains(t, events, EventReasonSessionEnded, "metadata a requester can set must not keep the end out of the activity log")
+}
+
+func TestInstanceConsoleSessionStatusCopyKeepsRecordedEvents(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	startOnHub(t, env)
+	env.reconcile(t)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	entry := sessionRecordedEvent(session, EventReasonSessionStarted)
+	require.NotNil(t, entry)
+	require.True(t, entry.Recorded)
+
+	env.setHubStatus(t, func(status *computev1alpha.InstanceConsoleSessionStatus) {
+		expires := metav1.NewTime(env.now.Add(time.Hour).Truncate(time.Second))
+		status.ExpiresAt = &expires
+	})
+	env.reconcile(t)
+	session, ok = env.projectSession(t)
+	require.True(t, ok)
+	require.NotNil(t, session.Status.ExpiresAt)
+	entry = sessionRecordedEvent(session, EventReasonSessionStarted)
+	require.NotNil(t, entry, "copying the cell's status dropped the record of the start event")
+	assert.True(t, entry.Recorded)
+	rv := session.ResourceVersion
+	env.reconcile(t)
+	session, _ = env.projectSession(t)
+	assert.Equal(t, rv, session.ResourceVersion, "a status that differs from the cell's only in recorded events is rewritten on every reconcile")
 }
 
 // endProjectSession ends the project session the way copying the cell's end

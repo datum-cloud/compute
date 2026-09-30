@@ -260,6 +260,15 @@ with NotConnected.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#instanceconsolesessionstatusrecordedeventsindex">recordedEvents</a></b></td>
+        <td>[]object</td>
+        <td>
+          The lifecycle events the control plane has recorded for the session in
+the project's activity, so that each is recorded once. Only the control
+plane writes it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>startedAt</b></td>
         <td>string</td>
         <td>
@@ -386,5 +395,50 @@ Where to connect, set once the session is ready.
           The host:port the client names when it opens a stream to the endpoint.<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### InstanceConsoleSession.status.recordedEvents[index]
+<sup><sup>[↩ Parent](#instanceconsolesessionstatus)</sup></sup>
+
+
+
+InstanceConsoleSessionRecordedEvent tracks recording one of a session's
+lifecycle events.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>attemptedAt</b></td>
+        <td>string</td>
+        <td>
+          When the control plane last began recording the event.<br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>reason</b></td>
+        <td>string</td>
+        <td>
+          The event's reason, such as SessionStarted or SessionEnded.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>recorded</b></td>
+        <td>boolean</td>
+        <td>
+          Whether the event is on record. An attempt that did not finish is
+retried.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
