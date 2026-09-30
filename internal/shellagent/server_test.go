@@ -252,11 +252,16 @@ func TestPlatformEndings(t *testing.T) {
 
 			c := dialSession(t, addr, testUID, key, time.Now())
 			waitForConnected(t, h)
+			_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			first, err := readFrame(c.reader)
+			if err != nil || len(first.payload) == 0 || first.payload[0] != channelStdout || string(first.payload[1:]) != "$ " {
+				t.Fatalf("first frame = %+v, %v", first, err)
+			}
 			go tc.end(a)
 			out, status, code := c.readUntilClose(t)
 
-			if out[channelStdout] != "$ " {
-				t.Fatalf("stdout = %q", out[channelStdout])
+			if out[channelStdout] != "" {
+				t.Fatalf("stdout after the end = %q", out[channelStdout])
 			}
 			if status == nil || status.Status != metav1.StatusFailure || string(status.Reason) != tc.reason ||
 				status.Message == "" || code != closeNormal {
