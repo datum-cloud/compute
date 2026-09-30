@@ -167,6 +167,49 @@ func TestValidateInstanceConsoleSessionCreate(t *testing.T) {
 			wantMsg:   `the "retired" runtime class does not support shell sessions`,
 		},
 		{
+			name: "the requester annotation a client sends is admitted, since admission overwrites it",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Annotations = map[string]string{computev1alpha.InstanceConsoleSessionRequesterAnnotation: "someone-else"}
+			},
+			instance: sessionAdmissionInstance(),
+		},
+		{
+			name: "metadata outside compute's namespaces is admitted",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Annotations = map[string]string{"example.com/ticket": "OPS-1", "notcompute.datumapis.com/x": "y"}
+				s.Labels = map[string]string{"team": "web", "app.kubernetes.io/name": "shell"}
+			},
+			instance: sessionAdmissionInstance(),
+		},
+		{
+			name: "a client-set event marker annotation is refused",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Annotations = map[string]string{"compute.datumapis.com/sessionended-event": "recorded"}
+			},
+			instance:  sessionAdmissionInstance(),
+			wantType:  field.ErrorTypeForbidden,
+			wantField: "metadata.annotations[compute.datumapis.com/sessionended-event]",
+			wantMsg:   "set by the platform",
+		},
+		{
+			name: "a client-set annotation in a compute subdomain is refused",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Annotations = map[string]string{"shell-agent.compute.datumapis.com/endpoint": "abc"}
+			},
+			instance:  sessionAdmissionInstance(),
+			wantType:  field.ErrorTypeForbidden,
+			wantField: "metadata.annotations[shell-agent.compute.datumapis.com/endpoint]",
+		},
+		{
+			name: "a client-set compute label is refused",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Labels = map[string]string{computev1alpha.InstanceConsoleSessionUIDLabel: "forged"}
+			},
+			instance:  sessionAdmissionInstance(),
+			wantType:  field.ErrorTypeForbidden,
+			wantField: "metadata.labels[" + computev1alpha.InstanceConsoleSessionUIDLabel + "]",
+		},
+		{
 			name:      "an empty catalog refuses the session",
 			instance:  sessionAdmissionInstance(),
 			noCatalog: true,

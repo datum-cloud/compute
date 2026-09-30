@@ -110,10 +110,11 @@ func TestInstanceConsoleSessionWebhookDefaultAddsFinalizer(t *testing.T) {
 
 func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 	tests := []struct {
-		name    string
-		gateOff bool
-		objs    []client.Object
-		wantErr string
+		name        string
+		gateOff     bool
+		objs        []client.Object
+		annotations map[string]string
+		wantErr     string
 	}{
 		{
 			name: "admits a session for an exec-capable instance",
@@ -137,6 +138,18 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 			wantErr: "spec.instanceRef.name: Not found",
 		},
 		{
+			name: "refuses a session that pre-sets an event marker, which would keep its events out of the activity log",
+			objs: []client.Object{
+				sessionWebhookInstance("general-purpose"),
+				sessionWebhookClass("general-purpose", runtimeclass.FeatureExec),
+			},
+			annotations: map[string]string{
+				"compute.datumapis.com/sessionstarted-event": "recorded",
+				"compute.datumapis.com/sessionended-event":   "recorded",
+			},
+			wantErr: "metadata.annotations[compute.datumapis.com/sessionended-event]: Forbidden",
+		},
+		{
 			name: "refuses a session for a class without exec",
 			objs: []client.Object{
 				sessionWebhookInstance("unikernel"),
@@ -152,8 +165,13 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 
 			w := newSessionWebhook(tt.objs...)
 			ctx := sessionWebhookContext("alice@example.com")
-			_, validateErr := w.ValidateCreate(ctx, sessionWebhookSession())
-			defaultErr := w.Default(ctx, sessionWebhookSession())
+			session := func() *computev1alpha.InstanceConsoleSession {
+				s := sessionWebhookSession()
+				s.Annotations = tt.annotations
+				return s
+			}
+			_, validateErr := w.ValidateCreate(ctx, session())
+			defaultErr := w.Default(ctx, session())
 			for phase, err := range map[string]error{"validating": validateErr, "mutating": defaultErr} {
 				if tt.wantErr == "" {
 					require.NoError(t, err, phase)
