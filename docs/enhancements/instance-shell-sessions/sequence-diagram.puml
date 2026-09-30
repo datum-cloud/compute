@@ -35,8 +35,9 @@ else API accepts request
     p_api --> p_client: Session resource
 
     p_controllers -> p_api: Watch new session
+    p_controllers -> p_controllers: Bind the session to the cell\nKarmada's scheduler placed\nthe instance's deployment on
     p_controllers -> p_karmada: Create the hub session copy
-    p_karmada -> p_agent: Propagate the session\nto the target cell
+    p_karmada -> p_agent: Propagate the session\nto the bound cell
     p_agent -> p_agent: Validate runtime, instance, container,\ncommand, deadline, and capacity
 
     alt Cell rejects request
@@ -84,28 +85,43 @@ else API accepts request
 
             alt Command exits
                 p_runtime --> p_agent: Exit code
+                p_agent -> p_agent: Release instance reservation
+                p_agent -> p_agent: Write terminal status and endedAt\nto the cell's session copy\n(process exit is its own confirmation)
+                p_karmada -> p_controllers: Reflect status to the hub copy
+                p_controllers -> p_api: Copy status and endedAt,\ncreate end event
+                p_api -> p_activity: Send lifecycle event\nwith controller identity
+                p_api --> p_client: Terminal status
             else Client revokes the session
                 p_client -> p_api: Delete session
+                p_controllers -> p_api: Set terminal reason=Revoked\nright away, endedAt still unset
+                p_api --> p_client: Terminal reason
                 p_controllers -> p_karmada: Annotate the hub copy\nto revoke
                 p_karmada -> p_agent: Propagate the revoke\nannotation to the cell copy
                 p_agent -> p_runtime: Stop session process group
                 p_runtime --> p_agent: Process group stopped
+                p_agent -> p_agent: Release instance reservation
+                p_agent -> p_agent: Write endedAt to the\ncell's session copy
+                p_karmada -> p_controllers: Reflect status to the hub copy
+                p_controllers -> p_api: Copy endedAt,\ncreate end event
+                p_api -> p_activity: Send lifecycle event\nwith controller identity
+            else Bound cell stops reporting
+                note over p_controllers, p_agent
+                    Cell deregistered, or the instance moved to
+                    another cell. There is no cell left to confirm
+                    cleanup.
+                end note
+                p_controllers -> p_api: Set terminal reason=AgentLost,\nrelease reservation and quota\nimmediately, endedAt never set
+                p_api -> p_activity: Send lifecycle event\nwith controller identity
+                p_api --> p_client: Terminal reason
             end
-            p_agent -> p_agent: Release instance reservation
-            p_agent -> p_agent: Write terminal status to the\ncell's session copy
-            p_karmada -> p_controllers: Reflect status to the hub copy
-            p_controllers -> p_api: Copy status\nand create end event
-            p_api -> p_activity: Send lifecycle event\nwith controller identity
-            p_api --> p_client: Terminal status
         end
     end
 
     note over p_controllers, p_karmada
         Karmada deletes the propagated cell copy as soon as the hub
         copy is gone, without waiting for the agent. The controller
-        deletes the hub copy only once it has copied a terminal
-        status for the session, or after 5 minutes with
-        CleanupUnconfirmed.
+        deletes the hub copy only once it has copied endedAt for the
+        session, or after 5 minutes with CleanupUnconfirmed.
     end note
     p_controllers -> p_karmada: Delete the hub session copy
     p_controllers -> p_api: Delete session resource\nand release its quota

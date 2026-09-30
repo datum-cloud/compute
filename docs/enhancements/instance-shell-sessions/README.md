@@ -109,9 +109,10 @@ agent writes session status to its own cell's copy only. Karmada's status
 sync, the same reflection and aggregation compute already uses for
 `WorkloadDeployment`, carries that status to the hub copy without the agent
 holding hub credentials or making a hub call. The compute controllers copy
-status from the hub to the project's session. A local prototype measured
-status reaching the project in under 0.5 seconds and a revoke completing in
-about 1.2 seconds.
+status from the hub to the project's session. Measured on real Kata cells
+running under Karmada, a session reaches `Ready` in 0.14–0.26 seconds. Revoke,
+client disconnect and expiry all killed background and disowned jobs in every
+run.
 
 ![C4 container diagram](./c4-container-diagram.png)
 
@@ -232,6 +233,11 @@ status:
   # Set when the command starts and calculated as startedAt plus spec.ttl.
   # startedAt: "2026-09-29T18:00:10Z"
   # expiresAt: "2026-09-29T18:15:10Z"
+
+  # Set only once the platform confirms every process the session started has
+  # stopped, not when the terminal reason first appears. A revoked or
+  # lost-cell session can show its terminal reason before this is set, or
+  # never get one at all if cleanup goes unconfirmed.
   # endedAt: "2026-09-29T18:04:32Z"
 
   # Set only when the runtime reports a normal process exit. datumctl returns
@@ -258,19 +264,25 @@ one immutable terminal state. Terminal reasons are `Completed`, `Expired`,
 `Invalid`, `Unavailable` and `Disconnected`. `Unavailable` ends a session that
 no cell takes within 30 seconds. `Disconnected` ends a session whose client
 went away before the command exited; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
-waiting for a connection from one whose command is running.
+waiting for a connection from one whose command is running. `AgentLost` also
+covers a session whose bound cell stops reporting altogether — deregistered,
+or the instance moved to another cell. That session ends and its reservation
+and quota are released immediately: there is no cell left to ask for cleanup,
+so the five-minute confirmation wait described below does not apply.
 
-Deleting an active session revokes it. A finalizer annotates the hub copy to
-ask the cell to revoke the session, then waits up to five minutes for the
-agent to stop the process, release its reservation and report the session
-ended. Only then does the controller delete the hub copy; Karmada deletes the
-propagated cell copy as soon as the hub copy is gone, without waiting for the
-agent to finish cleanup, so the controller cannot delete the hub copy first
-and confirm cleanup after. If the agent does not report the session ended
-within five minutes, the controller records `CleanupUnconfirmed`, deletes the
-hub copy anyway and removes the finalizer; it never reports cleanup as
-confirmed. This cleanup outcome is a lifecycle event, not a replacement for
-the immutable terminal reason.
+Deleting an active session revokes it. The controller sets the terminal
+reason right away so the client learns the outcome without waiting on the
+cell, then annotates the hub copy to ask the cell to revoke the session.
+`endedAt` is a separate, honest signal: it is set only once the agent
+confirms the process group has stopped, not when the terminal reason first
+appears. A finalizer waits up to five minutes for that confirmation before
+the controller deletes the hub copy; Karmada deletes the propagated cell copy
+as soon as the hub copy is gone, without waiting for the agent to finish
+cleanup, so the controller cannot delete the hub copy first and confirm
+cleanup after. If the agent does not confirm within five minutes, the
+controller records `CleanupUnconfirmed`, deletes the hub copy anyway and
+removes the finalizer without ever setting `endedAt`. This cleanup outcome is
+a lifecycle event, not a replacement for the immutable terminal reason.
 
 The controller deletes a session as soon as it reaches a terminal state and its
 end event is recorded, which releases its quota. A connected client receives
@@ -295,10 +307,11 @@ Audit records outlive the resource.
   status reflection and aggregation, the same mechanism compute already uses
   for `WorkloadDeployment`, copies that status to the hub. The compute
   controllers then copy it from the hub to the project's session.
-- **Picking between cells.** A session can be propagated to more than one
-  cell, the same way a `WorkloadDeployment` can be. When more than one cell
-  reports status, aggregation prefers the copy from the cell that claimed the
-  session over any other cell's copy.
+- **Trusted cell.** The control plane binds a session to the one cell
+  Karmada's scheduler placed the instance's deployment on, read from that
+  placement, not from anything a cell writes. Status from any other cell is
+  ignored, and once a session is bound, that binding can't be replaced by a
+  different endpoint.
 - **Audit record.** The Project API audit pipeline records session creation
   with the requesting user or service identity as the actor. The compute
   session controller emits start and end events, where the actor is the
@@ -315,9 +328,11 @@ Audit records outlive the resource.
   maintenance warns open shells and closes them at a deadline; an agent that
   crashes has its sessions ended and cleaned up by the other.
 
-A local prototype on a Kata cell proved this design end to end for
-general-purpose instances, including crash recovery, the per-instance limit,
-clean endings and network isolation. The unikernel path has not been exercised.
+A prototype on real Kata cells running under Karmada proved this design end to
+end for general-purpose instances, including status sync through Karmada,
+crash recovery, the per-instance limit, clean endings and network isolation;
+revoke, client disconnect and expiry killed background and disowned jobs in
+every run. The unikernel path has not been exercised.
 
 ### Decisions
 
@@ -341,8 +356,9 @@ clean endings and network isolation. The unikernel path has not been exercised.
   sessions routed to its location. Instead, the agent has no hub identity, no
   hub credentials and no hub egress at all; it only reads and writes its own
   cell's copy of the session, and Karmada's status sync carries that status to
-  the hub. There is nothing to leak, so the residual trust is narrower: a
-  cell's self-reported status is trusted for the sessions delivered to it.
+  the hub. There is nothing to leak, and the trusted-cell binding narrows the
+  residual trust further: a compromised cell can affect only sessions for the
+  instances it actually runs.
 - **First release:** general-purpose (Kata) instances only. The unikernel
   runtime class gets the `exec` feature, and its provider's exec policy is set
   to `always`, once staging has answered the open Unikraft questions. Until
@@ -430,6 +446,9 @@ creation, quota release, reservation release and agent failover.
 
 - 2026-09-29: Local prototype on a Kata cell, from the CLI and from a browser
   (Chromium and WebKit); this document drafted.
+- 2026-09-30: Prototype re-run on real Kata cells under Karmada, measuring
+  session-ready latency and confirming that revoke, disconnect and expiry all
+  kill background and disowned jobs.
 
 ## Drawbacks
 
@@ -461,9 +480,9 @@ creation, quota release, reservation release and agent failover.
 - A shell agent and tunnel endpoint deployed to each compute cell, with
   network policy limiting both.
 - Karmada status reflection and aggregation rules for `InstanceConsoleSession`,
-  including a rule that prefers the claiming cell's status when more than one
-  cell holds a copy, the same way `WorkloadDeployment` status is aggregated
-  today.
+  the same way `WorkloadDeployment` status is aggregated today, plus binding
+  each session to its scheduler-placed cell so status from any other cell is
+  ignored.
 - `exec` on the general-purpose runtime class; for unikernel instances later,
   `exec` on that class and the Unikraft provider exec policy set to `always`.
 - The session-create permission added to the default project-admin role.
