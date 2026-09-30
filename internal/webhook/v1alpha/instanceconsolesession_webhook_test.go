@@ -77,8 +77,17 @@ func sessionWebhookSession() *computev1alpha.InstanceConsoleSession {
 	}
 }
 
+func newAdmittingSessionWebhook(t *testing.T) *instanceConsoleSessionWebhook {
+	t.Helper()
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceConsoleSessions, true)
+	return newSessionWebhook(
+		sessionWebhookInstance("general-purpose"),
+		sessionWebhookClass("general-purpose", runtimeclass.FeatureExec),
+	)
+}
+
 func TestInstanceConsoleSessionWebhookDefaultRecordsRequester(t *testing.T) {
-	w := newSessionWebhook()
+	w := newAdmittingSessionWebhook(t)
 	session := sessionWebhookSession()
 	session.Annotations = map[string]string{computev1alpha.InstanceConsoleSessionRequesterAnnotation: "someone-else"}
 
@@ -87,7 +96,7 @@ func TestInstanceConsoleSessionWebhookDefaultRecordsRequester(t *testing.T) {
 }
 
 func TestInstanceConsoleSessionWebhookDefaultAddsFinalizer(t *testing.T) {
-	w := newSessionWebhook()
+	w := newAdmittingSessionWebhook(t)
 	session := sessionWebhookSession()
 	session.Finalizers = []string{"example.com/other"}
 
@@ -101,10 +110,11 @@ func TestInstanceConsoleSessionWebhookDefaultAddsFinalizer(t *testing.T) {
 
 func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 	tests := []struct {
-		name    string
-		gateOff bool
-		objs    []client.Object
-		wantErr string
+		name        string
+		gateOff     bool
+		objs        []client.Object
+		annotations map[string]string
+		wantErr     string
 	}{
 		{
 			name: "admits a session for an exec-capable instance",
@@ -128,6 +138,18 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 			wantErr: "spec.instanceRef.name: Not found",
 		},
 		{
+			name: "refuses a session that pre-sets an event marker, which would keep its events out of the activity log",
+			objs: []client.Object{
+				sessionWebhookInstance("general-purpose"),
+				sessionWebhookClass("general-purpose", runtimeclass.FeatureExec),
+			},
+			annotations: map[string]string{
+				"compute.datumapis.com/sessionstarted-event": "recorded",
+				"compute.datumapis.com/sessionended-event":   "recorded",
+			},
+			wantErr: "metadata.annotations[compute.datumapis.com/sessionended-event]: Forbidden",
+		},
+		{
 			name: "refuses a session for a class without exec",
 			objs: []client.Object{
 				sessionWebhookInstance("unikernel"),
@@ -142,14 +164,23 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceConsoleSessions, !tt.gateOff)
 
 			w := newSessionWebhook(tt.objs...)
-			_, err := w.ValidateCreate(sessionWebhookContext("alice@example.com"), sessionWebhookSession())
-			if tt.wantErr == "" {
-				require.NoError(t, err)
-				return
+			ctx := sessionWebhookContext("alice@example.com")
+			session := func() *computev1alpha.InstanceConsoleSession {
+				s := sessionWebhookSession()
+				s.Annotations = tt.annotations
+				return s
 			}
-			require.Error(t, err)
-			assert.True(t, apierrors.IsInvalid(err), "want a 422 Invalid, got %v", err)
-			assert.Contains(t, err.Error(), tt.wantErr)
+			_, validateErr := w.ValidateCreate(ctx, session())
+			defaultErr := w.Default(ctx, session())
+			for phase, err := range map[string]error{"validating": validateErr, "mutating": defaultErr} {
+				if tt.wantErr == "" {
+					require.NoError(t, err, phase)
+					continue
+				}
+				require.Error(t, err, "%s admission must refuse the session, because quota is claimed between the two phases", phase)
+				assert.True(t, apierrors.IsInvalid(err), "%s: want a 422 Invalid, got %v", phase, err)
+				assert.Contains(t, err.Error(), tt.wantErr, phase)
+			}
 		})
 	}
 }

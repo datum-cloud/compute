@@ -586,7 +586,7 @@ func TestConcurrencyCapDefersClaims(t *testing.T) {
 
 func TestClaimWaitsForReadyEndpoint(t *testing.T) {
 	h := newHarness(t)
-	a := h.agent(func(c *Config) { c.EndpointPodName = "exec-endpoint-0" })
+	a := h.agent(func(c *Config) { c.EndpointPodName = testEndpointPod })
 	h.session(testSession, testUID)
 
 	res := h.reconcile(a, testSession)
@@ -595,7 +595,7 @@ func TestClaimWaitsForReadyEndpoint(t *testing.T) {
 		t.Fatal("a claim deferred for a missing endpoint must be retried")
 	}
 
-	endpoint := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testAgentNamespace, Name: "exec-endpoint-0"}}
+	endpoint := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testAgentNamespace, Name: testEndpointPod}}
 	if err := h.cell.Create(h.ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
