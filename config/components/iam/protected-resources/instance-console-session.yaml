@@ -1,0 +1,21 @@
+# Sessions have no update permissions because the spec is immutable: a
+# different request is a new session. Deleting a session revokes it.
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: compute.datumapis.com-instanceconsolesession
+spec:
+  serviceRef:
+    name: "compute.datumapis.com"
+  kind: InstanceConsoleSession
+  plural: instanceconsolesessions
+  singular: instanceconsolesession
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

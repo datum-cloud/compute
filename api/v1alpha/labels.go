@@ -34,6 +34,15 @@ const (
 
 	// ReferencedDataLabelValue is the value used for ReferencedDataLabel.
 	ReferencedDataLabelValue = "true"
+
+	// InstanceConsoleSessionUIDLabel carries the project session's UID on the
+	// hub and cell copies of an InstanceConsoleSession. Clients sign with it.
+	InstanceConsoleSessionUIDLabel = LabelNamespace + "/session-uid"
+
+	// InstanceConsoleSessionInstanceNameLabel carries the name of the Instance
+	// a copied InstanceConsoleSession targets. The hub and cell Instance share
+	// the copy's namespace and this name.
+	InstanceConsoleSessionInstanceNameLabel = LabelNamespace + "/instance-name"
 )
 
 // Runtime class labels. Placement, provider dispatch, and per-tier metrics all

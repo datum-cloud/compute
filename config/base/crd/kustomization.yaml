@@ -2,6 +2,7 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by an overlay under config/overlays/
 resources:
+- bases/compute.datumapis.com_instanceconsolesessions.yaml
 - bases/compute.datumapis.com_instances.yaml
 - bases/compute.datumapis.com_instancetypes.yaml
 - bases/compute.datumapis.com_runtimeclasses.yaml

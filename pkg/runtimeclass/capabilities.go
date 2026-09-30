@@ -40,6 +40,7 @@ const (
 	FeatureEnvFrom                 = computev1alpha.RuntimeClassFeatureEnvFrom
 	FeatureImagePullSecrets        = computev1alpha.RuntimeClassFeatureImagePullSecrets
 	FeatureContainerCapabilities   = computev1alpha.RuntimeClassFeatureContainerCapabilities
+	FeatureExec                    = computev1alpha.RuntimeClassFeatureExec
 )
 
 // Capability is a Linux capability name without the CAP_ prefix. It aliases the
