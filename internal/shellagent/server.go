@@ -153,7 +153,7 @@ func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.R
 	uid := sessionUID(hub)
 	opts := ExecOptions{
 		Container: held.container,
-		Command:   wrappedCommand(held.markerDir, uid, hub.Spec.Command),
+		Command:   wrappedCommand(held.markerDir, uid, hub.Spec.Command, hub.Spec.Stdin, hub.Spec.Terminal),
 		Stdin:     hub.Spec.Stdin,
 		TTY:       hub.Spec.Terminal,
 	}
