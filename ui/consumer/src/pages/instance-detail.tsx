@@ -12,6 +12,7 @@ import {
 } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
 import { useInstance, usePublishedUrl } from '../lib/api';
+import { instancePageView } from '../lib/instance-page-view';
 import { useShellAvailable } from '../lib/use-shell-available';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
@@ -53,6 +54,11 @@ function InstanceLayoutShell({
   const published = usePublishedUrl(projectId, workloadName ?? instance?.workloadName);
   const locationIndex = useLocationIndex(projectId);
   const shellAvailable = useShellAvailable(projectId, instance);
+  const view = instancePageView({
+    isLoading,
+    hasInstance: !!instance,
+    errorStatus: error?.status,
+  });
 
   return (
     <InstancePageChrome
@@ -72,7 +78,7 @@ function InstanceLayoutShell({
       locationTooltip={
         instance?.location ? formatLocationTooltip(instance.location, locationIndex) : undefined
       }>
-      {isLoading &&
+      {view === 'loading' &&
         (pathname === metricsHref || pathname.startsWith(`${metricsHref}/`) ? (
           <InstanceMetricsSkeleton />
         ) : pathname === logsHref || pathname.startsWith(`${logsHref}/`) ? (
@@ -81,7 +87,7 @@ function InstanceLayoutShell({
           <InstanceOverviewSkeleton />
         ))}
 
-      {!isLoading && (error || !instance) && (
+      {view === 'error' && (
         <ErrorOrRestrictedState
           error={error}
           restrictedMessage="You don't have permission to view this instance."
@@ -89,7 +95,7 @@ function InstanceLayoutShell({
         />
       )}
 
-      {!isLoading && !error && instance && (
+      {view === 'ready' && instance && (
         <Outlet
           context={
             {
