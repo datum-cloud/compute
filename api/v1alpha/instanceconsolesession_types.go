@@ -209,6 +209,26 @@ const (
 	// InstanceConsoleSessionReasonInvalid means the request cannot be served
 	// as written. The message says why.
 	InstanceConsoleSessionReasonInvalid = "Invalid"
+
+	// InstanceConsoleSessionReasonUnavailable means no cell took the session in
+	// time, so sessions are not available for the instance right now.
+	InstanceConsoleSessionReasonUnavailable = "Unavailable"
+
+	// InstanceConsoleSessionReasonDisconnected means the client went away
+	// before the command exited, and the platform stopped the command.
+	InstanceConsoleSessionReasonDisconnected = "Disconnected"
+)
+
+// Finalizers on InstanceConsoleSessions.
+const (
+	// InstanceConsoleSessionFinalizer holds a project session until the cell
+	// has confirmed its processes are stopped, or the confirmation times out.
+	InstanceConsoleSessionFinalizer = "compute.datumapis.com/instance-console-session"
+
+	// InstanceConsoleSessionAgentFinalizer holds the hub and cell copies of a
+	// session until the shell agent has stopped its processes and released its
+	// slot.
+	InstanceConsoleSessionAgentFinalizer = "compute.datumapis.com/shell-agent"
 )
 
 // +kubebuilder:object:root=true

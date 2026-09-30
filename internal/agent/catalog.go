@@ -705,6 +705,22 @@ var catalog = []ReasonInfo{
 		Explanation:    "The session asked for something Datum cannot serve as written. The message says what.",
 		Remediation:    "Correct the request and open a new session.",
 	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonUnavailable,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityPlatform,
+		Explanation: "No part of Datum took the session in time, so shell sessions are not " +
+			"available for this instance right now. The instance itself was not affected.",
+		Remediation: "Try again shortly. If this keeps happening, raise it with Datum.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonDisconnected,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation: "The client disconnected before the command finished, so Datum stopped " +
+			"the command.",
+		Remediation: "Open a new session to continue.",
+	},
 }
 
 // byReason indexes the catalog, rendering each entry's window in the same pass
