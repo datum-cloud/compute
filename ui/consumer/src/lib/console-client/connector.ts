@@ -1,6 +1,5 @@
 import type { FromWorker, ToWorker } from './messages';
 import type { ConsoleAssets, ConsoleEnding, ConsoleTarget, TerminalSize } from './wasm-adapter';
-import { consoleClientAssets } from 'virtual:console-client-assets';
 
 export interface ShellConnector {
   load(): Promise<string>;
@@ -8,29 +7,50 @@ export interface ShellConnector {
     target: ConsoleTarget,
     size: TerminalSize,
     onOutput: (bytes: Uint8Array) => void,
-    onEnd: (ending: ConsoleEnding) => void
+    onEnd: (ending: ConsoleEnding) => void,
+    onConnected: () => void
   ): void;
   write(data: string): void;
   resize(size: TerminalSize): void;
   dispose(): void;
 }
 
-export const consoleClientBundled = consoleClientAssets !== null;
+export const CLOSE_TIMEOUT_MS = 2_000;
+
+export interface ShellWorker {
+  postMessage(message: ToWorker): void;
+  terminate(): void;
+  onmessage: ((event: MessageEvent<FromWorker>) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+}
+
+function spawnShellWorker(): ShellWorker {
+  return new Worker(new URL('./shell.worker.ts', import.meta.url), {
+    name: 'instance-shell',
+  }) as ShellWorker;
+}
 
 export function createWorkerConnector(
-  assets: ConsoleAssets | null = consoleClientAssets
+  assets: ConsoleAssets | null,
+  spawn: () => ShellWorker = spawnShellWorker,
+  closeTimeoutMs = CLOSE_TIMEOUT_MS
 ): ShellConnector {
-  const worker = new Worker(new URL('./shell.worker.ts', import.meta.url), {
-    name: 'instance-shell',
-  });
+  const worker = spawn();
   const send = (message: ToWorker) => worker.postMessage(message);
   let loaded: ((publicKey: string) => void) | undefined;
   let failed: ((err: Error) => void) | undefined;
   let onOutput: ((bytes: Uint8Array) => void) | undefined;
   let onEnd: ((ending: ConsoleEnding) => void) | undefined;
+  let onConnected: (() => void) | undefined;
+  let streaming = false;
+  let ended = false;
   let done = false;
+  let disposed = false;
+  let afterEnd: (() => void) | undefined;
 
   const finish = (ending: ConsoleEnding) => {
+    ended = true;
+    afterEnd?.();
     if (done) return;
     done = true;
     onEnd?.(ending);
@@ -54,6 +74,9 @@ export function createWorkerConnector(
         loaded = undefined;
         failed = undefined;
         break;
+      case 'connected':
+        onConnected?.();
+        break;
       case 'output':
         onOutput?.(message.bytes);
         break;
@@ -67,6 +90,8 @@ export function createWorkerConnector(
   };
   worker.onerror = (event) => {
     event.preventDefault();
+    ended = true;
+    afterEnd?.();
     fail('The shell client stopped unexpectedly.');
   };
 
@@ -82,9 +107,11 @@ export function createWorkerConnector(
         send({ type: 'load', assets });
       });
     },
-    connect(target, size, output, end) {
+    connect(target, size, output, end, connected) {
       onOutput = output;
       onEnd = end;
+      onConnected = connected;
+      streaming = true;
       send({ type: 'connect', target, size });
     },
     write(data) {
@@ -94,12 +121,24 @@ export function createWorkerConnector(
       send({ type: 'resize', size });
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       done = true;
       onOutput = undefined;
       onEnd = undefined;
+      onConnected = undefined;
       loaded = undefined;
       failed = undefined;
-      worker.terminate();
+      if (!streaming || ended) {
+        worker.terminate();
+        return;
+      }
+      const timer = setTimeout(() => worker.terminate(), closeTimeoutMs);
+      afterEnd = () => {
+        clearTimeout(timer);
+        worker.terminate();
+      };
+      send({ type: 'close' });
     },
   };
 }

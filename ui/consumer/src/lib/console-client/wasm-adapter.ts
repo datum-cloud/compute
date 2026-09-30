@@ -34,7 +34,8 @@ export interface ConsoleClient {
     target: ConsoleTarget,
     size: TerminalSize,
     onOutput: (bytes: Uint8Array) => void,
-    onEnd: (ending: ConsoleEnding) => void
+    onEnd: (ending: ConsoleEnding) => void,
+    onConnected: () => void
   ): ConsoleStream;
 }
 
@@ -44,11 +45,13 @@ interface GoRuntime {
 }
 
 interface DatumExec {
+  features?: string[];
   publicKey(): string;
   connect(
     session: ConsoleTarget & Partial<TerminalSize>,
     onOutput: (bytes: Uint8Array, fd: number) => void,
-    onEnd: (ending: Partial<ConsoleEnding>) => void
+    onEnd: (ending: Partial<ConsoleEnding>) => void,
+    onConnected?: () => void
   ): {
     write(data: string | Uint8Array): void;
     resize(cols: number, rows: number): void;
@@ -87,6 +90,7 @@ export async function loadConsoleClient(
 
   const exec = scope.datumExec;
   if (!exec) throw new Error('The shell client did not start.');
+  const signalsConnected = Array.isArray(exec.features) && exec.features.includes('connected');
 
   return {
     publicKey() {
@@ -94,25 +98,35 @@ export async function loadConsoleClient(
       if (!PUBLIC_KEY.test(key)) throw new Error('The shell client produced an invalid key.');
       return key;
     },
-    connect(target, size, onOutput, onEnd) {
-      const stream = exec.connect(
-        {
-          uid: target.uid,
-          endpointID: target.endpointID,
-          relayURLs: target.relayURLs,
-          target: target.target,
-          cols: size.cols,
-          rows: size.rows,
-        },
-        (bytes) => onOutput(bytes),
-        (ending) =>
-          onEnd({
-            exitCode: ending.exitCode ?? 1,
-            reason: ending.reason ?? '',
-            message: ending.message ?? '',
-            error: ending.error ?? '',
-          })
-      );
+    connect(target, size, onOutput, onEnd, onConnected) {
+      let connected = false;
+      const markConnected = () => {
+        if (connected) return;
+        connected = true;
+        onConnected();
+      };
+      const session = {
+        uid: target.uid,
+        endpointID: target.endpointID,
+        relayURLs: target.relayURLs,
+        target: target.target,
+        cols: size.cols,
+        rows: size.rows,
+      };
+      const output = (bytes: Uint8Array) => {
+        markConnected();
+        onOutput(bytes);
+      };
+      const end = (ending: Partial<ConsoleEnding>) =>
+        onEnd({
+          exitCode: ending.exitCode ?? 1,
+          reason: ending.reason ?? '',
+          message: ending.message ?? '',
+          error: ending.error ?? '',
+        });
+      const stream = signalsConnected
+        ? exec.connect(session, output, end, markConnected)
+        : exec.connect(session, output, end);
       return {
         write: (data) => stream.write(data),
         resize: ({ cols, rows }) => stream.resize(cols, rows),

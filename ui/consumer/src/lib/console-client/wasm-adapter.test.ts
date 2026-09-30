@@ -8,18 +8,22 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-function fakeScope(endpointID: string) {
+function fakeScope(endpointID: string, features?: string[]) {
   const calls: unknown[][] = [];
   const scope: Record<string, unknown> = {};
   const datumExec = {
+    features,
     publicKey: () => endpointID,
     connect(
       opts: unknown,
       onOutput: (b: Uint8Array, fd: number) => void,
-      onEnd: (e: unknown) => void
+      onEnd: (e: unknown) => void,
+      ...rest: Array<() => void>
     ) {
-      calls.push(['connect', opts]);
+      calls.push(['connect', opts, rest.length]);
+      rest[0]?.();
       onOutput(new Uint8Array([104, 105]), 1);
+      onOutput(new Uint8Array([33]), 1);
       onEnd({ exitCode: 0 });
       return {
         write: (data: unknown) => calls.push(['write', data]),
@@ -57,6 +61,7 @@ describe('loadConsoleClient', () => {
 
     const output: Uint8Array[] = [];
     const endings: unknown[] = [];
+    const events: string[] = [];
     const stream = client.connect(
       {
         uid: 'session-uid',
@@ -65,8 +70,12 @@ describe('loadConsoleClient', () => {
         target: 'agent:8443',
       },
       { cols: 100, rows: 30 },
-      (bytes) => output.push(bytes),
-      (ending) => endings.push(ending)
+      (bytes) => {
+        events.push('output');
+        output.push(bytes);
+      },
+      (ending) => endings.push(ending),
+      () => events.push('connected')
     );
     stream.write('ls');
     stream.resize({ cols: 90, rows: 20 });
@@ -84,13 +93,33 @@ describe('loadConsoleClient', () => {
           cols: 100,
           rows: 30,
         },
+        0,
       ],
       ['write', 'ls'],
       ['resize', 90, 20],
       ['close'],
     ]);
-    expect(output).toEqual([new Uint8Array([104, 105])]);
+    expect(output).toEqual([new Uint8Array([104, 105]), new Uint8Array([33])]);
+    expect(events).toEqual(['connected', 'output', 'output']);
     expect(endings).toEqual([{ exitCode: 0, reason: '', message: '', error: '' }]);
+  });
+
+  test("uses the client's connected signal when it offers one", async () => {
+    globalThis.fetch = (async () => new Response(EMPTY_WASM_MODULE)) as unknown as typeof fetch;
+    const { scope, calls } = fakeScope('ef'.repeat(32), ['connected', 'end-after-zeroing']);
+    const client = await loadConsoleClient(assets, scope as never);
+
+    const events: string[] = [];
+    client.connect(
+      { uid: 'u', endpointID: 'e', relayURLs: [], target: 't' },
+      { cols: 80, rows: 24 },
+      () => events.push('output'),
+      () => undefined,
+      () => events.push('connected')
+    );
+
+    expect(calls.find((c) => c[0] === 'connect')?.[2]).toBe(1);
+    expect(events).toEqual(['connected', 'output', 'output']);
   });
 
   test('rejects a key that is not 64 lowercase hex characters', async () => {

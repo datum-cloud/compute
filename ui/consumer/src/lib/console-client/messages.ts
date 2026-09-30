@@ -4,10 +4,12 @@ export type ToWorker =
   | { type: 'load'; assets: ConsoleAssets }
   | { type: 'connect'; target: ConsoleTarget; size: TerminalSize }
   | { type: 'input'; data: string }
-  | { type: 'resize'; size: TerminalSize };
+  | { type: 'resize'; size: TerminalSize }
+  | { type: 'close' };
 
 export type FromWorker =
   | { type: 'loaded'; publicKey: string }
+  | { type: 'connected' }
   | { type: 'output'; bytes: Uint8Array }
   | { type: 'end'; ending: ConsoleEnding }
   | { type: 'failed'; message: string };

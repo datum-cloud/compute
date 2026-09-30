@@ -27,14 +27,16 @@ function harness(statuses: RawConsoleSession[], opts: { createError?: Error } = 
   let clock = 0;
   let end: ((ending: ConsoleEnding) => void) | undefined;
   let emit: ((bytes: Uint8Array) => void) | undefined;
+  let signalConnected: (() => void) | undefined;
   let connectedWith: unknown;
 
   const connector: ShellConnector = {
     load: async () => PUBLIC_KEY,
-    connect(target, size, onOutput, onEnd) {
+    connect(target, size, onOutput, onEnd, onConnected) {
       connectedWith = { target, size };
       emit = onOutput;
       end = onEnd;
+      signalConnected = onConnected;
     },
     write: (data) => written.push(data),
     resize: () => undefined,
@@ -83,6 +85,7 @@ function harness(statuses: RawConsoleSession[], opts: { createError?: Error } = 
       return connectedWith;
     },
     emit: (bytes: Uint8Array) => emit?.(bytes),
+    connected: () => signalConnected?.(),
     end: (ending: Partial<ConsoleEnding>) =>
       end?.({ exitCode: 0, reason: '', message: '', error: '', ...ending }),
     open: () => session.open('app', () => ({ cols: 120, rows: 40 })),
@@ -108,8 +111,9 @@ describe('ShellSession', () => {
       size: { cols: 120, rows: 40 },
     });
 
-    h.emit(new Uint8Array([36, 32]));
+    h.connected();
     expect(h.states.at(-1)).toEqual({ phase: 'connected' });
+    h.emit(new Uint8Array([36, 32]));
     expect(h.output).toHaveLength(1);
 
     h.session.write('ls\r');
@@ -221,6 +225,13 @@ describe('ShellSession', () => {
 
     expect(h.removed).toEqual(['web-0-abcde']);
     expect(h.disposed).toBe(1);
+  });
+
+  test('stays connecting until the client reports the connection', async () => {
+    const h = harness([ready('SessionReady')]);
+    await h.open();
+    h.emit(new Uint8Array([36]));
+    expect(h.states.at(-1)).toEqual({ phase: 'connecting' });
   });
 
   test('ignores input before the connection opens', async () => {

@@ -36,7 +36,8 @@ scope.onmessage = async (event: MessageEvent<ToWorker>) => {
             const copy = bytes.slice();
             post({ type: 'output', bytes: copy }, [copy.buffer]);
           },
-          (ending) => post({ type: 'end', ending })
+          (ending) => post({ type: 'end', ending }),
+          () => post({ type: 'connected' })
         );
         break;
       case 'input':
@@ -44,6 +45,9 @@ scope.onmessage = async (event: MessageEvent<ToWorker>) => {
         break;
       case 'resize':
         stream?.resize(message.size);
+        break;
+      case 'close':
+        stream?.close();
         break;
     }
   } catch (err) {

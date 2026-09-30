@@ -100,12 +100,15 @@ export class ShellSession {
             { uid: session.uid, ...progress.connection },
             size(),
             (bytes) => {
-              if (!live()) return;
-              if (this.state.phase === 'connecting') this.setState({ phase: 'connected' });
-              this.options.onOutput(bytes);
+              if (live()) this.options.onOutput(bytes);
             },
             (ending) => {
               if (live()) this.end(endingMessage(ending));
+            },
+            () => {
+              if (live() && this.state.phase === 'connecting') {
+                this.setState({ phase: 'connected' });
+              }
             }
           );
           return;

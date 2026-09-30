@@ -25,6 +25,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css?inline';
 import { useEffect, useId, useRef, useState } from 'react';
+import { consoleClientAssets } from 'virtual:console-client-assets';
 
 const XTERM_STYLE_ID = 'compute-plugin-xterm-css';
 const TERMINAL_HEIGHT = 480;
@@ -47,7 +48,7 @@ function ensureXtermStyles() {
 
 function sessionDeps(projectId: string): ShellSessionDeps {
   return {
-    createConnector: () => createWorkerConnector(),
+    createConnector: () => createWorkerConnector(consoleClientAssets),
     create: (input) => createSession(projectId, input),
     get: (name) => getSession(projectId, name),
     remove: (name) => deleteSession(projectId, name),
