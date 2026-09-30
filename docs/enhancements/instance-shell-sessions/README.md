@@ -291,8 +291,9 @@ Audit records outlive the resource.
   maintenance warns open shells and closes them at a deadline; an agent that
   crashes has its sessions ended and cleaned up by the other.
 
-A local prototype on a Kata cell proved this design end to end, including
-crash recovery, the per-instance limit, clean endings and network isolation.
+A local prototype on a Kata cell proved this design end to end for
+general-purpose instances, including crash recovery, the per-instance limit,
+clean endings and network isolation. The unikernel path has not been exercised.
 
 ### Decisions
 
@@ -311,6 +312,15 @@ crash recovery, the per-instance limit, clean endings and network isolation.
   running instance or raise the workload's minimum replica count. This avoids
   changing workload scale or incurring cost as a side effect of a diagnostic
   action.
+- **Hub access:** each cell's shell agent has its own identity on the
+  federation hub, tied to the location it serves. It can read a session by name
+  and write only sessions routed to its own location; an admission policy on the
+  hub refuses anything else, and it cannot list or watch sessions. A leaked
+  agent credential therefore reaches only its own location's sessions.
+- **First release:** general-purpose (Kata) instances only. The unikernel
+  runtime class gets the `exec` feature, and its provider's exec policy is set
+  to `always`, once staging has answered the open Unikraft questions. Until
+  then, unikernel instances are refused when a session is created.
 - **Tunnel code:** the tunnel endpoint runs the Datum Connect CLI, so shells
   and Datum Connect share one tunnel implementation. Its license prevents
   linking it into `datumctl`; it does not prevent cells from running it as a
@@ -334,9 +344,14 @@ crash recovery, the per-instance limit, clean endings and network isolation.
 
 Staging cells first, then a preview for selected projects enabled by quota
 grant, then production cells through the normal release tag. General
-availability raises the default allowance. Before preview, staging must validate the
-latency goal and verify Unikraft behavior for missing shells, process cleanup,
-idle sessions and scale-to-zero.
+availability raises the default allowance. Before preview, staging must
+validate the latency goal on general-purpose instances. Unikernel instances
+follow once staging verifies Unikraft behavior for missing shells, process
+cleanup, idle sessions and scale-to-zero.
+
+Staging depends on a released Datum Connect CLI image, the general-purpose
+runtime class advertising `exec`, and, for the browser terminal, service catalog
+and Cloud Portal releases that let the plugin declare its browser permissions.
 
 ### Monitoring requirements
 
@@ -419,8 +434,10 @@ creation, quota release, reservation release and agent failover.
 
 - A shell agent and tunnel endpoint deployed to each compute cell, with
   network policy limiting both.
-- The Unikraft provider exec policy set to `always` in every cell that runs
-  unikernel instances.
+- A per-location shell agent identity on the federation hub, with an
+  admission policy that limits it to its own location's sessions.
+- `exec` on the general-purpose runtime class; for unikernel instances later,
+  `exec` on that class and the Unikraft provider exec policy set to `always`.
 - The session-create permission added to the default project-admin role.
 - A quota claim policy for sessions with a default allowance of zero, and quota
   grants for the projects in preview.
@@ -430,4 +447,7 @@ creation, quota release, reservation release and agent failover.
   lets it shut down cleanly.
 - Relays served over TLS, with browser access allowed on their latency probe, so
   portal terminals can connect.
+- Cloud Portal support for plugin-declared browser permissions, carried from
+  the service catalog, so the browser terminal can run WebAssembly and reach
+  the relays.
 - Relay capacity and placement reviewed for interactive traffic.
