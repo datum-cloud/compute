@@ -156,3 +156,66 @@ func TestSessionWithoutConnectedHandler(t *testing.T) {
 	r.wait(t)
 	r.check(t, "end")
 }
+
+// Closing a session tells the agent the user closed it, so the session ends as
+// ClosedByUser rather than as a lost connection.
+func TestSessionCloseTellsTheAgent(t *testing.T) {
+	key := newKey(t)
+	closeCodes := make(chan int, 1)
+	greeted := make(chan struct{})
+	agent := &scriptedAgent{
+		t: t,
+		script: func(ws *websocket.Conn, _ <-chan struct{}, stdin <-chan []byte) {
+			send(t, ws, channelStdout, "ready\n")
+			close(greeted)
+			for range stdin {
+			}
+		},
+		onClose: func(ws *websocket.Conn, code int) error {
+			<-greeted
+			closeCodes <- code
+			_ = ws.WriteMessage(websocket.BinaryMessage, append([]byte{channelStatus},
+				`{"status":"Failure","reason":"ClosedByUser","message":"The session was closed and the command was stopped."}`...))
+			return ws.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		},
+	}
+	srv := httptest.NewServer(agent)
+	t.Cleanup(srv.Close)
+	target := strings.TrimPrefix(srv.URL, "http://")
+	r, h := record(key)
+	s := NewSession(key, testSessionUID, Connection{Target: target}, h)
+	s.connect = func(ctx context.Context, k ed25519.PrivateKey, uid string, c Connection) (*Stream, error) {
+		conn, err := net.Dial("tcp", c.Target)
+		if err != nil {
+			return nil, err
+		}
+		return Start(ctx, conn, k, uid, c.Target)
+	}
+
+	go s.Run()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.mu.Lock()
+		n := r.output.Len()
+		r.mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.Close()
+	r.wait(t)
+
+	select {
+	case code := <-closeCodes:
+		if code != websocket.CloseNormalClosure {
+			t.Errorf("close code = %d, want %d", code, websocket.CloseNormalClosure)
+		}
+	default:
+		t.Fatal("the agent never received a close frame, so it would record a lost connection")
+	}
+	if r.err != nil || r.res.Reason != "ClosedByUser" {
+		t.Errorf("ended with %+v, %v; want the agent's ClosedByUser ending", r.res, r.err)
+	}
+}

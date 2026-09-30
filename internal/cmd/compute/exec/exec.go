@@ -109,7 +109,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		_ = os.Setenv(quicReceiveBufferWarning, "true")
 	}
 	project := util.ProjectFromCmd(cmd)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 
 	stdinFd := int(os.Stdin.Fd())
@@ -172,10 +172,10 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 
 	res, err := stream.Wait(cmd.OutOrStdout(), cmd.ErrOrStderr())
-	if err != nil {
-		if ctx.Err() != nil {
-			return interrupted(ctx, err)
-		}
+	switch {
+	case closedOnSignal(ctx, res, err):
+		return interrupted(ctx, err)
+	case err != nil:
 		return exitFor(endingFromStatus(ctx, c, session, err))
 	}
 	return exitFor(res, nil)
@@ -199,6 +199,12 @@ func endingFromStatus(ctx context.Context, c client.Client, s *computev1alpha.In
 		}
 	}
 	return consoleclient.Result{}, fmt.Errorf("lost the connection to the session: %w", streamErr)
+}
+
+// closedOnSignal reports whether the stream ended because datumctl closed it
+// on a signal: the agent confirmed the close, or the stream broke first.
+func closedOnSignal(ctx context.Context, res consoleclient.Result, err error) bool {
+	return ctx.Err() != nil && (err != nil || res.Reason == computev1alpha.InstanceConsoleSessionReasonClosedByUser)
 }
 
 func interrupted(ctx context.Context, err error) error {

@@ -81,6 +81,7 @@ describe('reasonMessage', () => {
 
   test('explains a session whose client went away', () => {
     expect(reasonMessage('Disconnected')).toMatch(/connection to it was lost/);
+    expect(reasonMessage('ClosedByUser')).toBe('The shell was closed.');
   });
 
   test('prefers the platform message', () => {

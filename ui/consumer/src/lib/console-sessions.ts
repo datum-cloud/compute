@@ -58,6 +58,7 @@ const REASON_MESSAGES: Record<string, string> = {
   Invalid: 'The platform could not open this shell.',
   Unavailable: "Shell sessions aren't available for this instance right now. Try again later.",
   Disconnected: 'The shell was closed because the connection to it was lost.',
+  ClosedByUser: 'The shell was closed.',
 };
 
 export const TOO_MANY_SESSIONS_MESSAGE =

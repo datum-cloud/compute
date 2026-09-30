@@ -49,7 +49,13 @@ const (
 	causeExitCode         = "ExitCode"
 )
 
-var keepaliveInterval = 5 * time.Second
+var (
+	keepaliveInterval = 5 * time.Second
+
+	// closeGrace is how long Close waits for the agent to answer before it
+	// drops the connection.
+	closeGrace = 2 * time.Second
+)
 
 // Result is how a session ended. Reason is empty when the command exited on its
 // own, and ExitCode then carries its code. Otherwise the platform ended the
@@ -98,8 +104,9 @@ func (e *RefusedError) Error() string {
 
 // Stream is the command's input and output for one session.
 type Stream struct {
-	ws      *websocket.Conn
-	writeMu sync.Mutex
+	ws        *websocket.Conn
+	writeMu   sync.Mutex
+	closeOnce sync.Once
 }
 
 // Start requests the session's stream over conn, a connection that already
@@ -166,9 +173,20 @@ func (s *Stream) Resize(width, height uint16) error {
 	return s.send(channelResize, b)
 }
 
-// Close drops the stream. The agent stops the command.
+// Close ends the session on purpose. It sends a WebSocket close frame, which
+// the agent records as the user closing the session rather than a lost
+// connection, and stops the command. The connection drops once the agent
+// answers, which a running Wait receives as the session's ending, or after
+// closeGrace.
 func (s *Stream) Close() error {
-	return s.ws.Close()
+	s.closeOnce.Do(func() {
+		s.writeMu.Lock()
+		_ = s.ws.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		s.writeMu.Unlock()
+		time.AfterFunc(closeGrace, func() { _ = s.ws.Close() })
+	})
+	return nil
 }
 
 func (s *Stream) send(channel byte, data []byte) error {
@@ -261,10 +279,12 @@ func (s *Stream) pong(data []byte) error {
 }
 
 func (s *Stream) closeNormally() {
-	s.writeMu.Lock()
-	_ = s.ws.WriteControl(websocket.CloseMessage,
-		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-	s.writeMu.Unlock()
+	s.closeOnce.Do(func() {
+		s.writeMu.Lock()
+		_ = s.ws.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		s.writeMu.Unlock()
+	})
 	_ = s.ws.Close()
 }
 

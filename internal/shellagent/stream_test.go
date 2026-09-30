@@ -86,7 +86,10 @@ func TestSilentClientIsDisconnected(t *testing.T) {
 	}
 }
 
-func TestClientDisconnectEndsAsDisconnected(t *testing.T) {
+// A close frame is the client ending the session on purpose, as the portal's
+// Close shell and datumctl on an interrupt do. Only a connection lost without
+// one is Disconnected.
+func TestClientCloseEndsAsClosedByUser(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()
 	addr := serve(t, h, a)
@@ -96,8 +99,16 @@ func TestClientDisconnectEndsAsDisconnected(t *testing.T) {
 	c := dialSession(t, addr, testUID, key, time.Now())
 	waitForConnected(t, h)
 	c.send(t, opClose, closePayload(closeNormal))
+	_, status, code := c.readUntilClose(t)
 
-	requireReason(t, waitForEnd(t, h), computev1alpha.InstanceConsoleSessionReasonDisconnected)
+	if status == nil || string(status.Reason) != computev1alpha.InstanceConsoleSessionReasonClosedByUser || code != closeNormal {
+		t.Fatalf("status = %+v, close code %d; want the agent to confirm the close", status, code)
+	}
+	s := waitForEnd(t, h)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonClosedByUser)
+	if s.Status.ExitCode != nil || h.exec.ran(killScript) != 1 {
+		t.Fatal("closing the session must stop the command")
+	}
 }
 
 func dialGorilla(t *testing.T, addr, uid string, key ed25519.PrivateKey) *websocket.Conn {

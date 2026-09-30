@@ -261,9 +261,12 @@ A session moves through `Pending`, `SessionReady` and `Connected`, then reaches
 one immutable terminal state. Terminal reasons are `Completed`, `Expired`,
 `Revoked`, `NotConnected`, `AgentShutdown`, `AgentLost`, `TooManySessions`,
 `NoShell`, `CommandUnavailable`, `InstanceNotRunning`, `InstanceNotFound`,
-`Invalid`, `Unavailable` and `Disconnected`. `Unavailable` ends a session that
-no cell takes within 30 seconds. `Disconnected` ends a session whose client
-went away before the command exited; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
+`Invalid`, `Unavailable`, `Disconnected` and `ClosedByUser`. `Unavailable`
+ends a session that no cell takes within 30 seconds. `ClosedByUser` ends a
+session whose client closed it on purpose before the command exited, by
+sending a WebSocket close frame; the portal's Close shell and `datumctl` on an
+interrupt do. `Disconnected` ends a session whose connection was lost without
+one; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
 waiting for a connection from one whose command is running. `AgentLost` also
 covers a session whose bound cell stops reporting altogether — deregistered,
 or the instance moved to another cell. That session ends and its reservation
