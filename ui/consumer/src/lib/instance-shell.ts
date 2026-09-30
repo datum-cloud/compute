@@ -52,7 +52,7 @@ export function canShowShell({
 }
 
 export function initialContainer(containers: string[]): string | undefined {
-  return containers.length === 1 ? containers[0] : undefined;
+  return containers[0];
 }
 
 export interface ShellStatusBadgeStyle {

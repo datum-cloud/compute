@@ -1,3 +1,5 @@
+import { DEFAULT_SHELL_COMMAND, parseCommand } from './shell-command';
+
 export const SHELL_WINDOW_PATH = 'shell/window';
 
 export const SHELL_WINDOW_FEATURES = 'popup,width=960,height=640';
@@ -21,10 +23,39 @@ export function shellWindowName(projectId: string, instanceName: string): string
   return `shell-${projectId}-${instanceName}`;
 }
 
-export function shellWindowHref(shellHref: string, container?: string): string {
+export interface ShellStart {
+  container?: string;
+  command?: string;
+}
+
+export function shellWindowHref(shellHref: string, start: ShellStart = {}): string {
   const base = shellHref.replace(/\/$/, '').replace(/\/shell$/, '');
-  const query = container ? `?${new URLSearchParams({ container })}` : '';
+  const params = new URLSearchParams();
+  if (start.container) params.set('container', start.container);
+  if (start.command?.trim()) params.set('command', start.command);
+  const query = params.size ? `?${params}` : '';
   return `${base}/${SHELL_WINDOW_PATH}${query}`;
+}
+
+export interface WindowStart {
+  container: string | undefined;
+  command: string;
+  connect: boolean;
+}
+
+// shellWindowStart reads the container and command a shell window was opened
+// with. The window connects at once only when both are usable; otherwise it
+// shows them in its start panel to correct.
+export function shellWindowStart(params: URLSearchParams, containers: string[]): WindowStart {
+  const requested = params.get('container') ?? '';
+  const container = containers.includes(requested) ? requested : containers[0];
+  const command = params.get('command') ?? DEFAULT_SHELL_COMMAND;
+  const containerOK = !requested || requested === container;
+  return {
+    container,
+    command,
+    connect: !!container && containerOK && parseCommand(command).ok,
+  };
 }
 
 function isBlank(popup: ShellWindow): boolean {

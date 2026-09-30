@@ -85,8 +85,9 @@ export class ShellSession {
     return this.state;
   }
 
-  async open(containerName: string, size: () => TerminalSize): Promise<void> {
+  async open(containerName: string, command: string[], size: () => TerminalSize): Promise<void> {
     this.release();
+    this.command = command;
     const attempt = ++this.attempt;
     const live = () => attempt === this.attempt;
     this.setState({ phase: 'starting' });
@@ -101,6 +102,7 @@ export class ShellSession {
         instanceName: this.options.instanceName,
         instanceUid: this.options.instanceUid,
         containerName,
+        command,
         clientPublicKey,
       });
       if (!live()) {

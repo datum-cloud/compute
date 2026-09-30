@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
   createErrorMessage,
+  createSession,
   describeEnding,
   fetchSessionEnding,
   readWatchStream,
@@ -293,5 +294,34 @@ describe('createErrorMessage', () => {
     expect(createErrorMessage(400, 'shell sessions are not enabled')).toBe(
       'shell sessions are not enabled'
     );
+  });
+});
+
+describe('createSession', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test('sends the chosen command as the session argv', async () => {
+    let body: { spec?: { command?: string[]; containerName?: string } } = {};
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({ metadata: { name: 'web-0-x', uid: 'u', resourceVersion: '4' } }),
+        { status: 201 }
+      );
+    }) as typeof fetch;
+
+    const created = await createSession('p1', {
+      instanceName: 'web-0',
+      instanceUid: 'iu',
+      containerName: 'app',
+      command: ['/bin/bash', '-l'],
+      clientPublicKey: 'cd'.repeat(32),
+    });
+
+    expect(body.spec).toMatchObject({ containerName: 'app', command: ['/bin/bash', '-l'] });
+    expect(created).toMatchObject({ name: 'web-0-x', uid: 'u', resourceVersion: '4' });
   });
 });

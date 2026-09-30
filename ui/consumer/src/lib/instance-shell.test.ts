@@ -84,8 +84,8 @@ describe('initialContainer', () => {
     expect(initialContainer(['app'])).toBe('app');
   });
 
-  test('leaves the choice to the user when there are several', () => {
-    expect(initialContainer(['app', 'sidecar'])).toBeUndefined();
+  test('selects the first of several, which the picker still shows', () => {
+    expect(initialContainer(['app', 'sidecar'])).toBe('app');
   });
 
   test('selects nothing when there are none', () => {

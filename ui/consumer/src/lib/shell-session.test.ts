@@ -132,7 +132,7 @@ function harness(
     end: (ending: Partial<ConsoleEnding>) =>
       end?.({ exitCode: 0, reason: '', message: '', error: '', ...ending }),
     expire: () => expire?.(),
-    open: () => session.open('app', () => ({ cols: 120, rows: 40 })),
+    open: (command = ['/bin/sh']) => session.open('app', command, () => ({ cols: 120, rows: 40 })),
   };
 }
 
@@ -161,6 +161,7 @@ describe('ShellSession', () => {
         instanceName: 'web-0',
         instanceUid: 'instance-uid',
         containerName: 'app',
+        command: ['/bin/sh'],
         clientPublicKey: PUBLIC_KEY,
       },
     ]);
@@ -245,13 +246,14 @@ describe('ShellSession', () => {
     expect(h.states.at(-1)).toEqual({ phase: 'connecting' });
   });
 
-  test('names the missing command', async () => {
+  test('sends the chosen command and names it when it is missing', async () => {
     const h = harness([[modified(ready('CommandUnavailable', 'False'))]]);
-    await h.open();
+    await h.open(['/bin/bash', '-l']);
 
+    expect(h.created).toMatchObject([{ command: ['/bin/bash', '-l'] }]);
     expect(h.states.at(-1)).toEqual({
       phase: 'ended',
-      message: "sh isn't installed in this container.",
+      message: "/bin/bash isn't installed in this container.",
     });
   });
 

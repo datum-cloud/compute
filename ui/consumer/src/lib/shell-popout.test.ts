@@ -9,6 +9,7 @@ import {
   popOutShell,
   shellWindowHref,
   shellWindowName,
+  shellWindowStart,
   type ShellWindow,
   type WindowOpener,
 } from './shell-popout';
@@ -54,10 +55,56 @@ describe('shellWindowHref', () => {
     );
   });
 
-  test('carries the chosen container', () => {
-    const url = new URL(shellWindowHref(`${SHELL_HREF}/`, 'sidecar'), 'https://portal.test');
+  test('carries the chosen container and command', () => {
+    const command = `sh -c 'echo "a&b=c" #1'`;
+    const href = shellWindowHref(`${SHELL_HREF}/`, { container: 'sidecar', command });
+    const url = new URL(href, 'https://portal.test');
     expect(url.pathname).toBe('/project/p1/services/workloads/web/instances/web-abc/shell/window');
     expect(url.searchParams.get('container')).toBe('sidecar');
+    expect(url.searchParams.get('command')).toBe(command);
+    expect(href).not.toContain('&b=c');
+    expect(href).not.toContain('#');
+  });
+
+  test('leaves out a blank command', () => {
+    expect(shellWindowHref(SHELL_HREF, { container: 'app', command: '  ' })).toBe(
+      '/project/p1/services/workloads/web/instances/web-abc/shell/window?container=app'
+    );
+  });
+});
+
+describe('shellWindowStart', () => {
+  const containers = ['app', 'sidecar'];
+
+  test('connects with the container and command the window was opened with', () => {
+    const href = shellWindowHref(SHELL_HREF, { container: 'sidecar', command: '/bin/bash -l' });
+    const params = new URL(href, 'https://portal.test').searchParams;
+    expect(shellWindowStart(params, containers)).toEqual({
+      container: 'sidecar',
+      command: '/bin/bash -l',
+      connect: true,
+    });
+  });
+
+  test('defaults to the first container and /bin/sh', () => {
+    expect(shellWindowStart(new URLSearchParams(), containers)).toEqual({
+      container: 'app',
+      command: '/bin/sh',
+      connect: true,
+    });
+  });
+
+  test('waits for the user when the container is not one the instance runs', () => {
+    expect(shellWindowStart(new URLSearchParams({ container: 'gone' }), containers)).toEqual({
+      container: 'app',
+      command: '/bin/sh',
+      connect: false,
+    });
+  });
+
+  test('waits for the user when the command does not parse', () => {
+    const start = shellWindowStart(new URLSearchParams({ command: `sh -c 'echo` }), containers);
+    expect(start).toMatchObject({ command: `sh -c 'echo`, connect: false });
   });
 });
 
@@ -125,9 +172,7 @@ describe('shell window page', () => {
     properties: { path: string; component: { $codeRef: string }; layout?: string };
     requirements?: { permissions?: Array<{ group: string; resource: string; verb: string }> };
   };
-  const pages = (manifest.extensions as Page[]).filter(
-    (ext) => ext.type === 'portal.page/project'
-  );
+  const pages = (manifest.extensions as Page[]).filter((ext) => ext.type === 'portal.page/project');
   const windowPage = pages.find(
     (page) => page.properties.component.$codeRef === 'InstanceShellWindow'
   );

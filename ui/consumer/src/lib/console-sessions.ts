@@ -1,4 +1,5 @@
 import { ApiError, getProjectScopedBase } from './api';
+import { DEFAULT_SHELL_COMMAND } from './shell-command';
 
 const SESSIONS_PATH =
   '/apis/compute.datumapis.com/v1alpha/namespaces/default/instanceconsolesessions';
@@ -8,7 +9,7 @@ const ALLOWANCE_BUCKETS_PATH =
 
 export const SESSION_RESOURCE_TYPE = 'compute.datumapis.com/instanceconsolesessions';
 
-export const SHELL_COMMAND = ['sh'];
+export const SHELL_COMMAND = [DEFAULT_SHELL_COMMAND];
 
 export interface SessionConnection {
   endpointID: string;
@@ -51,6 +52,7 @@ export interface NewSession {
   instanceName: string;
   instanceUid: string;
   containerName: string;
+  command: string[];
   clientPublicKey: string;
 }
 
@@ -197,7 +199,7 @@ export async function createSession(projectId: string, input: NewSession): Promi
       spec: {
         instanceRef: { name: input.instanceName, uid: input.instanceUid },
         containerName: input.containerName,
-        command: SHELL_COMMAND,
+        command: input.command,
         stdin: true,
         terminal: true,
         clientPublicKey: input.clientPublicKey,
