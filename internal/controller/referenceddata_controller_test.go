@@ -1827,7 +1827,7 @@ func TestReferencedData_SourceNameTooLong_Rejected(t *testing.T) {
 
 	srcCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
-		Data:       map[string]string{"key": "value"},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
 	}
 	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 
@@ -1862,7 +1862,7 @@ func TestReferencedData_SourceNameAtLimit_Accepted(t *testing.T) {
 
 	srcCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
-		Data:       map[string]string{"key": "value"},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
 	}
 	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
 

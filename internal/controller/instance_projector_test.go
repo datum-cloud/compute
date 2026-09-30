@@ -255,7 +255,7 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 					Namespace: projTestKarmadaNS,
 					// Intentionally no UpstreamOwnerClusterNameLabel.
 					Labels: map[string]string{
-						"some-other-label": "value",
+						"some-other-label": "some-other-value",
 					},
 				},
 			},

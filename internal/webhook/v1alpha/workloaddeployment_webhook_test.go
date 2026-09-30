@@ -59,7 +59,7 @@ func testDeployment(annotationValue *string) *computev1alpha.WorkloadDeployment 
 	wd := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-workload-default-dfw",
-			Namespace: "default",
+			Namespace: metav1.NamespaceDefault,
 			Labels: map[string]string{
 				computev1alpha.WorkloadUIDLabel: "00000000-0000-0000-0000-000000000005",
 				computev1alpha.LocationLabel:    "dfw",
@@ -70,7 +70,7 @@ func testDeployment(annotationValue *string) *computev1alpha.WorkloadDeployment 
 				Name: "test-workload",
 				UID:  "00000000-0000-0000-0000-000000000005",
 			},
-			PlacementName: "default",
+			PlacementName: testDefaultPlacement,
 			LocationRef:   locationsv1alpha1.LocationReference{Name: "dfw"},
 		},
 	}
