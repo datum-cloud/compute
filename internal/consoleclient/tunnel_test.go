@@ -48,9 +48,10 @@ func TestConnectThroughRelay(t *testing.T) {
 	endpoint := startTunnelEndpoint(ctx, t, relayURL, target)
 
 	s, err := Connect(ctx, clientKey, testSessionUID, Connection{
-		EndpointID: endpoint.ID().String(),
-		RelayURLs:  []string{relaySrv.URL},
-		Target:     target,
+		EndpointID:          endpoint.ID().String(),
+		RelayURLs:           []string{relaySrv.URL},
+		Target:              target,
+		AllowInsecureRelays: true,
 	})
 	if err != nil {
 		t.Fatalf("Connect() error = %v", err)
@@ -117,4 +118,45 @@ func startTunnelEndpoint(ctx context.Context, t *testing.T, relayURL netaddr.Rel
 		_, _ = io.Copy(stream, upstream)
 	}()
 	return ep
+}
+
+func TestRelaySchemes(t *testing.T) {
+	const unsupported = "unsupported scheme"
+	cases := []struct {
+		url      string
+		insecure bool
+		wantErr  string
+	}{
+		{url: "https://relay.example.com"},
+		{url: "wss://relay.example.com"},
+		{url: "HTTPS://relay.example.com"},
+		{url: "http://relay.example.com", wantErr: "not encrypted"},
+		{url: "ws://relay.example.com", wantErr: "not encrypted"},
+		{url: "http://localhost:3340", insecure: true},
+		{url: "ws://localhost:3340", insecure: true},
+		{url: "ftp://relay.example.com", insecure: true, wantErr: unsupported},
+		{url: "file:///tmp/relay", wantErr: unsupported},
+		{url: "relay.example.com", wantErr: unsupported},
+	}
+	for _, tc := range cases {
+		err := checkRelayScheme(tc.url, tc.insecure)
+		if (err != nil) != (tc.wantErr != "") || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("checkRelayScheme(%q, %v) = %v, want %q", tc.url, tc.insecure, err, tc.wantErr)
+		}
+	}
+}
+
+func TestDialRefusesPlainRelays(t *testing.T) {
+	sk, err := key.GenerateSecretKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Dial(context.Background(), newKey(t), Connection{
+		EndpointID: sk.Public().String(),
+		RelayURLs:  []string{"https://relay.example.com", "http://relay.example.com"},
+		Target:     "agent:7777",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not encrypted") {
+		t.Fatalf("Dial() error = %v, want the plain relay refused", err)
+	}
 }

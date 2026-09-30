@@ -22,7 +22,11 @@ import (
 	"go.datum.net/compute/internal/consolesession"
 )
 
-const exitInterrupted = 130
+const (
+	exitInterrupted = 130
+
+	envAllowInsecureRelays = "DATUM_EXEC_ALLOW_INSECURE_RELAYS"
+)
 
 type options struct {
 	instance  string
@@ -136,7 +140,9 @@ func run(cmd *cobra.Command, opts *options) error {
 		return interrupted(ctx, err)
 	}
 
-	stream, err := consoleclient.Connect(ctx, key, string(session.UID), connectionOf(session))
+	conn := connectionOf(session)
+	conn.AllowInsecureRelays = os.Getenv(envAllowInsecureRelays) == "true"
+	stream, err := consoleclient.Connect(ctx, key, string(session.UID), conn)
 	if err != nil {
 		return interrupted(ctx, fmt.Errorf("connecting to the session: %w", err))
 	}

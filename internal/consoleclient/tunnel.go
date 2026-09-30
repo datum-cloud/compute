@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 
 	"github.com/tmc/go-iroh/iroh"
@@ -27,6 +28,10 @@ type Connection struct {
 	EndpointID string
 	RelayURLs  []string
 	Target     string
+
+	// AllowInsecureRelays accepts http and ws relay URLs, for local testing
+	// only. Otherwise a relay must use https or wss.
+	AllowInsecureRelays bool
 }
 
 // Dial opens a tunnel to the session's endpoint through its relays, using key
@@ -35,6 +40,11 @@ type Connection struct {
 func Dial(ctx context.Context, clientKey ed25519.PrivateKey, c Connection) (net.Conn, error) {
 	if len(c.RelayURLs) == 0 {
 		return nil, errors.New("session names no relays")
+	}
+	for _, raw := range c.RelayURLs {
+		if err := checkRelayScheme(raw, c.AllowInsecureRelays); err != nil {
+			return nil, err
+		}
 	}
 	sk, err := key.SecretKeyFromEd25519(clientKey)
 	if err != nil {
@@ -85,6 +95,24 @@ func Dial(ctx context.Context, clientKey ed25519.PrivateKey, c Connection) (net.
 		_ = conn.CloseWithError(0, "")
 		_ = ep.Shutdown(context.Background())
 	}}, nil
+}
+
+func checkRelayScheme(raw string, allowInsecure bool) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("session relay URL %q: %w", raw, err)
+	}
+	switch u.Scheme {
+	case "https", "wss":
+		return nil
+	case "http", "ws":
+		if allowInsecure {
+			return nil
+		}
+		return fmt.Errorf("session relay URL %q is not encrypted; relays must use https or wss", raw)
+	default:
+		return fmt.Errorf("session relay URL %q: unsupported scheme %q; relays must use https or wss", raw, u.Scheme)
+	}
 }
 
 func connectThrough(raw net.Conn, target string) (net.Conn, error) {
