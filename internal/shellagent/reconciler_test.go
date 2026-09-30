@@ -5,6 +5,7 @@ package shellagent
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -785,5 +787,16 @@ func TestHungExecIsBounded(t *testing.T) {
 	}
 	if took := time.Since(start); took > 5*time.Second {
 		t.Fatalf("a hung exec held the caller for %v", took)
+	}
+}
+
+func TestAgentLeaseNamesAreDistinctAndValid(t *testing.T) {
+	a := agentLeaseName(strings.Repeat("a", 16) + strings.Repeat("0", 48))
+	b := agentLeaseName(strings.Repeat("a", 16) + strings.Repeat("1", 48))
+	if a == b {
+		t.Fatal("endpoint IDs sharing a prefix share a liveness Lease")
+	}
+	if errs := validation.IsDNS1123Subdomain(a); len(errs) != 0 {
+		t.Fatalf("lease name %q is invalid: %v", a, errs)
 	}
 }

@@ -4,6 +4,8 @@ package shellagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -24,11 +26,12 @@ const (
 	livenessComponent = "shell-agent-liveness"
 )
 
+// agentLeaseName names an agent's liveness Lease by the full SHA-256 of its
+// endpoint ID. Lease names are DNS subdomains, which fit all 64 hex digits, so
+// two agents never share a Lease.
 func agentLeaseName(endpointID string) string {
-	if len(endpointID) > 16 {
-		endpointID = endpointID[:16]
-	}
-	return "agent-" + endpointID
+	sum := sha256.Sum256([]byte(endpointID))
+	return "agent-" + hex.EncodeToString(sum[:])
 }
 
 // RunLiveness renews the agent's liveness Lease until ctx ends.
