@@ -136,7 +136,7 @@ func TestAnsweringClientStaysConnected(t *testing.T) {
 	waitForConnected(t, h)
 	time.Sleep(4 * a.cfg.PongTimeout)
 
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonConnected)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonConnected)
 	if n := backend.pongs(); n != 0 {
 		t.Fatalf("relayed %d pongs to the agent's own pings to the apiserver", n)
 	}
@@ -163,7 +163,7 @@ func TestUnsolicitedPongsKeepClientConnected(t *testing.T) {
 		}
 	}
 
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonConnected)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonConnected)
 }
 
 // ttyCommand writes a prompt, echoes the first stdin message, and exits 0.

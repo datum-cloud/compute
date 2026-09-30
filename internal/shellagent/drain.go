@@ -26,11 +26,11 @@ func (a *Agent) Drain(ctx context.Context) {
 		if a.isLive(uid) {
 			continue
 		}
-		var hub computev1alpha.InstanceConsoleSession
-		if err := a.hub.Get(ctx, key, &hub); err != nil {
+		var session computev1alpha.InstanceConsoleSession
+		if err := a.cell.Get(ctx, key, &session); err != nil {
 			continue
 		}
-		if err := a.endUnconnected(ctx, &hub, computev1alpha.InstanceConsoleSessionReasonAgentShutdown); err != nil {
+		if err := a.endUnconnected(ctx, &session, computev1alpha.InstanceConsoleSessionReasonAgentShutdown); err != nil {
 			logger.Error(err, "end unconnected session", "session", uid)
 		}
 	}

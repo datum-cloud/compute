@@ -25,24 +25,24 @@ const (
 )
 
 // sessionState reports whether a session, by project UID, is still open. A
-// session whose cell or hub copy is gone has ended.
+// session whose cell copy is gone has ended.
 func (a *Agent) sessionState(ctx context.Context, uid string) (sessionStateKind, error) {
-	cell, err := a.findSession(ctx, uid)
+	cached, err := a.findSession(ctx, uid)
 	if err != nil {
 		return sessionActive, err
 	}
-	if cell == nil {
+	if cached == nil {
 		return sessionEnded, nil
 	}
-	var hub computev1alpha.InstanceConsoleSession
-	err = a.hub.Get(ctx, client.ObjectKeyFromObject(cell), &hub)
+	var session computev1alpha.InstanceConsoleSession
+	err = a.cell.Get(ctx, client.ObjectKeyFromObject(cached), &session)
 	if apierrors.IsNotFound(err) {
 		return sessionEnded, nil
 	}
 	if err != nil {
 		return sessionActive, err
 	}
-	if sessionUID(&hub) != uid || isTerminal(&hub) {
+	if sessionUID(&session) != uid || isTerminal(&session) {
 		return sessionEnded, nil
 	}
 	return sessionActive, nil

@@ -4,7 +4,8 @@
 // replica pairs by ordinal with a tunnel endpoint, which is the only way a
 // client reaches it: the endpoint proxies one TCP target, this agent's exec
 // port. The agent claims sessions delivered to the cell, runs their commands
-// through the cell apiserver, and writes their status to the Karmada hub.
+// through the cell apiserver, and writes their status on the cell's copies,
+// which Karmada reflects back to the hub. It needs no hub credential.
 package main
 
 import (
@@ -23,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -39,19 +39,17 @@ import (
 var setupLog = ctrl.Log.WithName("setup")
 
 type options struct {
-	listen               string
-	probeAddr            string
-	federationKubeconfig string
-	federationContext    string
-	target               string
-	relayURLs            string
-	managedBy            string
-	endpointPodPrefix    string
-	featureGates         string
-	drainTimeout         time.Duration
-	killGrace            time.Duration
-	pingInterval         time.Duration
-	pongTimeout          time.Duration
+	listen            string
+	probeAddr         string
+	target            string
+	relayURLs         string
+	managedBy         string
+	endpointPodPrefix string
+	featureGates      string
+	drainTimeout      time.Duration
+	killGrace         time.Duration
+	pingInterval      time.Duration
+	pongTimeout       time.Duration
 }
 
 func main() {
@@ -59,10 +57,6 @@ func main() {
 	var opts options
 	flag.StringVar(&opts.listen, "listen", ":7777", "Address to serve session connections on.")
 	flag.StringVar(&opts.probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
-	flag.StringVar(&opts.federationKubeconfig, "federation-kubeconfig", "",
-		"Path to the kubeconfig for the Karmada hub, where session status is written.")
-	flag.StringVar(&opts.federationContext, "federation-context", "",
-		"Context to use from the federation kubeconfig. When omitted, the current context is used.")
 	flag.StringVar(&opts.target, "target", "",
 		"host:port the paired tunnel endpoint proxies to this agent, published as the session's target.")
 	flag.StringVar(&opts.relayURLs, "relay-urls", os.Getenv("DATUM_CONNECT_RELAY_URLS"),
@@ -112,9 +106,6 @@ func run(opts options, cfg shellagent.Config) error {
 	if err != nil || namespace == "" {
 		return fmt.Errorf("POD_NAME must be a StatefulSet pod name and POD_NAMESPACE must be set: %w", err)
 	}
-	if opts.federationKubeconfig == "" {
-		return errors.New("--federation-kubeconfig is required: session status is written to the Karmada hub")
-	}
 	cfg.Namespace = namespace
 	cfg.Ordinal = ordinal
 	cfg.EndpointPodName = fmt.Sprintf("%s-%d", opts.endpointPodPrefix, ordinal)
@@ -131,13 +122,6 @@ func run(opts options, cfg shellagent.Config) error {
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 
 	cellConfig := ctrl.GetConfigOrDie()
-	hubConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		&clientcmd.ClientConfigLoadingRules{ExplicitPath: opts.federationKubeconfig},
-		&clientcmd.ConfigOverrides{CurrentContext: opts.federationContext},
-	).ClientConfig()
-	if err != nil {
-		return fmt.Errorf("load federation kubeconfig: %w", err)
-	}
 
 	mgr, err := ctrl.NewManager(cellConfig, ctrl.Options{
 		Scheme:                 scheme,
@@ -151,17 +135,13 @@ func run(opts options, cfg shellagent.Config) error {
 	if err != nil {
 		return err
 	}
-	hubClient, err := client.New(hubConfig, client.Options{Scheme: scheme})
-	if err != nil {
-		return err
-	}
 	executor, err := shellagent.NewAPIServer(cellConfig)
 	if err != nil {
 		return fmt.Errorf("configure pod exec: %w", err)
 	}
 
 	incarnation := podName + "/" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	agent, err := shellagent.New(cfg, mgr.GetClient(), cellClient, hubClient, executor, incarnation)
+	agent, err := shellagent.New(cfg, mgr.GetClient(), cellClient, executor, incarnation)
 	if err != nil {
 		return err
 	}

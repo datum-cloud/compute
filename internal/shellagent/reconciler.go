@@ -25,11 +25,8 @@ const (
 	cleanupRetryInterval = 5 * time.Second
 )
 
-// SetupWithManager reconciles session copies delivered to the cell. The hub
-// grants each cell only get, patch and status writes on sessions, so the agent
-// cannot watch hub copies; it reads a session's hub copy by the cell copy's
-// namespace and name, and polls it while the session is open or holds the
-// agent's finalizer.
+// SetupWithManager reconciles session copies delivered to the cell. The agent
+// writes status only on these copies; Karmada carries it back to the hub.
 func (a *Agent) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("shell-agent").
@@ -38,73 +35,62 @@ func (a *Agent) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(a)
 }
 
-// Reconcile drives one session: claiming it, ending it at its deadlines,
-// taking it over from a lost agent, and stopping its processes before its
-// finalizers are released.
+// Reconcile drives one session: claiming it, ending it at its deadlines or
+// when it is revoked, taking it over from a lost agent, and stopping its
+// processes before its finalizer is released.
 func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var cell computev1alpha.InstanceConsoleSession
-	if err := a.sessions.Get(ctx, req.NamespacedName, &cell); err != nil {
+	var session computev1alpha.InstanceConsoleSession
+	if err := a.sessions.Get(ctx, req.NamespacedName, &session); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("session", sessionUID(&cell)))
-
-	var hub computev1alpha.InstanceConsoleSession
-	err := a.hub.Get(ctx, req.NamespacedName, &hub)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-	if apierrors.IsNotFound(err) || sessionUID(&hub) != sessionUID(&cell) {
-		return a.cleanUp(ctx, &cell, nil)
-	}
-	res, err := a.reconcileSession(ctx, &cell, &hub)
-	poll := !isTerminal(&hub) || controllerutil.ContainsFinalizer(&hub, computev1alpha.InstanceConsoleSessionAgentFinalizer)
-	if err == nil && poll && (res.RequeueAfter <= 0 || res.RequeueAfter > a.cfg.HubPollInterval) {
-		res.RequeueAfter = a.cfg.HubPollInterval
-	}
-	return res, err
+	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("session", sessionUID(&session)))
+	return a.reconcileSession(ctx, &session)
 }
 
-func (a *Agent) reconcileSession(ctx context.Context, cell, hub *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
-	uid := sessionUID(cell)
-	if !hub.DeletionTimestamp.IsZero() || !cell.DeletionTimestamp.IsZero() {
-		return a.cleanUp(ctx, cell, hub)
+func (a *Agent) reconcileSession(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
+	uid := sessionUID(session)
+	if !session.DeletionTimestamp.IsZero() {
+		return a.cleanUp(ctx, session)
 	}
 	if uid == "" {
-		return ctrl.Result{}, a.rejectUnclaimed(ctx, hub, reject(computev1alpha.InstanceConsoleSessionReasonInvalid,
+		return ctrl.Result{}, a.rejectUnclaimed(ctx, session, reject(computev1alpha.InstanceConsoleSessionReasonInvalid,
 			"The session was delivered without its session UID."))
 	}
-	if isTerminal(hub) {
+	if revoked(session) && !isTerminal(session) {
+		return a.revoke(ctx, session)
+	}
+	if isTerminal(session) {
 		a.forget(uid)
-		return a.settle(ctx, hub)
+		return a.settle(ctx, session)
 	}
 
-	owner := endpointOf(hub)
+	owner := endpointOf(session)
 	switch {
 	case owner == "":
-		return a.claim(ctx, cell, hub)
+		return a.claim(ctx, session)
 	case owner != a.EndpointID():
-		return a.watchOwner(ctx, hub, owner)
+		return a.watchOwner(ctx, session, owner)
 	}
 
-	a.track(uid, client.ObjectKeyFromObject(cell))
+	a.track(uid, client.ObjectKeyFromObject(session))
 	now := a.now()
-	switch readyReason(hub) {
+	switch readyReason(session) {
 	case computev1alpha.InstanceConsoleSessionReasonSessionReady:
 		if a.draining.Load() {
-			return ctrl.Result{}, a.endUnconnected(ctx, hub, computev1alpha.InstanceConsoleSessionReasonAgentShutdown)
+			return ctrl.Result{}, a.endUnconnected(ctx, session, computev1alpha.InstanceConsoleSessionReasonAgentShutdown)
 		}
-		if hub.Status.ConnectBefore != nil && now.Before(hub.Status.ConnectBefore.Time) {
-			return ctrl.Result{RequeueAfter: hub.Status.ConnectBefore.Sub(now)}, nil
+		if session.Status.ConnectBefore != nil && now.Before(session.Status.ConnectBefore.Time) {
+			return ctrl.Result{RequeueAfter: session.Status.ConnectBefore.Sub(now)}, nil
 		}
 		log.FromContext(ctx).Info("session was not connected in time")
-		return ctrl.Result{}, a.endUnconnected(ctx, hub, computev1alpha.InstanceConsoleSessionReasonNotConnected)
+		return ctrl.Result{}, a.endUnconnected(ctx, session, computev1alpha.InstanceConsoleSessionReasonNotConnected)
 	case computev1alpha.InstanceConsoleSessionReasonConnected:
 		if !a.isLive(uid) {
 			log.FromContext(ctx).Info("ending a session this agent's previous run served")
-			return ctrl.Result{}, a.abandon(ctx, hub, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
+			return ctrl.Result{}, a.abandon(ctx, session, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
 		}
-		if hub.Status.ExpiresAt != nil && now.Before(hub.Status.ExpiresAt.Time) {
-			return ctrl.Result{RequeueAfter: hub.Status.ExpiresAt.Sub(now)}, nil
+		if session.Status.ExpiresAt != nil && now.Before(session.Status.ExpiresAt.Time) {
+			return ctrl.Result{RequeueAfter: session.Status.ExpiresAt.Sub(now)}, nil
 		}
 		log.FromContext(ctx).Info("session expired")
 		a.stop(uid, computev1alpha.InstanceConsoleSessionReasonExpired)
@@ -113,11 +99,10 @@ func (a *Agent) reconcileSession(ctx context.Context, cell, hub *computev1alpha.
 }
 
 // claim checks a session and, if it can run, takes a slot and publishes where
-// to connect. Agents and the control plane, which ends sessions no cell takes
-// in time, race on the hub copy with optimistic concurrency, so a claim never
-// lands on a session that has already ended. A cell that does not run the
+// to connect. The cell's agents race on the cell copy with optimistic
+// concurrency, so exactly one claim lands. A cell that does not run the
 // session's instance leaves it to the cell that does, or to the control plane.
-func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
+func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
 	if !a.claiming() || a.openCount() >= a.cfg.MaxOpenSessions {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
 	}
@@ -128,7 +113,7 @@ func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceCon
 	if !ready {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
 	}
-	target, rej, err := a.check(ctx, cell)
+	target, rej, err := a.check(ctx, session)
 	if errors.Is(err, errNotInCell) {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
 	}
@@ -137,13 +122,13 @@ func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceCon
 	}
 	if rej != nil {
 		log.FromContext(ctx).Info("refusing session", "reason", rej.reason, "message", rej.message)
-		return ctrl.Result{}, a.rejectUnclaimed(ctx, hub, rej)
+		return ctrl.Result{}, a.rejectUnclaimed(ctx, session, rej)
 	}
 
-	uid := sessionUID(hub)
+	uid := sessionUID(session)
 	held, err := a.acquireSlot(ctx, target.instance.UID, &slot{
 		sessionUID:  uid,
-		session:     client.ObjectKeyFromObject(cell),
+		session:     client.ObjectKeyFromObject(session),
 		pod:         client.ObjectKeyFromObject(target.pod),
 		podUID:      target.pod.UID,
 		container:   target.container,
@@ -158,55 +143,60 @@ func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceCon
 		return ctrl.Result{}, err
 	}
 	if held == nil {
-		return ctrl.Result{}, a.rejectUnclaimed(ctx, hub, reject(
+		return ctrl.Result{}, a.rejectUnclaimed(ctx, session, reject(
 			computev1alpha.InstanceConsoleSessionReasonTooManySessions,
 			"The instance already has %d open sessions, the most it allows.", a.cfg.SlotsPerInstance))
 	}
 
-	for _, f := range []struct {
-		c client.Client
-		s *computev1alpha.InstanceConsoleSession
-	}{{a.hub, hub}, {a.cell, cell}} {
-		if err := addFinalizer(ctx, f.c, f.s); err != nil {
-			if relErr := a.releaseSlot(ctx, held); relErr != nil {
-				return ctrl.Result{}, relErr
-			}
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: time.Second}, nil
-			}
-			return ctrl.Result{}, err
-		}
+	claimed := session.DeepCopy()
+	if err := addFinalizer(ctx, a.cell, claimed); err != nil {
+		return a.abortClaim(ctx, client.ObjectKeyFromObject(session), held, err)
 	}
-
 	now := a.now()
 	connectBefore := metav1.NewTime(now.Add(a.cfg.ConnectTimeout))
-	hub.Status.Connection = &computev1alpha.InstanceConsoleSessionConnection{
+	claimed.Status.Connection = &computev1alpha.InstanceConsoleSessionConnection{
 		EndpointID: a.EndpointID(),
 		RelayURLs:  a.cfg.RelayURLs,
 		Target:     a.cfg.Target,
 	}
-	hub.Status.ConnectBefore = &connectBefore
-	setReady(hub, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonSessionReady,
+	claimed.Status.ConnectBefore = &connectBefore
+	setReady(claimed, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonSessionReady,
 		"Connect before the connection deadline.")
-	if err := a.hub.Status().Update(ctx, hub); err != nil {
-		if relErr := a.releaseSlot(ctx, held); relErr != nil {
-			return ctrl.Result{}, relErr
-		}
-		if apierrors.IsConflict(err) {
-			return ctrl.Result{RequeueAfter: time.Second}, nil
-		}
-		return ctrl.Result{}, err
+	if err := a.cell.Status().Update(ctx, claimed); err != nil {
+		return a.abortClaim(ctx, client.ObjectKeyFromObject(session), held, err)
 	}
-	a.track(uid, client.ObjectKeyFromObject(cell))
+	a.track(uid, client.ObjectKeyFromObject(session))
 	log.FromContext(ctx).Info("claimed session", "pod", target.pod.Name, "container", target.container)
 	return ctrl.Result{RequeueAfter: a.cfg.ConnectTimeout}, nil
 }
 
-// watchOwner takes over a session in this cell whose agent stopped renewing
-// its liveness Lease. A session claimed in another cell has no slot here and
-// is left alone.
-func (a *Agent) watchOwner(ctx context.Context, hub *computev1alpha.InstanceConsoleSession, owner string) (ctrl.Result, error) {
-	held, err := a.slotFor(ctx, sessionUID(hub))
+// abortClaim frees the slot of a claim that did not land. A conflict means
+// the session changed, most likely because another agent claimed it, and the
+// retry sees the change. The cache can also lag this agent's own claim, and
+// the slot of a claim that already stands is kept.
+func (a *Agent) abortClaim(ctx context.Context, key types.NamespacedName, held *slot, err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		var current computev1alpha.InstanceConsoleSession
+		if getErr := a.cell.Get(ctx, key, &current); getErr != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(getErr)
+		}
+		if endpointOf(&current) == a.EndpointID() && !isTerminal(&current) {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+	}
+	if relErr := a.releaseSlot(ctx, held); relErr != nil {
+		return ctrl.Result{}, relErr
+	}
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	return ctrl.Result{}, err
+}
+
+// watchOwner takes over a session whose agent stopped renewing its liveness
+// Lease. A session with no slot has nothing left to take over.
+func (a *Agent) watchOwner(ctx context.Context, session *computev1alpha.InstanceConsoleSession, owner string) (ctrl.Result, error) {
+	held, err := a.slotFor(ctx, sessionUID(session))
 	if err != nil || held == nil {
 		return ctrl.Result{}, err
 	}
@@ -218,14 +208,14 @@ func (a *Agent) watchOwner(ctx context.Context, hub *computev1alpha.InstanceCons
 		return ctrl.Result{RequeueAfter: LeaseDuration}, nil
 	}
 	log.FromContext(ctx).Info("taking over a session from a lost agent", "agent", owner)
-	return ctrl.Result{}, a.abandon(ctx, hub, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
+	return ctrl.Result{}, a.abandon(ctx, session, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
 }
 
 // abandon ends a session no agent is serving: it stops the session's process,
 // which a dropped stream leaves running, and records why. The slot is kept if
 // the process could not be confirmed stopped, for the sweep to retry.
-func (a *Agent) abandon(ctx context.Context, hub *computev1alpha.InstanceConsoleSession, owner, reason string) error {
-	uid := sessionUID(hub)
+func (a *Agent) abandon(ctx context.Context, session *computev1alpha.InstanceConsoleSession, owner, reason string) error {
+	uid := sessionUID(session)
 	held, err := a.slotFor(ctx, uid)
 	if err != nil {
 		return err
@@ -236,7 +226,7 @@ func (a *Agent) abandon(ctx context.Context, hub *computev1alpha.InstanceConsole
 			return err
 		}
 	}
-	if _, err := a.end(ctx, client.ObjectKeyFromObject(hub), reason, endMessage(reason), nil,
+	if _, err := a.end(ctx, client.ObjectKeyFromObject(session), reason, endMessage(reason), nil,
 		func(s *computev1alpha.InstanceConsoleSession) bool { return endpointOf(s) == owner }); err != nil {
 		return err
 	}
@@ -249,10 +239,10 @@ func (a *Agent) abandon(ctx context.Context, hub *computev1alpha.InstanceConsole
 
 // endUnconnected ends a session this agent claimed but no client connected
 // to. No process was started, so its slot is freed at once.
-func (a *Agent) endUnconnected(ctx context.Context, hub *computev1alpha.InstanceConsoleSession, reason string) error {
-	uid := sessionUID(hub)
+func (a *Agent) endUnconnected(ctx context.Context, session *computev1alpha.InstanceConsoleSession, reason string) error {
+	uid := sessionUID(session)
 	me := a.EndpointID()
-	ended, err := a.end(ctx, client.ObjectKeyFromObject(hub), reason, endMessage(reason), nil,
+	ended, err := a.end(ctx, client.ObjectKeyFromObject(session), reason, endMessage(reason), nil,
 		func(s *computev1alpha.InstanceConsoleSession) bool {
 			return endpointOf(s) == me && readyReason(s) == computev1alpha.InstanceConsoleSessionReasonSessionReady
 		})
@@ -267,16 +257,16 @@ func (a *Agent) endUnconnected(ctx context.Context, hub *computev1alpha.Instance
 	return a.releaseSlot(ctx, held)
 }
 
-func (a *Agent) rejectUnclaimed(ctx context.Context, hub *computev1alpha.InstanceConsoleSession, rej *rejection) error {
-	_, err := a.end(ctx, client.ObjectKeyFromObject(hub), rej.reason, rej.message, nil,
+func (a *Agent) rejectUnclaimed(ctx context.Context, session *computev1alpha.InstanceConsoleSession, rej *rejection) error {
+	_, err := a.end(ctx, client.ObjectKeyFromObject(session), rej.reason, rej.message, nil,
 		func(s *computev1alpha.InstanceConsoleSession) bool { return s.Status.Connection == nil })
 	return err
 }
 
 // settle frees the slot of an ended session once its process is stopped,
 // unless a live agent is still ending it.
-func (a *Agent) settle(ctx context.Context, hub *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
-	uid := sessionUID(hub)
+func (a *Agent) settle(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
+	uid := sessionUID(session)
 	if a.isLive(uid) {
 		return ctrl.Result{RequeueAfter: cleanupRetryInterval}, nil
 	}
@@ -284,7 +274,7 @@ func (a *Agent) settle(ctx context.Context, hub *computev1alpha.InstanceConsoleS
 	if err != nil || held == nil {
 		return ctrl.Result{}, err
 	}
-	if owner := endpointOf(hub); owner != "" && owner != a.EndpointID() {
+	if owner := endpointOf(session); owner != "" && owner != a.EndpointID() {
 		if alive, err := a.agentAlive(ctx, owner); err != nil || alive {
 			return ctrl.Result{RequeueAfter: LeaseDuration}, err
 		}
@@ -296,52 +286,54 @@ func (a *Agent) settle(ctx context.Context, hub *computev1alpha.InstanceConsoleS
 	return ctrl.Result{}, nil
 }
 
-// cleanUp handles a session whose hub or cell copy is being deleted, or whose
-// hub copy is gone. The session is revoked if it is still open, and the
-// finalizers are released only once its process is stopped.
-func (a *Agent) cleanUp(ctx context.Context, cell, hub *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
-	uid := sessionUID(cell)
-	me := a.EndpointID()
-	responsible := true
-	if hub == nil && a.isLive(uid) {
-		a.stop(uid, computev1alpha.InstanceConsoleSessionReasonRevoked)
-	}
-	if hub != nil && !isTerminal(hub) {
-		switch owner := endpointOf(hub); {
-		case owner == me && a.isLive(uid):
-			log.FromContext(ctx).Info("revoking session")
-			a.stop(uid, computev1alpha.InstanceConsoleSessionReasonRevoked)
-		case owner == me:
-			if err := a.endUnconnected(ctx, hub, computev1alpha.InstanceConsoleSessionReasonRevoked); err != nil {
-				return ctrl.Result{}, err
-			}
-		case owner == "":
-			if err := a.rejectUnclaimed(ctx, hub, reject(computev1alpha.InstanceConsoleSessionReasonRevoked,
-				"%s", endMessage(computev1alpha.InstanceConsoleSessionReasonRevoked))); err != nil {
-				return ctrl.Result{}, err
-			}
-		default:
-			held, err := a.slotFor(ctx, uid)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			if held == nil {
-				responsible = false
-				break
-			}
-			alive, err := a.agentAlive(ctx, owner)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			if alive {
-				return ctrl.Result{RequeueAfter: cleanupRetryInterval}, nil
-			}
-			if err := a.abandon(ctx, hub, owner, computev1alpha.InstanceConsoleSessionReasonRevoked); err != nil {
-				return ctrl.Result{}, err
-			}
+// revoke ends a session that is still open because the control plane revoked
+// it or its copy is being deleted. The end is recorded only once the
+// session's processes have been stopped, so the control plane can take it as
+// confirmation that the command is gone.
+func (a *Agent) revoke(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
+	uid := sessionUID(session)
+	reason := computev1alpha.InstanceConsoleSessionReasonRevoked
+	switch owner := endpointOf(session); {
+	case owner == a.EndpointID() && a.isLive(uid):
+		log.FromContext(ctx).Info("revoking session")
+		a.stop(uid, reason)
+	case owner == a.EndpointID():
+		if err := a.endUnconnected(ctx, session, reason); err != nil {
+			return ctrl.Result{}, err
+		}
+	case owner == "":
+		if err := a.rejectUnclaimed(ctx, session, reject(reason, "%s", endMessage(reason))); err != nil {
+			return ctrl.Result{}, err
+		}
+	default:
+		held, err := a.slotFor(ctx, uid)
+		if err != nil || held == nil {
+			return ctrl.Result{}, err
+		}
+		alive, err := a.agentAlive(ctx, owner)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if alive {
+			return ctrl.Result{RequeueAfter: cleanupRetryInterval}, nil
+		}
+		if err := a.abandon(ctx, session, owner, reason); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
+	return ctrl.Result{}, nil
+}
 
+// cleanUp handles a session whose cell copy is being deleted. The session is
+// revoked if it is still open, and the finalizer is released only once its
+// process is stopped.
+func (a *Agent) cleanUp(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
+	uid := sessionUID(session)
+	if !isTerminal(session) {
+		if res, err := a.revoke(ctx, session); err != nil || res.RequeueAfter > 0 {
+			return res, err
+		}
+	}
 	if a.isLive(uid) {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
@@ -356,19 +348,10 @@ func (a *Agent) cleanUp(ctx context.Context, cell, hub *computev1alpha.InstanceC
 		}
 	}
 	a.forget(uid)
-
-	if hub != nil && responsible {
-		if err := removeFinalizer(ctx, a.hub, client.ObjectKeyFromObject(hub)); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-	if !cell.DeletionTimestamp.IsZero() || hub == nil {
-		return ctrl.Result{}, removeFinalizer(ctx, a.cell, client.ObjectKeyFromObject(cell))
-	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, removeFinalizer(ctx, a.cell, client.ObjectKeyFromObject(session))
 }
 
-// end records a terminal reason on the hub copy if the session has not ended
+// end records a terminal reason on the cell copy if the session has not ended
 // yet and guard still holds for its latest state. It reports whether this
 // call ended the session.
 func (a *Agent) end(ctx context.Context, key types.NamespacedName, reason, message string, exitCode *int32,
@@ -376,7 +359,7 @@ func (a *Agent) end(ctx context.Context, key types.NamespacedName, reason, messa
 	ended := false
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var s computev1alpha.InstanceConsoleSession
-		if err := a.hub.Get(ctx, key, &s); err != nil {
+		if err := a.cell.Get(ctx, key, &s); err != nil {
 			return err
 		}
 		if isTerminal(&s) || guard != nil && !guard(&s) {
@@ -386,13 +369,20 @@ func (a *Agent) end(ctx context.Context, key types.NamespacedName, reason, messa
 		s.Status.EndedAt = &now
 		s.Status.ExitCode = exitCode
 		setReady(&s, metav1.ConditionFalse, reason, message)
-		if err := a.hub.Status().Update(ctx, &s); err != nil {
+		if err := a.cell.Status().Update(ctx, &s); err != nil {
 			return err
 		}
 		ended = true
 		return nil
 	})
 	return ended, client.IgnoreNotFound(err)
+}
+
+// revoked reports whether the control plane asked the cell to end the
+// session.
+func revoked(s *computev1alpha.InstanceConsoleSession) bool {
+	_, ok := s.Annotations[computev1alpha.InstanceConsoleSessionRevokeAnnotation]
+	return ok
 }
 
 func addFinalizer(ctx context.Context, c client.Client, s *computev1alpha.InstanceConsoleSession) error {

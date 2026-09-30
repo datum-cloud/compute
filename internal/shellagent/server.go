@@ -83,27 +83,27 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var hub computev1alpha.InstanceConsoleSession
-	err = a.hub.Get(ctx, client.ObjectKeyFromObject(cell), &hub)
+	var current computev1alpha.InstanceConsoleSession
+	err = a.cell.Get(ctx, client.ObjectKeyFromObject(cell), &current)
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "read session")
 		http.Error(w, "The session could not be read.", http.StatusInternalServerError)
 		return
 	}
-	if err != nil || sessionUID(&hub) != uid || endpointOf(&hub) != "" && endpointOf(&hub) != a.EndpointID() {
+	if err != nil || sessionUID(&current) != uid || endpointOf(&current) != "" && endpointOf(&current) != a.EndpointID() {
 		http.Error(w, "Session not found.", http.StatusNotFound)
 		return
 	}
-	if !hub.DeletionTimestamp.IsZero() || !cell.DeletionTimestamp.IsZero() {
+	if !current.DeletionTimestamp.IsZero() || revoked(&current) {
 		http.Error(w, endMessage(computev1alpha.InstanceConsoleSessionReasonRevoked), http.StatusGone)
 		return
 	}
-	if readyReason(&hub) != computev1alpha.InstanceConsoleSessionReasonSessionReady || isTerminal(&hub) {
-		code, msg := refusal(&hub)
+	if readyReason(&current) != computev1alpha.InstanceConsoleSessionReasonSessionReady || isTerminal(&current) {
+		code, msg := refusal(&current)
 		http.Error(w, msg, code)
 		return
 	}
-	if hub.Status.ConnectBefore != nil && !now.Before(hub.Status.ConnectBefore.Time) {
+	if current.Status.ConnectBefore != nil && !now.Before(current.Status.ConnectBefore.Time) {
 		http.Error(w, endMessage(computev1alpha.InstanceConsoleSessionReasonNotConnected), http.StatusGone)
 		return
 	}
@@ -114,7 +114,7 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 
 	started := metav1.NewTime(now)
-	expires := metav1.NewTime(now.Add(sessionTTL(&hub)))
+	expires := metav1.NewTime(now.Add(sessionTTL(&current)))
 	runCtx, cancel := context.WithDeadline(context.Background(), expires.Time)
 	defer cancel()
 	live, ok := a.register(uid, cancel, cell.Spec.Terminal)
@@ -127,10 +127,10 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 		close(live.done)
 	}()
 
-	hub.Status.StartedAt = &started
-	hub.Status.ExpiresAt = &expires
-	setReady(&hub, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonConnected, "A client is connected.")
-	if err := a.hub.Status().Update(ctx, &hub); err != nil {
+	current.Status.StartedAt = &started
+	current.Status.ExpiresAt = &expires
+	setReady(&current, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonConnected, "A client is connected.")
+	if err := a.cell.Status().Update(ctx, &current); err != nil {
 		if apierrors.IsConflict(err) {
 			http.Error(w, "The session already has a connection or has ended.", http.StatusConflict)
 			return
@@ -141,21 +141,21 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 	logger.Info("session connected", "pod", held.pod.String(), "container", held.container)
 
-	result := a.runSession(runCtx, w, r, &hub, held, live)
-	a.finishSession(uid, client.ObjectKeyFromObject(&hub), held, result)
+	result := a.runSession(runCtx, w, r, &current, held, live)
+	a.finishSession(uid, client.ObjectKeyFromObject(&current), held, result)
 	logger.Info("session ended", "reason", result.reason, "duration", a.now().Sub(started.Time).Round(time.Millisecond))
 }
 
 // runSession runs the session's command and relays its stream until it ends,
 // then sends the client the session's closing status.
 func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.Request,
-	hub *computev1alpha.InstanceConsoleSession, held *slot, live *liveSession) outcome {
-	uid := sessionUID(hub)
+	session *computev1alpha.InstanceConsoleSession, held *slot, live *liveSession) outcome {
+	uid := sessionUID(session)
 	opts := ExecOptions{
 		Container: held.container,
-		Command:   wrappedCommand(held.markerDir, uid, hub.Spec.Command, hub.Spec.Stdin, hub.Spec.Terminal),
-		Stdin:     hub.Spec.Stdin,
-		TTY:       hub.Spec.Terminal,
+		Command:   wrappedCommand(held.markerDir, uid, session.Spec.Command, session.Spec.Stdin, session.Spec.Terminal),
+		Stdin:     session.Spec.Stdin,
+		TTY:       session.Spec.Terminal,
 	}
 	resp, backend, fromBackend, err := a.exec.Open(ctx, held.pod, opts, r.Header)
 	if err != nil {

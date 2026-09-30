@@ -6,8 +6,9 @@
 // command in the instance through the cell apiserver, and stops that command
 // when the session ends for any reason.
 //
-// Every agent reads session copies from its cell and writes status to their
-// hub copies, which the management plane copies back to the project.
+// Every agent reads and writes only the session copies in its cell. Karmada
+// reflects their status back to the hub, and the management plane copies it
+// on to the project. The agent holds no hub credential.
 package shellagent
 
 import (
@@ -56,10 +57,6 @@ type Config struct {
 	// pong, before the agent ends the session as Disconnected. It must be
 	// longer than PingInterval.
 	PongTimeout time.Duration
-	// HubPollInterval is how often the agent rereads the hub copy of a session
-	// that is open or still holds its finalizer. The hub lets a cell read
-	// sessions only by name, so there is nothing to watch.
-	HubPollInterval time.Duration
 	// ExecTimeout bounds each command the agent runs in an instance to probe,
 	// list or stop session processes, so a hung exec cannot hold a reconcile
 	// worker or the sweep. Zero means KillGrace plus 30 seconds.
@@ -79,7 +76,6 @@ func DefaultConfig() Config {
 		SweepInterval:     time.Minute,
 		PingInterval:      10 * time.Second,
 		PongTimeout:       20 * time.Second,
-		HubPollInterval:   10 * time.Second,
 	}
 }
 
@@ -89,7 +85,6 @@ type Agent struct {
 
 	sessions client.Reader
 	cell     client.Client
-	hub      client.Client
 	exec     Executor
 	now      func() time.Time
 
@@ -106,9 +101,8 @@ type Agent struct {
 }
 
 // New returns an agent. sessions reads session copies and Instances from the
-// cell, typically through a cache; cell reaches the cell apiserver directly;
-// hub reaches the Karmada hub.
-func New(cfg Config, sessions client.Reader, cell, hub client.Client, exec Executor, incarnation string) (*Agent, error) {
+// cell, typically through a cache; cell reaches the cell apiserver directly.
+func New(cfg Config, sessions client.Reader, cell client.Client, exec Executor, incarnation string) (*Agent, error) {
 	if cfg.Namespace == "" || cfg.Target == "" || len(cfg.RelayURLs) == 0 || len(cfg.ManagedBy) == 0 {
 		return nil, errors.New("namespace, target, relay URLs and managed-by values are required")
 	}
@@ -122,7 +116,6 @@ func New(cfg Config, sessions client.Reader, cell, hub client.Client, exec Execu
 		cfg:         cfg,
 		sessions:    sessions,
 		cell:        cell,
-		hub:         hub,
 		exec:        exec,
 		now:         time.Now,
 		incarnation: incarnation,

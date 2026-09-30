@@ -35,7 +35,7 @@ func readySession(t *testing.T, h *harness, a *Agent, mutate ...func(*computev1a
 	t.Helper()
 	key := h.session(testSession, testUID, mutate...)
 	h.reconcile(a, testSession)
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonSessionReady)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonSessionReady)
 	return key
 }
 
@@ -84,9 +84,14 @@ func TestRefusals(t *testing.T) {
 			endAs(h, computev1alpha.InstanceConsoleSessionReasonRevoked)
 			return testUID, key, time.Now()
 		}, http.StatusGone},
+		{"revoke requested", func(t *testing.T, h *harness, a *Agent) (string, ed25519.PrivateKey, time.Time) {
+			key := readySession(t, h, a)
+			revokeSession(t, h)
+			return testUID, key, time.Now()
+		}, http.StatusGone},
 		{"being deleted", func(t *testing.T, h *harness, a *Agent) (string, ed25519.PrivateKey, time.Time) {
 			key := readySession(t, h, a)
-			if err := h.hub.Delete(h.ctx, h.hubSession(testSession)); err != nil {
+			if err := h.cell.Delete(h.ctx, h.cellSession(testSession)); err != nil {
 				t.Fatal(err)
 			}
 			return testUID, key, time.Now()
@@ -98,9 +103,9 @@ func TestRefusals(t *testing.T) {
 		}, http.StatusGone},
 		{"past connectBefore", func(t *testing.T, h *harness, a *Agent) (string, ed25519.PrivateKey, time.Time) {
 			key := readySession(t, h, a)
-			s := h.hubSession(testSession)
+			s := h.cellSession(testSession)
 			s.Status.ConnectBefore = &metav1.Time{Time: time.Now().Add(-time.Second)}
-			if err := h.hub.Status().Update(h.ctx, s); err != nil {
+			if err := h.cell.Status().Update(h.ctx, s); err != nil {
 				t.Fatal(err)
 			}
 			return testUID, key, time.Now()
@@ -342,12 +347,12 @@ func waitForConnected(t *testing.T, h *harness) {
 	reason := computev1alpha.InstanceConsoleSessionReasonConnected
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if readyReason(h.hubSession(testSession)) == reason {
+		if readyReason(h.cellSession(testSession)) == reason {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	requireReason(t, h.hubSession(testSession), reason)
+	requireReason(t, h.cellSession(testSession), reason)
 }
 
 func waitForEnd(t *testing.T, h *harness) *computev1alpha.InstanceConsoleSession {
@@ -355,11 +360,11 @@ func waitForEnd(t *testing.T, h *harness) *computev1alpha.InstanceConsoleSession
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if s := h.hubSession(name); isTerminal(s) && len(h.slots()) == 0 {
+		if s := h.cellSession(name); isTerminal(s) && len(h.slots()) == 0 {
 			return s
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("session %s did not end: %+v", name, h.hubSession(name).Status)
+	t.Fatalf("session %s did not end: %+v", name, h.cellSession(name).Status)
 	return nil
 }

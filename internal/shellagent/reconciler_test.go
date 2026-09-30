@@ -26,12 +26,12 @@ import (
 
 func TestClaimPublishesConnection(t *testing.T) {
 	h := newHarness(t)
-	a := h.agent(noPolling)
+	a := h.agent()
 	h.session(testSession, testUID)
 
 	res := h.reconcile(a, testSession)
 
-	s := h.hubSession(testSession)
+	s := h.cellSession(testSession)
 	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonSessionReady)
 	if s.Status.Connection == nil || s.Status.Connection.EndpointID != a.EndpointID() ||
 		s.Status.Connection.Target != a.cfg.Target || len(s.Status.Connection.RelayURLs) != 1 {
@@ -44,11 +44,6 @@ func TestClaimPublishesConnection(t *testing.T) {
 		t.Fatalf("requeue after %v, want the connect timeout", res.RequeueAfter)
 	}
 	if !controllerutil.ContainsFinalizer(s, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
-		t.Fatal("hub copy has no finalizer")
-	}
-	var cell computev1alpha.InstanceConsoleSession
-	_ = h.cell.Get(h.ctx, client.ObjectKeyFromObject(s), &cell)
-	if !controllerutil.ContainsFinalizer(&cell, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 		t.Fatal("cell copy has no finalizer")
 	}
 	if n := len(h.slots()); n != 1 {
@@ -71,7 +66,7 @@ func TestClaimRaceHasOneWinner(t *testing.T) {
 	}
 	wg.Wait()
 
-	s := h.hubSession(testSession)
+	s := h.cellSession(testSession)
 	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonSessionReady)
 	owners := 0
 	for _, a := range agents {
@@ -91,22 +86,40 @@ func TestClaimWithStaleCopyLosesToWinner(t *testing.T) {
 	h := newHarness(t)
 	winner, loser := h.agent(), h.agent()
 	h.session(testSession, testUID)
-	stale := h.hubSession(testSession)
-	var cell computev1alpha.InstanceConsoleSession
-	_ = h.cell.Get(h.ctx, client.ObjectKeyFromObject(stale), &cell)
+	stale := h.cellSession(testSession)
 
 	h.reconcile(winner, testSession)
-	if _, err := loser.claim(h.ctx, &cell, stale); err != nil {
+	if _, err := loser.claim(h.ctx, stale); err != nil {
 		t.Logf("losing claim returned %v", err)
 	}
 
-	s := h.hubSession(testSession)
+	s := h.cellSession(testSession)
 	if s.Status.Connection.EndpointID != winner.EndpointID() {
 		t.Fatal("a stale claim overwrote the winner's connection")
 	}
 	slots := h.slots()
 	if len(slots) != 1 || slots[0].Annotations[annotationEndpoint] != winner.EndpointID() {
 		t.Fatalf("slots = %+v, want only the winner's", slots)
+	}
+}
+
+func TestStaleRetryKeepsTheAgentsOwnClaim(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+	stale := h.cellSession(testSession)
+	h.reconcile(a, testSession)
+
+	if _, err := a.claim(h.ctx, stale); err != nil {
+		t.Fatalf("retried claim returned %v", err)
+	}
+
+	s := h.cellSession(testSession)
+	if s.Status.Connection == nil || s.Status.Connection.EndpointID != a.EndpointID() {
+		t.Fatalf("connection = %+v", s.Status.Connection)
+	}
+	if n := len(h.slots()); n != 1 {
+		t.Fatalf("slots = %d, want the claim's slot kept", n)
 	}
 }
 
@@ -130,7 +143,7 @@ func TestSlotCapIsExactlyThree(t *testing.T) {
 
 	counts := map[string]int{}
 	for i := range 6 {
-		counts[readyReason(h.hubSession(fmt.Sprintf("s%d", i)))]++
+		counts[readyReason(h.cellSession(fmt.Sprintf("s%d", i)))]++
 	}
 	if counts[computev1alpha.InstanceConsoleSessionReasonSessionReady] != 3 ||
 		counts[computev1alpha.InstanceConsoleSessionReasonTooManySessions] != 3 {
@@ -150,15 +163,15 @@ func TestSlotFreedByEndedSessionIsReused(t *testing.T) {
 	for i := range 3 {
 		h.reconcile(a, fmt.Sprintf("s%d", i))
 	}
-	s0 := h.hubSession("s0")
+	s0 := h.cellSession("s0")
 	setReady(s0, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonCompleted, "done")
-	if err := h.hub.Status().Update(h.ctx, s0); err != nil {
+	if err := h.cell.Status().Update(h.ctx, s0); err != nil {
 		t.Fatal(err)
 	}
 
 	h.reconcile(a, "s3")
 
-	requireReason(t, h.hubSession("s3"), computev1alpha.InstanceConsoleSessionReasonSessionReady)
+	requireReason(t, h.cellSession("s3"), computev1alpha.InstanceConsoleSessionReasonSessionReady)
 }
 
 func TestChecksBeforeClaim(t *testing.T) {
@@ -201,7 +214,7 @@ func TestChecksBeforeClaim(t *testing.T) {
 
 			h.reconcile(a, testSession)
 
-			s := h.hubSession(testSession)
+			s := h.cellSession(testSession)
 			requireReason(t, s, tc.want)
 			if s.Status.Connection != nil || len(h.slots()) != 0 {
 				t.Fatal("a refused session was claimed")
@@ -224,58 +237,64 @@ func TestSessionForAnotherCellIsIgnored(t *testing.T) {
 		h.clock.advance(10 * time.Minute)
 	}
 
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
 	if len(h.slots()) != 0 {
 		t.Fatal("a cell without the instance took a slot")
 	}
 }
 
-// endUnavailable ends a session the way the control plane does when no cell
-// claims it in time.
-func endUnavailable(t *testing.T, h *harness) {
+// revokeSession annotates the cell copy the way Karmada does once the control
+// plane revokes the session's hub copy.
+func revokeSession(t *testing.T, h *harness) {
 	t.Helper()
-	s := h.hubSession(testSession)
-	setReady(s, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonUnavailable, "No cell took the session.")
-	if err := h.hub.Status().Update(h.ctx, s); err != nil {
+	s := h.cellSession(testSession)
+	if s.Annotations == nil {
+		s.Annotations = map[string]string{}
+	}
+	s.Annotations[computev1alpha.InstanceConsoleSessionRevokeAnnotation] = h.clock.now().Format(time.RFC3339)
+	if err := h.cell.Update(h.ctx, s); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func requireUnclaimed(t *testing.T, h *harness) {
+func requireRevokedUnclaimed(t *testing.T, h *harness) {
 	t.Helper()
-	s := h.hubSession(testSession)
-	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonUnavailable)
+	s := h.cellSession(testSession)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonRevoked)
 	if s.Status.Connection != nil || len(h.slots()) != 0 ||
 		controllerutil.ContainsFinalizer(s, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
-		t.Fatalf("an ended session was claimed: %+v", s)
+		t.Fatalf("a revoked session was claimed: %+v", s)
 	}
 }
 
-func TestEndedSessionIsNotClaimed(t *testing.T) {
+func TestRevokedSessionIsNotClaimed(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()
 	h.session(testSession, testUID)
-	endUnavailable(t, h)
+	revokeSession(t, h)
 
 	h.reconcile(a, testSession)
 
-	requireUnclaimed(t, h)
+	requireRevokedUnclaimed(t, h)
 }
 
-func TestClaimLosesToControlPlaneEnding(t *testing.T) {
+func TestClaimLosesToRevoke(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()
 	h.session(testSession, testUID)
-	stale := h.hubSession(testSession)
-	var cell computev1alpha.InstanceConsoleSession
-	_ = h.cell.Get(h.ctx, client.ObjectKeyFromObject(stale), &cell)
-	endUnavailable(t, h)
+	stale := h.cellSession(testSession)
+	revokeSession(t, h)
 
-	if _, err := a.claim(h.ctx, &cell, stale); err != nil {
+	if _, err := a.claim(h.ctx, stale); err != nil {
 		t.Logf("losing claim returned %v", err)
 	}
+	s := h.cellSession(testSession)
+	if s.Status.Connection != nil || len(h.slots()) != 0 {
+		t.Fatalf("a claim read before the revoke landed: %+v", s)
+	}
 
-	requireUnclaimed(t, h)
+	h.reconcile(a, testSession)
+	requireRevokedUnclaimed(t, h)
 }
 
 func TestProbeIsCachedPerPodAndContainer(t *testing.T) {
@@ -301,7 +320,7 @@ func TestNotConnectedDeadline(t *testing.T) {
 	h.clock.advance(time.Minute)
 	h.reconcile(a, testSession)
 
-	s := h.hubSession(testSession)
+	s := h.cellSession(testSession)
 	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonNotConnected)
 	if s.Status.EndedAt == nil || s.Status.ExitCode != nil {
 		t.Fatalf("status = %+v", s.Status)
@@ -316,7 +335,7 @@ func TestNotConnectedDeadline(t *testing.T) {
 
 func TestExpiryStopsConnectedSession(t *testing.T) {
 	h := newHarness(t)
-	a := h.agent(noPolling)
+	a := h.agent()
 	h.session(testSession, testUID)
 	h.reconcile(a, testSession)
 	markConnected(h, testSession, h.clock.now().Add(time.Minute))
@@ -335,7 +354,7 @@ func TestExpiryStopsConnectedSession(t *testing.T) {
 
 func TestLivenessTakeover(t *testing.T) {
 	h := newHarness(t)
-	lost, survivor := h.agent(noPolling), h.agent(noPolling)
+	lost, survivor := h.agent(), h.agent()
 	h.session(testSession, testUID)
 	h.reconcile(lost, testSession)
 	markConnected(h, testSession, h.clock.now().Add(time.Hour))
@@ -343,7 +362,7 @@ func TestLivenessTakeover(t *testing.T) {
 	if res := h.reconcile(survivor, testSession); res.RequeueAfter != LeaseDuration {
 		t.Fatalf("requeue after %v while the owner is alive, want %v", res.RequeueAfter, LeaseDuration)
 	}
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonConnected)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonConnected)
 
 	h.clock.advance(LeaseDuration + time.Second)
 	if err := survivor.renewLease(h.ctx); err != nil {
@@ -351,7 +370,7 @@ func TestLivenessTakeover(t *testing.T) {
 	}
 	h.reconcile(survivor, testSession)
 
-	s := h.hubSession(testSession)
+	s := h.cellSession(testSession)
 	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonAgentLost)
 	if h.exec.ran(killScript) != 1 {
 		t.Fatal("the lost session's processes were not stopped")
@@ -370,29 +389,84 @@ func TestRestartedAgentEndsItsPreviousSessions(t *testing.T) {
 
 	h.reconcile(a, testSession)
 
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonAgentLost)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonAgentLost)
 	if h.exec.ran(killScript) != 1 {
 		t.Fatal("the previous run's processes were not stopped")
 	}
 }
 
-func TestSessionClaimedInAnotherCellIsLeftAlone(t *testing.T) {
+func TestSessionOwnedByAnotherAgentWithoutSlotIsLeftAlone(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()
 	h.session(testSession, testUID)
-	s := h.hubSession(testSession)
-	s.Status.Connection = &computev1alpha.InstanceConsoleSessionConnection{EndpointID: "another-cells-endpoint"}
+	s := h.cellSession(testSession)
+	s.Status.Connection = &computev1alpha.InstanceConsoleSessionConnection{EndpointID: "another-agents-endpoint"}
 	setReady(s, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonSessionReady, "ready")
-	if err := h.hub.Status().Update(h.ctx, s); err != nil {
+	if err := h.cell.Status().Update(h.ctx, s); err != nil {
 		t.Fatal(err)
 	}
 
 	h.reconcile(a, testSession)
 
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonSessionReady)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonSessionReady)
 }
 
-func TestDeletionReleasesFinalizersAfterProcessesStop(t *testing.T) {
+func TestRevokeStopsConnectedSession(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+	h.reconcile(a, testSession)
+	markConnected(h, testSession, h.clock.now().Add(time.Hour))
+	stopped := fakeLive(a, testUID, false)
+	revokeSession(t, h)
+
+	h.reconcile(a, testSession)
+
+	if got := <-stopped; got != computev1alpha.InstanceConsoleSessionReasonRevoked {
+		t.Fatalf("stop reason = %q, want Revoked", got)
+	}
+	if !controllerutil.ContainsFinalizer(h.cellSession(testSession), computev1alpha.InstanceConsoleSessionAgentFinalizer) {
+		t.Fatal("the finalizer holds the copy until the control plane deletes it")
+	}
+}
+
+func TestRevokeEndsUnconnectedSessionAndFreesItsSlot(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+	h.reconcile(a, testSession)
+	revokeSession(t, h)
+
+	h.reconcile(a, testSession)
+
+	s := h.cellSession(testSession)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonRevoked)
+	if s.Status.EndedAt == nil {
+		t.Fatal("the end has no time")
+	}
+	if len(h.slots()) != 0 {
+		t.Fatal("slot kept after the revoke")
+	}
+}
+
+func TestRevokeOfLostAgentsSessionStopsProcessesFirst(t *testing.T) {
+	h := newHarness(t)
+	lost, survivor := h.agent(), h.agent()
+	h.session(testSession, testUID)
+	h.reconcile(lost, testSession)
+	markConnected(h, testSession, h.clock.now().Add(time.Hour))
+	lost.releaseLease(h.ctx, lost.EndpointID())
+	revokeSession(t, h)
+
+	h.reconcile(survivor, testSession)
+
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonRevoked)
+	if h.exec.ran(killScript) == 0 || len(h.slots()) != 0 {
+		t.Fatal("the end was reported before the lost agent's processes were stopped")
+	}
+}
+
+func TestDeletionReleasesFinalizerAfterProcessesStop(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()
 	h.session(testSession, testUID)
@@ -400,7 +474,7 @@ func TestDeletionReleasesFinalizersAfterProcessesStop(t *testing.T) {
 	markConnected(h, testSession, h.clock.now().Add(time.Hour))
 	stopped := fakeLive(a, testUID, false)
 
-	if err := h.hub.Delete(h.ctx, h.hubSession(testSession)); err != nil {
+	if err := h.cell.Delete(h.ctx, h.cellSession(testSession)); err != nil {
 		t.Fatal(err)
 	}
 	h.reconcile(a, testSession)
@@ -408,22 +482,12 @@ func TestDeletionReleasesFinalizersAfterProcessesStop(t *testing.T) {
 		t.Fatalf("stop reason = %q, want Revoked", got)
 	}
 
-	var hub computev1alpha.InstanceConsoleSession
-	if err := h.hub.Get(h.ctx, reqFor(testSession).NamespacedName, &hub); err == nil {
-		t.Fatalf("hub copy still exists with finalizers %v", hub.Finalizers)
+	var cell computev1alpha.InstanceConsoleSession
+	if err := h.cell.Get(h.ctx, reqFor(testSession).NamespacedName, &cell); !apierrors.IsNotFound(err) {
+		t.Fatalf("cell copy still exists with finalizers %v: %v", cell.Finalizers, err)
 	}
 	if h.exec.ran(killScript) == 0 || len(h.slots()) != 0 {
 		t.Fatal("processes were not stopped before the finalizer was released")
-	}
-
-	var cell computev1alpha.InstanceConsoleSession
-	_ = h.cell.Get(h.ctx, reqFor(testSession).NamespacedName, &cell)
-	if err := h.cell.Delete(h.ctx, &cell); err != nil {
-		t.Fatal(err)
-	}
-	h.reconcile(a, testSession)
-	if err := h.cell.Get(h.ctx, reqFor(testSession).NamespacedName, &cell); err == nil {
-		t.Fatalf("cell copy still exists with finalizers %v", cell.Finalizers)
 	}
 }
 
@@ -436,21 +500,21 @@ func TestFinalizerHeldWhileProcessesCannotBeStopped(t *testing.T) {
 	endAs(h, computev1alpha.InstanceConsoleSessionReasonAgentLost)
 	h.exec.killExit = 1
 
-	if err := h.hub.Delete(h.ctx, h.hubSession(testSession)); err != nil {
+	if err := h.cell.Delete(h.ctx, h.cellSession(testSession)); err != nil {
 		t.Fatal(err)
 	}
 	if res := h.reconcile(a, testSession); res.RequeueAfter == 0 {
 		t.Fatal("expected a retry while processes may be running")
 	}
-	if !controllerutil.ContainsFinalizer(h.hubSession(testSession), computev1alpha.InstanceConsoleSessionAgentFinalizer) {
+	if !controllerutil.ContainsFinalizer(h.cellSession(testSession), computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 		t.Fatal("finalizer released before processes were stopped")
 	}
 
 	h.exec.killExit = 0
 	h.reconcile(a, testSession)
-	var hub computev1alpha.InstanceConsoleSession
-	if err := h.hub.Get(h.ctx, reqFor(testSession).NamespacedName, &hub); err == nil {
-		t.Fatal("hub copy kept after processes stopped")
+	var cell computev1alpha.InstanceConsoleSession
+	if err := h.cell.Get(h.ctx, reqFor(testSession).NamespacedName, &cell); !apierrors.IsNotFound(err) {
+		t.Fatalf("cell copy kept after processes stopped: %v", err)
 	}
 }
 
@@ -460,13 +524,13 @@ func TestUnclaimedDeletionIsRevoked(t *testing.T) {
 	h.session(testSession, testUID, func(s *computev1alpha.InstanceConsoleSession) {
 		s.Finalizers = []string{"test/hold"}
 	})
-	if err := h.hub.Delete(h.ctx, h.hubSession(testSession)); err != nil {
+	if err := h.cell.Delete(h.ctx, h.cellSession(testSession)); err != nil {
 		t.Fatal(err)
 	}
 
 	h.reconcile(a, testSession)
 
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonRevoked)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonRevoked)
 }
 
 func TestDrain(t *testing.T) {
@@ -485,7 +549,7 @@ func TestDrain(t *testing.T) {
 
 	a.Drain(h.ctx)
 
-	requireReason(t, h.hubSession("waiting"), computev1alpha.InstanceConsoleSessionReasonAgentShutdown)
+	requireReason(t, h.cellSession("waiting"), computev1alpha.InstanceConsoleSessionReasonAgentShutdown)
 	for _, stopped := range []chan string{ttyStopped, pipeStopped} {
 		if got := <-stopped; got != computev1alpha.InstanceConsoleSessionReasonAgentShutdown {
 			t.Fatalf("stop reason = %q, want AgentShutdown", got)
@@ -502,7 +566,7 @@ func TestDrain(t *testing.T) {
 	}
 	h.session("late", "uid-l")
 	h.reconcile(a, "late")
-	requireReason(t, h.hubSession("late"), computev1alpha.InstanceConsoleSessionReasonPending)
+	requireReason(t, h.cellSession("late"), computev1alpha.InstanceConsoleSessionReasonPending)
 }
 
 func TestConcurrencyCapDefersClaims(t *testing.T) {
@@ -514,7 +578,7 @@ func TestConcurrencyCapDefersClaims(t *testing.T) {
 	h.reconcile(a, testSession)
 	res := h.reconcile(a, "s2")
 
-	requireReason(t, h.hubSession("s2"), computev1alpha.InstanceConsoleSessionReasonPending)
+	requireReason(t, h.cellSession("s2"), computev1alpha.InstanceConsoleSessionReasonPending)
 	if res.RequeueAfter == 0 {
 		t.Fatal("a deferred claim must be retried")
 	}
@@ -526,7 +590,7 @@ func TestClaimWaitsForReadyEndpoint(t *testing.T) {
 	h.session(testSession, testUID)
 
 	res := h.reconcile(a, testSession)
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
 	if res.RequeueAfter == 0 {
 		t.Fatal("a claim deferred for a missing endpoint must be retried")
 	}
@@ -536,14 +600,14 @@ func TestClaimWaitsForReadyEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.reconcile(a, testSession)
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
 
 	endpoint.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	if err := h.cell.Status().Update(h.ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
 	h.reconcile(a, testSession)
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonSessionReady)
+	requireReason(t, h.cellSession(testSession), computev1alpha.InstanceConsoleSessionReasonSessionReady)
 }
 
 func TestSweepStopsOrphanedProcesses(t *testing.T) {
@@ -645,21 +709,21 @@ func reqFor(name string) ctrl.Request {
 
 func markConnected(h *harness, name string, expires time.Time) {
 	h.t.Helper()
-	s := h.hubSession(name)
+	s := h.cellSession(name)
 	started := metav1.NewTime(h.clock.now())
 	s.Status.StartedAt = &started
 	s.Status.ExpiresAt = &metav1.Time{Time: expires}
 	setReady(s, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonConnected, "connected")
-	if err := h.hub.Status().Update(h.ctx, s); err != nil {
+	if err := h.cell.Status().Update(h.ctx, s); err != nil {
 		h.t.Fatal(err)
 	}
 }
 
 func endAs(h *harness, reason string) {
 	h.t.Helper()
-	s := h.hubSession(testSession)
+	s := h.cellSession(testSession)
 	setReady(s, metav1.ConditionFalse, reason, "ended")
-	if err := h.hub.Status().Update(h.ctx, s); err != nil {
+	if err := h.cell.Status().Update(h.ctx, s); err != nil {
 		h.t.Fatal(err)
 	}
 }
@@ -725,41 +789,11 @@ func patchPod(h *harness, mutate func(*corev1.Pod)) {
 	}
 }
 
-// noPolling leaves a session's deadlines as the only reason to requeue it.
-func noPolling(c *Config) {
-	c.HubPollInterval = 24 * time.Hour
-}
-
-func TestOpenSessionsPollTheirHubCopy(t *testing.T) {
+func TestTerminalSessionIsNotRequeued(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()
 	h.session(testSession, testUID)
-
-	if res := h.reconcile(a, testSession); res.RequeueAfter != a.cfg.HubPollInterval {
-		t.Fatalf("requeue after %v for a claimed session, want the hub poll interval", res.RequeueAfter)
-	}
-	s := h.hubSession(testSession)
-	now := metav1.NewTime(h.clock.now())
-	s.DeletionTimestamp = &now
-	if err := h.hub.Delete(h.ctx, s); err != nil {
-		t.Fatal(err)
-	}
-
-	h.reconcile(a, testSession)
-
-	if err := h.hub.Get(h.ctx, client.ObjectKeyFromObject(s), s); !apierrors.IsNotFound(err) {
-		t.Fatalf("hub copy still held after its deletion was polled: %v", err)
-	}
-	if len(h.slots()) != 0 {
-		t.Fatal("slot kept after the hub copy was deleted")
-	}
-}
-
-func TestEndedSessionWithoutFinalizerIsNotPolled(t *testing.T) {
-	h := newHarness(t)
-	a := h.agent()
-	h.session(testSession, testUID)
-	endUnavailable(t, h)
+	endAs(h, computev1alpha.InstanceConsoleSessionReasonNoShell)
 
 	if res := h.reconcile(a, testSession); res.RequeueAfter != 0 {
 		t.Fatalf("requeue after %v for an ended session this agent never held", res.RequeueAfter)

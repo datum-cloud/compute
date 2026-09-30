@@ -10,7 +10,6 @@ import (
 	"crypto/sha1" //nolint:gosec // RFC 6455 derives the accept key with SHA-1
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,18 +20,15 @@ import (
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/watch"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/consolesession"
@@ -71,7 +67,6 @@ type harness struct {
 	t     *testing.T
 	ctx   context.Context
 	cell  client.Client
-	hub   client.WithWatch
 	exec  *fakeAPIServer
 	clock *clock
 }
@@ -124,36 +119,9 @@ func newHarness(t *testing.T) *harness {
 		cell: fake.NewClientBuilder().WithScheme(scheme).
 			WithStatusSubresource(session).
 			WithObjects(instance, pod).Build(),
-		hub:   fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(session).Build(),
 		exec:  newFakeAPIServer(),
 		clock: &clock{t: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)},
 	}
-}
-
-// cellHubAccess limits a hub client to what the hub grants a cell's agent:
-// get and patch on sessions and writes to their status, and nothing else.
-func cellHubAccess(hub client.WithWatch) client.WithWatch {
-	forbidden := func(verb string) error {
-		return apierrors.NewForbidden(computev1alpha.GroupVersion.WithResource("instanceconsolesessions").GroupResource(),
-			"", fmt.Errorf("shell agents may not %s sessions on the hub", verb))
-	}
-	return interceptor.NewClient(hub, interceptor.Funcs{
-		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
-			return forbidden("list")
-		},
-		Watch: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) (watch.Interface, error) {
-			return nil, forbidden("watch")
-		},
-		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
-			return forbidden("create")
-		},
-		Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
-			return forbidden("update")
-		},
-		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
-			return forbidden("delete")
-		},
-	})
 }
 
 // agent returns an agent whose endpoint ID derives from a fresh key and whose
@@ -168,7 +136,7 @@ func (h *harness) agent(mutate ...func(*Config)) *Agent {
 	for _, m := range mutate {
 		m(&cfg)
 	}
-	a, err := New(cfg, h.cell, h.cell, cellHubAccess(h.hub), h.exec, "test")
+	a, err := New(cfg, h.cell, h.cell, h.exec, "test")
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -182,47 +150,44 @@ func (h *harness) agent(mutate ...func(*Config)) *Agent {
 	return a
 }
 
-// session creates a session's hub and cell copies and returns the client's
-// key.
+// session creates a session's cell copy and returns the client's key.
 func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.InstanceConsoleSession)) ed25519.PrivateKey {
 	h.t.Helper()
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	for _, c := range []client.Client{h.hub, h.cell} {
-		s := &computev1alpha.InstanceConsoleSession{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              name,
-				Namespace:         testNamespace,
-				CreationTimestamp: metav1.NewTime(h.clock.now()),
-				Labels: map[string]string{
-					computev1alpha.InstanceConsoleSessionUIDLabel:          uid,
-					computev1alpha.InstanceConsoleSessionInstanceNameLabel: testInstance,
-					computev1alpha.WorkloadDeploymentUIDLabel:              testDeploymentUID,
-				},
+	s := &computev1alpha.InstanceConsoleSession{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         testNamespace,
+			CreationTimestamp: metav1.NewTime(h.clock.now()),
+			Labels: map[string]string{
+				computev1alpha.InstanceConsoleSessionUIDLabel:          uid,
+				computev1alpha.InstanceConsoleSessionInstanceNameLabel: testInstance,
+				computev1alpha.WorkloadDeploymentUIDLabel:              testDeploymentUID,
 			},
-			Spec: computev1alpha.InstanceConsoleSessionSpec{
-				InstanceRef:     computev1alpha.InstanceConsoleSessionInstanceRef{Name: testInstance, UID: "project-instance-uid"},
-				ContainerName:   testContainer,
-				Command:         []string{"sh"},
-				Stdin:           true,
-				Terminal:        true,
-				ClientPublicKey: consolesession.PublicKey(key),
-				TTL:             &metav1.Duration{Duration: 15 * time.Minute},
-			},
-		}
-		for _, m := range mutate {
-			m(s)
-		}
-		if err := c.Create(h.ctx, s); err != nil {
-			h.t.Fatal(err)
-		}
+		},
+		Spec: computev1alpha.InstanceConsoleSessionSpec{
+			InstanceRef:     computev1alpha.InstanceConsoleSessionInstanceRef{Name: testInstance, UID: "project-instance-uid"},
+			ContainerName:   testContainer,
+			Command:         []string{"sh"},
+			Stdin:           true,
+			Terminal:        true,
+			ClientPublicKey: consolesession.PublicKey(key),
+			TTL:             &metav1.Duration{Duration: 15 * time.Minute},
+		},
+	}
+	for _, m := range mutate {
+		m(s)
+	}
+	if err := h.cell.Create(h.ctx, s); err != nil {
+		h.t.Fatal(err)
 	}
 	return key
 }
 
-func (h *harness) hubSession(name string) *computev1alpha.InstanceConsoleSession {
+func (h *harness) cellSession(name string) *computev1alpha.InstanceConsoleSession {
 	h.t.Helper()
 	var s computev1alpha.InstanceConsoleSession
-	if err := h.hub.Get(h.ctx, client.ObjectKey{Namespace: testNamespace, Name: name}, &s); err != nil {
+	if err := h.cell.Get(h.ctx, client.ObjectKey{Namespace: testNamespace, Name: name}, &s); err != nil {
 		h.t.Fatal(err)
 	}
 	return &s
