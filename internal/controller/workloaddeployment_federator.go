@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -50,7 +51,8 @@ const (
 	// PropagationPolicy selectors to route them to the exact Location-serving cell.
 	locationLabel = locationsv1alpha1.ServingLocationTopologyLabel
 
-	kindWorkloadDeployment = "WorkloadDeployment"
+	kindWorkloadDeployment     = "WorkloadDeployment"
+	kindInstanceConsoleSession = "InstanceConsoleSession"
 )
 
 // WorkloadDeploymentFederator replicates WorkloadDeployments from project
@@ -91,7 +93,12 @@ type WorkloadDeploymentFederator struct {
 	// satisfies. A cell is a point-of-presence cluster registered with the
 	// federation hub.
 	RuntimeClassesEnabled bool
-	finalizers            finalizer.Finalizers
+	// ConsoleSessionsEnabled mirrors the InstanceConsoleSessions feature gate.
+	// When it is on, each policy also propagates the shell sessions whose hub
+	// copies carry the same placement labels as the deployments it selects, so
+	// a session reaches exactly the cells that run its instance.
+	ConsoleSessionsEnabled bool
+	finalizers             finalizer.Finalizers
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;update;patch
@@ -514,6 +521,15 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 					},
 				},
 			},
+		}
+		if r.ConsoleSessionsEnabled {
+			pp.Spec.ResourceSelectors = append(pp.Spec.ResourceSelectors, karmadapolicyv1alpha1.ResourceSelector{
+				APIVersion: computev1alpha.GroupVersion.String(),
+				Kind:       kindInstanceConsoleSession,
+				LabelSelector: &metav1.LabelSelector{
+					MatchLabels: maps.Clone(deploymentLabels),
+				},
+			})
 		}
 		return nil
 	})

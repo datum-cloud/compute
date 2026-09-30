@@ -67,6 +67,7 @@ test: manifests generate fmt vet envtest interpreter-test ## Run tests.
 .PHONY: interpreter-test
 interpreter-test: karmadactl ## Validate Karmada resource interpreter customizations.
 	$(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --check
+	KARMADACTL=$(KARMADACTL) test/interpreter/instanceconsolesession.sh
 	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
 	if ! grep -q "replicas: 5" <<<"$$out"; then \
 	  printf '%s\n' "$$out"; \
