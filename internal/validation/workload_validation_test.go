@@ -46,10 +46,33 @@ func TestValidateWorkloads(t *testing.T) {
 		"basic fields create": {
 			workload: &computev1alpha.Workload{},
 			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("metadata.name"), ""),
 				field.NotSupported(field.NewPath("spec.template.spec.runtime.resources"), "", []string{}),
 				field.Required(field.NewPath("spec.template.spec.runtime"), ""),
 				field.Required(field.NewPath("spec.template.spec.networkInterfaces"), ""),
 				field.Required(field.NewPath("spec.placements"), ""),
+			},
+		},
+		"workload name of 63 characters": {
+			workload:       MakeSandboxWorkload(strings.Repeat("a", 63)),
+			expectedErrors: field.ErrorList{},
+		},
+		"workload name longer than 63 characters": {
+			workload: MakeSandboxWorkload(strings.Repeat("a", 64)),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("metadata.name"), "", ""),
+			},
+		},
+		"workload name with a dot": {
+			workload: MakeSandboxWorkload("web.app"),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("metadata.name"), "", ""),
+			},
+		},
+		"workload name with uppercase": {
+			workload: MakeSandboxWorkload("Web"),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("metadata.name"), "", ""),
 			},
 		},
 		"location selector by city code": {
@@ -1159,4 +1182,46 @@ func TestValidateWorkloadUpdate_UnchangedImage(t *testing.T) {
 		}
 		cmpErrs(t, wantErrs, errs)
 	})
+}
+
+// TestValidateWorkloadUpdate_AllowsExistingName verifies that a workload
+// stored under a name the create-time rules now reject stays updatable.
+func TestValidateWorkloadUpdate_AllowsExistingName(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+					sar.GenerateName = sarGenerateName
+					sar.Status.Allowed = true
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		WithObjects(&networkingv1alpha.Network{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testDefaultNamespace, Name: testDefaultNamespace},
+		}).
+		Build()
+
+	name := strings.Repeat("a", 70) + ".example"
+	oldWorkload := MakeSandboxWorkload(name)
+	newWorkload := oldWorkload.DeepCopy()
+	opts := WorkloadValidationOptions{
+		Client:         fakeClient,
+		Context:        context.Background(),
+		ValidLocations: []string{testCityCodeDFW},
+		Workload:       newWorkload,
+	}
+
+	if errs := ValidateWorkloadUpdate(newWorkload, oldWorkload, opts); len(errs) != 0 {
+		t.Errorf("expected no errors, got: %v", errs)
+	}
+	if errs := ValidateWorkloadCreate(newWorkload.DeepCopy(), opts); len(errs) == 0 {
+		t.Error("expected the same name to be rejected on create")
+	}
 }

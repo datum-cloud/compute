@@ -17,6 +17,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/locations"
+	"go.datum.net/compute/internal/naming"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -408,7 +409,7 @@ func TestGetDeploymentsForWorkload_LocationSelector(t *testing.T) {
 	require.Len(t, desired, 2)
 	assert.Equal(t, "dfw-a", desired[0].Spec.LocationRef.Name)
 	assert.Equal(t, "dfw-b", desired[1].Spec.LocationRef.Name)
-	assert.Equal(t, rdTestWorkloadName+"-"+testDefaultPlacement+"-dfw-a", desired[0].Name)
+	assert.Equal(t, naming.DeploymentName(rdTestWorkloadName, "workload-uid", testDefaultPlacement, "dfw-a"), desired[0].Name)
 	assert.Equal(t, "dfw-a", desired[0].Labels[computev1alpha.LocationLabel])
 }
 
@@ -565,4 +566,136 @@ func TestGetDeploymentsForWorkload_RequiresComputeAvailability(t *testing.T) {
 	for _, deployment := range desired {
 		assert.Equal(t, testLocationName, deployment.Spec.LocationRef.Name)
 	}
+}
+
+func newDeploymentMatchingTestWorkload() *computev1alpha.Workload {
+	return &computev1alpha.Workload{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rdTestWorkloadName,
+			Namespace: testDefaultNamespace,
+			UID:       types.UID("workload-uid"),
+		},
+		Spec: computev1alpha.WorkloadSpec{
+			Placements: []computev1alpha.WorkloadPlacement{{
+				Name:          testDefaultPlacement,
+				Locations:     []locationsv1alpha1.LocationReference{{Name: testLocationName}},
+				ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+			}},
+		},
+	}
+}
+
+func newExistingDeployment(name string, workloadUID types.UID, placement string) *computev1alpha.WorkloadDeployment {
+	return &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: testDefaultNamespace,
+			Labels:    map[string]string{computev1alpha.WorkloadUIDLabel: string(workloadUID)},
+		},
+		Spec: computev1alpha.WorkloadDeploymentSpec{
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName, UID: workloadUID},
+			PlacementName: placement,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: testLocationName},
+		},
+	}
+}
+
+// TestGetDeploymentsForWorkload_OrphansOtherNames verifies that only the
+// deployment carrying the expected name is kept for a placement and location.
+// A deployment of the same workload under any other name, such as one created
+// before the naming change, is orphaned and replaced.
+func TestGetDeploymentsForWorkload_OrphansOtherNames(t *testing.T) {
+	t.Parallel()
+
+	workload := newDeploymentMatchingTestWorkload()
+	expectedName := naming.DeploymentName(workload.Name, workload.UID, testDefaultPlacement, testLocationName)
+	current := newExistingDeployment(expectedName, workload.UID, testDefaultPlacement)
+	oldStyle := newExistingDeployment(rdTestWorkloadName+"-"+testDefaultPlacement+"-"+testLocationName, workload.UID, testDefaultPlacement)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newNetworkingScheme()).
+		WithObjects(
+			newTestLocationBinding(testLocationName, "DFW"),
+			newTestComputeAvailability(testLocationName),
+			current, oldStyle,
+		).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, orphaned, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Len(t, desired, 1)
+	assert.Equal(t, expectedName, desired[0].Name)
+	require.Len(t, orphaned, 1)
+	assert.Equal(t, oldStyle.Name, orphaned[0].Name)
+}
+
+// TestGetDeploymentsForWorkload_ReplacesOldName verifies that a deployment
+// under an old-style name is orphaned and the expected name is desired in its
+// place.
+func TestGetDeploymentsForWorkload_ReplacesOldName(t *testing.T) {
+	t.Parallel()
+
+	workload := newDeploymentMatchingTestWorkload()
+	oldStyle := newExistingDeployment(rdTestWorkloadName+"-"+testDefaultPlacement+"-"+testLocationName, workload.UID, testDefaultPlacement)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newNetworkingScheme()).
+		WithObjects(
+			newTestLocationBinding(testLocationName, "DFW"),
+			newTestComputeAvailability(testLocationName),
+			oldStyle,
+		).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, orphaned, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Len(t, desired, 1)
+	assert.Equal(t, naming.DeploymentName(workload.Name, workload.UID, testDefaultPlacement, testLocationName), desired[0].Name)
+	require.Len(t, orphaned, 1)
+	assert.Equal(t, oldStyle.Name, orphaned[0].Name)
+}
+
+// TestUpsertWorkloadDeployment_RefusesForeignWorkload verifies that a
+// deployment belonging to another workload is never overwritten.
+func TestUpsertWorkloadDeployment_RefusesForeignWorkload(t *testing.T) {
+	t.Parallel()
+
+	workload := newDeploymentMatchingTestWorkload()
+	name := naming.DeploymentName(workload.Name, workload.UID, testDefaultPlacement, testLocationName)
+	foreign := newExistingDeployment(name, types.UID("other-uid"), "other-placement")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newNetworkingScheme()).
+		WithObjects(foreign).
+		Build()
+
+	desired := newExistingDeployment(name, workload.UID, testDefaultPlacement)
+	_, err := upsertWorkloadDeployment(context.Background(), cl, workload, desired)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "other-uid")
+
+	var stored computev1alpha.WorkloadDeployment
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(foreign), &stored))
+	assert.Equal(t, types.UID("other-uid"), stored.Spec.WorkloadRef.UID)
+	assert.Equal(t, "other-placement", stored.Spec.PlacementName)
+}
+
+// TestUpsertWorkloadDeployment_CreatesOwnedDeployment verifies a new
+// deployment is created and controlled by its workload.
+func TestUpsertWorkloadDeployment_CreatesOwnedDeployment(t *testing.T) {
+	t.Parallel()
+
+	workload := newDeploymentMatchingTestWorkload()
+	name := naming.DeploymentName(workload.Name, workload.UID, testDefaultPlacement, testLocationName)
+	cl := fake.NewClientBuilder().WithScheme(newNetworkingScheme()).Build()
+
+	desired := newExistingDeployment(name, workload.UID, testDefaultPlacement)
+	deployment, err := upsertWorkloadDeployment(context.Background(), cl, workload, desired)
+	require.NoError(t, err)
+	assert.Equal(t, name, deployment.Name)
+	assert.True(t, metav1.IsControlledBy(deployment, workload))
 }
