@@ -2,6 +2,21 @@
 # config/components/shell-agent on cells that run Cilium. Unlike the portable
 # policies they police traffic to the node's own apiserver, kubelet and etcd,
 # so the endpoint, which holds no credential, cannot reach them at all.
+#
+# The agent may leave the cell only for the Karmada hub. Set the hub's name in
+# the deployment, replacing the placeholder karmada-hub.invalid:
+#
+#   - target:
+#       group: cilium.io
+#       kind: CiliumNetworkPolicy
+#       name: exec-agent
+#     patch: |-
+#       - op: test
+#         path: /spec/egress/1/toFQDNs/0/matchName
+#         value: karmada-hub.invalid
+#       - op: replace
+#         path: /spec/egress/1/toFQDNs/0/matchName
+#         value: karmada.example.net
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
