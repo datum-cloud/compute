@@ -28,6 +28,18 @@ mount root so URLs read `…/services/workloads/<workloadName>`, not
   request/p99/error KPIs when the workload is published on a URL). The Logs
   tab always queries instance stdout; ALB access logs are merged in when an
   HTTPProxy exists. Manage/Activity remain placeholders.
+- **Instance shell** (`…/instances/:instanceName/shell`) — an interactive
+  shell in one of the instance's containers, through an
+  `InstanceConsoleSession`. The tab appears only when the plugin was built
+  with the wasm client, the user may `create` `instanceconsolesessions`, the
+  project's `compute.datumapis.com/instanceconsolesessions` allowance is not
+  zero or missing (sessions are enabled per project by granting one; when the
+  allowance can't be read the tab shows and a create denial explains it), and the
+  instance's runtime class (or the catalog default) declares the `exec`
+  feature, so it stays hidden until an environment publishes that feature.
+  The connection runs in a Web Worker that loads the wasm client on first
+  use and holds the session key; closing the shell or leaving the page
+  terminates the worker and deletes the session.
 
 **Delete** is in the workload detail page header.
 The confirmation dialog (`src/components/delete-workload-dialog.tsx`) also
@@ -103,8 +115,12 @@ version — accepted for v1.
 ## This is its own project
 
 `ui/consumer/` has its **own** `package.json` and lockfile,
-independent of the rest of this repo. It never touches the repo's Makefile,
-CI, or other root files. Install and run it in isolation:
+independent of the rest of this repo. The one exception is the shell's wasm
+client: the image builds it with `make build-console-wasm` from the
+repository root, and `vite build` emits `bin/console-session.wasm` and
+`bin/console-session-wasm_exec.js` (or the files in `$CONSOLE_WASM_DIR`) as
+hashed assets, which the portal's asset proxy caches. Without them the build
+warns and the Shell tab stays hidden. Install and run it in isolation:
 
 ```bash
 cd ui/consumer
