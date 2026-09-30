@@ -1,0 +1,82 @@
+# Portable policies. Most CNIs do not police a pod's traffic to its own node,
+# so they cannot keep the endpoint off the node's apiserver; the Cilium
+# policies in config/components/shell-agent-cilium do.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: exec-agent
+  namespace: compute-shell-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: exec-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: exec-endpoint
+      ports:
+        - protocol: TCP
+          port: 7777
+  egress:
+    # The cell apiserver and the Karmada hub.
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: exec-endpoint
+  namespace: compute-shell-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: exec-endpoint
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: exec-agent
+      ports:
+        - protocol: TCP
+          port: 7777
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Relays, and QUIC address discovery. Traffic always goes through a relay;
+    # direct paths would need UDP egress to any address.
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: UDP
+          port: 7842

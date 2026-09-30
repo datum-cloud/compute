@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: exec-agent
+  namespace: compute-shell-system
+---
+# The tunnel endpoint needs no Kubernetes API access at all.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: exec-endpoint
+  namespace: compute-shell-system
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-shell-agent
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - pods/exec
+    verbs:
+      - create
+      - get
+  - apiGroups:
+      - compute.datumapis.com
+    resources:
+      - instances
+    verbs:
+      - get
+      - list
+      - watch
+  # Session copies are read here and only their finalizer is written; status
+  # goes to the hub copy.
+  - apiGroups:
+      - compute.datumapis.com
+    resources:
+      - instanceconsolesessions
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-shell-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: compute-shell-agent
+subjects:
+  - kind: ServiceAccount
+    name: exec-agent
+    namespace: compute-shell-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: exec-agent
+  namespace: compute-shell-system
+rules:
+  # Liveness, per-instance slots and the key rotation lock.
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - create
+      - update
+      - delete
+  # Create cannot be limited by name; reading and rotating can.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    resourceNames:
+      - endpoint-key-0
+      - endpoint-key-1
+    verbs:
+      - get
+      - update
+  # Restarting its paired endpoint after a key rotation.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    resourceNames:
+      - exec-endpoint-0
+      - exec-endpoint-1
+    verbs:
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: exec-agent
+  namespace: compute-shell-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: exec-agent
+subjects:
+  - kind: ServiceAccount
+    name: exec-agent
+    namespace: compute-shell-system
