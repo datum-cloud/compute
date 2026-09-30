@@ -206,7 +206,7 @@ func (a *Agent) finishSession(uid string, key client.ObjectKey, held *slot, resu
 		message = "The command exited."
 	}
 	me := a.EndpointID()
-	if _, err := a.end(ctx, key, result.reason, message, result.exitCode,
+	if _, err := a.end(ctx, key, result.reason, message, result.exitCode, stopped,
 		func(s *computev1alpha.InstanceConsoleSession) bool { return endpointOf(s) == me }); err != nil {
 		logger.Error(err, "record session end")
 	}

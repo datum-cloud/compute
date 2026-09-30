@@ -226,7 +226,7 @@ func (a *Agent) abandon(ctx context.Context, session *computev1alpha.InstanceCon
 			return err
 		}
 	}
-	if _, err := a.end(ctx, client.ObjectKeyFromObject(session), reason, endMessage(reason), nil,
+	if _, err := a.end(ctx, client.ObjectKeyFromObject(session), reason, endMessage(reason), nil, stopped,
 		func(s *computev1alpha.InstanceConsoleSession) bool { return endpointOf(s) == owner }); err != nil {
 		return err
 	}
@@ -242,7 +242,7 @@ func (a *Agent) abandon(ctx context.Context, session *computev1alpha.InstanceCon
 func (a *Agent) endUnconnected(ctx context.Context, session *computev1alpha.InstanceConsoleSession, reason string) error {
 	uid := sessionUID(session)
 	me := a.EndpointID()
-	ended, err := a.end(ctx, client.ObjectKeyFromObject(session), reason, endMessage(reason), nil,
+	ended, err := a.end(ctx, client.ObjectKeyFromObject(session), reason, endMessage(reason), nil, true,
 		func(s *computev1alpha.InstanceConsoleSession) bool {
 			return endpointOf(s) == me && readyReason(s) == computev1alpha.InstanceConsoleSessionReasonSessionReady
 		})
@@ -258,32 +258,37 @@ func (a *Agent) endUnconnected(ctx context.Context, session *computev1alpha.Inst
 }
 
 func (a *Agent) rejectUnclaimed(ctx context.Context, session *computev1alpha.InstanceConsoleSession, rej *rejection) error {
-	_, err := a.end(ctx, client.ObjectKeyFromObject(session), rej.reason, rej.message, nil,
+	_, err := a.end(ctx, client.ObjectKeyFromObject(session), rej.reason, rej.message, nil, true,
 		func(s *computev1alpha.InstanceConsoleSession) bool { return s.Status.Connection == nil })
 	return err
 }
 
-// settle frees the slot of an ended session once its process is stopped,
-// unless a live agent is still ending it.
+// settle frees the slot of an ended session once its process is stopped, and
+// then records when it was, unless a live agent is still ending it.
 func (a *Agent) settle(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
 	uid := sessionUID(session)
 	if a.isLive(uid) {
 		return ctrl.Result{RequeueAfter: cleanupRetryInterval}, nil
 	}
 	held, err := a.slotFor(ctx, uid)
-	if err != nil || held == nil {
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if held == nil && session.Status.EndedAt != nil {
+		return ctrl.Result{}, nil
 	}
 	if owner := endpointOf(session); owner != "" && owner != a.EndpointID() {
 		if alive, err := a.agentAlive(ctx, owner); err != nil || alive {
 			return ctrl.Result{RequeueAfter: LeaseDuration}, err
 		}
 	}
-	reaped, err := a.reap(ctx, held)
-	if err != nil || !reaped {
-		return ctrl.Result{RequeueAfter: cleanupRetryInterval}, err
+	if held != nil {
+		reaped, err := a.reap(ctx, held)
+		if err != nil || !reaped {
+			return ctrl.Result{RequeueAfter: cleanupRetryInterval}, err
+		}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, a.markStopped(ctx, client.ObjectKeyFromObject(session), uid)
 }
 
 // revoke ends a session that is still open because the control plane revoked
@@ -348,14 +353,20 @@ func (a *Agent) cleanUp(ctx context.Context, session *computev1alpha.InstanceCon
 		}
 	}
 	a.forget(uid)
+	if err := a.markStopped(ctx, client.ObjectKeyFromObject(session), uid); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, removeFinalizer(ctx, a.cell, client.ObjectKeyFromObject(session))
 }
 
 // end records a terminal reason on the cell copy if the session has not ended
 // yet and guard still holds for its latest state. It reports whether this
-// call ended the session.
+// call ended the session. endedAt is set only when stopped says nothing the
+// session started is still running, because the control plane takes it as
+// confirmation of cleanup; otherwise markStopped sets it once the processes
+// are stopped.
 func (a *Agent) end(ctx context.Context, key types.NamespacedName, reason, message string, exitCode *int32,
-	guard func(*computev1alpha.InstanceConsoleSession) bool) (bool, error) {
+	stopped bool, guard func(*computev1alpha.InstanceConsoleSession) bool) (bool, error) {
 	ended := false
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var s computev1alpha.InstanceConsoleSession
@@ -365,8 +376,10 @@ func (a *Agent) end(ctx context.Context, key types.NamespacedName, reason, messa
 		if isTerminal(&s) || guard != nil && !guard(&s) {
 			return nil
 		}
-		now := metav1.NewTime(a.now())
-		s.Status.EndedAt = &now
+		if stopped {
+			now := metav1.NewTime(a.now())
+			s.Status.EndedAt = &now
+		}
 		s.Status.ExitCode = exitCode
 		setReady(&s, metav1.ConditionFalse, reason, message)
 		if err := a.cell.Status().Update(ctx, &s); err != nil {
@@ -376,6 +389,25 @@ func (a *Agent) end(ctx context.Context, key types.NamespacedName, reason, messa
 		return nil
 	})
 	return ended, client.IgnoreNotFound(err)
+}
+
+// markStopped records endedAt on an ended session whose processes are now
+// known to be stopped. A copy with the same name that belongs to another
+// session is left alone.
+func (a *Agent) markStopped(ctx context.Context, key types.NamespacedName, uid string) error {
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var s computev1alpha.InstanceConsoleSession
+		if err := a.cell.Get(ctx, key, &s); err != nil {
+			return err
+		}
+		if sessionUID(&s) != uid || !isTerminal(&s) || s.Status.EndedAt != nil {
+			return nil
+		}
+		now := metav1.NewTime(a.now())
+		s.Status.EndedAt = &now
+		return a.cell.Status().Update(ctx, &s)
+	})
+	return client.IgnoreNotFound(err)
 }
 
 // revoked reports whether the control plane asked the cell to end the

@@ -295,6 +295,40 @@ func TestClientDisconnectStopsCommand(t *testing.T) {
 	}
 }
 
+func TestFailedStopLeavesEndUnconfirmed(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	addr := serve(t, h, a)
+	key := readySession(t, h, a)
+	h.exec.onSession = func(conn net.Conn, r *bufio.Reader) {
+		for {
+			if _, err := readFrame(r); err != nil {
+				return
+			}
+		}
+	}
+	h.exec.mu.Lock()
+	h.exec.killExit = 1
+	h.exec.mu.Unlock()
+
+	c := dialSession(t, addr, testUID, key, time.Now())
+	waitForConnected(t, h)
+	_ = c.conn.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !isTerminal(h.cellSession(testSession)) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s := h.cellSession(testSession)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonDisconnected)
+	if s.Status.EndedAt != nil {
+		t.Fatal("endedAt set although the command could not be confirmed stopped")
+	}
+	if len(h.slots()) != 1 {
+		t.Fatal("slot released although the command could not be confirmed stopped")
+	}
+}
+
 func TestOversizedFrameEndsSession(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()

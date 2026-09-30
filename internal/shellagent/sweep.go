@@ -94,8 +94,15 @@ func (a *Agent) sweep(ctx context.Context) error {
 		if err != nil || state != sessionEnded {
 			continue
 		}
-		if _, err := a.reap(ctx, s); err != nil {
+		reaped, err := a.reap(ctx, s)
+		if err != nil {
 			log.FromContext(ctx).Error(err, "reap orphaned session", "session", s.sessionUID)
+			continue
+		}
+		if reaped {
+			if err := a.markStopped(ctx, s.session, s.sessionUID); err != nil {
+				log.FromContext(ctx).Error(err, "record stopped session", "session", s.sessionUID)
+			}
 		}
 	}
 	for place := range places {

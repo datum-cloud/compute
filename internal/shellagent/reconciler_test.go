@@ -834,3 +834,61 @@ func TestAgentLeaseNamesAreDistinctAndValid(t *testing.T) {
 		t.Fatalf("lease name %q is invalid: %v", a, errs)
 	}
 }
+
+func TestEndIsConfirmedOnlyOnceProcessesStop(t *testing.T) {
+	h := newHarness(t)
+	lost, survivor := h.agent(), h.agent()
+	h.session(testSession, testUID)
+	h.reconcile(lost, testSession)
+	markConnected(h, testSession, h.clock.now().Add(time.Hour))
+	lost.releaseLease(h.ctx, lost.EndpointID())
+	h.exec.killExit = 1
+
+	h.reconcile(survivor, testSession)
+
+	s := h.cellSession(testSession)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonAgentLost)
+	if s.Status.EndedAt != nil {
+		t.Fatal("endedAt set while the session's processes may still run")
+	}
+	if len(h.slots()) != 1 {
+		t.Fatal("slot released before the processes were stopped")
+	}
+
+	if res := h.reconcile(survivor, testSession); res.RequeueAfter == 0 {
+		t.Fatal("expected a retry while processes may be running")
+	}
+	if h.cellSession(testSession).Status.EndedAt != nil {
+		t.Fatal("endedAt set after another failed stop")
+	}
+
+	h.exec.killExit = 0
+	h.reconcile(survivor, testSession)
+	s = h.cellSession(testSession)
+	if s.Status.EndedAt == nil {
+		t.Fatal("endedAt not set once the processes stopped")
+	}
+	if len(h.slots()) != 0 {
+		t.Fatal("slot kept after the processes stopped")
+	}
+}
+
+func TestSweepConfirmsEndOnceProcessesStop(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+	h.reconcile(a, testSession)
+	markConnected(h, testSession, h.clock.now().Add(time.Hour))
+	endAs(h, computev1alpha.InstanceConsoleSessionReasonDisconnected)
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if h.cellSession(testSession).Status.EndedAt == nil {
+		t.Fatal("the sweep stopped the processes but did not record it")
+	}
+	if len(h.slots()) != 0 {
+		t.Fatal("slot kept after the sweep stopped the processes")
+	}
+}
