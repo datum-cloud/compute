@@ -41,7 +41,6 @@ spec:
       # the regional iroh relays directly from the browser.
       contentSecurityPolicy:
       - "script-src 'wasm-unsafe-eval'"
-      - "worker-src 'self'"
       - "connect-src https://iroh-relay.us-central-1.datumconnect.net wss://iroh-relay.us-central-1.datumconnect.net https://iroh-relay.us-east-1.datumconnect.net wss://iroh-relay.us-east-1.datumconnect.net https://iroh-relay.us-east-3.datumconnect.net wss://iroh-relay.us-east-3.datumconnect.net https://iroh-relay.us-west-1.datumconnect.net wss://iroh-relay.us-west-1.datumconnect.net"
     provider:
       assets:
