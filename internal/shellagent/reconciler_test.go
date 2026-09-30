@@ -11,6 +11,7 @@ import (
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -23,7 +24,7 @@ import (
 
 func TestClaimPublishesConnection(t *testing.T) {
 	h := newHarness(t)
-	a := h.agent()
+	a := h.agent(noPolling)
 	h.session(testSession, testUID)
 
 	res := h.reconcile(a, testSession)
@@ -313,7 +314,7 @@ func TestNotConnectedDeadline(t *testing.T) {
 
 func TestExpiryStopsConnectedSession(t *testing.T) {
 	h := newHarness(t)
-	a := h.agent()
+	a := h.agent(noPolling)
 	h.session(testSession, testUID)
 	h.reconcile(a, testSession)
 	markConnected(h, testSession, h.clock.now().Add(time.Minute))
@@ -332,7 +333,7 @@ func TestExpiryStopsConnectedSession(t *testing.T) {
 
 func TestLivenessTakeover(t *testing.T) {
 	h := newHarness(t)
-	lost, survivor := h.agent(), h.agent()
+	lost, survivor := h.agent(noPolling), h.agent(noPolling)
 	h.session(testSession, testUID)
 	h.reconcile(lost, testSession)
 	markConnected(h, testSession, h.clock.now().Add(time.Hour))
@@ -719,5 +720,46 @@ func patchPod(h *harness, mutate func(*corev1.Pod)) {
 	pod.Status = status
 	if err := h.cell.Status().Update(h.ctx, &pod); err != nil {
 		h.t.Fatal(err)
+	}
+}
+
+// noPolling leaves a session's deadlines as the only reason to requeue it.
+func noPolling(c *Config) {
+	c.HubPollInterval = 24 * time.Hour
+}
+
+func TestOpenSessionsPollTheirHubCopy(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+
+	if res := h.reconcile(a, testSession); res.RequeueAfter != a.cfg.HubPollInterval {
+		t.Fatalf("requeue after %v for a claimed session, want the hub poll interval", res.RequeueAfter)
+	}
+	s := h.hubSession(testSession)
+	now := metav1.NewTime(h.clock.now())
+	s.DeletionTimestamp = &now
+	if err := h.hub.Delete(h.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+
+	h.reconcile(a, testSession)
+
+	if err := h.hub.Get(h.ctx, client.ObjectKeyFromObject(s), s); !apierrors.IsNotFound(err) {
+		t.Fatalf("hub copy still held after its deletion was polled: %v", err)
+	}
+	if len(h.slots()) != 0 {
+		t.Fatal("slot kept after the hub copy was deleted")
+	}
+}
+
+func TestEndedSessionWithoutFinalizerIsNotPolled(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+	endUnavailable(t, h)
+
+	if res := h.reconcile(a, testSession); res.RequeueAfter != 0 {
+		t.Fatalf("requeue after %v for an ended session this agent never held", res.RequeueAfter)
 	}
 }

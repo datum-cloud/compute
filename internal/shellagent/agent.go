@@ -56,6 +56,10 @@ type Config struct {
 	// pong, before the agent ends the session as Disconnected. It must be
 	// longer than PingInterval.
 	PongTimeout time.Duration
+	// HubPollInterval is how often the agent rereads the hub copy of a session
+	// that is open or still holds its finalizer. The hub lets a cell read
+	// sessions only by name, so there is nothing to watch.
+	HubPollInterval time.Duration
 }
 
 // DefaultConfig returns the contract's limits.
@@ -71,6 +75,7 @@ func DefaultConfig() Config {
 		SweepInterval:     time.Minute,
 		PingInterval:      10 * time.Second,
 		PongTimeout:       20 * time.Second,
+		HubPollInterval:   10 * time.Second,
 	}
 }
 

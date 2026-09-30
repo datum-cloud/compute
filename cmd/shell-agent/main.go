@@ -26,7 +26,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -148,13 +147,6 @@ func run(opts options, cfg shellagent.Config) error {
 	if err != nil {
 		return fmt.Errorf("create manager: %w", err)
 	}
-	hubCluster, err := cluster.New(hubConfig, func(o *cluster.Options) { o.Scheme = scheme })
-	if err != nil {
-		return fmt.Errorf("create hub cluster: %w", err)
-	}
-	if err := mgr.Add(hubCluster); err != nil {
-		return err
-	}
 	cellClient, err := client.New(cellConfig, client.Options{Scheme: scheme})
 	if err != nil {
 		return err
@@ -178,7 +170,7 @@ func run(opts options, cfg shellagent.Config) error {
 	if err := agent.EnsureIdentity(ctx); err != nil {
 		return err
 	}
-	if err := agent.SetupWithManager(mgr, hubCluster); err != nil {
+	if err := agent.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("set up controller: %w", err)
 	}
 

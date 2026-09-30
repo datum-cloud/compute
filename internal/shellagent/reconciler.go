@@ -13,12 +13,9 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
@@ -28,14 +25,15 @@ const (
 	cleanupRetryInterval = 5 * time.Second
 )
 
-// SetupWithManager reconciles session copies delivered to the cell, and their
-// hub copies, which share a namespace and name with them.
-func (a *Agent) SetupWithManager(mgr ctrl.Manager, hub cluster.Cluster) error {
+// SetupWithManager reconciles session copies delivered to the cell. The hub
+// grants each cell only get, patch and status writes on sessions, so the agent
+// cannot watch hub copies; it reads a session's hub copy by the cell copy's
+// namespace and name, and polls it while the session is open or holds the
+// agent's finalizer.
+func (a *Agent) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("shell-agent").
 		For(&computev1alpha.InstanceConsoleSession{}).
-		WatchesRawSource(source.Kind(hub.GetCache(), &computev1alpha.InstanceConsoleSession{},
-			&handler.TypedEnqueueRequestForObject[*computev1alpha.InstanceConsoleSession]{})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 16}).
 		Complete(a)
 }
@@ -48,53 +46,62 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 	if err := a.sessions.Get(ctx, req.NamespacedName, &cell); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	uid := sessionUID(&cell)
-	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("session", uid))
+	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("session", sessionUID(&cell)))
 
 	var hub computev1alpha.InstanceConsoleSession
 	err := a.hub.Get(ctx, req.NamespacedName, &hub)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
-	if apierrors.IsNotFound(err) || sessionUID(&hub) != uid {
+	if apierrors.IsNotFound(err) || sessionUID(&hub) != sessionUID(&cell) {
 		return a.cleanUp(ctx, &cell, nil)
 	}
+	res, err := a.reconcileSession(ctx, &cell, &hub)
+	poll := !isTerminal(&hub) || controllerutil.ContainsFinalizer(&hub, computev1alpha.InstanceConsoleSessionAgentFinalizer)
+	if err == nil && poll && (res.RequeueAfter <= 0 || res.RequeueAfter > a.cfg.HubPollInterval) {
+		res.RequeueAfter = a.cfg.HubPollInterval
+	}
+	return res, err
+}
+
+func (a *Agent) reconcileSession(ctx context.Context, cell, hub *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
+	uid := sessionUID(cell)
 	if !hub.DeletionTimestamp.IsZero() || !cell.DeletionTimestamp.IsZero() {
-		return a.cleanUp(ctx, &cell, &hub)
+		return a.cleanUp(ctx, cell, hub)
 	}
 	if uid == "" {
-		return ctrl.Result{}, a.rejectUnclaimed(ctx, &hub, reject(computev1alpha.InstanceConsoleSessionReasonInvalid,
+		return ctrl.Result{}, a.rejectUnclaimed(ctx, hub, reject(computev1alpha.InstanceConsoleSessionReasonInvalid,
 			"The session was delivered without its session UID."))
 	}
-	if isTerminal(&hub) {
+	if isTerminal(hub) {
 		a.forget(uid)
-		return a.settle(ctx, &hub)
+		return a.settle(ctx, hub)
 	}
 
-	owner := endpointOf(&hub)
+	owner := endpointOf(hub)
 	switch {
 	case owner == "":
-		return a.claim(ctx, &cell, &hub)
+		return a.claim(ctx, cell, hub)
 	case owner != a.EndpointID():
-		return a.watchOwner(ctx, &hub, owner)
+		return a.watchOwner(ctx, hub, owner)
 	}
 
-	a.track(uid, req.NamespacedName)
+	a.track(uid, client.ObjectKeyFromObject(cell))
 	now := a.now()
-	switch readyReason(&hub) {
+	switch readyReason(hub) {
 	case computev1alpha.InstanceConsoleSessionReasonSessionReady:
 		if a.draining.Load() {
-			return ctrl.Result{}, a.endUnconnected(ctx, &hub, computev1alpha.InstanceConsoleSessionReasonAgentShutdown)
+			return ctrl.Result{}, a.endUnconnected(ctx, hub, computev1alpha.InstanceConsoleSessionReasonAgentShutdown)
 		}
 		if hub.Status.ConnectBefore != nil && now.Before(hub.Status.ConnectBefore.Time) {
 			return ctrl.Result{RequeueAfter: hub.Status.ConnectBefore.Sub(now)}, nil
 		}
 		log.FromContext(ctx).Info("session was not connected in time")
-		return ctrl.Result{}, a.endUnconnected(ctx, &hub, computev1alpha.InstanceConsoleSessionReasonNotConnected)
+		return ctrl.Result{}, a.endUnconnected(ctx, hub, computev1alpha.InstanceConsoleSessionReasonNotConnected)
 	case computev1alpha.InstanceConsoleSessionReasonConnected:
 		if !a.isLive(uid) {
 			log.FromContext(ctx).Info("ending a session this agent's previous run served")
-			return ctrl.Result{}, a.abandon(ctx, &hub, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
+			return ctrl.Result{}, a.abandon(ctx, hub, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
 		}
 		if hub.Status.ExpiresAt != nil && now.Before(hub.Status.ExpiresAt.Time) {
 			return ctrl.Result{RequeueAfter: hub.Status.ExpiresAt.Sub(now)}, nil

@@ -10,6 +10,7 @@ import (
 	"crypto/sha1" //nolint:gosec // RFC 6455 derives the accept key with SHA-1
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -19,15 +20,18 @@ import (
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/consolesession"
@@ -66,7 +70,7 @@ type harness struct {
 	t     *testing.T
 	ctx   context.Context
 	cell  client.Client
-	hub   client.Client
+	hub   client.WithWatch
 	exec  *fakeAPIServer
 	clock *clock
 }
@@ -125,6 +129,32 @@ func newHarness(t *testing.T) *harness {
 	}
 }
 
+// cellHubAccess limits a hub client to what the hub grants a cell's agent:
+// get and patch on sessions and writes to their status, and nothing else.
+func cellHubAccess(hub client.WithWatch) client.WithWatch {
+	forbidden := func(verb string) error {
+		return apierrors.NewForbidden(computev1alpha.GroupVersion.WithResource("instanceconsolesessions").GroupResource(),
+			"", fmt.Errorf("shell agents may not %s sessions on the hub", verb))
+	}
+	return interceptor.NewClient(hub, interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return forbidden("list")
+		},
+		Watch: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) (watch.Interface, error) {
+			return nil, forbidden("watch")
+		},
+		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+			return forbidden("create")
+		},
+		Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+			return forbidden("update")
+		},
+		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+			return forbidden("delete")
+		},
+	})
+}
+
 // agent returns an agent whose endpoint ID derives from a fresh key and whose
 // liveness Lease is current.
 func (h *harness) agent(mutate ...func(*Config)) *Agent {
@@ -137,7 +167,7 @@ func (h *harness) agent(mutate ...func(*Config)) *Agent {
 	for _, m := range mutate {
 		m(&cfg)
 	}
-	a, err := New(cfg, h.cell, h.cell, h.hub, h.exec, "test")
+	a, err := New(cfg, h.cell, h.cell, cellHubAccess(h.hub), h.exec, "test")
 	if err != nil {
 		h.t.Fatal(err)
 	}
