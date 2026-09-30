@@ -35,6 +35,12 @@ const (
 
 	maxFrameSize = 16 << 20
 
+	// maxStdinMessage is the most standard input one message carries. The
+	// Kubernetes apiserver reads each WebSocket frame as a whole message, so a
+	// fragmented message loses every frame after its first. Messages up to this
+	// size fit the write buffer and go out as a single frame.
+	maxStdinMessage = 32 << 10
+
 	outputQueue = 64
 
 	statusSuccess         = "Success"
@@ -108,6 +114,7 @@ func Start(ctx context.Context, conn net.Conn, key ed25519.PrivateKey, sessionUI
 		NetDialContext:   func(context.Context, string, string) (net.Conn, error) { return conn, nil },
 		Subprotocols:     []string{consolesession.SubProtocol},
 		HandshakeTimeout: 20 * time.Second,
+		WriteBufferSize:  maxStdinMessage + 1,
 	}
 	u := url.URL{Scheme: "ws", Host: target, Path: consolesession.ExecPath(sessionUID)}
 	ws, resp, err := dialer.DialContext(ctx, u.String(), header)
@@ -128,10 +135,16 @@ func Start(ctx context.Context, conn net.Conn, key ed25519.PrivateKey, sessionUI
 
 // Write sends p to the command's standard input.
 func (s *Stream) Write(p []byte) (int, error) {
-	if err := s.send(channelStdin, p); err != nil {
-		return 0, err
+	written := 0
+	for len(p) > 0 {
+		chunk := p[:min(len(p), maxStdinMessage)]
+		if err := s.send(channelStdin, chunk); err != nil {
+			return written, err
+		}
+		written += len(chunk)
+		p = p[len(chunk):]
 	}
-	return len(p), nil
+	return written, nil
 }
 
 // CloseStdin tells the command its standard input has ended.
