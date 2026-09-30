@@ -114,6 +114,13 @@ func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceCon
 	if !a.claiming() || a.openCount() >= a.cfg.MaxOpenSessions {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
 	}
+	ready, err := a.endpointReady(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !ready {
+		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
+	}
 	target, rej, err := a.check(ctx, cell)
 	if errors.Is(err, errNotInCell) {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
