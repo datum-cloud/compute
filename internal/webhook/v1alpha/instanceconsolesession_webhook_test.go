@@ -135,7 +135,7 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 		{
 			name:    "refuses a session for an instance that does not exist",
 			objs:    []client.Object{sessionWebhookClass("general-purpose", runtimeclass.FeatureExec)},
-			wantErr: "spec.instanceRef.name: Not found",
+			wantErr: `Can't open a shell session in instance "web-0": the project has no instance with that name`,
 		},
 		{
 			name: "refuses a session that pre-sets an event marker, which would keep its events out of the activity log",
@@ -147,7 +147,7 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 				"compute.datumapis.com/sessionstarted-event": "recorded",
 				"compute.datumapis.com/sessionended-event":   "recorded",
 			},
-			wantErr: "metadata.annotations[compute.datumapis.com/sessionended-event]: Forbidden",
+			wantErr: "annotations in the compute.datumapis.com namespace are set by the platform",
 		},
 		{
 			name: "refuses a session for a class without exec",
@@ -155,7 +155,7 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 				sessionWebhookInstance("unikernel"),
 				sessionWebhookClass("unikernel", runtimeclass.FeatureSandboxRuntime),
 			},
-			wantErr: `the "unikernel" runtime class does not support shell sessions`,
+			wantErr: `Can't open a shell session in instance "web-0": the "unikernel" runtime class does not support shell sessions`,
 		},
 	}
 
@@ -183,4 +183,30 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Admission runs before generateName is resolved, so the refusal must not
+// quote the session's empty name, which read as `InstanceConsoleSession "" is
+// invalid` in the CLI and the portal.
+func TestInstanceConsoleSessionWebhookRefusalNamesTheInstance(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceConsoleSessions, true)
+	w := newSessionWebhook(
+		sessionWebhookInstance("unikernel"),
+		sessionWebhookClass("unikernel", runtimeclass.FeatureSandboxRuntime),
+	)
+	session := sessionWebhookSession()
+	session.Name = ""
+	session.GenerateName = "web-0-"
+
+	err := w.Default(sessionWebhookContext("alice@example.com"), session)
+
+	var status *apierrors.StatusError
+	require.ErrorAs(t, err, &status)
+	assert.Equal(t, `Can't open a shell session in instance "web-0": the "unikernel" runtime class does not support shell sessions`,
+		status.ErrStatus.Message)
+	assert.NotContains(t, err.Error(), `""`)
+	require.NotNil(t, status.ErrStatus.Details)
+	require.Len(t, status.ErrStatus.Details.Causes, 1)
+	assert.Equal(t, "spec.instanceRef", status.ErrStatus.Details.Causes[0].Field,
+		"the field stays machine-readable in the status causes")
 }

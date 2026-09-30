@@ -310,3 +310,32 @@ func TestWaitReadyTimesOut(t *testing.T) {
 		t.Fatalf("waitReady() error = %v, want a timeout", err)
 	}
 }
+
+func TestClosedOnSignal(t *testing.T) {
+	interruptedCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	closed := consoleclient.Result{ExitCode: 1, Reason: computev1alpha.InstanceConsoleSessionReasonClosedByUser}
+	tests := []struct {
+		name string
+		ctx  context.Context
+		res  consoleclient.Result
+		err  error
+		want bool
+	}{
+		{name: "agent confirmed the close datumctl sent on a signal", ctx: interruptedCtx, res: closed, want: true},
+		{name: "stream broke after a signal", ctx: interruptedCtx, err: errors.New("closed"), want: true},
+		{name: "command exited as the signal arrived", ctx: interruptedCtx, res: consoleclient.Result{ExitCode: 3}},
+		{name: "another client closed the session", ctx: context.Background(), res: closed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := closedOnSignal(tt.ctx, tt.res, tt.err); got != tt.want {
+				t.Fatalf("closedOnSignal() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	var exit *util.ExitError
+	if err := interrupted(interruptedCtx, nil); !errors.As(err, &exit) || exit.Code != exitInterrupted {
+		t.Fatalf("interrupted() = %v, want exit %d", err, exitInterrupted)
+	}
+}

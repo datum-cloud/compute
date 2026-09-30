@@ -246,9 +246,16 @@ const (
 	// time, so sessions are not available for the instance right now.
 	InstanceConsoleSessionReasonUnavailable = "Unavailable"
 
-	// InstanceConsoleSessionReasonDisconnected means the client went away
-	// before the command exited, and the platform stopped the command.
+	// InstanceConsoleSessionReasonDisconnected means the connection to the
+	// client was lost before the command exited, and the platform stopped the
+	// command.
 	InstanceConsoleSessionReasonDisconnected = "Disconnected"
+
+	// InstanceConsoleSessionReasonClosedByUser means the client closed the
+	// session on purpose before the command exited, and the platform stopped
+	// the command. The client reports it, so it is advisory: a revoke,
+	// expiry or other ending the platform starts takes precedence.
+	InstanceConsoleSessionReasonClosedByUser = "ClosedByUser"
 )
 
 // Finalizers on InstanceConsoleSessions.

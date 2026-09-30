@@ -65,6 +65,10 @@ type Config struct {
 	// list or stop session processes, so a hung exec cannot hold a reconcile
 	// worker or the sweep. Zero means KillGrace plus 30 seconds.
 	ExecTimeout time.Duration
+	// ExitPollInterval is how often the agent checks for a connected
+	// command's exit code itself, in a container too bare for the exit watch
+	// to wait in. Zero means two seconds.
+	ExitPollInterval time.Duration
 }
 
 // DefaultConfig returns the contract's limits.
@@ -113,6 +117,9 @@ func New(cfg Config, sessions client.Reader, cell client.Client, exec Executor, 
 	}
 	if cfg.ExecTimeout <= 0 {
 		cfg.ExecTimeout = cfg.KillGrace + 30*time.Second
+	}
+	if cfg.ExitPollInterval <= 0 {
+		cfg.ExitPollInterval = 2 * time.Second
 	}
 	if cfg.PingInterval <= 0 || cfg.PongTimeout <= cfg.PingInterval {
 		return nil, errors.New("the ping interval must be positive and shorter than the pong timeout")

@@ -111,6 +111,10 @@ var (
 		reason:  computev1alpha.InstanceConsoleSessionReasonDisconnected,
 		message: endMessage(computev1alpha.InstanceConsoleSessionReasonDisconnected),
 	}
+	outcomeClosedByUser = outcome{
+		reason:  computev1alpha.InstanceConsoleSessionReasonClosedByUser,
+		message: endMessage(computev1alpha.InstanceConsoleSessionReasonClosedByUser),
+	}
 	outcomeStreamLost = outcome{
 		reason:  computev1alpha.InstanceConsoleSessionReasonInstanceNotRunning,
 		message: "The instance stopped the command's stream.",
@@ -132,9 +136,11 @@ var pingPayload = []byte("shell-agent")
 // relay copies frames both ways until the command exits, either side goes
 // away, or ctx ends. It returns nil when ctx ended first. The client is pinged
 // every pingInterval and counts as gone once it has sent nothing, not even a
-// pong, for pongTimeout.
+// pong, for pongTimeout. A code on exited ends the session as the command's
+// exit even while the stream stays open, as it does when a background job
+// still holds the terminal.
 func relay(ctx context.Context, c *clientStream, fromClient *bufio.Reader, backend net.Conn, fromBackend *bufio.Reader,
-	pingInterval, pongTimeout time.Duration) *outcome {
+	pingInterval, pongTimeout time.Duration, exited <-chan int32) *outcome {
 	results := make(chan outcome, 2)
 	done := make(chan struct{})
 	defer close(done)
@@ -144,6 +150,8 @@ func relay(ctx context.Context, c *clientStream, fromClient *bufio.Reader, backe
 	select {
 	case o := <-results:
 		return &o
+	case code := <-exited:
+		return &outcome{reason: computev1alpha.InstanceConsoleSessionReasonCompleted, exitCode: &code}
 	case <-ctx.Done():
 		return nil
 	}
@@ -211,7 +219,9 @@ func (c *clientStream) pump(r *bufio.Reader) outcome {
 // forward relays the client's frames to the apiserver, except pongs to the
 // agent's own pings. The apiserver reads only the first frame of a fragmented
 // message, so fragmented messages are reassembled and sent as one frame. Any
-// frame, including an unsolicited pong, shows the client is still there.
+// frame, including an unsolicited pong, shows the client is still there. A
+// close frame is the client ending the session on purpose; a connection that
+// breaks or goes quiet without one was lost.
 func (c *clientStream) forward(r *bufio.Reader, backend net.Conn, idle time.Duration) outcome {
 	var message []byte
 	var messageOp byte
@@ -225,8 +235,10 @@ func (c *clientStream) forward(r *bufio.Reader, backend net.Conn, idle time.Dura
 		switch {
 		case errors.As(err, &tooLarge):
 			return outcomeFrameTooLarge
-		case err != nil, f.opcode == opClose:
+		case err != nil:
 			return outcomeClientGone
+		case f.opcode == opClose:
+			return outcomeClosedByUser
 		case f.opcode == opPong && bytes.Equal(f.payload, pingPayload):
 			continue
 		}

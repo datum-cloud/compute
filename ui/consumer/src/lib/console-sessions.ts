@@ -1,13 +1,15 @@
 import { ApiError, getProjectScopedBase } from './api';
+import { DEFAULT_SHELL_COMMAND } from './shell-command';
 
 const SESSIONS_PATH =
   '/apis/compute.datumapis.com/v1alpha/namespaces/default/instanceconsolesessions';
+const EVENTS_PATH = '/apis/events.k8s.io/v1/namespaces/default/events';
 const ALLOWANCE_BUCKETS_PATH =
   '/apis/quota.miloapis.com/v1alpha1/namespaces/milo-system/allowancebuckets?labelSelector=quota.miloapis.com%2Fconsumer-kind%3DProject';
 
 export const SESSION_RESOURCE_TYPE = 'compute.datumapis.com/instanceconsolesessions';
 
-export const SHELL_COMMAND = ['sh'];
+export const SHELL_COMMAND = [DEFAULT_SHELL_COMMAND];
 
 export interface SessionConnection {
   endpointID: string;
@@ -16,7 +18,7 @@ export interface SessionConnection {
 }
 
 export interface RawConsoleSession {
-  metadata?: { name?: string; namespace?: string; uid?: string };
+  metadata?: { name?: string; namespace?: string; uid?: string; resourceVersion?: string };
   status?: {
     connection?: Partial<SessionConnection>;
     exitCode?: number;
@@ -30,10 +32,27 @@ export interface SessionRef {
   uid: string;
 }
 
+export interface CreatedSession extends SessionRef {
+  resourceVersion: string;
+  initial: RawConsoleSession;
+}
+
+export interface SessionWatchEvent {
+  type: 'ADDED' | 'MODIFIED' | 'DELETED' | 'BOOKMARK' | 'ERROR';
+  object: RawConsoleSession;
+}
+
+export interface SessionEnding {
+  reason: string;
+  message?: string;
+  exitCode?: number;
+}
+
 export interface NewSession {
   instanceName: string;
   instanceUid: string;
   containerName: string;
+  command: string[];
   clientPublicKey: string;
 }
 
@@ -43,22 +62,24 @@ export type SessionProgress =
   | { kind: 'ended'; reason: string; message: string; exitCode?: number };
 
 const REASON_MESSAGES: Record<string, string> = {
-  Completed: 'The shell exited.',
   Expired: 'The session reached its time limit.',
   Revoked: 'The session was closed.',
-  NotConnected: 'The shell was not reached in time. Open a new shell to try again.',
-  AgentShutdown: 'The platform closed the session for maintenance. Open a new shell to continue.',
-  AgentLost: 'The platform lost contact with the session. Open a new shell to continue.',
+  NotConnected: "The browser didn't reach the shell in time. Try again.",
+  AgentShutdown: 'Datum closed the session for maintenance. Connect again to continue.',
+  AgentLost: 'Datum lost contact with the session. Connect again to continue.',
   TooManySessions:
-    'This instance already has the most shells it can hold open. Close one and try again.',
-  NoShell: 'This container has no shell to open.',
-  CommandUnavailable: 'This container cannot run a shell.',
-  InstanceNotRunning: 'The instance is not running.',
+    'This instance already has as many shells open as it allows. Close one and try again.',
+  NoShell:
+    "This container has no shell (sh), so a shell session can't start. Datum runs every command through sh, so no command can run in this container.",
+  InstanceNotRunning: "The instance isn't running.",
   InstanceNotFound: 'The instance no longer exists.',
-  Invalid: 'The platform could not open this shell.',
-  Unavailable: "Shell sessions aren't available for this instance right now. Try again later.",
-  Disconnected: 'The shell was closed because the connection to it was lost.',
+  Invalid: "Datum couldn't open this shell.",
+  Unavailable: 'No part of Datum took the session in time. Try again shortly.',
+  Disconnected: 'The connection to the session was lost, so Datum stopped the command.',
+  ClosedByUser: 'The shell was closed.',
 };
+
+export const SESSION_GONE_MESSAGE = "The session ended, but Datum couldn't say why. Try again.";
 
 export const TOO_MANY_SESSIONS_MESSAGE =
   'Too many open sessions in this project. Close another shell and try again.';
@@ -93,22 +114,36 @@ export async function fetchSessionAllowance(projectId: string): Promise<number |
   }
 }
 
-export function reasonMessage(reason: string, message?: string): string {
-  return message?.trim() || REASON_MESSAGES[reason] || 'The session ended.';
+export function describeEnding(ending: SessionEnding, command: string[] = SHELL_COMMAND): string {
+  const { reason, message, exitCode } = ending;
+  if (reason === 'Completed' || reason === '') {
+    return exitCode ? `The shell exited with code ${exitCode}.` : 'The shell exited.';
+  }
+  if (reason === 'CommandUnavailable') {
+    return command[0]
+      ? `${command[0]} isn't installed in this container.`
+      : "The command isn't installed in this container.";
+  }
+  if (reason === 'Invalid') return message?.trim() || REASON_MESSAGES.Invalid;
+  return REASON_MESSAGES[reason] ?? (message?.trim() || 'The session ended.');
+}
+
+export function sessionEnding(raw: RawConsoleSession): SessionEnding | undefined {
+  const ready = raw.status?.conditions?.find((c) => c.type === 'Ready');
+  if (ready?.status !== 'False') return undefined;
+  return {
+    reason: ready.reason ?? '',
+    message: ready.message ?? '',
+    exitCode: raw.status?.exitCode,
+  };
 }
 
 export function sessionProgress(raw: RawConsoleSession): SessionProgress {
+  const ended = sessionEnding(raw);
+  if (ended) return { kind: 'ended', ...ended, message: ended.message ?? '' };
   const ready = raw.status?.conditions?.find((c) => c.type === 'Ready');
-  if (!ready || ready.status === 'Unknown' || !ready.status) return { kind: 'pending' };
+  if (!ready || ready.status !== 'True') return { kind: 'pending' };
   const reason = ready.reason ?? '';
-  if (ready.status === 'False') {
-    return {
-      kind: 'ended',
-      reason,
-      message: reasonMessage(reason, ready.message),
-      exitCode: raw.status?.exitCode,
-    };
-  }
   const c = raw.status?.connection;
   if (reason === 'SessionReady' && c?.endpointID && c.target && c.relayURLs?.length) {
     return {
@@ -130,7 +165,10 @@ export function isQuotaDenial(message: string): boolean {
   return /reached your quota|insufficient quota/i.test(message);
 }
 
-export function createErrorMessage(status: number, message: string, allowance?: number): string {
+const ADMISSION_PREFIX = /^admission webhook "[^"]*" denied the request: /;
+
+export function createErrorMessage(status: number, raw: string, allowance?: number): string {
+  const message = raw.replace(ADMISSION_PREFIX, '');
   if (isQuotaDenial(message)) {
     if (allowance === undefined) return SESSION_QUOTA_MESSAGE;
     return allowance === 0 ? SESSIONS_NOT_ENABLED_MESSAGE : TOO_MANY_SESSIONS_MESSAGE;
@@ -150,7 +188,7 @@ async function statusMessage(res: Response): Promise<string> {
   }
 }
 
-export async function createSession(projectId: string, input: NewSession): Promise<SessionRef> {
+export async function createSession(projectId: string, input: NewSession): Promise<CreatedSession> {
   const res = await fetch(`${getProjectScopedBase(projectId)}${SESSIONS_PATH}`, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -161,7 +199,7 @@ export async function createSession(projectId: string, input: NewSession): Promi
       spec: {
         instanceRef: { name: input.instanceName, uid: input.instanceUid },
         containerName: input.containerName,
-        command: SHELL_COMMAND,
+        command: input.command,
         stdin: true,
         terminal: true,
         clientPublicKey: input.clientPublicKey,
@@ -178,7 +216,49 @@ export async function createSession(projectId: string, input: NewSession): Promi
     name: body.metadata?.name ?? '',
     namespace: body.metadata?.namespace ?? 'default',
     uid: body.metadata?.uid ?? '',
+    resourceVersion: body.metadata?.resourceVersion ?? '',
+    initial: body,
   };
+}
+
+export async function* readWatchStream(
+  body: ReadableStream<Uint8Array>
+): AsyncGenerator<SessionWatchEvent> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      buffered += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const lines = buffered.split('\n');
+      buffered = done ? '' : (lines.pop() ?? '');
+      for (const line of lines) {
+        if (line.trim()) yield JSON.parse(line) as SessionWatchEvent;
+      }
+      if (done) return;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function* watchSession(
+  projectId: string,
+  name: string,
+  resourceVersion: string,
+  signal: AbortSignal
+): AsyncGenerator<SessionWatchEvent> {
+  const query = new URLSearchParams({ watch: 'true', fieldSelector: `metadata.name=${name}` });
+  if (resourceVersion) query.set('resourceVersion', resourceVersion);
+  const res = await fetch(`${getProjectScopedBase(projectId)}${SESSIONS_PATH}?${query}`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, `The session could not be watched (${res.status}).`);
+  }
+  yield* readWatchStream(res.body);
 }
 
 export async function getSession(projectId: string, name: string): Promise<RawConsoleSession> {
@@ -187,6 +267,53 @@ export async function getSession(projectId: string, name: string): Promise<RawCo
   });
   if (!res.ok) throw new ApiError(res.status, `The session could not be read (${res.status}).`);
   return (await res.json()) as RawConsoleSession;
+}
+
+export interface RawSessionEvent {
+  reason?: string;
+  note?: string;
+  metadata?: { annotations?: Record<string, string> };
+}
+
+interface RawSessionEventList {
+  items?: RawSessionEvent[];
+}
+
+const REASON_ANNOTATION = 'compute.datumapis.com/reason';
+const EXIT_CODE_ANNOTATION = 'compute.datumapis.com/exit-code';
+
+export function sessionEndingFromEvent(event: RawSessionEvent): SessionEnding | undefined {
+  const annotations = event.metadata?.annotations ?? {};
+  const reason = annotations[REASON_ANNOTATION];
+  if (event.reason !== 'SessionEnded' || !reason) return undefined;
+  const code = Number.parseInt(annotations[EXIT_CODE_ANNOTATION] ?? '', 10);
+  return Number.isNaN(code) ? { reason } : { reason, exitCode: code };
+}
+
+async function readJson<T>(url: string): Promise<T | undefined> {
+  try {
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    return res.ok ? ((await res.json()) as T) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function fetchSessionEnding(
+  projectId: string,
+  uid: string
+): Promise<SessionEnding | undefined> {
+  const base = `${getProjectScopedBase(projectId)}${EVENTS_PATH}`;
+  const named = await readJson<RawSessionEvent>(`${base}/${uid}.sessionended`);
+  const ending = named && sessionEndingFromEvent(named);
+  if (ending) return ending;
+  const query = new URLSearchParams({ fieldSelector: `regarding.uid=${uid},reason=SessionEnded` });
+  const list = await readJson<RawSessionEventList>(`${base}?${query}`);
+  for (const event of list?.items ?? []) {
+    const found = sessionEndingFromEvent(event);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 export async function deleteSession(projectId: string, name: string): Promise<void> {

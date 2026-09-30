@@ -3,6 +3,7 @@ import {
   canShowShell,
   initialContainer,
   resolveRuntimeClass,
+  shellStatusBadge,
   toRuntimeClasses,
   type RuntimeClassSummary,
 } from './instance-shell';
@@ -83,11 +84,32 @@ describe('initialContainer', () => {
     expect(initialContainer(['app'])).toBe('app');
   });
 
-  test('leaves the choice to the user when there are several', () => {
-    expect(initialContainer(['app', 'sidecar'])).toBeUndefined();
+  test('selects the first of several, which the picker still shows', () => {
+    expect(initialContainer(['app', 'sidecar'])).toBe('app');
   });
 
   test('selects nothing when there are none', () => {
     expect(initialContainer([])).toBeUndefined();
+  });
+});
+
+describe('shellStatusBadge', () => {
+  test('draws an ended session with the solid theme, which stays readable on white', () => {
+    expect(shellStatusBadge({ phase: 'ended' })).toEqual({
+      label: 'Ended',
+      type: 'muted',
+      theme: 'solid',
+    });
+  });
+
+  test('keeps the light theme for coloured states', () => {
+    expect(shellStatusBadge({ phase: 'connected' })).toMatchObject({
+      type: 'success',
+      theme: 'light',
+    });
+    expect(shellStatusBadge({ phase: 'waiting' })).toMatchObject({
+      type: 'warning',
+      theme: 'light',
+    });
   });
 });

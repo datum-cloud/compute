@@ -5,8 +5,10 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -84,9 +86,27 @@ func (w *instanceConsoleSessionWebhook) validateCreate(ctx context.Context, sess
 		}
 	}
 	if errs := validation.ValidateInstanceConsoleSessionCreate(session, opts); len(errs) > 0 {
-		return apierrors.NewInvalid(computev1alpha.GroupVersion.WithKind("InstanceConsoleSession").GroupKind(), session.Name, errs)
+		return refusal(session, errs)
 	}
 	return nil
+}
+
+// refusal explains a refused session by the instance it names. Admission runs
+// before the API server resolves generateName, so the session itself usually
+// has no name yet.
+func refusal(session *computev1alpha.InstanceConsoleSession, errs field.ErrorList) *apierrors.StatusError {
+	err := apierrors.NewInvalid(computev1alpha.GroupVersion.WithKind("InstanceConsoleSession").GroupKind(), session.Name, errs)
+	details := make([]string, 0, len(errs))
+	for _, e := range errs {
+		if e.Detail != "" {
+			details = append(details, e.Detail)
+		} else {
+			details = append(details, e.Error())
+		}
+	}
+	err.ErrStatus.Message = fmt.Sprintf("Can't open a shell session in instance %q: %s",
+		session.Spec.InstanceRef.Name, strings.Join(details, "; "))
+	return err
 }
 
 // ValidateUpdate implements admission.Validator. The webhook is not registered

@@ -24,6 +24,9 @@ import (
 type scriptedAgent struct {
 	t      *testing.T
 	script func(ws *websocket.Conn, pongs <-chan struct{}, stdin <-chan []byte)
+	// onClose, when set, answers the client's close frame in place of the
+	// library's default reply.
+	onClose func(ws *websocket.Conn, code int) error
 }
 
 func (a *scriptedAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +46,9 @@ func (a *scriptedAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	if a.onClose != nil {
+		ws.SetCloseHandler(func(code int, _ string) error { return a.onClose(ws, code) })
+	}
 	stdin := make(chan []byte, 64)
 	go func() {
 		defer close(stdin)
