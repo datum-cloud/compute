@@ -132,9 +132,11 @@ var pingPayload = []byte("shell-agent")
 // relay copies frames both ways until the command exits, either side goes
 // away, or ctx ends. It returns nil when ctx ended first. The client is pinged
 // every pingInterval and counts as gone once it has sent nothing, not even a
-// pong, for pongTimeout.
+// pong, for pongTimeout. A code on exited ends the session as the command's
+// exit even while the stream stays open, as it does when a background job
+// still holds the terminal.
 func relay(ctx context.Context, c *clientStream, fromClient *bufio.Reader, backend net.Conn, fromBackend *bufio.Reader,
-	pingInterval, pongTimeout time.Duration) *outcome {
+	pingInterval, pongTimeout time.Duration, exited <-chan int32) *outcome {
 	results := make(chan outcome, 2)
 	done := make(chan struct{})
 	defer close(done)
@@ -144,6 +146,8 @@ func relay(ctx context.Context, c *clientStream, fromClient *bufio.Reader, backe
 	select {
 	case o := <-results:
 		return &o
+	case code := <-exited:
+		return &outcome{reason: computev1alpha.InstanceConsoleSessionReasonCompleted, exitCode: &code}
 	case <-ctx.Done():
 		return nil
 	}

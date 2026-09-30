@@ -5,6 +5,7 @@ package shellagent
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -179,7 +180,12 @@ func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.R
 	stream := &clientStream{conn: conn}
 	a.attach(live, stream)
 
-	result := relay(ctx, stream, rw.Reader, backend, fromBackend, a.cfg.PingInterval, a.cfg.PongTimeout)
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	exited := make(chan int32, 1)
+	go a.watchExit(watchCtx, held, uid, sessionTTL(session)+time.Minute, exited)
+
+	result := relay(ctx, stream, rw.Reader, backend, fromBackend, a.cfg.PingInterval, a.cfg.PongTimeout, exited)
 	if reason := a.stopReason(uid); reason != "" {
 		result = &outcome{reason: reason, message: endMessage(reason)}
 	} else if result == nil {
@@ -188,6 +194,23 @@ func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.R
 	}
 	stream.End(closingStatus(result.reason, result.exitCode, result.message))
 	return *result
+}
+
+// watchExit sends the command's exit code once the wrapper records it. The
+// exec stream alone cannot say when the command exited: a background job that
+// still holds the terminal keeps it open. Nothing is sent when the watch ends
+// any other way, and the stream decides how the session ends.
+func (a *Agent) watchExit(ctx context.Context, held *slot, uid string, limit time.Duration, exited chan<- int32) {
+	out, code, err := run(ctx, a.exec, held.pod, held.container,
+		exitWatchCommand(held.markerDir, uid, int(limit.Seconds())))
+	if err != nil || code != 0 {
+		return
+	}
+	exitCode, err := strconv.ParseInt(strings.TrimSpace(out), 10, 32)
+	if err != nil {
+		return
+	}
+	exited <- int32(exitCode)
 }
 
 // finishSession stops the session's processes, records its end, and frees its

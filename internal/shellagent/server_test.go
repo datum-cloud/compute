@@ -407,3 +407,70 @@ func waitForEnd(t *testing.T, h *harness) *computev1alpha.InstanceConsoleSession
 	t.Fatalf("session %s did not end: %+v", name, h.cellSession(name).Status)
 	return nil
 }
+
+// A shell that exits while a background job still holds its terminal leaves
+// the exec stream open, as `sleep 900 & exit` does. The session ends with the
+// shell's exit code as soon as the wrapper records it, and the job is stopped.
+func TestCommandExitEndsSessionWhileABackgroundJobHoldsTheTerminal(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	addr := serve(t, h, a)
+	key := readySession(t, h, a, func(s *computev1alpha.InstanceConsoleSession) {
+		s.Spec.Stdin, s.Spec.Terminal = true, true
+	})
+	shellExited := make(chan string, 1)
+	h.exec.exitWatch = shellExited
+	streamClosed := make(chan struct{})
+	h.exec.onSession = func(conn net.Conn, r *bufio.Reader) {
+		defer close(streamClosed)
+		writeServerFrame(conn, channelStdout, []byte("$ "))
+		for {
+			if _, err := readFrame(r); err != nil {
+				return
+			}
+		}
+	}
+
+	c := dialSession(t, addr, testUID, key, time.Now())
+	waitForConnected(t, h)
+	c.send(t, opBinary, append([]byte{channelStdin}, "sleep 900 &\rexit 3\r"...))
+	shellExited <- "3"
+	_, status, code := c.readUntilClose(t)
+
+	if status == nil || status.Reason != ReasonNonZeroExitCode || status.Details == nil ||
+		status.Details.Causes[0].Message != "3" || code != closeNormal {
+		t.Fatalf("status = %+v, close code %d; want the shell's exit code 3", status, code)
+	}
+	s := waitForEnd(t, h)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonCompleted)
+	if s.Status.ExitCode == nil || *s.Status.ExitCode != 3 {
+		t.Fatalf("exit code = %v, want 3", s.Status.ExitCode)
+	}
+	if h.exec.ran(killScript) != 1 {
+		t.Fatal("the background job left in the session must be stopped")
+	}
+	select {
+	case <-streamClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the agent kept the exec stream open after the session ended")
+	}
+}
+
+func TestExitWatchDoesNotEndARunningSession(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	addr := serve(t, h, a)
+	key := readySession(t, h, a)
+	h.exec.onSession = scriptedExit(0)
+
+	c := dialSession(t, addr, testUID, key, time.Now())
+	c.send(t, opBinary, append([]byte{channelStdin}, " world"...))
+	_, status, _ := c.readUntilClose(t)
+
+	if status == nil || status.Status != metav1.StatusSuccess {
+		t.Fatalf("status = %+v; the stream's own exit must end the session while the watch waits", status)
+	}
+	if h.exec.ran(exitWatchScript) != 1 {
+		t.Fatalf("exit watch ran %d times, want once per session", h.exec.ran(exitWatchScript))
+	}
+}

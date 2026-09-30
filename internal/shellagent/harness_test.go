@@ -238,6 +238,10 @@ type fakeAPIServer struct {
 	killExit  int
 	killHangs bool
 	onSession func(conn net.Conn, r *bufio.Reader)
+	// exitWatch answers the exit watch with the code it receives. Without
+	// one, the watch runs until the agent drops it, as it does while the
+	// command is still running.
+	exitWatch chan string
 }
 
 func newFakeAPIServer() *fakeAPIServer {
@@ -293,7 +297,7 @@ func acceptKey(key string) string {
 
 func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 	f.mu.Lock()
-	probeExit, probeDir, markers, killExit, killHangs := f.probeExit, f.probeDir, f.markers, f.killExit, f.killHangs
+	probeExit, probeDir, markers, killExit, killHangs, exitWatch := f.probeExit, f.probeDir, f.markers, f.killExit, f.killHangs, f.exitWatch
 	f.mu.Unlock()
 	switch command[2] {
 	case probeScript:
@@ -303,6 +307,13 @@ func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 		writeExitStatus(conn, probeExit)
 	case listMarkersScript:
 		writeServerFrame(conn, channelStdout, []byte(markers))
+		writeExitStatus(conn, 0)
+	case exitWatchScript:
+		if exitWatch == nil {
+			_, _ = io.Copy(io.Discard, conn)
+			return
+		}
+		writeServerFrame(conn, channelStdout, []byte(<-exitWatch+"\n"))
 		writeExitStatus(conn, 0)
 	case killScript:
 		if killHangs {

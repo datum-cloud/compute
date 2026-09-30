@@ -3,6 +3,7 @@
 package shellagent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,7 +12,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 type fakeProcess struct {
@@ -41,6 +44,7 @@ type killRun struct {
 	signalled  map[string][]int
 	survivors  []int
 	markerLeft bool
+	exitLeft   bool
 }
 
 func runKillScript(t *testing.T, marker string, procs []fakeProcess) killRun {
@@ -73,6 +77,10 @@ func runKillScript(t *testing.T, marker string, procs []fakeProcess) killRun {
 	}
 	markerFile := filepath.Join(dir, ".datum-exec-uid")
 	if err := os.WriteFile(markerFile, []byte(marker+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exitFile := filepath.Join(dir, ".datum-exit-uid")
+	if err := os.WriteFile(exitFile, []byte("0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	logFile := filepath.Join(dir, "log")
@@ -116,6 +124,8 @@ func runKillScript(t *testing.T, marker string, procs []fakeProcess) killRun {
 	sort.Ints(res.survivors)
 	_, statErr := os.Stat(markerFile)
 	res.markerLeft = statErr == nil
+	_, statErr = os.Stat(exitFile)
+	res.exitLeft = statErr == nil
 	return res
 }
 
@@ -140,8 +150,8 @@ func TestKillScriptStopsTheWholeSession(t *testing.T) {
 		{pid: 45, pgrp: 45, sid: 40, start: 900, comm: "older"},
 	})
 
-	if res.exit != 0 || res.markerLeft {
-		t.Fatalf("exit %d, marker kept %v", res.exit, res.markerLeft)
+	if res.exit != 0 || res.markerLeft || res.exitLeft {
+		t.Fatalf("exit %d, marker kept %v, exit file kept %v", res.exit, res.markerLeft, res.exitLeft)
 	}
 	if got := fmt.Sprint(res.signalled["-HUP"]); got != "[40 41 42]" {
 		t.Fatalf("SIGHUP sent to %s", got)
@@ -160,7 +170,7 @@ func TestKillScriptKeepsMarkerWhileProcessesSurvive(t *testing.T) {
 		{pid: 41, pgrp: 41, sid: 40, start: 1100, ignoresHUP: true, unkillable: true},
 	})
 
-	if res.exit != 5 || !res.markerLeft {
+	if res.exit != 5 || !res.markerLeft || !res.exitLeft {
 		t.Fatalf("exit %d, marker kept %v; want 5 and the marker kept for the sweep", res.exit, res.markerLeft)
 	}
 }
@@ -230,5 +240,87 @@ func TestWrapperRecordsItsSession(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err == nil &&
 		(fields[2] != "session" || strings.TrimSpace(string(out)) != fields[0]) {
 		t.Fatalf("marker = %q, command session %q; want a session the wrapper leads", record, out)
+	}
+}
+
+// A background job that inherits the command's output keeps it open after the
+// command exits, as a job holding the terminal keeps the exec stream open. The
+// exit watch reports the command's own exit code regardless, and the kill
+// script then stops the job.
+func TestExitWatchReportsTheCommandWhileABackgroundJobHoldsItsOutput(t *testing.T) {
+	dir := t.TempDir()
+	args := wrappedCommand(dir, "uid", []string{"sh", "-c", "sleep 30 & exit 3"}, true, false)
+	wrapper := exec.Command(args[0], args[1:]...)
+	wrapper.Stdout = &strings.Builder{}
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := wrapper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- wrapper.Wait() }()
+	hasProc := runtime.GOOS == "linux"
+	stop := func() {
+		if hasProc {
+			kill := killCommand(dir, "uid", 1)
+			if out, err := exec.Command(kill[0], kill[1:]...).CombinedOutput(); err != nil {
+				t.Errorf("kill script: %v: %s", err, out)
+			}
+		}
+		_ = syscall.Kill(-wrapper.Process.Pid, syscall.SIGKILL)
+	}
+	t.Cleanup(stop)
+
+	watch := exitWatchCommand(dir, "uid", 10)
+	out, err := exec.Command(watch[0], watch[1:]...).Output()
+
+	if err != nil || strings.TrimSpace(string(out)) != "3" {
+		t.Fatalf("exit watch = %q, %v; want the command's exit code 3", out, err)
+	}
+	select {
+	case <-done:
+		t.Fatal("the background job no longer holds the output, so this test proves nothing")
+	default:
+	}
+	stop()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background job survived the session's end")
+	}
+	if hasProc {
+		for _, f := range []string{markerPath(dir, "uid"), exitPath(dir, "uid")} {
+			if _, err := os.Stat(f); err == nil {
+				t.Errorf("%s left behind", f)
+			}
+		}
+	}
+}
+
+func TestExitWatchGivesUpOnceTheSessionIsStopped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(markerPath(dir, "uid"), []byte("1 1 session\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	watch := exitWatchCommand(dir, "uid", 30)
+	cmd := exec.Command(watch[0], watch[1:]...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	time.Sleep(1500 * time.Millisecond)
+	if err := os.Remove(markerPath(dir, "uid")); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+			t.Fatalf("exit watch ended with %v, want exit 2", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the exit watch outlived its session")
 	}
 }

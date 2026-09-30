@@ -75,7 +75,7 @@ func TestWrappedCommandArguments(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := wrappedCommand("/tmp", "uid-1", []string{"ls", "-l"}, tt.stdin, tt.tty)
-			want := []string{"sh", "-c", wrapperScript, "sh", wrapperScript, "/tmp/.datum-exec-uid-1", tt.mode, "0", "ls", "-l"}
+			want := []string{"sh", "-c", wrapperScript, "sh", wrapperScript, "/tmp/.datum-exec-uid-1", "/tmp/.datum-exit-uid-1", tt.mode, "0", "ls", "-l"}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("wrappedCommand() = %q, want %q", got, want)
 			}
