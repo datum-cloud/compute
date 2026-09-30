@@ -1,5 +1,5 @@
 applied: true
-clusterName: cell-without-instance
+clusterName: cell-with-instance
 health: Unknown
 status:
   conditions:

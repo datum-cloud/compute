@@ -64,12 +64,31 @@ expect "a refusal from the cell that runs the instance is reported" \
   "$(aggregate hub-unclaimed.yaml items-refused.yaml)" \
   "reason: NoShell"
 
-expect "the defaulted Pending status is carried while no cell has claimed" \
+expect "the member cluster's defaulted Pending status is carried while it has not claimed" \
   "$(aggregate hub-unclaimed.yaml items-none-claimed.yaml)" \
   "reason: Pending"
 
 reject "no status is invented when no cell reports one" \
   "$(aggregate hub-unclaimed.yaml items-empty.yaml)" "status:"
+
+expect "a forged claim from another cell listed first loses to the member cluster's claim" \
+  "$(aggregate hub-unclaimed.yaml items-hostile-first.yaml)" \
+  "endpointID: 5f0c0a1e" "https://relay.example.test"
+
+reject "a forged claim from another cell is never taken" \
+  "$(aggregate hub-unclaimed.yaml items-hostile-only.yaml)" "deadbeef"
+
+reject "a forged claim from another cell never replaces the hub copy's claim" \
+  "$(aggregate hub-claimed.yaml items-hostile-only.yaml)" "evil.example.test"
+
+reject "a refusal from another cell does not end the session" \
+  "$(aggregate hub-unclaimed.yaml items-hostile-refusal.yaml)" "NoShell"
+
+reject "a claim for a different endpoint never replaces the hub copy's claim" \
+  "$(aggregate hub-claimed.yaml items-member-new-endpoint.yaml)" "cafe0000"
+
+reject "a hub copy bound to no member cluster takes no status" \
+  "$(aggregate hub-unbound.yaml items-one-cell-claimed.yaml)" "endpointID"
 
 if [ "$failures" -ne 0 ]; then
   printf '%d interpreter check(s) failed\n' "$failures"

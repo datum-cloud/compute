@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -24,6 +26,8 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
+
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 	milosource "go.miloapis.com/milo/pkg/multicluster-runtime/source"
@@ -31,6 +35,13 @@ import (
 
 const (
 	defaultSessionCleanupTimeout = 5 * time.Minute
+
+	// sessionMemberClusterLabel names, on a hub copy, the Karmada member
+	// cluster the session's hub WorkloadDeployment is scheduled to, which is
+	// the only cell that runs the instance. Status aggregation takes a claim or
+	// an end only from that cluster, and the controller watches that cluster
+	// keeps reporting while the session is open.
+	sessionMemberClusterLabel = "compute.datumapis.com/member-cluster"
 
 	// DefaultSessionClaimTimeout is how long after its creation a session may
 	// wait for a cell to claim it before it ends as Unavailable.
@@ -187,12 +198,23 @@ func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 			// requeues the session through the hub watch.
 			return ctrl.Result{RequeueAfter: claimDeadline.Sub(r.now())}, nil
 		}
-		if _, err := r.deliver(ctx, clusterName, projectClient, session, &instance); err != nil {
+		if hubCopy, err = r.deliver(ctx, clusterName, projectClient, session, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	if sessionClaimed(session) {
+		reporting, err := r.memberReports(ctx, hubCopy)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !reporting {
+			log.FromContext(ctx).Info("the cell that claimed the session stopped reporting it",
+				"memberCluster", hubCopy.Labels[sessionMemberClusterLabel])
+			return ctrl.Result{}, r.endSession(ctx, projectClient, session,
+				computev1alpha.InstanceConsoleSessionReasonAgentLost,
+				"The cell running the session stopped reporting it.")
+		}
 		return ctrl.Result{}, nil
 	}
 	if wait := claimDeadline.Sub(r.now()); wait > 0 {
@@ -301,8 +323,14 @@ func (r *InstanceConsoleSessionReconciler) buildHubCopy(
 		return nil, nil, fmt.Errorf("hub WorkloadDeployment %s/%s is missing the %s label", hubNS, deploymentName, locationLabel)
 	}
 
+	memberCluster, err := r.scheduledMember(ctx, &hubDeployment)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	labels := map[string]string{
-		locationLabel: location,
+		locationLabel:                                          location,
+		sessionMemberClusterLabel:                              memberCluster,
 		computev1alpha.InstanceConsoleSessionUIDLabel:          string(session.UID),
 		computev1alpha.InstanceConsoleSessionInstanceNameLabel: instance.Name,
 		computev1alpha.WorkloadDeploymentUIDLabel:              cellDeploymentUID,
@@ -353,7 +381,14 @@ func (r *InstanceConsoleSessionReconciler) copyStatus(
 	session *computev1alpha.InstanceConsoleSession,
 	hubCopy *computev1alpha.InstanceConsoleSession,
 ) error {
-	if sessionEnded(session) || equality.Semantic.DeepEqual(session.Status, hubCopy.Status) {
+	if equality.Semantic.DeepEqual(session.Status, hubCopy.Status) {
+		return nil
+	}
+	if sessionEnded(session) {
+		return r.copyCleanupTime(ctx, projectClient, session, hubCopy)
+	}
+	if claimed := session.Status.Connection; claimed != nil &&
+		(hubCopy.Status.Connection == nil || hubCopy.Status.Connection.EndpointID != claimed.EndpointID) {
 		return nil
 	}
 	hubWeight := statusWeight(&hubCopy.Status)
@@ -363,6 +398,25 @@ func (r *InstanceConsoleSessionReconciler) copyStatus(
 	session.Status = *hubCopy.Status.DeepCopy()
 	if err := projectClient.Status().Update(ctx, session); err != nil {
 		return fmt.Errorf("failed copying hub status to session: %w", err)
+	}
+	return nil
+}
+
+// copyCleanupTime records on an ended session when the cell confirmed its
+// processes stopped, once the hub copy reports the same end with that time.
+func (r *InstanceConsoleSessionReconciler) copyCleanupTime(
+	ctx context.Context,
+	projectClient client.Client,
+	session *computev1alpha.InstanceConsoleSession,
+	hubCopy *computev1alpha.InstanceConsoleSession,
+) error {
+	if session.Status.EndedAt != nil || !cleanupConfirmed(hubCopy) ||
+		sessionReadyReason(hubCopy) != sessionReadyReason(session) {
+		return nil
+	}
+	session.Status.EndedAt = hubCopy.Status.EndedAt.DeepCopy()
+	if err := projectClient.Status().Update(ctx, session); err != nil {
+		return fmt.Errorf("failed recording session cleanup time: %w", err)
 	}
 	return nil
 }
@@ -415,17 +469,25 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 				return ctrl.Result{}, err
 			}
 			if openOnCell(hubCopy) {
-				if err := r.revokeHubCopy(ctx, hubCopy); err != nil {
+				reporting, err := r.memberReports(ctx, hubCopy)
+				if err != nil {
 					return ctrl.Result{}, err
 				}
 				deadline := session.DeletionTimestamp.Add(r.cleanupTimeout())
-				if wait := deadline.Sub(r.now()); wait > 0 {
+				wait := deadline.Sub(r.now())
+				if reporting {
+					if err := r.revokeHubCopy(ctx, hubCopy); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
+				if reporting && wait > 0 {
 					return ctrl.Result{RequeueAfter: wait}, nil
 				}
 				if err := r.recordCleanupUnconfirmed(ctx, projectClient, session); err != nil {
 					return ctrl.Result{}, err
 				}
-				logger.Info("cell did not confirm session cleanup", "hubNamespace", hubNS, "timeout", r.cleanupTimeout())
+				logger.Info("cell did not confirm session cleanup", "hubNamespace", hubNS,
+					"memberReporting", reporting, "timeout", r.cleanupTimeout())
 			}
 			if err := r.FederationClient.Delete(ctx, hubCopy, client.Preconditions{UID: &hubCopy.UID}); client.IgnoreNotFound(err) != nil {
 				return ctrl.Result{}, fmt.Errorf("failed deleting hub session %s/%s: %w", hubNS, session.Name, err)
@@ -467,12 +529,79 @@ func (r *InstanceConsoleSessionReconciler) revokeHubCopy(ctx context.Context, hu
 	return nil
 }
 
-// openOnCell reports whether a cell claimed the session and has not reported
-// its end. Only such a session can have processes to stop. One no cell
-// claimed has none, because a client learns where to connect only from the
-// claim.
+// openOnCell reports whether a cell claimed the session and has not confirmed
+// that its processes are stopped. Only such a session can have processes to
+// stop. One no cell claimed has none, because a client learns where to
+// connect only from the claim.
 func openOnCell(hubCopy *computev1alpha.InstanceConsoleSession) bool {
-	return sessionClaimed(hubCopy) && !sessionEnded(hubCopy)
+	return sessionClaimed(hubCopy) && !cleanupConfirmed(hubCopy)
+}
+
+// cleanupConfirmed reports whether the cell recorded the session's end together
+// with the time its processes were confirmed stopped. The agent records the
+// end at once so the client learns of it, but sets endedAt only once nothing
+// the session started is left running.
+func cleanupConfirmed(s *computev1alpha.InstanceConsoleSession) bool {
+	return sessionEnded(s) && s.Status.EndedAt != nil
+}
+
+// errNoSingleMember means the hub WorkloadDeployment is not scheduled to
+// exactly one member cluster, so no single cell can be trusted with the
+// session.
+var errNoSingleMember = errors.New("not scheduled to exactly one member cluster")
+
+// scheduledMember returns the one member cluster Karmada scheduled the hub
+// WorkloadDeployment to. The scheduler writes this, not a cell, so it names
+// the cell that runs the deployment's instances whatever any cell reports.
+func (r *InstanceConsoleSessionReconciler) scheduledMember(
+	ctx context.Context,
+	hubDeployment *computev1alpha.WorkloadDeployment,
+) (string, error) {
+	var binding karmadaworkv1alpha2.ResourceBinding
+	key := types.NamespacedName{Namespace: hubDeployment.Namespace, Name: bindingName(kindWorkloadDeployment, hubDeployment.Name)}
+	if err := r.FederationClient.Get(ctx, key, &binding); err != nil {
+		return "", fmt.Errorf("failed getting the placement of hub WorkloadDeployment %s/%s: %w",
+			hubDeployment.Namespace, hubDeployment.Name, err)
+	}
+	if len(binding.Spec.Clusters) != 1 {
+		return "", fmt.Errorf("hub WorkloadDeployment %s/%s is %w (%d)",
+			hubDeployment.Namespace, hubDeployment.Name, errNoSingleMember, len(binding.Spec.Clusters))
+	}
+	return binding.Spec.Clusters[0].Name, nil
+}
+
+// memberReports reports whether the member cluster a hub copy is bound to
+// still reports the session's status to Karmada. A cell that was deregistered,
+// lost the deployment to another cell, or had its copy removed stops
+// reporting, and Karmada then keeps the hub copy's last status forever.
+func (r *InstanceConsoleSessionReconciler) memberReports(
+	ctx context.Context,
+	hubCopy *computev1alpha.InstanceConsoleSession,
+) (bool, error) {
+	member := hubCopy.Labels[sessionMemberClusterLabel]
+	if member == "" {
+		return false, nil
+	}
+	var binding karmadaworkv1alpha2.ResourceBinding
+	key := types.NamespacedName{Namespace: hubCopy.Namespace, Name: bindingName(kindInstanceConsoleSession, hubCopy.Name)}
+	if err := r.FederationClient.Get(ctx, key, &binding); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed getting the binding of hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)
+	}
+	for _, item := range binding.Status.AggregatedStatus {
+		if item.ClusterName == member && item.Status != nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// bindingName is the name Karmada gives the ResourceBinding of a namespaced
+// resource template.
+func bindingName(kind, name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, ":", ".") + "-" + kind)
 }
 
 func (r *InstanceConsoleSessionReconciler) cleanupTimeout() time.Duration {

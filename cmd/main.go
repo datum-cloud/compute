@@ -45,6 +45,7 @@ import (
 
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
@@ -97,6 +98,7 @@ func init() {
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaworkv1alpha2.Install(scheme))
 	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme

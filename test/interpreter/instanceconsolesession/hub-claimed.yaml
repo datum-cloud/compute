@@ -3,6 +3,8 @@ kind: InstanceConsoleSession
 metadata:
   name: web-0-abcde
   namespace: ns-aabbccdd-0000-1111-2222-333344445555
+  labels:
+    compute.datumapis.com/member-cluster: cell-with-instance
 spec:
   instanceRef:
     name: web-0

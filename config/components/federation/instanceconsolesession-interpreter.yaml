@@ -2,12 +2,14 @@
 # Karmada reflects it from every cell the copy reaches and aggregates it onto
 # the hub copy, where compute's session controller reads it.
 #
-# A location can map to more than one cell, and only the cell that runs the
-# session's instance writes anything; every other cell keeps the Pending
-# status the API defaults. Aggregation therefore takes the status that says
-# the most: a claim first, then an end, then anything else. A status that says
-# less never replaces the hub copy's, so a cell that left the session alone
-# cannot wipe the claim or refusal of the cell that runs the instance.
+# The control plane labels each hub copy with the one member cluster Karmada
+# scheduled the session's WorkloadDeployment to, the only cell that runs the
+# instance. Aggregation takes status only from that cluster, so a claim or a
+# refusal written by any other cell the copy reaches is ignored. Once the hub
+# copy holds a claim, only status for the same endpoint replaces it. Among
+# statuses from the member cluster, the one that says the most wins: a claim,
+# then an end, then anything else, and one that says less never replaces the
+# hub copy's.
 apiVersion: config.karmada.io/v1alpha1
 kind: ResourceInterpreterCustomization
 metadata:
@@ -50,17 +52,30 @@ spec:
         end
 
         function AggregateStatus(desiredObj, statusItems)
-          if statusItems == nil then
+          if statusItems == nil or desiredObj.metadata == nil or desiredObj.metadata.labels == nil then
             return desiredObj
+          end
+          local member = desiredObj.metadata.labels["compute.datumapis.com/member-cluster"]
+          if member == nil or member == "" then
+            return desiredObj
+          end
+          local claimed = nil
+          if desiredObj.status ~= nil and desiredObj.status.connection ~= nil then
+            claimed = desiredObj.status.connection.endpointID
           end
           local best = nil
           local bestWeight = 0
           for i = 1, #statusItems do
-            local status = statusItems[i].status
-            local w = weight(status)
-            if w > bestWeight then
-              best = status
-              bestWeight = w
+            local item = statusItems[i]
+            local status = item.status
+            local sameClaim = claimed == nil or status == nil or status.connection == nil or
+              status.connection.endpointID == claimed
+            if item.clusterName == member and sameClaim then
+              local w = weight(status)
+              if w > bestWeight then
+                best = status
+                bestWeight = w
+              end
             end
           end
           if best == nil or bestWeight < weight(desiredObj.status) then
