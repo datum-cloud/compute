@@ -1,7 +1,10 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
   createErrorMessage,
-  reasonMessage,
+  describeEnding,
+  fetchSessionEnding,
+  readWatchStream,
+  sessionEndingFromEvent,
   SESSION_QUOTA_MESSAGE,
   SESSION_RESOURCE_TYPE,
   sessionAllowance,
@@ -48,15 +51,15 @@ describe('sessionProgress', () => {
     ).toEqual({ kind: 'pending' });
   });
 
-  test('surfaces the platform message for a terminal reason', () => {
+  test('carries the terminal reason and the platform message', () => {
     expect(sessionProgress(withReady('False', 'NoShell', {}, 'The image has no /bin/sh.'))).toEqual(
-      { kind: 'ended', reason: 'NoShell', message: 'The image has no /bin/sh.' }
+      {
+        kind: 'ended',
+        reason: 'NoShell',
+        message: 'The image has no /bin/sh.',
+        exitCode: undefined,
+      }
     );
-  });
-
-  test('explains a terminal reason that carries no message', () => {
-    const progress = sessionProgress(withReady('False', 'InstanceNotRunning'));
-    expect(progress).toMatchObject({ kind: 'ended', message: 'The instance is not running.' });
   });
 
   test('carries the exit code of a completed session', () => {
@@ -74,44 +77,176 @@ describe('sessionProgress', () => {
   });
 });
 
-describe('reasonMessage', () => {
-  test('explains a session no cell took in time', () => {
-    expect(reasonMessage('Unavailable')).toMatch(/aren't available/);
-  });
-
-  test('explains a session whose client went away', () => {
-    expect(reasonMessage('Disconnected')).toMatch(/connection to it was lost/);
-    expect(reasonMessage('ClosedByUser')).toBe('The shell was closed.');
-  });
-
-  test('prefers the platform message', () => {
-    expect(reasonMessage('Unavailable', 'No cell is serving this instance.')).toBe(
-      'No cell is serving this instance.'
+describe('describeEnding', () => {
+  test('says plainly that a container without sh can run nothing', () => {
+    const message = describeEnding({
+      reason: 'NoShell',
+      message: 'The container has no shell (sh).',
+    });
+    expect(message).toStartWith(
+      "This container has no shell (sh), so a shell session can't start."
     );
+    expect(message).toMatch(/no command can run/);
+  });
+
+  test('names the command that is not installed', () => {
+    expect(describeEnding({ reason: 'CommandUnavailable' }, ['/bin/bash', '-l'])).toBe(
+      "/bin/bash isn't installed in this container."
+    );
+  });
+
+  test('reports the exit code of a command that exited', () => {
+    expect(describeEnding({ reason: 'Completed', exitCode: 0 })).toBe('The shell exited.');
+    expect(describeEnding({ reason: 'Completed', exitCode: 3 })).toBe(
+      'The shell exited with code 3.'
+    );
+  });
+
+  test('reuses the CLI wording for platform endings', () => {
+    expect(describeEnding({ reason: 'Unavailable' })).toBe(
+      'No part of Datum took the session in time. Try again shortly.'
+    );
+    expect(describeEnding({ reason: 'Disconnected' })).toBe(
+      'The connection to the session was lost, so Datum stopped the command.'
+    );
+  });
+
+  test('tells a deliberate close from a lost connection', () => {
+    expect(describeEnding({ reason: 'ClosedByUser' })).toBe('The shell was closed.');
+  });
+
+  test('explains every terminal reason', () => {
+    for (const reason of [
+      'Expired',
+      'Revoked',
+      'NotConnected',
+      'AgentShutdown',
+      'AgentLost',
+      'TooManySessions',
+      'NoShell',
+      'CommandUnavailable',
+      'InstanceNotRunning',
+      'InstanceNotFound',
+      'Invalid',
+      'Unavailable',
+      'Disconnected',
+      'ClosedByUser',
+    ]) {
+      expect(describeEnding({ reason })).not.toBe('The session ended.');
+    }
+  });
+
+  test('prefers the platform message for a request it could not serve', () => {
+    expect(describeEnding({ reason: 'Invalid', message: 'The command is too long.' })).toBe(
+      'The command is too long.'
+    );
+  });
+
+  test('falls back to the platform message for a reason it does not know', () => {
+    expect(describeEnding({ reason: 'SomethingNew', message: 'Details.' })).toBe('Details.');
   });
 });
 
-describe('sessionAllowance', () => {
-  test('reads the limit of the session bucket', () => {
+function streamOf(...chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+}
+
+describe('readWatchStream', () => {
+  test('parses watch events split across chunks', async () => {
+    const events = [];
+    for await (const event of readWatchStream(
+      streamOf(
+        '{"type":"MODIFIED","object":{"metadata":{"resourceVersion":"2"}}}\n{"type":"DEL',
+        'ETED","object":{"metadata":{"resourceVersion":"3"}}}\n'
+      )
+    )) {
+      events.push(event);
+    }
+    expect(events.map((e) => [e.type, e.object.metadata?.resourceVersion])).toEqual([
+      ['MODIFIED', '2'],
+      ['DELETED', '3'],
+    ]);
+  });
+
+  test('reads a final event without a trailing newline', async () => {
+    const events = [];
+    for await (const event of readWatchStream(streamOf('{"type":"ADDED","object":{}}'))) {
+      events.push(event.type);
+    }
+    expect(events).toEqual(['ADDED']);
+  });
+});
+
+function endedEvent(annotations: Record<string, string>) {
+  return { reason: 'SessionEnded', metadata: { annotations } };
+}
+
+describe('sessionEndingFromEvent', () => {
+  test('reads the reason and exit code the controller records', () => {
     expect(
-      sessionAllowance({
-        items: [
-          { spec: { resourceType: 'compute.datumapis.com/instances' }, status: { limit: 50 } },
-          { spec: { resourceType: SESSION_RESOURCE_TYPE }, status: { limit: 3 } },
-        ],
-      })
-    ).toBe(3);
+      sessionEndingFromEvent(
+        endedEvent({
+          'compute.datumapis.com/reason': 'Completed',
+          'compute.datumapis.com/exit-code': '2',
+        })
+      )
+    ).toEqual({ reason: 'Completed', exitCode: 2 });
   });
 
-  test('is zero without a session bucket', () => {
-    expect(sessionAllowance({ items: [] })).toBe(0);
-    expect(sessionAllowance({})).toBe(0);
+  test('ignores events other than the session ending', () => {
+    expect(
+      sessionEndingFromEvent({ reason: 'SessionStarted', metadata: { annotations: {} } })
+    ).toBeUndefined();
+  });
+});
+
+describe('fetchSessionEnding', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
   });
 
-  test('is zero before the bucket reports a limit', () => {
-    expect(sessionAllowance({ items: [{ spec: { resourceType: SESSION_RESOURCE_TYPE } }] })).toBe(
-      0
-    );
+  function serve(routes: Record<string, unknown>) {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = decodeURIComponent(String(input));
+      seen.push(url);
+      const key = Object.keys(routes).find((k) => url.endsWith(k));
+      return key
+        ? new Response(JSON.stringify(routes[key]), { status: 200 })
+        : new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    return seen;
+  }
+
+  test("reads the session's SessionEnded event by name", async () => {
+    const seen = serve({
+      '/events/session-uid.sessionended': endedEvent({ 'compute.datumapis.com/reason': 'NoShell' }),
+    });
+    expect(await fetchSessionEnding('p1', 'session-uid')).toEqual({ reason: 'NoShell' });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('/apis/events.k8s.io/v1/namespaces/default/events/');
+  });
+
+  test('finds the event by the session it regards when the name differs', async () => {
+    const seen = serve({
+      'fieldSelector=regarding.uid=session-uid,reason=SessionEnded': {
+        items: [endedEvent({ 'compute.datumapis.com/reason': 'Expired' })],
+      },
+    });
+    expect(await fetchSessionEnding('p1', 'session-uid')).toEqual({ reason: 'Expired' });
+    expect(seen).toHaveLength(2);
+  });
+
+  test('returns nothing when no ending was recorded', async () => {
+    serve({});
+    expect(await fetchSessionEnding('p1', 'session-uid')).toBeUndefined();
   });
 });
 

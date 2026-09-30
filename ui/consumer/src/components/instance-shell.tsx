@@ -1,7 +1,13 @@
 import { createWorkerConnector } from '../lib/console-client/connector';
 import type { TerminalSize } from '../lib/console-client/wasm-adapter';
-import { createSession, deleteSession, getSession } from '../lib/console-sessions';
-import { initialContainer } from '../lib/instance-shell';
+import {
+  createSession,
+  deleteSession,
+  fetchSessionEnding,
+  getSession,
+  watchSession,
+} from '../lib/console-sessions';
+import { initialContainer, shellStatusBadge } from '../lib/instance-shell';
 import { popOutFromTab, shellWindowHref, shellWindowName } from '../lib/shell-popout';
 import { ShellSession, type ShellSessionDeps, type ShellState } from '../lib/shell-session';
 import type { Instance } from '../schema';
@@ -62,17 +68,30 @@ function sessionDeps(projectId: string): ShellSessionDeps {
   return {
     createConnector: () => createWorkerConnector(consoleClientAssets),
     create: (input) => createSession(projectId, input),
+    watch: (name, resourceVersion, signal) =>
+      watchSession(projectId, name, resourceVersion, signal),
     get: (name) => getSession(projectId, name),
+    ending: (uid) => fetchSessionEnding(projectId, uid),
     remove: (name) => deleteSession(projectId, name),
-    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    wait: (ms, signal) =>
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      }),
     now: () => Date.now(),
   };
 }
 
-function statusBadge(state: ShellState): { label: string; type: 'success' | 'muted' | 'warning' } {
-  if (state.phase === 'connected') return { label: 'Connected', type: 'success' };
-  if (state.phase === 'ended') return { label: 'Ended', type: 'muted' };
-  return { label: 'Opening', type: 'warning' };
+function ShellStatusBadge({ state }: { state: ShellState }) {
+  const badge = shellStatusBadge(state);
+  return (
+    <Badge type={badge.type} theme={badge.theme} data-testid="compute-plugin-shell-badge">
+      {badge.label}
+    </Badge>
+  );
 }
 
 function useWindowFillHeight(
@@ -88,9 +107,7 @@ function useWindowFillHeight(
     const update = () => {
       const below = root.getBoundingClientRect().bottom - region.getBoundingClientRect().bottom;
       const top = region.getBoundingClientRect().top;
-      setHeight(
-        Math.max(MIN_WINDOW_TERMINAL_HEIGHT, Math.floor(window.innerHeight - top - below))
-      );
+      setHeight(Math.max(MIN_WINDOW_TERMINAL_HEIGHT, Math.floor(window.innerHeight - top - below)));
     };
     update();
     const observer = new ResizeObserver(update);
@@ -242,7 +259,6 @@ export function InstanceShell(props: InstanceShellProps) {
     </p>
   );
 
-  const badge = statusBadge(state);
   const statusText =
     state.phase === 'ended'
       ? inWindow
@@ -269,7 +285,10 @@ export function InstanceShell(props: InstanceShellProps) {
 
   if (props.variant === 'window') {
     return (
-      <div ref={rootRef} className="flex min-w-0 flex-col" data-testid="compute-plugin-instance-shell">
+      <div
+        ref={rootRef}
+        className="flex min-w-0 flex-col"
+        data-testid="compute-plugin-instance-shell">
         <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2">
           <div className="min-w-0 flex-1">{props.title}</div>
           <div className="flex items-center gap-3">
@@ -280,11 +299,7 @@ export function InstanceShell(props: InstanceShellProps) {
               data-testid="compute-plugin-shell-status">
               {state.phase === 'connected' ? '' : statusText}
             </p>
-            {active && (
-              <Badge type={badge.type} theme="light">
-                {badge.label}
-              </Badge>
-            )}
+            {active && <ShellStatusBadge state={state} />}
             {active && state.phase !== 'ended' && (
               <Button
                 type="secondary"
@@ -346,11 +361,7 @@ export function InstanceShell(props: InstanceShellProps) {
           page.
         </CardDescription>
         <CardAction className="flex items-center gap-2">
-          {active && (
-            <Badge type={badge.type} theme="light">
-              {badge.label}
-            </Badge>
-          )}
+          {active && <ShellStatusBadge state={state} />}
           {active &&
             (state.phase === 'ended' ? (
               <Button type="secondary" theme="solid" size="small" onClick={open}>

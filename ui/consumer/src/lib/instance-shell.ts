@@ -54,3 +54,17 @@ export function canShowShell({
 export function initialContainer(containers: string[]): string | undefined {
   return containers.length === 1 ? containers[0] : undefined;
 }
+
+export interface ShellStatusBadgeStyle {
+  label: string;
+  type: 'success' | 'muted' | 'warning';
+  theme: 'light' | 'solid';
+}
+
+// The muted badge's light theme draws pale grey text on white, so an ended
+// session uses the solid theme, which pairs dark text with a tinted fill.
+export function shellStatusBadge(state: { phase: string }): ShellStatusBadgeStyle {
+  if (state.phase === 'connected') return { label: 'Connected', type: 'success', theme: 'light' };
+  if (state.phase === 'ended') return { label: 'Ended', type: 'muted', theme: 'solid' };
+  return { label: 'Opening', type: 'warning', theme: 'light' };
+}
