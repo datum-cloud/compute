@@ -2,6 +2,10 @@
 # endpoint-key-<n>, which its paired agent creates and rotates, and proxies to
 # that agent only. Both keys are projected and the ordinal picks one, because a
 # StatefulSet cannot name a different Secret per pod.
+#
+# The relay-probe container dials the endpoint the way a session's client
+# does, through the relays in exec-relays, and holds the pod unready while that
+# fails. The paired agent claims sessions only while the pod is ready.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -84,6 +88,55 @@ spec:
               readOnly: true
             - name: state
               mountPath: /var/lib/datum-connect
+        - name: relay-probe
+          # The manager's image, which carries this binary too.
+          image: ghcr.io/datum-cloud/compute:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /shell-endpoint-probe
+          args:
+            - --listen=:8082
+            - --key-file=/var/run/datum-connect/keys/$(POD_INDEX)
+            - --target=exec-agent-$(POD_INDEX).exec-agent.$(POD_NAMESPACE).svc.cluster.local:7777
+          env:
+            - name: POD_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          envFrom:
+            - configMapRef:
+                name: exec-relays
+          ports:
+            - name: probes
+              containerPort: 8082
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: keys
+              mountPath: /var/run/datum-connect/keys
+              readOnly: true
       volumes:
         - name: keys
           projected:
