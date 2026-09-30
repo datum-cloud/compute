@@ -104,6 +104,15 @@ After session creation, command traffic travels straight from the client to the
 cell that runs the instance. Traffic is encrypted end to end, the control plane
 is not in the data path and cells accept no inbound connections.
 
+Status travels the other way without any cell reaching outward. The shell
+agent writes session status to its own cell's copy only. Karmada's status
+sync, the same reflection and aggregation compute already uses for
+`WorkloadDeployment`, carries that status to the hub copy without the agent
+holding hub credentials or making a hub call. The compute controllers copy
+status from the hub to the project's session. A local prototype measured
+status reaching the project in under 0.5 seconds and a revoke completing in
+about 1.2 seconds.
+
 ![C4 container diagram](./c4-container-diagram.png)
 
 Source: [c4-container-diagram.puml](./c4-container-diagram.puml)
@@ -251,11 +260,17 @@ no cell takes within 30 seconds. `Disconnected` ends a session whose client
 went away before the command exited; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
 waiting for a connection from one whose command is running.
 
-Deleting an active session revokes it. A finalizer waits up to five minutes for
-the cell to stop the process and release its reservation. If the cell does not
-confirm cleanup, the controller records `CleanupUnconfirmed` and removes the
-finalizer; it never reports cleanup as confirmed. This cleanup outcome is a
-lifecycle event, not a replacement for the immutable terminal reason.
+Deleting an active session revokes it. A finalizer annotates the hub copy to
+ask the cell to revoke the session, then waits up to five minutes for the
+agent to stop the process, release its reservation and report the session
+ended. Only then does the controller delete the hub copy; Karmada deletes the
+propagated cell copy as soon as the hub copy is gone, without waiting for the
+agent to finish cleanup, so the controller cannot delete the hub copy first
+and confirm cleanup after. If the agent does not report the session ended
+within five minutes, the controller records `CleanupUnconfirmed`, deletes the
+hub copy anyway and removes the finalizer; it never reports cleanup as
+confirmed. This cleanup outcome is a lifecycle event, not a replacement for
+the immutable terminal reason.
 
 The controller deletes a session as soon as it reaches a terminal state and its
 end event is recorded, which releases its quota. A connected client receives
@@ -275,6 +290,15 @@ Audit records outlive the resource.
     runs unikernel instances.
 - **Routing.** Instances record which cell runs them, and sessions follow the
   same federation path as the workloads they target.
+- **Status sync.** The agent has no hub access and never calls the hub. It
+  writes session status only to its own cell's copy of the session. Karmada's
+  status reflection and aggregation, the same mechanism compute already uses
+  for `WorkloadDeployment`, copies that status to the hub. The compute
+  controllers then copy it from the hub to the project's session.
+- **Picking between cells.** A session can be propagated to more than one
+  cell, the same way a `WorkloadDeployment` can be. When more than one cell
+  reports status, aggregation prefers the copy from the cell that claimed the
+  session over any other cell's copy.
 - **Audit record.** The Project API audit pipeline records session creation
   with the requesting user or service identity as the actor. The compute
   session controller emits start and end events, where the actor is the
@@ -312,11 +336,13 @@ clean endings and network isolation. The unikernel path has not been exercised.
   running instance or raise the workload's minimum replica count. This avoids
   changing workload scale or incurring cost as a side effect of a diagnostic
   action.
-- **Hub access:** each cell's shell agent has its own identity on the
-  federation hub, tied to the location it serves. It can read a session by name
-  and write only sessions routed to its own location; an admission policy on the
-  hub refuses anything else, and it cannot list or watch sessions. A leaked
-  agent credential therefore reaches only its own location's sessions.
+- **No hub access:** this replaces an earlier decision to give each cell's
+  shell agent its own identity on the federation hub, admitted only to
+  sessions routed to its location. Instead, the agent has no hub identity, no
+  hub credentials and no hub egress at all; it only reads and writes its own
+  cell's copy of the session, and Karmada's status sync carries that status to
+  the hub. There is nothing to leak, so the residual trust is narrower: a
+  cell's self-reported status is trusted for the sessions delivered to it.
 - **First release:** general-purpose (Kata) instances only. The unikernel
   runtime class gets the `exec` feature, and its provider's exec policy is set
   to `always`, once staging has answered the open Unikraft questions. Until
@@ -434,8 +460,10 @@ creation, quota release, reservation release and agent failover.
 
 - A shell agent and tunnel endpoint deployed to each compute cell, with
   network policy limiting both.
-- A per-location shell agent identity on the federation hub, with an
-  admission policy that limits it to its own location's sessions.
+- Karmada status reflection and aggregation rules for `InstanceConsoleSession`,
+  including a rule that prefers the claiming cell's status when more than one
+  cell holds a copy, the same way `WorkloadDeployment` status is aggregated
+  today.
 - `exec` on the general-purpose runtime class; for unikernel instances later,
   `exec` on that class and the Unikraft provider exec policy set to `always`.
 - The session-create permission added to the default project-admin role.

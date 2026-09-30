@@ -16,6 +16,7 @@ actor "Client\n(datumctl, portal, or AI agent)" as p_client
 participant "Project API" as p_api
 participant "Activity pipeline\n(ActivityPolicy)" as p_activity
 participant "Compute controllers" as p_controllers
+participant "Karmada\n(status reflection\nand aggregation)" as p_karmada
 participant "Shell agent" as p_agent
 participant "Tunnel endpoint" as p_tunnel
 participant "Datum relay" as p_relay
@@ -34,24 +35,28 @@ else API accepts request
     p_api --> p_client: Session resource
 
     p_controllers -> p_api: Watch new session
-    p_controllers -> p_agent: Deliver session to target cell
+    p_controllers -> p_karmada: Create the hub session copy
+    p_karmada -> p_agent: Propagate the session\nto the target cell
     p_agent -> p_agent: Validate runtime, instance, container,\ncommand, deadline, and capacity
 
     alt Cell rejects request
-        p_agent -> p_controllers: Publish terminal reason\n(TooManySessions, NoShell, CommandUnavailable,\nInstanceNotRunning, or Invalid)
-        p_controllers -> p_api: Update terminal status and create event
+        p_agent -> p_agent: Write terminal reason to the cell's\nsession copy\n(TooManySessions, NoShell, CommandUnavailable,\nInstanceNotRunning, or Invalid)
+        p_karmada -> p_controllers: Reflect status to the hub copy
+        p_controllers -> p_api: Copy terminal status\nand create event
         p_api -> p_activity: Send lifecycle event\nwith controller identity
         p_api --> p_client: Terminal reason
     else Cell accepts request
         p_agent -> p_agent: Acquire atomic instance reservation
-        p_agent -> p_controllers: Publish endpoint and connectBefore
-        p_controllers -> p_api: Set Ready=True, reason=SessionReady
+        p_agent -> p_agent: Write endpoint and connectBefore\nto the cell's session copy
+        p_karmada -> p_controllers: Reflect status to the hub copy
+        p_controllers -> p_api: Copy Ready=True,\nreason=SessionReady
         p_api --> p_client: Connection details and deadline
 
         alt connectBefore passes
             p_agent -> p_agent: Release instance reservation
-            p_agent -> p_controllers: Publish NotConnected
-            p_controllers -> p_api: Update terminal status and create event
+            p_agent -> p_agent: Write NotConnected to the\ncell's session copy
+            p_karmada -> p_controllers: Reflect status to the hub copy
+            p_controllers -> p_api: Copy terminal status\nand create event
             p_api -> p_activity: Send lifecycle event\nwith controller identity
             p_api --> p_client: NotConnected
         else Client connects in time
@@ -61,8 +66,9 @@ else API accepts request
             p_agent -> p_agent: Match public key and consume session
             p_agent -> p_runtime: Execute command in target container
             p_runtime --> p_agent: Command started
-            p_agent -> p_controllers: Publish Connected and startedAt
-            p_controllers -> p_api: Update status and create start event
+            p_agent -> p_agent: Write Connected and startedAt\nto the cell's session copy
+            p_karmada -> p_controllers: Reflect status to the hub copy
+            p_controllers -> p_api: Copy status\nand create start event
             p_api -> p_activity: Send lifecycle event\nwith controller identity
 
             loop Until exit, expiry, revocation, or failure
@@ -78,18 +84,30 @@ else API accepts request
 
             alt Command exits
                 p_runtime --> p_agent: Exit code
-            else Session ends externally
+            else Client revokes the session
+                p_client -> p_api: Delete session
+                p_controllers -> p_karmada: Annotate the hub copy\nto revoke
+                p_karmada -> p_agent: Propagate the revoke\nannotation to the cell copy
                 p_agent -> p_runtime: Stop session process group
                 p_runtime --> p_agent: Process group stopped
             end
             p_agent -> p_agent: Release instance reservation
-            p_agent -> p_controllers: Publish terminal status
-            p_controllers -> p_api: Update status and create end event
+            p_agent -> p_agent: Write terminal status to the\ncell's session copy
+            p_karmada -> p_controllers: Reflect status to the hub copy
+            p_controllers -> p_api: Copy status\nand create end event
             p_api -> p_activity: Send lifecycle event\nwith controller identity
             p_api --> p_client: Terminal status
         end
     end
 
+    note over p_controllers, p_karmada
+        Karmada deletes the propagated cell copy as soon as the hub
+        copy is gone, without waiting for the agent. The controller
+        deletes the hub copy only once it has copied a terminal
+        status for the session, or after 5 minutes with
+        CleanupUnconfirmed.
+    end note
+    p_controllers -> p_karmada: Delete the hub session copy
     p_controllers -> p_api: Delete session resource\nand release its quota
 end
 
