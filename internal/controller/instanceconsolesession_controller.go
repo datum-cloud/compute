@@ -44,23 +44,28 @@ const (
 // A session is delivered as a copy in the federation hub namespace of the
 // instance's WorkloadDeployment. The copy carries the hub WorkloadDeployment's
 // placement labels, so the WorkloadDeployment's PropagationPolicy delivers it to
-// the same cells. The shell agent there writes status to the hub copy, and this
-// controller copies that status onto the project session.
+// the same cells. The shell agent there writes status only on its cell copy;
+// Karmada reflects it back onto the hub copy, and this controller copies it onto
+// the project session. The controller never writes hub status, which
+// aggregation would overwrite: what it decides itself goes on the project
+// session, and it ends a session on the cell by revoking or deleting the hub
+// copy.
 type InstanceConsoleSessionReconciler struct {
 	mgr mcmanager.Manager
 
-	// FederationClient reads and writes hub copies on the federation hub.
+	// FederationClient creates, revokes and deletes hub copies on the
+	// federation hub.
 	FederationClient client.Client
 
-	// FederationCluster watches hub copies, so status the agent writes reaches
-	// the project session without waiting for a resync. It is nil in unit tests.
+	// FederationCluster watches hub copies, so status Karmada reflects from the
+	// cell reaches the project session without waiting for a resync. It is nil in unit tests.
 	FederationCluster cluster.Cluster
 
 	// ReportingInstance identifies this replica on the events it records.
 	ReportingInstance string
 
-	// CleanupTimeout is how long a deleted session waits for the cell to
-	// confirm cleanup. Zero means five minutes.
+	// CleanupTimeout is how long a deleted session that is open on the cell
+	// waits for the cell to report its end. Zero means five minutes.
 	CleanupTimeout time.Duration
 
 	// ClaimTimeout is how long after its creation a session waits for a cell to
@@ -130,10 +135,10 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 	return result, nil
 }
 
-// reconcileDelivery delivers a session that has not ended and mirrors its hub
-// copy's status onto it. It ends the session when its instance is gone, when
-// no cell claims it by its claim deadline, and when its hub copy goes away
-// before the session ends.
+// reconcileDelivery delivers a session that has not ended and mirrors the
+// status Karmada reflects onto its hub copy. It ends the session when its
+// instance is gone, when no cell claims it by its claim deadline, and when its
+// hub copy goes away after a cell claimed it.
 func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 	ctx context.Context,
 	clusterName multicluster.ClusterName,
@@ -146,8 +151,13 @@ func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if hubCopy != nil && sessionEnded(hubCopy) {
-		return ctrl.Result{}, r.copyStatus(ctx, projectClient, session, hubCopy)
+	if hubCopy != nil {
+		if err := r.copyStatus(ctx, projectClient, session, hubCopy); err != nil {
+			return ctrl.Result{}, err
+		}
+		if sessionEnded(session) {
+			return ctrl.Result{}, nil
+		}
 	}
 
 	var instance computev1alpha.Instance
@@ -161,7 +171,7 @@ func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 			fmt.Sprintf("Instance %q was deleted or replaced.", session.Spec.InstanceRef.Name))
 	}
 
-	if hubCopy == nil {
+	if hubCopy == nil || !hubCopy.DeletionTimestamp.IsZero() {
 		if sessionClaimed(session) {
 			return ctrl.Result{}, r.endSession(ctx, projectClient, session,
 				computev1alpha.InstanceConsoleSessionReasonAgentLost,
@@ -172,100 +182,28 @@ func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 			return ctrl.Result{}, r.endSession(ctx, projectClient, session,
 				computev1alpha.InstanceConsoleSessionReasonUnavailable, r.unavailableMessage())
 		}
-		if hubCopy, err = r.deliver(ctx, clusterName, projectClient, session, &instance); err != nil {
+		if hubCopy != nil {
+			// The copy's name is taken until it is gone, and its removal
+			// requeues the session through the hub watch.
+			return ctrl.Result{RequeueAfter: claimDeadline.Sub(r.now())}, nil
+		}
+		if _, err := r.deliver(ctx, clusterName, projectClient, session, &instance); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
-	if !hubCopy.DeletionTimestamp.IsZero() {
-		return r.reconcileTerminatingHubCopy(ctx, projectClient, session, hubCopy, claimDeadline)
+	if sessionClaimed(session) {
+		return ctrl.Result{}, nil
 	}
-
-	wait, err := r.endUnclaimed(ctx, hubCopy, claimDeadline)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.copyStatus(ctx, projectClient, session, hubCopy); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: wait}, nil
-}
-
-// reconcileTerminatingHubCopy handles a hub copy deleted while its session is
-// still open, as happens when the hub deployment that owns it is replaced. The
-// session waits as long as a deleted session waits for the cell to confirm
-// cleanup, or only until its claim deadline if no cell claimed it, and then
-// releases the copy and ends.
-func (r *InstanceConsoleSessionReconciler) reconcileTerminatingHubCopy(
-	ctx context.Context,
-	projectClient client.Client,
-	session *computev1alpha.InstanceConsoleSession,
-	hubCopy *computev1alpha.InstanceConsoleSession,
-	claimDeadline time.Time,
-) (ctrl.Result, error) {
-	if err := r.copyStatus(ctx, projectClient, session, hubCopy); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	claimed := sessionClaimed(session)
-	deadline := hubCopy.DeletionTimestamp.Add(r.cleanupTimeout())
-	if !claimed && claimDeadline.Before(deadline) {
-		deadline = claimDeadline
-	}
-	if wait := deadline.Sub(r.now()); wait > 0 {
+	if wait := claimDeadline.Sub(r.now()); wait > 0 {
 		return ctrl.Result{RequeueAfter: wait}, nil
 	}
-
-	if controllerutil.ContainsFinalizer(hubCopy, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
-		if err := r.recordCleanupUnconfirmed(ctx, projectClient, session); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.releaseHubCopy(ctx, hubCopy); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if !claimed {
-		return ctrl.Result{}, r.endSession(ctx, projectClient, session,
-			computev1alpha.InstanceConsoleSessionReasonUnavailable, r.unavailableMessage())
-	}
+	// A cell may have claimed the session in the moment before this decision,
+	// but no client can have connected: clients learn where to connect only
+	// from the claim on the project session. Cleanup revokes the cell's claim.
+	log.FromContext(ctx).Info("ending session no cell claimed in time")
 	return ctrl.Result{}, r.endSession(ctx, projectClient, session,
-		computev1alpha.InstanceConsoleSessionReasonAgentLost,
-		"The session's copy on the cell was removed and the cell did not report the session's end.")
-}
-
-// endUnclaimed ends a hub copy no cell has claimed by the deadline, and
-// otherwise returns how long remains until the deadline. The status update
-// carries the copy's resourceVersion, and so does the shell agent's claim, so
-// exactly one of them succeeds: a conflict here means the copy changed, most
-// likely because a cell claimed it, and the retry re-reads it.
-func (r *InstanceConsoleSessionReconciler) endUnclaimed(
-	ctx context.Context,
-	hubCopy *computev1alpha.InstanceConsoleSession,
-	deadline time.Time,
-) (time.Duration, error) {
-	if hubCopy.Status.Connection != nil || sessionEnded(hubCopy) || !hubCopy.DeletionTimestamp.IsZero() {
-		return 0, nil
-	}
-	if wait := deadline.Sub(r.now()); wait > 0 {
-		return wait, nil
-	}
-
-	now := metav1.NewTime(r.now())
-	hubCopy.Status.EndedAt = &now
-	apimeta.SetStatusCondition(&hubCopy.Status.Conditions, metav1.Condition{
-		Type:               computev1alpha.InstanceConsoleSessionReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             computev1alpha.InstanceConsoleSessionReasonUnavailable,
-		Message:            r.unavailableMessage(),
-		ObservedGeneration: hubCopy.Generation,
-		LastTransitionTime: now,
-	})
-	if err := r.FederationClient.Status().Update(ctx, hubCopy); err != nil {
-		return 0, fmt.Errorf("failed ending unclaimed hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)
-	}
-	log.FromContext(ctx).Info("ended session no cell claimed in time", "hubNamespace", hubCopy.Namespace)
-	return 0, nil
+		computev1alpha.InstanceConsoleSessionReasonUnavailable, r.unavailableMessage())
 }
 
 // recordedHubCopy returns the hub copy in the namespace recorded on the
@@ -405,8 +343,10 @@ func (r *InstanceConsoleSessionReconciler) getHubCopy(
 	return &hubCopy, nil
 }
 
-// copyStatus mirrors the status the cell wrote on the hub copy. An ended
-// session keeps its status: a terminal reason never changes.
+// copyStatus mirrors the status Karmada reflected onto the hub copy. An ended
+// session keeps its status, because a terminal reason never changes, and a
+// status that says less than the session's, such as a fresh copy's empty one,
+// never replaces it. The weighing matches the hub copy's status aggregation.
 func (r *InstanceConsoleSessionReconciler) copyStatus(
 	ctx context.Context,
 	projectClient client.Client,
@@ -416,6 +356,10 @@ func (r *InstanceConsoleSessionReconciler) copyStatus(
 	if sessionEnded(session) || equality.Semantic.DeepEqual(session.Status, hubCopy.Status) {
 		return nil
 	}
+	hubWeight := statusWeight(&hubCopy.Status)
+	if hubWeight == 0 || hubWeight < statusWeight(&session.Status) {
+		return nil
+	}
 	session.Status = *hubCopy.Status.DeepCopy()
 	if err := projectClient.Status().Update(ctx, session); err != nil {
 		return fmt.Errorf("failed copying hub status to session: %w", err)
@@ -423,7 +367,7 @@ func (r *InstanceConsoleSessionReconciler) copyStatus(
 	return nil
 }
 
-// endSession ends a session the cell never received.
+// endSession records an end the control plane decided on the project session.
 func (r *InstanceConsoleSessionReconciler) endSession(
 	ctx context.Context,
 	projectClient client.Client,
@@ -446,9 +390,11 @@ func (r *InstanceConsoleSessionReconciler) endSession(
 	return nil
 }
 
-// finalize removes the hub copy and releases the project session once the cell
-// confirms cleanup by removing its finalizer from the copy, or once the cleanup
-// timeout passes without that confirmation.
+// finalize removes the hub copy and releases the project session. A session
+// still open on the cell is revoked first, and the copy is removed once the
+// cell reports the session's end, or once the cleanup timeout passes without
+// that report. Karmada removes a cell copy without waiting for it to go, so a
+// removed hub copy can no longer report anything.
 func (r *InstanceConsoleSessionReconciler) finalize(
 	ctx context.Context,
 	projectClient client.Client,
@@ -465,28 +411,25 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 			return ctrl.Result{}, err
 		}
 		if hubCopy != nil && hubCopy.DeletionTimestamp.IsZero() {
-			if err := r.FederationClient.Delete(ctx, hubCopy, client.Preconditions{UID: &hubCopy.UID}); client.IgnoreNotFound(err) != nil {
-				return ctrl.Result{}, fmt.Errorf("failed deleting hub session %s/%s: %w", hubNS, session.Name, err)
-			}
-			if hubCopy, err = r.getHubCopy(ctx, hubNS, session); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		if hubCopy != nil {
 			if err := r.copyStatus(ctx, projectClient, session, hubCopy); err != nil {
 				return ctrl.Result{}, err
 			}
-			deadline := session.DeletionTimestamp.Add(r.cleanupTimeout())
-			if wait := deadline.Sub(r.now()); wait > 0 {
-				return ctrl.Result{RequeueAfter: wait}, nil
+			if openOnCell(hubCopy) {
+				if err := r.revokeHubCopy(ctx, hubCopy); err != nil {
+					return ctrl.Result{}, err
+				}
+				deadline := session.DeletionTimestamp.Add(r.cleanupTimeout())
+				if wait := deadline.Sub(r.now()); wait > 0 {
+					return ctrl.Result{RequeueAfter: wait}, nil
+				}
+				if err := r.recordCleanupUnconfirmed(ctx, projectClient, session); err != nil {
+					return ctrl.Result{}, err
+				}
+				logger.Info("cell did not confirm session cleanup", "hubNamespace", hubNS, "timeout", r.cleanupTimeout())
 			}
-			if err := r.recordCleanupUnconfirmed(ctx, projectClient, session); err != nil {
-				return ctrl.Result{}, err
+			if err := r.FederationClient.Delete(ctx, hubCopy, client.Preconditions{UID: &hubCopy.UID}); client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, fmt.Errorf("failed deleting hub session %s/%s: %w", hubNS, session.Name, err)
 			}
-			if err := r.releaseHubCopy(ctx, hubCopy); err != nil {
-				return ctrl.Result{}, err
-			}
-			logger.Info("cell did not confirm session cleanup", "hubNamespace", hubNS, "timeout", r.cleanupTimeout())
 		}
 	}
 
@@ -506,18 +449,30 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 	return ctrl.Result{}, nil
 }
 
-// releaseHubCopy removes the agent's finalizer from a hub copy the cell never
-// confirmed, so the copy does not outlive the session. Its cell copy goes with
-// it, and the agent's orphan sweep stops any command still running for it.
-func (r *InstanceConsoleSessionReconciler) releaseHubCopy(ctx context.Context, hubCopy *computev1alpha.InstanceConsoleSession) error {
-	patch := client.MergeFromWithOptions(hubCopy.DeepCopy(), client.MergeFromWithOptimisticLock{})
-	if !controllerutil.RemoveFinalizer(hubCopy, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
+// revokeHubCopy asks the cell to end the session. The annotation reaches the
+// cell copy through propagation, and the agent reports the end through status
+// only after it has stopped the session's processes.
+func (r *InstanceConsoleSessionReconciler) revokeHubCopy(ctx context.Context, hubCopy *computev1alpha.InstanceConsoleSession) error {
+	if _, ok := hubCopy.Annotations[computev1alpha.InstanceConsoleSessionRevokeAnnotation]; ok {
 		return nil
 	}
+	patch := client.MergeFrom(hubCopy.DeepCopy())
+	if hubCopy.Annotations == nil {
+		hubCopy.Annotations = map[string]string{}
+	}
+	hubCopy.Annotations[computev1alpha.InstanceConsoleSessionRevokeAnnotation] = r.now().UTC().Format(time.RFC3339)
 	if err := r.FederationClient.Patch(ctx, hubCopy, patch); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("failed releasing hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)
+		return fmt.Errorf("failed revoking hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)
 	}
 	return nil
+}
+
+// openOnCell reports whether a cell claimed the session and has not reported
+// its end. Only such a session can have processes to stop. One no cell
+// claimed has none, because a client learns where to connect only from the
+// claim.
+func openOnCell(hubCopy *computev1alpha.InstanceConsoleSession) bool {
+	return sessionClaimed(hubCopy) && !sessionEnded(hubCopy)
 }
 
 func (r *InstanceConsoleSessionReconciler) cleanupTimeout() time.Duration {
@@ -544,6 +499,18 @@ func (r *InstanceConsoleSessionReconciler) now() time.Time {
 // sessionEnded reports whether the session has reached its terminal state.
 func sessionEnded(session *computev1alpha.InstanceConsoleSession) bool {
 	return apimeta.IsStatusConditionFalse(session.Status.Conditions, computev1alpha.InstanceConsoleSessionReady)
+}
+
+// statusWeight ranks how much a session status says: a claim, then any
+// condition, then nothing.
+func statusWeight(status *computev1alpha.InstanceConsoleSessionStatus) int {
+	switch {
+	case status.Connection != nil:
+		return 2
+	case len(status.Conditions) > 0:
+		return 1
+	}
+	return 0
 }
 
 // sessionClaimed reports whether a cell has claimed the session.

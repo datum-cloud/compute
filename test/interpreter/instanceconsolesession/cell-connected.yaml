@@ -12,9 +12,17 @@ spec:
     - sh
   clientPublicKey: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 status:
+  connection:
+    endpointID: 5f0c0a1e
+    relayURLs:
+      - https://relay.example.test
+    target: exec-agent-0.exec-agent.compute-shell-system.svc.cluster.local:7777
+  connectBefore: "2026-09-29T18:01:10Z"
+  startedAt: "2026-09-29T18:00:20Z"
+  expiresAt: "2026-09-29T18:15:20Z"
   conditions:
     - type: Ready
       status: "True"
       reason: Connected
-      message: A client is connected
-      lastTransitionTime: "2026-09-29T18:00:10Z"
+      message: A client is connected.
+      lastTransitionTime: "2026-09-29T18:00:20Z"

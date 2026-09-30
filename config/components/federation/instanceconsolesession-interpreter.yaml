@@ -1,7 +1,12 @@
-# The cell's shell agent writes a session's status straight onto the hub copy,
-# and compute's session controller reads it from there. Aggregation keeps the
-# hub copy's status as it is, so Karmada never overwrites what the agent wrote
-# with the status of a cell copy, which nothing writes.
+# The cell's shell agent writes a session's status only on its cell copy.
+# Karmada reflects it from every cell the copy reaches and aggregates it onto
+# the hub copy, where compute's session controller reads it.
+#
+# A location can map to more than one cell, and only the cell that runs the
+# session's instance writes anything. Aggregation therefore takes the status
+# that says the most: a claim first, then any status with a condition. A
+# status that says less never replaces the hub copy's, so a cell that left the
+# session alone cannot wipe the claim of the cell that took it.
 apiVersion: config.karmada.io/v1alpha1
 kind: ResourceInterpreterCustomization
 metadata:
@@ -11,8 +16,46 @@ spec:
     apiVersion: compute.datumapis.com/v1alpha
     kind: InstanceConsoleSession
   customizations:
+    statusReflection:
+      luaScript: |
+        function ReflectStatus(observedObj)
+          if observedObj.status == nil then
+            return nil
+          end
+          return observedObj.status
+        end
     statusAggregation:
       luaScript: |
+        local function weight(status)
+          if status == nil then
+            return 0
+          end
+          if status.connection ~= nil then
+            return 2
+          end
+          if status.conditions ~= nil and #status.conditions > 0 then
+            return 1
+          end
+          return 0
+        end
+
         function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil then
+            return desiredObj
+          end
+          local best = nil
+          local bestWeight = 0
+          for i = 1, #statusItems do
+            local status = statusItems[i].status
+            local w = weight(status)
+            if w > bestWeight then
+              best = status
+              bestWeight = w
+            end
+          end
+          if best == nil or bestWeight < weight(desiredObj.status) then
+            return desiredObj
+          end
+          desiredObj.status = best
           return desiredObj
         end

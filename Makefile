@@ -67,13 +67,7 @@ test: manifests generate fmt vet envtest interpreter-test ## Run tests.
 .PHONY: interpreter-test
 interpreter-test: karmadactl ## Validate Karmada resource interpreter customizations.
 	$(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --check
-	$(KARMADACTL) interpret -f config/components/federation/instanceconsolesession-interpreter.yaml --check
-	@out="$$($(KARMADACTL) interpret -f config/components/federation/instanceconsolesession-interpreter.yaml --operation aggregateStatus --observed-file test/interpreter/instanceconsolesession-aggregate-observed.yaml --status-file test/interpreter/instanceconsolesession-aggregate-status.yaml)"; \
-	if ! grep -q "reason: Connected" <<<"$$out"; then \
-	  printf '%s\n' "$$out"; \
-	  printf '%s\n' "expected aggregation to keep the status the shell agent wrote on the hub session"; \
-	  exit 1; \
-	fi
+	KARMADACTL=$(KARMADACTL) test/interpreter/instanceconsolesession.sh
 	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
 	if ! grep -q "replicas: 5" <<<"$$out"; then \
 	  printf '%s\n' "$$out"; \

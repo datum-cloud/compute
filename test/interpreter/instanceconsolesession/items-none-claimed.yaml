@@ -1,0 +1,8 @@
+applied: true
+clusterName: cell-without-instance
+health: Unknown
+status: {}
+---
+applied: true
+clusterName: cell-not-reporting
+health: Unknown

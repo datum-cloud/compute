@@ -1,0 +1,26 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceConsoleSession
+metadata:
+  name: web-0-abcde
+  namespace: ns-aabbccdd-0000-1111-2222-333344445555
+spec:
+  instanceRef:
+    name: web-0
+    uid: 6f1c2f0e-0000-1111-2222-333344445555
+  containerName: app
+  command:
+    - sh
+  clientPublicKey: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+status:
+  connection:
+    endpointID: 5f0c0a1e
+    relayURLs:
+      - https://relay.example.test
+    target: exec-agent-0.exec-agent.compute-shell-system.svc.cluster.local:7777
+  connectBefore: "2026-09-29T18:01:10Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: SessionReady
+      message: Connect before the connection deadline.
+      lastTransitionTime: "2026-09-29T18:00:10Z"

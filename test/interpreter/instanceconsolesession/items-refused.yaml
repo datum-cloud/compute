@@ -1,0 +1,16 @@
+applied: true
+clusterName: cell-without-instance
+health: Unknown
+status: {}
+---
+applied: true
+clusterName: cell-with-instance
+health: Unknown
+status:
+  endedAt: "2026-09-29T18:00:05Z"
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: NoShell
+      message: The container has no shell.
+      lastTransitionTime: "2026-09-29T18:00:05Z"
