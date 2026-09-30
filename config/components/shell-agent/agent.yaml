@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: exec-agent
+  namespace: compute-shell-system
+  labels:
+    app.kubernetes.io/name: exec-agent
+    app.kubernetes.io/part-of: compute
+spec:
+  replicas: 2
+  serviceName: exec-agent
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exec-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exec-agent
+        app.kubernetes.io/part-of: compute
+    spec:
+      serviceAccountName: exec-agent
+      # The drain window, then time to stop the processes of sessions still
+      # open at its end.
+      terminationGracePeriodSeconds: 75
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: exec-agent
+      containers:
+        - name: agent
+          # The manager's image, which carries this binary too.
+          image: ghcr.io/datum-cloud/compute:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /shell-agent
+          args:
+            - --listen=:7777
+            - --health-probe-bind-address=:8081
+            - --target=$(POD_NAME).exec-agent.$(POD_NAMESPACE).svc.cluster.local:7777
+            - --managed-by=kata-provider
+            - --endpoint-pod-prefix=exec-endpoint
+            - --drain-timeout=30s
+            - --feature-gates=$(FEATURE_GATES)
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: FEATURE_GATES
+              value: InstanceConsoleSessions=true
+          envFrom:
+            - configMapRef:
+                name: exec-relays
+          ports:
+            - name: exec
+              containerPort: 7777
+              protocol: TCP
+            - name: probes
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
