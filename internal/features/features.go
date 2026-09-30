@@ -88,6 +88,21 @@ const (
 	//
 	// alpha: v0.1
 	InstanceTypes featuregate.Feature = "InstanceTypes"
+
+	// InstanceConsoleSessions controls whether customers can open shell
+	// sessions into their instances through InstanceConsoleSession.
+	//
+	// When the gate is disabled, the session controllers and the shell agent do
+	// not run, and admission rejects every session create with an explained
+	// reason rather than accepting a session nothing will serve.
+	//
+	// The gate defaults to disabled because a session needs the shell agent in
+	// the cell serving the instance and a runtime class declaring the exec
+	// feature. Deployments opt in per environment once both are in place, with
+	// --feature-gates=InstanceConsoleSessions=true.
+	//
+	// alpha: v0.1
+	InstanceConsoleSessions featuregate.Feature = "InstanceConsoleSessions"
 )
 
 // MutableFeatureGate is the mutable feature gate for the compute operator.
@@ -103,9 +118,10 @@ var FeatureGate featuregate.FeatureGate = MutableFeatureGate
 
 func init() {
 	if err := MutableFeatureGate.Add(map[featuregate.Feature]featuregate.FeatureSpec{
-		NetworkingIntegration: {Default: false, PreRelease: featuregate.Alpha},
-		RuntimeClasses:        {Default: false, PreRelease: featuregate.Alpha},
-		InstanceTypes:         {Default: false, PreRelease: featuregate.Alpha},
+		NetworkingIntegration:   {Default: false, PreRelease: featuregate.Alpha},
+		RuntimeClasses:          {Default: false, PreRelease: featuregate.Alpha},
+		InstanceTypes:           {Default: false, PreRelease: featuregate.Alpha},
+		InstanceConsoleSessions: {Default: false, PreRelease: featuregate.Alpha},
 	}); err != nil {
 		panic(err)
 	}

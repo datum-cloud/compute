@@ -22,3 +22,14 @@ spec:
     - compute.datumapis.com/runtimeclasses.list
     - compute.datumapis.com/runtimeclasses.get
     - compute.datumapis.com/runtimeclasses.watch
+    # Viewers can see who has a shell session open, but opening one runs
+    # commands inside an instance, so creating a session needs Compute Admin.
+    - compute.datumapis.com/instanceconsolesessions.list
+    - compute.datumapis.com/instanceconsolesessions.get
+    - compute.datumapis.com/instanceconsolesessions.watch
+    # Sessions are enabled per project by quota, so the CLI and portal read the
+    # project's allowance to say whether shells are available before a create
+    # is refused.
+    - quota.miloapis.com/allowancebuckets.list
+    - quota.miloapis.com/allowancebuckets.get
+    - quota.miloapis.com/allowancebuckets.watch
