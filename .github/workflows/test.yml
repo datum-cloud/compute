@@ -21,3 +21,6 @@ jobs:
         run: |
           go mod tidy
           make test
+
+      - name: Console session client tests
+        run: make test-console
