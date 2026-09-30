@@ -181,7 +181,7 @@ func endingFromStatus(ctx context.Context, c client.Client, s *computev1alpha.In
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	return consoleclient.Result{}, streamErr
+	return consoleclient.Result{}, fmt.Errorf("lost the connection to the session: %w", streamErr)
 }
 
 func interrupted(ctx context.Context, err error) error {
