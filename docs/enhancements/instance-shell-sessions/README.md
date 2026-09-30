@@ -265,7 +265,9 @@ one immutable terminal state. Terminal reasons are `Completed`, `Expired`,
 ends a session that no cell takes within 30 seconds. `ClosedByUser` ends a
 session whose client closed it on purpose before the command exited, by
 sending a WebSocket close frame; the portal's Close shell and `datumctl` on an
-interrupt do. `Disconnected` ends a session whose connection was lost without
+interrupt do. The client reports `ClosedByUser`, so it is advisory: it cannot
+hide a revoke, an expiry or any other ending the platform starts, because
+those take precedence. `Disconnected` ends a session whose connection was lost without
 one; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
 waiting for a connection from one whose command is running. `AgentLost` also
 covers a session whose bound cell stops reporting altogether — deregistered,

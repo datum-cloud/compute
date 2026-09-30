@@ -727,7 +727,8 @@ var catalog = []ReasonInfo{
 		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
 		Actionability:  ActionabilityTransient,
 		Explanation: "The user closed the session before the command finished, so Datum " +
-			"stopped the command. Nothing went wrong.",
+			"stopped the command. Nothing went wrong. The client reports this reason, so " +
+			"it never replaces a revoke, an expiry or another ending Datum starts.",
 	},
 }
 

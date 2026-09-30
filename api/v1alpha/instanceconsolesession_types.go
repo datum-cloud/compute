@@ -253,7 +253,8 @@ const (
 
 	// InstanceConsoleSessionReasonClosedByUser means the client closed the
 	// session on purpose before the command exited, and the platform stopped
-	// the command.
+	// the command. The client reports it, so it is advisory: a revoke,
+	// expiry or other ending the platform starts takes precedence.
 	InstanceConsoleSessionReasonClosedByUser = "ClosedByUser"
 )
 
