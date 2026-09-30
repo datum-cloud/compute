@@ -37,6 +37,12 @@ spec:
         baseURL: https://compute-consumer-ui-plugin.compute-system.svc.cluster.local
       visibility:
         entitlement: None
+      # The instance shell runs a WebAssembly client in a worker and reaches
+      # the regional iroh relays directly from the browser.
+      contentSecurityPolicy:
+      - "script-src 'wasm-unsafe-eval'"
+      - "worker-src 'self'"
+      - "connect-src https://iroh-relay.us-central-1.datumconnect.net wss://iroh-relay.us-central-1.datumconnect.net https://iroh-relay.us-east-1.datumconnect.net wss://iroh-relay.us-east-1.datumconnect.net https://iroh-relay.us-east-3.datumconnect.net wss://iroh-relay.us-east-3.datumconnect.net https://iroh-relay.us-west-1.datumconnect.net wss://iroh-relay.us-west-1.datumconnect.net"
     provider:
       assets:
         baseURL: https://compute-provider-ui-plugin.compute-system.svc.cluster.local

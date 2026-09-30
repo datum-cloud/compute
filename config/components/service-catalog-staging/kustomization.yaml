@@ -8,3 +8,9 @@ patches:
       version: v1alpha1
       kind: ServiceConfiguration
       name: compute
+  - path: service-configuration-console-csp.yaml
+    target:
+      group: services.miloapis.com
+      version: v1alpha1
+      kind: ServiceConfiguration
+      name: compute
