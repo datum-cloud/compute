@@ -324,3 +324,40 @@ func TestExitWatchGivesUpOnceTheSessionIsStopped(t *testing.T) {
 		t.Fatal("the exit watch outlived its session")
 	}
 }
+
+// Without sleep the exit watch refuses to spin, and the exit check, which uses
+// only builtins, reports the code instead.
+func TestExitCheckWorksWithoutSleep(t *testing.T) {
+	dir := t.TempDir()
+	noSleep := []string{"PATH=" + t.TempDir()}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runScript := func(args []string) (string, int) {
+		cmd := exec.Command(sh, args[1:]...)
+		cmd.Env = noSleep
+		out, err := cmd.Output()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return string(out), exitErr.ExitCode()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out), 0
+	}
+
+	if _, code := runScript(exitWatchCommand(dir, "uid", 30)); code != exitWatchNoSleep {
+		t.Fatalf("exit watch without sleep exited %d, want %d", code, exitWatchNoSleep)
+	}
+	if out, code := runScript(exitCheckCommand(dir, "uid")); code != 2 || out != "" {
+		t.Fatalf("exit check before the command exited = %q, %d; want nothing and exit 2", out, code)
+	}
+	if err := os.WriteFile(exitPath(dir, "uid"), []byte("7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runScript(exitCheckCommand(dir, "uid")); code != 0 || strings.TrimSpace(out) != "7" {
+		t.Fatalf("exit check = %q, %d; want 7", out, code)
+	}
+}

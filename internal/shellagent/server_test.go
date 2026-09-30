@@ -474,3 +474,41 @@ func TestExitWatchDoesNotEndARunningSession(t *testing.T) {
 		t.Fatalf("exit watch ran %d times, want once per session", h.exec.ran(exitWatchScript))
 	}
 }
+
+// A container without sleep cannot run the exit watch, so the agent checks
+// for the exit code on its own timer instead.
+func TestCommandExitEndsSessionInAContainerWithoutSleep(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent(func(c *Config) { c.ExitPollInterval = 20 * time.Millisecond })
+	addr := serve(t, h, a)
+	key := readySession(t, h, a, func(s *computev1alpha.InstanceConsoleSession) {
+		s.Spec.Stdin, s.Spec.Terminal = true, true
+	})
+	h.exec.mu.Lock()
+	h.exec.noSleep = true
+	h.exec.mu.Unlock()
+	h.exec.onSession = (&backendRecorder{}).run
+
+	c := dialSession(t, addr, testUID, key, time.Now())
+	waitForConnected(t, h)
+	deadline := time.Now().Add(5 * time.Second)
+	for h.exec.ran(exitCheckScript) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if h.exec.ran(exitCheckScript) < 2 {
+		t.Fatal("the agent did not poll for the exit code")
+	}
+	h.exec.mu.Lock()
+	h.exec.recorded = "6"
+	h.exec.mu.Unlock()
+	_, status, _ := c.readUntilClose(t)
+
+	if status == nil || status.Details == nil || status.Details.Causes[0].Message != "6" {
+		t.Fatalf("status = %+v; want the command's exit code 6", status)
+	}
+	s := waitForEnd(t, h)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonCompleted)
+	if s.Status.ExitCode == nil || *s.Status.ExitCode != 6 || h.exec.ran(killScript) != 1 {
+		t.Fatalf("exit code %v, kills %d", s.Status.ExitCode, h.exec.ran(killScript))
+	}
+}

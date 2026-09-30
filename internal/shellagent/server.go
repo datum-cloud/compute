@@ -198,11 +198,17 @@ func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.R
 
 // watchExit sends the command's exit code once the wrapper records it. The
 // exec stream alone cannot say when the command exited: a background job that
-// still holds the terminal keeps it open. Nothing is sent when the watch ends
-// any other way, and the stream decides how the session ends.
+// still holds the terminal keeps it open. In a container without sleep the
+// watch cannot wait, so the agent checks on its own timer until ctx ends.
+// Nothing is sent when the watch ends any other way, and the stream decides
+// how the session ends.
 func (a *Agent) watchExit(ctx context.Context, held *slot, uid string, limit time.Duration, exited chan<- int32) {
 	out, code, err := run(ctx, a.exec, held.pod, held.container,
 		exitWatchCommand(held.markerDir, uid, int(limit.Seconds())))
+	if err == nil && code == exitWatchNoSleep {
+		out, err = a.pollExit(ctx, held, uid)
+		code = 0
+	}
 	if err != nil || code != 0 {
 		return
 	}
@@ -211,6 +217,22 @@ func (a *Agent) watchExit(ctx context.Context, held *slot, uid string, limit tim
 		return
 	}
 	exited <- int32(exitCode)
+}
+
+func (a *Agent) pollExit(ctx context.Context, held *slot, uid string) (string, error) {
+	ticker := time.NewTicker(a.cfg.ExitPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+		out, code, err := a.run(ctx, held.pod, held.container, exitCheckCommand(held.markerDir, uid))
+		if err == nil && code == 0 {
+			return out, nil
+		}
+	}
 }
 
 // finishSession stops the session's processes, records its end, and frees its

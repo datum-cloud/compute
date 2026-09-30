@@ -21,6 +21,8 @@ for d in /tmp /dev/shm /run /var/tmp; do
 done
 exit 3`
 
+const exitWatchNoSleep = 3
+
 const (
 	probeExitCommandMissing = 4
 	probeExitNoWritableDir  = 3
@@ -64,7 +66,8 @@ exit "$rc"`
 // The exit watch prints the command's exit code once the wrapper records it.
 // It gives up once the marker it saw is removed, when the session has been
 // stopped, or after its limit in seconds. It exits 3 without looking when the
-// container has no sleep, so it never spins.
+// container has no sleep, so it never spins; the agent then polls with the
+// exit check, which uses only shell builtins.
 const exitWatchScript = `x=$1 m=$2 n=$3 seen=0 i=0
 command -v sleep >/dev/null 2>&1 || exit 3
 while [ "$i" -lt "$n" ]; do
@@ -72,6 +75,12 @@ while [ "$i" -lt "$n" ]; do
   if [ -f "$m" ]; then seen=1; elif [ "$seen" = 1 ]; then exit 2; fi
   sleep 1; i=$((i+1))
 done
+exit 2`
+
+// The exit check prints the command's exit code if the wrapper has recorded
+// it, and exits 2 otherwise.
+const exitCheckScript = `x=$1
+if [ -s "$x" ]; then read -r rc < "$x"; echo "$rc"; exit 0; fi
 exit 2`
 
 // The kill script stops every process in the recorded session, or process
@@ -147,6 +156,10 @@ func wrappedCommand(dir, sessionUID string, command []string, stdin, tty bool) [
 	}
 	return append([]string{"sh", "-c", wrapperScript, "sh", wrapperScript,
 		markerPath(dir, sessionUID), exitPath(dir, sessionUID), mode, "0"}, command...)
+}
+
+func exitCheckCommand(dir, sessionUID string) []string {
+	return []string{"sh", "-c", exitCheckScript, "sh", exitPath(dir, sessionUID)}
 }
 
 func exitWatchCommand(dir, sessionUID string, limitSeconds int) []string {

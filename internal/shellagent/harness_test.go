@@ -242,6 +242,10 @@ type fakeAPIServer struct {
 	// one, the watch runs until the agent drops it, as it does while the
 	// command is still running.
 	exitWatch chan string
+	// noSleep makes the exit watch report a container without sleep, and
+	// recorded is what the exit check finds in the exit file.
+	noSleep  bool
+	recorded string
 }
 
 func newFakeAPIServer() *fakeAPIServer {
@@ -298,6 +302,7 @@ func acceptKey(key string) string {
 func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 	f.mu.Lock()
 	probeExit, probeDir, markers, killExit, killHangs, exitWatch := f.probeExit, f.probeDir, f.markers, f.killExit, f.killHangs, f.exitWatch
+	noSleep, recorded := f.noSleep, f.recorded
 	f.mu.Unlock()
 	switch command[2] {
 	case probeScript:
@@ -309,11 +314,22 @@ func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 		writeServerFrame(conn, channelStdout, []byte(markers))
 		writeExitStatus(conn, 0)
 	case exitWatchScript:
+		if noSleep {
+			writeExitStatus(conn, exitWatchNoSleep)
+			return
+		}
 		if exitWatch == nil {
 			_, _ = io.Copy(io.Discard, conn)
 			return
 		}
 		writeServerFrame(conn, channelStdout, []byte(<-exitWatch+"\n"))
+		writeExitStatus(conn, 0)
+	case exitCheckScript:
+		if recorded == "" {
+			writeExitStatus(conn, 2)
+			return
+		}
+		writeServerFrame(conn, channelStdout, []byte(recorded+"\n"))
 		writeExitStatus(conn, 0)
 	case killScript:
 		if killHangs {
