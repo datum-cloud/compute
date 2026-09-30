@@ -113,7 +113,7 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 	if status := containerStatus(&pod, place.container); status == nil || status.State.Running == nil {
 		return
 	}
-	out, code, err := run(ctx, a.exec, place.pod, place.container, listMarkersCommand(place.dir))
+	out, code, err := a.run(ctx, place.pod, place.container, listMarkersCommand(place.dir))
 	if err != nil || code != 0 {
 		logger.Info("could not list session markers", "exitCode", code, "error", err)
 		return
@@ -127,7 +127,7 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 			continue
 		}
 		grace := int(a.cfg.KillGrace.Seconds())
-		if _, code, err := run(ctx, a.exec, place.pod, place.container, killCommand(place.dir, uid, grace)); err != nil || code != 0 {
+		if _, code, err := a.run(ctx, place.pod, place.container, killCommand(place.dir, uid, grace)); err != nil || code != 0 {
 			logger.Info("could not stop orphaned session processes", "session", uid, "exitCode", code, "error", err)
 			continue
 		}

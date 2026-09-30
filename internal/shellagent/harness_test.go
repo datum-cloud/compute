@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -263,6 +264,7 @@ type fakeAPIServer struct {
 	probeDir  string
 	markers   string
 	killExit  int
+	killHangs bool
 	onSession func(conn net.Conn, r *bufio.Reader)
 }
 
@@ -319,7 +321,7 @@ func acceptKey(key string) string {
 
 func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 	f.mu.Lock()
-	probeExit, probeDir, markers, killExit := f.probeExit, f.probeDir, f.markers, f.killExit
+	probeExit, probeDir, markers, killExit, killHangs := f.probeExit, f.probeDir, f.markers, f.killExit, f.killHangs
 	f.mu.Unlock()
 	switch command[2] {
 	case probeScript:
@@ -331,6 +333,10 @@ func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 		writeServerFrame(conn, channelStdout, []byte(markers))
 		writeExitStatus(conn, 0)
 	case killScript:
+		if killHangs {
+			_, _ = io.Copy(io.Discard, conn)
+			return
+		}
 		writeExitStatus(conn, killExit)
 	default:
 		writeExitStatus(conn, 0)

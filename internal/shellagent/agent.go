@@ -60,6 +60,10 @@ type Config struct {
 	// that is open or still holds its finalizer. The hub lets a cell read
 	// sessions only by name, so there is nothing to watch.
 	HubPollInterval time.Duration
+	// ExecTimeout bounds each command the agent runs in an instance to probe,
+	// list or stop session processes, so a hung exec cannot hold a reconcile
+	// worker or the sweep. Zero means KillGrace plus 30 seconds.
+	ExecTimeout time.Duration
 }
 
 // DefaultConfig returns the contract's limits.
@@ -107,6 +111,9 @@ type Agent struct {
 func New(cfg Config, sessions client.Reader, cell, hub client.Client, exec Executor, incarnation string) (*Agent, error) {
 	if cfg.Namespace == "" || cfg.Target == "" || len(cfg.RelayURLs) == 0 || len(cfg.ManagedBy) == 0 {
 		return nil, errors.New("namespace, target, relay URLs and managed-by values are required")
+	}
+	if cfg.ExecTimeout <= 0 {
+		cfg.ExecTimeout = cfg.KillGrace + 30*time.Second
 	}
 	if cfg.PingInterval <= 0 || cfg.PongTimeout <= cfg.PingInterval {
 		return nil, errors.New("the ping interval must be positive and shorter than the pong timeout")

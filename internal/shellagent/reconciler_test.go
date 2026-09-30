@@ -763,3 +763,27 @@ func TestEndedSessionWithoutFinalizerIsNotPolled(t *testing.T) {
 		t.Fatalf("requeue after %v for an ended session this agent never held", res.RequeueAfter)
 	}
 }
+
+func TestHungExecIsBounded(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent(func(c *Config) { c.ExecTimeout = 200 * time.Millisecond })
+	h.session(testSession, testUID)
+	h.reconcile(a, testSession)
+	held, err := a.slotFor(h.ctx, testUID)
+	if err != nil || held == nil {
+		t.Fatalf("slot = %v, %v", held, err)
+	}
+	h.exec.mu.Lock()
+	h.exec.killHangs = true
+	h.exec.mu.Unlock()
+
+	start := time.Now()
+	stopped, err := a.stopProcesses(h.ctx, held)
+
+	if err != nil || stopped {
+		t.Fatalf("stopProcesses() = %v, %v; want not stopped, no error", stopped, err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("a hung exec held the caller for %v", took)
+	}
+}

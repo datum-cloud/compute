@@ -232,7 +232,7 @@ func (a *Agent) stopProcesses(ctx context.Context, s *slot) (bool, error) {
 		return true, nil
 	}
 	grace := int(a.cfg.KillGrace.Seconds())
-	out, code, err := run(ctx, a.exec, s.pod, s.container, killCommand(s.markerDir, s.sessionUID, grace))
+	out, code, err := a.run(ctx, s.pod, s.container, killCommand(s.markerDir, s.sessionUID, grace))
 	if err != nil || code != 0 {
 		log.FromContext(ctx).Info("could not stop session processes", "session", s.sessionUID,
 			"pod", s.pod.String(), "exitCode", code, "output", out, "error", err)

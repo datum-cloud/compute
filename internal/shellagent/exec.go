@@ -207,6 +207,14 @@ func (e *ExecFailedError) Error() string {
 	return "exec failed: " + e.Message
 }
 
+// run runs a command in a pod to completion, giving up after the agent's exec
+// timeout.
+func (a *Agent) run(ctx context.Context, pod types.NamespacedName, container string, command []string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.cfg.ExecTimeout)
+	defer cancel()
+	return run(ctx, a.exec, pod, container, command)
+}
+
 // run runs a command to completion without stdin and returns its combined
 // output and exit code.
 func run(ctx context.Context, exec Executor, pod types.NamespacedName, container string, command []string) (string, int, error) {

@@ -166,7 +166,7 @@ func (a *Agent) probe(ctx context.Context, pod *corev1.Pod, container, executabl
 		}
 	}
 
-	out, code, err := run(ctx, a.exec, types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name},
+	out, code, err := a.run(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name},
 		container, probeCommand(executable))
 	var failed *ExecFailedError
 	switch {
