@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   createErrorMessage,
+  reasonMessage,
   SESSION_RESOURCE_TYPE,
   sessionAllowance,
   SESSIONS_NOT_ENABLED_MESSAGE,
@@ -69,6 +70,22 @@ describe('sessionProgress', () => {
       kind: 'ended',
       reason: 'Connected',
     });
+  });
+});
+
+describe('reasonMessage', () => {
+  test('explains a session no cell took in time', () => {
+    expect(reasonMessage('Unavailable')).toMatch(/aren't available/);
+  });
+
+  test('explains a session whose client went away', () => {
+    expect(reasonMessage('Disconnected')).toMatch(/connection to it was lost/);
+  });
+
+  test('prefers the platform message', () => {
+    expect(reasonMessage('Unavailable', 'No cell is serving this instance.')).toBe(
+      'No cell is serving this instance.'
+    );
   });
 });
 
