@@ -130,7 +130,10 @@ export function isQuotaDenial(message: string): boolean {
   return /reached your quota|insufficient quota/i.test(message);
 }
 
-export function createErrorMessage(status: number, message: string, allowance?: number): string {
+const ADMISSION_PREFIX = /^admission webhook "[^"]*" denied the request: /;
+
+export function createErrorMessage(status: number, raw: string, allowance?: number): string {
+  const message = raw.replace(ADMISSION_PREFIX, '');
   if (isQuotaDenial(message)) {
     if (allowance === undefined) return SESSION_QUOTA_MESSAGE;
     return allowance === 0 ? SESSIONS_NOT_ENABLED_MESSAGE : TOO_MANY_SESSIONS_MESSAGE;

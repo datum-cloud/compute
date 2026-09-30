@@ -45,7 +45,9 @@ func ValidateInstanceConsoleSessionCreate(
 	ref := session.Spec.InstanceRef
 	instance := opts.Instance
 	if instance == nil {
-		return field.ErrorList{field.NotFound(refPath.Child("name"), ref.Name)}
+		notFound := field.NotFound(refPath.Child("name"), ref.Name)
+		notFound.Detail = "the project has no instance with that name"
+		return field.ErrorList{notFound}
 	}
 	if instance.UID != ref.UID {
 		return field.ErrorList{field.Invalid(refPath.Child("uid"), ref.UID, fmt.Sprintf(

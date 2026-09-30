@@ -142,6 +142,17 @@ describe('createErrorMessage', () => {
     expect(createErrorMessage(403, 'cannot create resource')).toMatch(/permission/);
   });
 
+  test('shows an admission refusal without the webhook preamble', () => {
+    expect(
+      createErrorMessage(
+        422,
+        'admission webhook "minstanceconsolesession.kb.io" denied the request: Can\'t open a shell session in instance "web-0": the "unikernel" runtime class does not support shell sessions'
+      )
+    ).toBe(
+      'Can\'t open a shell session in instance "web-0": the "unikernel" runtime class does not support shell sessions'
+    );
+  });
+
   test('passes other API messages through', () => {
     expect(createErrorMessage(400, 'shell sessions are not enabled')).toBe(
       'shell sessions are not enabled'
