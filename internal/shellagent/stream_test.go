@@ -257,3 +257,72 @@ func (b blockingReader) Read([]byte) (int, error) {
 }
 
 func blockUntil(ctx context.Context) io.Reader { return blockingReader{ctx: ctx} }
+
+func encodeFragment(opcode byte, payload []byte, fin bool) []byte {
+	f := encodeFrame(opcode, payload, true)
+	if !fin {
+		f[0] &^= 0x80
+	}
+	return f
+}
+
+// The apiserver reads only the first frame of a fragmented message, so the
+// agent must deliver a fragmented stdin message as one frame.
+func TestFragmentedClientMessageIsReassembled(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	addr := serve(t, h, a)
+	key := readySession(t, h, a)
+	backend := &backendRecorder{}
+	h.exec.onSession = backend.run
+
+	c := dialSession(t, addr, testUID, key, time.Now())
+	waitForConnected(t, h)
+	raw := append(encodeFragment(opBinary, []byte{channelStdin, 'a', 'b'}, false),
+		encodeFrame(opPing, []byte("client"), true)...)
+	raw = append(raw, encodeFragment(opContinuation, []byte("cd"), false)...)
+	raw = append(raw, encodeFragment(opContinuation, []byte("ef"), true)...)
+	if _, err := c.conn.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		backend.mu.Lock()
+		frames := append([]*frame(nil), backend.frames...)
+		backend.mu.Unlock()
+		if len(frames) >= 2 {
+			if frames[0].opcode != opPing {
+				t.Fatalf("first relayed frame opcode = %d, want the ping", frames[0].opcode)
+			}
+			f := frames[1]
+			if !f.fin || f.opcode != opBinary || string(f.payload) != "\x00abcdef" || f.raw[1]&0x80 == 0 {
+				t.Fatalf("relayed frame = fin %v, opcode %d, payload %q, masked %v",
+					f.fin, f.opcode, f.payload, f.raw[1]&0x80 != 0)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("relayed %d frames, want 2", len(frames))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestStrayContinuationEndsSession(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	addr := serve(t, h, a)
+	key := readySession(t, h, a)
+	h.exec.onSession = (&backendRecorder{}).run
+
+	c := dialSession(t, addr, testUID, key, time.Now())
+	waitForConnected(t, h)
+	c.send(t, opContinuation, []byte("x"))
+	_, status, _ := c.readUntilClose(t)
+
+	if status == nil || string(status.Reason) != computev1alpha.InstanceConsoleSessionReasonInvalid {
+		t.Fatalf("status = %+v", status)
+	}
+	requireReason(t, waitForEnd(t, h), computev1alpha.InstanceConsoleSessionReasonInvalid)
+}

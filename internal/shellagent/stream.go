@@ -119,6 +119,10 @@ var (
 		reason:  computev1alpha.InstanceConsoleSessionReasonInvalid,
 		message: "The client sent a message larger than 16 MiB.",
 	}
+	outcomeMalformed = outcome{
+		reason:  computev1alpha.InstanceConsoleSessionReasonInvalid,
+		message: "The client sent a malformed WebSocket message.",
+	}
 )
 
 // pingPayload marks the agent's own pings, so the client's pongs to them are
@@ -204,10 +208,14 @@ func (c *clientStream) pump(r *bufio.Reader) outcome {
 	}
 }
 
-// forward relays the client's frames to the apiserver unchanged, except pongs
-// to the agent's own pings. Any frame, including an unsolicited pong, shows
-// the client is still there.
+// forward relays the client's frames to the apiserver, except pongs to the
+// agent's own pings. The apiserver reads only the first frame of a fragmented
+// message, so fragmented messages are reassembled and sent as one frame. Any
+// frame, including an unsolicited pong, shows the client is still there.
 func (c *clientStream) forward(r *bufio.Reader, backend net.Conn, idle time.Duration) outcome {
+	var message []byte
+	var messageOp byte
+	fragmented := false
 	for {
 		if err := c.conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
 			return outcomeClientGone
@@ -222,7 +230,29 @@ func (c *clientStream) forward(r *bufio.Reader, backend net.Conn, idle time.Dura
 		case f.opcode == opPong && bytes.Equal(f.payload, pingPayload):
 			continue
 		}
-		if _, err := backend.Write(f.raw); err != nil {
+		out := f.raw
+		switch {
+		case f.control():
+		case f.opcode == opContinuation:
+			if !fragmented {
+				return outcomeMalformed
+			}
+			if len(message)+len(f.payload) > MaxFrameSize {
+				return outcomeFrameTooLarge
+			}
+			message = append(message, f.payload...)
+			if !f.fin {
+				continue
+			}
+			out = encodeFrame(messageOp, message, true)
+			message, fragmented = nil, false
+		case fragmented:
+			return outcomeMalformed
+		case !f.fin:
+			message, messageOp, fragmented = append([]byte(nil), f.payload...), f.opcode, true
+			continue
+		}
+		if _, err := backend.Write(out); err != nil {
 			return outcomeStreamLost
 		}
 	}
