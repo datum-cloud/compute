@@ -142,6 +142,30 @@ func TestAnsweringClientStaysConnected(t *testing.T) {
 	}
 }
 
+// Any frame is a sign of life: a client whose output is backed up may answer
+// with unsolicited empty pongs rather than replies to the agent's pings.
+func TestUnsolicitedPongsKeepClientConnected(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent(fastPings)
+	addr := serve(t, h, a)
+	key := readySession(t, h, a)
+	h.exec.onSession = (&backendRecorder{}).run
+
+	c := dialSession(t, addr, testUID, key, time.Now())
+	waitForConnected(t, h)
+	stop := time.After(4 * a.cfg.PongTimeout)
+	for done := false; !done; {
+		select {
+		case <-stop:
+			done = true
+		case <-time.After(a.cfg.PongTimeout / 3):
+			c.send(t, opPong, nil)
+		}
+	}
+
+	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonConnected)
+}
+
 // ttyCommand writes a prompt, echoes the first stdin message, and exits 0.
 func ttyCommand(conn net.Conn, r *bufio.Reader) {
 	writeServerFrame(conn, channelStdout, []byte("prompt$ "))

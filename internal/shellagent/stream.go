@@ -205,7 +205,8 @@ func (c *clientStream) pump(r *bufio.Reader) outcome {
 }
 
 // forward relays the client's frames to the apiserver unchanged, except pongs
-// to the agent's own pings.
+// to the agent's own pings. Any frame, including an unsolicited pong, shows
+// the client is still there.
 func (c *clientStream) forward(r *bufio.Reader, backend net.Conn, idle time.Duration) outcome {
 	for {
 		if err := c.conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
