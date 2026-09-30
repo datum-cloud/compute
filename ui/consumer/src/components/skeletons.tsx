@@ -295,14 +295,12 @@ export function InstanceMetricsSkeleton() {
 
 export function InstanceShellWindowSkeleton() {
   return (
-    <Card aria-busy="true" data-testid="compute-plugin-loading-instance-shell">
-      <CardHeader>
-        <Bone className="h-4 w-20" />
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Bone className="h-4 w-72" />
-        <Bone className="w-full" style={{ height: '60vh' }} />
-      </CardContent>
-    </Card>
+    <div
+      aria-busy="true"
+      className="flex flex-col gap-4"
+      data-testid="compute-plugin-loading-instance-shell">
+      <Bone className="h-4 w-72" />
+      <Bone className="w-full" style={{ height: '60vh' }} />
+    </div>
   );
 }

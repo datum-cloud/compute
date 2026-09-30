@@ -27,13 +27,20 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css?inline';
 import { SquareArrowOutUpRightIcon } from 'lucide-react';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { consoleClientAssets } from 'virtual:console-client-assets';
 
 const XTERM_STYLE_ID = 'compute-plugin-xterm-css';
 const TERMINAL_HEIGHT = 480;
 const MIN_WINDOW_TERMINAL_HEIGHT = 240;
-const WINDOW_BOTTOM_GAP = 24;
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 
 const STATUS: Record<Exclude<ShellState['phase'], 'idle' | 'ended'>, string> = {
@@ -70,33 +77,30 @@ function statusBadge(state: ShellState): { label: string; type: 'success' | 'mut
 
 function useWindowFillHeight(
   enabled: boolean,
-  cardRef: RefObject<HTMLDivElement | null>,
+  rootRef: RefObject<HTMLDivElement | null>,
   regionRef: RefObject<HTMLDivElement | null>
 ): number | undefined {
   const [height, setHeight] = useState<number>();
   useLayoutEffect(() => {
-    const card = cardRef.current;
+    const root = rootRef.current;
     const region = regionRef.current;
-    if (!enabled || !card || !region) return;
+    if (!enabled || !root || !region) return;
     const update = () => {
-      const below = card.getBoundingClientRect().bottom - region.getBoundingClientRect().bottom;
+      const below = root.getBoundingClientRect().bottom - region.getBoundingClientRect().bottom;
       const top = region.getBoundingClientRect().top;
       setHeight(
-        Math.max(
-          MIN_WINDOW_TERMINAL_HEIGHT,
-          Math.floor(window.innerHeight - top - below - WINDOW_BOTTOM_GAP)
-        )
+        Math.max(MIN_WINDOW_TERMINAL_HEIGHT, Math.floor(window.innerHeight - top - below))
       );
     };
     update();
     const observer = new ResizeObserver(update);
-    observer.observe(card);
+    observer.observe(root);
     window.addEventListener('resize', update);
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', update);
     };
-  }, [enabled, cardRef, regionRef]);
+  }, [enabled, rootRef, regionRef]);
   return height;
 }
 
@@ -106,7 +110,8 @@ function startingContainer(containers: string[], requested?: string): string | u
 }
 
 type InstanceShellProps = { projectId: string; instance: Instance } & (
-  { variant: 'tab'; shellHref: string } | { variant: 'window'; container?: string }
+  | { variant: 'tab'; shellHref: string }
+  | { variant: 'window'; title: ReactNode; container?: string }
 );
 
 export function InstanceShell(props: InstanceShellProps) {
@@ -120,7 +125,7 @@ export function InstanceShell(props: InstanceShellProps) {
   const sessionRef = useRef<ShellSession | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const regionRef = useRef<HTMLDivElement>(null);
   const pickerId = useId();
 
@@ -142,7 +147,7 @@ export function InstanceShell(props: InstanceShellProps) {
   }, [projectId, instance.name, instance.uid]);
 
   const active = state.phase !== 'idle';
-  const fillHeight = useWindowFillHeight(inWindow && active, cardRef, regionRef);
+  const fillHeight = useWindowFillHeight(inWindow && active, rootRef, regionRef);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -238,51 +243,138 @@ export function InstanceShell(props: InstanceShellProps) {
   );
 
   const badge = statusBadge(state);
+  const statusText =
+    state.phase === 'ended'
+      ? inWindow
+        ? ''
+        : state.message
+      : state.phase === 'idle'
+        ? ''
+        : STATUS[state.phase];
+
+  const terminalRegion = active && (
+    <div
+      ref={regionRef}
+      role="region"
+      aria-label={`Shell in container ${container ?? ''}`}
+      className={inWindow ? 'overflow-hidden' : 'overflow-hidden rounded-md border'}
+      style={{
+        height: inWindow ? (fillHeight ?? TERMINAL_HEIGHT) : TERMINAL_HEIGHT,
+        padding: 8,
+        background: '#000',
+      }}>
+      <div ref={hostRef} style={{ height: '100%', width: '100%' }} />
+    </div>
+  );
+
+  if (props.variant === 'window') {
+    return (
+      <div ref={rootRef} className="flex min-w-0 flex-col" data-testid="compute-plugin-instance-shell">
+        <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2">
+          <div className="min-w-0 flex-1">{props.title}</div>
+          <div className="flex items-center gap-3">
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-muted-foreground text-xs"
+              data-testid="compute-plugin-shell-status">
+              {state.phase === 'connected' ? '' : statusText}
+            </p>
+            {active && (
+              <Badge type={badge.type} theme="light">
+                {badge.label}
+              </Badge>
+            )}
+            {active && state.phase !== 'ended' && (
+              <Button
+                type="secondary"
+                theme="outline"
+                size="small"
+                onClick={() => sessionRef.current?.close()}>
+                Close shell
+              </Button>
+            )}
+          </div>
+        </header>
+        {state.phase === 'ended' && (
+          <div
+            role="alert"
+            className="bg-muted flex flex-wrap items-end justify-between gap-3 border-b px-4 py-3"
+            data-testid="compute-plugin-shell-ended">
+            <p className="text-sm">{state.message}</p>
+            <div className="flex flex-wrap items-end gap-3">
+              {multiple && picker}
+              <Button type="primary" theme="solid" size="small" onClick={open}>
+                Open new shell
+              </Button>
+            </div>
+          </div>
+        )}
+        {!active && (
+          <div className="flex flex-col gap-3 p-4">
+            {running ? (
+              <div className="flex flex-wrap items-end gap-3">
+                {picker}
+                <Button
+                  type="primary"
+                  theme="solid"
+                  size="small"
+                  disabled={!container}
+                  onClick={open}
+                  data-testid="compute-plugin-shell-open">
+                  Open shell
+                </Button>
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-sm">
+                A shell can be opened once the instance is running.
+              </p>
+            )}
+          </div>
+        )}
+        {terminalRegion}
+      </div>
+    );
+  }
 
   return (
-    <Card ref={cardRef} className="bg-card" data-testid="compute-plugin-instance-shell">
+    <Card className="bg-card" data-testid="compute-plugin-instance-shell">
       <CardHeader>
         <CardTitle>Shell</CardTitle>
         <CardDescription>
           Run commands in a container of this instance. The shell ends when you leave or close this
           page.
         </CardDescription>
-        {(active || !inWindow) && (
-          <CardAction className="flex items-center gap-2">
-            {active && (
-              <Badge type={badge.type} theme="light">
-                {badge.label}
-              </Badge>
-            )}
-            {active &&
-              (state.phase === 'ended' ? (
-                !inWindow && (
-                  <Button type="secondary" theme="solid" size="small" onClick={open}>
-                    Open new shell
-                  </Button>
-                )
-              ) : (
-                <Button
-                  type="secondary"
-                  theme="outline"
-                  size="small"
-                  onClick={() => sessionRef.current?.close()}>
-                  Close shell
-                </Button>
-              ))}
-            {!inWindow && (
+        <CardAction className="flex items-center gap-2">
+          {active && (
+            <Badge type={badge.type} theme="light">
+              {badge.label}
+            </Badge>
+          )}
+          {active &&
+            (state.phase === 'ended' ? (
+              <Button type="secondary" theme="solid" size="small" onClick={open}>
+                Open new shell
+              </Button>
+            ) : (
               <Button
                 type="secondary"
                 theme="outline"
                 size="small"
-                icon={<Icon icon={SquareArrowOutUpRightIcon} size={12} />}
-                onClick={popOut}
-                data-testid="compute-plugin-shell-pop-out">
-                Pop out
+                onClick={() => sessionRef.current?.close()}>
+                Close shell
               </Button>
-            )}
-          </CardAction>
-        )}
+            ))}
+          <Button
+            type="secondary"
+            theme="outline"
+            size="small"
+            icon={<Icon icon={SquareArrowOutUpRightIcon} size={12} />}
+            onClick={popOut}
+            data-testid="compute-plugin-shell-pop-out">
+            Open in new window
+          </Button>
+        </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {popOutError && (
@@ -318,39 +410,9 @@ export function InstanceShell(props: InstanceShellProps) {
           aria-live="polite"
           className="text-muted-foreground text-sm"
           data-testid="compute-plugin-shell-status">
-          {state.phase === 'ended'
-            ? inWindow
-              ? ''
-              : state.message
-            : state.phase === 'idle'
-              ? ''
-              : STATUS[state.phase]}
+          {statusText}
         </p>
-        {inWindow && state.phase === 'ended' && (
-          <div
-            role="alert"
-            className="bg-muted flex flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3"
-            data-testid="compute-plugin-shell-ended">
-            <p className="text-sm">{state.message}</p>
-            <Button type="primary" theme="solid" size="small" onClick={open}>
-              Open new shell
-            </Button>
-          </div>
-        )}
-        {active && (
-          <div
-            ref={regionRef}
-            role="region"
-            aria-label={`Shell in container ${container ?? ''}`}
-            className="overflow-hidden rounded-md border"
-            style={{
-              height: inWindow ? (fillHeight ?? TERMINAL_HEIGHT) : TERMINAL_HEIGHT,
-              padding: 8,
-              background: '#000',
-            }}>
-            <div ref={hostRef} style={{ height: '100%', width: '100%' }} />
-          </div>
-        )}
+        {terminalRegion}
       </CardContent>
     </Card>
   );
