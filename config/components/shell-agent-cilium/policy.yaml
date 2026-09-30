@@ -33,17 +33,6 @@ spec:
               protocol: TCP
             - port: "6443"
               protocol: TCP
-    # The Karmada hub, and nothing else outside the cell. The name is a
-    # placeholder that resolves nowhere, so a deployment that does not set its
-    # hub's name reaches no hub rather than the whole internet.
-    - toFQDNs:
-        - matchName: karmada-hub.invalid
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
-    # Cilium learns the hub's addresses from the agent's DNS answers, so DNS
-    # goes through its proxy.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
@@ -54,9 +43,6 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-          rules:
-            dns:
-              - matchPattern: "*"
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

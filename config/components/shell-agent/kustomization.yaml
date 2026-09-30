@@ -4,16 +4,12 @@
 # Everything lives in compute-shell-system, and the session target clients dial
 # names that namespace, so include this component from a kustomization that does
 # not rename namespaces (see config/overlays/cell-shell-agent). The deployment
-# supplies three things this component only references:
+# supplies ConfigMap exec-relays: DATUM_CONNECT_RELAY_URLS, the relays the
+# endpoints register with and the agents publish, nearest first.
 #
-# - ConfigMap exec-relays: DATUM_CONNECT_RELAY_URLS, the relays the endpoints
-#   register with and the agents publish, nearest first.
-# - ConfigMap exec-agent-federation-kubeconfig (key kubeconfig) and Secret
-#   exec-agent-federation-client-cert: the Karmada hub credential, mounted
-#   together at /etc/kubernetes/upstream/auth/. On the hub it needs only get
-#   and patch on instanceconsolesessions and get, update and patch on their
-#   status. The agent never lists or watches the hub: it reads each session's
-#   hub copy by the namespace and name of the copy delivered to its cell.
+# The agent needs no Karmada hub credential. It writes status only on the
+# session copies in its cell, and Karmada reflects it back to the hub with the
+# InstanceConsoleSession interpreter in config/components/federation.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

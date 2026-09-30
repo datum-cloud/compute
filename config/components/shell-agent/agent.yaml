@@ -55,7 +55,6 @@ spec:
             - --listen=:7777
             - --health-probe-bind-address=:8081
             - --target=$(POD_NAME).exec-agent.$(POD_NAMESPACE).svc.cluster.local:7777
-            - --federation-kubeconfig=/etc/kubernetes/upstream/auth/kubeconfig
             - --managed-by=kata-provider
             - --endpoint-pod-prefix=exec-endpoint
             - --drain-timeout=30s
@@ -106,15 +105,3 @@ spec:
             limits:
               cpu: "1"
               memory: 256Mi
-          volumeMounts:
-            - name: federation
-              mountPath: /etc/kubernetes/upstream/auth/
-              readOnly: true
-      volumes:
-        - name: federation
-          projected:
-            sources:
-              - secret:
-                  name: exec-agent-federation-client-cert
-              - configMap:
-                  name: exec-agent-federation-kubeconfig

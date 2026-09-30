@@ -41,8 +41,9 @@ rules:
       - get
       - list
       - watch
-  # Session copies are read here and only their finalizer is written; status
-  # goes to the hub copy.
+  # The agent claims and ends sessions on their cell copies, whose status
+  # Karmada reflects back to the hub, and holds each copy with its finalizer
+  # until the session's processes are stopped.
   - apiGroups:
       - compute.datumapis.com
     resources:
@@ -51,6 +52,14 @@ rules:
       - get
       - list
       - watch
+      - patch
+  - apiGroups:
+      - compute.datumapis.com
+    resources:
+      - instanceconsolesessions/status
+    verbs:
+      - get
+      - update
       - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1

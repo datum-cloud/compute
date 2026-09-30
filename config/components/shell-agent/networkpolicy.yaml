@@ -22,7 +22,7 @@ spec:
         - protocol: TCP
           port: 7777
   egress:
-    # The cell apiserver and the Karmada hub.
+    # The cell apiserver.
     - ports:
         - protocol: TCP
           port: 443
