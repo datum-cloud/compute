@@ -22,10 +22,9 @@ export function shellWindowName(projectId: string, instanceName: string): string
 }
 
 export function shellWindowHref(shellHref: string, container?: string): string {
-  const params = new URLSearchParams({ sidebar: 'false' });
-  if (container) params.set('container', container);
   const base = shellHref.replace(/\/$/, '').replace(/\/shell$/, '');
-  return `${base}/${SHELL_WINDOW_PATH}?${params}`;
+  const query = container ? `?${new URLSearchParams({ container })}` : '';
+  return `${base}/${SHELL_WINDOW_PATH}${query}`;
 }
 
 function isBlank(popup: ShellWindow): boolean {

@@ -122,6 +122,7 @@ export default defineConfig({
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
         './InstanceDetail': './src/pages/instance-detail.tsx',
+        './InstanceShellWindow': './src/pages/instance-shell-window.tsx',
         './TryDemoHomeCard': './src/cards/try-demo-home-card.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors

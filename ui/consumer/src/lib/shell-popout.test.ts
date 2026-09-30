@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { matchPath } from 'react-router';
+import { matchPath, matchRoutes } from 'react-router';
+import manifest from '../../public/plugin-manifest.json';
 import {
   POPUP_BLOCKED_MESSAGE,
   SHELL_WINDOW_FEATURES,
@@ -37,7 +38,7 @@ function fakeOpener(popup: ShellWindow | null) {
 }
 
 describe('shellWindowHref', () => {
-  test('lands on the pop-out route of the same instance page', () => {
+  test('lands on the shell window route of the same instance page', () => {
     const url = new URL(shellWindowHref(SHELL_HREF), 'https://portal.test');
     const match = matchPath(`${INSTANCE_PAGE}/${SHELL_WINDOW_PATH}`, url.pathname);
     expect(match?.params).toMatchObject({
@@ -47,9 +48,10 @@ describe('shellWindowHref', () => {
     });
   });
 
-  test('starts the portal sidebar collapsed', () => {
-    const url = new URL(shellWindowHref(SHELL_HREF), 'https://portal.test');
-    expect(url.searchParams.get('sidebar')).toBe('false');
+  test('adds no query without a container', () => {
+    expect(shellWindowHref(SHELL_HREF)).toBe(
+      '/project/p1/services/workloads/web/instances/web-abc/shell/window'
+    );
   });
 
   test('carries the chosen container', () => {
@@ -75,7 +77,7 @@ describe('popOutShell', () => {
     expect(popup.location.href).toBe('/shell/window');
   });
 
-  test('focuses an existing pop-out without reloading it', () => {
+  test('focuses an open shell window without reloading it', () => {
     const popup = fakeWindow('https://portal.test/shell/window');
     const { opener } = fakeOpener(popup);
     expect(popOutShell(opener, '/shell/window', 'shell-p1-web')).toBe('focused');
@@ -92,7 +94,7 @@ describe('popOutShell', () => {
 });
 
 describe('popOutFromTab', () => {
-  test('closes the tab session once the pop-out opens', () => {
+  test('closes the tab session once the window opens', () => {
     let closed = 0;
     const message = popOutFromTab({
       opener: fakeOpener(fakeWindow('about:blank')).opener,
@@ -114,5 +116,51 @@ describe('popOutFromTab', () => {
     });
     expect(message).toBe(POPUP_BLOCKED_MESSAGE);
     expect(closed).toBe(0);
+  });
+});
+
+describe('shell window page', () => {
+  type Page = {
+    type: string;
+    properties: { path: string; component: { $codeRef: string }; layout?: string };
+    requirements?: { permissions?: Array<{ group: string; resource: string; verb: string }> };
+  };
+  const pages = (manifest.extensions as Page[]).filter(
+    (ext) => ext.type === 'portal.page/project'
+  );
+  const windowPage = pages.find(
+    (page) => page.properties.component.$codeRef === 'InstanceShellWindow'
+  );
+
+  function pageAt(pathname: string) {
+    const routes = pages.map((page, index) => ({ id: String(index), path: page.properties.path }));
+    const matches = matchRoutes(routes, pathname);
+    return matches ? pages[Number(matches[matches.length - 1].route.id)] : undefined;
+  }
+
+  test('is a bare portal page', () => {
+    expect(windowPage?.properties.layout).toBe('bare');
+  });
+
+  test('needs the same permission as the instance page', () => {
+    expect(windowPage?.requirements?.permissions).toEqual([
+      { group: 'compute.datumapis.com', resource: 'instances', verb: 'get' },
+    ]);
+  });
+
+  test('is exposed by the plugin', () => {
+    expect(manifest.exposedModules).toHaveProperty('InstanceShellWindow');
+  });
+
+  test('wins over the instance page for the window URL', () => {
+    const url = new URL(shellWindowHref(SHELL_HREF, 'sidecar'), 'https://portal.test');
+    const mountPath = url.pathname.replace('/project/p1/services/workloads', '');
+    expect(pageAt(mountPath)).toBe(windowPage);
+  });
+
+  test('leaves the Shell tab on the instance page', () => {
+    expect(pageAt('/web/instances/web-abc/shell')?.properties.component.$codeRef).toBe(
+      'InstanceDetail'
+    );
   });
 });
