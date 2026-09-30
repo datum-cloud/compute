@@ -27,6 +27,11 @@ const (
 // the command, so the agent can stop the process group on any ending.
 const wrapperScript = `echo $$ > "$1"; shift; exec "$@"`
 
+// Kata leaves an exec's standard input open when the request asks for none, so
+// a command that reads it would wait for the whole session. Without a
+// terminal, the command gets /dev/null instead, as it does under runc.
+const wrapperScriptNoStdin = `echo $$ > "$1"; shift; exec "$@" </dev/null`
+
 const killScript = `f="$1"; grace="$2"
 [ -f "$f" ] || exit 0
 p=$(cat "$f")
@@ -50,8 +55,12 @@ func probeCommand(executable string) []string {
 	return []string{"sh", "-c", probeScript, "sh", executable}
 }
 
-func wrappedCommand(dir, sessionUID string, command []string) []string {
-	return append([]string{"sh", "-c", wrapperScript, "sh", markerPath(dir, sessionUID)}, command...)
+func wrappedCommand(dir, sessionUID string, command []string, stdin, tty bool) []string {
+	script := wrapperScript
+	if !stdin && !tty {
+		script = wrapperScriptNoStdin
+	}
+	return append([]string{"sh", "-c", script, "sh", markerPath(dir, sessionUID)}, command...)
 }
 
 func killCommand(dir, sessionUID string, graceSeconds int) []string {
