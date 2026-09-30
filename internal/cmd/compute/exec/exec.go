@@ -94,7 +94,16 @@ func parseArgs(args []string, dash int) (string, []string, error) {
 	return args[0], args[dash:], nil
 }
 
+// quicReceiveBufferWarning names quic-go's switch for the warning it logs when
+// the host limits UDP receive buffers, as most Linux hosts do. The tunnel only
+// uses relays, so the warning says nothing useful, and it would land in the
+// middle of the command's standard error.
+const quicReceiveBufferWarning = "QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING"
+
 func run(cmd *cobra.Command, opts *options) error {
+	if _, set := os.LookupEnv(quicReceiveBufferWarning); !set {
+		_ = os.Setenv(quicReceiveBufferWarning, "true")
+	}
 	project := util.ProjectFromCmd(cmd)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
