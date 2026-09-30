@@ -130,7 +130,7 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 	}
 
 	if err := r.recordLifecycleEvents(ctx, projectClient, &session, ""); err != nil {
-		return ctrl.Result{}, err
+		return requeueOnConflict(err)
 	}
 
 	if sessionEnded(&session) {
@@ -484,7 +484,7 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 					return ctrl.Result{RequeueAfter: wait}, nil
 				}
 				if err := r.recordCleanupUnconfirmed(ctx, projectClient, session); err != nil {
-					return ctrl.Result{}, err
+					return requeueOnConflict(err)
 				}
 				logger.Info("cell did not confirm session cleanup", "hubNamespace", hubNS,
 					"memberReporting", reporting, "timeout", r.cleanupTimeout())
@@ -500,7 +500,7 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 		endReason = computev1alpha.InstanceConsoleSessionReasonRevoked
 	}
 	if err := r.recordLifecycleEvents(ctx, projectClient, session, endReason); err != nil {
-		return ctrl.Result{}, err
+		return requeueOnConflict(err)
 	}
 
 	patch := client.MergeFrom(session.DeepCopy())
@@ -616,6 +616,15 @@ func (r *InstanceConsoleSessionReconciler) claimTimeout() time.Duration {
 		return r.ClaimTimeout
 	}
 	return DefaultSessionClaimTimeout
+}
+
+// requeueOnConflict retries soon, without reporting an error, when a write
+// lost to a newer version of the session, which the retry reads.
+func requeueOnConflict(err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	return ctrl.Result{}, err
 }
 
 func (r *InstanceConsoleSessionReconciler) now() time.Time {
