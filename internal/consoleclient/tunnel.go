@@ -57,7 +57,7 @@ func Dial(ctx context.Context, clientKey ed25519.PrivateKey, c Connection) (net.
 
 	ep, err := iroh.Bind(ctx,
 		iroh.WithSecretKey(sk),
-		iroh.WithRelayMode(relay.ModeCustom(relay.MapFromURLs(relays...))),
+		iroh.WithRelayMode(relay.ModeCustom(relayMap(relays))),
 		iroh.WithoutIPTransports(),
 	)
 	if err != nil {

@@ -22,6 +22,7 @@ var (
 )
 
 func main() {
+	refusePlainHTTPFetch()
 	js.Global().Set("datumExec", js.ValueOf(map[string]any{
 		"publicKey": js.FuncOf(publicKey),
 		"connect":   js.FuncOf(connect),

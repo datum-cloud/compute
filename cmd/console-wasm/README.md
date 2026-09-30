@@ -34,6 +34,11 @@ go.run(instance);
 // self.datumExec is now defined.
 ```
 
+The module replaces the worker's `fetch` with one that refuses plain-HTTP
+URLs, so the tunnel library's captive-portal check, which a browser always
+blocks, never leaves the worker. The only probe the browser runs is the relays'
+HTTPS latency probe, `GET /ping`, which the relays allow from any origin.
+
 ## API
 
 The module defines one global, `datumExec`.
