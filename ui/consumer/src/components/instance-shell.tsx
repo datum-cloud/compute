@@ -10,6 +10,12 @@ import {
 import { initialContainer, shellStatusBadge } from '../lib/instance-shell';
 import { DEFAULT_SHELL_COMMAND, parseCommand, QUICK_COMMANDS } from '../lib/shell-command';
 import {
+  shellLayout,
+  terminalHeight,
+  TERMINAL_INPUT_CSS,
+  type ShellLayout,
+} from '../lib/shell-layout';
+import {
   popOutFromTab,
   shellWindowHref,
   shellWindowName,
@@ -53,8 +59,6 @@ import {
 import { consoleClientAssets } from 'virtual:console-client-assets';
 
 const XTERM_STYLE_ID = 'compute-plugin-xterm-css';
-const TERMINAL_HEIGHT = 480;
-const MIN_WINDOW_TERMINAL_HEIGHT = 240;
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 
 const STATUS: Record<Exclude<ShellState['phase'], 'idle' | 'ended'>, string> = {
@@ -68,7 +72,7 @@ function ensureXtermStyles() {
   if (document.getElementById(XTERM_STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = XTERM_STYLE_ID;
-  style.textContent = xtermCss;
+  style.textContent = `${xtermCss}\n${TERMINAL_INPUT_CSS}`;
   document.head.appendChild(style);
 }
 
@@ -102,31 +106,60 @@ function ShellStatusBadge({ state }: { state: ShellState }) {
   );
 }
 
-function useWindowFillHeight(
+function viewportSize() {
+  const vv = window.visualViewport;
+  return {
+    width: window.innerWidth,
+    height: vv?.height ?? window.innerHeight,
+    coarse: window.matchMedia?.('(pointer: coarse)').matches ?? false,
+  };
+}
+
+function onViewportChange(update: () => void): () => void {
+  const vv = window.visualViewport;
+  window.addEventListener('resize', update);
+  window.addEventListener('orientationchange', update);
+  vv?.addEventListener('resize', update);
+  return () => {
+    window.removeEventListener('resize', update);
+    window.removeEventListener('orientationchange', update);
+    vv?.removeEventListener('resize', update);
+  };
+}
+
+function useViewport() {
+  const [size, setSize] = useState(viewportSize);
+  useEffect(() => onViewportChange(() => setSize(viewportSize())), []);
+  return size;
+}
+
+function useTerminalHeight(
   enabled: boolean,
+  inWindow: boolean,
+  narrow: boolean,
+  viewportHeight: number,
   rootRef: RefObject<HTMLDivElement | null>,
   regionRef: RefObject<HTMLDivElement | null>
-): number | undefined {
-  const [height, setHeight] = useState<number>();
+): number {
+  const [edges, setEdges] = useState({ top: 0, below: 0 });
   useLayoutEffect(() => {
     const root = rootRef.current;
     const region = regionRef.current;
-    if (!enabled || !root || !region) return;
+    if (!enabled || !inWindow || !root || !region) return;
     const update = () => {
       const below = root.getBoundingClientRect().bottom - region.getBoundingClientRect().bottom;
-      const top = region.getBoundingClientRect().top;
-      setHeight(Math.max(MIN_WINDOW_TERMINAL_HEIGHT, Math.floor(window.innerHeight - top - below)));
+      setEdges({ top: region.getBoundingClientRect().top, below });
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(root);
-    window.addEventListener('resize', update);
+    const stop = onViewportChange(update);
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', update);
+      stop();
     };
-  }, [enabled, rootRef, regionRef]);
-  return height;
+  }, [enabled, inWindow, rootRef, regionRef]);
+  return terminalHeight({ inWindow, narrow, viewportHeight, ...edges });
 }
 
 interface StartPanelProps {
@@ -140,6 +173,7 @@ interface StartPanelProps {
   onConnect(): void;
   onPopOut?: () => void;
   compact?: boolean;
+  layout: ShellLayout;
 }
 
 function StartPanel({
@@ -153,7 +187,11 @@ function StartPanel({
   onConnect,
   onPopOut,
   compact,
+  layout,
 }: StartPanelProps) {
+  const control = layout.controlHeight ? { height: layout.controlHeight } : undefined;
+  const target = layout.controlHeight ? { minHeight: layout.controlHeight } : undefined;
+  const field = (desktop: string) => ({ flex: layout.narrow ? '1 1 100%' : desktop });
   const containerId = useId();
   const commandId = useId();
   const errorId = useId();
@@ -171,12 +209,13 @@ function StartPanel({
       className={compact ? 'flex flex-col gap-3' : 'flex flex-col gap-3 rounded-lg border p-4'}
       data-testid="compute-plugin-shell-start">
       <div className="flex flex-wrap items-start gap-3">
-        <div className="flex min-w-0 flex-col gap-1.5" style={{ flex: '0 1 16rem' }}>
+        <div className="flex min-w-0 flex-col gap-1.5" style={field('0 1 16rem')}>
           <Label htmlFor={containerId}>Container</Label>
           <Select value={container ?? ''} onValueChange={onContainer}>
             <SelectTrigger
               id={containerId}
               className="bg-card h-9 w-full"
+              style={control}
               data-testid="compute-plugin-shell-container">
               <SelectValue placeholder="Choose a container" />
             </SelectTrigger>
@@ -189,7 +228,7 @@ function StartPanel({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex min-w-0 flex-col gap-1.5" style={{ flex: '1 1 18rem' }}>
+        <div className="flex min-w-0 flex-col gap-1.5" style={field('1 1 18rem')}>
           <Label htmlFor={commandId}>Command</Label>
           <Input
             id={commandId}
@@ -199,6 +238,7 @@ function StartPanel({
             autoComplete="off"
             spellCheck={false}
             className="h-9 font-mono"
+            style={control}
             aria-invalid={!!commandError}
             aria-describedby={commandError ? errorId : undefined}
             data-testid="compute-plugin-shell-command"
@@ -212,6 +252,7 @@ function StartPanel({
                 theme={command.trim() === quick ? 'light' : 'outline'}
                 size="xs"
                 className="font-mono"
+                style={target}
                 aria-pressed={command.trim() === quick}
                 onClick={() => onCommand(quick)}>
                 {quick}
@@ -224,28 +265,38 @@ function StartPanel({
             )}
           </div>
         </div>
-        <div className="ml-auto flex flex-col gap-1.5">
-          <Label aria-hidden className="invisible">
-            Actions
-          </Label>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className={layout.narrow ? 'flex w-full flex-col' : 'ml-auto flex flex-col gap-1.5'}>
+          {!layout.narrow && (
+            <Label aria-hidden className="invisible">
+              Actions
+            </Label>
+          )}
+          <div
+            className={
+              layout.narrow
+                ? 'flex w-full flex-col gap-2'
+                : 'flex flex-wrap items-center justify-end gap-2'
+            }>
             <Button
               htmlType="submit"
               type="primary"
               theme="solid"
               size="small"
               className="h-9"
+              block={layout.narrow}
+              style={target}
               disabled={!canConnect}
               data-testid="compute-plugin-shell-open">
               Connect
             </Button>
-            {onPopOut && (
+            {onPopOut && layout.showPopOut && (
               <Button
                 htmlType="button"
                 type="secondary"
                 theme="outline"
                 size="small"
                 className="h-9"
+                style={target}
                 disabled={!canConnect}
                 icon={<Icon icon={SquareArrowOutUpRightIcon} size={12} />}
                 onClick={onPopOut}
@@ -270,34 +321,39 @@ function SessionLine({
   container,
   command,
   onClose,
+  layout,
 }: {
   state: ShellState;
   container: string;
   command: string;
   onClose(): void;
+  layout: ShellLayout;
 }) {
   const status = state.phase === 'idle' || state.phase === 'ended' ? '' : STATUS[state.phase];
   return (
-    <div
-      className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2"
-      data-testid="compute-plugin-shell-session">
-      <p className="min-w-0 truncate text-sm">
+    <div className="flex min-w-0 items-center gap-3" data-testid="compute-plugin-shell-session">
+      <p className="min-w-0 flex-1 truncate text-sm" title={`${container} · ${command}`}>
         <span className="text-muted-foreground">Container </span>
         <span className="font-mono">{container}</span>
         <span className="text-muted-foreground"> · </span>
         <span className="font-mono">{command}</span>
       </p>
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <p
           role="status"
           aria-live="polite"
-          className="text-muted-foreground text-xs"
+          className={layout.narrow ? 'sr-only' : 'text-muted-foreground text-xs'}
           data-testid="compute-plugin-shell-status">
           {status}
         </p>
         <ShellStatusBadge state={state} />
         {state.phase !== 'ended' && (
-          <Button type="secondary" theme="outline" size="small" onClick={onClose}>
+          <Button
+            type="secondary"
+            theme="outline"
+            size="small"
+            style={layout.controlHeight ? { minHeight: layout.controlHeight } : undefined}
+            onClick={onClose}>
             Close shell
           </Button>
         )}
@@ -356,7 +412,16 @@ export function InstanceShell(props: InstanceShellProps) {
   const ended = state.phase === 'ended';
   const active = state.phase !== 'idle' && !ended;
   const showTerminal = active || (ended && reachedShell);
-  const fillHeight = useWindowFillHeight(inWindow && showTerminal, rootRef, regionRef);
+  const viewport = useViewport();
+  const layout = shellLayout(viewport.width, viewport.coarse);
+  const height = useTerminalHeight(
+    showTerminal,
+    inWindow,
+    layout.narrow,
+    viewport.height,
+    rootRef,
+    regionRef
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -376,9 +441,18 @@ export function InstanceShell(props: InstanceShellProps) {
     const resize = terminal.onResize((size) => sessionRef.current?.resize(size));
     const observer = new ResizeObserver(() => fit.fit());
     observer.observe(host);
+    const keepPromptVisible = () => {
+      fit.fit();
+      if (host.contains(document.activeElement)) {
+        terminal.scrollToBottom();
+        host.scrollIntoView({ block: 'end' });
+      }
+    };
+    const stopViewport = onViewportChange(keepPromptVisible);
     terminalRef.current = terminal;
     terminal.focus();
     return () => {
+      stopViewport();
       observer.disconnect();
       input.dispose();
       resize.dispose();
@@ -435,6 +509,7 @@ export function InstanceShell(props: InstanceShellProps) {
       onConnect={() => connect()}
       onPopOut={inWindow ? undefined : popOut}
       compact={inWindow}
+      layout={layout}
     />
   );
 
@@ -453,6 +528,7 @@ export function InstanceShell(props: InstanceShellProps) {
       container={running.container}
       command={running.command}
       onClose={() => sessionRef.current?.close()}
+      layout={layout}
     />
   );
 
@@ -462,8 +538,11 @@ export function InstanceShell(props: InstanceShellProps) {
       role="region"
       aria-label={`Shell in container ${running?.container ?? ''}`}
       className={inWindow ? 'overflow-hidden' : 'overflow-hidden rounded-md border'}
+      onClick={() => terminalRef.current?.focus()}
       style={{
-        height: inWindow ? (fillHeight ?? TERMINAL_HEIGHT) : TERMINAL_HEIGHT,
+        height,
+        width: '100%',
+        maxWidth: '100%',
         padding: 8,
         background: '#000',
       }}>
