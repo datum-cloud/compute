@@ -4,6 +4,9 @@ package validation
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
@@ -32,6 +35,10 @@ func ValidateInstanceConsoleSessionCreate(
 	specPath := field.NewPath("spec")
 	if !features.FeatureGate.Enabled(features.InstanceConsoleSessions) {
 		return field.ErrorList{field.Forbidden(specPath, "shell sessions are not available in this environment")}
+	}
+
+	if errs := validateSessionMetadata(session); len(errs) > 0 {
+		return errs
 	}
 
 	refPath := specPath.Child("instanceRef")
@@ -91,4 +98,35 @@ func validateSessionRuntimeClass(instance *computev1alpha.Instance, catalog runt
 			"%s does not support shell sessions", capabilities.ClassDescription()))}
 	}
 	return nil
+}
+
+// validateSessionMetadata refuses labels and annotations in compute's own
+// namespaces, which compute's controllers and cell agents read and write.
+// Admission sets the requester annotation itself, overwriting any value the
+// client sent.
+func validateSessionMetadata(session *computev1alpha.InstanceConsoleSession) field.ErrorList {
+	metaPath := field.NewPath("metadata")
+	allErrs := field.ErrorList{}
+	for _, key := range slices.Sorted(maps.Keys(session.Annotations)) {
+		if key != computev1alpha.InstanceConsoleSessionRequesterAnnotation && reservedKey(key) {
+			allErrs = append(allErrs, field.Forbidden(metaPath.Child("annotations").Key(key),
+				"annotations in the "+computev1alpha.AnnotationNamespace+" namespace are set by the platform"))
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(session.Labels)) {
+		if reservedKey(key) {
+			allErrs = append(allErrs, field.Forbidden(metaPath.Child("labels").Key(key),
+				"labels in the "+computev1alpha.AnnotationNamespace+" namespace are set by the platform"))
+		}
+	}
+	return allErrs
+}
+
+func reservedKey(key string) bool {
+	prefix, _, found := strings.Cut(key, "/")
+	if !found {
+		return false
+	}
+	prefix = strings.ToLower(prefix)
+	return prefix == computev1alpha.AnnotationNamespace || strings.HasSuffix(prefix, "."+computev1alpha.AnnotationNamespace)
 }

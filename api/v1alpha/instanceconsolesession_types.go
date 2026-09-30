@@ -132,6 +132,38 @@ type InstanceConsoleSessionStatus struct {
 	// +kubebuilder:validation:MaxItems=8
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// The lifecycle events the control plane has recorded for the session in
+	// the project's activity, so that each is recorded once. Only the control
+	// plane writes it.
+	//
+	// +listType=map
+	// +listMapKey=reason
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:Optional
+	RecordedEvents []InstanceConsoleSessionRecordedEvent `json:"recordedEvents,omitempty"`
+}
+
+// InstanceConsoleSessionRecordedEvent tracks recording one of a session's
+// lifecycle events.
+type InstanceConsoleSessionRecordedEvent struct {
+	// The event's reason, such as SessionStarted or SessionEnded.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Reason string `json:"reason"`
+
+	// When the control plane last began recording the event.
+	//
+	// +kubebuilder:validation:Required
+	AttemptedAt metav1.Time `json:"attemptedAt"`
+
+	// Whether the event is on record. An attempt that did not finish is
+	// retried.
+	//
+	// +kubebuilder:validation:Optional
+	Recorded bool `json:"recorded,omitempty"`
 }
 
 // Condition types reported on an InstanceConsoleSession.
