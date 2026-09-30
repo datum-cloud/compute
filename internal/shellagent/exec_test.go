@@ -61,21 +61,21 @@ func TestAPIServerOpensAuthorizedExecStream(t *testing.T) {
 	}
 }
 
-func TestWrappedCommandRecordsProcessID(t *testing.T) {
+func TestWrappedCommandArguments(t *testing.T) {
 	tests := []struct {
 		name       string
 		stdin, tty bool
-		script     string
+		mode       string
 	}{
-		{name: "stdin", stdin: true, script: wrapperScript},
-		{name: "terminal", tty: true, script: wrapperScript},
-		{name: "stdin and terminal", stdin: true, tty: true, script: wrapperScript},
-		{name: "neither", script: wrapperScriptNoStdin},
+		{name: "stdin", stdin: true, mode: "-"},
+		{name: "terminal", tty: true, mode: "-"},
+		{name: "stdin and terminal", stdin: true, tty: true, mode: "-"},
+		{name: "neither", mode: "null"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := wrappedCommand("/tmp", "uid-1", []string{"ls", "-l"}, tt.stdin, tt.tty)
-			want := []string{"sh", "-c", tt.script, "sh", "/tmp/.datum-exec-uid-1", "ls", "-l"}
+			want := []string{"sh", "-c", wrapperScript, "sh", wrapperScript, "/tmp/.datum-exec-uid-1", tt.mode, "0", "ls", "-l"}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("wrappedCommand() = %q, want %q", got, want)
 			}
