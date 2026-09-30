@@ -19,9 +19,17 @@ import (
 	"go.datum.net/compute/internal/consoleclient"
 )
 
-const readyTimeout = time.Minute
+const (
+	readyTimeout = time.Minute
 
-var errTooManySessions = errors.New("too many open sessions in this project")
+	sessionQuotaType = "compute.datumapis.com/instanceconsolesessions"
+)
+
+var (
+	errSessionsNotEnabled = errors.New("shell sessions aren't enabled for this project")
+	errTooManySessions    = errors.New("too many open sessions in this project")
+	errSessionQuota       = errors.New("shell sessions aren't enabled for this project, or too many are open in it")
+)
 
 func createSession(ctx context.Context, c client.Client, opts *options, tty bool, publicKey string) (*computev1alpha.InstanceConsoleSession, error) {
 	var inst computev1alpha.Instance
@@ -51,7 +59,7 @@ func createSession(ctx context.Context, c client.Client, opts *options, tty bool
 		},
 	}
 	if err := c.Create(ctx, session); err != nil {
-		return nil, createError(err)
+		return nil, createError(ctx, c, err)
 	}
 	return session, nil
 }
@@ -81,11 +89,22 @@ func pickContainer(inst *computev1alpha.Instance, name string) (string, error) {
 	}
 }
 
-func createError(err error) error {
-	if k8serrors.IsForbidden(err) && strings.Contains(err.Error(), "reached your quota") {
+// createError explains a refused create. A quota denial means sessions are
+// either off for the project, which has no allowance for them, or all in use.
+// Reading the allowance needs list on the project's AllowanceBuckets.
+func createError(ctx context.Context, c client.Client, err error) error {
+	if !k8serrors.IsForbidden(err) || !strings.Contains(err.Error(), "reached your quota") {
+		return fmt.Errorf("creating session: %w", err)
+	}
+	limit, found, lookupErr := util.ProjectQuotaLimit(ctx, c, sessionQuotaType)
+	switch {
+	case lookupErr != nil:
+		return errSessionQuota
+	case !found, limit == 0:
+		return errSessionsNotEnabled
+	default:
 		return errTooManySessions
 	}
-	return fmt.Errorf("creating session: %w", err)
 }
 
 // waitReady watches the session until the platform says where to connect, or
@@ -179,6 +198,11 @@ func connectionOf(s *computev1alpha.InstanceConsoleSession) consoleclient.Connec
 	}
 }
 
+var endingExplanations = map[string]string{
+	computev1alpha.InstanceConsoleSessionReasonUnavailable:  "No part of Datum took the session in time. Try again shortly.",
+	computev1alpha.InstanceConsoleSessionReasonDisconnected: "The connection to the session was lost, so Datum stopped the command.",
+}
+
 // exitFor turns how a session ended into the plugin's exit: the command's own
 // code, or 1 with the reason when the platform ended it.
 func exitFor(res consoleclient.Result, err error) error {
@@ -187,8 +211,10 @@ func exitFor(res consoleclient.Result, err error) error {
 		return err
 	case res.PlatformEnded():
 		msg := "session ended: " + res.Reason
-		if res.Message != "" {
-			msg += ": " + res.Message
+		if m := res.Message; m != "" {
+			msg += ": " + m
+		} else if m := endingExplanations[res.Reason]; m != "" {
+			msg += ": " + m
 		}
 		return &util.ExitError{Code: 1, Err: errors.New(msg)}
 	case res.ExitCode != 0:

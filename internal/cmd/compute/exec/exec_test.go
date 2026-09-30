@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -132,6 +133,12 @@ func TestExitFor(t *testing.T) {
 		{name: "command failed", res: consoleclient.Result{ExitCode: 3}, wantCode: 3},
 		{name: "platform ending", res: consoleclient.Result{ExitCode: 1, Reason: "Expired", Message: "The session expired."},
 			wantCode: 1, wantErr: "session ended: Expired: The session expired."},
+		{name: "unavailable", res: consoleclient.Result{ExitCode: 1, Reason: computev1alpha.InstanceConsoleSessionReasonUnavailable},
+			wantCode: 1, wantErr: "session ended: Unavailable: No part of Datum took the session in time. Try again shortly."},
+		{name: "unavailable with message", res: consoleclient.Result{ExitCode: 1, Reason: computev1alpha.InstanceConsoleSessionReasonUnavailable, Message: "No cell took it."},
+			wantCode: 1, wantErr: "session ended: Unavailable: No cell took it."},
+		{name: "disconnected", res: consoleclient.Result{ExitCode: 1, Reason: computev1alpha.InstanceConsoleSessionReasonDisconnected},
+			wantCode: 1, wantErr: "session ended: Disconnected: The connection to the session was lost, so Datum stopped the command."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,14 +161,53 @@ func TestCreateError(t *testing.T) {
 	gr := schema.GroupResource{Group: "compute.datumapis.com", Resource: "instanceconsolesessions"}
 	quota := k8serrors.NewForbidden(gr, "", errors.New(
 		"You've reached your quota for this resource type (need 1, 0 available). Delete unused resources to free up capacity, or contact support to request a higher limit."))
-	if err := createError(quota); err.Error() != "too many open sessions in this project" {
-		t.Errorf("createError(quota) = %q", err)
-	}
 
-	denied := k8serrors.NewForbidden(gr, "", errors.New("user cannot create instanceconsolesessions"))
-	if err := createError(denied); !strings.Contains(err.Error(), "user cannot create") {
-		t.Errorf("createError(denied) = %q, want the API's reason kept", err)
+	cases := []struct {
+		name     string
+		err      error
+		c        client.Client
+		want     string
+		contains bool
+	}{
+		{name: "not enabled", err: quota, c: newFakeClient(t, sessionBucket(0)), want: "shell sessions aren't enabled for this project"},
+		{name: "full", err: quota, c: newFakeClient(t, sessionBucket(3)), want: "too many open sessions in this project"},
+		{name: "no allowance", err: quota, c: newFakeClient(t), want: "shell sessions aren't enabled for this project"},
+		{name: "allowance unreadable", err: quota, c: forbiddenLister{newFakeClient(t)},
+			want: "shell sessions aren't enabled for this project, or too many are open in it"},
+		{name: "not a quota denial", err: k8serrors.NewForbidden(gr, "", errors.New("user cannot create instanceconsolesessions")),
+			c: newFakeClient(t), want: "user cannot create", contains: true},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := createError(context.Background(), tc.c, tc.err)
+			if code := exitCode(t, err); code != 1 {
+				t.Errorf("createError() exit = %d, want 1", code)
+			}
+			if tc.contains && !strings.Contains(err.Error(), tc.want) || !tc.contains && err.Error() != tc.want {
+				t.Errorf("createError() = %q, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func sessionBucket(limit int64) *quotav1alpha1.AllowanceBucket {
+	return &quotav1alpha1.AllowanceBucket{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "milo-system",
+			Name:      "project-sessions",
+			Labels:    map[string]string{"quota.miloapis.com/consumer-kind": "Project"},
+		},
+		Spec:   quotav1alpha1.AllowanceBucketSpec{ResourceType: sessionQuotaType},
+		Status: quotav1alpha1.AllowanceBucketStatus{Limit: limit, Allocated: limit},
+	}
+}
+
+type forbiddenLister struct {
+	client.WithWatch
+}
+
+func (forbiddenLister) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return k8serrors.NewForbidden(schema.GroupResource{Group: "quota.miloapis.com", Resource: "allowancebuckets"}, "", errors.New("denied"))
 }
 
 func session(cond *metav1.Condition, connection bool) *computev1alpha.InstanceConsoleSession {
@@ -191,6 +237,8 @@ func TestReadiness(t *testing.T) {
 			wantDone: true, wantErr: "another client"},
 		{name: "refused", session: session(&metav1.Condition{Status: metav1.ConditionFalse, Reason: computev1alpha.InstanceConsoleSessionReasonNoShell, Message: "The container has no shell."}, false),
 			wantDone: true, wantErr: "session ended: NoShell: The container has no shell."},
+		{name: "unavailable", session: session(&metav1.Condition{Status: metav1.ConditionFalse, Reason: computev1alpha.InstanceConsoleSessionReasonUnavailable}, false),
+			wantDone: true, wantErr: "session ended: Unavailable: No part of Datum took the session in time."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -217,6 +265,9 @@ func newFakeClient(t *testing.T, objs ...client.Object) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := computev1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := quotav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
