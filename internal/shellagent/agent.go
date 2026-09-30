@@ -44,7 +44,11 @@ type Config struct {
 	// sessions.
 	ManagedBy []string
 
-	ConnectTimeout    time.Duration
+	ConnectTimeout time.Duration
+	// ClaimStagger is how long each claiming agent waits after the one
+	// before it in a session's claim order. Zero lets every agent claim at
+	// once.
+	ClaimStagger      time.Duration
 	SlotsPerInstance  int
 	MaxOpenSessions   int
 	DrainTimeout      time.Duration
@@ -68,6 +72,7 @@ func DefaultConfig() Config {
 	return Config{
 		ManagedBy:         []string{"kata-provider"},
 		ConnectTimeout:    60 * time.Second,
+		ClaimStagger:      3 * time.Second,
 		SlotsPerInstance:  3,
 		MaxOpenSessions:   200,
 		DrainTimeout:      30 * time.Second,
