@@ -20,6 +20,7 @@ kind: Component
 resources:
   - namespace.yaml
   - rbac.yaml
+  - exec-admission-policy.yaml
   - service.yaml
   - agent.yaml
   - endpoint.yaml

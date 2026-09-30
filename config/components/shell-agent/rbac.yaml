@@ -23,6 +23,9 @@ rules:
       - pods
     verbs:
       - get
+  # Tenant namespaces are created per project, so exec is granted cluster-wide
+  # and narrowed to tenant namespaces by the compute-shell-agent-exec
+  # ValidatingAdmissionPolicy.
   - apiGroups:
       - ""
     resources:
