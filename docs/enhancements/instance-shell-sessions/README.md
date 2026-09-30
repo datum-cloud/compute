@@ -129,9 +129,9 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
 - **Short-lived:** The cell gives clients a 60-second connection window and
   limits command execution to one hour
 - **Per-instance limit:** At most three sessions can run in an instance at once
-- **Session quota:** Each project can hold at most 100 sessions at once. The
-  quota system enforces this when a session is created, and projects can
-  request more
+- **Session quota:** The quota system limits how many sessions a project can
+  hold open, checked when a session is created. The default is zero, so a
+  project can open sessions only once it is granted an allowance
 - **Isolation:** Cell network policy lets the tunnel endpoint reach only its
   agent
 
@@ -246,7 +246,9 @@ A session moves through `Pending`, `SessionReady` and `Connected`, then reaches
 one immutable terminal state. Terminal reasons are `Completed`, `Expired`,
 `Revoked`, `NotConnected`, `AgentShutdown`, `AgentLost`, `TooManySessions`,
 `NoShell`, `CommandUnavailable`, `InstanceNotRunning`, `InstanceNotFound`,
-and `Invalid`. The client uses the condition reason to distinguish a session
+`Invalid`, `Unavailable` and `Disconnected`. `Unavailable` ends a session that
+no cell takes within 30 seconds. `Disconnected` ends a session whose client
+went away before the command exited; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
 waiting for a connection from one whose command is running.
 
 Deleting an active session revokes it. A finalizer waits up to five minutes for
@@ -322,12 +324,17 @@ crash recovery, the per-instance limit, clean endings and network isolation.
   runtime class control the feature. Disabling either switch
   stops new sessions; open sessions end with a clear reason and their processes
   are cleaned up.
+- **Per project:** a quota grant for sessions enables a project; the default
+  allowance is zero. Removing the grant stops new sessions in that project.
+  Clients hide the feature, or say it isn't enabled, when a project has no
+  allowance.
 - **Rollback:** Disable the feature without changing instances or workloads.
 
 ### Rollout
 
-Staging cells first, then a preview for selected projects, then production
-cells through the normal release tag. Before preview, staging must validate the
+Staging cells first, then a preview for selected projects enabled by quota
+grant, then production cells through the normal release tag. General
+availability raises the default allowance. Before preview, staging must validate the
 latency goal and verify Unikraft behavior for missing shells, process cleanup,
 idle sessions and scale-to-zero.
 
@@ -367,8 +374,12 @@ creation, quota release, reservation release and agent failover.
   supported shell and the requested executable.
 - **Too many sessions:** Show the limit and ask the user to close a session or
   wait for one to end.
+- **Not enabled for the project:** Tell the user shell sessions aren't
+  enabled for this project.
 - **Session quota reached:** Tell the user the project has too many open
   sessions and ask them to close one or retry shortly.
+- **No cell took the session:** Show `Unavailable` and ask the user to try
+  again shortly.
 - **Relay unreachable:** Retry another advertised relay and report a regional
   connectivity issue if none work.
 - **Agent restart or crash:** Show `AgentShutdown` or `AgentLost`, then let the
@@ -411,7 +422,8 @@ creation, quota release, reservation release and agent failover.
 - The Unikraft provider exec policy set to `always` in every cell that runs
   unikernel instances.
 - The session-create permission added to the default project-admin role.
-- A quota claim policy for sessions, with a default of 100 per project.
+- A quota claim policy for sessions with a default allowance of zero, and quota
+  grants for the projects in preview.
 - An activity policy that maps session creation and lifecycle events into the
   project activity log.
 - A released container image of the Datum Connect CLI, including the fix that
