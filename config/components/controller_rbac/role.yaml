@@ -40,6 +40,39 @@ rules:
 - apiGroups:
   - compute.datumapis.com
   resources:
+  - instanceconsolesessions
+  verbs:
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instanceconsolesessions/finalizers
+  - instances/finalizers
+  - instancetypes/finalizers
+  - workloaddeployments/finalizers
+  - workloads/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instanceconsolesessions/status
+  - instances/status
+  - instancetypes/status
+  - workloaddeployments/status
+  - workloads/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - compute.datumapis.com
+  resources:
   - instances
   - instancetypes
   - workloaddeployments
@@ -52,26 +85,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - compute.datumapis.com
-  resources:
-  - instances/finalizers
-  - instancetypes/finalizers
-  - workloaddeployments/finalizers
-  - workloads/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - compute.datumapis.com
-  resources:
-  - instances/status
-  - instancetypes/status
-  - workloaddeployments/status
-  - workloads/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - compute.datumapis.com
   resources:

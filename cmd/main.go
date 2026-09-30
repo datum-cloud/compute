@@ -45,6 +45,7 @@ import (
 
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
@@ -97,6 +98,7 @@ func init() {
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaworkv1alpha2.Install(scheme))
 	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
@@ -170,6 +172,7 @@ func main() {
 		"NetworkingIntegration", features.FeatureGate.Enabled(features.NetworkingIntegration),
 		"RuntimeClasses", features.FeatureGate.Enabled(features.RuntimeClasses),
 		"InstanceTypes", features.FeatureGate.Enabled(features.InstanceTypes),
+		"InstanceConsoleSessions", features.FeatureGate.Enabled(features.InstanceConsoleSessions),
 	)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
@@ -487,6 +490,10 @@ func main() {
 			mgr, instanceTypeDeprecationGracePeriod,
 		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
+			os.Exit(1)
+		}
+		if err = computev1alphawebhooks.SetupInstanceConsoleSessionWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceConsoleSession")
 			os.Exit(1)
 		}
 	}
@@ -844,8 +851,9 @@ func ignoreCanceled(err error) error {
 	return err
 }
 
-// setupManagementControllers wires the WorkloadDeploymentFederator and
-// InstanceProjector onto mgr. It returns the federation cluster as a Runnable
+// setupManagementControllers wires the WorkloadDeploymentFederator,
+// InstanceProjector and, behind its feature gate, the InstanceConsoleSession
+// controller onto mgr. It returns the federation cluster as a Runnable
 // that must be started alongside the main manager. Called only when management
 // controllers are enabled and a federation REST config is available.
 func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
@@ -867,9 +875,10 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// aggregated downstream by Karmada is mirrored back to the project WD
 	// immediately instead of on the next informer resync.
 	federator := &controller.WorkloadDeploymentFederator{
-		FederationClient:      federationClient,
-		FederationCluster:     federationCluster,
-		RuntimeClassesEnabled: features.FeatureGate.Enabled(features.RuntimeClasses),
+		FederationClient:       federationClient,
+		FederationCluster:      federationCluster,
+		RuntimeClassesEnabled:  features.FeatureGate.Enabled(features.RuntimeClasses),
+		ConsoleSessionsEnabled: features.FeatureGate.Enabled(features.InstanceConsoleSessions),
 	}
 	if err := federator.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
@@ -883,6 +892,20 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		MCManager:        mgr,
 	}).SetupWithManager(mgr.GetLocalManager(), federationCluster); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
+	}
+
+	if features.FeatureGate.Enabled(features.InstanceConsoleSessions) {
+		reportingInstance, err := os.Hostname()
+		if err != nil || reportingInstance == "" {
+			reportingInstance = "compute-manager"
+		}
+		if err := (&controller.InstanceConsoleSessionReconciler{
+			FederationClient:  federationClient,
+			FederationCluster: federationCluster,
+			ReportingInstance: reportingInstance,
+		}).SetupWithManager(mgr); err != nil {
+			return nil, fmt.Errorf("InstanceConsoleSession: %w", err)
+		}
 	}
 
 	return []manager.Runnable{federationCluster}, nil

@@ -225,10 +225,19 @@ const (
 	// has confirmed its processes are stopped, or the confirmation times out.
 	InstanceConsoleSessionFinalizer = "compute.datumapis.com/instance-console-session"
 
-	// InstanceConsoleSessionAgentFinalizer holds the hub and cell copies of a
-	// session until the shell agent has stopped its processes and released its
-	// slot.
+	// InstanceConsoleSessionAgentFinalizer holds the cell copy of a session
+	// until the shell agent has stopped its processes and released its slot.
 	InstanceConsoleSessionAgentFinalizer = "compute.datumapis.com/shell-agent"
+)
+
+// Annotations on copies of InstanceConsoleSessions.
+const (
+	// InstanceConsoleSessionRevokeAnnotation asks the cell to end a session as
+	// Revoked. The control plane sets it on the hub copy when the project
+	// session is deleted, so the cell can report the session's end through
+	// status before the copy goes away. Deleting a copy also ends its session,
+	// but a deleted copy can report nothing back.
+	InstanceConsoleSessionRevokeAnnotation = "compute.datumapis.com/revoke"
 )
 
 // +kubebuilder:object:root=true

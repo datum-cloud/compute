@@ -1,5 +1,7 @@
-# Sessions have no update permissions because the spec is immutable: a
-# different request is a new session. Deleting a session revokes it.
+# The spec is immutable, so no customer role grants update, patch or
+# updateStatus: a different request is a new session, and deleting a session
+# revokes it. They are declared so compute's controllers can manage the
+# session's finalizer and mirror the status the cell reports.
 apiVersion: iam.miloapis.com/v1alpha1
 kind: ProtectedResource
 metadata:
@@ -16,6 +18,9 @@ spec:
     - watch
     - create
     - delete
+    - update
+    - patch
+    - updateStatus
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

@@ -4,8 +4,9 @@
  * Layout is an upside-down tree: the workload is the root, region groups sit
  * in a row beneath it, and instances wrap into a few columns inside each
  * region. Large groups show their unhealthy instances first and fold the rest
- * into a "+N more" card that expands in place. The load balancer hangs off
- * the workload's left. The frame pans by dragging the
+ * into a "+N more" card that expands in place. Load balancers stack in a
+ * column to the workload's left, folding the same way past a few. The frame
+ * pans by dragging the
  * background and zooms with a pinch or the corner buttons.
  * Connectors are orthogonal SVG paths measured from port elements.
  *
@@ -81,7 +82,15 @@ type Edge =
 
 const CARD_WIDTH = 264;
 const CARD_GAP = 16;
-const ALB_GAP = 96;
+
+/**
+ * Load balancers shown before the rest fold into a "+N more" card. The column
+ * sits beside the workload, so every card makes the top row taller and the
+ * whole tree smaller at fit-to-view.
+ */
+const ALB_LIMIT = 4;
+/** Expansion key for the balancer column, alongside the region groups' keys. */
+const ALBS_KEY = '\u0000albs';
 
 /**
  * Columns per group, and how many cards a group shows before folding the rest
@@ -132,11 +141,15 @@ const STYLES = `
 .cpt-zoom button:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
 .cpt-chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);font-family:var(--font-mono);font-size:11px;line-height:1;color:var(--card-foreground);box-shadow:0 1px 2px rgb(0 0 0/.04);white-space:nowrap}
 .cpt-chip-dot{width:6px;height:6px;border-radius:9999px}
-/* Workload stays centered over the region row. The load balancer hangs off
-   its left, in the tree's padding, so it does not pull that center sideways. */
+/* Workload stays centered over the region row. With load balancers the top
+   row is three equal columns (balancers, workload, an empty spacer) so the
+   workload stays in the middle, and the balancer column is in flow: however
+   many stack up, the row grows to hold them, pushing the regions down and
+   staying inside what fit-to-view measures. */
 .cpt-tree{position:relative;display:flex;flex-direction:column;align-items:center;gap:56px;width:max-content}
 .cpt-top{position:relative}
-.cpt-ingress{position:absolute;top:50%;right:calc(50% + 132px + 96px);transform:translateY(-50%);display:flex;flex-direction:column;gap:24px}
+.cpt-top-ingress{display:grid;grid-template-columns:264px 264px 264px;column-gap:96px;align-items:center}
+.cpt-ingress{display:flex;flex-direction:column;gap:24px}
 .cpt-replicas{display:flex;flex-direction:row;align-items:flex-start;justify-content:center;gap:48px;width:max-content}
 .cpt-group{position:relative;flex:0 0 auto;width:max-content;display:flex;flex-direction:column;align-items:stretch;gap:12px}
 .cpt-group.cpt-boxed{border:1px solid color-mix(in oklab,var(--primary) 28%,transparent);background:color-mix(in oklab,var(--primary) 4%,var(--card));border-radius:12px;padding:16px}
@@ -525,7 +538,11 @@ export function TopologyCanvas({
   // rebuilds `albs`/`instances` whenever live metrics tick, and geometry
   // only changes when nodes are added/removed, regrouped, reordered by
   // status or folded (ResizeObserver covers size).
-  const albIds = albs.map((alb) => alb.id).join('\u0000');
+  const albsFoldable = albs.length > ALB_LIMIT;
+  const albsOpen = albsFoldable && expanded.has(ALBS_KEY);
+  const shownAlbs = albsFoldable && !albsOpen ? albs.slice(0, ALB_LIMIT - 1) : albs;
+  const foldedAlbs = albsFoldable && !albsOpen ? albs.slice(ALB_LIMIT - 1) : [];
+  const albIds = shownAlbs.map((alb) => alb.id).join('\u0000');
   const shownKey = laidOut
     .map((group) => `${group.key}:${group.shown.map((i) => i.id).join(',')}:${group.folded.length}`)
     .join('\u0000');
@@ -788,13 +805,16 @@ export function TopologyCanvas({
         })}
       </svg>
 
-      <div
-        className="cpt-tree"
-        style={hasIngress ? { paddingLeft: CARD_WIDTH + ALB_GAP } : undefined}>
-        <div className="cpt-top">
+      <div className="cpt-tree">
+        <div className={`cpt-top${hasIngress ? ' cpt-top-ingress' : ''}`}>
         {hasIngress ? (
           <div className="cpt-ingress">
-            {albs.map((alb) => (
+            {albsOpen ? (
+              <button type="button" className="cpt-group-toggle" onClick={() => toggleGroup(ALBS_KEY)}>
+                Show fewer load balancers
+              </button>
+            ) : null}
+            {shownAlbs.map((alb) => (
               <div key={alb.id} className="cpt-node">
                 <GraphCard>
                   <CardHead
@@ -820,6 +840,20 @@ export function TopologyCanvas({
                 <Port id={`alb-${alb.id}`} side="right" />
               </div>
             ))}
+            {foldedAlbs.length > 0 ? (
+              <button
+                type="button"
+                className="cpt-more"
+                onClick={() => toggleGroup(ALBS_KEY)}
+                aria-label={`Show all ${albs.length} load balancers`}>
+                <span className="cpt-icon cpt-icon-primary">
+                  <Icon icon={GlobeIcon} size={15} />
+                </span>
+                <span className="cpt-more-title">+{foldedAlbs.length} more</span>
+                <span className="cpt-more-sub">load balancers</span>
+                <span className="cpt-more-cta">Show all</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -843,6 +877,8 @@ export function TopologyCanvas({
           {hasIngress ? <Port id="workload-in" side="left" /> : null}
           {hasReplicas ? <Port id="workload-out" side="bottom" /> : null}
         </div>
+        {/* Balances the balancer column so the workload stays centered. */}
+        {hasIngress ? <div aria-hidden /> : null}
         </div>
 
         {hasReplicas ? (

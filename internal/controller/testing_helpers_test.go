@@ -19,6 +19,7 @@ import (
 
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -47,6 +48,7 @@ func newKarmadaScheme() *runtime.Scheme {
 	_ = locationsv1alpha1.AddToScheme(s)
 	_ = karmadapolicyv1alpha1.Install(s)
 	_ = karmadaclusterv1alpha1.Install(s)
+	_ = karmadaworkv1alpha2.Install(s)
 	return s
 }
 
