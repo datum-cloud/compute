@@ -1,6 +1,66 @@
+/// <reference types="node" />
 import { federation } from '@module-federation/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { defineConfig, type Plugin } from 'vite';
+
+const CONSOLE_WASM_DIR = resolve(__dirname, process.env.CONSOLE_WASM_DIR ?? '../../bin');
+const CONSOLE_WASM = 'console-session.wasm';
+const CONSOLE_WASM_EXEC = 'console-session-wasm_exec.js';
+const CONSOLE_ASSETS_ID = 'virtual:console-client-assets';
+
+// Ships the shell's wasm client from `make build-console-wasm` as hashed
+// assets, so the portal's asset proxy caches it across visits. Without it the
+// plugin builds and the Shell tab stays hidden.
+function consoleWasm(): Plugin {
+  let command: 'build' | 'serve' = 'build';
+  const path = (file: string) => resolve(CONSOLE_WASM_DIR, file);
+  const present = () => [CONSOLE_WASM, CONSOLE_WASM_EXEC].every((f) => existsSync(path(f)));
+  return {
+    name: 'compute-console-wasm',
+    configResolved(config) {
+      command = config.command;
+    },
+    resolveId(id) {
+      return id === CONSOLE_ASSETS_ID ? `\0${CONSOLE_ASSETS_ID}` : undefined;
+    },
+    load(id) {
+      if (id !== `\0${CONSOLE_ASSETS_ID}`) return undefined;
+      if (!present()) {
+        this.warn(
+          `shell client not bundled: run make build-console-wasm or set CONSOLE_WASM_DIR (looked in ${CONSOLE_WASM_DIR})`
+        );
+        return 'export const consoleClientAssets = null;';
+      }
+      if (command === 'serve') {
+        return `export const consoleClientAssets = { wasmUrl: new URL('/console/${CONSOLE_WASM}', location.href).href, runtimeUrl: new URL('/console/${CONSOLE_WASM_EXEC}', location.href).href };`;
+      }
+      const wasm = this.emitFile({
+        type: 'asset',
+        name: CONSOLE_WASM,
+        source: readFileSync(path(CONSOLE_WASM)),
+      });
+      const runtime = this.emitFile({
+        type: 'asset',
+        name: CONSOLE_WASM_EXEC,
+        source: readFileSync(path(CONSOLE_WASM_EXEC)),
+      });
+      return `export const consoleClientAssets = { wasmUrl: new URL(import.meta.ROLLUP_FILE_URL_${wasm}, location.href).href, runtimeUrl: new URL(import.meta.ROLLUP_FILE_URL_${runtime}, location.href).href };`;
+    },
+    configureServer(server) {
+      server.middlewares.use('/console', (req, res, next) => {
+        const file = [CONSOLE_WASM, CONSOLE_WASM_EXEC].find((f) => req.url === `/${f}`);
+        if (!file || !existsSync(path(file))) return next();
+        res.setHeader(
+          'Content-Type',
+          file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript'
+        );
+        res.end(readFileSync(path(file)));
+      });
+    },
+  };
+}
 
 // Compute Portal Plugin — a Module Federation remote loaded by the cloud-portal
 // host at runtime. Structural template: examples/sample-plugin/ in the
@@ -41,8 +101,14 @@ export default defineConfig({
     // Keep the plugin readable when inspecting the built bundle.
     minify: false,
   },
+  experimental: {
+    renderBuiltUrl(_filename, { hostType }) {
+      return hostType === 'js' ? { relative: true } : undefined;
+    },
+  },
   plugins: [
     react(),
+    consoleWasm(),
     federation({
       // MUST equal the manifest `name` — the host keys the remote by this id.
       name: 'workload.compute.datumapis.com',
@@ -56,6 +122,7 @@ export default defineConfig({
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
         './InstanceDetail': './src/pages/instance-detail.tsx',
+        './InstanceShellWindow': './src/pages/instance-shell-window.tsx',
         './WorkloadsHomeColumn': './src/cards/workloads-home-column.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors

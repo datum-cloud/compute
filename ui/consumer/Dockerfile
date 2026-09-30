@@ -12,18 +12,41 @@
 # mounted at /etc/tls by the Deployment (see
 # config/components/consumer-ui-plugin/deployment.yaml) — the same mount
 # path serve.ts reads from.
+#
+# The build context is the repository root so the shell's wasm client can be
+# built from the Go sources with `make build-console-wasm`. A tree without that
+# target yields a plugin without the client, which hides the Shell tab.
+#
+# Dockerfile.dockerignore admits only the files that build needs plus this
+# plugin, and the Go sources are bind-mounted rather than copied, so no source
+# file lands in a cached layer.
+
+FROM --platform=$BUILDPLATFORM golang:1.26 AS console-wasm
+WORKDIR /workspace
+COPY go.mod go.sum Makefile ./
+RUN go mod download
+RUN --mount=type=bind,target=/src \
+  --mount=type=cache,target=/root/.cache/go-build \
+  mkdir -p /out && cd /src && \
+  if grep -q '^build-console-wasm:' Makefile; then \
+    make build-console-wasm \
+      CONSOLE_WASM=/out/console-session.wasm \
+      CONSOLE_WASM_EXEC=/out/console-session-wasm_exec.js; \
+  fi
 
 FROM oven/bun:1 AS build
 WORKDIR /app
-COPY package.json bun.lock ./
+COPY ui/consumer/package.json ui/consumer/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY . .
+COPY ui/consumer/ .
+COPY --from=console-wasm /out/ /console-wasm/
+ENV CONSOLE_WASM_DIR=/console-wasm
 RUN bun run build
 
 FROM oven/bun:1-slim
 WORKDIR /app
 COPY --from=build /app/dist ./dist
-COPY serve.ts ./
+COPY ui/consumer/serve.ts ./
 USER bun
 EXPOSE 8443
 CMD ["bun", "run", "serve.ts"]

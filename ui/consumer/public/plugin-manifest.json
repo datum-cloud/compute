@@ -10,6 +10,7 @@
     "WorkloadList": "./src/pages/workload-list.tsx",
     "WorkloadDetail": "./src/pages/workload-detail.tsx",
     "InstanceDetail": "./src/pages/instance-detail.tsx",
+    "InstanceShellWindow": "./src/pages/instance-shell-window.tsx",
     "WorkloadsHomeColumn": "./src/cards/workloads-home-column.tsx"
   },
   "extensions": [
@@ -53,6 +54,25 @@
         "component": {
           "$codeRef": "WorkloadDetail"
         }
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": ":workloadName/instances/:instanceName/shell/window",
+        "component": {
+          "$codeRef": "InstanceShellWindow"
+        },
+        "layout": "bare"
+      },
+      "requirements": {
+        "permissions": [
+          {
+            "group": "compute.datumapis.com",
+            "resource": "instances",
+            "verb": "get"
+          }
+        ]
       }
     },
     {
