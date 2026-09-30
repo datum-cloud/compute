@@ -32,10 +32,14 @@ spec:
       type: string
     - jsonPath: .status.expiresAt
       name: Expires
-      type: date
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .status.connectBefore
+      name: Connect Before
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Message
       priority: 1

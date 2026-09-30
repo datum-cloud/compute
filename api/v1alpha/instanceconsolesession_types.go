@@ -246,8 +246,9 @@ const (
 // +kubebuilder:printcolumn:name="Container",type=string,JSONPath=`.spec.containerName`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Expires",type=date,JSONPath=`.status.expiresAt`
+// +kubebuilder:printcolumn:name="Expires",type=string,JSONPath=`.status.expiresAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Connect Before",type=string,JSONPath=`.status.connectBefore`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 type InstanceConsoleSession struct {
 	metav1.TypeMeta   `json:",inline"`
