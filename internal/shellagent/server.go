@@ -43,7 +43,7 @@ func wantsExecStream(r *http.Request) bool {
 // findSession returns the cell copy of the session with a project UID.
 func (a *Agent) findSession(ctx context.Context, uid string) (*computev1alpha.InstanceConsoleSession, error) {
 	var sessions computev1alpha.InstanceConsoleSessionList
-	if err := a.sessions.List(ctx, &sessions, client.MatchingLabels{SessionUIDLabel: uid}); err != nil {
+	if err := a.sessions.List(ctx, &sessions, client.MatchingLabels{computev1alpha.InstanceConsoleSessionUIDLabel: uid}); err != nil {
 		return nil, err
 	}
 	if len(sessions.Items) == 0 {
@@ -179,7 +179,7 @@ func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.R
 	stream := &clientStream{conn: conn}
 	a.attach(live, stream)
 
-	result := relay(ctx, stream, rw.Reader, backend, fromBackend)
+	result := relay(ctx, stream, rw.Reader, backend, fromBackend, a.cfg.PingInterval, a.cfg.PongTimeout)
 	if reason := a.stopReason(uid); reason != "" {
 		result = &outcome{reason: reason, message: endMessage(reason)}
 	} else if result == nil {

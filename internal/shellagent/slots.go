@@ -17,6 +17,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 const (
@@ -84,8 +86,8 @@ func (s *slot) leaseFor(namespace, name string) *coordinationv1.Lease {
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				componentLabel:  slotComponent,
-				SessionUIDLabel: s.sessionUID,
+				componentLabel: slotComponent,
+				computev1alpha.InstanceConsoleSessionUIDLabel: s.sessionUID,
 			},
 			Annotations: map[string]string{
 				annotationSession:     s.session.String(),
@@ -168,8 +170,8 @@ func (a *Agent) acquireSlot(ctx context.Context, instanceUID types.UID, want *sl
 func (a *Agent) slotFor(ctx context.Context, sessionUID string) (*slot, error) {
 	var leases coordinationv1.LeaseList
 	if err := a.cell.List(ctx, &leases, client.InNamespace(a.cfg.Namespace), client.MatchingLabels{
-		componentLabel:  slotComponent,
-		SessionUIDLabel: sessionUID,
+		componentLabel: slotComponent,
+		computev1alpha.InstanceConsoleSessionUIDLabel: sessionUID,
 	}); err != nil {
 		return nil, err
 	}

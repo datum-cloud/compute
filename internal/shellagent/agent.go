@@ -23,22 +23,7 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-const (
-	// Finalizer is set on a session's hub and cell copies when an agent claims
-	// it, and removed once the session's processes are stopped. A hub copy
-	// that has disappeared therefore confirms the cell cleaned up.
-	Finalizer = "compute.datumapis.com/shell-agent"
-
-	// SessionUIDLabel carries the project session's UID on its hub and cell
-	// copies. Clients connect with this UID and sign it.
-	SessionUIDLabel = computev1alpha.LabelNamespace + "/session-uid"
-
-	// InstanceNameLabel carries the name of the Instance a session copy runs
-	// in. The cell Instance has this name in the copy's namespace.
-	InstanceNameLabel = computev1alpha.LabelNamespace + "/instance-name"
-
-	managedByLabel = "managed-by"
-)
+const managedByLabel = "managed-by"
 
 // Config is an agent's configuration.
 type Config struct {
@@ -64,8 +49,13 @@ type Config struct {
 	DrainTimeout      time.Duration
 	KillGrace         time.Duration
 	KeyRotationPeriod time.Duration
-	UnclaimedTimeout  time.Duration
 	SweepInterval     time.Duration
+	// PingInterval is how often the agent pings a connected client.
+	PingInterval time.Duration
+	// PongTimeout is how long a connected client may send nothing, not even a
+	// pong, before the agent ends the session as Disconnected. It must be
+	// longer than PingInterval.
+	PongTimeout time.Duration
 }
 
 // DefaultConfig returns the contract's limits.
@@ -78,8 +68,9 @@ func DefaultConfig() Config {
 		DrainTimeout:      30 * time.Second,
 		KillGrace:         3 * time.Second,
 		KeyRotationPeriod: 30 * 24 * time.Hour,
-		UnclaimedTimeout:  2 * time.Minute,
 		SweepInterval:     time.Minute,
+		PingInterval:      10 * time.Second,
+		PongTimeout:       20 * time.Second,
 	}
 }
 
@@ -111,6 +102,9 @@ type Agent struct {
 func New(cfg Config, sessions client.Reader, cell, hub client.Client, exec Executor, incarnation string) (*Agent, error) {
 	if cfg.Namespace == "" || cfg.Target == "" || len(cfg.RelayURLs) == 0 || len(cfg.ManagedBy) == 0 {
 		return nil, errors.New("namespace, target, relay URLs and managed-by values are required")
+	}
+	if cfg.PingInterval <= 0 || cfg.PongTimeout <= cfg.PingInterval {
+		return nil, errors.New("the ping interval must be positive and shorter than the pong timeout")
 	}
 	return &Agent{
 		cfg:         cfg,
@@ -245,7 +239,7 @@ func (a *Agent) openCount() int {
 }
 
 func sessionUID(s *computev1alpha.InstanceConsoleSession) string {
-	return s.Labels[SessionUIDLabel]
+	return s.Labels[computev1alpha.InstanceConsoleSessionUIDLabel]
 }
 
 func endpointOf(s *computev1alpha.InstanceConsoleSession) string {
