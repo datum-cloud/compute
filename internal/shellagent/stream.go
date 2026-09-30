@@ -4,6 +4,7 @@ package shellagent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -107,8 +108,8 @@ type outcome struct {
 
 var (
 	outcomeClientGone = outcome{
-		reason:  computev1alpha.InstanceConsoleSessionReasonCompleted,
-		message: "The client disconnected and the command was stopped.",
+		reason:  computev1alpha.InstanceConsoleSessionReasonDisconnected,
+		message: endMessage(computev1alpha.InstanceConsoleSessionReasonDisconnected),
 	}
 	outcomeStreamLost = outcome{
 		reason:  computev1alpha.InstanceConsoleSessionReasonInstanceNotRunning,
@@ -120,17 +121,42 @@ var (
 	}
 )
 
+// pingPayload marks the agent's own pings, so the client's pongs to them are
+// not relayed to the apiserver.
+var pingPayload = []byte("shell-agent")
+
 // relay copies frames both ways until the command exits, either side goes
-// away, or ctx ends. It returns nil when ctx ended first.
-func relay(ctx context.Context, c *clientStream, fromClient *bufio.Reader, backend net.Conn, fromBackend *bufio.Reader) *outcome {
+// away, or ctx ends. It returns nil when ctx ended first. The client is pinged
+// every pingInterval and counts as gone once it has sent nothing, not even a
+// pong, for pongTimeout.
+func relay(ctx context.Context, c *clientStream, fromClient *bufio.Reader, backend net.Conn, fromBackend *bufio.Reader,
+	pingInterval, pongTimeout time.Duration) *outcome {
 	results := make(chan outcome, 2)
+	done := make(chan struct{})
+	defer close(done)
 	go func() { results <- c.pump(fromBackend) }()
-	go func() { results <- forward(fromClient, backend) }()
+	go func() { results <- c.forward(fromClient, backend, pongTimeout) }()
+	go c.ping(pingInterval, done)
 	select {
 	case o := <-results:
 		return &o
 	case <-ctx.Done():
 		return nil
+	}
+}
+
+func (c *clientStream) ping(interval time.Duration, done <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if err := c.relayControl(encodeFrame(opPing, pingPayload, false)); err != nil {
+				return
+			}
+		}
 	}
 }
 
@@ -178,9 +204,13 @@ func (c *clientStream) pump(r *bufio.Reader) outcome {
 	}
 }
 
-// forward relays the client's frames to the apiserver unchanged.
-func forward(r *bufio.Reader, backend net.Conn) outcome {
+// forward relays the client's frames to the apiserver unchanged, except pongs
+// to the agent's own pings.
+func (c *clientStream) forward(r *bufio.Reader, backend net.Conn, idle time.Duration) outcome {
 	for {
+		if err := c.conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
+			return outcomeClientGone
+		}
 		f, err := readFrame(r)
 		var tooLarge errFrameTooLarge
 		switch {
@@ -188,6 +218,8 @@ func forward(r *bufio.Reader, backend net.Conn) outcome {
 			return outcomeFrameTooLarge
 		case err != nil, f.opcode == opClose:
 			return outcomeClientGone
+		case f.opcode == opPong && bytes.Equal(f.payload, pingPayload):
+			continue
 		}
 		if _, err := backend.Write(f.raw); err != nil {
 			return outcomeStreamLost

@@ -28,6 +28,7 @@ var endMessages = map[string]string{
 	computev1alpha.InstanceConsoleSessionReasonTooManySessions:    "The instance already has as many open sessions as it allows.",
 	computev1alpha.InstanceConsoleSessionReasonInstanceNotRunning: "The instance is not running.",
 	computev1alpha.InstanceConsoleSessionReasonInstanceNotFound:   "The instance no longer exists or has been replaced.",
+	computev1alpha.InstanceConsoleSessionReasonDisconnected:       "The client disconnected and the command was stopped.",
 }
 
 func endMessage(reason string) string {
@@ -51,7 +52,9 @@ func terminalReason(reason string) bool {
 		computev1alpha.InstanceConsoleSessionReasonCommandUnavailable,
 		computev1alpha.InstanceConsoleSessionReasonInstanceNotRunning,
 		computev1alpha.InstanceConsoleSessionReasonInstanceNotFound,
-		computev1alpha.InstanceConsoleSessionReasonInvalid:
+		computev1alpha.InstanceConsoleSessionReasonInvalid,
+		computev1alpha.InstanceConsoleSessionReasonUnavailable,
+		computev1alpha.InstanceConsoleSessionReasonDisconnected:
 		return true
 	}
 	return false

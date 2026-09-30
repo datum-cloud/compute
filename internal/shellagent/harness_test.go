@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha1" //nolint:gosec // RFC 6455 derives the accept key with SHA-1
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -161,9 +163,9 @@ func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.Insta
 				Namespace:         testNamespace,
 				CreationTimestamp: metav1.NewTime(h.clock.now()),
 				Labels: map[string]string{
-					SessionUIDLabel:   uid,
-					InstanceNameLabel: testInstance,
-					computev1alpha.WorkloadDeploymentUIDLabel: testDeploymentUID,
+					computev1alpha.InstanceConsoleSessionUIDLabel:          uid,
+					computev1alpha.InstanceConsoleSessionInstanceNameLabel: testInstance,
+					computev1alpha.WorkloadDeploymentUIDLabel:              testDeploymentUID,
 				},
 			},
 			Spec: computev1alpha.InstanceConsoleSessionSpec{
@@ -265,6 +267,7 @@ func (f *fakeAPIServer) Open(_ context.Context, _ types.NamespacedName, opts Exe
 			"Upgrade":                []string{"websocket"},
 			"Connection":             []string{"Upgrade"},
 			"Sec-Websocket-Protocol": []string{consolesession.SubProtocol},
+			"Sec-Websocket-Accept":   []string{acceptKey(handshake.Get("Sec-WebSocket-Key"))},
 		},
 	}
 	serverReader := bufio.NewReader(serverSide)
@@ -277,6 +280,11 @@ func (f *fakeAPIServer) Open(_ context.Context, _ types.NamespacedName, opts Exe
 		f.answer(serverSide, opts.Command)
 	}()
 	return resp, agentSide, bufio.NewReader(agentSide), nil
+}
+
+func acceptKey(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
 func (f *fakeAPIServer) answer(conn net.Conn, command []string) {

@@ -51,6 +51,8 @@ type options struct {
 	featureGates         string
 	drainTimeout         time.Duration
 	killGrace            time.Duration
+	pingInterval         time.Duration
+	pongTimeout          time.Duration
 }
 
 func main() {
@@ -76,6 +78,10 @@ func main() {
 		"How long connected sessions may continue after the agent is asked to stop.")
 	flag.DurationVar(&opts.killGrace, "kill-grace", defaults.KillGrace,
 		"Time between SIGHUP and SIGKILL when a session's processes are stopped.")
+	flag.DurationVar(&opts.pingInterval, "ping-interval", defaults.PingInterval,
+		"How often the agent pings a connected client.")
+	flag.DurationVar(&opts.pongTimeout, "pong-timeout", defaults.PongTimeout,
+		"How long a connected client may send nothing, not even a pong, before its session ends as Disconnected.")
 	zapOpts := zap.Options{}
 	zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -118,6 +124,8 @@ func run(opts options, cfg shellagent.Config) error {
 	cfg.ManagedBy = splitList(opts.managedBy)
 	cfg.DrainTimeout = opts.drainTimeout
 	cfg.KillGrace = opts.killGrace
+	cfg.PingInterval = opts.pingInterval
+	cfg.PongTimeout = opts.pongTimeout
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))

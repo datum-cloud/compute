@@ -106,20 +106,19 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 }
 
 // claim checks a session and, if it can run, takes a slot and publishes where
-// to connect. Agents race to claim with optimistic concurrency.
+// to connect. Agents and the control plane, which ends sessions no cell takes
+// in time, race on the hub copy with optimistic concurrency, so a claim never
+// lands on a session that has already ended. A cell that does not run the
+// session's instance leaves it to the cell that does, or to the control plane.
 func (a *Agent) claim(ctx context.Context, cell, hub *computev1alpha.InstanceConsoleSession) (ctrl.Result, error) {
 	if !a.claiming() || a.openCount() >= a.cfg.MaxOpenSessions {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
 	}
 	target, rej, err := a.check(ctx, cell)
 	if errors.Is(err, errNotInCell) {
-		age := a.now().Sub(hub.CreationTimestamp.Time)
-		if age < a.cfg.UnclaimedTimeout {
-			return ctrl.Result{RequeueAfter: a.cfg.UnclaimedTimeout - age}, nil
-		}
-		rej = reject(computev1alpha.InstanceConsoleSessionReasonInstanceNotFound,
-			"The instance no longer exists or has been replaced.")
-	} else if err != nil {
+		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
+	}
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if rej != nil {
@@ -383,11 +382,11 @@ func (a *Agent) end(ctx context.Context, key types.NamespacedName, reason, messa
 }
 
 func addFinalizer(ctx context.Context, c client.Client, s *computev1alpha.InstanceConsoleSession) error {
-	if controllerutil.ContainsFinalizer(s, Finalizer) {
+	if controllerutil.ContainsFinalizer(s, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 		return nil
 	}
 	base := s.DeepCopy()
-	controllerutil.AddFinalizer(s, Finalizer)
+	controllerutil.AddFinalizer(s, computev1alpha.InstanceConsoleSessionAgentFinalizer)
 	return c.Patch(ctx, s, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
@@ -397,11 +396,11 @@ func removeFinalizer(ctx context.Context, c client.Client, key types.NamespacedN
 		if err := c.Get(ctx, key, &s); err != nil {
 			return err
 		}
-		if !controllerutil.ContainsFinalizer(&s, Finalizer) {
+		if !controllerutil.ContainsFinalizer(&s, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 			return nil
 		}
 		base := s.DeepCopy()
-		controllerutil.RemoveFinalizer(&s, Finalizer)
+		controllerutil.RemoveFinalizer(&s, computev1alpha.InstanceConsoleSessionAgentFinalizer)
 		return c.Patch(ctx, &s, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 	})
 	return client.IgnoreNotFound(err)

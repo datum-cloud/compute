@@ -40,12 +40,12 @@ func TestClaimPublishesConnection(t *testing.T) {
 	if res.RequeueAfter != time.Minute {
 		t.Fatalf("requeue after %v, want the connect timeout", res.RequeueAfter)
 	}
-	if !controllerutil.ContainsFinalizer(s, Finalizer) {
+	if !controllerutil.ContainsFinalizer(s, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 		t.Fatal("hub copy has no finalizer")
 	}
 	var cell computev1alpha.InstanceConsoleSession
 	_ = h.cell.Get(h.ctx, client.ObjectKeyFromObject(s), &cell)
-	if !controllerutil.ContainsFinalizer(&cell, Finalizer) {
+	if !controllerutil.ContainsFinalizer(&cell, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 		t.Fatal("cell copy has no finalizer")
 	}
 	if n := len(h.slots()); n != 1 {
@@ -214,15 +214,65 @@ func TestSessionForAnotherCellIsIgnored(t *testing.T) {
 		s.Labels[computev1alpha.WorkloadDeploymentUIDLabel] = "elsewhere"
 	})
 
-	res := h.reconcile(a, testSession)
+	for range 3 {
+		if res := h.reconcile(a, testSession); res.RequeueAfter <= 0 {
+			t.Fatal("expected a retry while the session is unclaimed")
+		}
+		h.clock.advance(10 * time.Minute)
+	}
 
 	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
-	if res.RequeueAfter <= 0 {
-		t.Fatal("expected a retry until the unclaimed timeout")
+	if len(h.slots()) != 0 {
+		t.Fatal("a cell without the instance took a slot")
 	}
-	h.clock.advance(a.cfg.UnclaimedTimeout)
+}
+
+// endUnavailable ends a session the way the control plane does when no cell
+// claims it in time.
+func endUnavailable(t *testing.T, h *harness) {
+	t.Helper()
+	s := h.hubSession(testSession)
+	setReady(s, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonUnavailable, "No cell took the session.")
+	if err := h.hub.Status().Update(h.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireUnclaimed(t *testing.T, h *harness) {
+	t.Helper()
+	s := h.hubSession(testSession)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonUnavailable)
+	if s.Status.Connection != nil || len(h.slots()) != 0 ||
+		controllerutil.ContainsFinalizer(s, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
+		t.Fatalf("an ended session was claimed: %+v", s)
+	}
+}
+
+func TestEndedSessionIsNotClaimed(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+	endUnavailable(t, h)
+
 	h.reconcile(a, testSession)
-	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonInstanceNotFound)
+
+	requireUnclaimed(t, h)
+}
+
+func TestClaimLosesToControlPlaneEnding(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, testUID)
+	stale := h.hubSession(testSession)
+	var cell computev1alpha.InstanceConsoleSession
+	_ = h.cell.Get(h.ctx, client.ObjectKeyFromObject(stale), &cell)
+	endUnavailable(t, h)
+
+	if _, err := a.claim(h.ctx, &cell, stale); err != nil {
+		t.Logf("losing claim returned %v", err)
+	}
+
+	requireUnclaimed(t, h)
 }
 
 func TestProbeIsCachedPerPodAndContainer(t *testing.T) {
@@ -389,7 +439,7 @@ func TestFinalizerHeldWhileProcessesCannotBeStopped(t *testing.T) {
 	if res := h.reconcile(a, testSession); res.RequeueAfter == 0 {
 		t.Fatal("expected a retry while processes may be running")
 	}
-	if !controllerutil.ContainsFinalizer(h.hubSession(testSession), Finalizer) {
+	if !controllerutil.ContainsFinalizer(h.hubSession(testSession), computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 		t.Fatal("finalizer released before processes were stopped")
 	}
 

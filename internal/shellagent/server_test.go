@@ -246,7 +246,7 @@ func TestPlatformEndings(t *testing.T) {
 			}
 
 			c := dialSession(t, addr, testUID, key, time.Now())
-			waitForReason(t, h, testSession, computev1alpha.InstanceConsoleSessionReasonConnected)
+			waitForConnected(t, h)
 			go tc.end(a)
 			out, status, code := c.readUntilClose(t)
 
@@ -280,10 +280,11 @@ func TestClientDisconnectStopsCommand(t *testing.T) {
 	}
 
 	c := dialSession(t, addr, testUID, key, time.Now())
-	waitForReason(t, h, testSession, computev1alpha.InstanceConsoleSessionReasonConnected)
+	waitForConnected(t, h)
 	_ = c.conn.Close()
 
 	s := waitForEnd(t, h)
+	requireReason(t, s, computev1alpha.InstanceConsoleSessionReasonDisconnected)
 	if s.Status.ExitCode != nil || h.exec.ran(killScript) != 1 {
 		t.Fatal("a dropped connection must stop the command")
 	}
@@ -336,16 +337,17 @@ func TestSecondConnectionIsRefused(t *testing.T) {
 	}
 }
 
-func waitForReason(t *testing.T, h *harness, name, reason string) {
+func waitForConnected(t *testing.T, h *harness) {
 	t.Helper()
+	reason := computev1alpha.InstanceConsoleSessionReasonConnected
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if readyReason(h.hubSession(name)) == reason {
+		if readyReason(h.hubSession(testSession)) == reason {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	requireReason(t, h.hubSession(name), reason)
+	requireReason(t, h.hubSession(testSession), reason)
 }
 
 func waitForEnd(t *testing.T, h *harness) *computev1alpha.InstanceConsoleSession {

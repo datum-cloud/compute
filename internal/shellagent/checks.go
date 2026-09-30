@@ -70,7 +70,7 @@ func (a *Agent) check(ctx context.Context, s *computev1alpha.InstanceConsoleSess
 // Instance from another workload deployment is a replacement, not the
 // Instance the session was created for.
 func (a *Agent) findInstance(ctx context.Context, s *computev1alpha.InstanceConsoleSession) (*computev1alpha.Instance, *rejection, error) {
-	name := s.Labels[InstanceNameLabel]
+	name := s.Labels[computev1alpha.InstanceConsoleSessionInstanceNameLabel]
 	deploymentUID := s.Labels[computev1alpha.WorkloadDeploymentUIDLabel]
 	if name == "" || deploymentUID == "" || len(s.Spec.Command) == 0 {
 		return nil, reject(computev1alpha.InstanceConsoleSessionReasonInvalid,
