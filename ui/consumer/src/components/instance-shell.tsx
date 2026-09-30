@@ -2,6 +2,7 @@ import { createWorkerConnector } from '../lib/console-client/connector';
 import type { TerminalSize } from '../lib/console-client/wasm-adapter';
 import { createSession, deleteSession, getSession } from '../lib/console-sessions';
 import { initialContainer } from '../lib/instance-shell';
+import { popOutFromTab, shellWindowHref, shellWindowName } from '../lib/shell-popout';
 import { ShellSession, type ShellSessionDeps, type ShellState } from '../lib/shell-session';
 import type { Instance } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
@@ -14,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@datum-cloud/datum-ui/card';
+import { Icon } from '@datum-cloud/datum-ui/icons';
 import {
   Select,
   SelectContent,
@@ -24,11 +26,14 @@ import {
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css?inline';
-import { useEffect, useId, useRef, useState } from 'react';
+import { SquareArrowOutUpRightIcon } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { consoleClientAssets } from 'virtual:console-client-assets';
 
 const XTERM_STYLE_ID = 'compute-plugin-xterm-css';
 const TERMINAL_HEIGHT = 480;
+const MIN_WINDOW_TERMINAL_HEIGHT = 240;
+const WINDOW_BOTTOM_GAP = 24;
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 
 const STATUS: Record<Exclude<ShellState['phase'], 'idle' | 'ended'>, string> = {
@@ -63,12 +68,60 @@ function statusBadge(state: ShellState): { label: string; type: 'success' | 'mut
   return { label: 'Opening', type: 'warning' };
 }
 
-export function InstanceShell({ projectId, instance }: { projectId: string; instance: Instance }) {
-  const [container, setContainer] = useState(() => initialContainer(instance.containers));
+function useWindowFillHeight(
+  enabled: boolean,
+  cardRef: RefObject<HTMLDivElement | null>,
+  regionRef: RefObject<HTMLDivElement | null>
+): number | undefined {
+  const [height, setHeight] = useState<number>();
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    const region = regionRef.current;
+    if (!enabled || !card || !region) return;
+    const update = () => {
+      const below = card.getBoundingClientRect().bottom - region.getBoundingClientRect().bottom;
+      const top = region.getBoundingClientRect().top;
+      setHeight(
+        Math.max(
+          MIN_WINDOW_TERMINAL_HEIGHT,
+          Math.floor(window.innerHeight - top - below - WINDOW_BOTTOM_GAP)
+        )
+      );
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(card);
+    window.addEventListener('resize', update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [enabled, cardRef, regionRef]);
+  return height;
+}
+
+function startingContainer(containers: string[], requested?: string): string | undefined {
+  if (requested && containers.includes(requested)) return requested;
+  return initialContainer(containers);
+}
+
+type InstanceShellProps = { projectId: string; instance: Instance } & (
+  { variant: 'tab'; shellHref: string } | { variant: 'window'; container?: string }
+);
+
+export function InstanceShell(props: InstanceShellProps) {
+  const { projectId, instance, variant } = props;
+  const inWindow = variant === 'window';
+  const [container, setContainer] = useState(() =>
+    startingContainer(instance.containers, inWindow ? props.container : undefined)
+  );
   const [state, setState] = useState<ShellState>({ phase: 'idle' });
+  const [popOutError, setPopOutError] = useState<string>();
   const sessionRef = useRef<ShellSession | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const regionRef = useRef<HTMLDivElement>(null);
   const pickerId = useId();
 
   useEffect(() => {
@@ -89,6 +142,7 @@ export function InstanceShell({ projectId, instance }: { projectId: string; inst
   }, [projectId, instance.name, instance.uid]);
 
   const active = state.phase !== 'idle';
+  const fillHeight = useWindowFillHeight(inWindow && active, cardRef, regionRef);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -136,6 +190,23 @@ export function InstanceShell({ projectId, instance }: { projectId: string; inst
     void sessionRef.current?.open(container, size);
   };
 
+  useEffect(() => {
+    if (inWindow && running && container) open();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inWindow]);
+
+  const popOut = () => {
+    if (props.variant !== 'tab') return;
+    setPopOutError(
+      popOutFromTab({
+        opener: window,
+        href: shellWindowHref(props.shellHref, container),
+        name: shellWindowName(projectId, instance.name),
+        closeTabSession: () => sessionRef.current?.close(),
+      })
+    );
+  };
+
   const picker = multiple ? (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={pickerId} className="text-sm font-medium">
@@ -169,34 +240,59 @@ export function InstanceShell({ projectId, instance }: { projectId: string; inst
   const badge = statusBadge(state);
 
   return (
-    <Card className="bg-card" data-testid="compute-plugin-instance-shell">
+    <Card ref={cardRef} className="bg-card" data-testid="compute-plugin-instance-shell">
       <CardHeader>
         <CardTitle>Shell</CardTitle>
         <CardDescription>
-          Run commands in a container of this instance. The shell closes when you leave this page.
+          Run commands in a container of this instance. The shell ends when you leave or close this
+          page.
         </CardDescription>
-        {active && (
+        {(active || !inWindow) && (
           <CardAction className="flex items-center gap-2">
-            <Badge type={badge.type} theme="light">
-              {badge.label}
-            </Badge>
-            {state.phase === 'ended' ? (
-              <Button type="secondary" theme="solid" size="small" onClick={open}>
-                Open new shell
-              </Button>
-            ) : (
+            {active && (
+              <Badge type={badge.type} theme="light">
+                {badge.label}
+              </Badge>
+            )}
+            {active &&
+              (state.phase === 'ended' ? (
+                !inWindow && (
+                  <Button type="secondary" theme="solid" size="small" onClick={open}>
+                    Open new shell
+                  </Button>
+                )
+              ) : (
+                <Button
+                  type="secondary"
+                  theme="outline"
+                  size="small"
+                  onClick={() => sessionRef.current?.close()}>
+                  Close shell
+                </Button>
+              ))}
+            {!inWindow && (
               <Button
                 type="secondary"
                 theme="outline"
                 size="small"
-                onClick={() => sessionRef.current?.close()}>
-                Close shell
+                icon={<Icon icon={SquareArrowOutUpRightIcon} size={12} />}
+                onClick={popOut}
+                data-testid="compute-plugin-shell-pop-out">
+                Pop out
               </Button>
             )}
           </CardAction>
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {popOutError && (
+          <p
+            role="alert"
+            className="text-destructive text-sm"
+            data-testid="compute-plugin-shell-pop-out-error">
+            {popOutError}
+          </p>
+        )}
         {!active && (
           <div className="flex flex-wrap items-end gap-3">
             {picker}
@@ -223,17 +319,35 @@ export function InstanceShell({ projectId, instance }: { projectId: string; inst
           className="text-muted-foreground text-sm"
           data-testid="compute-plugin-shell-status">
           {state.phase === 'ended'
-            ? state.message
+            ? inWindow
+              ? ''
+              : state.message
             : state.phase === 'idle'
               ? ''
               : STATUS[state.phase]}
         </p>
+        {inWindow && state.phase === 'ended' && (
+          <div
+            role="alert"
+            className="bg-muted flex flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3"
+            data-testid="compute-plugin-shell-ended">
+            <p className="text-sm">{state.message}</p>
+            <Button type="primary" theme="solid" size="small" onClick={open}>
+              Open new shell
+            </Button>
+          </div>
+        )}
         {active && (
           <div
+            ref={regionRef}
             role="region"
             aria-label={`Shell in container ${container ?? ''}`}
             className="overflow-hidden rounded-md border"
-            style={{ height: TERMINAL_HEIGHT, padding: 8, background: '#000' }}>
+            style={{
+              height: inWindow ? (fillHeight ?? TERMINAL_HEIGHT) : TERMINAL_HEIGHT,
+              padding: 8,
+              background: '#000',
+            }}>
             <div ref={hostRef} style={{ height: '100%', width: '100%' }} />
           </div>
         )}

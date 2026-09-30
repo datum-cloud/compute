@@ -1,9 +1,11 @@
 import { InstanceShell } from '../components/instance-shell';
 import { useInstanceOutlet } from './instance-outlet-context';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
+import { useLocation } from 'react-router';
 
 export default function InstanceShellPage() {
   const { instance, projectId, shellAvailable } = useInstanceOutlet();
+  const { pathname } = useLocation();
   if (shellAvailable === undefined) return null;
   if (!projectId || !shellAvailable) {
     return (
@@ -16,5 +18,7 @@ export default function InstanceShellPage() {
       />
     );
   }
-  return <InstanceShell projectId={projectId} instance={instance} />;
+  return (
+    <InstanceShell variant="tab" projectId={projectId} instance={instance} shellHref={pathname} />
+  );
 }

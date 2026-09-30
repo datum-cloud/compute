@@ -292,3 +292,17 @@ export function InstanceLogsSkeleton() {
 export function InstanceMetricsSkeleton() {
   return <MetricsSkeleton testId="compute-plugin-loading-instance-metrics" />;
 }
+
+export function InstanceShellWindowSkeleton() {
+  return (
+    <Card aria-busy="true" data-testid="compute-plugin-loading-instance-shell">
+      <CardHeader>
+        <Bone className="h-4 w-20" />
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <Bone className="h-4 w-72" />
+        <Bone className="w-full" style={{ height: '60vh' }} />
+      </CardContent>
+    </Card>
+  );
+}
