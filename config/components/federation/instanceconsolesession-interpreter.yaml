@@ -3,10 +3,11 @@
 # the hub copy, where compute's session controller reads it.
 #
 # A location can map to more than one cell, and only the cell that runs the
-# session's instance writes anything. Aggregation therefore takes the status
-# that says the most: a claim first, then any status with a condition. A
-# status that says less never replaces the hub copy's, so a cell that left the
-# session alone cannot wipe the claim of the cell that took it.
+# session's instance writes anything; every other cell keeps the Pending
+# status the API defaults. Aggregation therefore takes the status that says
+# the most: a claim first, then an end, then anything else. A status that says
+# less never replaces the hub copy's, so a cell that left the session alone
+# cannot wipe the claim or refusal of the cell that runs the instance.
 apiVersion: config.karmada.io/v1alpha1
 kind: ResourceInterpreterCustomization
 metadata:
@@ -31,9 +32,18 @@ spec:
             return 0
           end
           if status.connection ~= nil then
-            return 2
+            return 3
           end
-          if status.conditions ~= nil and #status.conditions > 0 then
+          if status.conditions == nil then
+            return 0
+          end
+          for i = 1, #status.conditions do
+            local condition = status.conditions[i]
+            if condition.type == "Ready" and condition.status == "False" then
+              return 2
+            end
+          end
+          if #status.conditions > 0 then
             return 1
           end
           return 0

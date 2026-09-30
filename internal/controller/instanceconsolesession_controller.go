@@ -501,11 +501,13 @@ func sessionEnded(session *computev1alpha.InstanceConsoleSession) bool {
 	return apimeta.IsStatusConditionFalse(session.Status.Conditions, computev1alpha.InstanceConsoleSessionReady)
 }
 
-// statusWeight ranks how much a session status says: a claim, then any
-// condition, then nothing.
+// statusWeight ranks how much a session status says: a claim, then an end,
+// then any condition, then nothing.
 func statusWeight(status *computev1alpha.InstanceConsoleSessionStatus) int {
 	switch {
 	case status.Connection != nil:
+		return 3
+	case apimeta.IsStatusConditionFalse(status.Conditions, computev1alpha.InstanceConsoleSessionReady):
 		return 2
 	case len(status.Conditions) > 0:
 		return 1

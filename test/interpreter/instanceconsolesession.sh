@@ -64,8 +64,12 @@ expect "a refusal from the cell that runs the instance is reported" \
   "$(aggregate hub-unclaimed.yaml items-refused.yaml)" \
   "reason: NoShell"
 
+expect "the defaulted Pending status is carried while no cell has claimed" \
+  "$(aggregate hub-unclaimed.yaml items-none-claimed.yaml)" \
+  "reason: Pending"
+
 reject "no status is invented when no cell reports one" \
-  "$(aggregate hub-unclaimed.yaml items-none-claimed.yaml)" "status:"
+  "$(aggregate hub-unclaimed.yaml items-empty.yaml)" "status:"
 
 if [ "$failures" -ne 0 ]; then
   printf '%d interpreter check(s) failed\n' "$failures"

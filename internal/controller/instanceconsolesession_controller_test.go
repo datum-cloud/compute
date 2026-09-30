@@ -991,3 +991,25 @@ func TestPropagationPolicySelectsConsoleSessions(t *testing.T) {
 		})
 	}
 }
+
+func TestInstanceConsoleSessionRefusalIsCopied(t *testing.T) {
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconcile(t)
+	endOnHub(t, env, computev1alpha.InstanceConsoleSessionReasonNoShell, nil)
+
+	env.reconcile(t)
+
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonNoShell, sessionReadyReason(session),
+		"an end replaces the Pending status the session was created with")
+	ended, ok := env.events(t)[EventReasonSessionEnded]
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonNoShell, ended.Annotations[sessionEventReasonAnnotation])
+
+	env.reconcile(t)
+	_, ok = env.hubSession(t)
+	assert.False(t, ok, "a refused session has nothing to clean up on the cell")
+	_, ok = env.projectSession(t)
+	assert.False(t, ok)
+}
