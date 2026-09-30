@@ -43,6 +43,16 @@ HTTPS latency probe, `GET /ping`, which the relays allow from any origin.
 
 The module defines one global, `datumExec`.
 
+### `datumExec.features`
+
+An array of strings naming what this build supports, so a host can check before
+relying on it:
+
+| Feature | Meaning |
+|---|---|
+| `connected` | `connect` takes `onConnected` |
+| `end-after-zeroing` | `onEnd` fires only after the private key is zeroed |
+
 ### `datumExec.publicKey()`
 
 Returns the client's public key: 64 lowercase hexadecimal characters. Put it in
@@ -52,7 +62,7 @@ The module generates the private key and never exposes it. It returns the same
 key until `connect` uses it. After that, the next call returns a new key, so
 each session gets its own.
 
-### `datumExec.connect(session, onOutput, onEnd)`
+### `datumExec.connect(session, onOutput, onEnd, onConnected)`
 
 Connects to a session that is ready, which means its `Ready` condition is
 `True` with reason `SessionReady`. Connect right away: the session ends as
@@ -68,12 +78,19 @@ Connects to a session that is ready, which means its `Ready` condition is
 | `target` | string | `status.connection.target` |
 | `cols` | number | Optional. The terminal's width in columns |
 | `rows` | number | Optional. The terminal's height in rows |
+| `allowInsecureRelays` | boolean | Optional, for local testing only. Accepts `http` and `ws` relay URLs; otherwise every relay must use `https` or `wss` |
 
 `onOutput(bytes, fd)` receives the command's output. `bytes` is a `Uint8Array`
 and `fd` is `1` for standard output or `2` for standard error. A session with a
 terminal sends everything on `1`.
 
-`onEnd(ending)` is called exactly once. `ending` has these fields:
+`onConnected()` is optional. It is called once the stream to the command is
+established, before any output, and never after `onEnd`. It is not called when
+the connection fails.
+
+`onEnd(ending)` is called exactly once, on a normal exit, an error or after
+`close()`, and only after the client's copy of the private key has been zeroed
+and the tunnel, which holds the only other copy, has shut down. `ending` has these fields:
 
 | Field | Type | Value |
 |---|---|---|
@@ -88,12 +105,17 @@ terminal sends everything on `1`.
 |---|---|
 | `write(data)` | Sends a string or `Uint8Array` to the command's standard input |
 | `resize(cols, rows)` | Sets the terminal size |
-| `close()` | Drops the connection. The platform stops the command |
+| `close()` | Drops the connection. The platform stops the command. `onEnd` follows once the key is zeroed |
 
 The methods return at once; the client sends data in order in the background.
 
 When `onEnd` fires, delete the session through the API. The client does not
 call the API.
+
+To shut down, call `close()` and wait for `onEnd` before terminating the
+worker, so the key is zeroed rather than left for the worker's teardown. A host
+that cannot wait longer than a couple of seconds may terminate the worker
+anyway.
 
 ## Example
 
@@ -110,6 +132,7 @@ const conn = datumExec.connect(
   },
   (bytes) => term.write(bytes),
   (end) => showEnding(end),
+  () => showConnected(),
 );
 term.onData((d) => conn.write(d));
 term.onResize(({ cols, rows }) => conn.resize(cols, rows));
