@@ -16,6 +16,10 @@ import {
   type ShellLayout,
 } from '../lib/shell-layout';
 import {
+  createHandoff,
+  discardHandoff,
+  handoffStorage,
+  handoffTarget,
   popOutFromTab,
   shellWindowHref,
   shellWindowName,
@@ -486,15 +490,23 @@ export function InstanceShell(props: InstanceShellProps) {
   }, [inWindow]);
 
   const popOut = () => {
-    if (props.variant !== 'tab') return;
-    setPopOutError(
-      popOutFromTab({
-        opener: window,
-        href: shellWindowHref(props.shellHref, { container, command }),
-        name: shellWindowName(projectId, instance.name),
-        closeTabSession: () => sessionRef.current?.close(),
-      })
-    );
+    if (props.variant !== 'tab' || !container) return;
+    const storage = handoffStorage();
+    const nonce = storage
+      ? createHandoff(
+          storage,
+          { target: handoffTarget(projectId, instance.name), container, command },
+          Date.now()
+        )
+      : undefined;
+    const error = popOutFromTab({
+      opener: window,
+      href: shellWindowHref(props.shellHref, nonce),
+      name: shellWindowName(projectId, instance.name),
+      closeTabSession: () => sessionRef.current?.close(),
+    });
+    if (error && storage && nonce) discardHandoff(storage, nonce);
+    setPopOutError(error);
   };
 
   const panel = !active && (

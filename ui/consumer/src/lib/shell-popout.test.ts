@@ -10,6 +10,11 @@ import {
   shellWindowHref,
   shellWindowName,
   shellWindowStart,
+  createHandoff,
+  discardHandoff,
+  HANDOFF_TTL_MS,
+  handoffTarget,
+  type HandoffStorage,
   type ShellWindow,
   type WindowOpener,
 } from './shell-popout';
@@ -49,62 +54,111 @@ describe('shellWindowHref', () => {
     });
   });
 
-  test('adds no query without a container', () => {
+  test('adds no query without a hand-off', () => {
     expect(shellWindowHref(SHELL_HREF)).toBe(
       '/project/p1/services/workloads/web/instances/web-abc/shell/window'
     );
   });
 
-  test('carries the chosen container and command', () => {
-    const command = `sh -c 'echo "a&b=c" #1'`;
-    const href = shellWindowHref(`${SHELL_HREF}/`, { container: 'sidecar', command });
+  test('carries only the hand-off nonce, never the command', () => {
+    const href = shellWindowHref(`${SHELL_HREF}/`, 'ab'.repeat(16));
     const url = new URL(href, 'https://portal.test');
     expect(url.pathname).toBe('/project/p1/services/workloads/web/instances/web-abc/shell/window');
-    expect(url.searchParams.get('container')).toBe('sidecar');
-    expect(url.searchParams.get('command')).toBe(command);
-    expect(href).not.toContain('&b=c');
-    expect(href).not.toContain('#');
-  });
-
-  test('leaves out a blank command', () => {
-    expect(shellWindowHref(SHELL_HREF, { container: 'app', command: '  ' })).toBe(
-      '/project/p1/services/workloads/web/instances/web-abc/shell/window?container=app'
-    );
+    expect([...url.searchParams.keys()]).toEqual(['handoff']);
   });
 });
 
+function memoryStorage(): HandoffStorage & { keys(): string[] } {
+  const items = new Map<string, string>();
+  return {
+    get length() {
+      return items.size;
+    },
+    key: (i) => [...items.keys()][i] ?? null,
+    getItem: (k) => items.get(k) ?? null,
+    setItem: (k, v) => void items.set(k, v),
+    removeItem: (k) => void items.delete(k),
+    keys: () => [...items.keys()],
+  };
+}
+
 describe('shellWindowStart', () => {
   const containers = ['app', 'sidecar'];
+  const target = handoffTarget('p1', 'web-abc');
+  let seq = 0;
 
-  test('connects with the container and command the window was opened with', () => {
-    const href = shellWindowHref(SHELL_HREF, { container: 'sidecar', command: '/bin/bash -l' });
-    const params = new URL(href, 'https://portal.test').searchParams;
-    expect(shellWindowStart(params, containers)).toEqual({
+  function handedOff(storage: HandoffStorage, command: string, now = 1_000) {
+    const nonce = (++seq).toString(16).padStart(32, '0');
+    createHandoff(storage, { target, container: 'sidecar', command }, now, nonce);
+    return new URLSearchParams({ handoff: nonce });
+  }
+
+  function start(params: URLSearchParams, storage: HandoffStorage, now = 2_000, t = target) {
+    return shellWindowStart(params, containers, { storage, target: t, now, page: new Map() });
+  }
+
+  test('a crafted link only fills in the panel and never connects', () => {
+    const params = new URLSearchParams({ container: 'sidecar', command: 'rm -rf /' });
+    expect(start(params, memoryStorage())).toEqual({
       container: 'sidecar',
-      command: '/bin/bash -l',
-      connect: true,
-    });
-  });
-
-  test('defaults to the first container and /bin/sh', () => {
-    expect(shellWindowStart(new URLSearchParams(), containers)).toEqual({
-      container: 'app',
-      command: '/bin/sh',
-      connect: true,
-    });
-  });
-
-  test('waits for the user when the container is not one the instance runs', () => {
-    expect(shellWindowStart(new URLSearchParams({ container: 'gone' }), containers)).toEqual({
-      container: 'app',
-      command: '/bin/sh',
+      command: 'rm -rf /',
       connect: false,
     });
   });
 
-  test('waits for the user when the command does not parse', () => {
-    const start = shellWindowStart(new URLSearchParams({ command: `sh -c 'echo` }), containers);
-    expect(start).toMatchObject({ command: `sh -c 'echo`, connect: false });
+  test("connects with the container and command from the user's own tab", () => {
+    const storage = memoryStorage();
+    const params = handedOff(storage, '/bin/bash -l');
+    params.set('command', 'rm -rf /');
+    expect(start(params, storage)).toEqual({
+      container: 'sidecar',
+      command: '/bin/bash -l',
+      connect: true,
+    });
+    expect(storage.keys()).toEqual([]);
+  });
+
+  test('a replayed hand-off does not connect', () => {
+    const storage = memoryStorage();
+    const params = handedOff(storage, '/bin/sh');
+    expect(start(params, storage).connect).toBe(true);
+    expect(start(params, storage).connect).toBe(false);
+  });
+
+  test('a render reading the same hand-off twice in one page still connects', () => {
+    const storage = memoryStorage();
+    const params = handedOff(storage, '/bin/sh');
+    const page = new Map();
+    const opts = { storage, target, now: 2_000, page };
+    expect(shellWindowStart(params, containers, opts).connect).toBe(true);
+    expect(shellWindowStart(params, containers, opts).connect).toBe(true);
+  });
+
+  test('a nonce this browser never issued does not connect', () => {
+    const params = new URLSearchParams({ handoff: 'e'.repeat(32), command: '/bin/sh' });
+    expect(start(params, memoryStorage()).connect).toBe(false);
+  });
+
+  test('an expired hand-off does not connect and is removed', () => {
+    const storage = memoryStorage();
+    const params = handedOff(storage, '/bin/sh', 1_000);
+    expect(start(params, storage, 1_000 + HANDOFF_TTL_MS).connect).toBe(false);
+    expect(storage.keys()).toEqual([]);
+  });
+
+  test('a hand-off for another instance does not connect', () => {
+    const storage = memoryStorage();
+    const params = handedOff(storage, '/bin/sh');
+    expect(start(params, storage, 2_000, handoffTarget('p1', 'other')).connect).toBe(false);
+  });
+
+  test('writing a hand-off prunes expired ones, and a discarded one is gone', () => {
+    const storage = memoryStorage();
+    handedOff(storage, '/bin/sh', 0);
+    const fresh = handedOff(storage, '/bin/sh', HANDOFF_TTL_MS + 1);
+    expect(storage.keys()).toHaveLength(1);
+    discardHandoff(storage, fresh.get('handoff') as string);
+    expect(storage.keys()).toEqual([]);
   });
 });
 

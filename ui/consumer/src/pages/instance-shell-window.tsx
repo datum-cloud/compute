@@ -4,7 +4,7 @@ import { ErrorOrRestrictedState } from '../components/states';
 import { useInstance } from '../lib/api';
 import { instancePageView } from '../lib/instance-page-view';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
-import { shellWindowStart } from '../lib/shell-popout';
+import { handoffStorage, handoffTarget, shellWindowStart } from '../lib/shell-popout';
 import { useShellAvailable } from '../lib/use-shell-available';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { useEffect } from 'react';
@@ -80,7 +80,11 @@ export default function InstanceShellWindowPage() {
           title={title}
           projectId={projectId}
           instance={instance}
-          start={shellWindowStart(searchParams, instance.containers)}
+          start={shellWindowStart(searchParams, instance.containers, {
+            storage: handoffStorage(),
+            target: handoffTarget(projectId, instance.name),
+            now: Date.now(),
+          })}
         />
       </div>
     );
