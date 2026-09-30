@@ -13,6 +13,7 @@ import {
 import { ErrorOrRestrictedState } from '../components/states';
 import { useInstance, usePublishedUrl } from '../lib/api';
 import { instancePageView } from '../lib/instance-page-view';
+import { SHELL_WINDOW_PATH } from '../lib/shell-popout';
 import { useShellAvailable } from '../lib/use-shell-available';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
@@ -23,6 +24,7 @@ import { lazy, Suspense } from 'react';
 import { Outlet, Route, Routes, useLocation, useParams } from 'react-router';
 
 const InstanceShellPage = lazy(() => import('./instance-shell'));
+const InstanceShellWindowPage = lazy(() => import('./instance-shell-window'));
 
 function InstanceLayoutShell({
   projectHref,
@@ -137,6 +139,14 @@ export default function InstanceDetail() {
 
   return (
     <Routes>
+      <Route
+        path={SHELL_WINDOW_PATH}
+        element={
+          <Suspense fallback={null}>
+            <InstanceShellWindowPage />
+          </Suspense>
+        }
+      />
       <Route
         element={
           <InstanceLayoutShell

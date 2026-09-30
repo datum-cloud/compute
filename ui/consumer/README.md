@@ -40,6 +40,12 @@ mount root so URLs read `…/services/workloads/<workloadName>`, not
   The connection runs in a Web Worker that loads the wasm client on first
   use and holds the session key; closing the shell or leaving the page
   terminates the worker and deletes the session.
+- **Shell pop-out** (`…/instances/:instanceName/shell/window`) — the Shell
+  tab's **Pop out** opens this route in a named browser window with the
+  portal sidebar collapsed. The window starts its own session, since a
+  session's key can't leave the worker that made it, and the tab's session
+  closes. A second click focuses the open window rather than opening another,
+  and closing the window ends its session.
 
 **Delete** is in the workload detail page header.
 The confirmation dialog (`src/components/delete-workload-dialog.tsx`) also
