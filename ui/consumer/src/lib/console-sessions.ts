@@ -2,6 +2,10 @@ import { ApiError, getProjectScopedBase } from './api';
 
 const SESSIONS_PATH =
   '/apis/compute.datumapis.com/v1alpha/namespaces/default/instanceconsolesessions';
+const ALLOWANCE_BUCKETS_PATH =
+  '/apis/quota.miloapis.com/v1alpha1/namespaces/milo-system/allowancebuckets?labelSelector=quota.miloapis.com%2Fconsumer-kind%3DProject';
+
+export const SESSION_RESOURCE_TYPE = 'compute.datumapis.com/instanceconsolesessions';
 
 export const SHELL_COMMAND = ['sh'];
 
@@ -55,7 +59,34 @@ const REASON_MESSAGES: Record<string, string> = {
 };
 
 export const TOO_MANY_SESSIONS_MESSAGE =
-  'There are too many open sessions in this project. Close another shell and try again.';
+  'Too many open sessions in this project. Close another shell and try again.';
+
+export const SESSIONS_NOT_ENABLED_MESSAGE = "Shell sessions aren't enabled for this project.";
+
+export interface RawAllowanceBucketList {
+  items?: Array<{
+    spec?: { resourceType?: string };
+    status?: { limit?: number };
+  }>;
+}
+
+export function sessionAllowance(body: RawAllowanceBucketList): number | undefined {
+  const limit = body.items?.find((b) => b.spec?.resourceType === SESSION_RESOURCE_TYPE)?.status
+    ?.limit;
+  return typeof limit === 'number' ? limit : undefined;
+}
+
+export async function fetchSessionAllowance(projectId: string): Promise<number | undefined> {
+  try {
+    const res = await fetch(`${getProjectScopedBase(projectId)}${ALLOWANCE_BUCKETS_PATH}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return undefined;
+    return sessionAllowance((await res.json()) as RawAllowanceBucketList);
+  } catch {
+    return undefined;
+  }
+}
 
 export function reasonMessage(reason: string, message?: string): string {
   return message?.trim() || REASON_MESSAGES[reason] || 'The session ended.';
@@ -90,8 +121,15 @@ export function sessionProgress(raw: RawConsoleSession): SessionProgress {
   return { kind: 'pending' };
 }
 
-export function createErrorMessage(status: number, message: string): string {
-  if (/quota/i.test(message)) return TOO_MANY_SESSIONS_MESSAGE;
+export function isQuotaDenial(message: string): boolean {
+  return /reached your quota|insufficient quota/i.test(message);
+}
+
+export function createErrorMessage(status: number, message: string, allowance?: number): string {
+  if (isQuotaDenial(message)) {
+    return allowance === 0 ? SESSIONS_NOT_ENABLED_MESSAGE : TOO_MANY_SESSIONS_MESSAGE;
+  }
+  if (/quota/i.test(message)) return message;
   if (status === 403) return "You don't have permission to open a shell in this project.";
   if (status === 404) return 'Shell sessions are not available in this project yet.';
   return message || `The shell could not be opened (${status}).`;
@@ -125,7 +163,9 @@ export async function createSession(projectId: string, input: NewSession): Promi
     }),
   });
   if (!res.ok) {
-    throw new ApiError(res.status, createErrorMessage(res.status, await statusMessage(res)));
+    const message = await statusMessage(res);
+    const allowance = isQuotaDenial(message) ? await fetchSessionAllowance(projectId) : undefined;
+    throw new ApiError(res.status, createErrorMessage(res.status, message, allowance));
   }
   const body = (await res.json()) as RawConsoleSession;
   return {

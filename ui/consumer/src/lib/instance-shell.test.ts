@@ -35,72 +35,46 @@ describe('resolveRuntimeClass', () => {
 });
 
 describe('canShowShell', () => {
-  const execClass = resolveRuntimeClass('general-purpose', classes);
+  const shown = {
+    clientBundled: true,
+    canCreateSessions: true,
+    sessionAllowance: 5 as number | undefined,
+    runtimeClass: resolveRuntimeClass('general-purpose', classes),
+    containers: ['app'],
+  };
 
-  test('shows with permission, an exec class and a container', () => {
-    expect(
-      canShowShell({
-        clientBundled: true,
-        canCreateSessions: true,
-        runtimeClass: execClass,
-        containers: ['app'],
-      })
-    ).toBe(true);
+  test('shows with permission, an allowance, an exec class and a container', () => {
+    expect(canShowShell(shown)).toBe(true);
   });
 
   test('hides without permission to create sessions', () => {
-    expect(
-      canShowShell({
-        clientBundled: true,
-        canCreateSessions: false,
-        runtimeClass: execClass,
-        containers: ['app'],
-      })
-    ).toBe(false);
+    expect(canShowShell({ ...shown, canCreateSessions: false })).toBe(false);
+  });
+
+  test('hides when the project has no session allowance', () => {
+    expect(canShowShell({ ...shown, sessionAllowance: 0 })).toBe(false);
+  });
+
+  test('shows when the allowance cannot be read', () => {
+    expect(canShowShell({ ...shown, sessionAllowance: undefined })).toBe(true);
   });
 
   test('hides when the runtime class lacks exec', () => {
     expect(
-      canShowShell({
-        clientBundled: true,
-        canCreateSessions: true,
-        runtimeClass: resolveRuntimeClass('unikernel', classes),
-        containers: ['app'],
-      })
+      canShowShell({ ...shown, runtimeClass: resolveRuntimeClass('unikernel', classes) })
     ).toBe(false);
   });
 
   test('hides when the runtime class is unknown', () => {
-    expect(
-      canShowShell({
-        clientBundled: true,
-        canCreateSessions: true,
-        runtimeClass: undefined,
-        containers: ['app'],
-      })
-    ).toBe(false);
+    expect(canShowShell({ ...shown, runtimeClass: undefined })).toBe(false);
   });
 
   test('hides when the plugin was built without the shell client', () => {
-    expect(
-      canShowShell({
-        clientBundled: false,
-        canCreateSessions: true,
-        runtimeClass: execClass,
-        containers: ['app'],
-      })
-    ).toBe(false);
+    expect(canShowShell({ ...shown, clientBundled: false })).toBe(false);
   });
 
   test('hides for instances without containers', () => {
-    expect(
-      canShowShell({
-        clientBundled: true,
-        canCreateSessions: true,
-        runtimeClass: execClass,
-        containers: [],
-      })
-    ).toBe(false);
+    expect(canShowShell({ ...shown, containers: [] })).toBe(false);
   });
 });
 

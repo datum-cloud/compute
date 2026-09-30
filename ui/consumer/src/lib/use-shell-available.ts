@@ -6,6 +6,7 @@ import {
   type RawRuntimeClassList,
   type RuntimeClassSummary,
 } from './instance-shell';
+import { fetchSessionAllowance } from './console-sessions';
 import type { Instance } from '../schema';
 import { useQuery } from '@tanstack/react-query';
 import { consoleClientAssets } from 'virtual:console-client-assets';
@@ -14,10 +15,12 @@ const RUNTIME_CLASSES_PATH = '/apis/compute.datumapis.com/v1alpha/runtimeclasses
 
 async function fetchShellAccess(projectId: string): Promise<{
   canCreateSessions: boolean;
+  sessionAllowance: number | undefined;
   runtimeClasses: RuntimeClassSummary[];
 }> {
-  const [canCreateSessions, runtimeClasses] = await Promise.all([
+  const [canCreateSessions, sessionAllowance, runtimeClasses] = await Promise.all([
     canPerform(projectId, 'compute.datumapis.com', 'instanceconsolesessions', 'create'),
+    fetchSessionAllowance(projectId),
     fetch(`${getProjectScopedBase(projectId)}${RUNTIME_CLASSES_PATH}`, {
       headers: { Accept: 'application/json' },
     })
@@ -25,7 +28,7 @@ async function fetchShellAccess(projectId: string): Promise<{
       .then(toRuntimeClasses)
       .catch(() => []),
   ]);
-  return { canCreateSessions, runtimeClasses };
+  return { canCreateSessions, sessionAllowance, runtimeClasses };
 }
 
 export function useShellAvailable(
@@ -45,6 +48,7 @@ export function useShellAvailable(
   return canShowShell({
     clientBundled: true,
     canCreateSessions: query.data.canCreateSessions,
+    sessionAllowance: query.data.sessionAllowance,
     runtimeClass: resolveRuntimeClass(instance.runtimeClass, query.data.runtimeClasses),
     containers: instance.containers,
   });

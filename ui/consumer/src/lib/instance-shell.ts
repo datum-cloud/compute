@@ -32,17 +32,20 @@ export function resolveRuntimeClass(
 export function canShowShell({
   clientBundled,
   canCreateSessions,
+  sessionAllowance,
   runtimeClass,
   containers,
 }: {
   clientBundled: boolean;
   canCreateSessions: boolean;
+  sessionAllowance: number | undefined;
   runtimeClass: RuntimeClassSummary | undefined;
   containers: string[];
 }): boolean {
   return (
     clientBundled &&
     canCreateSessions &&
+    sessionAllowance !== 0 &&
     !!runtimeClass?.features.includes(EXEC_FEATURE) &&
     containers.length > 0
   );
