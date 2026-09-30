@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   createErrorMessage,
   reasonMessage,
+  SESSION_QUOTA_MESSAGE,
   SESSION_RESOURCE_TYPE,
   sessionAllowance,
   SESSIONS_NOT_ENABLED_MESSAGE,
@@ -95,20 +96,20 @@ describe('sessionAllowance', () => {
       sessionAllowance({
         items: [
           { spec: { resourceType: 'compute.datumapis.com/instances' }, status: { limit: 50 } },
-          { spec: { resourceType: SESSION_RESOURCE_TYPE }, status: { limit: 0 } },
+          { spec: { resourceType: SESSION_RESOURCE_TYPE }, status: { limit: 3 } },
         ],
       })
-    ).toBe(0);
+    ).toBe(3);
   });
 
-  test('is unknown without a session bucket', () => {
-    expect(sessionAllowance({ items: [] })).toBeUndefined();
-    expect(sessionAllowance({})).toBeUndefined();
+  test('is zero without a session bucket', () => {
+    expect(sessionAllowance({ items: [] })).toBe(0);
+    expect(sessionAllowance({})).toBe(0);
   });
 
-  test('is unknown before the bucket reports a limit', () => {
+  test('is zero before the bucket reports a limit', () => {
     expect(sessionAllowance({ items: [{ spec: { resourceType: SESSION_RESOURCE_TYPE } }] })).toBe(
-      undefined
+      0
     );
   });
 });
@@ -125,10 +126,10 @@ describe('createErrorMessage', () => {
     expect(createErrorMessage(403, denial, 10)).toBe(TOO_MANY_SESSIONS_MESSAGE);
   });
 
-  test('maps a denial with an unknown allowance to too many open sessions', () => {
+  test('covers both causes when the allowance cannot be read', () => {
     expect(
       createErrorMessage(403, 'instanceconsolesessions "x" is forbidden: Insufficient quota')
-    ).toBe(TOO_MANY_SESSIONS_MESSAGE);
+    ).toBe(SESSION_QUOTA_MESSAGE);
   });
 
   test('passes a quota check that is not a denial through', () => {

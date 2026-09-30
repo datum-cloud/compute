@@ -65,6 +65,9 @@ export const TOO_MANY_SESSIONS_MESSAGE =
 
 export const SESSIONS_NOT_ENABLED_MESSAGE = "Shell sessions aren't enabled for this project.";
 
+export const SESSION_QUOTA_MESSAGE =
+  "Shell sessions aren't enabled for this project, or too many are open in it.";
+
 export interface RawAllowanceBucketList {
   items?: Array<{
     spec?: { resourceType?: string };
@@ -72,10 +75,10 @@ export interface RawAllowanceBucketList {
   }>;
 }
 
-export function sessionAllowance(body: RawAllowanceBucketList): number | undefined {
+export function sessionAllowance(body: RawAllowanceBucketList): number {
   const limit = body.items?.find((b) => b.spec?.resourceType === SESSION_RESOURCE_TYPE)?.status
     ?.limit;
-  return typeof limit === 'number' ? limit : undefined;
+  return typeof limit === 'number' ? limit : 0;
 }
 
 export async function fetchSessionAllowance(projectId: string): Promise<number | undefined> {
@@ -129,6 +132,7 @@ export function isQuotaDenial(message: string): boolean {
 
 export function createErrorMessage(status: number, message: string, allowance?: number): string {
   if (isQuotaDenial(message)) {
+    if (allowance === undefined) return SESSION_QUOTA_MESSAGE;
     return allowance === 0 ? SESSIONS_NOT_ENABLED_MESSAGE : TOO_MANY_SESSIONS_MESSAGE;
   }
   if (/quota/i.test(message)) return message;
