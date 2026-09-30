@@ -64,6 +64,11 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet envtest interpreter-test ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
+.PHONY: test-console
+test-console: ## Run the console session client's tests with the race detector, and the browser build's tests under Node.
+	go test -race ./internal/consoleclient/... ./internal/cmd/compute/exec/...
+	PATH="$$(go env GOROOT)/lib/wasm:$$PATH" GOOS=js GOARCH=wasm go test ./cmd/console-wasm/...
+
 .PHONY: interpreter-test
 interpreter-test: karmadactl ## Validate Karmada resource interpreter customizations.
 	$(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --check
