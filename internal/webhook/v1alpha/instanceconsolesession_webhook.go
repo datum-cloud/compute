@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -44,12 +45,15 @@ var (
 	_ admission.Validator[*computev1alpha.InstanceConsoleSession] = &instanceConsoleSessionWebhook{}
 )
 
-// Default records the authenticated requester on the session.
+// Default records the authenticated requester on the session and adds the
+// controller's finalizer, so a session deleted before the controller first sees
+// it still has its end recorded.
 func (w *instanceConsoleSessionWebhook) Default(ctx context.Context, session *computev1alpha.InstanceConsoleSession) error {
 	req, err := admission.RequestFromContext(ctx)
 	if err != nil {
 		return err
 	}
+	controllerutil.AddFinalizer(session, computev1alpha.InstanceConsoleSessionFinalizer)
 	if session.Annotations == nil {
 		session.Annotations = map[string]string{}
 	}

@@ -86,6 +86,19 @@ func TestInstanceConsoleSessionWebhookDefaultRecordsRequester(t *testing.T) {
 	assert.Equal(t, "alice@example.com", session.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation])
 }
 
+func TestInstanceConsoleSessionWebhookDefaultAddsFinalizer(t *testing.T) {
+	w := newSessionWebhook()
+	session := sessionWebhookSession()
+	session.Finalizers = []string{"example.com/other"}
+
+	require.NoError(t, w.Default(sessionWebhookContext("bob@example.com"), session))
+	assert.Equal(t, []string{"example.com/other", computev1alpha.InstanceConsoleSessionFinalizer}, session.Finalizers,
+		"a session deleted before the controller sees it is still held until its end is recorded")
+
+	require.NoError(t, w.Default(sessionWebhookContext("bob@example.com"), session))
+	assert.Len(t, session.Finalizers, 2, "defaulting twice adds the finalizer once")
+}
+
 func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 	tests := []struct {
 		name    string
