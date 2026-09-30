@@ -517,6 +517,32 @@ func TestConcurrencyCapDefersClaims(t *testing.T) {
 	}
 }
 
+func TestClaimWaitsForReadyEndpoint(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent(func(c *Config) { c.EndpointPodName = "exec-endpoint-0" })
+	h.session(testSession, testUID)
+
+	res := h.reconcile(a, testSession)
+	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
+	if res.RequeueAfter == 0 {
+		t.Fatal("a claim deferred for a missing endpoint must be retried")
+	}
+
+	endpoint := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testAgentNamespace, Name: "exec-endpoint-0"}}
+	if err := h.cell.Create(h.ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile(a, testSession)
+	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonPending)
+
+	endpoint.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	if err := h.cell.Status().Update(h.ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile(a, testSession)
+	requireReason(t, h.hubSession(testSession), computev1alpha.InstanceConsoleSessionReasonSessionReady)
+}
+
 func TestSweepStopsOrphanedProcesses(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent()

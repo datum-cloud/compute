@@ -210,6 +210,23 @@ func (a *Agent) restartEndpoint(ctx context.Context) error {
 	}
 }
 
+// endpointReady reports whether the paired endpoint can carry a connection. A
+// session claimed while it cannot fails at the client's dial.
+func (a *Agent) endpointReady(ctx context.Context) (bool, error) {
+	if a.cfg.EndpointPodName == "" {
+		return true, nil
+	}
+	var pod corev1.Pod
+	err := a.cell.Get(ctx, client.ObjectKey{Namespace: a.cfg.Namespace, Name: a.cfg.EndpointPodName}, &pod)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return podReady(&pod), nil
+}
+
 func podReady(pod *corev1.Pod) bool {
 	for _, c := range pod.Status.Conditions {
 		if c.Type == corev1.PodReady {
