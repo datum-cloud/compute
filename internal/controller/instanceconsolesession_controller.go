@@ -30,25 +30,11 @@ import (
 )
 
 const (
-	// instanceConsoleSessionFinalizer holds a project session until its hub
-	// copy is gone, which is how the cell confirms the command has stopped.
-	instanceConsoleSessionFinalizer = "compute.datumapis.com/instance-console-session"
-
-	// shellAgentFinalizer is the finalizer the cell's shell agent puts on a hub
-	// copy before it starts the command, and removes once the command has
-	// stopped and its reservation is released.
-	shellAgentFinalizer = "compute.datumapis.com/shell-agent"
-
-	// sessionUIDLabel carries the project session's UID on its hub copy. The
-	// agent verifies client signatures against this UID.
-	sessionUIDLabel = computev1alpha.LabelNamespace + "/session-uid"
-
-	// sessionInstanceNameLabel carries the name of the instance a hub copy
-	// targets. The hub and cell instance share this name and the copy's
-	// namespace.
-	sessionInstanceNameLabel = computev1alpha.LabelNamespace + "/instance-name"
-
 	defaultSessionCleanupTimeout = 5 * time.Minute
+
+	// DefaultSessionClaimTimeout is how long after its creation a session may
+	// wait for a cell to claim it before it ends as Unavailable.
+	DefaultSessionClaimTimeout = 30 * time.Second
 )
 
 // InstanceConsoleSessionReconciler delivers shell sessions created in a project
@@ -76,6 +62,11 @@ type InstanceConsoleSessionReconciler struct {
 	// CleanupTimeout is how long a deleted session waits for the cell to
 	// confirm cleanup. Zero means five minutes.
 	CleanupTimeout time.Duration
+
+	// ClaimTimeout is how long after its creation a session waits for a cell to
+	// claim it before it ends as Unavailable. Zero means
+	// DefaultSessionClaimTimeout.
+	ClaimTimeout time.Duration
 
 	// Now returns the current time. Nil means time.Now.
 	Now func() time.Time
@@ -106,23 +97,19 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 		return r.finalize(ctx, projectClient, &session)
 	}
 
-	if !controllerutil.ContainsFinalizer(&session, instanceConsoleSessionFinalizer) {
+	if !controllerutil.ContainsFinalizer(&session, computev1alpha.InstanceConsoleSessionFinalizer) {
 		patch := client.MergeFrom(session.DeepCopy())
-		controllerutil.AddFinalizer(&session, instanceConsoleSessionFinalizer)
+		controllerutil.AddFinalizer(&session, computev1alpha.InstanceConsoleSessionFinalizer)
 		if err := projectClient.Patch(ctx, &session, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed adding finalizer: %w", err)
 		}
 	}
 
+	var result ctrl.Result
 	if !sessionEnded(&session) {
-		hubCopy, err := r.deliver(ctx, req.ClusterName, projectClient, &session)
-		if err != nil {
+		var err error
+		if result, err = r.reconcileDelivery(ctx, req.ClusterName, projectClient, &session); err != nil {
 			return ctrl.Result{}, err
-		}
-		if hubCopy != nil {
-			if err := r.copyStatus(ctx, projectClient, &session, hubCopy); err != nil {
-				return ctrl.Result{}, err
-			}
 		}
 	}
 
@@ -137,13 +124,105 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 			return ctrl.Result{}, fmt.Errorf("failed deleting ended session: %w", err)
 		}
 		log.FromContext(ctx).Info("deleted ended session", "reason", sessionReadyReason(&session))
+		return ctrl.Result{}, nil
 	}
 
-	return ctrl.Result{}, nil
+	return result, nil
+}
+
+// reconcileDelivery delivers a session that has not ended, ends it as
+// Unavailable when no cell claims it by its claim deadline, and mirrors the hub
+// copy's status onto it.
+func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
+	ctx context.Context,
+	clusterName multicluster.ClusterName,
+	projectClient client.Client,
+	session *computev1alpha.InstanceConsoleSession,
+) (ctrl.Result, error) {
+	deadline := session.CreationTimestamp.Add(r.claimTimeout())
+
+	hubCopy, deliverErr := r.deliver(ctx, clusterName, projectClient, session)
+	if deliverErr != nil {
+		if r.now().Before(deadline) {
+			return ctrl.Result{}, deliverErr
+		}
+		var err error
+		if hubCopy, err = r.recordedHubCopy(ctx, session); err != nil {
+			return ctrl.Result{}, err
+		}
+		if hubCopy == nil {
+			log.FromContext(ctx).Error(deliverErr, "ending session no cell could receive in time")
+			return ctrl.Result{}, r.endSession(ctx, projectClient, session,
+				computev1alpha.InstanceConsoleSessionReasonUnavailable, r.unavailableMessage())
+		}
+	}
+	if hubCopy == nil {
+		return ctrl.Result{}, nil
+	}
+
+	wait, err := r.endUnclaimed(ctx, hubCopy, deadline)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.copyStatus(ctx, projectClient, session, hubCopy); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: wait}, nil
+}
+
+// endUnclaimed ends a hub copy no cell has claimed by the deadline, and
+// otherwise returns how long remains until the deadline. The status update
+// carries the copy's resourceVersion, and so does the shell agent's claim, so
+// exactly one of them succeeds: a conflict here means the copy changed, most
+// likely because a cell claimed it, and the retry re-reads it.
+func (r *InstanceConsoleSessionReconciler) endUnclaimed(
+	ctx context.Context,
+	hubCopy *computev1alpha.InstanceConsoleSession,
+	deadline time.Time,
+) (time.Duration, error) {
+	if hubCopy.Status.Connection != nil || sessionEnded(hubCopy) || !hubCopy.DeletionTimestamp.IsZero() {
+		return 0, nil
+	}
+	if wait := deadline.Sub(r.now()); wait > 0 {
+		return wait, nil
+	}
+
+	now := metav1.NewTime(r.now())
+	hubCopy.Status.EndedAt = &now
+	apimeta.SetStatusCondition(&hubCopy.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.InstanceConsoleSessionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.InstanceConsoleSessionReasonUnavailable,
+		Message:            r.unavailableMessage(),
+		ObservedGeneration: hubCopy.Generation,
+		LastTransitionTime: now,
+	})
+	if err := r.FederationClient.Status().Update(ctx, hubCopy); err != nil {
+		return 0, fmt.Errorf("failed ending unclaimed hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)
+	}
+	log.FromContext(ctx).Info("ended session no cell claimed in time", "hubNamespace", hubCopy.Namespace)
+	return 0, nil
+}
+
+// recordedHubCopy returns the hub copy in the namespace recorded on the
+// session, or nil when none is recorded or the copy does not exist.
+func (r *InstanceConsoleSessionReconciler) recordedHubCopy(
+	ctx context.Context,
+	session *computev1alpha.InstanceConsoleSession,
+) (*computev1alpha.InstanceConsoleSession, error) {
+	hubNS := session.Annotations[computev1alpha.FederationNamespaceAnnotation]
+	if hubNS == "" {
+		return nil, nil
+	}
+	return r.getHubCopy(ctx, hubNS, session)
+}
+
+func (r *InstanceConsoleSessionReconciler) unavailableMessage() string {
+	return fmt.Sprintf("No cell took the session within %s. Shell sessions are not available for this instance right now.", r.claimTimeout())
 }
 
 // deliver returns the session's hub copy, creating it if the session has not
-// been delivered yet. It returns nil when the session cannot be delivered, in
+// been delivered yet. It returns nil when the session's instance is gone, in
 // which case it has ended the session.
 func (r *InstanceConsoleSessionReconciler) deliver(
 	ctx context.Context,
@@ -240,12 +319,12 @@ func (r *InstanceConsoleSessionReconciler) buildHubCopy(
 	}
 
 	labels := map[string]string{
-		locationLabel:                                  location,
-		sessionUIDLabel:                                string(session.UID),
-		sessionInstanceNameLabel:                       instance.Name,
-		computev1alpha.WorkloadDeploymentUIDLabel:      cellDeploymentUID,
-		downstreamclient.UpstreamOwnerClusterNameLabel: EncodeClusterName(string(clusterName)),
-		downstreamclient.UpstreamOwnerNamespaceLabel:   session.Namespace,
+		locationLabel: location,
+		computev1alpha.InstanceConsoleSessionUIDLabel:          string(session.UID),
+		computev1alpha.InstanceConsoleSessionInstanceNameLabel: instance.Name,
+		computev1alpha.WorkloadDeploymentUIDLabel:              cellDeploymentUID,
+		downstreamclient.UpstreamOwnerClusterNameLabel:         EncodeClusterName(string(clusterName)),
+		downstreamclient.UpstreamOwnerNamespaceLabel:           session.Namespace,
 	}
 	if class, ok := hubDeployment.Labels[computev1alpha.RuntimeClassLabel]; ok {
 		labels[computev1alpha.RuntimeClassLabel] = class
@@ -275,7 +354,7 @@ func (r *InstanceConsoleSessionReconciler) getHubCopy(
 		}
 		return nil, fmt.Errorf("failed getting hub session %s/%s: %w", hubNS, session.Name, err)
 	}
-	if hubCopy.Labels[sessionUIDLabel] != string(session.UID) {
+	if hubCopy.Labels[computev1alpha.InstanceConsoleSessionUIDLabel] != string(session.UID) {
 		return nil, nil
 	}
 	return &hubCopy, nil
@@ -330,7 +409,7 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 	projectClient client.Client,
 	session *computev1alpha.InstanceConsoleSession,
 ) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(session, instanceConsoleSessionFinalizer) {
+	if !controllerutil.ContainsFinalizer(session, computev1alpha.InstanceConsoleSessionFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	logger := log.FromContext(ctx)
@@ -375,7 +454,7 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 	}
 
 	patch := client.MergeFrom(session.DeepCopy())
-	controllerutil.RemoveFinalizer(session, instanceConsoleSessionFinalizer)
+	controllerutil.RemoveFinalizer(session, computev1alpha.InstanceConsoleSessionFinalizer)
 	if err := projectClient.Patch(ctx, session, patch); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, fmt.Errorf("failed removing finalizer: %w", err)
 	}
@@ -387,7 +466,7 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 // it, and the agent's orphan sweep stops any command still running for it.
 func (r *InstanceConsoleSessionReconciler) releaseHubCopy(ctx context.Context, hubCopy *computev1alpha.InstanceConsoleSession) error {
 	patch := client.MergeFromWithOptions(hubCopy.DeepCopy(), client.MergeFromWithOptimisticLock{})
-	if !controllerutil.RemoveFinalizer(hubCopy, shellAgentFinalizer) {
+	if !controllerutil.RemoveFinalizer(hubCopy, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
 		return nil
 	}
 	if err := r.FederationClient.Patch(ctx, hubCopy, patch); client.IgnoreNotFound(err) != nil {
@@ -401,6 +480,13 @@ func (r *InstanceConsoleSessionReconciler) cleanupTimeout() time.Duration {
 		return r.CleanupTimeout
 	}
 	return defaultSessionCleanupTimeout
+}
+
+func (r *InstanceConsoleSessionReconciler) claimTimeout() time.Duration {
+	if r.ClaimTimeout > 0 {
+		return r.ClaimTimeout
+	}
+	return DefaultSessionClaimTimeout
 }
 
 func (r *InstanceConsoleSessionReconciler) now() time.Time {

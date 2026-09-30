@@ -20,6 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -36,11 +37,17 @@ const (
 	testRuntimeClass    = "general-purpose"
 )
 
+var testSessionCreated = time.Date(2026, time.September, 29, 18, 0, 0, 0, time.UTC)
+
 type sessionTestEnv struct {
 	project    client.Client
 	hub        client.Client
 	reconciler *InstanceConsoleSessionReconciler
 	now        time.Time
+
+	// beforeHubStatusUpdate, when set, runs once just before the next status
+	// update reaches the hub, so a test can land a competing write first.
+	beforeHubStatusUpdate func()
 }
 
 func newSessionTestEnv(t *testing.T, projectObjs []client.Object, hubObjs []client.Object) *sessionTestEnv {
@@ -54,20 +61,28 @@ func newSessionTestEnv(t *testing.T, projectObjs []client.Object, hubObjs []clie
 		WithStatusSubresource(&computev1alpha.InstanceConsoleSession{}).
 		Build()
 
-	hub := fake.NewClientBuilder().
+	env := &sessionTestEnv{
+		project: project,
+		now:     testSessionCreated,
+	}
+	env.hub = fake.NewClientBuilder().
 		WithScheme(newKarmadaScheme()).
 		WithObjects(hubObjs...).
 		WithStatusSubresource(&computev1alpha.InstanceConsoleSession{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if hook := env.beforeHubStatusUpdate; hook != nil {
+					env.beforeHubStatusUpdate = nil
+					hook()
+				}
+				return c.SubResource(subResource).Update(ctx, obj, opts...)
+			},
+		}).
 		Build()
 
-	env := &sessionTestEnv{
-		project: project,
-		hub:     hub,
-		now:     time.Now(),
-	}
 	env.reconciler = &InstanceConsoleSessionReconciler{
 		mgr:               newFakeMCManager(testCluster, newFakeCluster(project)),
-		FederationClient:  hub,
+		FederationClient:  env.hub,
 		ReportingInstance: "compute-manager-0",
 		Now:               func() time.Time { return env.now },
 	}
@@ -136,7 +151,7 @@ func (e *sessionTestEnv) addAgentFinalizer(t *testing.T) {
 	t.Helper()
 	hubCopy, ok := e.hubSession(t)
 	require.True(t, ok)
-	controllerutil.AddFinalizer(hubCopy, shellAgentFinalizer)
+	controllerutil.AddFinalizer(hubCopy, computev1alpha.InstanceConsoleSessionAgentFinalizer)
 	require.NoError(t, e.hub.Update(context.Background(), hubCopy))
 }
 
@@ -145,16 +160,17 @@ func (e *sessionTestEnv) removeAgentFinalizer(t *testing.T) {
 	t.Helper()
 	hubCopy, ok := e.hubSession(t)
 	require.True(t, ok)
-	controllerutil.RemoveFinalizer(hubCopy, shellAgentFinalizer)
+	controllerutil.RemoveFinalizer(hubCopy, computev1alpha.InstanceConsoleSessionAgentFinalizer)
 	require.NoError(t, e.hub.Update(context.Background(), hubCopy))
 }
 
 func testSession() *computev1alpha.InstanceConsoleSession {
 	return &computev1alpha.InstanceConsoleSession{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      testSessionName,
-			Namespace: testProjNS,
-			UID:       testSessionUID,
+			Name:              testSessionName,
+			Namespace:         testProjNS,
+			UID:               testSessionUID,
+			CreationTimestamp: metav1.NewTime(testSessionCreated),
 			Annotations: map[string]string{
 				computev1alpha.InstanceConsoleSessionRequesterAnnotation: "alice@example.com",
 			},
@@ -235,19 +251,19 @@ func TestInstanceConsoleSessionDelivery(t *testing.T) {
 
 	session, ok := env.projectSession(t)
 	require.True(t, ok)
-	assert.Contains(t, session.Finalizers, instanceConsoleSessionFinalizer)
+	assert.Contains(t, session.Finalizers, computev1alpha.InstanceConsoleSessionFinalizer)
 	assert.Equal(t, testKarmadaNSStr, session.Annotations[computev1alpha.FederationNamespaceAnnotation])
 
 	hubCopy, ok := env.hubSession(t)
 	require.True(t, ok, "session should be copied into the deployment's hub namespace")
 	assert.Equal(t, map[string]string{
-		locationLabel:                                  testFederatorLocation,
-		computev1alpha.RuntimeClassLabel:               testRuntimeClass,
-		sessionUIDLabel:                                string(testSessionUID),
-		sessionInstanceNameLabel:                       testSessionInstance,
-		computev1alpha.WorkloadDeploymentUIDLabel:      testCellWDUID,
-		downstreamclient.UpstreamOwnerClusterNameLabel: EncodeClusterName(testCluster),
-		downstreamclient.UpstreamOwnerNamespaceLabel:   testProjNS,
+		locationLabel:                                          testFederatorLocation,
+		computev1alpha.RuntimeClassLabel:                       testRuntimeClass,
+		computev1alpha.InstanceConsoleSessionUIDLabel:          string(testSessionUID),
+		computev1alpha.InstanceConsoleSessionInstanceNameLabel: testSessionInstance,
+		computev1alpha.WorkloadDeploymentUIDLabel:              testCellWDUID,
+		downstreamclient.UpstreamOwnerClusterNameLabel:         EncodeClusterName(testCluster),
+		downstreamclient.UpstreamOwnerNamespaceLabel:           testProjNS,
 	}, hubCopy.Labels)
 	assert.Equal(t, session.Spec, hubCopy.Spec)
 
@@ -356,6 +372,170 @@ func TestInstanceConsoleSessionStatusCopy(t *testing.T) {
 	assert.Len(t, env.events(t), 1, "events are recorded once however often the session reconciles")
 }
 
+// claimOnHub claims the hub copy the way the shell agent does.
+func claimOnHub(env *sessionTestEnv, hubCopy *computev1alpha.InstanceConsoleSession) error {
+	connectBefore := metav1.NewTime(env.now.Add(time.Minute).Truncate(time.Second))
+	hubCopy.Status.Connection = &computev1alpha.InstanceConsoleSessionConnection{
+		EndpointID: "abcdef",
+		RelayURLs:  []string{"https://relay.example.com"},
+		Target:     "exec-agent-0.exec-agent.compute-shell-system.svc.cluster.local:7777",
+	}
+	hubCopy.Status.ConnectBefore = &connectBefore
+	apimeta.SetStatusCondition(&hubCopy.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.InstanceConsoleSessionReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             computev1alpha.InstanceConsoleSessionReasonSessionReady,
+		Message:            "Ready for a client",
+		LastTransitionTime: connectBefore,
+	})
+	return env.hub.Status().Update(context.Background(), hubCopy)
+}
+
+func (e *sessionTestEnv) reconcileErr() error {
+	_, err := e.reconciler.Reconcile(context.Background(), mcreconcile.Request{
+		ClusterName: testCluster,
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testProjNS, Name: testSessionName}},
+	})
+	return err
+}
+
+func TestInstanceConsoleSessionUnclaimedEndsUnavailable(t *testing.T) {
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+
+	result := env.reconcile(t)
+	assert.Equal(t, DefaultSessionClaimTimeout, result.RequeueAfter, "delivery waits for the claim deadline")
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout - time.Second)
+	result = env.reconcile(t)
+	assert.Equal(t, time.Second, result.RequeueAfter)
+	hubCopy, ok := env.hubSession(t)
+	require.True(t, ok)
+	assert.False(t, sessionEnded(hubCopy), "a copy is not ended before its deadline")
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout)
+	env.reconcile(t)
+
+	hubCopy, ok = env.hubSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, sessionReadyReason(hubCopy),
+		"the decision is made on the hub copy, where the agent claims")
+	require.NotNil(t, hubCopy.Status.EndedAt)
+
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, sessionReadyReason(session))
+	assert.False(t, session.DeletionTimestamp.IsZero(), "an ended session is deleted at once")
+
+	events := env.events(t)
+	ended, ok := events[EventReasonSessionEnded]
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, ended.Annotations[sessionEventReasonAnnotation])
+	assert.NotContains(t, events, EventReasonSessionStarted)
+
+	env.reconcile(t)
+	_, ok = env.hubSession(t)
+	assert.False(t, ok, "an unclaimed copy has no agent finalizer holding it")
+	_, ok = env.projectSession(t)
+	assert.False(t, ok)
+}
+
+func TestInstanceConsoleSessionClaimedIsNotUnavailable(t *testing.T) {
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconcile(t)
+
+	hubCopy, ok := env.hubSession(t)
+	require.True(t, ok)
+	require.NoError(t, claimOnHub(env, hubCopy))
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout + time.Minute)
+	result := env.reconcile(t)
+	assert.Zero(t, result.RequeueAfter, "a claimed session is the agent's to end")
+
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonSessionReady, sessionReadyReason(session))
+	assert.True(t, session.DeletionTimestamp.IsZero())
+}
+
+func TestInstanceConsoleSessionClaimWinsRaceWithUnavailable(t *testing.T) {
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconcile(t)
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout)
+	env.beforeHubStatusUpdate = func() {
+		hubCopy, ok := env.hubSession(t)
+		require.True(t, ok)
+		require.NoError(t, claimOnHub(env, hubCopy))
+	}
+	err := env.reconcileErr()
+	require.Error(t, err)
+	assert.True(t, apierrors.IsConflict(err), "the claim landed first, so ending the copy conflicts: %v", err)
+
+	hubCopy, ok := env.hubSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonSessionReady, sessionReadyReason(hubCopy))
+
+	env.reconcile(t)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonSessionReady, sessionReadyReason(session),
+		"the retry sees the claim and mirrors it")
+	assert.True(t, session.DeletionTimestamp.IsZero())
+	assert.NotContains(t, env.events(t), EventReasonSessionEnded)
+}
+
+func TestInstanceConsoleSessionUnavailableWinsRaceWithClaim(t *testing.T) {
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconcile(t)
+
+	agentView, ok := env.hubSession(t)
+	require.True(t, ok)
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout)
+	env.reconcile(t)
+
+	err := claimOnHub(env, agentView)
+	require.Error(t, err)
+	assert.True(t, apierrors.IsConflict(err), "a claim read before the copy ended must not overwrite it: %v", err)
+
+	hubCopy, ok := env.hubSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, sessionReadyReason(hubCopy))
+	assert.Nil(t, hubCopy.Status.Connection)
+}
+
+func TestInstanceConsoleSessionUndeliverableEndsUnavailable(t *testing.T) {
+	unfederated := testWorkloadDeployment()
+	env := newSessionTestEnv(t,
+		[]client.Object{testSession(), testSessionInstanceObj(), unfederated},
+		[]client.Object{testHubWD(testRuntimeClass)},
+	)
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout - time.Second)
+	require.Error(t, env.reconcileErr(), "delivery retries until the deadline")
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonPending, sessionReadyReason(session))
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout)
+	env.reconcile(t)
+
+	_, delivered := env.hubSession(t)
+	assert.False(t, delivered)
+	session, ok = env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, sessionReadyReason(session))
+	assert.False(t, session.DeletionTimestamp.IsZero())
+
+	ended, ok := env.events(t)[EventReasonSessionEnded]
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, ended.Annotations[sessionEventReasonAnnotation])
+
+	env.reconcile(t)
+	_, ok = env.projectSession(t)
+	assert.False(t, ok)
+}
+
 // endSessionOnHub moves the hub copy through a connection to a normal exit.
 func endSessionOnHub(t *testing.T, env *sessionTestEnv, exitCode int32) {
 	t.Helper()
@@ -395,6 +575,7 @@ func TestInstanceConsoleSessionImmediateCleanupWithConfirmation(t *testing.T) {
 	require.False(t, session.DeletionTimestamp.IsZero(), "an ended session is deleted once its end is on record")
 	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonCompleted, sessionReadyReason(session))
 
+	env.now = session.DeletionTimestamp.Time
 	result := env.reconcile(t)
 	hubCopy, ok := env.hubSession(t)
 	require.True(t, ok, "the agent's finalizer holds the hub copy")
@@ -454,13 +635,13 @@ func TestInstanceConsoleSessionIgnoresAnotherSessionsHubCopy(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testSessionName,
 			Namespace:  testKarmadaNSStr,
-			Labels:     map[string]string{sessionUIDLabel: "earlier-session"},
-			Finalizers: []string{shellAgentFinalizer},
+			Labels:     map[string]string{computev1alpha.InstanceConsoleSessionUIDLabel: "earlier-session"},
+			Finalizers: []string{computev1alpha.InstanceConsoleSessionAgentFinalizer},
 		},
 	}
 	session := testSession()
 	session.Annotations[computev1alpha.FederationNamespaceAnnotation] = testKarmadaNSStr
-	session.Finalizers = []string{instanceConsoleSessionFinalizer}
+	session.Finalizers = []string{computev1alpha.InstanceConsoleSessionFinalizer}
 
 	env := newSessionTestEnv(t,
 		[]client.Object{session, testSessionInstanceObj(), testFederatedProjectWD()},
@@ -474,7 +655,7 @@ func TestInstanceConsoleSessionIgnoresAnotherSessionsHubCopy(t *testing.T) {
 
 	hubCopy, ok := env.hubSession(t)
 	require.True(t, ok)
-	assert.Equal(t, "earlier-session", hubCopy.Labels[sessionUIDLabel])
+	assert.Equal(t, "earlier-session", hubCopy.Labels[computev1alpha.InstanceConsoleSessionUIDLabel])
 	assert.True(t, hubCopy.Status.Conditions == nil, "the earlier copy's status is not this session's")
 }
 
