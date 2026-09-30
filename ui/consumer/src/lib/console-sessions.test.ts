@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
   createErrorMessage,
+  SESSION_RESOURCE_TYPE,
+  sessionAllowance,
+  SESSIONS_NOT_ENABLED_MESSAGE,
   sessionProgress,
   TOO_MANY_SESSIONS_MESSAGE,
   type RawConsoleSession,
@@ -69,11 +72,52 @@ describe('sessionProgress', () => {
   });
 });
 
+describe('sessionAllowance', () => {
+  test('reads the limit of the session bucket', () => {
+    expect(
+      sessionAllowance({
+        items: [
+          { spec: { resourceType: 'compute.datumapis.com/instances' }, status: { limit: 50 } },
+          { spec: { resourceType: SESSION_RESOURCE_TYPE }, status: { limit: 0 } },
+        ],
+      })
+    ).toBe(0);
+  });
+
+  test('is unknown without a session bucket', () => {
+    expect(sessionAllowance({ items: [] })).toBeUndefined();
+    expect(sessionAllowance({})).toBeUndefined();
+  });
+
+  test('is unknown before the bucket reports a limit', () => {
+    expect(sessionAllowance({ items: [{ spec: { resourceType: SESSION_RESOURCE_TYPE } }] })).toBe(
+      undefined
+    );
+  });
+});
+
 describe('createErrorMessage', () => {
-  test('maps a quota denial to too many open sessions', () => {
+  const denial =
+    "You've reached your quota for this resource type (Insufficient quota resources.). Delete unused resources to free up capacity, or contact support to request a higher limit.";
+
+  test('maps a denial with no allowance to sessions not enabled', () => {
+    expect(createErrorMessage(403, denial, 0)).toBe(SESSIONS_NOT_ENABLED_MESSAGE);
+  });
+
+  test('maps a denial with an allowance to too many open sessions', () => {
+    expect(createErrorMessage(403, denial, 10)).toBe(TOO_MANY_SESSIONS_MESSAGE);
+  });
+
+  test('maps a denial with an unknown allowance to too many open sessions', () => {
     expect(
       createErrorMessage(403, 'instanceconsolesessions "x" is forbidden: Insufficient quota')
     ).toBe(TOO_MANY_SESSIONS_MESSAGE);
+  });
+
+  test('passes a quota check that is not a denial through', () => {
+    const timeout =
+      'Your request took too long to be checked against your quota. Please try again in a moment.';
+    expect(createErrorMessage(403, timeout)).toBe(timeout);
   });
 
   test('maps other forbidden responses to a permission message', () => {

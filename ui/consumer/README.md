@@ -31,8 +31,11 @@ mount root so URLs read `…/services/workloads/<workloadName>`, not
 - **Instance shell** (`…/instances/:instanceName/shell`) — an interactive
   shell in one of the instance's containers, through an
   `InstanceConsoleSession`. The tab appears only when the plugin was built
-  with the wasm client, the user may `create` `instanceconsolesessions`, and
-  the instance's runtime class (or the catalog default) declares the `exec`
+  with the wasm client, the user may `create` `instanceconsolesessions`, the
+  project's `compute.datumapis.com/instanceconsolesessions` allowance is not
+  zero (sessions are enabled per project by granting one; when the allowance
+  can't be read the tab shows and a create denial explains it), and the
+  instance's runtime class (or the catalog default) declares the `exec`
   feature, so it stays hidden until an environment publishes that feature.
   The connection runs in a Web Worker that loads the wasm client on first
   use and holds the session key; closing the shell or leaving the page
