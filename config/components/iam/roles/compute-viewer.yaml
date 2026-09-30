@@ -27,3 +27,9 @@ spec:
     - compute.datumapis.com/instanceconsolesessions.list
     - compute.datumapis.com/instanceconsolesessions.get
     - compute.datumapis.com/instanceconsolesessions.watch
+    # Sessions are enabled per project by quota, so the CLI and portal read the
+    # project's allowance to say whether shells are available before a create
+    # is refused.
+    - quota.miloapis.com/allowancebuckets.list
+    - quota.miloapis.com/allowancebuckets.get
+    - quota.miloapis.com/allowancebuckets.watch
