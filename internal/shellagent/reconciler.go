@@ -113,6 +113,13 @@ func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConso
 	if !ready {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
 	}
+	wait, err := a.claimDelay(ctx, session)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
 	target, rej, err := a.check(ctx, session)
 	if errors.Is(err, errNotInCell) {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil

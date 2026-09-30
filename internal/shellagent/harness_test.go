@@ -43,6 +43,7 @@ const (
 	testContainer      = "app"
 	testSession        = "s1"
 	testUID            = "uid-1"
+	testEndpointPod    = "exec-endpoint-0"
 )
 
 // clock is a settable time source shared by the agents in a test.
@@ -150,7 +151,9 @@ func (h *harness) agent(mutate ...func(*Config)) *Agent {
 	return a
 }
 
-// session creates a session's cell copy and returns the client's key.
+// session creates a session's cell copy and returns the client's key. The
+// copy was created long enough ago that any agent may claim it; justCreated
+// makes it new, so the cell's claim order applies.
 func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.InstanceConsoleSession)) ed25519.PrivateKey {
 	h.t.Helper()
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
@@ -158,7 +161,7 @@ func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.Insta
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         testNamespace,
-			CreationTimestamp: metav1.NewTime(h.clock.now()),
+			CreationTimestamp: metav1.NewTime(h.clock.now().Add(-time.Minute)),
 			Labels: map[string]string{
 				computev1alpha.InstanceConsoleSessionUIDLabel:          uid,
 				computev1alpha.InstanceConsoleSessionInstanceNameLabel: testInstance,
@@ -182,6 +185,10 @@ func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.Insta
 		h.t.Fatal(err)
 	}
 	return key
+}
+
+func (h *harness) justCreated(s *computev1alpha.InstanceConsoleSession) {
+	s.CreationTimestamp = metav1.NewTime(h.clock.now())
 }
 
 func (h *harness) cellSession(name string) *computev1alpha.InstanceConsoleSession {

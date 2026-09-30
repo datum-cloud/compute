@@ -77,8 +77,17 @@ func sessionWebhookSession() *computev1alpha.InstanceConsoleSession {
 	}
 }
 
+func newAdmittingSessionWebhook(t *testing.T) *instanceConsoleSessionWebhook {
+	t.Helper()
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceConsoleSessions, true)
+	return newSessionWebhook(
+		sessionWebhookInstance("general-purpose"),
+		sessionWebhookClass("general-purpose", runtimeclass.FeatureExec),
+	)
+}
+
 func TestInstanceConsoleSessionWebhookDefaultRecordsRequester(t *testing.T) {
-	w := newSessionWebhook()
+	w := newAdmittingSessionWebhook(t)
 	session := sessionWebhookSession()
 	session.Annotations = map[string]string{computev1alpha.InstanceConsoleSessionRequesterAnnotation: "someone-else"}
 
@@ -87,7 +96,7 @@ func TestInstanceConsoleSessionWebhookDefaultRecordsRequester(t *testing.T) {
 }
 
 func TestInstanceConsoleSessionWebhookDefaultAddsFinalizer(t *testing.T) {
-	w := newSessionWebhook()
+	w := newAdmittingSessionWebhook(t)
 	session := sessionWebhookSession()
 	session.Finalizers = []string{"example.com/other"}
 
@@ -142,14 +151,18 @@ func TestInstanceConsoleSessionWebhookValidateCreate(t *testing.T) {
 			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceConsoleSessions, !tt.gateOff)
 
 			w := newSessionWebhook(tt.objs...)
-			_, err := w.ValidateCreate(sessionWebhookContext("alice@example.com"), sessionWebhookSession())
-			if tt.wantErr == "" {
-				require.NoError(t, err)
-				return
+			ctx := sessionWebhookContext("alice@example.com")
+			_, validateErr := w.ValidateCreate(ctx, sessionWebhookSession())
+			defaultErr := w.Default(ctx, sessionWebhookSession())
+			for phase, err := range map[string]error{"validating": validateErr, "mutating": defaultErr} {
+				if tt.wantErr == "" {
+					require.NoError(t, err, phase)
+					continue
+				}
+				require.Error(t, err, "%s admission must refuse the session, because quota is claimed between the two phases", phase)
+				assert.True(t, apierrors.IsInvalid(err), "%s: want a 422 Invalid, got %v", phase, err)
+				assert.Contains(t, err.Error(), tt.wantErr, phase)
 			}
-			require.Error(t, err)
-			assert.True(t, apierrors.IsInvalid(err), "want a 422 Invalid, got %v", err)
-			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }

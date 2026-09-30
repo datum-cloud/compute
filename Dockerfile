@@ -29,6 +29,7 @@ RUN go mod download
 COPY cmd/main.go cmd/main.go
 COPY cmd/compute-mcp/ cmd/compute-mcp/
 COPY cmd/shell-agent/ cmd/shell-agent/
+COPY cmd/shell-endpoint-probe/ cmd/shell-endpoint-probe/
 COPY api/ api/
 COPY internal/ internal/
 COPY pkg/ pkg/
@@ -72,6 +73,15 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     -ldflags "-s -w" \
     -o shell-agent ./cmd/shell-agent
 
+# shell-endpoint-probe runs beside each tunnel endpoint and dials it the way a
+# session's client does, with the same client package, so the endpoint is
+# ready only while clients can reach it.
+RUN --mount=type=cache,target=/go/pkg/mod/ \
+  --mount=type=cache,target="/root/.cache/go-build" \
+  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w" \
+    -o shell-endpoint-probe ./cmd/shell-endpoint-probe
+
 # Use distroless as minimal base image to package the binaries
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 #
@@ -86,6 +96,7 @@ WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/compute-mcp .
 COPY --from=builder /workspace/shell-agent .
+COPY --from=builder /workspace/shell-endpoint-probe .
 USER 65532:65532
 
 # The manager keeps the entrypoint it has always had, so nothing that runs this

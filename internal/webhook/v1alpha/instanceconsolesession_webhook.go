@@ -45,12 +45,20 @@ var (
 	_ admission.Validator[*computev1alpha.InstanceConsoleSession] = &instanceConsoleSessionWebhook{}
 )
 
-// Default records the authenticated requester on the session and adds the
-// controller's finalizer, so a session deleted before the controller first sees
-// it still has its end recorded.
+// Default refuses a session that cannot run, then records the authenticated
+// requester on it and adds the controller's finalizer, so a session deleted
+// before the controller first sees it still has its end recorded.
+//
+// The project's quota is claimed after mutating admission and before
+// validating admission, so refusing here keeps a refused session from holding
+// quota until the claim is collected, and gives the requester the real reason
+// rather than a quota denial.
 func (w *instanceConsoleSessionWebhook) Default(ctx context.Context, session *computev1alpha.InstanceConsoleSession) error {
 	req, err := admission.RequestFromContext(ctx)
 	if err != nil {
+		return err
+	}
+	if err := w.validateCreate(ctx, session); err != nil {
 		return err
 	}
 	controllerutil.AddFinalizer(session, computev1alpha.InstanceConsoleSessionFinalizer)
@@ -61,19 +69,24 @@ func (w *instanceConsoleSessionWebhook) Default(ctx context.Context, session *co
 	return nil
 }
 
-// ValidateCreate implements admission.Validator.
+// ValidateCreate implements admission.Validator. It repeats Default's checks
+// against the session as every mutating webhook left it.
 func (w *instanceConsoleSessionWebhook) ValidateCreate(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (admission.Warnings, error) {
+	return nil, w.validateCreate(ctx, session)
+}
+
+func (w *instanceConsoleSessionWebhook) validateCreate(ctx context.Context, session *computev1alpha.InstanceConsoleSession) error {
 	opts := validation.InstanceConsoleSessionValidationOptions{}
 	if features.FeatureGate.Enabled(features.InstanceConsoleSessions) {
 		var err error
 		if opts, err = w.validationOptions(ctx, session); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if errs := validation.ValidateInstanceConsoleSessionCreate(session, opts); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(computev1alpha.GroupVersion.WithKind("InstanceConsoleSession").GroupKind(), session.Name, errs)
+		return apierrors.NewInvalid(computev1alpha.GroupVersion.WithKind("InstanceConsoleSession").GroupKind(), session.Name, errs)
 	}
-	return nil, nil
+	return nil
 }
 
 // ValidateUpdate implements admission.Validator. The webhook is not registered

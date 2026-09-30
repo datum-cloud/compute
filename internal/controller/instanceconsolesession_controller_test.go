@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -65,6 +66,7 @@ func newSessionTestEnv(t *testing.T, projectObjs []client.Object, hubObjs []clie
 		WithScheme(projectScheme).
 		WithObjects(projectObjs...).
 		WithStatusSubresource(&computev1alpha.InstanceConsoleSession{}).
+		WithInterceptorFuncs(interceptor.Funcs{Create: createLikeMiloEvents}).
 		Build()
 
 	env := &sessionTestEnv{
@@ -104,6 +106,24 @@ func newSessionTestEnv(t *testing.T, projectObjs []client.Object, hubObjs []clie
 		Now:               func() time.Time { return env.now },
 	}
 	return env
+}
+
+// createLikeMiloEvents stores events the way Milo's project events store does,
+// which accepts a second event with a name already taken, so a test sees every
+// event the controller records rather than an AlreadyExists that hides it.
+func createLikeMiloEvents(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+	err := c.Create(ctx, obj, opts...)
+	event, ok := obj.(*eventsv1.Event)
+	if !ok || !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	var list eventsv1.EventList
+	if err := c.List(ctx, &list, client.InNamespace(event.Namespace)); err != nil {
+		return err
+	}
+	event.Name = fmt.Sprintf("%s-%d", event.Name, len(list.Items))
+	event.ResourceVersion = ""
+	return c.Create(ctx, event, opts...)
 }
 
 func (e *sessionTestEnv) reconcile(t *testing.T) ctrl.Result {
@@ -437,6 +457,23 @@ func claimOnHub(t *testing.T, env *sessionTestEnv) {
 			Reason:             computev1alpha.InstanceConsoleSessionReasonSessionReady,
 			Message:            "Ready for a client",
 			LastTransitionTime: connectBefore,
+		})
+	})
+}
+
+// startOnHub writes the connected status onto the hub copy the way
+// aggregation does once a client connects.
+func startOnHub(t *testing.T, env *sessionTestEnv) {
+	t.Helper()
+	startedAt := metav1.NewTime(env.now.Truncate(time.Second))
+	env.setHubStatus(t, func(status *computev1alpha.InstanceConsoleSessionStatus) {
+		status.StartedAt = &startedAt
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               computev1alpha.InstanceConsoleSessionReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             computev1alpha.InstanceConsoleSessionReasonConnected,
+			Message:            "Connected",
+			LastTransitionTime: startedAt,
 		})
 	})
 }
@@ -1182,4 +1219,73 @@ func TestInstanceConsoleSessionEndWithoutStoppedProcessesTimesOut(t *testing.T) 
 	assert.False(t, ok)
 	_, ok = env.projectSession(t)
 	assert.False(t, ok)
+}
+
+func TestInstanceConsoleSessionRecordsEachEventOnce(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	startOnHub(t, env)
+	env.reconcile(t)
+	env.reconcile(t)
+	endOnHub(t, env, computev1alpha.InstanceConsoleSessionReasonCompleted, ptr.To(int32(0)))
+
+	for range 4 {
+		env.reconcile(t)
+	}
+
+	events := env.events(t)
+	assert.Contains(t, events, EventReasonSessionStarted)
+	assert.Contains(t, events, EventReasonSessionEnded)
+	_, ok := env.projectSession(t)
+	assert.False(t, ok)
+}
+
+func TestInstanceConsoleSessionStaleReconcileDoesNotRecordAgain(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	stale := endProjectSession(t, env)
+
+	require.NoError(t, env.reconciler.recordLifecycleEvents(context.Background(), env.project, stale.DeepCopy(), ""))
+	require.Contains(t, env.events(t), EventReasonSessionEnded)
+
+	err := env.reconciler.recordLifecycleEvents(context.Background(), env.project, stale, "")
+	assert.True(t, apierrors.IsConflict(err), "a reconcile working from a stale session must not record the end again, got %v", err)
+	env.events(t)
+}
+
+func TestInstanceConsoleSessionRetriesAnEventThatFailedToRecord(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	session := endProjectSession(t, env)
+
+	failing := interceptor.NewClient(env.project.(client.WithWatch), interceptor.Funcs{
+		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+			return errors.New("events store unavailable")
+		},
+	})
+	require.Error(t, env.reconciler.recordLifecycleEvents(context.Background(), failing, session, ""))
+	require.NotContains(t, env.events(t), EventReasonSessionEnded)
+
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	require.NoError(t, env.reconciler.recordLifecycleEvents(context.Background(), env.project, session, ""))
+	assert.Contains(t, env.events(t), EventReasonSessionEnded)
+	session, ok = env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, sessionEventRecorded, session.Annotations[sessionEventMarkerAnnotation(EventReasonSessionEnded)])
+}
+
+// endProjectSession ends the project session the way copying the cell's end
+// does, without reconciling, and returns it as a reconcile would read it.
+func endProjectSession(t *testing.T, env *sessionTestEnv) *computev1alpha.InstanceConsoleSession {
+	t.Helper()
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	apimeta.SetStatusCondition(&session.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.InstanceConsoleSessionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.InstanceConsoleSessionReasonCompleted,
+		Message:            "The command exited",
+		LastTransitionTime: metav1.NewTime(env.now.Truncate(time.Second)),
+	})
+	require.NoError(t, env.project.Status().Update(context.Background(), session))
+	require.NotContains(t, env.events(t), EventReasonSessionEnded)
+	return session
 }
