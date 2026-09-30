@@ -11,7 +11,7 @@
     "WorkloadDetail": "./src/pages/workload-detail.tsx",
     "InstanceDetail": "./src/pages/instance-detail.tsx",
     "InstanceShellWindow": "./src/pages/instance-shell-window.tsx",
-    "TryDemoHomeCard": "./src/cards/try-demo-home-card.tsx"
+    "WorkloadsHomeColumn": "./src/cards/workloads-home-column.tsx"
   },
   "extensions": [
     {
@@ -94,16 +94,14 @@
       }
     },
     {
-      "type": "portal.card/project-home",
+      "type": "portal.column/project-home",
       "properties": {
-        "title": "New In Compute",
+        "title": "Workloads",
+        "path": "/",
         "component": {
-          "$codeRef": "TryDemoHomeCard"
+          "$codeRef": "WorkloadsHomeColumn"
         },
-        "order": 50
-      },
-      "requirements": {
-        "serviceRef": "compute.datumapis.com"
+        "order": 10
       }
     }
   ]

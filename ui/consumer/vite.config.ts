@@ -123,7 +123,7 @@ export default defineConfig({
         './WorkloadDetail': './src/pages/workload-detail.tsx',
         './InstanceDetail': './src/pages/instance-detail.tsx',
         './InstanceShellWindow': './src/pages/instance-shell-window.tsx',
-        './TryDemoHomeCard': './src/cards/try-demo-home-card.tsx',
+        './WorkloadsHomeColumn': './src/cards/workloads-home-column.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
       // (react 19, react-router 8, react-query 5) — cloud-portal moved
