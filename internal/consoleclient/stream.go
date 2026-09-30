@@ -35,11 +35,15 @@ const (
 
 	maxFrameSize = 16 << 20
 
+	outputQueue = 64
+
 	statusSuccess         = "Success"
 	statusFailure         = "Failure"
 	reasonNonZeroExitCode = "NonZeroExitCode"
 	causeExitCode         = "ExitCode"
 )
+
+var keepaliveInterval = 5 * time.Second
 
 // Result is how a session ended. Reason is empty when the command exited on its
 // own, and ExitCode then carries its code. Otherwise the platform ended the
@@ -157,7 +161,22 @@ func (s *Stream) send(channel byte, data []byte) error {
 
 // Wait copies the command's output until the session ends and reports how it
 // ended. An error means the stream broke before the agent reported an ending.
+//
+// Wait keeps reading while stdout or stderr is slow, so the agent's pings are
+// answered and a paused terminal does not end the session.
 func (s *Stream) Wait(stdout, stderr io.Writer) (Result, error) {
+	out := make(chan []byte, outputQueue)
+	delivered := make(chan error, 1)
+	go func() { delivered <- s.deliver(out, stdout, stderr) }()
+	res, err := s.read(out)
+	close(out)
+	if werr := <-delivered; werr != nil {
+		return Result{}, werr
+	}
+	return res, err
+}
+
+func (s *Stream) read(out chan<- []byte) (Result, error) {
 	for {
 		_, msg, err := s.ws.ReadMessage()
 		if err != nil {
@@ -167,20 +186,52 @@ func (s *Stream) Wait(stdout, stderr io.Writer) (Result, error) {
 			continue
 		}
 		switch msg[0] {
-		case channelStdout:
-			if _, err := stdout.Write(msg[1:]); err != nil {
-				return Result{}, err
-			}
-		case channelStderr:
-			if _, err := stderr.Write(msg[1:]); err != nil {
-				return Result{}, err
-			}
+		case channelStdout, channelStderr:
+			s.enqueue(out, msg)
 		case channelStatus:
 			res, err := parseStatus(msg[1:])
 			s.closeNormally()
 			return res, err
 		}
 	}
+}
+
+// enqueue hands msg to the output writer. While the writer is blocked, reading
+// stops, so unsolicited pongs tell the agent this client is still here.
+func (s *Stream) enqueue(out chan<- []byte, msg []byte) {
+	select {
+	case out <- msg:
+		return
+	default:
+	}
+	t := time.NewTicker(keepaliveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case out <- msg:
+			return
+		case <-t.C:
+			_ = s.ws.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second))
+		}
+	}
+}
+
+func (s *Stream) deliver(out <-chan []byte, stdout, stderr io.Writer) error {
+	var failed error
+	for msg := range out {
+		if failed != nil {
+			continue
+		}
+		w := stdout
+		if msg[0] == channelStderr {
+			w = stderr
+		}
+		if _, err := w.Write(msg[1:]); err != nil {
+			failed = err
+			_ = s.ws.Close()
+		}
+	}
+	return failed
 }
 
 func (s *Stream) closeNormally() {
