@@ -130,37 +130,58 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 	return result, nil
 }
 
-// reconcileDelivery delivers a session that has not ended, ends it as
-// Unavailable when no cell claims it by its claim deadline, and mirrors the hub
-// copy's status onto it.
+// reconcileDelivery delivers a session that has not ended and mirrors its hub
+// copy's status onto it. It ends the session when its instance is gone, when
+// no cell claims it by its claim deadline, and when its hub copy goes away
+// before the session ends.
 func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 	ctx context.Context,
 	clusterName multicluster.ClusterName,
 	projectClient client.Client,
 	session *computev1alpha.InstanceConsoleSession,
 ) (ctrl.Result, error) {
-	deadline := session.CreationTimestamp.Add(r.claimTimeout())
+	claimDeadline := session.CreationTimestamp.Add(r.claimTimeout())
 
-	hubCopy, deliverErr := r.deliver(ctx, clusterName, projectClient, session)
-	if deliverErr != nil {
-		if r.now().Before(deadline) {
-			return ctrl.Result{}, deliverErr
+	hubCopy, err := r.recordedHubCopy(ctx, session)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if hubCopy != nil && sessionEnded(hubCopy) {
+		return ctrl.Result{}, r.copyStatus(ctx, projectClient, session, hubCopy)
+	}
+
+	var instance computev1alpha.Instance
+	instanceKey := types.NamespacedName{Namespace: session.Namespace, Name: session.Spec.InstanceRef.Name}
+	if err := projectClient.Get(ctx, instanceKey, &instance); client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, fmt.Errorf("failed getting instance %s: %w", instanceKey, err)
+	}
+	if instance.UID != session.Spec.InstanceRef.UID || !instance.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.endSession(ctx, projectClient, session,
+			computev1alpha.InstanceConsoleSessionReasonInstanceNotFound,
+			fmt.Sprintf("Instance %q was deleted or replaced.", session.Spec.InstanceRef.Name))
+	}
+
+	if hubCopy == nil {
+		if sessionClaimed(session) {
+			return ctrl.Result{}, r.endSession(ctx, projectClient, session,
+				computev1alpha.InstanceConsoleSessionReasonAgentLost,
+				"The session's copy on the cell was removed before the session ended.")
 		}
-		var err error
-		if hubCopy, err = r.recordedHubCopy(ctx, session); err != nil {
-			return ctrl.Result{}, err
-		}
-		if hubCopy == nil {
-			log.FromContext(ctx).Error(deliverErr, "ending session no cell could receive in time")
+		if !r.now().Before(claimDeadline) {
+			log.FromContext(ctx).Info("ending session no cell could receive in time")
 			return ctrl.Result{}, r.endSession(ctx, projectClient, session,
 				computev1alpha.InstanceConsoleSessionReasonUnavailable, r.unavailableMessage())
 		}
-	}
-	if hubCopy == nil {
-		return ctrl.Result{}, nil
+		if hubCopy, err = r.deliver(ctx, clusterName, projectClient, session, &instance); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
-	wait, err := r.endUnclaimed(ctx, hubCopy, deadline)
+	if !hubCopy.DeletionTimestamp.IsZero() {
+		return r.reconcileTerminatingHubCopy(ctx, projectClient, session, hubCopy, claimDeadline)
+	}
+
+	wait, err := r.endUnclaimed(ctx, hubCopy, claimDeadline)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -168,6 +189,49 @@ func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: wait}, nil
+}
+
+// reconcileTerminatingHubCopy handles a hub copy deleted while its session is
+// still open, as happens when the hub deployment that owns it is replaced. The
+// session waits as long as a deleted session waits for the cell to confirm
+// cleanup, or only until its claim deadline if no cell claimed it, and then
+// releases the copy and ends.
+func (r *InstanceConsoleSessionReconciler) reconcileTerminatingHubCopy(
+	ctx context.Context,
+	projectClient client.Client,
+	session *computev1alpha.InstanceConsoleSession,
+	hubCopy *computev1alpha.InstanceConsoleSession,
+	claimDeadline time.Time,
+) (ctrl.Result, error) {
+	if err := r.copyStatus(ctx, projectClient, session, hubCopy); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	claimed := sessionClaimed(session)
+	deadline := hubCopy.DeletionTimestamp.Add(r.cleanupTimeout())
+	if !claimed && claimDeadline.Before(deadline) {
+		deadline = claimDeadline
+	}
+	if wait := deadline.Sub(r.now()); wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
+
+	if controllerutil.ContainsFinalizer(hubCopy, computev1alpha.InstanceConsoleSessionAgentFinalizer) {
+		if err := r.recordCleanupUnconfirmed(ctx, projectClient, session); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.releaseHubCopy(ctx, hubCopy); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if !claimed {
+		return ctrl.Result{}, r.endSession(ctx, projectClient, session,
+			computev1alpha.InstanceConsoleSessionReasonUnavailable, r.unavailableMessage())
+	}
+	return ctrl.Result{}, r.endSession(ctx, projectClient, session,
+		computev1alpha.InstanceConsoleSessionReasonAgentLost,
+		"The session's copy on the cell was removed and the cell did not report the session's end.")
 }
 
 // endUnclaimed ends a hub copy no cell has claimed by the deadline, and
@@ -221,34 +285,15 @@ func (r *InstanceConsoleSessionReconciler) unavailableMessage() string {
 	return fmt.Sprintf("No cell took the session within %s. Shell sessions are not available for this instance right now.", r.claimTimeout())
 }
 
-// deliver returns the session's hub copy, creating it if the session has not
-// been delivered yet. It returns nil when the session's instance is gone, in
-// which case it has ended the session.
+// deliver creates the session's hub copy and returns it.
 func (r *InstanceConsoleSessionReconciler) deliver(
 	ctx context.Context,
 	clusterName multicluster.ClusterName,
 	projectClient client.Client,
 	session *computev1alpha.InstanceConsoleSession,
+	instance *computev1alpha.Instance,
 ) (*computev1alpha.InstanceConsoleSession, error) {
-	if hubNS := session.Annotations[computev1alpha.FederationNamespaceAnnotation]; hubNS != "" {
-		hubCopy, err := r.getHubCopy(ctx, hubNS, session)
-		if err != nil || hubCopy != nil {
-			return hubCopy, err
-		}
-	}
-
-	var instance computev1alpha.Instance
-	instanceKey := types.NamespacedName{Namespace: session.Namespace, Name: session.Spec.InstanceRef.Name}
-	if err := projectClient.Get(ctx, instanceKey, &instance); client.IgnoreNotFound(err) != nil {
-		return nil, fmt.Errorf("failed getting instance %s: %w", instanceKey, err)
-	}
-	if instance.UID != session.Spec.InstanceRef.UID || !instance.DeletionTimestamp.IsZero() {
-		return nil, r.endSession(ctx, projectClient, session,
-			computev1alpha.InstanceConsoleSessionReasonInstanceNotFound,
-			fmt.Sprintf("Instance %q was deleted or replaced before the session started.", session.Spec.InstanceRef.Name))
-	}
-
-	hubCopy, hubDeployment, err := r.buildHubCopy(ctx, clusterName, projectClient, session, &instance)
+	hubCopy, hubDeployment, err := r.buildHubCopy(ctx, clusterName, projectClient, session, instance)
 	if err != nil {
 		return nil, err
 	}
@@ -499,6 +544,11 @@ func (r *InstanceConsoleSessionReconciler) now() time.Time {
 // sessionEnded reports whether the session has reached its terminal state.
 func sessionEnded(session *computev1alpha.InstanceConsoleSession) bool {
 	return apimeta.IsStatusConditionFalse(session.Status.Conditions, computev1alpha.InstanceConsoleSessionReady)
+}
+
+// sessionClaimed reports whether a cell has claimed the session.
+func sessionClaimed(session *computev1alpha.InstanceConsoleSession) bool {
+	return session.Status.Connection != nil || session.Status.StartedAt != nil
 }
 
 // sessionStarted reports whether a client connected and the command started.

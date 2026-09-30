@@ -536,6 +536,181 @@ func TestInstanceConsoleSessionUndeliverableEndsUnavailable(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// deleteHubCopy deletes the hub copy the way a cascade from its hub deployment
+// does, and returns it as it is while terminating.
+func (e *sessionTestEnv) deleteHubCopy(t *testing.T) *computev1alpha.InstanceConsoleSession {
+	t.Helper()
+	hubCopy, ok := e.hubSession(t)
+	require.True(t, ok)
+	require.NoError(t, e.hub.Delete(context.Background(), hubCopy))
+	hubCopy, _ = e.hubSession(t)
+	return hubCopy
+}
+
+// newClaimedSessionEnv delivers a session, lets the agent claim it and hold its
+// finalizer, and mirrors the claim onto the project session.
+func newClaimedSessionEnv(t *testing.T) *sessionTestEnv {
+	t.Helper()
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconcile(t)
+	env.addAgentFinalizer(t)
+	hubCopy, ok := env.hubSession(t)
+	require.True(t, ok)
+	require.NoError(t, claimOnHub(env, hubCopy))
+	env.reconcile(t)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	require.NotNil(t, session.Status.Connection)
+	return env
+}
+
+func TestInstanceConsoleSessionTerminatingHubCopyEndsAfterCleanupTimeout(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	hubCopy := env.deleteHubCopy(t)
+	require.NotNil(t, hubCopy, "the agent's finalizer holds the copy")
+
+	env.now = hubCopy.DeletionTimestamp.Add(defaultSessionCleanupTimeout - time.Second)
+	result := env.reconcile(t)
+	assert.Equal(t, time.Second, result.RequeueAfter, "a claimed session waits for the cell as long as a deleted one does")
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.False(t, sessionEnded(session))
+
+	env.now = hubCopy.DeletionTimestamp.Add(defaultSessionCleanupTimeout)
+	env.reconcile(t)
+
+	_, ok = env.hubSession(t)
+	assert.False(t, ok, "the agent's finalizer is released so the copy goes")
+	session, ok = env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonAgentLost, sessionReadyReason(session))
+	assert.False(t, session.DeletionTimestamp.IsZero(), "an ended session is deleted at once, releasing its quota")
+
+	events := env.events(t)
+	assert.Contains(t, events, EventReasonCleanupUnconfirmed)
+	ended, ok := events[EventReasonSessionEnded]
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonAgentLost, ended.Annotations[sessionEventReasonAnnotation])
+
+	env.reconcile(t)
+	_, ok = env.projectSession(t)
+	assert.False(t, ok)
+}
+
+func TestInstanceConsoleSessionTerminatingUnclaimedHubCopyEndsAtClaimDeadline(t *testing.T) {
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconcile(t)
+	env.addAgentFinalizer(t)
+	env.deleteHubCopy(t)
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout - time.Second)
+	result := env.reconcile(t)
+	assert.Equal(t, time.Second, result.RequeueAfter)
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout)
+	env.reconcile(t)
+
+	_, ok := env.hubSession(t)
+	assert.False(t, ok)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, sessionReadyReason(session))
+	ended, ok := env.events(t)[EventReasonSessionEnded]
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, ended.Annotations[sessionEventReasonAnnotation])
+}
+
+func TestInstanceConsoleSessionVanishedHubCopyEndsClaimedSession(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	env.removeAgentFinalizer(t)
+	require.Nil(t, env.deleteHubCopy(t))
+
+	env.reconcile(t)
+
+	_, redelivered := env.hubSession(t)
+	assert.False(t, redelivered, "a claimed session is never delivered twice")
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonAgentLost, sessionReadyReason(session))
+	assert.False(t, session.DeletionTimestamp.IsZero())
+	ended, ok := env.events(t)[EventReasonSessionEnded]
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonAgentLost, ended.Annotations[sessionEventReasonAnnotation])
+}
+
+func TestInstanceConsoleSessionVanishedUnclaimedHubCopyIsRedelivered(t *testing.T) {
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconcile(t)
+	require.Nil(t, env.deleteHubCopy(t))
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout / 2)
+	result := env.reconcile(t)
+	assert.Equal(t, DefaultSessionClaimTimeout/2, result.RequeueAfter, "the claim deadline still counts from creation")
+	_, ok := env.hubSession(t)
+	assert.True(t, ok)
+}
+
+func TestInstanceConsoleSessionReplacedInstanceEndsDeliveredSession(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+
+	instance := testSessionInstanceObj()
+	require.NoError(t, env.project.Delete(context.Background(), instance))
+	instance.ResourceVersion = ""
+	instance.UID = "replacement-uid"
+	require.NoError(t, env.project.Create(context.Background(), instance))
+
+	env.reconcile(t)
+
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonInstanceNotFound, sessionReadyReason(session))
+	assert.False(t, session.DeletionTimestamp.IsZero())
+	ended, ok := env.events(t)[EventReasonSessionEnded]
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonInstanceNotFound, ended.Annotations[sessionEventReasonAnnotation])
+}
+
+func TestInstanceConsoleSessionWithoutLocationEndsUnavailable(t *testing.T) {
+	hubWD := testHubWD(testRuntimeClass)
+	delete(hubWD.Labels, locationLabel)
+	env := newSessionTestEnv(t,
+		[]client.Object{testSession(), testSessionInstanceObj(), testFederatedProjectWD()},
+		[]client.Object{hubWD},
+	)
+
+	require.Error(t, env.reconcileErr(), "a copy without a location no agent could write is never delivered")
+	_, delivered := env.hubSession(t)
+	assert.False(t, delivered)
+
+	env.now = testSessionCreated.Add(DefaultSessionClaimTimeout)
+	env.reconcile(t)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonUnavailable, sessionReadyReason(session))
+}
+
+func TestInstanceConsoleSessionDeletedBeforeFirstReconcileRecordsEnd(t *testing.T) {
+	session := testSession()
+	session.Finalizers = []string{computev1alpha.InstanceConsoleSessionFinalizer}
+	env := newSessionTestEnv(t,
+		[]client.Object{session, testSessionInstanceObj(), testFederatedProjectWD()},
+		[]client.Object{testHubWD(testRuntimeClass)},
+	)
+	stored, ok := env.projectSession(t)
+	require.True(t, ok)
+	require.NoError(t, env.project.Delete(context.Background(), stored))
+
+	env.reconcile(t)
+
+	ended, ok := env.events(t)[EventReasonSessionEnded]
+	require.True(t, ok, "the finalizer added at admission holds the session until its end is recorded")
+	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonRevoked, ended.Annotations[sessionEventReasonAnnotation])
+	_, ok = env.projectSession(t)
+	assert.False(t, ok)
+	_, delivered := env.hubSession(t)
+	assert.False(t, delivered)
+}
+
 // endSessionOnHub moves the hub copy through a connection to a normal exit.
 func endSessionOnHub(t *testing.T, env *sessionTestEnv, exitCode int32) {
 	t.Helper()
