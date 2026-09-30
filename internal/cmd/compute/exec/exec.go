@@ -123,6 +123,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	if err != nil {
 		return fmt.Errorf("generating session key: %w", err)
 	}
+	defer clear(key)
 
 	session, err := createSession(ctx, c, opts, tty, consolesession.PublicKey(key))
 	if err != nil {
@@ -139,6 +140,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	if err != nil {
 		return interrupted(ctx, fmt.Errorf("connecting to the session: %w", err))
 	}
+	defer func() { _ = stream.Close() }()
 	go func() {
 		<-ctx.Done()
 		_ = stream.Close()
