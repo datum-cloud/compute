@@ -33,6 +33,11 @@ func ProjectControlPlaneURL(apiHost, projectID string) string {
 
 // NewClient builds a Kubernetes client targeting the project's virtual control plane.
 func NewClient(project string) (client.Client, error) {
+	return NewWatchClient(project)
+}
+
+// NewWatchClient is NewClient for callers that also watch resources.
+func NewWatchClient(project string) (client.WithWatch, error) {
 	if project == "" {
 		return nil, fmt.Errorf("no project set — pass --project or run 'datumctl config set project <name>'")
 	}
@@ -69,7 +74,7 @@ func NewClient(project string) (client.Client, error) {
 		BearerToken: token,
 	}
 
-	return client.New(cfg, client.Options{Scheme: scheme})
+	return client.NewWithWatch(cfg, client.Options{Scheme: scheme})
 }
 
 // NewPlatformClient builds a Kubernetes client targeting the platform API server
