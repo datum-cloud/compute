@@ -130,7 +130,12 @@ func Start(ctx context.Context, conn net.Conn, key ed25519.PrivateKey, sessionUI
 		return nil, fmt.Errorf("agent speaks %q, want %q", ws.Subprotocol(), consolesession.SubProtocol)
 	}
 	ws.SetReadLimit(maxFrameSize)
-	return &Stream{ws: ws}, nil
+	s := &Stream{ws: ws}
+	ws.SetPingHandler(func(data string) error {
+		_ = s.pong([]byte(data))
+		return nil
+	})
+	return s, nil
 }
 
 // Write sends p to the command's standard input.
@@ -224,7 +229,7 @@ func (s *Stream) enqueue(out chan<- []byte, msg []byte) {
 		case out <- msg:
 			return
 		case <-t.C:
-			_ = s.ws.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second))
+			_ = s.pong(nil)
 		}
 	}
 }
@@ -245,6 +250,14 @@ func (s *Stream) deliver(out <-chan []byte, stdout, stderr io.Writer) error {
 		}
 	}
 	return failed
+}
+
+// pong answers a ping, or tells the agent the client is still here when data
+// is nil. It shares the write lock so it never interleaves with a message.
+func (s *Stream) pong(data []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.ws.WriteControl(websocket.PongMessage, data, time.Now().Add(time.Second))
 }
 
 func (s *Stream) closeNormally() {

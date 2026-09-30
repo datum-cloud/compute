@@ -241,3 +241,64 @@ func waitFor(t *testing.T, b *lockedBuffer, want string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Input, resizes and keepalive pongs sent at once while output is backed up
+// must each arrive whole.
+func TestKeepaliveInterleavesWithInput(t *testing.T) {
+	keepaliveInterval = time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = 5 * time.Second })
+
+	const writes = 300
+	chunk := strings.Repeat("k", 1000)
+	release := make(chan struct{})
+	sent := make(chan struct{})
+	s := startScripted(t, func(ws *websocket.Conn, pongs <-chan struct{}, stdin <-chan []byte) {
+		for i := 0; i < outputQueue+4; i++ {
+			send(t, ws, channelStdout, "x")
+		}
+		got := 0
+		for b := range stdin {
+			if string(b) != chunk {
+				t.Errorf("stdin message %d = %d bytes, want %d", got, len(b), len(chunk))
+				return
+			}
+			if got++; got == writes {
+				break
+			}
+		}
+		awaitPong(t, pongs, "while output is backed up")
+		<-sent
+		close(release)
+		send(t, ws, channelStatus, `{"status":"Success"}`)
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < writes; i++ {
+			if _, err := s.Write([]byte(chunk)); err != nil {
+				t.Errorf("Write() error = %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < writes; i++ {
+			if err := s.Resize(uint16(80+i%10), 24); err != nil {
+				t.Errorf("Resize() error = %v", err)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(sent)
+	}()
+
+	if _, err := s.Wait(&blockingWriter{release: release}, io.Discard); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+}
