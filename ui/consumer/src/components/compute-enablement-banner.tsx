@@ -5,6 +5,9 @@
  * "Enable Compute" button creates the same ServiceEntitlement object that
  * `datumctl compute deploy`'s "Would you like to request access?" prompt
  * does, so a request made here shows up identically to one made via the CLI.
+ *
+ * The `compact` variant is the same states and wording, sized for the
+ * project home page's Workloads column.
  */
 import { Banner } from './cli-section';
 import { useRequestComputeAccess, type EntitlementPhase } from '../lib/api';
@@ -43,7 +46,15 @@ function bannerState(phase: EntitlementPhase | null): BannerState {
   return 'NotRequested';
 }
 
-export function ComputeEnablementBanner({ projectId, phase }: { projectId: string; phase: EntitlementPhase | null }) {
+export function ComputeEnablementBanner({
+  projectId,
+  phase,
+  compact = false,
+}: {
+  projectId: string;
+  phase: EntitlementPhase | null;
+  compact?: boolean;
+}) {
   const { mutate, isPending } = useRequestComputeAccess(projectId);
   const state = bannerState(phase);
   const copy = COPY[state];
@@ -55,19 +66,37 @@ export function ComputeEnablementBanner({ projectId, phase }: { projectId: strin
     });
   };
 
+  const action = state !== 'PendingApproval' && (
+    <Button
+      loading={isPending}
+      disabled={isPending}
+      size={compact ? 'small' : undefined}
+      onClick={handleClick}
+    >
+      {copy.cta}
+    </Button>
+  );
+
+  if (compact) {
+    return (
+      <div
+        className="bg-muted/40 border-input flex min-h-24 flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-5 text-center"
+        data-testid="compute-plugin-enablement-compact"
+      >
+        <p className="text-sm font-medium">{copy.title}</p>
+        <p className="text-muted-foreground text-xs">{copy.description}</p>
+        {action}
+      </div>
+    );
+  }
+
   return (
     <Banner
       testId="compute-plugin-enablement-banner"
       icon={copy.icon}
       title={copy.title}
       description={copy.description}
-      actions={
-        state !== 'PendingApproval' && (
-          <Button loading={isPending} disabled={isPending} onClick={handleClick}>
-            {copy.cta}
-          </Button>
-        )
-      }
+      actions={action}
     />
   );
 }

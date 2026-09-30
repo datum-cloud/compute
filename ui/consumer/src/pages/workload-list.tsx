@@ -673,7 +673,7 @@ export default function WorkloadList() {
   const goToDemoWorkload = () =>
     demoDialog.goToWorkload((name) => navigate(workloadHref(name)));
 
-  // `?tryDemo=1` arrives from the project-home card / top-header hint, which
+  // `?tryDemo=1` arrives from the project-home Workloads column / top-header hint, which
   // link here from elsewhere in the project rather than opening the dialog
   // themselves (it lives on this page). Pop it once, then strip the param so
   // a refresh or the browser back button doesn't reopen it.
