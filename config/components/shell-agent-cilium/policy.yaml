@@ -56,6 +56,13 @@ spec:
   enableDefaultDeny:
     ingress: true
     egress: true
+  ingress:
+    - fromEntities:
+        - host
+      toPorts:
+        - ports:
+            - port: "8082"
+              protocol: TCP
   egress:
     - toEndpoints:
         - matchLabels:

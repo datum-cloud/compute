@@ -140,8 +140,8 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
   limits command execution to one hour
 - **Per-instance limit:** At most three sessions can run in an instance at once
 - **Session quota:** The quota system limits how many sessions a project can
-  hold open, checked when a session is created. The default is zero, so a
-  project can open sessions only once it is granted an allowance
+  hold open, checked when a session is created. Every project can hold ten
+  open by default, and a grant raises or lowers that for one project
 - **Isolation:** Cell network policy lets the tunnel endpoint reach only its
   agent
 
@@ -261,9 +261,14 @@ A session moves through `Pending`, `SessionReady` and `Connected`, then reaches
 one immutable terminal state. Terminal reasons are `Completed`, `Expired`,
 `Revoked`, `NotConnected`, `AgentShutdown`, `AgentLost`, `TooManySessions`,
 `NoShell`, `CommandUnavailable`, `InstanceNotRunning`, `InstanceNotFound`,
-`Invalid`, `Unavailable` and `Disconnected`. `Unavailable` ends a session that
-no cell takes within 30 seconds. `Disconnected` ends a session whose client
-went away before the command exited; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
+`Invalid`, `Unavailable`, `Disconnected` and `ClosedByUser`. `Unavailable`
+ends a session that no cell takes within 30 seconds. `ClosedByUser` ends a
+session whose client closed it on purpose before the command exited, by
+sending a WebSocket close frame; the portal's Close shell and `datumctl` on an
+interrupt do. The client reports `ClosedByUser`, so it is advisory: it cannot
+hide a revoke, an expiry or any other ending the platform starts, because
+those take precedence. `Disconnected` ends a session whose connection was lost without
+one; the agent notices within 20 seconds. The client uses the condition reason to distinguish a session
 waiting for a connection from one whose command is running. `AgentLost` also
 covers a session whose bound cell stops reporting altogether — deregistered,
 or the instance moved to another cell. That session ends and its reservation
@@ -486,8 +491,8 @@ creation, quota release, reservation release and agent failover.
 - `exec` on the general-purpose runtime class; for unikernel instances later,
   `exec` on that class and the Unikraft provider exec policy set to `always`.
 - The session-create permission added to the default project-admin role.
-- A quota claim policy for sessions with a default allowance of zero, and quota
-  grants for the projects in preview.
+- A quota claim policy for sessions with a default allowance of ten open
+  sessions per project.
 - An activity policy that maps session creation and lifecycle events into the
   project activity log.
 - A released container image of the Datum Connect CLI, including the fix that

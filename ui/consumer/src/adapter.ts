@@ -54,6 +54,7 @@ interface RawRuntime {
   };
   sandbox?: { containers?: RawSandboxContainer[] };
   virtualMachine?: unknown;
+  class?: string;
 }
 
 // ── Workload ─────────────────────────────────────────────────────────────
@@ -465,6 +466,10 @@ export function toInstance(raw: RawInstance): Instance {
     memory,
     image: container?.image,
     ports: (container?.ports ?? []).map((p) => `${p.port}/${p.protocol ?? 'TCP'}`),
+    containers: (raw.spec?.runtime?.sandbox?.containers ?? []).flatMap((c) =>
+      c.name ? [c.name] : []
+    ),
+    runtimeClass: raw.spec?.runtime?.class || undefined,
     status: deriveInstanceStatus(conditions),
     externalIP: assignments?.externalIP,
     internalIP: assignments?.networkIP,

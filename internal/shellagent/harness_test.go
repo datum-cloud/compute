@@ -43,6 +43,7 @@ const (
 	testContainer      = "app"
 	testSession        = "s1"
 	testUID            = "uid-1"
+	testEndpointPod    = "exec-endpoint-0"
 )
 
 // clock is a settable time source shared by the agents in a test.
@@ -150,7 +151,9 @@ func (h *harness) agent(mutate ...func(*Config)) *Agent {
 	return a
 }
 
-// session creates a session's cell copy and returns the client's key.
+// session creates a session's cell copy and returns the client's key. The
+// copy was created long enough ago that any agent may claim it; justCreated
+// makes it new, so the cell's claim order applies.
 func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.InstanceConsoleSession)) ed25519.PrivateKey {
 	h.t.Helper()
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
@@ -158,7 +161,7 @@ func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.Insta
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         testNamespace,
-			CreationTimestamp: metav1.NewTime(h.clock.now()),
+			CreationTimestamp: metav1.NewTime(h.clock.now().Add(-time.Minute)),
 			Labels: map[string]string{
 				computev1alpha.InstanceConsoleSessionUIDLabel:          uid,
 				computev1alpha.InstanceConsoleSessionInstanceNameLabel: testInstance,
@@ -182,6 +185,10 @@ func (h *harness) session(name, uid string, mutate ...func(*computev1alpha.Insta
 		h.t.Fatal(err)
 	}
 	return key
+}
+
+func (h *harness) justCreated(s *computev1alpha.InstanceConsoleSession) {
+	s.CreationTimestamp = metav1.NewTime(h.clock.now())
 }
 
 func (h *harness) cellSession(name string) *computev1alpha.InstanceConsoleSession {
@@ -231,6 +238,14 @@ type fakeAPIServer struct {
 	killExit  int
 	killHangs bool
 	onSession func(conn net.Conn, r *bufio.Reader)
+	// exitWatch answers the exit watch with the code it receives. Without
+	// one, the watch runs until the agent drops it, as it does while the
+	// command is still running.
+	exitWatch chan string
+	// noSleep makes the exit watch report a container without sleep, and
+	// recorded is what the exit check finds in the exit file.
+	noSleep  bool
+	recorded string
 }
 
 func newFakeAPIServer() *fakeAPIServer {
@@ -286,7 +301,8 @@ func acceptKey(key string) string {
 
 func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 	f.mu.Lock()
-	probeExit, probeDir, markers, killExit, killHangs := f.probeExit, f.probeDir, f.markers, f.killExit, f.killHangs
+	probeExit, probeDir, markers, killExit, killHangs, exitWatch := f.probeExit, f.probeDir, f.markers, f.killExit, f.killHangs, f.exitWatch
+	noSleep, recorded := f.noSleep, f.recorded
 	f.mu.Unlock()
 	switch command[2] {
 	case probeScript:
@@ -296,6 +312,24 @@ func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 		writeExitStatus(conn, probeExit)
 	case listMarkersScript:
 		writeServerFrame(conn, channelStdout, []byte(markers))
+		writeExitStatus(conn, 0)
+	case exitWatchScript:
+		if noSleep {
+			writeExitStatus(conn, exitWatchNoSleep)
+			return
+		}
+		if exitWatch == nil {
+			_, _ = io.Copy(io.Discard, conn)
+			return
+		}
+		writeServerFrame(conn, channelStdout, []byte(<-exitWatch+"\n"))
+		writeExitStatus(conn, 0)
+	case exitCheckScript:
+		if recorded == "" {
+			writeExitStatus(conn, 2)
+			return
+		}
+		writeServerFrame(conn, channelStdout, []byte(recorded+"\n"))
 		writeExitStatus(conn, 0)
 	case killScript:
 		if killHangs {

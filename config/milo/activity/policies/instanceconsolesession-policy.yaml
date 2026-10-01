@@ -15,8 +15,14 @@ spec:
     apiGroup: compute.datumapis.com
     kind: InstanceConsoleSession
 
+  # Clients create sessions with generateName, so the request carries no name
+  # and the name comes from the created object in the response.
   auditRules:
     - name: create
+      match: "audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.responseObject.metadata) && has(audit.responseObject.metadata.name) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} opened shell session {{ audit.responseObject.metadata.name }} in container {{ audit.requestObject.spec.containerName }} of instance {{ audit.requestObject.spec.instanceRef.name }}"
+
+    - name: create-unnamed
       match: "audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} opened a shell session in container {{ audit.requestObject.spec.containerName }} of instance {{ audit.requestObject.spec.instanceRef.name }}"
 

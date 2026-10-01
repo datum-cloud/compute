@@ -258,6 +258,40 @@ spec:
                 description: 'When the command is stopped: startedAt plus spec.ttl.'
                 format: date-time
                 type: string
+              recordedEvents:
+                description: |-
+                  The lifecycle events the control plane has recorded for the session in
+                  the project's activity, so that each is recorded once. Only the control
+                  plane writes it.
+                items:
+                  description: |-
+                    InstanceConsoleSessionRecordedEvent tracks recording one of a session's
+                    lifecycle events.
+                  properties:
+                    attemptedAt:
+                      description: When the control plane last began recording the
+                        event.
+                      format: date-time
+                      type: string
+                    reason:
+                      description: The event's reason, such as SessionStarted or SessionEnded.
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                    recorded:
+                      description: |-
+                        Whether the event is on record. An attempt that did not finish is
+                        retried.
+                      type: boolean
+                  required:
+                  - attemptedAt
+                  - reason
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - reason
+                x-kubernetes-list-type: map
               startedAt:
                 description: When the command started.
                 format: date-time

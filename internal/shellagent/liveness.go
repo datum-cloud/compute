@@ -5,7 +5,9 @@ package shellagent
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"strconv"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -14,6 +16,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 const (
@@ -24,6 +28,11 @@ const (
 	LeaseRenewInterval = 5 * time.Second
 
 	livenessComponent = "shell-agent-liveness"
+
+	// annotationClaiming on an agent's liveness Lease says whether the agent
+	// takes new sessions, so the cell's agents spread claims among only those
+	// that do.
+	annotationClaiming = annotationPrefix + "claiming"
 )
 
 // agentLeaseName names an agent's liveness Lease by the full SHA-256 of its
@@ -55,6 +64,7 @@ func (a *Agent) renewLease(ctx context.Context) error {
 	if id == "" {
 		return nil
 	}
+	claiming := strconv.FormatBool(a.acceptsClaims(ctx))
 	now := metav1.NewMicroTime(a.now())
 	key := client.ObjectKey{Namespace: a.cfg.Namespace, Name: agentLeaseName(id)}
 	var lease coordinationv1.Lease
@@ -62,9 +72,10 @@ func (a *Agent) renewLease(ctx context.Context) error {
 	if apierrors.IsNotFound(err) {
 		return a.cell.Create(ctx, &coordinationv1.Lease{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      key.Name,
-				Namespace: key.Namespace,
-				Labels:    map[string]string{componentLabel: livenessComponent},
+				Name:        key.Name,
+				Namespace:   key.Namespace,
+				Labels:      map[string]string{componentLabel: livenessComponent},
+				Annotations: map[string]string{annotationClaiming: claiming},
 			},
 			Spec: coordinationv1.LeaseSpec{
 				HolderIdentity:       ptr.To(a.incarnation),
@@ -77,10 +88,20 @@ func (a *Agent) renewLease(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	metav1.SetMetaDataAnnotation(&lease.ObjectMeta, annotationClaiming, claiming)
 	lease.Spec.HolderIdentity = ptr.To(a.incarnation)
 	lease.Spec.LeaseDurationSeconds = ptr.To(int32(LeaseDuration.Seconds()))
 	lease.Spec.RenewTime = &now
 	return a.cell.Update(ctx, &lease)
+}
+
+// acceptsClaims reports whether the agent would claim a new session now.
+func (a *Agent) acceptsClaims(ctx context.Context) bool {
+	if !a.claiming() || a.openCount() >= a.cfg.MaxOpenSessions {
+		return false
+	}
+	ready, err := a.endpointReady(ctx)
+	return err == nil && ready
 }
 
 // releaseLease deletes a liveness Lease once its agent no longer serves
@@ -109,9 +130,55 @@ func (a *Agent) agentAlive(ctx context.Context, endpointID string) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	return leaseCurrent(&lease, a.now()), nil
+}
+
+func leaseCurrent(lease *coordinationv1.Lease, now time.Time) bool {
 	if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
-		return false, nil
+		return false
 	}
-	expires := lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second)
-	return a.now().Before(expires), nil
+	return now.Before(lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second))
+}
+
+// claimDelay is how long the agent leaves a new session to the agents ahead
+// of it before claiming it itself.
+//
+// Every agent that takes claims ranks the cell's claiming agents for each
+// session by a hash of the session UID and the agent, so the cell's agents
+// agree on an order that differs from session to session and spreads sessions
+// evenly across them. The first agent claims at once, and each one after it
+// waits one more ClaimStagger from the session's creation, which lets a later
+// agent take a session its predecessors cannot serve. Claims still race with
+// optimistic concurrency, so an order two agents see differently costs only a
+// lost claim.
+func (a *Agent) claimDelay(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (time.Duration, error) {
+	if a.cfg.ClaimStagger <= 0 {
+		return 0, nil
+	}
+	var leases coordinationv1.LeaseList
+	if err := a.cell.List(ctx, &leases, client.InNamespace(a.cfg.Namespace),
+		client.MatchingLabels{componentLabel: livenessComponent}); err != nil {
+		return 0, err
+	}
+	uid := sessionUID(session)
+	mine := agentLeaseName(a.EndpointID())
+	myRank := claimRank(uid, mine)
+	now := a.now()
+	ahead := 0
+	for i := range leases.Items {
+		lease := &leases.Items[i]
+		if claiming, _ := strconv.ParseBool(lease.Annotations[annotationClaiming]); lease.Name == mine || !claiming || !leaseCurrent(lease, now) {
+			continue
+		}
+		if rank := claimRank(uid, lease.Name); rank < myRank || rank == myRank && lease.Name < mine {
+			ahead++
+		}
+	}
+	wait := time.Duration(ahead)*a.cfg.ClaimStagger - now.Sub(session.CreationTimestamp.Time)
+	return max(wait, 0), nil
+}
+
+func claimRank(sessionUID, leaseName string) uint64 {
+	sum := sha256.Sum256([]byte(sessionUID + "/" + leaseName))
+	return binary.BigEndian.Uint64(sum[:8])
 }

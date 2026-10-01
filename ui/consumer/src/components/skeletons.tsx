@@ -292,3 +292,15 @@ export function InstanceLogsSkeleton() {
 export function InstanceMetricsSkeleton() {
   return <MetricsSkeleton testId="compute-plugin-loading-instance-metrics" />;
 }
+
+export function InstanceShellWindowSkeleton() {
+  return (
+    <div
+      aria-busy="true"
+      className="flex flex-col gap-4"
+      data-testid="compute-plugin-loading-instance-shell">
+      <Bone className="h-4 w-72" />
+      <Bone className="w-full" style={{ height: '60vh' }} />
+    </div>
+  );
+}
