@@ -111,7 +111,7 @@ export function SparklineStatCard({
       <CardContent className={cn('flex min-w-0 flex-col gap-2', isLoading && 'invisible')}>
         <div className="flex h-4 items-center justify-between gap-2">
           <span className="text-muted-foreground text-xs font-medium">{title}</span>
-          <span className="text-muted-foreground text-2xs">
+          <span className="text-muted-foreground text-5xs">
             {unavailable || value !== undefined ? '\u00a0' : windowLabel}
           </span>
         </div>
