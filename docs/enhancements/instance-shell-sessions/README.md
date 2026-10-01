@@ -140,8 +140,8 @@ Source: [sequence-diagram.puml](./sequence-diagram.puml)
   limits command execution to one hour
 - **Per-instance limit:** At most three sessions can run in an instance at once
 - **Session quota:** The quota system limits how many sessions a project can
-  hold open, checked when a session is created. The default is zero, so a
-  project can open sessions only once it is granted an allowance
+  hold open, checked when a session is created. Every project can hold ten
+  open by default, and a grant raises or lowers that for one project
 - **Isolation:** Cell network policy lets the tunnel endpoint reach only its
   agent
 
@@ -491,8 +491,8 @@ creation, quota release, reservation release and agent failover.
 - `exec` on the general-purpose runtime class; for unikernel instances later,
   `exec` on that class and the Unikraft provider exec policy set to `always`.
 - The session-create permission added to the default project-admin role.
-- A quota claim policy for sessions with a default allowance of zero, and quota
-  grants for the projects in preview.
+- A quota claim policy for sessions with a default allowance of ten open
+  sessions per project.
 - An activity policy that maps session creation and lifecycle events into the
   project activity log.
 - A released container image of the Datum Connect CLI, including the fix that

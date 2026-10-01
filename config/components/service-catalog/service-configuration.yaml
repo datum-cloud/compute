@@ -209,9 +209,8 @@ spec:
       unit: MiB
       defaultLimit: 81920
     # Sessions end and are deleted within an hour, so this bounds how many
-    # shells a project holds open at once rather than how many it opens. The
-    # default of zero keeps sessions off until a project is granted an
-    # allowance, which is how the feature is enabled per customer.
+    # shells a project holds open at once rather than how many it opens. A
+    # grant raises or lowers it for one project.
     - name: compute-instanceconsolesessions
       displayName: Shell sessions
       description: Maximum number of shell sessions that can be open into instances within a project.
@@ -220,4 +219,4 @@ spec:
         apiGroup: resourcemanager.miloapis.com
         kind: Project
       unit: session
-      defaultLimit: 0
+      defaultLimit: 10
