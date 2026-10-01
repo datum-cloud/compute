@@ -12,6 +12,7 @@ import (
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -293,54 +294,81 @@ func servingCities(info *Info) []string {
 // applyService creates the NetworkService, or brings an existing one in line
 // with what the workload now declares.
 func applyService(ctx context.Context, c client.Client, desired *networkingv1alpha.NetworkService) error {
-	var existing networkingv1alpha.NetworkService
-	err := c.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
-	if k8serrors.IsNotFound(err) {
-		if err := c.Create(ctx, desired); err != nil {
-			return fmt.Errorf("publishing backends for %q: %w", desired.Name, err)
+	// The NetworkService controller writes status as members come and go, and
+	// each write bumps resourceVersion. An Update carrying the version read a
+	// moment earlier then fails with a conflict, so retry on a fresh read
+	// rather than failing a deploy whose rollout already succeeded (#393).
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var existing networkingv1alpha.NetworkService
+		err := c.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
+		if k8serrors.IsNotFound(err) {
+			if err := c.Create(ctx, desired); err != nil {
+				return fmt.Errorf("publishing backends for %q: %w", desired.Name, err)
+			}
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reading published backends for %q: %w", desired.Name, err)
+		}
+
+		merged := mergeServiceSpec(existing.Spec, desired.Spec)
+		if reflect.DeepEqual(existing.Spec, merged) && metaCurrent(&existing, desired) {
+			return nil
+		}
+		existing.Spec = merged
+		adoptMeta(&existing, desired)
+		if err := c.Update(ctx, &existing); err != nil {
+			return fmt.Errorf("updating published backends for %q: %w", desired.Name, err)
 		}
 		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("reading published backends for %q: %w", desired.Name, err)
-	}
+	})
+}
 
-	if reflect.DeepEqual(existing.Spec, desired.Spec) && metaCurrent(&existing, desired) {
-		return nil
+// mergeServiceSpec lays the fields a deploy sets over the service as it
+// stands. A deploy owns the member selector and the ports. It leaves traffic
+// distribution unset, which the API defaults (to Nearest); taking the spec as
+// built would read that default as a change, so every deploy rewrote the
+// service, and each of those writes could race the controller's status
+// updates. A strategy the deploy does set still wins.
+func mergeServiceSpec(existing, desired networkingv1alpha.NetworkServiceSpec) networkingv1alpha.NetworkServiceSpec {
+	merged := *existing.DeepCopy()
+	merged.NetworkInterfaces = *desired.NetworkInterfaces.DeepCopy()
+	merged.Ports = append([]networkingv1alpha.NetworkServicePort(nil), desired.Ports...)
+	if desired.TrafficDistribution.Strategy != "" {
+		merged.TrafficDistribution = desired.TrafficDistribution
 	}
-	existing.Spec = desired.Spec
-	adoptMeta(&existing, desired)
-	if err := c.Update(ctx, &existing); err != nil {
-		return fmt.Errorf("updating published backends for %q: %w", desired.Name, err)
-	}
-	return nil
+	return merged
 }
 
 // applyProxy creates the HTTPProxy, or brings an existing one in line with
 // what the workload now declares.
 func applyProxy(ctx context.Context, c client.Client, desired *networkingv1alpha.HTTPProxy) error {
-	var existing networkingv1alpha.HTTPProxy
-	err := c.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
-	if k8serrors.IsNotFound(err) {
-		if err := c.Create(ctx, desired); err != nil {
-			return fmt.Errorf("publishing URL for %q: %w", desired.Name, err)
+	// The HTTPProxy's status is written by its controller too, so the same
+	// stale-resourceVersion conflict applies here; see applyService.
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var existing networkingv1alpha.HTTPProxy
+		err := c.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
+		if k8serrors.IsNotFound(err) {
+			if err := c.Create(ctx, desired); err != nil {
+				return fmt.Errorf("publishing URL for %q: %w", desired.Name, err)
+			}
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reading published URL for %q: %w", desired.Name, err)
+		}
+
+		merged := mergeProxySpec(existing.Spec, desired.Spec)
+		if reflect.DeepEqual(existing.Spec, merged) && metaCurrent(&existing, desired) {
+			return nil
+		}
+		existing.Spec = merged
+		adoptMeta(&existing, desired)
+		if err := c.Update(ctx, &existing); err != nil {
+			return fmt.Errorf("updating published URL for %q: %w", desired.Name, err)
 		}
 		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("reading published URL for %q: %w", desired.Name, err)
-	}
-
-	merged := mergeProxySpec(existing.Spec, desired.Spec)
-	if reflect.DeepEqual(existing.Spec, merged) && metaCurrent(&existing, desired) {
-		return nil
-	}
-	existing.Spec = merged
-	adoptMeta(&existing, desired)
-	if err := c.Update(ctx, &existing); err != nil {
-		return fmt.Errorf("updating published URL for %q: %w", desired.Name, err)
-	}
-	return nil
+	})
 }
 
 // mergeProxySpec lays what a deploy owns over the proxy as it stands, instead
