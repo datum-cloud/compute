@@ -577,6 +577,13 @@ func TestWorkloadDeploymentFederator_PropagationPolicyDelegatesCompanionDelivery
 	assert.True(t, pp.Spec.PropagateDeps,
 		"without PropagateDeps the engine never reads the deployment's dependencies and no companion is delivered")
 
+	// An attached dependency binding inherits the parent binding's conflict
+	// resolution, so this is the only place companion delivery can be told to
+	// take over a stray same-named object on a cell. The default, Abort, would
+	// strand delivery as AppliedFailed on a hub object the customer cannot read.
+	assert.Equal(t, karmadapolicyv1alpha1.ConflictOverwrite, pp.Spec.ConflictResolution,
+		"compute owns what this policy delivers and the namespace it lands in, so a name collision must not stop propagation")
+
 	require.Len(t, pp.Spec.ResourceSelectors, 1, "PP must select the WorkloadDeployment only")
 	assert.Equal(t, kindWorkloadDeployment, pp.Spec.ResourceSelectors[0].Kind)
 

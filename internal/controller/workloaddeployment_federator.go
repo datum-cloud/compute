@@ -508,6 +508,21 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 			// but it is a gap. Setting both fields in one write is deliberate —
 			// splitting them across reconciles would widen it.
 			PropagateDeps: true,
+			// The field defaults to Abort, which stops propagation when an
+			// object of the same name already exists on the cell. Everything
+			// this policy delivers is compute-owned and lands in a
+			// compute-owned cell namespace, so a name collision is never
+			// another owner's object to protect — it is a stray copy, and
+			// compute's copy is the authority. Aborting instead leaves the work
+			// AppliedFailed on a hub object the customer cannot read, with no
+			// signal on the deployment, so a single stray object on one cell
+			// strands delivery indefinitely and invisibly.
+			//
+			// This also covers the companions, which no policy selects: an
+			// attached dependency binding inherits its parent binding's
+			// conflict resolution, so the deployment's policy is the only place
+			// to set it for them.
+			ConflictResolution: karmadapolicyv1alpha1.ConflictOverwrite,
 			ResourceSelectors: []karmadapolicyv1alpha1.ResourceSelector{
 				{
 					APIVersion: computev1alpha.GroupVersion.String(),
