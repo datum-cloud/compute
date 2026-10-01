@@ -71,7 +71,7 @@ import (
 const (
 	// DefaultInstanceType is the instance type used when Input.InstanceType is
 	// empty. It is currently the only type the admission webhook accepts.
-	DefaultInstanceType = "datumcloud/d1-standard-2"
+	DefaultInstanceType = "datumcloud-d1-standard-2"
 
 	// DefaultNetwork is the network attached when Input.Network is empty.
 	DefaultNetwork = "default"

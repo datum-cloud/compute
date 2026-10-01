@@ -220,7 +220,7 @@ export function useRequestComputeAccess(
 //         - {name: eth0, ipFamilies: [IPv6], network: {name: datum-demo-net-<suffix>}}
 //         runtime:
 //           class: unikernel
-//           resources: {instanceType: datumcloud/d1-standard-2}
+//           resources: {instanceType: datumcloud-d1-standard-2}
 //           sandbox:
 //             containers:
 //             - name: mesh
@@ -295,7 +295,7 @@ function demoWorkloadPayload(workloadName: string, networkName: string) {
           ],
           runtime: {
             class: 'unikernel',
-            resources: { instanceType: 'datumcloud/d1-standard-2' },
+            resources: { instanceType: 'datumcloud-d1-standard-2' },
             sandbox: {
               containers: [
                 {

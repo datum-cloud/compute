@@ -128,7 +128,7 @@ function deriveWorkloadHealth(conditions: RawCondition[]): WorkloadHealth {
   return 'Unknown';
 }
 
-/** Builds a human-readable resource summary, e.g. "datumcloud/d1-standard-2 · 1 vCPU · 512Mi". */
+/** Builds a human-readable resource summary, e.g. "datumcloud-d1-standard-2 · 1 vCPU · 512Mi". */
 function deriveResources(runtime?: RawRuntime): string | undefined {
   const res = runtime?.resources;
   if (!res) return undefined;
@@ -369,12 +369,14 @@ function deriveInstanceStatus(conditions: RawCondition[]): InstanceStatusValue {
 }
 
 /**
- * Platform instance-type catalog — mirrors `instanceTypeCatalog` in
- * `internal/controller/instance_controller.go`. Most instances only set
- * `instanceType` (no explicit requests); the controller resolves size from
- * this catalog for quota. We do the same for display.
+ * Platform instance-type catalog — mirrors `pkg/instancetype/catalog.go`. Most
+ * instances only set `instanceType` (no explicit requests); the controller
+ * resolves size from this catalog for quota. We do the same for display.
+ * `datumcloud/d1-standard-2` is the name the baseline type had before the
+ * rename, still carried by instances created before it.
  */
 const INSTANCE_TYPE_CATALOG: Record<string, { cpu: string; memory: string }> = {
+  'datumcloud-d1-standard-2': { cpu: '1', memory: '2Gi' },
   'datumcloud/d1-standard-2': { cpu: '1', memory: '2Gi' },
   'd1-standard-2': { cpu: '1', memory: '2Gi' },
 };

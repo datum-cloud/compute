@@ -26,7 +26,7 @@ func TestCatalogSizing(t *testing.T) {
 		},
 		{
 			name:         "unknown instance type yields no sizing",
-			instanceType: "datumcloud/d1-standard-64",
+			instanceType: "datumcloud-d1-standard-64",
 			wantFound:    false,
 		},
 		{
@@ -50,7 +50,7 @@ func TestCatalogSizing(t *testing.T) {
 }
 
 func TestCatalogName(t *testing.T) {
-	if D1Standard2 != "datumcloud/d1-standard-2" {
+	if D1Standard2 != "datumcloud-d1-standard-2" {
 		t.Errorf("instance type name changed to %q; the name is a customer-facing API value", D1Standard2)
 	}
 }
@@ -59,6 +59,31 @@ func TestNames(t *testing.T) {
 	want := []string{D1Standard2}
 	if delta := cmp.Diff(want, Names()); delta != "" {
 		t.Errorf("unexpected catalog contents (-want +got):\n%s", delta)
+	}
+}
+
+// TestRetiredName checks that the name the baseline type carried before the
+// rename still resolves to the same sizing. Every workload, deployment, and
+// instance stored before the rename carries it; if it stopped resolving, their
+// quota claims would drop vCPU and memory and their pods would lose sizing.
+func TestRetiredName(t *testing.T) {
+	if LegacyD1Standard2 != "datumcloud/d1-standard-2" {
+		t.Errorf("retired name changed to %q; it must match what stored objects carry", LegacyD1Standard2)
+	}
+	if got := Canonical(LegacyD1Standard2); got != D1Standard2 {
+		t.Errorf("Canonical(%q) = %q, want %q", LegacyD1Standard2, got, D1Standard2)
+	}
+	if got := Canonical("datumcloud-unknown"); got != "datumcloud-unknown" {
+		t.Errorf("Canonical must return an unknown name unchanged, got %q", got)
+	}
+
+	legacy, ok := Lookup(LegacyD1Standard2)
+	if !ok {
+		t.Fatalf("Lookup(%q) must resolve", LegacyD1Standard2)
+	}
+	current, _ := Lookup(D1Standard2)
+	if legacy != current {
+		t.Errorf("retired name sized %+v, want the same as %q: %+v", legacy, D1Standard2, current)
 	}
 }
 

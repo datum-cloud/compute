@@ -1,0 +1,14 @@
+# Applied (merge) over datumcloud-d1-standard-2 once the lowered deprecation
+# grace period (90s) has passed. Deprecated -> Disabled is gated by the grace
+# period, so this update is only accepted after the sleep step.
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceType
+metadata:
+  name: datumcloud-d1-standard-2
+spec:
+  resources:
+    cpu: 1000m
+    memory: 2048Mi
+  lifecycle:
+    phase: Disabled
+    replacementInstanceType: datumcloud-d2-standard-2
