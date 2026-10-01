@@ -15,6 +15,7 @@
  * `features/project/home/resource-column.tsx`) so the row of columns reads as
  * one piece.
  */
+import { ColumnEmpty, ColumnSkeleton, COLUMN_ROW_CLASS } from './home-column-parts';
 import { ComputeEnablementBanner } from '../components/compute-enablement-banner';
 import { useComputeEntitlement, useWorkloads } from '../lib/api';
 import { ownPluginHref, useOwnPluginSlug } from '../lib/plugin-slug';
@@ -23,32 +24,15 @@ import {
   homeColumnWorkloads,
   statusLabel,
 } from '../lib/workload-presenters';
+import { LinkButton } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { ChevronRightIcon, RocketIcon } from 'lucide-react';
+import { RocketIcon, ServerIcon, TriangleAlertIcon } from 'lucide-react';
 import { Link, useParams } from 'react-router';
 
 const HOME_COLUMN_LIMIT = 5;
 
-function ColumnSkeleton() {
-  return (
-    <div className="flex flex-col gap-1" role="status">
-      <span className="sr-only">Loading workloads</span>
-      {Array.from({ length: 3 }, (_, i) => (
-        <Skeleton key={i} className="h-10 w-full rounded-md" />
-      ))}
-    </div>
-  );
-}
-
-function ColumnMessage({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="bg-muted/40 border-input flex min-h-24 flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-5 text-center">
-      {children}
-    </div>
-  );
-}
+const ServerTile = <Icon icon={ServerIcon} size={18} aria-hidden />;
 
 export default function WorkloadsHomeColumn() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -57,7 +41,7 @@ export default function WorkloadsHomeColumn() {
   const { data: workloads, isLoading: workloadsLoading, error } = useWorkloads(projectId, enabled);
   const { data: slug } = useOwnPluginSlug(projectId);
 
-  if (!projectId || entitlementLoading) return <ColumnSkeleton />;
+  if (!projectId || entitlementLoading) return <ColumnSkeleton label="Workloads" />;
 
   if (!enabled) {
     return (
@@ -65,17 +49,15 @@ export default function WorkloadsHomeColumn() {
     );
   }
 
-  if (workloadsLoading) return <ColumnSkeleton />;
+  if (workloadsLoading) return <ColumnSkeleton label="Workloads" />;
 
   if (error) {
     return (
-      <ColumnMessage>
-        <p className="text-muted-foreground text-xs">
-          {error.status === 403
-            ? "You don't have access to workloads in this project."
-            : "Couldn't load workloads. Try again in a moment."}
-        </p>
-      </ColumnMessage>
+      <ColumnEmpty icon={<Icon icon={TriangleAlertIcon} size={18} aria-hidden />}>
+        {error.status === 403
+          ? "You don't have access to workloads in this project."
+          : "Workloads aren't available right now."}
+      </ColumnEmpty>
     );
   }
 
@@ -84,77 +66,66 @@ export default function WorkloadsHomeColumn() {
 
   if (all.length === 0) {
     return (
-      <ColumnMessage>
-        <p className="text-muted-foreground text-xs">No workloads in this project yet.</p>
-        <code className="bg-background border-input rounded border px-2 py-1 font-mono text-xs">
-          datumctl compute deploy -f workload.yaml
-        </code>
-        {root && (
-          <Link
-            to={`${root}?tryDemo=1`}
-            className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-xs transition-colors"
-          >
-            <Icon icon={RocketIcon} size={12} aria-hidden />
-            Or try the demo
-          </Link>
-        )}
-      </ColumnMessage>
+      <ColumnEmpty
+        icon={ServerTile}
+        title="Deploy your first workload"
+        action={
+          root && (
+            <LinkButton
+              as={Link}
+              href={`${root}?tryDemo=1`}
+              type="primary"
+              theme="solid"
+              size="xs"
+              icon={<Icon icon={RocketIcon} size={14} aria-hidden />}
+            >
+              Try the demo
+            </LinkButton>
+          )
+        }
+      >
+        Run <code className="font-mono">datumctl compute deploy</code>, or launch a demo workload
+        in one click.
+      </ColumnEmpty>
     );
   }
 
   const rows = homeColumnWorkloads(all, HOME_COLUMN_LIMIT);
 
   return (
-    <>
-      <ul className="flex flex-col">
-        {rows.map((workload) => {
-          const content = (
-            <>
+    <ul className="flex flex-col">
+      {rows.map((workload) => {
+        const content = (
+          <>
+            <span className="flex size-3.5 shrink-0 items-center justify-center" aria-hidden>
               <span
                 className={cn(
-                  'size-2 shrink-0 rounded-full',
+                  'size-2 rounded-full',
                   workload.deleting ? 'bg-muted-foreground' : HEALTH_DOT_CLASS[workload.health]
                 )}
-                aria-hidden
               />
-              <span className="min-w-0 flex-1 truncate text-sm">{workload.name}</span>
-              <span className="text-muted-foreground shrink-0 text-xs">
-                {statusLabel(workload)}
-              </span>
-              <Icon
-                icon={ChevronRightIcon}
-                size={14}
-                className="text-icon-quaternary group-hover:text-foreground shrink-0"
-                aria-hidden
-              />
-            </>
-          );
-          const rowClass =
-            'group flex min-h-10 items-center gap-2 rounded-md px-2 py-1.5 transition-colors';
-          return (
-            <li key={workload.uid}>
-              {root ? (
-                <Link
-                  to={`${root}/${encodeURIComponent(workload.name)}`}
-                  className={cn(rowClass, 'hover:bg-accent')}
-                >
-                  {content}
-                </Link>
-              ) : (
-                <div className={rowClass}>{content}</div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      {root && all.length > rows.length && (
-        <Link
-          to={root}
-          className="text-muted-foreground hover:text-foreground px-2 text-xs transition-colors"
-        >
-          View all workloads
-        </Link>
-      )}
-    </>
+            </span>
+            <span className="min-w-0 flex-1 truncate text-sm">{workload.name}</span>
+            <span className="text-muted-foreground shrink-0 text-xs">
+              {statusLabel(workload)}
+            </span>
+          </>
+        );
+        return (
+          <li key={workload.uid}>
+            {root ? (
+              <Link
+                to={`${root}/${encodeURIComponent(workload.name)}`}
+                className={cn(COLUMN_ROW_CLASS, 'hover:bg-accent transition-colors')}
+              >
+                {content}
+              </Link>
+            ) : (
+              <div className={COLUMN_ROW_CLASS}>{content}</div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
