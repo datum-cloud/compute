@@ -43,6 +43,12 @@ type Config struct {
 	// ManagedBy lists the managed-by label values of pods that may take
 	// sessions.
 	ManagedBy []string
+	// Cell names the cell the agent serves, on its metrics and logs. Empty
+	// leaves the label empty.
+	Cell string
+	// Agent identifies this agent among the cell's, typically its pod name,
+	// on its metrics and logs. Empty leaves the label empty.
+	Agent string
 
 	ConnectTimeout time.Duration
 	// ClaimStagger is how long each claiming agent waits after the one
@@ -223,12 +229,14 @@ func (a *Agent) stop(uid, reason string) {
 func (a *Agent) track(uid string, key types.NamespacedName) {
 	a.mu.Lock()
 	a.open[uid] = key
+	a.recordOpen()
 	a.mu.Unlock()
 }
 
 func (a *Agent) forget(uid string) {
 	a.mu.Lock()
 	delete(a.open, uid)
+	a.recordOpen()
 	a.mu.Unlock()
 }
 

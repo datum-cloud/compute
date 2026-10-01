@@ -41,6 +41,8 @@ var setupLog = ctrl.Log.WithName("setup")
 type options struct {
 	listen            string
 	probeAddr         string
+	metricsAddr       string
+	cell              string
 	target            string
 	relayURLs         string
 	managedBy         string
@@ -57,6 +59,10 @@ func main() {
 	var opts options
 	flag.StringVar(&opts.listen, "listen", ":7777", "Address to serve session connections on.")
 	flag.StringVar(&opts.probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
+	flag.StringVar(&opts.metricsAddr, "metrics-bind-address", ":8080",
+		"Address the metrics endpoint binds to, or 0 to disable it.")
+	flag.StringVar(&opts.cell, "cell", os.Getenv("CELL_NAME"),
+		"Name of the cell this agent serves, on its metrics and logs.")
 	flag.StringVar(&opts.target, "target", "",
 		"host:port the paired tunnel endpoint proxies to this agent, published as the session's target.")
 	flag.StringVar(&opts.relayURLs, "relay-urls", os.Getenv("DATUM_CONNECT_RELAY_URLS"),
@@ -108,6 +114,8 @@ func run(opts options, cfg shellagent.Config) error {
 	}
 	cfg.Namespace = namespace
 	cfg.Ordinal = ordinal
+	cfg.Cell = opts.cell
+	cfg.Agent = podName
 	cfg.EndpointPodName = fmt.Sprintf("%s-%d", opts.endpointPodPrefix, ordinal)
 	cfg.Target = opts.target
 	cfg.RelayURLs = splitList(opts.relayURLs)
@@ -123,9 +131,13 @@ func run(opts options, cfg shellagent.Config) error {
 
 	cellConfig := ctrl.GetConfigOrDie()
 
+	// Every line the agent logs names the cell and agent, so one activity
+	// event's cell annotation leads to this agent's logs.
+	logger := ctrl.Log.WithName("shell-agent").WithValues("cell", cfg.Cell, "agent", cfg.Agent)
 	mgr, err := ctrl.NewManager(cellConfig, ctrl.Options{
 		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: "0"},
+		Logger:                 logger,
+		Metrics:                metricsserver.Options{BindAddress: opts.metricsAddr},
 		HealthProbeBindAddress: opts.probeAddr,
 	})
 	if err != nil {
@@ -145,7 +157,7 @@ func run(opts options, cfg shellagent.Config) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(ctrl.LoggerInto(context.Background(), ctrl.Log.WithName("shell-agent")))
+	ctx, cancel := context.WithCancel(ctrl.LoggerInto(context.Background(), logger))
 	defer cancel()
 	if err := agent.EnsureIdentity(ctx); err != nil {
 		return err
@@ -191,7 +203,8 @@ func run(opts options, cfg shellagent.Config) error {
 		os.Exit(1)
 	}()
 
-	setupLog.Info("starting shell agent", "endpointID", agent.EndpointID(), "target", cfg.Target)
+	setupLog.Info("starting shell agent", "cell", cfg.Cell, "agent", cfg.Agent,
+		"endpointID", agent.EndpointID(), "target", cfg.Target, "metrics", opts.metricsAddr)
 	return mgr.Start(ctx)
 }
 

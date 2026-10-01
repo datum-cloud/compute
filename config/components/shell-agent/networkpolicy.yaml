@@ -21,6 +21,13 @@ spec:
       ports:
         - protocol: TCP
           port: 7777
+    # Metrics, for the platform's scraper in whichever namespace it runs. The
+    # metrics carry no session, user or Instance.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
   egress:
     # The cell apiserver.
     - ports:

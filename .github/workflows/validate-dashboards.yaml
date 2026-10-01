@@ -1,0 +1,63 @@
+name: Validate Dashboards
+
+# Re-renders every Grafana dashboard from its jsonnet source and fails when the
+# committed JSON differs, so the OCI bundle always ships what the source says.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/validate-dashboards.yaml'
+      - 'hack/validate-dashboard-drift'
+      - 'observability/**'
+      - 'config/components/dashboards/**'
+      - 'Taskfile.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/validate-dashboards.yaml'
+      - 'hack/validate-dashboard-drift'
+      - 'observability/**'
+      - 'config/components/dashboards/**'
+      - 'Taskfile.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate-dashboards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: zendesk/setup-jsonnet@v16
+        with:
+          version: v0.20.0
+
+      - name: Install jsonnet-bundler
+        run: go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@v0.6.0
+
+      - name: Cache jsonnet vendor directories
+        uses: actions/cache@v4
+        with:
+          path: observability/**/vendor
+          key: jsonnet-vendor-${{ hashFiles('observability/**/jsonnetfile.lock.json') }}
+
+      - name: Render dashboards
+        run: task dashboards:install dashboards:build
+
+      - name: Validate rendered dashboards are in sync
+        run: hack/validate-dashboard-drift
+
+      - name: Validate the dashboards component builds
+        run: kubectl kustomize config/components/dashboards >/dev/null && kubectl kustomize config/overlays/management-plane >/dev/null

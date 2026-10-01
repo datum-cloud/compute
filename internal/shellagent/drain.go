@@ -30,6 +30,7 @@ func (a *Agent) Drain(ctx context.Context) {
 		if err := a.cell.Get(ctx, key, &session); err != nil {
 			continue
 		}
+		a.recordOutcome(claimOutcomeShutdown)
 		if err := a.endUnconnected(ctx, &session, computev1alpha.InstanceConsoleSessionReasonAgentShutdown); err != nil {
 			logger.Error(err, "end unconnected session", "session", uid)
 		}

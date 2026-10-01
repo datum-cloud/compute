@@ -143,7 +143,8 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 
 	result := a.runSession(runCtx, w, r, &current, held, live)
 	a.finishSession(uid, client.ObjectKeyFromObject(&current), held, result)
-	logger.Info("session ended", "reason", result.reason, "duration", a.now().Sub(started.Time).Round(time.Millisecond))
+	logger.Info("session ended", "reason", result.reason, "exitCode", result.exitCode,
+		"duration", a.now().Sub(started.Time).Round(time.Millisecond))
 }
 
 // runSession runs the session's command and relays its stream until it ends,

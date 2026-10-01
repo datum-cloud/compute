@@ -5,7 +5,8 @@
 # names that namespace, so include this component from a kustomization that does
 # not rename namespaces (see config/overlays/cell-shell-agent). The deployment
 # supplies ConfigMap exec-relays: DATUM_CONNECT_RELAY_URLS, the relays the
-# endpoints register with and the agents publish, nearest first.
+# endpoints register with and the agents publish, nearest first, and
+# CELL_NAME, the cell's name on the agents' metrics and logs.
 #
 # The agent needs no Karmada hub credential. It writes status only on the
 # session copies in its cell, and Karmada reflects it back to the hub with the
@@ -18,6 +19,7 @@ resources:
   - rbac.yaml
   - exec-admission-policy.yaml
   - service.yaml
+  - monitor.yaml
   - agent.yaml
   - endpoint.yaml
   - networkpolicy.yaml

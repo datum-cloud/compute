@@ -397,10 +397,63 @@ and Cloud Portal releases that let the plugin declare its browser permissions.
 
 ### Monitoring requirements
 
-- **For users:** each session's `Ready` condition and reason.
-- **For operators:** sessions opened, active and ended by reason; time from
-  creation to the first interactive prompt, or to process start and first byte
-  for a noninteractive command; agent health per cell.
+Monitoring answers a different question for each audience:
+
+- **Product:** how many sessions each project and location opens, how long
+  they last and why they end, over any time range.
+- **Support:** trace one project activity event to the cell and agent that
+  served the session.
+- **On-call:** connect and run failures, relay path health and leaked
+  processes.
+- **Customers:** the complete access history for their own project.
+
+#### Signals
+
+The control plane emits metrics for the project and location views. Cell
+agents emit metrics for the cell and agent views: session load, endpoint
+reachability through relays, claim outcomes and unconfirmed cleanup.
+Histograms record time to first prompt and session duration. Counters record
+session ends by reason. Metrics never carry session IDs or user identity.
+
+Every session start, end and failure record, in control-plane logs and in the
+project activity log, includes the requester, project, Instance name and UID,
+container, cell, session UID, timestamps, duration, ending reason and exit
+code when present. Activity events include the cell name so support can go
+from one event to one cell's logs without a second lookup. Audit records
+outlive the session resource under the project's activity retention policy,
+as described in [Runtime and routing](#runtime-and-routing).
+
+Users continue to see each session's readiness condition and its reason.
+
+#### Alerts
+
+Operators receive an alert when:
+
+- Sessions fail to become available in a location.
+- An agent endpoint is unreachable through relays.
+- Connect latency exceeds the p95 goal.
+- Process cleanup goes unconfirmed.
+- Session volume in one project is unusual.
+- Quota denials are sustained.
+
+The last two alerts are the mitigations named in
+[Risks and mitigations](#risks-and-mitigations). Each alert ships with a
+runbook.
+
+#### Tracing
+
+Distributed tracing is not adopted now. The data path bypasses the control
+plane, so a trace would cover only session creation, and the session UID
+already correlates control-plane logs. Revisit this decision if connect
+latency misses its p95 goal.
+
+#### Privacy
+
+The platform never records keystrokes, output or command arguments beyond the
+executable name, consistent with the [non-goals](#non-goals). Requester
+identity lives only in the activity log and control-plane logs. Project
+members with the activity permission read their own project's history.
+Operators read cell logs and metrics.
 
 ### Dependencies
 
@@ -449,6 +502,9 @@ creation, quota release, reservation release and agent failover.
 - 2026-09-30: Prototype re-run on real Kata cells under Karmada, measuring
   session-ready latency and confirming that revoke, disconnect and expiry all
   kill background and disowned jobs.
+- 2026-09-30: Monitoring requirements expanded to record the audience
+  questions, signal categories, required record fields, alert categories and
+  the tracing and privacy decisions.
 
 ## Drawbacks
 

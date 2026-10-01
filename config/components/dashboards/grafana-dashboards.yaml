@@ -1,0 +1,18 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: compute-shell-sessions
+  labels:
+    app.kubernetes.io/part-of: compute
+    app.kubernetes.io/component: monitoring
+spec:
+  # The Grafana instance lives in telemetry-system, not where compute installs.
+  allowCrossNamespaceImport: true
+  folder: Platform / Compute
+  instanceSelector:
+    matchLabels:
+      dashboards: vm-grafana
+  resyncPeriod: 5m
+  configMapRef:
+    name: compute-shell-sessions-dashboard
+    key: shell-sessions.json

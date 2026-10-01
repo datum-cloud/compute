@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+#
+# Fails when a rendered dashboard JSON under config/components/dashboards/ no
+# longer matches its jsonnet source. Run after `task dashboards:build`; CI runs
+# it the same way so hand edits to the rendered JSON, or source changes without
+# a rebuild, cannot merge.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT
+cd "$REPO_ROOT"
+
+readonly GENERATED_PATHS=(
+  config/components/dashboards/shell-sessions.json
+)
+
+readonly FIX_STEPS=(
+  "task dashboards:install"
+  "task dashboards:build"
+  "git add config/components/dashboards/"
+  "git commit"
+)
+
+step_summary() {
+  [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+  cat >>"${GITHUB_STEP_SUMMARY}"
+}
+
+fail() {
+  local heading="$1"
+  local fix="$2"
+  shift 2
+
+  echo "FAIL: ${heading}"
+  echo ""
+  printf '%s\n' "$@"
+  echo ""
+  echo "To fix this, run:"
+  printf '  %s\n' "${fix}"
+
+  {
+    echo "## ${heading}"
+    echo ""
+    printf '%s\n' "$@"
+    echo ""
+    echo "### How to fix"
+    echo '```bash'
+    printf '%s\n' "${fix}"
+    echo '```'
+  } | step_summary
+
+  exit 1
+}
+
+GENERATE_FIX="$(printf '%s\n' "${FIX_STEPS[@]}")"
+readonly GENERATE_FIX
+
+unmatched=""
+for path in "${GENERATED_PATHS[@]}"; do
+  if [[ "$(git ls-files -- "${path}" | wc -l | tr -d ' ')" -eq 0 ]]; then
+    unmatched+="  ${path}"$'\n'
+  fi
+done
+
+if [[ -n "${unmatched}" ]]; then
+  fail "Rendered dashboard paths match no tracked file" "${GENERATE_FIX}" \
+    "These entries were compared against nothing, so they are not verified:" \
+    "${unmatched%$'\n'}"
+fi
+
+if ! drift="$(git diff HEAD -- "${GENERATED_PATHS[@]}")" || [[ -n "${drift}" ]]; then
+  echo "${drift}"
+  fail "Rendered dashboards are out of sync with their jsonnet source" "${GENERATE_FIX}" \
+    "These rendered files have uncommitted changes:" \
+    "$(git diff HEAD --name-only -- "${GENERATED_PATHS[@]}")"
+fi
+
+untracked="$(git ls-files --others --exclude-standard -- "${GENERATED_PATHS[@]}")"
+if [[ -n "${untracked}" ]]; then
+  fail "Rendering produced files that are not committed" "${GENERATE_FIX}" \
+    "${untracked}"
+fi
+
+echo "OK: ${#GENERATED_PATHS[@]} rendered dashboard(s) match their jsonnet source"
+{
+  echo "## Dashboards are in sync"
+  echo ""
+  echo "All ${#GENERATED_PATHS[@]} rendered dashboard(s) match their jsonnet source."
+} | step_summary

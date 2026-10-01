@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Grafana dashboards for the compute service, installed through the Grafana
+# operator. The JSON files here are rendered from observability/dashboards/
+# and must not be edited by hand: run `task dashboards:build` instead.
+#
+# The overlay that includes this component sets the namespace, so the
+# GrafanaDashboard and its ConfigMap land next to the compute manager.
+
+resources:
+  - grafana-dashboards.yaml
+
+configMapGenerator:
+  - name: compute-shell-sessions-dashboard
+    files:
+      - shell-sessions.json
+    options:
+      # A stable name lets the GrafanaDashboard reference the ConfigMap
+      # without a generated suffix.
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: compute
+        app.kubernetes.io/component: monitoring

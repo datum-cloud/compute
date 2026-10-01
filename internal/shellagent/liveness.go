@@ -95,13 +95,17 @@ func (a *Agent) renewLease(ctx context.Context) error {
 	return a.cell.Update(ctx, &lease)
 }
 
-// acceptsClaims reports whether the agent would claim a new session now.
+// acceptsClaims reports whether the agent would claim a new session now. It
+// checks the endpoint whether or not the agent is claiming, so the
+// reachability metric stays current while the agent drains.
 func (a *Agent) acceptsClaims(ctx context.Context) bool {
+	ready, err := a.endpointReady(ctx)
+	reachable := err == nil && ready
+	a.recordEndpointReachable(reachable)
 	if !a.claiming() || a.openCount() >= a.cfg.MaxOpenSessions {
 		return false
 	}
-	ready, err := a.endpointReady(ctx)
-	return err == nil && ready
+	return reachable
 }
 
 // releaseLease deletes a liveness Lease once its agent no longer serves

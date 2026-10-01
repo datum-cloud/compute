@@ -80,4 +80,16 @@ const (
 	// and overwrites any value the client supplied, so the session's start and
 	// end events can name the requester.
 	InstanceConsoleSessionRequesterAnnotation = AnnotationNamespace + "/requester"
+
+	// InstanceConsoleSessionCellAnnotation records, on a project
+	// InstanceConsoleSession and on its lifecycle events, the cell the session
+	// was delivered to. The session controller sets it at delivery, so support
+	// can go from one activity event to that cell's logs without a lookup.
+	InstanceConsoleSessionCellAnnotation = AnnotationNamespace + "/cell"
+
+	// InstanceConsoleSessionLocationAnnotation records, on a project
+	// InstanceConsoleSession and on its lifecycle events, the location of the
+	// cell the session was delivered to. The session controller sets it at
+	// delivery.
+	InstanceConsoleSessionLocationAnnotation = AnnotationNamespace + "/location"
 )
