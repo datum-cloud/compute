@@ -30,6 +30,7 @@ require (
 	github.com/distribution/reference v0.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/tmc/go-iroh v0.2.2
 )
 
