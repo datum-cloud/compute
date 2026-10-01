@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,11 +13,16 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/locations"
+	"go.datum.net/compute/pkg/instancetype"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -79,6 +85,20 @@ func makeWDWithAvailCond(name string, status metav1.ConditionStatus, reason, mes
 		LastTransitionTime: metav1.Now(),
 	})
 	return d
+}
+
+// newTestInstanceType builds an InstanceType object at the given lifecycle for
+// workload status-condition tests.
+func newTestInstanceType(phase computev1alpha.InstanceTypeLifecyclePhase, replacement string) *computev1alpha.InstanceType {
+	return &computev1alpha.InstanceType{
+		ObjectMeta: metav1.ObjectMeta{Name: instancetype.D1Standard2},
+		Spec: computev1alpha.InstanceTypeSpec{
+			Lifecycle: computev1alpha.InstanceTypeLifecycle{
+				Phase:                   phase,
+				ReplacementInstanceType: replacement,
+			},
+		},
+	}
 }
 
 // runReconcileWorkloadStatus is a minimal harness that calls reconcileWorkloadStatus
@@ -273,6 +293,240 @@ func TestReconcileWorkloadStatus_ObservedGeneration(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, gen, cond.ObservedGeneration,
 		"Available condition ObservedGeneration must equal workload.Generation")
+}
+
+// TestReconcileInstanceTypeCondition_Deprecated verifies that a workload on a
+// deprecated instance type gains the InstanceTypeDeprecated condition carrying
+// the migration guidance published on the type.
+func TestReconcileInstanceTypeCondition_Deprecated(t *testing.T) {
+	enableInstanceTypes(t)
+	workload := makeWorkload(4)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+	require.NotNil(t, cond, "InstanceTypeDeprecated condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, computev1alpha.InstanceTypeConditionDeprecated, cond.Reason)
+	assert.Contains(t, cond.Message, "datumcloud-d1-standard-4")
+	assert.Equal(t, workload.Generation, cond.ObservedGeneration)
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled),
+		"a deprecated type must not also set the disabled condition")
+}
+
+// TestReconcileInstanceTypeCondition_Disabled verifies that a workload on a
+// disabled instance type gains the InstanceTypeDisabled condition carrying the
+// published replacement guidance.
+func TestReconcileInstanceTypeCondition_Disabled(t *testing.T) {
+	enableInstanceTypes(t)
+	workload := makeWorkload(2)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4"))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+	require.NotNil(t, cond, "InstanceTypeDisabled condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, computev1alpha.InstanceTypeConditionDisabled, cond.Reason)
+	assert.Contains(t, cond.Message, "datumcloud-d1-standard-4")
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated),
+		"a disabled type must not also set the deprecated condition")
+}
+
+// TestReconcileInstanceTypeCondition_DisabledWithoutReplacement uses the
+// no-replacement wording when the type lists no successor.
+func TestReconcileInstanceTypeCondition_DisabledWithoutReplacement(t *testing.T) {
+	enableInstanceTypes(t)
+	workload := makeWorkload(1)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		computev1alpha.InstanceTypePhaseDisabled, ""))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "lists no replacement")
+}
+
+// enableInstanceTypes turns the InstanceTypes gate on for the duration of a
+// test; the lifecycle conditions are reported only while it is on.
+func enableInstanceTypes(t *testing.T) {
+	t.Helper()
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, true)
+}
+
+// priorDeprecatedStatus is a status carrying an InstanceTypeDeprecated
+// condition from an earlier reconcile.
+func priorDeprecatedStatus() *computev1alpha.WorkloadStatus {
+	return &computev1alpha.WorkloadStatus{
+		Conditions: []metav1.Condition{
+			{Type: computev1alpha.InstanceTypeConditionDeprecated, Status: metav1.ConditionTrue, Reason: "previous-reason"},
+		},
+	}
+}
+
+// TestReconcileInstanceTypeCondition_FollowsPhase verifies the conditions track
+// the type's current lifecycle phase rather than accumulating: a type that is
+// Active again, one the project no longer publishes, or one that moved on to
+// Disabled each replace a condition left by an earlier reconcile.
+func TestReconcileInstanceTypeCondition_FollowsPhase(t *testing.T) {
+	enableInstanceTypes(t)
+
+	tests := []struct {
+		name         string
+		objs         []client.Object
+		wantDisabled bool
+	}{
+		{name: "an active type drops the condition",
+			objs: []client.Object{newTestInstanceType(
+				computev1alpha.InstanceTypePhaseActive, "")}},
+		{name: "an unpublished type drops the condition",
+			objs: nil},
+		{name: "a type moved on to disabled swaps the condition",
+			objs: []client.Object{newTestInstanceType(
+				computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4")},
+			wantDisabled: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workload := makeWorkload(1)
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+			status := priorDeprecatedStatus()
+			reconcileInstanceTypeCondition(context.Background(), newProjectFakeClient(tc.objs...), workload, status)
+
+			assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated),
+				"the earlier deprecated condition must not outlive the phase it described")
+			disabled := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+			if tc.wantDisabled {
+				require.NotNil(t, disabled)
+				assert.Equal(t, metav1.ConditionTrue, disabled.Status)
+			} else {
+				assert.Nil(t, disabled)
+			}
+		})
+	}
+}
+
+// TestReconcileInstanceTypeCondition_UnreadableKeepsPrior verifies that a read
+// failure other than the type not being published leaves the prior conditions
+// untouched, so a transient error never flaps them.
+func TestReconcileInstanceTypeCondition_UnreadableKeepsPrior(t *testing.T) {
+	enableInstanceTypes(t)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return errors.New("project control plane unavailable")
+			},
+		}).
+		Build()
+
+	workload := makeWorkload(1)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	status := priorDeprecatedStatus()
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	prior := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+	require.NotNil(t, prior, "an unreadable type must leave the prior condition in place")
+	assert.Equal(t, "previous-reason", prior.Reason)
+}
+
+// TestReconcileInstanceTypeCondition_ResolvesTypeName verifies the condition is
+// reported against the type the instances actually run on: the platform's
+// fallback for a workload naming none, and the renamed type for a workload
+// stored under its retired name.
+func TestReconcileInstanceTypeCondition_ResolvesTypeName(t *testing.T) {
+	enableInstanceTypes(t)
+
+	for _, selected := range []string{"", instancetype.LegacyD1Standard2} {
+		t.Run("selected "+selected, func(t *testing.T) {
+			workload := makeWorkload(1)
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = selected
+
+			cl := newProjectFakeClient(newTestInstanceType(
+				computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
+
+			status := &computev1alpha.WorkloadStatus{}
+			reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+			cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+			require.NotNil(t, cond, "the deprecation of the type the instances run on must be reported")
+			assert.Contains(t, cond.Message, "datumcloud-d1-standard-4")
+		})
+	}
+}
+
+// TestReconcileInstanceTypeCondition_GateOff verifies that with the gate off
+// the InstanceType API is never read and conditions left from a period with the
+// gate on are dropped.
+func TestReconcileInstanceTypeCondition_GateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, false)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				t.Error("the InstanceType API must not be read while the gate is off")
+				return nil
+			},
+		}).
+		Build()
+
+	workload := makeWorkload(1)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	status := priorDeprecatedStatus()
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated))
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled))
+}
+
+// TestEnqueueWorkloadsOnInstanceType verifies a change to an instance type
+// re-queues exactly the workloads that run on it, including one that names no
+// type (it runs on the fallback) and one stored under the retired name.
+func TestEnqueueWorkloadsOnInstanceType(t *testing.T) {
+	onType := func(name, instanceType string) *computev1alpha.Workload {
+		w := makeWorkload(1)
+		w.Name = name
+		w.Spec.Template.Spec.Runtime.Resources.InstanceType = instanceType
+		return w
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithObjects(
+			onType("named", instancetype.D1Standard2),
+			onType("fallback", ""),
+			onType("retired-name", instancetype.LegacyD1Standard2),
+			onType("other", "datumcloud-d2-standard-2"),
+		).
+		WithIndex(&computev1alpha.Workload{}, workloadInstanceTypeIndex, workloadInstanceTypeIndexFunc).
+		Build()
+
+	requests := enqueueWorkloadsOnInstanceType(context.Background(), cl, "project", instancetype.D1Standard2)
+
+	names := make([]string, 0, len(requests))
+	for _, r := range requests {
+		assert.Equal(t, multicluster.ClusterName("project"), r.ClusterName)
+		names = append(names, r.Name)
+	}
+	assert.ElementsMatch(t, []string{"named", "fallback", "retired-name"}, names)
 }
 
 // TestMergeDeploymentMetadata_PreservesForeignAnnotation verifies that merging

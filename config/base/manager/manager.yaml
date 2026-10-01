@@ -38,6 +38,7 @@ spec:
           - --enable-cell-controllers=$(ENABLE_CELL_CONTROLLERS)
           - --feature-gates=$(FEATURE_GATES)
           - --instance-type-deprecation-grace-period=$(INSTANCE_TYPE_DEPRECATION_GRACE_PERIOD)
+          - --instance-type-default=$(INSTANCE_TYPE_DEFAULT)
         env:
           - name: LEADER_ELECT
             value: "true"
@@ -55,6 +56,8 @@ spec:
             value: ""
           - name: INSTANCE_TYPE_DEPRECATION_GRACE_PERIOD
             value: "1440h"
+          - name: INSTANCE_TYPE_DEFAULT
+            value: "datumcloud-d1-standard-2"
         image: ghcr.io/datum-cloud/compute:latest
         ports:
         - containerPort: 9443

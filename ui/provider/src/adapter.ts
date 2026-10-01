@@ -305,8 +305,12 @@ function deriveInstanceStatusMessage(conditions: RawCondition[]): string | undef
   return conditions.find((c) => c.type === 'Available')?.message;
 }
 
-/** Mirrors `instanceTypeCatalog` in `internal/controller/instance_controller.go`. */
+/**
+ * Mirrors `pkg/instancetype/catalog.go`. `datumcloud/d1-standard-2` is the
+ * baseline type's name before the rename, still carried by older instances.
+ */
 const INSTANCE_TYPE_CATALOG: Record<string, { cpu: string; memory: string }> = {
+  'datumcloud-d1-standard-2': { cpu: '1', memory: '2Gi' },
   'datumcloud/d1-standard-2': { cpu: '1', memory: '2Gi' },
   'd1-standard-2': { cpu: '1', memory: '2Gi' },
 };

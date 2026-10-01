@@ -1,0 +1,13 @@
+# The migration target the deprecation/disable scenarios point at. Living as a
+# second Active type makes replacementInstanceType validate (the webhook requires
+# the replacement to exist) and lets the disabled-rejection message name it.
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceType
+metadata:
+  name: datumcloud-d2-standard-2
+spec:
+  resources:
+    cpu: 2000m
+    memory: 4096Mi
+  lifecycle:
+    phase: Active

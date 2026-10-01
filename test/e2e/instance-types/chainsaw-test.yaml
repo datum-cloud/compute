@@ -1,0 +1,264 @@
+# E2E suite for issue #333: Workload admission validates instanceType against the
+# live InstanceType catalog, and the Workload controller surfaces lifecycle
+# conditions.
+#
+# Scenarios:
+#   A. An Active catalog tier admits a Workload, the render stamps the type onto
+#      the WLD, and a downstream Instance is projected back to the control plane.
+#   B. A Workload that omits instanceType is ADMITTED (no catalog-marked
+#      default); the mutating webhook stamps the operator-configured default
+#      (datumcloud-d1-standard-2) onto the stored Workload at creation, and the
+#      rendered WLD carries it through.
+#   C. A Deprecated tier still admits a new Workload; the controller surfaces
+#      InstanceTypeDeprecated on the Workload.
+#   D. After the (lowered 90s) deprecation grace period, a Disabled tier rejects
+#      a new Workload with the migration message naming replacementInstanceType.
+#
+# The suite seeds its own InstanceType objects (none are pre-seeded in e2e).
+# It also seeds the two networking objects Workload lifecycle needs and the e2e
+# environment ships empty: a cluster-scoped LocationBinding named "dfw" (the
+# placement location every scenario uses -- without it the webhook rejects
+# every placement) and a namespaced Network named "default" (the interface every
+# workload attaches -- without it the Workload controller sets Available=False
+# and never renders WorkloadDeployments).
+# Quota is disabled in the e2e cell (no ResourceClaim is ever created), so the
+# claim shape (vcpus=1000/memory=2048) is asserted by the unit harness in
+# instance_controller_test.go, not here.
+#
+# Because the deprecation grace period is a flag on the management deploy (set to
+# 90s by test/e2e/deploy/management/deployment_patch.yaml), scenario D can reach
+# Disabled within the test run.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: instance-types
+spec:
+  description: |
+    Workload admission validates instanceType against the live InstanceType
+    catalog. Active types admit; a deprecated type still admits and surfaces
+    InstanceTypeDeprecated; a disabled type rejects with the migration message;
+    an omitted type keeps the legacy fallback.
+  template: true
+
+  steps:
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 0. SEED THE CATALOG
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: seed-catalog
+    description: Create the two Active InstanceType tiers the suite validates against.
+    try:
+    - apply:
+        file: location-binding-dfw.yaml
+    - apply:
+        file: network-default.yaml
+    # d2 is applied before d1 on purpose: cleanup runs in reverse order, and d1
+    # (once deprecated) names d2 as its replacement, so the webhook refuses to
+    # delete d2 until d1 is gone.
+    - apply:
+        file: instance-type-d2-standard-2.yaml
+    - apply:
+        file: instance-type-d1-standard-2.yaml
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-d1-standard-2
+          status:
+            conditions:
+            - type: Ready
+              status: "True"
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-d2-standard-2
+          status:
+            conditions:
+            - type: Ready
+              status: "True"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 1. SCENARIO A — ACTIVE TYPE ADMITS AND FLOWS THROUGH
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: admit-active-type
+    description: |
+      A Workload naming an Active catalog tier is admitted (no error), the type
+      is stamped onto the rendered WLD, and the full chain projects an Instance
+      back to the control plane.
+    try:
+    - apply:
+        file: workload-valid.yaml
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: instance-types-wl-valid-default-dfw
+          spec:
+            template:
+              spec:
+                runtime:
+                  resources:
+                    instanceType: datumcloud-d1-standard-2
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($namespace)
+            name: instance-types-wl-valid-default-dfw-0
+          (status.conditions[?type == 'Ready'] | [0]):
+            status: "False"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 2. SCENARIO B — OMITTED INSTANCETYPE IS THE LEGACY FALLBACK
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: omitted-type-admitted
+    description: |
+      A Workload that omits instanceType is admitted (there is no catalog-marked
+      default per the design decision; the default is operator configuration,
+      applied by the mutating webhook at creation). The stored Workload gets
+      the operator-configured default stamped on immediately, and the render
+      path carries it through to the downstream WLD.
+    try:
+    - apply:
+        file: workload-empty.yaml
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Workload
+          metadata:
+            namespace: ($namespace)
+            name: instance-types-wl-empty
+          spec:
+            template:
+              spec:
+                runtime:
+                  resources:
+                    instanceType: datumcloud-d1-standard-2
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: instance-types-wl-empty-default-dfw
+          spec:
+            template:
+              spec:
+                runtime:
+                  resources:
+                    instanceType: datumcloud-d1-standard-2
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 3. COMPANION — UNKNOWN TYPE IS REJECTED
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: unknown-type-rejected
+    description: |
+      A Workload naming a tier the catalog does not publish is rejected; the
+      error carries the offending instanceType name.
+    try:
+    - apply:
+        file: workload-unknown.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'datumcloud-no-such-type')): true
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 4. SCENARIO C — DEPRECATED TYPE STILL ADMITS + SURFACES CONDITION
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: deprecate-tier
+    description: Deprecate datumcloud-d1-standard-2, pointing at d2 as the replacement.
+    try:
+    - apply:
+        file: deprecate-d1.yaml
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-d1-standard-2
+          spec:
+            lifecycle:
+              phase: Deprecated
+              replacementInstanceType: datumcloud-d2-standard-2
+
+  - name: deprecated-type-admits-with-condition
+    description: |
+      A new Workload naming the Deprecated tier is still admitted (with a
+      warning; Chainsaw cannot bind admission warnings, so this asserts the
+      Workload status condition the controller surfaces instead).
+    try:
+    - apply:
+        file: workload-deprecated.yaml
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Workload
+          metadata:
+            namespace: ($namespace)
+            name: instance-types-wl-deprecated
+          status:
+            (conditions[?type == 'InstanceTypeDeprecated'] | [0]):
+              status: "True"
+              reason: InstanceTypeDeprecated
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 5. SCENARIO D — REACH DISABLED AFTER GRACE, THEN REJECT
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: wait-grace-period
+    description: |
+      Sleep past the 90s deprecation grace period so the Deprecated -> Disabled
+      transition is accepted by the InstanceType webhook.
+    try:
+    - script:
+        timeout: 150s
+        content: sleep 110
+
+  - name: disable-tier
+    description: Disable datumcloud-d1-standard-2 after its grace period has elapsed.
+    try:
+    - apply:
+        file: disable-d1.yaml
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-d1-standard-2
+          spec:
+            lifecycle:
+              phase: Disabled
+
+  - name: disabled-type-rejected
+    description: |
+      A new Workload naming the Disabled tier is rejected with the migration
+      message directing the author to replacementInstanceType.
+    try:
+    - apply:
+        file: workload-disabled.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'is disabled; please update your workload to')): true
+            (contains($error, 'datumcloud-d2-standard-2')): true

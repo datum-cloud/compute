@@ -23,6 +23,12 @@ spec:
           env:
             - name: FEATURE_GATES
               value: InstanceTypes=true
+            # Lower the deprecation grace period so the instance-types e2e suite
+            # can advance a type Deprecated -> Disabled within a test run. The
+            # instancetype-lifecycle suite's grace-period-verification still holds:
+            # its transitions happen within seconds, well under 90s.
+            - name: INSTANCE_TYPE_DEPRECATION_GRACE_PERIOD
+              value: 90s
       volumes:
         - name: webhook-server-tls
           csi: null

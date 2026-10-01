@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/pkg/instancetypecatalog"
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
@@ -137,6 +138,15 @@ type WorkloadValidationOptions struct {
 	// selection is disabled. When selection is enabled, an empty catalog means
 	// the control plane offers no tier, so validation rejects the workload.
 	RuntimeClasses runtimeclass.Catalog
+
+	// InstanceTypes is the catalog of InstanceType objects this project control
+	// plane publishes, read by the caller. The catalog is empty when instance
+	// type selection is disabled. When selection is enabled, an empty catalog
+	// means the control plane offers no type, so validation rejects a workload
+	// that names one. A workload that omits instanceType always passes: the
+	// platform runs it on the hardcoded fallback type for backwards
+	// compatibility.
+	InstanceTypes instancetypecatalog.Catalog
 }
 
 func validateWorkloadSpec(spec computev1alpha.WorkloadSpec, opts WorkloadValidationOptions) field.ErrorList {

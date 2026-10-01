@@ -1,0 +1,30 @@
+# Scenario B: a Workload that omits instanceType. Per the design decision there
+# is no catalog-marked default, so admission must NOT reject the empty value.
+# The mutating webhook stamps the operator-configured default (compute-manager's
+# --instance-type-default, datumcloud-d1-standard-2 in this e2e environment) onto
+# the stored Workload at creation, and the render path carries it through to the
+# downstream WLD. The resources block must be present (the CRD schema requires
+# runtime.resources) but instanceType is left empty inside it, as a customer
+# manifest that omits the field would.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: instance-types-wl-empty
+spec:
+  template:
+    spec:
+      runtime:
+        resources: {}
+        sandbox:
+          containers:
+            - name: app
+              image: docker.io/library/nginx:latest
+      networkInterfaces:
+      - network:
+          name: default
+  placements:
+  - name: default
+    locations:
+    - name: dfw
+    scaleSettings:
+      minReplicas: 1

@@ -12,7 +12,29 @@ package instancetype
 import "sort"
 
 // D1Standard2 is the catalog's baseline instance type name.
-const D1Standard2 = "datumcloud/d1-standard-2"
+const D1Standard2 = "datumcloud-d1-standard-2"
+
+// LegacyD1Standard2 is the name D1Standard2 was published under before instance
+// type names became valid Kubernetes object names. Workloads, deployments, and
+// instances stored before the rename still carry it, and rewriting them would
+// change their templates and roll every running instance, so the name stays an
+// alias rather than being migrated.
+const LegacyD1Standard2 = "datumcloud/d1-standard-2"
+
+// aliases maps retired instance type names to the name that replaced them.
+var aliases = map[string]string{
+	LegacyD1Standard2: D1Standard2,
+}
+
+// Canonical returns the current name for an instance type name, mapping a name
+// retired by a rename to the name that replaced it. Any other name, including
+// an unknown one, is returned unchanged.
+func Canonical(name string) string {
+	if canonical, ok := aliases[name]; ok {
+		return canonical
+	}
+	return name
+}
 
 // Resources are the dimensions a named instance type is sized at.
 type Resources struct {
@@ -26,7 +48,7 @@ type Resources struct {
 
 // catalog holds the platform-declared sizes, which are not derived from any
 // infrastructure provider's machine type. For example, infra-provider-gcp maps
-// datumcloud/d1-standard-2 to the GCP n2-standard-2 machine type, but that
+// datumcloud-d1-standard-2 to the GCP n2-standard-2 machine type, but that
 // mapping does not define the size here.
 //
 // The map stays unexported and is reached only through Lookup, so no consumer
@@ -39,15 +61,18 @@ var catalog = map[string]Resources{
 }
 
 // Lookup returns the sizing for an instance type name and reports whether the
-// catalog contains the name. An unknown name yields no sizing rather than a
-// default, so a misspelled name surfaces as missing sizing instead of an
-// instance running at a size it was not billed for.
+// catalog contains the name. A retired name resolves to the sizing of the name
+// that replaced it. An unknown name yields no sizing rather than a default, so
+// a misspelled name surfaces as missing sizing instead of an instance running
+// at a size it was not billed for.
 func Lookup(name string) (Resources, bool) {
-	res, ok := catalog[name]
+	res, ok := catalog[Canonical(name)]
 	return res, ok
 }
 
-// Names returns the catalogued instance type names in sorted order.
+// Names returns the catalogued instance type names in sorted order. Retired
+// names are still accepted by Lookup but are not listed, so they are never
+// offered as a choice.
 func Names() []string {
 	names := make([]string, 0, len(catalog))
 	for name := range catalog {
