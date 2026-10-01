@@ -10,6 +10,7 @@
  * project home page's Workloads column.
  */
 import { Banner } from './cli-section';
+import { ColumnEmpty } from '../cards/home-column-parts';
 import { useRequestComputeAccess, type EntitlementPhase } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
@@ -38,6 +39,13 @@ const COPY: Record<BannerState, { title: string; description: string; icon: Reac
     icon: <Icon icon={XCircleIcon} size={32} className="text-destructive shrink-0" />,
     cta: 'Request access again',
   },
+};
+
+/** Smaller icons for the compact (home column) variant, which sits in a tile. */
+const COMPACT_ICON: Record<BannerState, typeof ShieldAlertIcon> = {
+  NotRequested: ShieldAlertIcon,
+  PendingApproval: ClockIcon,
+  Rejected: XCircleIcon,
 };
 
 function bannerState(phase: EntitlementPhase | null): BannerState {
@@ -70,7 +78,7 @@ export function ComputeEnablementBanner({
     <Button
       loading={isPending}
       disabled={isPending}
-      size={compact ? 'small' : undefined}
+      size={compact ? 'xs' : undefined}
       onClick={handleClick}
     >
       {copy.cta}
@@ -79,14 +87,14 @@ export function ComputeEnablementBanner({
 
   if (compact) {
     return (
-      <div
-        className="bg-muted/40 border-input flex min-h-24 flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-5 text-center"
-        data-testid="compute-plugin-enablement-compact"
+      <ColumnEmpty
+        icon={<Icon icon={COMPACT_ICON[state]} size={18} aria-hidden />}
+        title={copy.title}
+        action={action}
+        testId="compute-plugin-enablement-compact"
       >
-        <p className="text-sm font-medium">{copy.title}</p>
-        <p className="text-muted-foreground text-xs">{copy.description}</p>
-        {action}
-      </div>
+        {copy.description}
+      </ColumnEmpty>
     );
   }
 
