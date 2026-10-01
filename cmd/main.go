@@ -494,6 +494,17 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
 			os.Exit(1)
 		}
+		// Guards the expected-referenced-data annotation, which authorizes what
+		// the federation engine delivers to cells. Registered wherever the
+		// webhook server runs, independently of the referenced-data gate: the
+		// resolver writes the annotation whether or not instances are gated on
+		// it.
+		if err = computev1alphawebhooks.SetupWorkloadDeploymentWebhookWithManager(
+			mgr, serverConfig.ReferencedData.ResolverUsernames,
+		); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "WorkloadDeployment")
+			os.Exit(1)
+		}
 		// Always registered, regardless of InstanceTypes: the gate is checked
 		// inside validation, which rejects every write with an explained reason
 		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(

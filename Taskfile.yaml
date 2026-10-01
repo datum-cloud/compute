@@ -342,6 +342,11 @@ tasks:
             -n karmada-system get deploy karmada-apiserver &>/dev/null; then
           echo "Karmada already present — waiting for its components to become Available..."
         else
+          # PropagateDeps carries a WorkloadDeployment's referenced ConfigMaps
+          # and Secrets to the cells it runs on. The chart pins the gate off,
+          # overriding the upstream default, so it has to be set explicitly here
+          # and in any environment that serves referenced data — otherwise
+          # companions never leave the hub and instances hold their gate.
           echo "Installing Karmada {{.KARMADA_VERSION}} via Helm..."
           helm install karmada karmada-charts/karmada \
             --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
@@ -350,6 +355,7 @@ tasks:
             --version {{.KARMADA_VERSION}} \
             --set apiServer.serviceType=NodePort \
             --set apiServer.nodePort={{.KARMADA_API_NODEPORT}} \
+            --set controllerManager.featureGates.PropagateDeps=true \
             --wait \
             --timeout 10m \
             || echo "Helm --wait did not settle in time; will wait on the deployments directly below"

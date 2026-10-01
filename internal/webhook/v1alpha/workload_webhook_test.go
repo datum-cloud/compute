@@ -45,6 +45,10 @@ const (
 	testCapSetgid         = "SETGID"
 )
 
+// testDefaultPlacement is the placement name the Workload controller writes
+// when a customer names none.
+const testDefaultPlacement = "default"
+
 func runtimeClass(name string, isDefault bool) computev1alpha.RuntimeClass {
 	return computev1alpha.RuntimeClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -106,7 +110,7 @@ func TestWorkloadWebhookDefaultMigratesCityCodes(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, false)
 
 	workload := &computev1alpha.Workload{}
-	workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{Name: "default", CityCodes: []string{"DFW"}}}
+	workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{Name: testDefaultPlacement, CityCodes: []string{"DFW"}}}
 
 	if err := (&workloadWebhook{}).Default(context.Background(), workload); err != nil {
 		t.Fatalf("Default: %v", err)

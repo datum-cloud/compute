@@ -38,3 +38,63 @@ spec:
           end
           return desiredObj
         end
+    # Names the companion ConfigMaps and Secrets a deployment needs, so the
+    # engine delivers each one to the union of every referencing deployment's
+    # placements. Policy claiming is exclusive, so a companion named as a
+    # selector on two locations' policies reaches only one of them; declaring it
+    # as a dependency removes the claim entirely.
+    #
+    # The expected-referenced-data annotation is the contract: the resolver is
+    # its only writer, a validating webhook rejects every other writer, and the
+    # cell's scheduling gate reads the same value. Consumers never re-derive
+    # companion names.
+    #
+    # Karmada runs this with open libraries skipped: string.gmatch, string.find,
+    # string.sub and the table library are available, string.gsub and a JSON
+    # module are not. Hence the hand-rolled token scan over the JSON array.
+    dependencyInterpretation:
+      luaScript: |
+        function GetDependencies(desiredObj)
+          local dependencies = {}
+          if desiredObj.metadata == nil or desiredObj.metadata.annotations == nil then
+            return dependencies
+          end
+
+          local expected = desiredObj.metadata.annotations["compute.datumapis.com/expected-referenced-data"]
+          if expected == nil or expected == "" then
+            return dependencies
+          end
+
+          -- Only the two kinds the resolver materialises are accepted. A kind
+          -- outside this set cannot be propagated even if it reaches the
+          -- annotation, which keeps a stray write from shipping arbitrary
+          -- objects to cells.
+          local allowedKinds = { ConfigMap = true, Secret = true }
+          local seen = {}
+          local count = 0
+
+          -- The annotation holds a JSON array of "Kind/name" tokens. Companion
+          -- names are DNS subdomains and kinds are literals, so no token can
+          -- contain a quote and matching quoted runs is sufficient.
+          for token in string.gmatch(expected, '"([^"]+)"') do
+            local separator = string.find(token, "/", 1, true)
+            if separator ~= nil and separator > 1 and separator < #token then
+              local kind = string.sub(token, 1, separator - 1)
+              local name = string.sub(token, separator + 1)
+              if allowedKinds[kind] and not seen[token] then
+                seen[token] = true
+                count = count + 1
+                dependencies[count] = {
+                  apiVersion = "v1",
+                  kind = kind,
+                  name = name,
+                  -- Pinned to the deployment's own namespace so the annotation
+                  -- can never reach data in another project's namespace.
+                  namespace = desiredObj.metadata.namespace,
+                }
+              end
+            end
+          end
+
+          return dependencies
+        end
