@@ -73,18 +73,32 @@ patches:
       kind: ResourceMetricsPolicy
       name: compute-metrics
 
-  # DEVIATION 5 (required): remove the reconcile-storm VMRule.
-  # config/components/alerts ships a VMRule
+  # DEVIATION 5 (required): remove every VMRule.
+  # config/components/alerts ships VMRules
   # (operator.victoriametrics.com/v1beta1), whose CRD is owned by the
-  # VictoriaMetrics operator that is not installed in Kind. Applying it fails
+  # VictoriaMetrics operator that is not installed in Kind. Applying them fails
   # with "no matches for kind VMRule". Alerting rules are evaluated by the
-  # metrics stack, not the operator under test, so drop it from the deploy set.
+  # metrics stack, not the operator under test, so drop them from the deploy
+  # set. Targeting by kind keeps this deviation valid as new rule files land.
   - patch: |
       $patch: delete
       apiVersion: operator.victoriametrics.com/v1beta1
       kind: VMRule
       metadata:
-        name: compute-controller-alerts
+        name: unused
     target:
       kind: VMRule
-      name: compute-controller-alerts
+
+  # DEVIATION 6 (required): remove every GrafanaDashboard.
+  # config/components/dashboards ships GrafanaDashboards
+  # (grafana.integreatly.org/v1beta1), whose CRD is owned by the Grafana
+  # operator that is not installed in Kind. The rendered dashboard ConfigMap is
+  # harmless and stays, which also proves the component renders.
+  - patch: |
+      $patch: delete
+      apiVersion: grafana.integreatly.org/v1beta1
+      kind: GrafanaDashboard
+      metadata:
+        name: unused
+    target:
+      kind: GrafanaDashboard

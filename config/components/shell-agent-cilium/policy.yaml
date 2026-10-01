@@ -24,6 +24,13 @@ spec:
         - ports:
             - port: "8081"
               protocol: TCP
+    # Metrics, for the platform's scraper wherever in the cluster it runs.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
   egress:
     - toEntities:
         - kube-apiserver

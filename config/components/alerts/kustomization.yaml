@@ -3,3 +3,4 @@ kind: Component
 
 resources:
   - reconcile-storm.yaml
+  - shell-sessions.yaml

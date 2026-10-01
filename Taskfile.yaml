@@ -55,6 +55,17 @@ vars:
   # Namespace the operators deploy into (matches config/overlays/* namespace:).
   COMPUTE_NAMESPACE: compute-system
 
+# ─── Includes ───────────────────────────────────────────────────────────────
+
+# One Taskfile per grafonnet dashboard under observability/dashboards/. The
+# dashboards:* tasks below fan out to each so a new dashboard only needs an
+# entry here and a line in those two tasks.
+includes:
+  shell-sessions-dashboard:
+    taskfile: observability/dashboards/shell-sessions/Taskfile.yaml
+    dir: observability/dashboards/shell-sessions
+    internal: true
+
 # ─── Tasks ──────────────────────────────────────────────────────────────────
 
 tasks:
@@ -63,6 +74,29 @@ tasks:
     cmds:
       - task --list
     silent: true
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  Grafana dashboards (grafonnet)
+  # ════════════════════════════════════════════════════════════════════════
+
+  install-jsonnet-tools:
+    desc: "Install jsonnet and jsonnet-bundler if not already installed"
+    status:
+      - which jsonnet
+      - which jb
+    cmds:
+      - brew install go-jsonnet
+      - go install -a github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@latest
+
+  dashboards:install:
+    desc: "Fetch grafonnet into each dashboard's vendor/ directory"
+    cmds:
+      - task: shell-sessions-dashboard:install
+
+  dashboards:build:
+    desc: "Render every dashboard JSON into config/components/dashboards/"
+    cmds:
+      - task: shell-sessions-dashboard:build
 
   # ════════════════════════════════════════════════════════════════════════
   #  e2e environment lifecycle

@@ -236,6 +236,7 @@ func (a *Agent) stopProcesses(ctx context.Context, s *slot) (bool, error) {
 	if err != nil || code != 0 {
 		log.FromContext(ctx).Info("could not stop session processes", "session", s.sessionUID,
 			"pod", s.pod.String(), "exitCode", code, "output", out, "error", err)
+		a.recordCleanupUnconfirmed()
 		return false, nil
 	}
 	return true, nil
