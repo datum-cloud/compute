@@ -39,6 +39,7 @@ ENTRYPOINT ["/usr/local/bin/app"]
 	node, sourceStage := df.findEntrypointProducer("/usr/local/bin/app", toolchain{Kind: toolchainGo})
 	if node == nil {
 		t.Fatal("expected producer")
+		return
 	}
 	if node.StartLine != 3 {
 		t.Fatalf("expected line 3, got %d", node.StartLine)
@@ -62,6 +63,7 @@ ENTRYPOINT ["/server"]
 	node := df.findEntrypointCopy("/server")
 	if node == nil {
 		t.Fatal("expected entrypoint copy")
+		return
 	}
 	if node.StartLine != 4 {
 		t.Fatalf("expected line 4, got %d", node.StartLine)
@@ -399,6 +401,7 @@ func TestCheckMissingLibrariesReportsDynamicLoader(t *testing.T) {
 	_, elfFile := detectToolchain(data)
 	if elfFile == nil {
 		t.Fatal("expected ELF")
+		return
 	}
 	if interp := elfInterp(elfFile); interp == "" {
 		t.Skip("test toolchain produced no PT_INTERP")

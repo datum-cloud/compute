@@ -558,13 +558,19 @@ var catalog = []ReasonInfo{
 		Explanation: "This runtime class is available to use. The provider behind it serves " +
 			"everything the class promises.",
 	},
+	// Pending is also where a shell session starts, so one entry explains
+	// both.
 	{
-		Reason:         computev1alpha.RuntimeClassReasonPending,
-		ConditionTypes: []string{computev1alpha.RuntimeClassConditionAvailable},
-		Actionability:  ActionabilityTransient,
-		Explanation: "Datum has not reported back either way on this runtime class yet. That is " +
-			"expected briefly after a class is published or while the provider behind it is being " +
-			"rolled out.",
+		Reason: computev1alpha.RuntimeClassReasonPending,
+		ConditionTypes: []string{
+			computev1alpha.RuntimeClassConditionAvailable,
+			computev1alpha.InstanceConsoleSessionReady,
+		},
+		Actionability: ActionabilityTransient,
+		Explanation: "Datum has not reported back either way yet. For a runtime class, that is " +
+			"expected briefly after the class is published or while the provider behind it is being " +
+			"rolled out. For a shell session, it is expected for a few seconds after the session is " +
+			"opened.",
 		Remediation:      remediationWait,
 		Skill:            SkillStalledTransient,
 		ExpectedDuration: windowHandoff,
@@ -588,6 +594,141 @@ var catalog = []ReasonInfo{
 			"status message says which part.",
 		Remediation: remediationEscalate + " In the meantime, select a different runtime class if " +
 			"one fits.",
+	},
+
+	// Shell sessions. A session is one command run in one container of an
+	// instance. Every reason that ends a session is final: the fix is always a
+	// new session, never a change to this one.
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonSessionReady,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityTransient,
+		Explanation: "This shell session is ready and waiting for its client to connect. It ends " +
+			"with NotConnected if nobody connects within a minute.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonConnected,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityTransient,
+		Explanation:    "A client is connected to this shell session and its command is running.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonCompleted,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityTransient,
+		Explanation: "The session's command exited on its own. The session's exit code says " +
+			"whether it succeeded.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonExpired,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation:    "The session's command ran for its full time limit and was stopped.",
+		Remediation: "Open a new session. If the command needs longer, ask for a longer ttl, up " +
+			"to one hour.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonRevoked,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation:    "The session was deleted before its command finished, which stopped the command.",
+		Remediation:    "Open a new session if you still need one.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonNotConnected,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation: "Nobody connected to the session before its connection deadline, so it ended " +
+			"without running the command.",
+		Remediation: "Open a new session and connect straight away. datumctl compute exec does " +
+			"both in one step.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonAgentShutdown,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityPlatform,
+		Explanation: "Datum ended the session for routine maintenance where the instance runs. " +
+			"The instance itself was not affected.",
+		Remediation: "Open a new session.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonAgentLost,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityPlatform,
+		Explanation: "Datum lost track of the session unexpectedly and ended it. The instance " +
+			"itself was not affected.",
+		Remediation: "Open a new session. If this keeps happening, raise it with Datum.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonTooManySessions,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation:    "The instance already has as many shell sessions open as it allows.",
+		Remediation:    "Close one of the instance's open sessions, then open a new one.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonNoShell,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation: "The container's image has no shell. Datum needs one to run and stop the " +
+			"session's command, even when the command is not itself a shell.",
+		Remediation: "Add a shell such as /bin/sh to the image, or open the session in a " +
+			"container whose image has one.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonCommandUnavailable,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation:    "The container's image does not have the executable the session asked to run.",
+		Remediation: "Check the command's spelling and path, or add the executable to the " +
+			"image, then open a new session.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonInstanceNotRunning,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation:    "The instance or the container was not running, so there was nothing to open a session into.",
+		Remediation:    "Wait until the instance is running, then open a new session.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonInstanceNotFound,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation: "The instance the session named no longer exists. It may have been replaced " +
+			"by a new instance with the same name.",
+		Remediation: "Look the instance up again and open a new session into the current one.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonInvalid,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation:    "The session asked for something Datum cannot serve as written. The message says what.",
+		Remediation:    "Correct the request and open a new session.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonUnavailable,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityPlatform,
+		Explanation: "No part of Datum took the session in time, so shell sessions are not " +
+			"available for this instance right now. The instance itself was not affected.",
+		Remediation: "Try again shortly. If this keeps happening, raise it with Datum.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonDisconnected,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityUser,
+		Explanation: "The connection to the client was lost before the command finished, so " +
+			"Datum stopped the command.",
+		Remediation: "Open a new session to continue. If this keeps happening, check the " +
+			"client's network connection.",
+	},
+	{
+		Reason:         computev1alpha.InstanceConsoleSessionReasonClosedByUser,
+		ConditionTypes: []string{computev1alpha.InstanceConsoleSessionReady},
+		Actionability:  ActionabilityTransient,
+		Explanation: "The user closed the session before the command finished, so Datum " +
+			"stopped the command. Nothing went wrong. The client reports this reason, so " +
+			"it never replaces a revoke, an expiry or another ending Datum starts.",
 	},
 }
 

@@ -64,9 +64,15 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet envtest interpreter-test ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
+.PHONY: test-console
+test-console: ## Run the console session client's tests with the race detector, and the browser build's tests under Node.
+	go test -race ./internal/consoleclient/... ./internal/cmd/compute/exec/...
+	PATH="$$(go env GOROOT)/lib/wasm:$$PATH" GOOS=js GOARCH=wasm go test ./cmd/console-wasm/...
+
 .PHONY: interpreter-test
 interpreter-test: karmadactl ## Validate Karmada resource interpreter customizations.
 	$(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --check
+	KARMADACTL=$(KARMADACTL) test/interpreter/instanceconsolesession.sh
 	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
 	if ! grep -q "replicas: 5" <<<"$$out"; then \
 	  printf '%s\n' "$$out"; \
@@ -104,6 +110,17 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
+
+CONSOLE_WASM ?= bin/console-session.wasm
+CONSOLE_WASM_EXEC ?= bin/console-session-wasm_exec.js
+
+.PHONY: build-console-wasm
+build-console-wasm: ## Build the browser console session client and report its size.
+	GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o $(CONSOLE_WASM) ./cmd/console-wasm
+	install -m 0644 "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $(CONSOLE_WASM_EXEC)
+	@echo "$(CONSOLE_WASM): $$(wc -c < $(CONSOLE_WASM) | tr -d ' ') bytes raw," \
+		"$$(gzip -9c $(CONSOLE_WASM) | wc -c | tr -d ' ') gzip," \
+		"$$(if command -v brotli >/dev/null; then brotli -c $(CONSOLE_WASM) | wc -c | tr -d ' '; else echo n/a; fi) brotli"
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.

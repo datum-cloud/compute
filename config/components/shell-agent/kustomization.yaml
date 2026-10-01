@@ -1,0 +1,29 @@
+# Serves instance shell sessions in a cell: two shell agents, each paired by
+# ordinal with a Datum Connect tunnel endpoint that is the agent's only way in.
+#
+# Everything lives in compute-shell-system, and the session target clients dial
+# names that namespace, so include this component from a kustomization that does
+# not rename namespaces (see config/overlays/cell-shell-agent). The deployment
+# supplies ConfigMap exec-relays: DATUM_CONNECT_RELAY_URLS, the relays the
+# endpoints register with and the agents publish, nearest first.
+#
+# The agent needs no Karmada hub credential. It writes status only on the
+# session copies in its cell, and Karmada reflects it back to the hub with the
+# InstanceConsoleSession interpreter in config/components/federation.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - exec-admission-policy.yaml
+  - service.yaml
+  - agent.yaml
+  - endpoint.yaml
+  - networkpolicy.yaml
+
+# datum-connect's CLI image is first published by datum-cloud/app#192. Until
+# that release exists this tag is a placeholder; pin the released tag here.
+images:
+  - name: ghcr.io/datum-cloud/datum-connect
+    newTag: v0.0.0-unreleased

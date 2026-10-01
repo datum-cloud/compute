@@ -28,7 +28,7 @@ jobs:
     uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
     with:
       image-name: compute-consumer-ui-plugin
-      context: ui/consumer
+      context: .
       dockerfile-path: ui/consumer/Dockerfile
     secrets: inherit
 
@@ -56,8 +56,9 @@ jobs:
   # can only stamp one image across N paths, which can't express "three
   # different images, four different paths" at all.
   #
-  # compute-mcp is stamped with the manager's image and the manager's tag: one
-  # image carries both binaries, so the two paths cannot name different builds.
+  # compute-mcp and the shell agent are stamped with the manager's image and
+  # the manager's tag: one image carries all three binaries, so the paths
+  # cannot name different builds.
   publish-kustomize-bundles:
     needs:
       [
@@ -78,4 +79,5 @@ jobs:
         - { path: config/components/consumer-ui-plugin, name: ghcr.io/datum-cloud/compute-consumer-ui-plugin, tag: "${{ needs.publish-consumer-ui-plugin-image.outputs.tag }}" }
         - { path: config/components/provider-ui-plugin, name: ghcr.io/datum-cloud/compute-provider-ui-plugin, tag: "${{ needs.publish-provider-ui-plugin-image.outputs.tag }}" }
         - { path: config/components/compute-mcp, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
+        - { path: config/components/shell-agent, name: ghcr.io/datum-cloud/compute, tag: "${{ needs.publish-container-image.outputs.tag }}" }
     secrets: inherit

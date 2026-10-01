@@ -779,11 +779,13 @@ func publish(ctx context.Context, out io.Writer, c client.Client, w *computev1al
 // existingHostnames returns the custom hostnames already attached to the
 // workload's URL, so republishing carries them forward.
 //
-// Publishing rewrites the proxy spec wholesale. Custom hostnames are not set by
-// this plugin — they are configured out of band, by the ALB tooling that owns
-// advanced proxy configuration — so without this every redeploy would silently
-// detach them and the custom domain would stop answering. That matters more,
-// not less, for hostnames this plugin cannot see itself having added.
+// Publishing sets the proxy's hostnames to exactly the ones it is handed (the
+// rest of the spec it merges, see url.mergeProxySpec). Custom hostnames are not
+// set by this plugin — they are configured out of band, by the ALB tooling that
+// owns advanced proxy configuration — so without this every redeploy would
+// silently detach them and the custom domain would stop answering. That
+// matters more, not less, for hostnames this plugin cannot see itself having
+// added.
 //
 // It fails closed. A workload that has never been published has no hostnames
 // and that is a nil with no error, but a control plane that cannot be read is

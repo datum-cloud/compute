@@ -114,6 +114,7 @@ spec:
                       - envFrom
                       - imagePullSecrets
                       - containerCapabilities
+                      - exec
                       type: string
                     maxItems: 32
                     type: array

@@ -1,0 +1,26 @@
+# The spec is immutable, so no customer role grants update, patch or
+# updateStatus: a different request is a new session, and deleting a session
+# revokes it. They are declared so compute's controllers can manage the
+# session's finalizer and mirror the status the cell reports.
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: compute.datumapis.com-instanceconsolesession
+spec:
+  serviceRef:
+    name: "compute.datumapis.com"
+  kind: InstanceConsoleSession
+  plural: instanceconsolesessions
+  singular: instanceconsolesession
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - delete
+    - update
+    - patch
+    - updateStatus
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

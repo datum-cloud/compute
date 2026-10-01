@@ -331,15 +331,74 @@ func applyProxy(ctx context.Context, c client.Client, desired *networkingv1alpha
 		return fmt.Errorf("reading published URL for %q: %w", desired.Name, err)
 	}
 
-	if reflect.DeepEqual(existing.Spec, desired.Spec) && metaCurrent(&existing, desired) {
+	merged := mergeProxySpec(existing.Spec, desired.Spec)
+	if reflect.DeepEqual(existing.Spec, merged) && metaCurrent(&existing, desired) {
 		return nil
 	}
-	existing.Spec = desired.Spec
+	existing.Spec = merged
 	adoptMeta(&existing, desired)
 	if err := c.Update(ctx, &existing); err != nil {
 		return fmt.Errorf("updating published URL for %q: %w", desired.Name, err)
 	}
 	return nil
+}
+
+// mergeProxySpec lays what a deploy owns over the proxy as it stands, instead
+// of replacing the spec with it.
+//
+// A deploy owns two things: the workload's own networkService backend, which
+// it points at the workload's port, and the hostnames it is handed (the
+// caller carries custom hostnames forward, see existingHostnames). Everything
+// else on the proxy is configured elsewhere, most often in the portal, and a
+// deploy that rewrote the spec wholesale would silently undo it on every image
+// bump: the load balancing algorithm, health checks, other backends and their
+// weights, the redirect rule, and rule filters such as HSTS or a Host header.
+//
+// The workload's backend is found by its NetworkService name and has its port
+// updated in place, keeping its weight and filters. If it has gone missing it
+// is put back, into the rule that holds the other backends when there is one,
+// so a deploy always leaves its URL routing to the workload.
+func mergeProxySpec(existing, desired networkingv1alpha.HTTPProxySpec) networkingv1alpha.HTTPProxySpec {
+	merged := *existing.DeepCopy()
+	merged.Hostnames = desired.Hostnames
+
+	own, ownRule, ok := ownBackend(desired)
+	if !ok {
+		// Nothing of the workload's to lay over: keep the spec as the deploy wrote it.
+		return desired
+	}
+
+	for r := range merged.Rules {
+		for b := range merged.Rules[r].Backends {
+			backend := &merged.Rules[r].Backends[b]
+			if backend.NetworkService != nil && backend.NetworkService.Name == own.NetworkService.Name {
+				backend.NetworkService = own.NetworkService.DeepCopy()
+				return merged
+			}
+		}
+	}
+
+	for r := range merged.Rules {
+		if len(merged.Rules[r].Backends) > 0 {
+			merged.Rules[r].Backends = append(merged.Rules[r].Backends, *own.DeepCopy())
+			return merged
+		}
+	}
+	merged.Rules = append(merged.Rules, *ownRule.DeepCopy())
+	return merged
+}
+
+// ownBackend returns the workload's networkService backend and the rule that
+// carries it in the spec a deploy builds (BuildHTTPProxy).
+func ownBackend(desired networkingv1alpha.HTTPProxySpec) (networkingv1alpha.HTTPProxyRuleBackend, networkingv1alpha.HTTPProxyRule, bool) {
+	for _, rule := range desired.Rules {
+		for _, backend := range rule.Backends {
+			if backend.NetworkService != nil {
+				return backend, rule, true
+			}
+		}
+	}
+	return networkingv1alpha.HTTPProxyRuleBackend{}, networkingv1alpha.HTTPProxyRule{}, false
 }
 
 // metaCurrent reports whether an existing object already carries the labels

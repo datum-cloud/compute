@@ -51,3 +51,17 @@ export function imageShortName(image?: string): string | undefined {
   const noDigest = image.split('@')[0];
   return noDigest.split('/').pop() || noDigest;
 }
+
+/**
+ * Workloads for the project home page column: unhealthy first so problems
+ * surface, then newest, capped to `limit`. Returns a new array.
+ */
+export function homeColumnWorkloads(workloads: readonly Workload[], limit = 5): Workload[] {
+  return [...workloads]
+    .sort(
+      (a, b) =>
+        HEALTH_ORDER[a.health] - HEALTH_ORDER[b.health] ||
+        b.createdAt.getTime() - a.createdAt.getTime()
+    )
+    .slice(0, limit);
+}

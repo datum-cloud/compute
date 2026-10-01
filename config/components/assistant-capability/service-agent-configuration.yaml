@@ -1,41 +1,38 @@
-# What compute offers an AI assistant: docs to read, tools to call, and
-# step-by-step guides to follow.
+# What compute's agent offers a customer: docs to read, tools to call, and guides
+# to follow.
 #
-# Applied to one customer's project at a time. Adding a guide under
-# docs/agent/skills/ means adding it here too, or nobody sees it.
-apiVersion: capabilities.assistant.miloapis.com/v1alpha1
-kind: CapabilityBinding
+# New versions ship as new objects rather than edits to this one, so it is always
+# clear which content a customer actually saw. The newest Published one wins.
+#
+# The catalog copies this into every entitled project, where the assistant reads
+# it. Nothing here entitles anyone on its own.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
 metadata:
-  # Matches the agent name the service catalog uses, so the two don't create
-  # duplicates later.
-  name: compute-diagnostics-agent
+  name: compute-diagnostics-agent-v1
   labels:
     app.kubernetes.io/name: compute-diagnostics-agent
     app.kubernetes.io/part-of: compute.datumapis.com
 spec:
-  # Matches the catalog entry in ../service-catalog/service.yaml.
-  serviceRef:
-    name: compute-datumapis-com
-  # Tool usage is billed against this name, so a typo bills the wrong service.
-  serviceName: compute.datumapis.com
   serviceAgentRef:
     name: compute-diagnostics-agent
-  # Our own version stamp for the content below. Bump it whenever that content
-  # changes, so we can tell which version a customer actually saw.
-  configurationVersion: v1
-  # Where compute's team reads reports of things the assistant couldn't do.
-  # Remove it and those reports have nowhere to go.
+  phase: Published
+  # Our own stamp for the content below. Bump it — as a new object — whenever
+  # that content changes.
+  version: v1
+  # Where compute's team reads reports of things the assistant could not do.
+  # Drop it and those reports have nowhere to go.
   reportingProject: datum-cloud
 
   knowledge:
-    # Served by cmd/compute-mcp straight from docs/agent/. If it's ever
-    # unreachable the assistant carries on without it.
+    # Served by cmd/compute-mcp from docs/agent/. If it is ever unreachable the
+    # assistant carries on without it.
     sources:
       - type: LLMDocs
         title: Compute resource model and condition semantics
         url: http://compute-mcp.compute-system.svc.cluster.local:8080/llms-full.txt
-    # Short explanations of compute's main resources, so the assistant can
-    # answer basic questions without fetching anything.
+    # Short explanations of compute's main resources, so basic questions can be
+    # answered without fetching anything.
     concepts:
       - gvk:
           group: compute.datumapis.com
@@ -52,14 +49,14 @@ spec:
 
   tools:
     mcpServers:
-      # Tools appear to the assistant as "compute__<tool>", so they can't clash
-      # with another service's.
+      # Tools reach the assistant as "compute__<tool>", so they cannot clash with
+      # another service's.
       - name: compute
         # Points straight at compute-mcp, which is fine in staging.
         #
-        # Production needs this changed to the AI gateway address instead.
-        # Going direct there means the call isn't billed, doesn't carry the
-        # customer's identity, and will simply be refused.
+        # Production needs this changed to the AI gateway address. Going direct
+        # there means the call is not billed, does not carry the customer's
+        # identity, and will simply be refused.
         endpoint: http://compute-mcp.compute-system.svc.cluster.local:8080/mcp
         toolSelector:
           # The approved list. Anything not named here is never offered to the
@@ -71,16 +68,15 @@ spec:
             - compute_instances_list
             - compute_workload_diagnose
             - compute_reason_explain
-            # Helping plan a new workload. Neither of these changes anything.
+            # Helping plan a new workload. Neither changes anything.
             - compute_instance_types_list
             - compute_workload_render
-        # None of compute's tools change a customer's resources. Left explicit
-        # so the next person adding one has to think about it.
+        # None of compute's tools change a customer's resources. Left explicit so
+        # the next person adding one has to think about it.
         mutating: []
 
-  # Triage guides. Only the name and description below are shown to the
-  # assistant; the full guide is fetched only when it's relevant, so having
-  # seven costs almost nothing.
+  # Triage guides. Only the name and description reach the assistant; the guide
+  # itself is fetched when it is relevant, so having seven costs almost nothing.
   skills:
     - name: workload-not-available
       description: Triage a compute Workload that is not available, from symptom to root cause and owner
@@ -105,7 +101,7 @@ spec:
       source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-create.md
 
   authority:
-    # Reads run as the person asking, so this grants no access they don't
+    # Reads run as the person asking, so this grants no access they do not
     # already have. "*" covers every compute resource, because diagnosing one
     # problem usually crosses several.
     reads:

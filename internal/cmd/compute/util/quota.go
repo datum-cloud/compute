@@ -47,12 +47,8 @@ func ListServiceQuota(
 	meta map[string]QuotaMeta,
 	orderedTypes []string, // explicit display order; types not in this list follow alphabetically
 ) ([]QuotaRow, error) {
-	// Fetch AllowanceBuckets from the project VCP.
-	var bucketList quotav1alpha1.AllowanceBucketList
-	if err := projectClient.List(ctx, &bucketList,
-		client.InNamespace("milo-system"),
-		client.MatchingLabels{"quota.miloapis.com/consumer-kind": "Project"},
-	); err != nil {
+	bucketList, err := listProjectBuckets(ctx, projectClient)
+	if err != nil {
 		return nil, err
 	}
 
@@ -152,6 +148,32 @@ func ListServiceQuota(
 	}
 
 	return rows, nil
+}
+
+// ProjectQuotaLimit returns the project's limit for resourceType. found is
+// false when the project has no allowance for it.
+func ProjectQuotaLimit(ctx context.Context, projectClient client.Client, resourceType string) (limit int64, found bool, err error) {
+	buckets, err := listProjectBuckets(ctx, projectClient)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, b := range buckets.Items {
+		if b.Spec.ResourceType == resourceType {
+			return b.Status.Limit, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func listProjectBuckets(ctx context.Context, projectClient client.Client) (*quotav1alpha1.AllowanceBucketList, error) {
+	var buckets quotav1alpha1.AllowanceBucketList
+	if err := projectClient.List(ctx, &buckets,
+		client.InNamespace("milo-system"),
+		client.MatchingLabels{"quota.miloapis.com/consumer-kind": "Project"},
+	); err != nil {
+		return nil, err
+	}
+	return &buckets, nil
 }
 
 // resourceTypeSuffix derives a human-readable name from the last segment of a
