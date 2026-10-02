@@ -17,14 +17,15 @@ import (
 // Fixture class names shared across these tests. They are constants so every
 // case names the same fixture the same way.
 const (
-	testContainerName     = "app"
-	testConfigVolumeName  = "config"
-	testDiskVolumeName    = "data"
-	testConfigMapName     = "settings"
-	testCapChown          = "CHOWN"
-	testCapNetBindService = "NET_BIND_SERVICE"
-	testCapNetRaw         = "NET_RAW"
-	testCapSetgid         = "SETGID"
+	testContainerName        = "app"
+	testConfigVolumeName     = "config"
+	testDiskVolumeName       = "data"
+	testConfigMapName        = "settings"
+	testCapChown             = "CHOWN"
+	testCapNetBindService    = "NET_BIND_SERVICE"
+	testCapNetRaw            = "NET_RAW"
+	testCapSetgid            = "SETGID"
+	testIPv4ForwardingSysctl = "net.ipv4.ip_forward"
 )
 
 // envFromRejection is the rejection a narrow class returns for envFrom. It is
@@ -51,7 +52,7 @@ var fullCapabilities = Capabilities{
 	},
 	GrantableCapabilities: []Capability{testCapNetBindService, testCapChown},
 	SupportedSysctls: []Sysctl{{
-		Name:          "net.ipv4.ip_forward",
+		Name:          testIPv4ForwardingSysctl,
 		AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
 	}},
 }
@@ -72,12 +73,12 @@ func TestValidateSandboxSysctls(t *testing.T) {
 	}{
 		{
 			name:         "an exact supported name and value is accepted",
-			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "1"}),
+			spec:         request(computev1alpha.SandboxSysctl{Name: testIPv4ForwardingSysctl, Value: "1"}),
 			capabilities: fullCapabilities,
 		},
 		{
 			name:         "a class without sysctl support rejects the whole request",
-			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "1"}),
+			spec:         request(computev1alpha.SandboxSysctl{Name: testIPv4ForwardingSysctl, Value: "1"}),
 			capabilities: minimalCapabilities,
 			want: field.ErrorList{field.Forbidden(sysctlsPath,
 				`sandbox sysctls are not supported by the "azurite" runtime class`)},
@@ -87,11 +88,12 @@ func TestValidateSandboxSysctls(t *testing.T) {
 			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward.extra", Value: "1"}),
 			capabilities: fullCapabilities,
 			want: field.ErrorList{field.Forbidden(sysctlsPath.Index(0).Child("name"),
-				`sysctl net.ipv4.ip_forward.extra is not supported by the "basalt" runtime class, which supports net.ipv4.ip_forward`)},
+				"sysctl "+testIPv4ForwardingSysctl+".extra is not supported by the "+
+					`"basalt" runtime class, which supports `+testIPv4ForwardingSysctl)},
 		},
 		{
 			name:         "an unsupported value names the finite allowed set",
-			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "2"}),
+			spec:         request(computev1alpha.SandboxSysctl{Name: testIPv4ForwardingSysctl, Value: "2"}),
 			capabilities: fullCapabilities,
 			want: field.ErrorList{field.NotSupported(sysctlsPath.Index(0).Child("value"),
 				computev1alpha.SysctlValue("2"), []string{"0", "1"})},
@@ -106,11 +108,11 @@ func TestValidateSandboxSysctls(t *testing.T) {
 		{
 			name: "a duplicate exact name is rejected",
 			spec: request(
-				computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "1"},
-				computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "0"},
+				computev1alpha.SandboxSysctl{Name: testIPv4ForwardingSysctl, Value: "1"},
+				computev1alpha.SandboxSysctl{Name: testIPv4ForwardingSysctl, Value: "0"},
 			),
 			capabilities: fullCapabilities,
-			want:         field.ErrorList{field.Duplicate(sysctlsPath.Index(1).Child("name"), "net.ipv4.ip_forward")},
+			want:         field.ErrorList{field.Duplicate(sysctlsPath.Index(1).Child("name"), testIPv4ForwardingSysctl)},
 		},
 	}
 

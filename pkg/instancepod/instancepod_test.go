@@ -44,6 +44,10 @@ const (
 	// Translating an instance must not depend on what its class is called.
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
+
+	testIPv4ForwardingSysctl     = "net.ipv4.ip_forward"
+	testIPv6AllForwardingSysctl  = "net.ipv6.conf.all.forwarding"
+	testIPv6DefaultForwardSysctl = "net.ipv6.conf.default.forwarding"
 )
 
 // sandboxCapabilities serves the whole sandbox surface, so a translation test
@@ -453,9 +457,9 @@ func TestBuildPodSpecErrors(t *testing.T) {
 
 func TestBuildPodSpecSysctls(t *testing.T) {
 	requested := []computev1alpha.SandboxSysctl{
-		{Name: "net.ipv6.conf.default.forwarding", Value: "1"},
-		{Name: "net.ipv4.ip_forward", Value: "1"},
-		{Name: "net.ipv6.conf.all.forwarding", Value: "1"},
+		{Name: testIPv6DefaultForwardSysctl, Value: "1"},
+		{Name: testIPv4ForwardingSysctl, Value: "1"},
+		{Name: testIPv6AllForwardingSysctl, Value: "1"},
 	}
 	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
 	instance.Spec.Runtime.Sandbox.Sysctls = requested
@@ -463,9 +467,9 @@ func TestBuildPodSpecSysctls(t *testing.T) {
 		Class:    testClassBasalt,
 		Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureSandboxSysctls},
 		SupportedSysctls: []runtimeclass.Sysctl{
-			{Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
-			{Name: "net.ipv6.conf.all.forwarding", AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
-			{Name: "net.ipv6.conf.default.forwarding", AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: testIPv6AllForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: testIPv6DefaultForwardSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
 		},
 	}}
 
@@ -474,9 +478,9 @@ func TestBuildPodSpecSysctls(t *testing.T) {
 		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
 	}
 	want := []corev1.Sysctl{
-		{Name: "net.ipv4.ip_forward", Value: "1"},
-		{Name: "net.ipv6.conf.all.forwarding", Value: "1"},
-		{Name: "net.ipv6.conf.default.forwarding", Value: "1"},
+		{Name: testIPv4ForwardingSysctl, Value: "1"},
+		{Name: testIPv6AllForwardingSysctl, Value: "1"},
+		{Name: testIPv6DefaultForwardSysctl, Value: "1"},
 	}
 	if spec.SecurityContext == nil {
 		t.Fatal("Pod security context is nil")

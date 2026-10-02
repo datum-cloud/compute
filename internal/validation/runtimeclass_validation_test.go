@@ -51,6 +51,8 @@ const (
 	testCapPrefixedChown = "CAP_CHOWN"
 )
 
+const testIPv4ForwardingSysctl = "net.ipv4.ip_forward"
+
 // makeRuntimeClass builds a catalog entry that serves every capability, so a
 // test only has to state the part of the contract it exercises.
 func makeRuntimeClass(name string, tweaks ...func(*computev1alpha.RuntimeClass)) computev1alpha.RuntimeClass {
@@ -244,13 +246,13 @@ func TestValidateSandboxSysctlSelection(t *testing.T) {
 		return computev1alpha.InstanceSpec{Runtime: computev1alpha.InstanceRuntimeSpec{
 			Class: class,
 			Sandbox: &computev1alpha.SandboxRuntime{Sysctls: []computev1alpha.SandboxSysctl{{
-				Name: "net.ipv4.ip_forward", Value: computev1alpha.SysctlValue(value),
+				Name: testIPv4ForwardingSysctl, Value: computev1alpha.SysctlValue(value),
 			}}},
 		}}
 	}
 	classWithSysctls := runtimeclass.Catalog{makeRuntimeClass(testClassBasalt, withSysctls(
 		computev1alpha.RuntimeClassSysctl{
-			Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
+			Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
 		},
 	))}
 
@@ -289,7 +291,7 @@ func TestValidateStoredSandboxSysctlsAfterGateOff(t *testing.T) {
 	stored := MakeSandboxWorkload("stored-sysctls", func(workload *computev1alpha.Workload) {
 		workload.Spec.Template.Spec.Runtime.Class = testClassBasalt
 		workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
-			Name: "net.ipv4.ip_forward", Value: "1",
+			Name: testIPv4ForwardingSysctl, Value: "1",
 		}}
 	})
 

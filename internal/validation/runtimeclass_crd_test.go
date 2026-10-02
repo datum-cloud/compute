@@ -159,7 +159,7 @@ func TestRuntimeClassCRD(t *testing.T) {
 		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
 			computev1alpha.RuntimeClassFeatureSandboxSysctls)
 		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
-			Name:          "net.ipv4.ip_forward",
+			Name:          testIPv4ForwardingSysctl,
 			AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
 		}}
 		require.NoError(t, c.Create(ctx, class))
@@ -169,7 +169,7 @@ func TestRuntimeClassCRD(t *testing.T) {
 	t.Run("a class cannot publish sysctls without the feature", func(t *testing.T) {
 		class := newCatalogEntry("sysctls-without-feature")
 		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
-			Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"1"},
+			Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"1"},
 		}}
 		require.ErrorContains(t, c.Create(ctx, class),
 			"supportedSysctls requires the sandboxSysctls feature")
@@ -190,7 +190,7 @@ func TestRuntimeClassCRD(t *testing.T) {
 			computev1alpha.RuntimeClassFeatureSandboxSysctls,
 		}
 		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
-			Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"1"},
+			Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"1"},
 		}}
 		require.ErrorContains(t, c.Create(ctx, class),
 			"the sandboxSysctls feature requires the sandboxRuntime feature")
@@ -218,8 +218,8 @@ func TestRuntimeClassCRD(t *testing.T) {
 		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
 			computev1alpha.RuntimeClassFeatureSandboxSysctls)
 		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{
-			{Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"0"}},
-			{Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"1"}},
+			{Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0"}},
+			{Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"1"}},
 		}
 		require.Error(t, c.Create(ctx, class))
 	})
@@ -233,7 +233,7 @@ func TestRuntimeClassCRD(t *testing.T) {
 			class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
 				computev1alpha.RuntimeClassFeatureSandboxSysctls)
 			class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
-				Name: "net.ipv4.ip_forward", AllowedValues: values,
+				Name: testIPv4ForwardingSysctl, AllowedValues: values,
 			}}
 			require.Error(t, c.Create(ctx, class))
 		})
@@ -358,7 +358,7 @@ func TestRuntimeClassCRD(t *testing.T) {
 	t.Run("a workload can request well-formed sandbox sysctls", func(t *testing.T) {
 		workload := MakeSandboxWorkload("valid-sandbox-sysctls", func(workload *computev1alpha.Workload) {
 			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{
-				{Name: "net.ipv4.ip_forward", Value: "1"},
+				{Name: testIPv4ForwardingSysctl, Value: "1"},
 				{Name: "net.ipv6.conf.all.forwarding", Value: "1"},
 			}
 		})
@@ -378,8 +378,8 @@ func TestRuntimeClassCRD(t *testing.T) {
 	t.Run("a workload cannot request one sysctl twice", func(t *testing.T) {
 		workload := MakeSandboxWorkload("duplicate-sandbox-sysctl", func(workload *computev1alpha.Workload) {
 			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{
-				{Name: "net.ipv4.ip_forward", Value: "0"},
-				{Name: "net.ipv4.ip_forward", Value: "1"},
+				{Name: testIPv4ForwardingSysctl, Value: "0"},
+				{Name: testIPv4ForwardingSysctl, Value: "1"},
 			}
 		})
 		require.Error(t, c.Create(ctx, workload))
@@ -388,7 +388,7 @@ func TestRuntimeClassCRD(t *testing.T) {
 	t.Run("a workload cannot request an empty sysctl value", func(t *testing.T) {
 		workload := MakeSandboxWorkload("empty-sandbox-sysctl", func(workload *computev1alpha.Workload) {
 			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
-				Name: "net.ipv4.ip_forward", Value: "",
+				Name: testIPv4ForwardingSysctl, Value: "",
 			}}
 		})
 		require.Error(t, c.Create(ctx, workload))
