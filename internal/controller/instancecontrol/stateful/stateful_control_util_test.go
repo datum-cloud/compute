@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,37 +16,48 @@ import (
 
 func TestGetInstanceOrdinal(t *testing.T) {
 	tests := []struct {
-		name       string
-		objectName string
-		want       int
+		name   string
+		labels map[string]string
+		want   int
 	}{
 		{
-			name:       "instance with ordinal 0",
-			objectName: "my-instance-0",
-			want:       0,
+			name:   "ordinal 0",
+			labels: map[string]string{v1alpha.InstanceIndexLabel: "0"},
+			want:   0,
 		},
 		{
-			name:       "instance with ordinal 1",
-			objectName: "my-instance-1",
-			want:       1,
+			name:   "ordinal 12",
+			labels: map[string]string{v1alpha.InstanceIndexLabel: "12"},
+			want:   12,
 		},
 		{
-			name:       "instance with unexpected suffix",
-			objectName: "my-instance-foo",
-			want:       -1,
+			name:   "missing label",
+			labels: map[string]string{},
+			want:   -1,
 		},
 		{
-			name:       "instance with no dash in name",
-			objectName: "myinstance",
-			want:       -1,
+			name:   "non-numeric label",
+			labels: map[string]string{v1alpha.InstanceIndexLabel: "foo"},
+			want:   -1,
+		},
+		{
+			name:   "negative label",
+			labels: map[string]string{v1alpha.InstanceIndexLabel: "-1"},
+			want:   -1,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := getInstanceOrdinal(test.objectName)
+			instance := &v1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "checkout-api-7c1e04b9a2-3",
+					Labels: test.labels,
+				},
+			}
+			got := getInstanceOrdinal(instance)
 			if got != test.want {
-				t.Errorf("getInstanceOrdinal(%q) = %d, want %d", test.objectName, got, test.want)
+				t.Errorf("getInstanceOrdinal(%v) = %d, want %d", test.labels, got, test.want)
 			}
 		})
 	}
@@ -59,7 +71,8 @@ func TestDescendingOrdinal(t *testing.T) {
 		actions = append(actions, instancecontrol.NewWaitAction(
 			&v1alpha.Instance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: fmt.Sprintf("my-instance-%d", perm[i]),
+					Name:   fmt.Sprintf("my-instance-%d", perm[i]),
+					Labels: map[string]string{v1alpha.InstanceIndexLabel: strconv.Itoa(perm[i])},
 				},
 			},
 		))

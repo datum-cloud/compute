@@ -710,3 +710,100 @@ func getInstanceTemplate(name string, ordinal int) *v1alpha.Instance {
 
 	return instance
 }
+
+// TestOrdinal_ReadFromLabelNotName verifies that an existing instance fills the
+// slot recorded in its ordinal label, whatever its name ends with.
+func TestOrdinal_ReadFromLabelNotName(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+
+	deployment := getWorkloadDeployment("test-ordinal-label", 2)
+
+	instance := getInstanceForDeployment(deployment, 1)
+	instance.Name = "test-ordinal-label-renamed"
+
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, []v1alpha.Instance{*instance})
+	require.NoError(t, err)
+
+	for _, a := range actions {
+		assert.NotEqual(t, instancecontrol.ActionTypeDelete, a.ActionType(),
+			"an instance with a valid ordinal label must keep its slot")
+	}
+	require.Len(t, actions, 1)
+	assert.Equal(t, instancecontrol.ActionTypeCreate, actions[0].ActionType())
+	assert.Equal(t, "test-ordinal-label-0", actions[0].Object.GetName())
+}
+
+// TestOrdinal_InvalidLabelDeleted verifies that an instance without a usable
+// ordinal label is deleted instead of being placed by its name.
+func TestOrdinal_InvalidLabelDeleted(t *testing.T) {
+	for _, value := range []string{"", "foo", "-1"} {
+		t.Run(fmt.Sprintf("label=%q", value), func(t *testing.T) {
+			ctx := context.Background()
+			control := NewWithOptions(Options{})
+
+			deployment := getWorkloadDeployment("test-ordinal-invalid", 1)
+
+			instance := getInstanceForDeployment(deployment, 0)
+			if value == "" {
+				delete(instance.Labels, v1alpha.InstanceIndexLabel)
+			} else {
+				instance.Labels[v1alpha.InstanceIndexLabel] = value
+			}
+
+			actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, []v1alpha.Instance{*instance})
+			require.NoError(t, err)
+
+			// The delete must run first: the replacement reuses the same name.
+			require.Len(t, actions, 2)
+			assert.Equal(t, instancecontrol.ActionTypeDelete, actions[0].ActionType())
+			assert.Equal(t, "test-ordinal-invalid-0", actions[0].Object.GetName())
+			assert.False(t, actions[0].IsSkipped())
+			assert.Equal(t, instancecontrol.ActionTypeCreate, actions[1].ActionType())
+			assert.Equal(t, "test-ordinal-invalid-0", actions[1].Object.GetName())
+			assert.True(t, actions[1].IsSkipped())
+		})
+	}
+}
+
+// TestOrdinal_DuplicateLabelDeleted verifies that when two instances claim the
+// same ordinal, only one keeps the slot and the other is deleted.
+func TestOrdinal_DuplicateLabelDeleted(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+
+	deployment := getWorkloadDeployment("test-ordinal-duplicate", 1)
+
+	first := getInstanceForDeployment(deployment, 0)
+	second := getInstanceForDeployment(deployment, 0)
+	second.Name = "test-ordinal-duplicate-other"
+
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, []v1alpha.Instance{*first, *second})
+	require.NoError(t, err)
+
+	require.Len(t, actions, 1)
+	assert.Equal(t, instancecontrol.ActionTypeDelete, actions[0].ActionType())
+	assert.Equal(t, "test-ordinal-duplicate-other", actions[0].Object.GetName())
+	assert.False(t, actions[0].IsSkipped())
+}
+
+// TestOrdinal_NewInstancesDoNotShareTemplateLabels verifies that each new
+// instance gets its own label map, so the ordinal stamped on one instance does
+// not leak onto another or onto the deployment template.
+func TestOrdinal_NewInstancesDoNotShareTemplateLabels(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+
+	deployment := getWorkloadDeployment("test-ordinal-template", 3)
+	deployment.Spec.Template.Labels = map[string]string{"app": "checkout"}
+
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, nil)
+	require.NoError(t, err)
+	require.Len(t, actions, 3)
+
+	for i, a := range actions {
+		assert.Equal(t, strconv.Itoa(i), a.Object.GetLabels()[v1alpha.InstanceIndexLabel])
+		assert.Equal(t, "checkout", a.Object.GetLabels()["app"])
+	}
+	assert.Equal(t, map[string]string{"app": "checkout"}, deployment.Spec.Template.Labels)
+}
