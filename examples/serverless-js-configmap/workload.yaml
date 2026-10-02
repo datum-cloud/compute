@@ -1,0 +1,60 @@
+# Datum Cloud Workload: serverless Node.js function via ConfigMap mount.
+#
+# The image is the GENERIC runtime (node + libs, no code). The function arrives
+# by mounting the `js-function` ConfigMap at /app, so /app/index.js is the file
+# the Kraftfile's cmd runs. Swap the function by editing the ConfigMap and
+# restarting -- no rebuild of this image.
+#
+# Field shapes (validated against examples/config-secret-probe on this branch):
+#   - spec.template.spec.volumes[]: {name, configMap:{name}}  -> mounted as a dir
+#   - container.volumeAttachments[]: {name, mountPath}         -> k8s VolumeMount
+#   - instanceType lives at runtime.resources (NOT container resources; the
+#     validating webhook rejects container-level resources on this branch).
+#
+# Apply the ConfigMap on the PROJECT plane FIRST (see configmap.yaml), then:
+#   datumctl compute deploy -f workload.yaml -y
+#
+# NOTE: env is intentionally EMPTY. In a busy namespace, kraftlet-injected k8s
+# service-link env can overflow the UKC kernel-cmdline buffer
+# (InvalidKernelCommandLine, boot 0.00 ms / standby). The mount needs no env and
+# PORT defaults to 8080 in index.js, so we keep env empty to stay under budget.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: serverless-js-fn
+  labels:
+    app: serverless-js-fn
+spec:
+  template:
+    metadata:
+      labels:
+        app: serverless-js-fn
+    spec:
+      volumes:
+        - name: fn-vol
+          configMap:
+            name: js-function
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: index.unikraft.io/datum/serverless-js-runtime:latest
+              volumeAttachments:
+                - name: fn-vol
+                  mountPath: /app
+              ports:
+                - name: http
+                  port: 8080
+                  protocol: TCP
+      networkInterfaces:
+        - network:
+            name: default
+  placements:
+    - name: default
+      cityCodes:
+        - DFW
+      scaleSettings:
+        minReplicas: 1
+        instanceManagementPolicy: OrderedReady
