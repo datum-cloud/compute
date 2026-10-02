@@ -866,7 +866,8 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 //	2 - NetworkProvisioning    (infra provisioning)
 //	3 - QuotaNotGranted / PendingQuota (operator action may be needed)
 //	4 - ReferencedDataNotReady / AwaitingPropagation / Resolving (transient)
-//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
+//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error),
+//	    ImageUnavailable / InstanceCrashing / ConfigurationError (start failure)
 //	6 - NetworkNotFound        (hard error; user action required)
 //	7 - NetworkFailedToCreate  (hard infra error)
 func workloadBlockingReasonPriority(reason string) int {
@@ -888,7 +889,10 @@ func workloadBlockingReasonPriority(reason string) int {
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
 		computev1alpha.ReferencedDataReasonSourceNameTooLong,
-		computev1alpha.ReferencedDataReasonSourceUnauthorized:
+		computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		computev1alpha.InstanceReadyReasonImageUnavailable,
+		computev1alpha.InstanceReadyReasonInstanceCrashing,
+		computev1alpha.InstanceReadyReasonConfigurationError:
 		return 5
 	case computev1alpha.WorkloadReasonNetworkNotFound,
 		computev1alpha.WorkloadReasonNoMatchingLocations:

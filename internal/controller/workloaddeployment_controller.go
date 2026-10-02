@@ -284,6 +284,8 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	deployment.Status.Selector = workloadDeploymentPodSelector(&deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
 
+	startFailure := firstStartFailure(instances.Items)
+
 	switch {
 	case quotaBlockedReplicas > 0:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
@@ -298,6 +300,13 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			Status:  metav1.ConditionFalse,
 			Reason:  computev1alpha.ReferencedDataReasonAwaitingPropagation,
 			Message: fmt.Sprintf("%d of %d desired replicas are waiting for referenced data companions", referencedDataBlockedReplicas, desiredReplicas),
+		})
+	case startFailure.count > 0:
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  startFailure.reason,
+			Message: fmt.Sprintf("%d of %d desired replicas are failing: %s", startFailure.count, desiredReplicas, startFailure.message),
 		})
 	default:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
@@ -317,7 +326,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			ObservedGeneration: deployment.Generation,
 		})
 	} else {
-		availCond := selectWDBlockingCondition(&deployment, networkReady, location, quotaBlockedReplicas, referencedDataBlockedReplicas, replicas, desiredReplicas)
+		availCond := selectWDBlockingCondition(&deployment, networkReady, location, quotaBlockedReplicas, referencedDataBlockedReplicas, replicas, desiredReplicas, startFailure)
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, availCond)
 	}
 
@@ -512,6 +521,7 @@ func selectWDBlockingCondition(
 	location servingLocationResult,
 	quotaBlockedReplicas, referencedDataBlockedReplicas, replicas int,
 	desiredReplicas int32,
+	startFailure instanceStartFailure,
 ) metav1.Condition {
 	type candidate struct {
 		reason   string
@@ -579,6 +589,11 @@ func selectWDBlockingCondition(
 		}
 	}
 
+	if startFailure.count > 0 {
+		consider(startFailure.reason,
+			fmt.Sprintf("%d of %d instances are failing: %s", startFailure.count, replicas, startFailure.message))
+	}
+
 	if replicas > 0 {
 		consider(computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, "Instances are being provisioned")
 	}
@@ -598,6 +613,38 @@ func selectWDBlockingCondition(
 	}
 }
 
+// instanceStartFailure is the failure of the first failing instance by name, and
+// how many instances fail for the same reason.
+type instanceStartFailure struct {
+	reason, message string
+	count           int
+}
+
+var startFailureReasons = []string{
+	computev1alpha.InstanceReadyReasonImageUnavailable,
+	computev1alpha.InstanceReadyReasonInstanceCrashing,
+	computev1alpha.InstanceReadyReasonConfigurationError,
+}
+
+func firstStartFailure(instances []computev1alpha.Instance) instanceStartFailure {
+	var failure instanceStartFailure
+	var first string
+	failing := map[string]int{}
+	for _, instance := range instances {
+		cond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceAvailable)
+		if cond == nil || cond.Status == metav1.ConditionTrue || !slices.Contains(startFailureReasons, cond.Reason) {
+			continue
+		}
+		failing[cond.Reason]++
+		if first == "" || instance.Name < first {
+			first = instance.Name
+			failure.reason, failure.message = cond.Reason, cond.Message
+		}
+	}
+	failure.count = failing[failure.reason]
+	return failure
+}
+
 // wdBlockingReasonPriority returns the relative priority of a blocking reason on
 // WorkloadDeployment.Available. Higher numbers indicate causes that are more
 // actionable and should be surfaced over lower-priority transient states.
@@ -612,7 +659,8 @@ func selectWDBlockingCondition(
 //	    can act on)
 //	3 - QuotaNotGranted        (operator action may be needed)
 //	4 - ReferencedDataNotReady (AwaitingPropagation / Resolving — expected to clear)
-//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
+//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error),
+//	    ImageUnavailable / InstanceCrashing / ConfigurationError (start failure)
 //	6 - NetworkNotFound        (hard error; user action required)
 //	7 - NetworkFailedToCreate  (hard infra error)
 //	8 - LocationMismatch / AmbiguousServingLocation (the deployment is on a cell
@@ -635,7 +683,10 @@ func wdBlockingReasonPriority(reason string) int {
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
 		computev1alpha.ReferencedDataReasonSourceNameTooLong,
-		computev1alpha.ReferencedDataReasonSourceUnauthorized:
+		computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		computev1alpha.InstanceReadyReasonImageUnavailable,
+		computev1alpha.InstanceReadyReasonInstanceCrashing,
+		computev1alpha.InstanceReadyReasonConfigurationError:
 		return 5
 	case computev1alpha.WorkloadReasonNetworkNotFound:
 		return 6

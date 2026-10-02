@@ -242,6 +242,8 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 //   - currentReplicas: the Programmed=True subset of updated instances.
 //   - readyReplicas: Ready=True regardless of revision.
 //   - quotaBlockedReplicas: QuotaGranted=False.
+//   - firstStartFailure: the first failing instance by name, counting only
+//     instances with its reason; Available need only be not True.
 func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 	t.Parallel()
 
@@ -289,14 +291,24 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 		},
 	}
 
+	instanceImageUnavailable := wdControllerTestInstance("instance-image-unavailable")
+	instanceImageUnavailable.Status.Conditions = []metav1.Condition{
+		{Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionFalse, Reason: computev1alpha.InstanceReadyReasonImageUnavailable, Message: "image message"},
+	}
+	instanceCrashing := wdControllerTestInstance("instance-crashing")
+	instanceCrashing.Status.Conditions = []metav1.Condition{
+		{Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionUnknown, Reason: computev1alpha.InstanceReadyReasonInstanceCrashing, Message: "crash message"},
+	}
+
 	cl := newProjectFakeClient()
 	r := &WorkloadDeploymentReconciler{}
+	instances := []computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceQuotaBlocked, instanceImageUnavailable, instanceCrashing}
 
 	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, _, err := r.reconcileInstanceGates(
 		context.Background(),
 		cl,
 		deployment,
-		[]computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceQuotaBlocked},
+		instances,
 		nil,
 	)
 	require.NoError(t, err)
@@ -305,6 +317,7 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 	assert.Equal(t, 1, currentReplicas, "only updated AND Programmed instances count as current")
 	assert.Equal(t, 2, readyReplicas, "Ready=True counts regardless of revision")
 	assert.Equal(t, 1, quotaBlockedReplicas, "QuotaGranted=False counts as quota-blocked")
+	assert.Equal(t, instanceStartFailure{reason: computev1alpha.InstanceReadyReasonInstanceCrashing, message: "crash message", count: 1}, firstStartFailure(instances))
 }
 
 // TestReconcileInstanceGates_ClearsNetworkSchedulingGate verifies the network
@@ -491,6 +504,32 @@ func TestWorkloadDeploymentReconcile_FinalizerAddRequeues(t *testing.T) {
 	assert.Equal(t, workloadDeploymentPodSelector(&updated), updated.Status.Selector)
 	assert.True(t, apimeta.IsStatusConditionTrue(updated.Status.Conditions, computev1alpha.WorkloadDeploymentReplicasReady),
 		"no instances are quota-blocked, so ReplicasReady must be true")
+
+	// An instance the provider reports as unable to start surfaces on both
+	// conditions.
+	var instances computev1alpha.InstanceList
+	require.NoError(t, cl.List(context.Background(), &instances))
+	require.Len(t, instances.Items, 1)
+	instance := instances.Items[0]
+	instance.CreationTimestamp = metav1.Now() // The fake client does not stamp it.
+	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionFalse, Reason: computev1alpha.InstanceReadyReasonImageUnavailable, Message: "image message",
+	})
+	require.NoError(t, cl.Update(context.Background(), &instance))
+
+	_, err = r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	require.NoError(t, cl.Get(context.Background(), req.NamespacedName, &updated))
+	for condType, want := range map[string]string{
+		computev1alpha.WorkloadDeploymentReplicasReady: "1 of 1 desired replicas are failing: image message",
+		computev1alpha.WorkloadDeploymentAvailable:     "1 of 1 instances are failing: image message",
+	} {
+		cond := apimeta.FindStatusCondition(updated.Status.Conditions, condType)
+		require.NotNil(t, cond, condType)
+		assert.Equal(t, computev1alpha.InstanceReadyReasonImageUnavailable, cond.Reason, condType)
+		assert.Equal(t, want, cond.Message, condType)
+	}
 }
 
 func TestWorkloadDeploymentReconcile_UsesSpecReplicas(t *testing.T) {
@@ -901,7 +940,7 @@ func TestWDAvailableCondition_ReferencedDataSourceNotFound(t *testing.T) {
 	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
 		computev1alpha.ReferencedDataReasonSourceNotFound, msg)
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -920,7 +959,7 @@ func TestWDAvailableCondition_QuotaNotGranted(t *testing.T) {
 	)
 	deployment := makeWDForAvailTest(gen, metav1.ConditionTrue, computev1alpha.ReferencedDataReasonReady, "all present")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 2, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 2, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, cond.Reason)
@@ -941,7 +980,7 @@ func TestWDAvailableCondition_ReferencedDataWinsOverQuota(t *testing.T) {
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		`ConfigMap "X" not found in namespace "default"`)
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"ReferencedDataNotReady (priority 4) must beat QuotaNotGranted (priority 3)")
@@ -962,7 +1001,7 @@ func TestWDAvailableCondition_NetworkProvisioningVsReferencedData(t *testing.T) 
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		`ConfigMap "X" not found`)
 
-	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"ReferencedDataNotReady (priority 4) must beat NetworkProvisioning (priority 2)")
@@ -987,6 +1026,9 @@ func TestWDBlockingReasonPriority_WD(t *testing.T) {
 		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
 		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
 		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
+		{computev1alpha.InstanceReadyReasonImageUnavailable, 5},
+		{computev1alpha.InstanceReadyReasonInstanceCrashing, 5},
+		{computev1alpha.InstanceReadyReasonConfigurationError, 5},
 		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
 		{reasonNetworkFailedToCreate, 7},
 	}
@@ -1005,7 +1047,7 @@ func TestWDAvailableCondition_ObservedGeneration(t *testing.T) {
 	const gen = int64(42)
 	deployment := makeWDForAvailTest(gen, "", "", "")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, 0, 1)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, 0, 1, instanceStartFailure{})
 
 	assert.Equal(t, gen, cond.ObservedGeneration, "ObservedGeneration must match deployment generation")
 	// Verify the condition is also reachable via apimeta.FindStatusCondition (field
@@ -1063,7 +1105,7 @@ func TestWDAvailableCondition_AnnotationSourceNotFound(t *testing.T) {
 	)
 	deployment := makeWDWithAnnotation(gen, annot)
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -1101,7 +1143,7 @@ func TestWDAvailableCondition_AnnotationAndConditionBothPresent(t *testing.T) {
 		},
 	}
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	// Both paths arrive at the same terminal reason; the winner is stable regardless
@@ -1126,7 +1168,7 @@ func TestWDAvailableCondition_AnnotationWinsOverQuota(t *testing.T) {
 	deployment := makeWDWithAnnotation(gen, annot)
 
 	// quotaBlockedReplicas=1 would normally surface QuotaNotGranted (priority 3).
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
 		"SourceNotFound (priority 5) must beat QuotaNotGranted (priority 3)")
@@ -1144,7 +1186,7 @@ func TestWDAvailableCondition_NoAnnotationPropagationLag(t *testing.T) {
 	// No annotation, no ReferencedDataReady condition: companions still propagating.
 	deployment := makeWDForAvailTest(gen, "", "", "")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"propagation-lag path must still fire when annotation is absent")
@@ -1161,7 +1203,7 @@ func TestWDAvailableCondition_AnnotationEmptyString(t *testing.T) {
 	)
 	deployment := makeWDWithAnnotation(gen, "")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	// No real blockers; falls through to InstancesProvisioning.
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason)
@@ -1179,7 +1221,7 @@ func TestWDAvailableCondition_AnnotationMalformedJSON(t *testing.T) {
 	deployment := makeWDWithAnnotation(gen, "not-valid-json{{")
 
 	// Should not panic; malformed annotation is skipped.
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
 		"malformed annotation must be silently ignored; fallback to InstancesProvisioning")
