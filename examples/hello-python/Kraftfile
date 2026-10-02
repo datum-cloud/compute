@@ -1,0 +1,21 @@
+# Kraftfile for the dynamically-linked glibc CPython runtime proof.
+#
+# Unlike the Go/Rust proofs (a single static-PIE binary, no interpreter), the
+# rootfs here ships the CPython interpreter, its stdlib, the glibc dynamic
+# loader, and the glibc shared libraries. The bet: base:latest (app-elfloader)
+# runs a dynamic ELF when the loader + every needed .so is present in the rootfs.
+# `rootfs: ./Dockerfile` makes kraft build that rootfs from the multi-stage
+# Dockerfile.
+#
+# Build/push (push-only, do not start):
+#   kraft cloud --metro <metro>/v1 --token <token> \
+#     --buildkit-host docker-container://buildkit \
+#     deploy --no-start -M 1024 --name hello-python \
+#     --runtime base:latest --rootfs ./Dockerfile .
+spec: v0.6
+
+runtime: base:latest
+
+rootfs: ./Dockerfile
+
+cmd: ["/usr/local/bin/python3", "/server.py"]
