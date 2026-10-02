@@ -65,10 +65,10 @@ const (
 //     go.datum.net/network-services-operator).
 //  2. Upserts a corresponding WorkloadDeployment in that downstream namespace,
 //     stamped with label topology.datum.net/location=<location-name>.
-//  3. Lazily creates a PropagationPolicy per location per downstream namespace
-//     that selects WorkloadDeployments by the location label and targets
-//     clusters carrying the same label. The PP is deleted once no deployments
-//     with that location remain in the namespace.
+//  3. Lazily creates a PropagationPolicy per location (per runtime class, when
+//     the gate is on) per downstream namespace that selects WorkloadDeployments
+//     by those labels and targets clusters carrying the same labels. A policy
+//     is deleted once no deployment in the namespace is keyed by it.
 //  4. Reads the aggregated status from the downstream control plane and writes
 //     it back to the project-namespace object.
 //  5. On deletion: removes the downstream WorkloadDeployment and cleans up
@@ -181,6 +181,10 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	}
 
 	if err := r.ensurePropagationPolicy(ctx, downstreamNS, deployment.Spec.LocationRef.Name, runtimeClass); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.pruneStaleClasslessPropagationPolicy(ctx, downstreamNS, deployment.Spec.LocationRef.Name, runtimeClass); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -447,6 +451,10 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 // class) pair. Only deployments in the class are selected, and only cells that
 // advertise they serve the class are targeted. An empty runtimeClass adds no
 // class selector, so cells that advertise no class remain eligible.
+//
+// The policy selects deployments only. Referenced data travels as the
+// deployment's declared dependencies, which is what lets one shared companion
+// reach several locations at once.
 func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 	ctx context.Context,
 	downstreamNS string,
@@ -469,45 +477,58 @@ func (r *WorkloadDeploymentFederator) ensurePropagationPolicy(
 
 	result, err := controllerutil.CreateOrPatch(ctx, r.FederationClient, pp, func() error {
 		pp.Spec = karmadapolicyv1alpha1.PropagationSpec{
-			// Select WorkloadDeployments by location label, plus ALL
-			// companion ConfigMaps and Secrets in this namespace that carry the
-			// referenced-data label. The label selector on ConfigMap/Secret is
-			// location-agnostic — companions are shared across locations when
-			// multiple WDs reference the same source. Karmada propagates the
-			// entire set to matching clusters in one policy, so companions
-			// co-arrive with their WorkloadDeployment.
+			// Companion ConfigMaps and Secrets are deliberately NOT selected
+			// here. A companion is shared: one object per referenced source,
+			// used by every deployment in the namespace that references it. A
+			// policy claim is exclusive and sticky to the first claimant, so
+			// naming a companion on each location's policy delivers it to one
+			// location and silently starves the rest.
 			//
-			// Using separate ResourceSelectors for each kind (WorkloadDeployment,
-			// ConfigMap, Secret) is the idiomatic Karmada pattern for
-			// multi-kind propagation within a single policy.
+			// PropagateDeps hands companion delivery to the engine instead. The
+			// dependency-interpretation hook on the WorkloadDeployment
+			// interpreter reads the expected-referenced-data annotation, and the
+			// engine maintains an attached binding per companion whose
+			// destinations are the union of every referencing deployment's
+			// placements. No policy claims a companion, so there is no claim to
+			// win or lose, and delivery still reaches only cells that run a
+			// referencing workload.
+			//
+			// The hub has to run karmada-controller-manager with
+			// --feature-gates=PropagateDeps=true. The Karmada Helm chart pins
+			// the gate off, overriding the upstream default, so a hub installed
+			// from the chart without an explicit override ignores this field:
+			// companions stay on the hub and every instance that references
+			// data holds its gate with AwaitingPropagation.
+			//
+			// Upgrading a namespace that already has companion selectors
+			// briefly removes the delivered copies: the engine strips the claim
+			// and deletes the derived binding for an object a policy no longer
+			// selects, and re-delivery goes through a new attached binding.
+			// Both are driven by this single policy update, so the gap is short,
+			// but it is a gap. Setting both fields in one write is deliberate —
+			// splitting them across reconciles would widen it.
+			PropagateDeps: true,
+			// The field defaults to Abort, which stops propagation when an
+			// object of the same name already exists on the cell. Everything
+			// this policy delivers is compute-owned and lands in a
+			// compute-owned cell namespace, so a name collision is never
+			// another owner's object to protect — it is a stray copy, and
+			// compute's copy is the authority. Aborting instead leaves the work
+			// AppliedFailed on a hub object the customer cannot read, with no
+			// signal on the deployment, so a single stray object on one cell
+			// strands delivery indefinitely and invisibly.
+			//
+			// This also covers the companions, which no policy selects: an
+			// attached dependency binding inherits its parent binding's
+			// conflict resolution, so the deployment's policy is the only place
+			// to set it for them.
+			ConflictResolution: karmadapolicyv1alpha1.ConflictOverwrite,
 			ResourceSelectors: []karmadapolicyv1alpha1.ResourceSelector{
 				{
 					APIVersion: computev1alpha.GroupVersion.String(),
 					Kind:       kindWorkloadDeployment,
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: deploymentLabels,
-					},
-				},
-				{
-					// Propagate companion ConfigMaps alongside WorkloadDeployments.
-					// The referenced-data label is the only selector needed; there
-					// is no per-location partitioning of companions.
-					APIVersion: corev1.SchemeGroupVersion.String(),
-					Kind:       kindConfigMap,
-					LabelSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
-						},
-					},
-				},
-				{
-					// Propagate companion Secrets alongside WorkloadDeployments.
-					APIVersion: corev1.SchemeGroupVersion.String(),
-					Kind:       kindSecret,
-					LabelSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							computev1alpha.ReferencedDataLabel: computev1alpha.ReferencedDataLabelValue,
-						},
 					},
 				},
 			},
@@ -611,6 +632,88 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 	})
 }
 
+// pruneStaleClasslessPropagationPolicy removes the class-blind
+// location-<location> policy once no hub deployment at that location
+// propagates without a runtime class.
+//
+// A namespace federated before the RuntimeClasses gate was enabled holds such a
+// policy, and the federator stops writing to it the moment every deployment in
+// the namespace carries a class. Karmada breaks a tie between two policies of
+// equal priority by name, taking the alphabetically smaller one, and
+// location-<location> always sorts before location-<location>-class-<class>.
+// The stale policy therefore keeps claiming every deployment the class policy
+// was written for, and the class policy — including its PropagateDeps and its
+// class-aware cluster affinity — never applies. The stale policy is not inert,
+// so it has to be removed rather than left alone.
+//
+// Deleting it releases its claims; Karmada then re-matches each deployment and
+// its dependencies against the class policy. The prune runs on the normal
+// reconcile path rather than only on finalization so an existing namespace
+// migrates on the next reconcile of any of its deployments.
+//
+// This is a no-op unless the gate is on and the caller's deployment carries a
+// class. With the gate off every deployment resolves to the empty class, the
+// class-blind policy is the live one, and no suffixed policy is ever written.
+func (r *WorkloadDeploymentFederator) pruneStaleClasslessPropagationPolicy(
+	ctx context.Context,
+	downstreamNS string,
+	locationName string,
+	runtimeClass string,
+) error {
+	if !r.RuntimeClassesEnabled || runtimeClass == "" {
+		return nil
+	}
+
+	// An empty location would build an empty-valued label selector below, which
+	// matches the wrong deployment set and mis-decides the prune. The webhook
+	// requires locationRef.name, so an empty value here is corruption.
+	if locationName == "" {
+		return fmt.Errorf("cannot evaluate stale class-blind PropagationPolicy in namespace %q: location name is empty", downstreamNS)
+	}
+
+	name := propagationPolicyNameFor(locationName, "")
+
+	// Get first so the steady state — where the stale policy was already pruned
+	// or never existed — costs one cached read and no List.
+	var stale karmadapolicyv1alpha1.PropagationPolicy
+	if err := r.FederationClient.Get(ctx, types.NamespacedName{Namespace: downstreamNS, Name: name}, &stale); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read PropagationPolicy %s/%s: %w", downstreamNS, name, err)
+	}
+
+	selector, err := r.propagationPolicyUsageSelector(locationName, "")
+	if err != nil {
+		return err
+	}
+
+	var classless computev1alpha.WorkloadDeploymentList
+	if err := r.FederationClient.List(ctx, &classless,
+		client.InNamespace(downstreamNS),
+		selector,
+	); err != nil {
+		return fmt.Errorf("failed to list class-blind downstream deployments for location %q: %w", locationName, err)
+	}
+
+	if len(classless.Items) > 0 {
+		// A deployment at this location still propagates without a class, so the
+		// policy is live for it and the tie-break it wins is the correct outcome.
+		return nil
+	}
+
+	// The UID precondition keeps a concurrent reconcile that legitimately
+	// recreated this policy for a newly class-blind deployment from losing it to
+	// a decision made against the object we read.
+	if err := r.FederationClient.Delete(ctx, &stale, client.Preconditions{UID: &stale.UID}); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("failed to delete stale class-blind PropagationPolicy %s/%s: %w", downstreamNS, name, err)
+	}
+
+	log.FromContext(ctx).Info("deleted stale class-blind PropagationPolicy (every deployment at this location carries a runtime class)",
+		"policy", name, "location", locationName, "downstreamNamespace", downstreamNS)
+	return nil
+}
+
 // cleanupPropagationPolicyIfUnused deletes the PropagationPolicy for the given
 // location and runtime class if no WorkloadDeployments propagated by it remain
 // in the downstream namespace.
@@ -619,6 +722,11 @@ func (r *WorkloadDeploymentFederator) syncStatusFromDownstream(
 // by that pair. Counting the location alone would keep a class policy alive
 // for deployments in another class, and would keep the no-class policy alive
 // for deployments that no longer use it.
+//
+// This is the finalization path, and it only ever considers the finalizing
+// deployment's own key. A policy that no deployment is keyed by any more — the
+// class-blind policy of a namespace federated before the RuntimeClasses gate —
+// is pruned on the reconcile path by pruneStaleClasslessPropagationPolicy.
 func (r *WorkloadDeploymentFederator) cleanupPropagationPolicyIfUnused(
 	ctx context.Context,
 	downstreamNS string,

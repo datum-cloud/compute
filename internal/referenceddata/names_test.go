@@ -101,12 +101,12 @@ func TestCompanionName_SameSourceDifferentKind(t *testing.T) {
 }
 
 func TestCompanionName_LongName(t *testing.T) {
-	// Build a name that would exceed 253 chars.
+	// Build a name that would exceed MaxCompanionNameLength.
 	longName := strings.Repeat("a", 250)
 	result := CompanionName(testKindConfigMap, longName)
 
-	if len(result) > maxNameLength {
-		t.Errorf("CompanionName with long source: len=%d exceeds maxNameLength=%d", len(result), maxNameLength)
+	if len(result) > MaxCompanionNameLength {
+		t.Errorf("CompanionName with long source: len=%d exceeds MaxCompanionNameLength=%d", len(result), MaxCompanionNameLength)
 	}
 
 	if !isValidDNSSubdomain(result) {
@@ -121,14 +121,14 @@ func TestCompanionName_LongName(t *testing.T) {
 }
 
 func TestCompanionName_AllDashesSource(t *testing.T) {
-	// A source name composed entirely of '-' characters exceeds maxNameLength
+	// A source name composed entirely of '-' characters exceeds MaxCompanionNameLength
 	// when long. After TrimRight, truncated becomes "". The function must
 	// produce a valid DNS subdomain (just the hash).
 	longDashes := strings.Repeat("-", 250)
 	result := CompanionName(testKindConfigMap, longDashes)
 
-	if len(result) > maxNameLength {
-		t.Errorf("len=%d exceeds maxNameLength=%d", len(result), maxNameLength)
+	if len(result) > MaxCompanionNameLength {
+		t.Errorf("len=%d exceeds MaxCompanionNameLength=%d", len(result), MaxCompanionNameLength)
 	}
 	if !isValidDNSSubdomain(result) {
 		t.Errorf("produced invalid DNS subdomain: %q", result)
@@ -147,8 +147,8 @@ func TestCompanionName_AllDotsSource(t *testing.T) {
 	longDots := strings.Repeat(".", 250)
 	result := CompanionName(testKindConfigMap, longDots)
 
-	if len(result) > maxNameLength {
-		t.Errorf("len=%d exceeds maxNameLength=%d", len(result), maxNameLength)
+	if len(result) > MaxCompanionNameLength {
+		t.Errorf("len=%d exceeds MaxCompanionNameLength=%d", len(result), MaxCompanionNameLength)
 	}
 	if !isValidDNSSubdomain(result) {
 		t.Errorf("produced invalid DNS subdomain: %q", result)
@@ -159,14 +159,14 @@ func TestCompanionName_NameEndingOnDot(t *testing.T) {
 	// A source name whose truncation point lands exactly on a '.'. The
 	// trailing '.' is stripped and the result must still be a valid subdomain.
 	//
-	// maxNameLength=253; suffix="-HHHHHHHH" (9).
-	// maxSourceLen = 253 - 9 (suffix) = 244.
+	// MaxCompanionNameLength=243; suffix="-HHHHHHHH" (9).
+	// maxSourceLen = 243 - 9 (suffix) = 234.
 	// Build a name that is exactly 244 chars and ends with '.'.
 	base := strings.Repeat("a", 243) + "."
 	result := CompanionName("configmap", base)
 
-	if len(result) > maxNameLength {
-		t.Errorf("len=%d exceeds maxNameLength=%d", len(result), maxNameLength)
+	if len(result) > MaxCompanionNameLength {
+		t.Errorf("len=%d exceeds MaxCompanionNameLength=%d", len(result), MaxCompanionNameLength)
 	}
 	if !isValidDNSSubdomain(result) {
 		t.Errorf("produced invalid DNS subdomain: %q", result)
@@ -174,7 +174,7 @@ func TestCompanionName_NameEndingOnDot(t *testing.T) {
 }
 
 func TestCompanionName_ValidShortName(t *testing.T) {
-	// Positive case: a simple name that fits within maxNameLength without
+	// Positive case: a simple name that fits within MaxCompanionNameLength without
 	// truncation should be returned unchanged.
 	result := CompanionName(testKindSecret, testNameMySecret)
 	want := testNameMySecret

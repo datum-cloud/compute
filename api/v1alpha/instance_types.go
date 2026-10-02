@@ -413,14 +413,18 @@ type VolumeAttachment struct {
 type InstanceRuntimeResources struct {
 	// Full or partial URL of the instance type resource to use for this instance.
 	//
-	// For example: `datumcloud/d1-standard-2`
+	// For example: `datumcloud-d1-standard-2`
 	//
 	// May be combined with `resources` to allow for custom instance types for
 	// instance families that support customization. Instance types which support
 	// customization will appear in the form `<project>/<instanceFamily>-custom`.
 	//
-	// +kubebuilder:validation:Required
-	InstanceType string `json:"instanceType"`
+	// When omitted, the instance runs on the platform's default instance type,
+	// `datumcloud-d1-standard-2`, for compatibility with workloads written
+	// before instance types could be chosen.
+	//
+	// +kubebuilder:validation:Optional
+	InstanceType string `json:"instanceType,omitempty"`
 
 	// Describes adjustments to the resources defined by the instance type.
 	//
@@ -853,6 +857,13 @@ const (
 	// ReferencedDataReasonSourceTooLarge indicates one or more referenced objects
 	// exceed the allowed size limit.
 	ReferencedDataReasonSourceTooLarge = "SourceTooLarge"
+
+	// ReferencedDataReasonSourceNameTooLong indicates a referenced object's name
+	// leaves no room for the suffix the federation engine appends when it names
+	// the object's binding, so the data could never reach a cell. Renaming the
+	// source is the only fix, which is why this is reported rather than worked
+	// around by shortening the delivered copy.
+	ReferencedDataReasonSourceNameTooLong = "SourceNameTooLong"
 
 	// ReferencedDataReasonReady indicates all referenced data has been resolved
 	// and is present on the cell.

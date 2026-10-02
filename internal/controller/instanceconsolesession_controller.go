@@ -104,12 +104,22 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 	}
 	projectClient := cl.GetClient()
 
+	// The open-sessions gauge follows what this reconcile observes: a session
+	// that is gone, being deleted or ended is no longer open.
+	trackingKey := string(req.ClusterName) + "/" + req.NamespacedName.String()
 	var session computev1alpha.InstanceConsoleSession
 	if err := projectClient.Get(ctx, req.NamespacedName, &session); err != nil {
+		if apierrors.IsNotFound(err) {
+			openSessionsByKey.forget(trackingKey)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	placement := placementOf(&session)
+	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues(
+		"sessionUID", session.UID, "cell", placement.cell, "location", placement.location))
 
 	if !session.DeletionTimestamp.IsZero() {
+		openSessionsByKey.forget(trackingKey)
 		return r.finalize(ctx, projectClient, &session)
 	}
 
@@ -127,6 +137,17 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 		if result, err = r.reconcileDelivery(ctx, req.ClusterName, projectClient, &session); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if sessionEnded(&session) {
+		openSessionsByKey.forget(trackingKey)
+	} else {
+		// Delivery may have just recorded the placement, so read it again.
+		openSessionsByKey.observe(trackingKey, openSessionSeries{
+			project:  session.Namespace,
+			location: placementOf(&session).location,
+			phase:    sessionPhase(&session),
+		})
 	}
 
 	if err := r.recordLifecycleEvents(ctx, projectClient, &session, ""); err != nil {
@@ -260,15 +281,27 @@ func (r *InstanceConsoleSessionReconciler) deliver(
 
 	// Record the hub namespace before writing into it, so finalization can
 	// always find the copy even once the instance and its deployment are gone.
+	// The cell and location go with it: they label the session's events and
+	// metrics, and outlive the hub copy and the deployment they came from.
+	placement := sessionPlacement{
+		location: hubCopy.Labels[locationLabel],
+		cell:     hubCopy.Labels[sessionMemberClusterLabel],
+	}
 	if session.Annotations[computev1alpha.FederationNamespaceAnnotation] != hubCopy.Namespace {
 		patch := client.MergeFrom(session.DeepCopy())
 		if session.Annotations == nil {
 			session.Annotations = map[string]string{}
 		}
 		session.Annotations[computev1alpha.FederationNamespaceAnnotation] = hubCopy.Namespace
+		session.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation] = placement.location
+		session.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation] = placement.cell
 		if err := projectClient.Patch(ctx, session, patch); err != nil {
 			return nil, fmt.Errorf("failed recording federation namespace on session: %w", err)
 		}
+		// The first delivery is the one time a session is counted as created:
+		// a copy redelivered after vanishing unclaimed finds the namespace
+		// already recorded.
+		sessionsCreated.WithLabelValues(session.Namespace, placement.location).Inc()
 	}
 
 	if err := controllerutil.SetControllerReference(hubDeployment, hubCopy, federationScheme(r.FederationClient.Scheme())); err != nil {
@@ -277,7 +310,8 @@ func (r *InstanceConsoleSessionReconciler) deliver(
 	if err := r.FederationClient.Create(ctx, hubCopy); err != nil {
 		return nil, fmt.Errorf("failed creating hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)
 	}
-	log.FromContext(ctx).Info("delivered session to federation hub", "hubNamespace", hubCopy.Namespace)
+	log.FromContext(ctx).Info("delivered session to federation hub", "hubNamespace", hubCopy.Namespace,
+		"cell", placement.cell, "location", placement.location)
 	return hubCopy, nil
 }
 

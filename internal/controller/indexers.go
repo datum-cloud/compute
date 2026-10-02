@@ -11,11 +11,18 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/referenceddata"
+	"go.datum.net/compute/pkg/instancetype"
 )
 
 const (
 	deploymentWorkloadUIDIndex = "deploymentWorkloadUIDIndex"
 	workloadNetworksIndex      = "workloadNetworksIndex"
+
+	// workloadInstanceTypeIndex indexes Workloads by the canonical name of the
+	// instance type their instances run on. Used by the WorkloadReconciler's
+	// InstanceType watch to re-queue the workloads on a type whose lifecycle
+	// phase changed.
+	workloadInstanceTypeIndex = "workloadInstanceTypeIndex"
 
 	deploymentLocationIndex = "deploymentLocationIndex"
 
@@ -94,7 +101,16 @@ func addWorkloadIndexers(ctx context.Context, mgr mcmanager.Manager) error {
 		return fmt.Errorf("failed to add workload indexer %q: %w", workloadNetworksIndex, err)
 	}
 
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &computev1alpha.Workload{}, workloadInstanceTypeIndex, workloadInstanceTypeIndexFunc); err != nil {
+		return fmt.Errorf("failed to add workload indexer %q: %w", workloadInstanceTypeIndex, err)
+	}
+
 	return nil
+}
+
+func workloadInstanceTypeIndexFunc(o client.Object) []string {
+	workload := o.(*computev1alpha.Workload)
+	return []string{instancetype.Canonical(effectiveInstanceType(workload))}
 }
 
 // wdRefersToConfigMapIndexFunc returns the namespace/name keys of all

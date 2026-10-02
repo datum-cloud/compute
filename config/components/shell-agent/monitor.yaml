@@ -1,0 +1,20 @@
+# Scrapes each shell agent's metrics: sessions open, endpoint reachability,
+# claim outcomes and unconfirmed cleanup, labeled by cell and agent. The
+# platform's service-metrics vmagent picks up ServiceMonitors in every
+# namespace, the same way it scrapes compute-manager.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exec-agent
+  namespace: compute-shell-system
+  labels:
+    app.kubernetes.io/name: exec-agent
+    app.kubernetes.io/part-of: compute
+spec:
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exec-agent

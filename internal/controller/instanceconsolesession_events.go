@@ -12,9 +12,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
@@ -32,6 +34,7 @@ const (
 	sessionEventContainerAnnotation = computev1alpha.AnnotationNamespace + "/container"
 	sessionEventReasonAnnotation    = computev1alpha.AnnotationNamespace + "/reason"
 	sessionEventExitCodeAnnotation  = computev1alpha.AnnotationNamespace + "/exit-code"
+	sessionEventDurationAnnotation  = computev1alpha.AnnotationNamespace + "/duration"
 )
 
 // recordLifecycleEvents records SessionStarted once the session has started and
@@ -45,13 +48,27 @@ func (r *InstanceConsoleSessionReconciler) recordLifecycleEvents(
 	session *computev1alpha.InstanceConsoleSession,
 	endReason string,
 ) error {
+	placement := placementOf(session)
+	logger := log.FromContext(ctx).WithValues("instance", session.Spec.InstanceRef.Name,
+		"container", session.Spec.ContainerName)
+
 	if sessionStarted(session) {
 		note := fmt.Sprintf("Shell session started in container %q of instance %q.",
 			session.Spec.ContainerName, session.Spec.InstanceRef.Name)
-		if err := r.recordOnce(ctx, projectClient, session, EventReasonSessionStarted, func() error {
+		recorded, err := r.recordOnce(ctx, projectClient, session, EventReasonSessionStarted, func() error {
 			return r.recordSessionEvent(ctx, projectClient, session, corev1.EventTypeNormal, EventReasonSessionStarted, note, nil)
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		if recorded {
+			// Recording the event is the once-per-session transition the
+			// metrics follow, so a repeated reconcile cannot observe twice.
+			connect := sessionConnectTime(session)
+			if connect >= 0 {
+				sessionConnectSeconds.WithLabelValues(placement.location).Observe(connect.Seconds())
+			}
+			logger.Info("session started", "startedAt", session.Status.StartedAt, "connectTime", connect)
 		}
 	}
 
@@ -62,7 +79,11 @@ func (r *InstanceConsoleSessionReconciler) recordLifecycleEvents(
 		return nil
 	}
 
+	duration := sessionDuration(session, r.now())
 	annotations := map[string]string{sessionEventReasonAnnotation: endReason}
+	if duration >= 0 {
+		annotations[sessionEventDurationAnnotation] = duration.String()
+	}
 	note := fmt.Sprintf("Shell session in container %q of instance %q ended: %s.",
 		session.Spec.ContainerName, session.Spec.InstanceRef.Name, endReason)
 	if code := session.Status.ExitCode; code != nil {
@@ -70,9 +91,49 @@ func (r *InstanceConsoleSessionReconciler) recordLifecycleEvents(
 		note = fmt.Sprintf("Shell session in container %q of instance %q ended: %s with exit code %d.",
 			session.Spec.ContainerName, session.Spec.InstanceRef.Name, endReason, *code)
 	}
-	return r.recordOnce(ctx, projectClient, session, EventReasonSessionEnded, func() error {
+	recorded, err := r.recordOnce(ctx, projectClient, session, EventReasonSessionEnded, func() error {
 		return r.recordSessionEvent(ctx, projectClient, session, corev1.EventTypeNormal, EventReasonSessionEnded, note, annotations)
 	})
+	if err != nil || !recorded {
+		return err
+	}
+	sessionsEnded.WithLabelValues(placement.location, endReason).Inc()
+	if duration >= 0 {
+		sessionDurationSeconds.WithLabelValues(placement.location, endReason).Observe(duration.Seconds())
+	}
+	logger.Info("session ended", "reason", endReason, "duration", duration,
+		"exitCode", session.Status.ExitCode, "startedAt", session.Status.StartedAt, "endedAt", session.Status.EndedAt)
+	return nil
+}
+
+// sessionConnectTime is how long the session's client took to connect after
+// the session was created, or -1 for a session no client connected to.
+func sessionConnectTime(session *computev1alpha.InstanceConsoleSession) time.Duration {
+	if session.Status.StartedAt == nil {
+		return -1
+	}
+	return session.Status.StartedAt.Sub(session.CreationTimestamp.Time)
+}
+
+// sessionDuration is how long the session's client was connected, or -1 for
+// a session no client connected to. The end is the cell's confirmed end when
+// it reported one, otherwise when the session's Ready condition turned false,
+// and for a session the control plane is ending right now, now.
+func sessionDuration(session *computev1alpha.InstanceConsoleSession, now time.Time) time.Duration {
+	if session.Status.StartedAt == nil {
+		return -1
+	}
+	end := now
+	switch {
+	case session.Status.EndedAt != nil:
+		end = session.Status.EndedAt.Time
+	case sessionEnded(session):
+		if cond := apimeta.FindStatusCondition(session.Status.Conditions, computev1alpha.InstanceConsoleSessionReady); cond != nil &&
+			!cond.LastTransitionTime.IsZero() {
+			end = cond.LastTransitionTime.Time
+		}
+	}
+	return max(end.Sub(session.Status.StartedAt.Time), 0)
 }
 
 func (r *InstanceConsoleSessionReconciler) recordCleanupUnconfirmed(
@@ -81,14 +142,17 @@ func (r *InstanceConsoleSessionReconciler) recordCleanupUnconfirmed(
 	session *computev1alpha.InstanceConsoleSession,
 ) error {
 	note := fmt.Sprintf("The cell did not confirm within %s that the session's command stopped.", r.cleanupTimeout())
-	return r.recordOnce(ctx, projectClient, session, EventReasonCleanupUnconfirmed, func() error {
+	_, err := r.recordOnce(ctx, projectClient, session, EventReasonCleanupUnconfirmed, func() error {
 		return r.recordSessionEvent(ctx, projectClient, session, corev1.EventTypeWarning, EventReasonCleanupUnconfirmed, note, nil)
 	})
+	return err
 }
 
 // recordOnce records a session's event of the given reason at most once, even
 // though the project events store accepts two events with the same name and
-// the session is reconciled many times around its end.
+// the session is reconciled many times around its end. It reports whether
+// this call put the event on record, which happens once per session and so
+// is when the session's metrics are observed.
 //
 // Before recording, it claims the event in the session's status with
 // optimistic concurrency, so only a reconcile that saw the session's latest
@@ -103,18 +167,18 @@ func (r *InstanceConsoleSessionReconciler) recordOnce(
 	session *computev1alpha.InstanceConsoleSession,
 	reason string,
 	record func() error,
-) error {
+) (bool, error) {
 	if entry := sessionRecordedEvent(session, reason); entry != nil && entry.Recorded {
-		return nil
+		return false, nil
 	}
 
 	setRecordedEvent(session, reason, r.now(), false)
 	if err := projectClient.Status().Update(ctx, session); err != nil {
-		return fmt.Errorf("failed claiming the %s event: %w", reason, err)
+		return false, fmt.Errorf("failed claiming the %s event: %w", reason, err)
 	}
 
 	if err := record(); err != nil {
-		return err
+		return false, err
 	}
 
 	attemptedAt := r.now()
@@ -129,9 +193,9 @@ func (r *InstanceConsoleSessionReconciler) recordOnce(
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("failed marking the %s event recorded: %w", reason, err)
+		return false, fmt.Errorf("failed marking the %s event recorded: %w", reason, err)
 	}
-	return nil
+	return true, nil
 }
 
 func sessionRecordedEvent(session *computev1alpha.InstanceConsoleSession, reason string) *computev1alpha.InstanceConsoleSessionRecordedEvent {
@@ -167,8 +231,13 @@ func (r *InstanceConsoleSessionReconciler) recordSessionEvent(
 	eventType, reason, note string,
 	extraAnnotations map[string]string,
 ) error {
+	// The cell and location let support go from the activity event to the
+	// cell's logs, and the session UID correlates the event with them.
+	placement := placementOf(session)
 	annotations := map[string]string{
 		computev1alpha.InstanceConsoleSessionRequesterAnnotation: session.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation],
+		computev1alpha.InstanceConsoleSessionCellAnnotation:      placement.cell,
+		computev1alpha.InstanceConsoleSessionLocationAnnotation:  placement.location,
 		sessionEventInstanceAnnotation:                           session.Spec.InstanceRef.Name,
 		sessionEventContainerAnnotation:                          session.Spec.ContainerName,
 	}

@@ -231,28 +231,35 @@ Undo creates a new revision rather than rewriting history — the audit trail st
 
 ### 4. Get logs
 
-`datumctl compute logs` treats the workload as the target, not the individual instance. By default it returns logs across all instances and prefixes each line with the city and instance short name:
+`datumctl compute logs` treats the workload as the target, not the individual instance. It merges the logs of every instance oldest first and prefixes each line with the instance's short name: the instance name without the workload, which already shows the placement, location and ordinal.
 
 ```
 $ datumctl compute logs api --follow
 
-Tailing logs for workload "api" in DFW, IAD. Ctrl-C to stop.
-
-[DFW/api-dfw-0]  10:14:02  GET  /healthz       200   3ms
-[IAD/api-iad-1]  10:14:02  GET  /v1/users       200  18ms
-[DFW/api-dfw-1]  10:14:03  POST /v1/login       401   4ms
-[IAD/api-iad-0]  10:14:03  GET  /healthz        200   2ms
+[default-us-central-1-0] Oct 01 10:14:02.118  listening on :8080
+[default-us-east-1-0]    Oct 01 10:14:02.410  GET /v1/users 200
+[default-us-central-1-1] Oct 01 10:14:03.007  POST /v1/login 401
+Following logs for workload "api". Ctrl-C to stop.
 ```
 
-Common filters reduce the output without requiring instance name lookup:
+Without a window it shows the newest 200 lines from the last 24 hours; `--since` and `--since-time` show the whole window. `--follow` polls for new lines every 0.5–2 seconds. The telemetry API has no streaming endpoint yet.
+
+Filters narrow the output without looking up instance names:
 
 ```
 $ datumctl compute logs api --location=us-east-1 --follow
-$ datumctl compute logs api --since=15m
-$ datumctl compute logs api -c worker --follow
+$ datumctl compute logs api --instance=default-us-east-1-0 --since=15m
+$ datumctl compute logs api -c worker --search=timeout
+$ datumctl compute logs api --alb --since=1h            # access logs of the workload's URL
+$ datumctl compute logs api -o json | jq .line
+$ datumctl compute logs api --browser                   # the portal's Logs tab
 ```
 
-All filters translate to label selectors against the platform's telemetry system. There is no per-city fan-out — the CLI queries a single endpoint and the label index handles scoping.
+Every filter is ANDed into a single LogQL query, so no per-location fan-out is needed. The workload, instance and container filters are label matchers, and `--search` is a server-side substring filter. There is no location label on log lines yet, so `--location` matches the location embedded in instance names (`<workload>-<placement>-<location>-<ordinal>`). Once the log collectors copy the pod's `compute.datumapis.com/location` label onto each line, it becomes a plain label matcher. The command rejects filters that can only match nothing, such as `-c` on a unikernel workload or an `--instance` outside the given `--location`.
+
+Because the query selects on the workload's label rather than on its current instances, it includes instances that have since been scaled away and workloads that have been deleted. An instance keeps its name across redeploys, but each replacement runs a new generation (a new VM or pod), so the output marks where an instance's generation changes. `--previous` and `--current` show one generation per instance, the way `kubectl logs --previous` does for a container. Restarts in place keep the generation.
+
+`--show-query` prints the generated LogQL, which can be taken to datumctl's raw `logs` command for anything this one doesn't cover.
 
 ### 5. Inspect and debug instances
 
@@ -319,7 +326,7 @@ Next steps
 datumctl compute deploy             Deploy or update a workload
 datumctl compute status             Show health across all cities
 datumctl compute instances          List all instances (--workload, --location to filter)
-datumctl compute logs               Stream logs (--workload, --location, --instance, -c/--container)
+datumctl compute logs WORKLOAD      Show or follow logs (--instance, --location, -c, --search, --alb)
 datumctl compute rollout            Watch a rollout in progress
 datumctl compute rollout history    List recent revisions
 datumctl compute rollout undo       Roll back to a previous revision
@@ -336,7 +343,7 @@ datumctl compute workloads [get | describe | delete | edit]
 datumctl compute workloads rollout [status | history | undo]
 datumctl compute workloads set image NAME CONTAINER=IMAGE
 
-datumctl compute instances [get | describe | logs]
+datumctl compute instances [get | describe]
 
 datumctl compute cities [list | describe]
 datumctl compute instance-types [list | describe]

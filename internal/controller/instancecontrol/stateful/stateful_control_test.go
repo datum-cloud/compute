@@ -694,7 +694,7 @@ func getInstanceTemplate(name string, ordinal int) *v1alpha.Instance {
 		Spec: v1alpha.InstanceSpec{
 			Runtime: v1alpha.InstanceRuntimeSpec{
 				Resources: v1alpha.InstanceRuntimeResources{
-					InstanceType: "datumcloud/d1-standard-2",
+					InstanceType: "datumcloud-d1-standard-2",
 				},
 				Sandbox: &v1alpha.SandboxRuntime{
 					Containers: []v1alpha.SandboxContainer{

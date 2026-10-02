@@ -53,6 +53,7 @@ func (a *Agent) reconcileSession(ctx context.Context, session *computev1alpha.In
 		return a.cleanUp(ctx, session)
 	}
 	if uid == "" {
+		a.recordOutcome(claimOutcomeRefused)
 		return ctrl.Result{}, a.rejectUnclaimed(ctx, session, reject(computev1alpha.InstanceConsoleSessionReasonInvalid,
 			"The session was delivered without its session UID."))
 	}
@@ -77,22 +78,28 @@ func (a *Agent) reconcileSession(ctx context.Context, session *computev1alpha.In
 	switch readyReason(session) {
 	case computev1alpha.InstanceConsoleSessionReasonSessionReady:
 		if a.draining.Load() {
+			a.recordOutcome(claimOutcomeShutdown)
 			return ctrl.Result{}, a.endUnconnected(ctx, session, computev1alpha.InstanceConsoleSessionReasonAgentShutdown)
 		}
 		if session.Status.ConnectBefore != nil && now.Before(session.Status.ConnectBefore.Time) {
 			return ctrl.Result{RequeueAfter: session.Status.ConnectBefore.Sub(now)}, nil
 		}
-		log.FromContext(ctx).Info("session was not connected in time")
+		log.FromContext(ctx).Info("session was not connected in time",
+			"reason", computev1alpha.InstanceConsoleSessionReasonNotConnected)
+		a.recordOutcome(claimOutcomeNotConnected)
 		return ctrl.Result{}, a.endUnconnected(ctx, session, computev1alpha.InstanceConsoleSessionReasonNotConnected)
 	case computev1alpha.InstanceConsoleSessionReasonConnected:
 		if !a.isLive(uid) {
-			log.FromContext(ctx).Info("ending a session this agent's previous run served")
+			log.FromContext(ctx).Info("ending a session this agent's previous run served",
+				"reason", computev1alpha.InstanceConsoleSessionReasonAgentLost)
+			a.recordOutcome(claimOutcomeTakeover)
 			return ctrl.Result{}, a.abandon(ctx, session, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
 		}
 		if session.Status.ExpiresAt != nil && now.Before(session.Status.ExpiresAt.Time) {
 			return ctrl.Result{RequeueAfter: session.Status.ExpiresAt.Sub(now)}, nil
 		}
-		log.FromContext(ctx).Info("session expired")
+		log.FromContext(ctx).Info("session expired", "reason", computev1alpha.InstanceConsoleSessionReasonExpired)
+		a.recordOutcome(claimOutcomeExpired)
 		a.stop(uid, computev1alpha.InstanceConsoleSessionReasonExpired)
 	}
 	return ctrl.Result{}, nil
@@ -129,6 +136,7 @@ func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConso
 	}
 	if rej != nil {
 		log.FromContext(ctx).Info("refusing session", "reason", rej.reason, "message", rej.message)
+		a.recordOutcome(claimOutcomeRefused)
 		return ctrl.Result{}, a.rejectUnclaimed(ctx, session, rej)
 	}
 
@@ -150,6 +158,7 @@ func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConso
 		return ctrl.Result{}, err
 	}
 	if held == nil {
+		a.recordOutcome(claimOutcomeRefused)
 		return ctrl.Result{}, a.rejectUnclaimed(ctx, session, reject(
 			computev1alpha.InstanceConsoleSessionReasonTooManySessions,
 			"The instance already has %d open sessions, the most it allows.", a.cfg.SlotsPerInstance))
@@ -173,6 +182,7 @@ func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConso
 		return a.abortClaim(ctx, client.ObjectKeyFromObject(session), held, err)
 	}
 	a.track(uid, client.ObjectKeyFromObject(session))
+	a.recordOutcome(claimOutcomeClaimed)
 	log.FromContext(ctx).Info("claimed session", "pod", target.pod.Name, "container", target.container)
 	return ctrl.Result{RequeueAfter: a.cfg.ConnectTimeout}, nil
 }
@@ -214,7 +224,9 @@ func (a *Agent) watchOwner(ctx context.Context, session *computev1alpha.Instance
 	if alive {
 		return ctrl.Result{RequeueAfter: LeaseDuration}, nil
 	}
-	log.FromContext(ctx).Info("taking over a session from a lost agent", "agent", owner)
+	log.FromContext(ctx).Info("taking over a session from a lost agent", "lostEndpoint", owner,
+		"reason", computev1alpha.InstanceConsoleSessionReasonAgentLost)
+	a.recordOutcome(claimOutcomeTakeover)
 	return ctrl.Result{}, a.abandon(ctx, session, owner, computev1alpha.InstanceConsoleSessionReasonAgentLost)
 }
 
@@ -307,13 +319,16 @@ func (a *Agent) revoke(ctx context.Context, session *computev1alpha.InstanceCons
 	reason := computev1alpha.InstanceConsoleSessionReasonRevoked
 	switch owner := endpointOf(session); {
 	case owner == a.EndpointID() && a.isLive(uid):
-		log.FromContext(ctx).Info("revoking session")
+		log.FromContext(ctx).Info("revoking session", "reason", reason)
+		a.recordOutcome(claimOutcomeRevoked)
 		a.stop(uid, reason)
 	case owner == a.EndpointID():
+		a.recordOutcome(claimOutcomeRevoked)
 		if err := a.endUnconnected(ctx, session, reason); err != nil {
 			return ctrl.Result{}, err
 		}
 	case owner == "":
+		a.recordOutcome(claimOutcomeRevoked)
 		if err := a.rejectUnclaimed(ctx, session, reject(reason, "%s", endMessage(reason))); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -329,6 +344,7 @@ func (a *Agent) revoke(ctx context.Context, session *computev1alpha.InstanceCons
 		if alive {
 			return ctrl.Result{RequeueAfter: cleanupRetryInterval}, nil
 		}
+		a.recordOutcome(claimOutcomeRevoked)
 		if err := a.abandon(ctx, session, owner, reason); err != nil {
 			return ctrl.Result{}, err
 		}

@@ -401,6 +401,16 @@ var catalog = []ReasonInfo{
 		Skill:          SkillReferencedData,
 	},
 	{
+		Reason:         computev1alpha.ReferencedDataReasonSourceNameTooLong,
+		ConditionTypes: []string{computev1alpha.ReferencedDataReady},
+		Actionability:  ActionabilityUser,
+		Explanation: "The name of a ConfigMap or Secret your workload references is too long for " +
+			"Datum to deliver it to the machine that runs your instances.",
+		Remediation: "Recreate it under a shorter name, at most 243 characters, and reference the " +
+			"new name from your workload.",
+		Skill: SkillReferencedData,
+	},
+	{
 		Reason:           computev1alpha.ReferencedDataReasonResolving,
 		ConditionTypes:   []string{computev1alpha.ReferencedDataReady},
 		Actionability:    ActionabilityTransient,

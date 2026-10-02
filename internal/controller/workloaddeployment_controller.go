@@ -634,6 +634,7 @@ func wdBlockingReasonPriority(reason string) int {
 		return 4
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized:
 		return 5
 	case computev1alpha.WorkloadReasonNetworkNotFound:

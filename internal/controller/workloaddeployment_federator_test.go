@@ -396,27 +396,16 @@ func TestWorkloadDeploymentFederator_FederatesToKarmada(t *testing.T) {
 	}, &pp)
 	require.NoError(t, err, "PropagationPolicy %q should exist", ppName)
 
-	// The PP must have three selectors: WorkloadDeployment (location), ConfigMap
-	// (referenced-data), and Secret (referenced-data).
-	require.Len(t, pp.Spec.ResourceSelectors, 3)
+	// The PP selects the WorkloadDeployment and nothing else. Companions travel
+	// as its dependencies.
+	require.Len(t, pp.Spec.ResourceSelectors, 1)
+	assert.True(t, pp.Spec.PropagateDeps, "the PP must ask the engine to carry the deployment's dependencies")
 
 	wdSel := pp.Spec.ResourceSelectors[0]
 	assert.Equal(t, computev1alpha.GroupVersion.String(), wdSel.APIVersion)
 	assert.Equal(t, kindWorkloadDeployment, wdSel.Kind)
 	require.NotNil(t, wdSel.LabelSelector)
 	assert.Equal(t, testFederatorLocation, wdSel.LabelSelector.MatchLabels[locationLabel])
-
-	cmSel := pp.Spec.ResourceSelectors[1]
-	assert.Equal(t, "v1", cmSel.APIVersion)
-	assert.Equal(t, kindConfigMap, cmSel.Kind)
-	require.NotNil(t, cmSel.LabelSelector)
-	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, cmSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
-
-	secretSel := pp.Spec.ResourceSelectors[2]
-	assert.Equal(t, "v1", secretSel.APIVersion)
-	assert.Equal(t, kindSecret, secretSel.Kind)
-	require.NotNil(t, secretSel.LabelSelector)
-	assert.Equal(t, computev1alpha.ReferencedDataLabelValue, secretSel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel])
 
 	// The PP cluster affinity must target clusters carrying the same location.
 	require.NotNil(t, pp.Spec.Placement.ClusterAffinity)
@@ -559,11 +548,15 @@ func TestCleanupPropagationPolicyIfUnused_EmptyLocation(t *testing.T) {
 	assert.Contains(t, err.Error(), "location name is empty")
 }
 
-// TestWorkloadDeploymentFederator_PropagationPolicyHasReferencedDataSelectors
-// verifies that the PropagationPolicy always includes ConfigMap and Secret
-// selectors for the referenced-data label in addition to the WorkloadDeployment
-// location selector. This is the always-on companion co-propagation.
-func TestWorkloadDeploymentFederator_PropagationPolicyHasReferencedDataSelectors(t *testing.T) {
+// TestWorkloadDeploymentFederator_PropagationPolicyDelegatesCompanionDelivery
+// verifies the PropagationPolicy names no ConfigMap or Secret and instead sets
+// PropagateDeps.
+//
+// A companion is shared by every deployment in the namespace that references
+// the same source, so naming it on each location's policy hands it to whichever
+// policy claims it first and starves every other location. Delegating to the
+// engine unions the destinations instead.
+func TestWorkloadDeploymentFederator_PropagationPolicyDelegatesCompanionDelivery(t *testing.T) {
 	t.Parallel()
 
 	wd := testWorkloadDeployment(withFinalizer)
@@ -581,23 +574,24 @@ func TestWorkloadDeploymentFederator_PropagationPolicyHasReferencedDataSelectors
 		Namespace: testKarmadaNSStr,
 	}, &pp))
 
-	require.Len(t, pp.Spec.ResourceSelectors, 3, "PP must have WD + ConfigMap + Secret selectors")
+	assert.True(t, pp.Spec.PropagateDeps,
+		"without PropagateDeps the engine never reads the deployment's dependencies and no companion is delivered")
 
-	kinds := make(map[string]bool)
-	for _, sel := range pp.Spec.ResourceSelectors {
-		kinds[sel.Kind] = true
-	}
-	assert.True(t, kinds[kindWorkloadDeployment], "PP must select WorkloadDeployments")
-	assert.True(t, kinds[kindConfigMap], "PP must select ConfigMaps with referenced-data label")
-	assert.True(t, kinds[kindSecret], "PP must select Secrets with referenced-data label")
+	// An attached dependency binding inherits the parent binding's conflict
+	// resolution, so this is the only place companion delivery can be told to
+	// take over a stray same-named object on a cell. The default, Abort, would
+	// strand delivery as AppliedFailed on a hub object the customer cannot read.
+	assert.Equal(t, karmadapolicyv1alpha1.ConflictOverwrite, pp.Spec.ConflictResolution,
+		"compute owns what this policy delivers and the namespace it lands in, so a name collision must not stop propagation")
 
-	// Verify the ConfigMap and Secret selectors match on the referenced-data label.
+	require.Len(t, pp.Spec.ResourceSelectors, 1, "PP must select the WorkloadDeployment only")
+	assert.Equal(t, kindWorkloadDeployment, pp.Spec.ResourceSelectors[0].Kind)
+
 	for _, sel := range pp.Spec.ResourceSelectors {
-		if sel.Kind == kindConfigMap || sel.Kind == kindSecret {
-			require.NotNil(t, sel.LabelSelector)
-			assert.Equal(t, computev1alpha.ReferencedDataLabelValue, sel.LabelSelector.MatchLabels[computev1alpha.ReferencedDataLabel],
-				"%s selector must match referenced-data=true label", sel.Kind)
-		}
+		assert.NotEqual(t, kindConfigMap, sel.Kind,
+			"a ConfigMap selector reintroduces exclusive claiming of shared companions")
+		assert.NotEqual(t, kindSecret, sel.Kind,
+			"a Secret selector reintroduces exclusive claiming of shared companions")
 	}
 }
 

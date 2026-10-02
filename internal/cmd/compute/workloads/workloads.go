@@ -652,7 +652,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	// Next steps.
 	fmt.Fprintf(out, "Next steps:\n")
 	fmt.Fprintf(out, "  %-25s datumctl compute instances --workload=%s\n", "List instances:", workloadName)
-	fmt.Fprintf(out, "  %-25s datumctl compute logs <instance>\n", "Stream logs:")
+	fmt.Fprintf(out, "  %-25s datumctl compute logs %s -f\n", "Stream logs:", workloadName)
 	fmt.Fprintf(out, "  %-25s datumctl compute rollout undo %s\n", "Roll back:", workloadName)
 
 	return nil

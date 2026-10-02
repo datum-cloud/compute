@@ -71,25 +71,16 @@ spec:
             namespace: ($downstreamNS)
             name: location-ord
           spec:
-            # Three selectors: the WorkloadDeployment plus the always-on ConfigMap
-            # and Secret referenced-data selectors. Chainsaw matches list length
-            # exactly, so all three must be present.
+            # Companions ride the deployment's declared dependencies, so the
+            # policy names one selector. Chainsaw matches list length exactly,
+            # which also asserts no ConfigMap or Secret selector crept back in.
+            propagateDeps: true
             resourceSelectors:
             - apiVersion: compute.datumapis.com/v1alpha
               kind: WorkloadDeployment
               labelSelector:
                 matchLabels:
                   topology.datum.net/location: ord
-            - apiVersion: v1
-              kind: ConfigMap
-              labelSelector:
-                matchLabels:
-                  compute.datumapis.com/referenced-data: "true"
-            - apiVersion: v1
-              kind: Secret
-              labelSelector:
-                matchLabels:
-                  compute.datumapis.com/referenced-data: "true"
             placement:
               clusterAffinity:
                 labelSelector:

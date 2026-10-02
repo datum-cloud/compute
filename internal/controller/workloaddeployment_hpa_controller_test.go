@@ -217,7 +217,7 @@ func TestWorkloadDeploymentHPAMetrics(t *testing.T) {
 		wantMetric corev1.ResourceName
 	}{
 		{
-			name: "value",
+			name: "value target",
 			metrics: []computev1alpha.MetricSpec{{Resource: &computev1alpha.ResourceMetricSource{
 				Name:   corev1.ResourceCPU,
 				Target: computev1alpha.MetricTarget{Value: &value},

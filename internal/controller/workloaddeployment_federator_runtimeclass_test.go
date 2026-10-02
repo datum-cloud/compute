@@ -157,9 +157,13 @@ func TestWorkloadDeploymentFederator_ClassAwarePropagation(t *testing.T) {
 				Namespace: testKarmadaNSStr,
 			}, &pp), "PropagationPolicy %q should exist", tt.wantPolicyName)
 
-			// The companion selectors ignore runtime class. Companions are
-			// shared by every deployment in the namespace.
-			require.Len(t, pp.Spec.ResourceSelectors, 3)
+			// Runtime class narrows which deployments the policy selects, and
+			// nothing else. Companions are shared by every deployment in the
+			// namespace regardless of class, so they are delivered as
+			// dependencies rather than named here — two class policies in one
+			// location would otherwise contend for the same companion.
+			require.Len(t, pp.Spec.ResourceSelectors, 1)
+			assert.True(t, pp.Spec.PropagateDeps)
 			wdSel := pp.Spec.ResourceSelectors[0]
 			require.NotNil(t, wdSel.LabelSelector)
 			assert.Equal(t, testFederatorLocation, wdSel.LabelSelector.MatchLabels[locationLabel])
@@ -379,4 +383,119 @@ func TestApplyPlacementRefusal_KeepsAvailableDeployment(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, "InstancesReady", cond.Reason)
+}
+
+// TestWorkloadDeploymentFederator_PrunesStaleClasslessPolicy covers the
+// migration of a namespace federated before the RuntimeClasses gate was
+// enabled. Such a namespace holds a class-blind location-<location> policy that
+// the federator no longer writes to, and Karmada's name-ordered tie-break hands
+// it every claim ahead of the class policy, so the class policy and its
+// PropagateDeps never apply. Reconcile has to remove it.
+//
+// The negative cases pin the limits: a deployment still propagating without a
+// class keeps the policy, and with the gate off the class-blind policy is the
+// live one and must survive.
+func TestWorkloadDeploymentFederator_PrunesStaleClasslessPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		classesEnabled bool
+		specClass      string
+		// hubExtra holds hub-namespace objects beyond the stale class-blind policy.
+		hubExtra        []client.Object
+		wantClasslessPP bool
+	}{
+		{
+			name:            "gate on, class selected, no class-blind sibling — stale policy pruned",
+			classesEnabled:  true,
+			specClass:       testClassBasalt,
+			wantClasslessPP: false,
+		},
+		{
+			name:            "gate on, class selected, class-blind sibling remains — stale policy kept",
+			classesEnabled:  true,
+			specClass:       testClassBasalt,
+			hubExtra:        []client.Object{hubSiblingDeployment(testFederatorLocation, "")},
+			wantClasslessPP: true,
+		},
+		{
+			name:            "gate on, class selected, sibling at another location — stale policy pruned",
+			classesEnabled:  true,
+			specClass:       testClassBasalt,
+			hubExtra:        []client.Object{hubSiblingDeployment(testWestLocationName, "")},
+			wantClasslessPP: false,
+		},
+		{
+			name:            "gate off — class-blind policy is the live one and is kept",
+			classesEnabled:  false,
+			specClass:       testClassBasalt,
+			wantClasslessPP: true,
+		},
+		{
+			name:            "gate on, no class selected — class-blind policy is the live one and is kept",
+			classesEnabled:  true,
+			specClass:       "",
+			wantClasslessPP: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wd := testWorkloadDeployment(withFinalizer, withRuntimeClass(tt.specClass))
+			projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+
+			classlessPP := propagationPolicyNameFor(testFederatorLocation, "")
+			hubObjs := []client.Object{
+				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testKarmadaNSStr}},
+				// The policy a pre-gate federator left behind.
+				&karmadapolicyv1alpha1.PropagationPolicy{
+					ObjectMeta: metav1.ObjectMeta{Name: classlessPP, Namespace: testKarmadaNSStr},
+				},
+			}
+			hubObjs = append(hubObjs, tt.hubExtra...)
+			hubClient := newKarmadaFakeClient(hubObjs...)
+
+			r := newTestFederator(projectClient, hubClient)
+			r.RuntimeClassesEnabled = tt.classesEnabled
+
+			ctx := context.Background()
+			_, err := r.Reconcile(ctx, reconcileRequest())
+			require.NoError(t, err)
+
+			var stale karmadapolicyv1alpha1.PropagationPolicy
+			err = hubClient.Get(ctx, types.NamespacedName{Name: classlessPP, Namespace: testKarmadaNSStr}, &stale)
+			if tt.wantClasslessPP {
+				assert.NoError(t, err, "class-blind PropagationPolicy %q should be kept", classlessPP)
+			} else {
+				assert.True(t, apierrors.IsNotFound(err),
+					"class-blind PropagationPolicy %q wins Karmada's name-ordered tie-break and must be pruned", classlessPP)
+			}
+
+			// Whichever policy the deployment is keyed by must be present and
+			// still ask the engine to carry the deployment's dependencies.
+			livePP := propagationPolicyNameFor(testFederatorLocation, r.propagationRuntimeClass(wd))
+			var live karmadapolicyv1alpha1.PropagationPolicy
+			require.NoError(t, hubClient.Get(ctx, types.NamespacedName{Name: livePP, Namespace: testKarmadaNSStr}, &live),
+				"the policy the deployment is keyed by should exist")
+			assert.True(t, live.Spec.PropagateDeps,
+				"companions reach the cell only through the live policy's PropagateDeps")
+		})
+	}
+}
+
+// TestPruneStaleClasslessPropagationPolicy_EmptyLocation guards against listing
+// with an empty location label value, which would match the wrong deployment
+// set and prune a policy that is still in use.
+func TestPruneStaleClasslessPropagationPolicy_EmptyLocation(t *testing.T) {
+	t.Parallel()
+
+	r := newTestFederator(newProjectFakeClient(testProjectNamespace()), newKarmadaFakeClient())
+	r.RuntimeClassesEnabled = true
+
+	err := r.pruneStaleClasslessPropagationPolicy(context.Background(), testKarmadaNSStr, "", testClassBasalt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "location name is empty")
 }

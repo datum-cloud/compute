@@ -33,6 +33,8 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/locations"
+	"go.datum.net/compute/pkg/instancetype"
+	"go.datum.net/compute/pkg/instancetypecatalog"
 	"go.datum.net/compute/pkg/runtimeclass"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -63,9 +65,13 @@ type WorkloadReconciler struct {
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=runtimeclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=compute.datumapis.com,resources=instancetypes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloads/finalizers,verbs=update
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
+// The use verb is for the workload updates this controller writes (finalizers,
+// city code migration): admission checks that the writer may use every network
+// the workload attaches, and this controller is the writer.
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch;use
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locationbindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
@@ -407,6 +413,8 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 
 	apimeta.SetStatusCondition(&newWorkloadStatus.Conditions, availableCondition)
 
+	reconcileInstanceTypeCondition(ctx, upstreamClient, workload, newWorkloadStatus)
+
 	newWorkloadStatus.Deployments = totalDeployments
 	newWorkloadStatus.Replicas = totalReplicas
 	newWorkloadStatus.CurrentReplicas = totalCurrentReplicas
@@ -425,6 +433,89 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	}
 
 	return nil
+}
+
+// reconcileInstanceTypeCondition reports the lifecycle phase of the instance
+// type a workload runs on as a status condition. A workload on a deprecated
+// type carries InstanceTypeDeprecated, on a disabled type InstanceTypeDisabled,
+// each with the migration guidance the admission webhook announces. The
+// conditions follow the type's current phase: moving from deprecated to
+// disabled swaps one for the other, and a type that is active again, or a
+// workload migrated to an active type, drops both. The controller watches
+// InstanceType objects, so a phase change reaches every workload on the type.
+//
+// A workload that names no type runs on the platform's hardcoded fallback, so
+// it is reported against that type.
+//
+// While the gate is off there is no catalog to report against; the conditions
+// are dropped so none outlive a period with the gate on, and the InstanceType
+// API is not read. A type that cannot be read for any other reason than not
+// being published leaves the prior conditions untouched, and the next
+// reconcile retries.
+//
+// upstreamClient is the workload's project-plane client; InstanceTypes are
+// cluster-scoped, so the lookup is a plain Get by name.
+func reconcileInstanceTypeCondition(
+	ctx context.Context,
+	upstreamClient client.Client,
+	workload *computev1alpha.Workload,
+	newWorkloadStatus *computev1alpha.WorkloadStatus,
+) {
+	if !features.FeatureGate.Enabled(features.InstanceTypes) {
+		removeInstanceTypeConditions(newWorkloadStatus)
+		return
+	}
+
+	instanceTypeName := effectiveInstanceType(workload)
+
+	instanceType := &computev1alpha.InstanceType{}
+	if err := upstreamClient.Get(ctx, types.NamespacedName{Name: instancetype.Canonical(instanceTypeName)}, instanceType); err != nil {
+		if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
+			// The project does not publish the type, so it has no lifecycle phase
+			// to report.
+			removeInstanceTypeConditions(newWorkloadStatus)
+			return
+		}
+		log.FromContext(ctx).V(1).Info("skipping instance type condition, type is not readable",
+			"instanceType", instanceTypeName, "error", err)
+		return
+	}
+
+	phase := instanceType.Spec.Lifecycle.Phase
+	var conditionType, staleType string
+	switch phase {
+	case computev1alpha.InstanceTypePhaseDeprecated:
+		conditionType, staleType = computev1alpha.InstanceTypeConditionDeprecated, computev1alpha.InstanceTypeConditionDisabled
+	case computev1alpha.InstanceTypePhaseDisabled:
+		conditionType, staleType = computev1alpha.InstanceTypeConditionDisabled, computev1alpha.InstanceTypeConditionDeprecated
+	default:
+		removeInstanceTypeConditions(newWorkloadStatus)
+		return
+	}
+
+	apimeta.RemoveStatusCondition(&newWorkloadStatus.Conditions, staleType)
+	apimeta.SetStatusCondition(&newWorkloadStatus.Conditions, metav1.Condition{
+		Type:               conditionType,
+		Status:             metav1.ConditionTrue,
+		Reason:             conditionType,
+		Message:            instancetypecatalog.LifecycleRecommendedMessage(phase, instanceTypeName, instanceType.Spec.Lifecycle.ReplacementInstanceType),
+		ObservedGeneration: workload.Generation,
+	})
+}
+
+// removeInstanceTypeConditions drops both instance type lifecycle conditions.
+func removeInstanceTypeConditions(status *computev1alpha.WorkloadStatus) {
+	apimeta.RemoveStatusCondition(&status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+	apimeta.RemoveStatusCondition(&status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+}
+
+// effectiveInstanceType returns the instance type a workload's instances run
+// on: the one it names, or the platform's hardcoded fallback when it names none.
+func effectiveInstanceType(workload *computev1alpha.Workload) string {
+	if name := workload.Spec.Template.Spec.Runtime.Resources.InstanceType; name != "" {
+		return name
+	}
+	return instancetype.D1Standard2
 }
 
 var errWorkloadHasDeployments = errors.New("workload has deployments")
@@ -578,7 +669,13 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 					},
 					PlacementName: placement.Name,
 					LocationRef:   locationsv1alpha1.LocationReference{Name: locationName},
-					Template:      workload.Spec.Template,
+					Template: func() computev1alpha.InstanceTemplateSpec {
+						template := *workload.Spec.Template.DeepCopy()
+						if template.Spec.Runtime.Resources.InstanceType == "" {
+							template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+						}
+						return template
+					}(),
 					ScaleSettings: placement.ScaleSettings,
 					Replicas:      new(placement.ScaleSettings.MinReplicas),
 
@@ -693,6 +790,24 @@ func (r *WorkloadReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			mcbuilder.WithClusterFilter(servedKindClusterFilter("service availability", locations.ServesServiceAvailabilityKind)),
 		)
 
+	// A workload's InstanceTypeDeprecated/InstanceTypeDisabled conditions follow
+	// the lifecycle phase of the type it runs on, so a phase change re-queues
+	// the workloads on that type. With the gate off the conditions are not
+	// reported and no project is expected to serve the kind, so nothing is
+	// watched; with it on, a project whose provisioning has not reached it yet
+	// is skipped rather than wedging the cache sync.
+	if features.FeatureGate.Enabled(features.InstanceTypes) {
+		b = b.Watches(&computev1alpha.InstanceType{},
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, instanceType client.Object) []mcreconcile.Request {
+					return enqueueWorkloadsOnInstanceType(ctx, cl.GetClient(), clusterName, instanceType.GetName())
+				})
+			},
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithClusterFilter(servedKindClusterFilter("instance type", servesInstanceTypeKind)),
+		)
+	}
+
 	if !r.NetworkingEnabled {
 		return b.Complete(r)
 	}
@@ -772,6 +887,7 @@ func workloadBlockingReasonPriority(reason string) int {
 		return 4
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized:
 		return 5
 	case computev1alpha.WorkloadReasonNetworkNotFound,
@@ -843,6 +959,41 @@ func servedKindClusterFilter(what string, serves func(apimeta.RESTMapper) (bool,
 		}
 		return served
 	}
+}
+
+// servesInstanceTypeKind reports whether a control plane serves the
+// InstanceType kind, which a project does only once its provisioning has
+// reached it.
+func servesInstanceTypeKind(mapper apimeta.RESTMapper) (bool, error) {
+	gvk := computev1alpha.GroupVersion.WithKind("InstanceType")
+	if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+		if apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to determine whether %s is served: %w", gvk, err)
+	}
+	return true, nil
+}
+
+// enqueueWorkloadsOnInstanceType maps a change to an instance type to every
+// workload in the project whose instances run on it.
+func enqueueWorkloadsOnInstanceType(ctx context.Context, c client.Client, clusterName multicluster.ClusterName, instanceTypeName string) []mcreconcile.Request {
+	var workloads computev1alpha.WorkloadList
+	if err := c.List(ctx, &workloads, client.MatchingFields{workloadInstanceTypeIndex: instanceTypeName}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list workloads for instance type change", "instanceType", instanceTypeName)
+		return nil
+	}
+
+	requests := make([]mcreconcile.Request, 0, len(workloads.Items))
+	for _, workload := range workloads.Items {
+		requests = append(requests, mcreconcile.Request{
+			Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name},
+			},
+			ClusterName: clusterName,
+		})
+	}
+	return requests
 }
 
 // enqueueAllWorkloads maps a change in the project's placement locations to

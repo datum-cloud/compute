@@ -10,6 +10,7 @@ import (
 	"go.datum.net/compute/internal/cmd/compute/destroy"
 	"go.datum.net/compute/internal/cmd/compute/exec"
 	"go.datum.net/compute/internal/cmd/compute/instances"
+	"go.datum.net/compute/internal/cmd/compute/logs"
 	"go.datum.net/compute/internal/cmd/compute/quota"
 	"go.datum.net/compute/internal/cmd/compute/restart"
 	"go.datum.net/compute/internal/cmd/compute/rollout"
@@ -40,6 +41,7 @@ func Command() *cobra.Command {
 		destroy.Command(),
 		exec.Command(),
 		instances.Command(),
+		logs.Command(),
 		quota.Command(),
 		restart.Command(),
 		rollout.Command(),

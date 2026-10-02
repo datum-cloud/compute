@@ -55,6 +55,17 @@ vars:
   # Namespace the operators deploy into (matches config/overlays/* namespace:).
   COMPUTE_NAMESPACE: compute-system
 
+# ─── Includes ───────────────────────────────────────────────────────────────
+
+# One Taskfile per grafonnet dashboard under observability/dashboards/. The
+# dashboards:* tasks below fan out to each so a new dashboard only needs an
+# entry here and a line in those two tasks.
+includes:
+  shell-sessions-dashboard:
+    taskfile: observability/dashboards/shell-sessions/Taskfile.yaml
+    dir: observability/dashboards/shell-sessions
+    internal: true
+
 # ─── Tasks ──────────────────────────────────────────────────────────────────
 
 tasks:
@@ -63,6 +74,29 @@ tasks:
     cmds:
       - task --list
     silent: true
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  Grafana dashboards (grafonnet)
+  # ════════════════════════════════════════════════════════════════════════
+
+  install-jsonnet-tools:
+    desc: "Install jsonnet and jsonnet-bundler if not already installed"
+    status:
+      - which jsonnet
+      - which jb
+    cmds:
+      - brew install go-jsonnet
+      - go install -a github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@latest
+
+  dashboards:install:
+    desc: "Fetch grafonnet into each dashboard's vendor/ directory"
+    cmds:
+      - task: shell-sessions-dashboard:install
+
+  dashboards:build:
+    desc: "Render every dashboard JSON into config/components/dashboards/"
+    cmds:
+      - task: shell-sessions-dashboard:build
 
   # ════════════════════════════════════════════════════════════════════════
   #  e2e environment lifecycle
@@ -137,6 +171,19 @@ tasks:
           --config test/e2e/chainsaw-config.yaml \
           {{.CLI_ARGS}} \
           test/e2e/
+
+  e2e:test:path:
+    desc: "Run only the suite(s) under a given test/e2e/<dir> (e.g. task e2e:test:path DIR=instance-types) — deterministic, no regex"
+    deps: [e2e:tools:chainsaw]
+    requires:
+      vars: [DIR]
+    cmds:
+      - |
+        KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
+        {{.CHAINSAW}} test \
+          --config test/e2e/chainsaw-config.yaml \
+          test/e2e/{{.DIR}} \
+          {{.CLI_ARGS}}
 
   # ════════════════════════════════════════════════════════════════════════
   #  Tool installation
@@ -295,6 +342,11 @@ tasks:
             -n karmada-system get deploy karmada-apiserver &>/dev/null; then
           echo "Karmada already present — waiting for its components to become Available..."
         else
+          # PropagateDeps carries a WorkloadDeployment's referenced ConfigMaps
+          # and Secrets to the cells it runs on. The chart pins the gate off,
+          # overriding the upstream default, so it has to be set explicitly here
+          # and in any environment that serves referenced data — otherwise
+          # companions never leave the hub and instances hold their gate.
           echo "Installing Karmada {{.KARMADA_VERSION}} via Helm..."
           helm install karmada karmada-charts/karmada \
             --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
@@ -303,6 +355,7 @@ tasks:
             --version {{.KARMADA_VERSION}} \
             --set apiServer.serviceType=NodePort \
             --set apiServer.nodePort={{.KARMADA_API_NODEPORT}} \
+            --set controllerManager.featureGates.PropagateDeps=true \
             --wait \
             --timeout 10m \
             || echo "Helm --wait did not settle in time; will wait on the deployments directly below"

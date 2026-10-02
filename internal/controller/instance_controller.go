@@ -42,6 +42,7 @@ import (
 	"go.miloapis.com/milo/pkg/downstreamclient"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	"go.datum.net/compute/internal/features"
 	quotametrics "go.datum.net/compute/internal/quota"
 	"go.datum.net/compute/internal/referenceddata"
 	"go.datum.net/compute/pkg/instancetype"
@@ -771,7 +772,8 @@ func isTerminalReferencedDataReason(reason string) bool {
 	switch reason {
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized,
-		computev1alpha.ReferencedDataReasonSourceTooLarge:
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong:
 		return true
 	}
 	return false
@@ -1453,7 +1455,30 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		},
 	}
 
-	cpuMillicores, memMiB, resolved := resolveInstanceResources(instance)
+	// InstanceType objects are published into each project's control plane and
+	// nothing copies them into cells, so they are read from the project that
+	// owns the instance, through the same client its claim is written with.
+	// While the gate is off there is no catalog to read and sizing comes from
+	// the hardcoded catalog alone, so the cell takes no dependency on the
+	// InstanceType API.
+	var readInstanceType instanceTypeReader
+	if features.FeatureGate.Enabled(features.InstanceTypes) {
+		readInstanceType = instanceTypeReaderFromClient(projectClient)
+	}
+
+	cpuMillicores, memMiB, resolved, err := resolveInstanceResources(ctx, instance, readInstanceType)
+	if err != nil {
+		msg := fmt.Sprintf("Quota sizing unavailable for instance %s/%s: %v", instance.Namespace, instance.Name, err)
+		r.emitEvent(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, eventActionClaimingQuota, msg)
+		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonBackendUnavailable).Inc()
+		return &metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable,
+			Message: msg,
+		}, fmt.Errorf("sizing instance %s/%s: %w", instance.Namespace, instance.Name, err)
+	}
 	if !resolved {
 		logger.Info("unable to resolve resource amounts from instance spec, claiming instance count only")
 	} else {
@@ -1575,6 +1600,32 @@ func (r *InstanceReconciler) classifyCreateError(
 	}, fmt.Errorf("failed creating resource claim: %w", err)
 }
 
+// instanceTypeReader fetches an InstanceType object by name from the project
+// control plane that owns an instance. It returns (nil, nil) when the project
+// does not publish the type, so a caller can fall through to the hardcoded
+// catalog before declaring the sizing unresolved. A non-nil error is transient
+// and the caller retries rather than under-claiming quota.
+type instanceTypeReader func(ctx context.Context, name string) (*computev1alpha.InstanceType, error)
+
+// instanceTypeReaderFromClient returns an instanceTypeReader backed by a live
+// client Get against a project control plane. A retired name is read under the
+// name that replaced it. A project that does not serve the InstanceType kind
+// yet (its provisioning has not reached it) is treated like one that does not
+// publish the type, so sizing falls back to the hardcoded catalog.
+func instanceTypeReaderFromClient(c client.Client) instanceTypeReader {
+	return func(ctx context.Context, name string) (*computev1alpha.InstanceType, error) {
+		var t computev1alpha.InstanceType
+		err := c.Get(ctx, types.NamespacedName{Name: instancetype.Canonical(name)}, &t)
+		if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &t, nil
+	}
+}
+
 // resolveInstanceResources determines the vCPU and memory amounts to claim
 // for an instance. Explicit sizing always takes precedence over the instance
 // type catalog, so a workload that overrides container limits is accounted at
@@ -1584,12 +1635,17 @@ func (r *InstanceReconciler) classifyCreateError(
 //  1. Sandbox container Limits (sum across all containers) — all containers
 //     must have both cpu and memory Limits for this path to succeed.
 //  2. Instance-level Resources.Requests — both cpu and memory must be present.
-//  3. instance type catalog lookup by instanceType — used for the common case
-//     where a workload is sized only by instanceType with no explicit limits.
+//  3. The published InstanceType object the instance selects, when its name is
+//     non-empty and a reader is available.
+//  4. The hardcoded instancetype catalog, which every consumer imports so the
+//     claimed amounts match what the provider runs. This covers old installs
+//     and a type not yet projected into the cell.
 //
-// Returns (0, 0, false) when none of the above yield a complete sizing, so
-// the caller falls back to claiming only the instance count.
-func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores int64, memMiB int64, resolved bool) {
+// Returns (0, 0, false, nil) when none of the above yield a complete sizing, so
+// the caller falls back to claiming only the instance count. A failed
+// InstanceType read (readInstanceType non-nil) returns a non-nil error instead,
+// so the caller surfaces a transient failure rather than under-claiming.
+func resolveInstanceResources(ctx context.Context, instance *computev1alpha.Instance, readInstanceType instanceTypeReader) (cpuMillicores int64, memMiB int64, resolved bool, err error) {
 	rt := instance.Spec.Runtime
 
 	// Path 1: explicit per-container Limits — most specific, wins if fully set.
@@ -1612,10 +1668,10 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 			totalMem.Add(mem)
 		}
 		if allSet && len(rt.Sandbox.Containers) > 0 {
-			return totalCPU.MilliValue(), totalMem.Value() / (1024 * 1024), true
+			return totalCPU.MilliValue(), totalMem.Value() / (1024 * 1024), true, nil
 		}
 		// Containers exist but limits are incomplete — fall through so the
-		// instance-level Requests and instanceType catalog paths can still
+		// instance-level Requests and instance type catalog paths can still
 		// yield a sizing.
 	}
 
@@ -1623,18 +1679,44 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 	cpu, hasCPU := rt.Resources.Requests[corev1.ResourceCPU]
 	mem, hasMem := rt.Resources.Requests[corev1.ResourceMemory]
 	if hasCPU && hasMem {
-		return cpu.MilliValue(), mem.Value() / (1024 * 1024), true
+		return cpu.MilliValue(), mem.Value() / (1024 * 1024), true, nil
 	}
 
-	// Path 3: instance type catalog — handles the typical production case where
-	// instanceType is the only sizing signal and no explicit limits are set.
-	// The providers that run the instance share this catalog, so the claimed
-	// amounts match the amounts the instance receives.
+	// Path 3: the InstanceType object the owning project publishes for the
+	// selected name.
+	if readInstanceType != nil && rt.Resources.InstanceType != "" {
+		t, rerr := readInstanceType(ctx, rt.Resources.InstanceType)
+		if rerr != nil {
+			return 0, 0, false, fmt.Errorf("reading InstanceType %q: %w", rt.Resources.InstanceType, rerr)
+		}
+		if t != nil {
+			cpuMillicores = t.Spec.Resources.CPU.MilliValue()
+			memMiB = t.Spec.Resources.Memory.Value() / (1024 * 1024)
+			if cpuMillicores > 0 && memMiB > 0 {
+				return cpuMillicores, memMiB, true, nil
+			}
+			// A type published with a zero dimension is invalid; fall through to
+			// the hardcoded catalog rather than claim an empty amount.
+		}
+	}
+
+	// TODO(instance-type-catalog): delete this hardcoded lookup table once the
+	// live InstanceType CRD read path above is proven in production. The static
+	// go.datum.net/compute/pkg/instancetype catalog only covers names the reader
+	// does not hold yet (old installs, types not projected into this cell); once
+	// every cell reliably serves InstanceType objects, sizing must come from a
+	// single source — the published catalog — and could otherwise drift from the
+	// footprint compute claims against quota.
+
+	// Path 4: hardcoded instance type catalog — handles the typical production
+	// case where instanceType is the only sizing signal and no explicit limits
+	// are set. The providers that run the instance share this catalog, so the
+	// claimed amounts match the amounts the instance receives.
 	if sizing, ok := instancetype.Lookup(rt.Resources.InstanceType); ok {
-		return sizing.CPUMillicores, sizing.MemoryMiB, true
+		return sizing.CPUMillicores, sizing.MemoryMiB, true, nil
 	}
 
-	return 0, 0, false
+	return 0, 0, false, nil
 }
 
 // instanceBlockingReasonPriority ranks Instance blocking reasons so the most
@@ -1667,6 +1749,7 @@ func instanceBlockingReasonPriority(reason string) int {
 		computev1alpha.InstanceReadyReasonConfigurationError,
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized:
 		// Hard runtime errors are user-actionable (wrong image, crashing app, bad
 		// config) and rank highest among non-infra reasons so they are not buried

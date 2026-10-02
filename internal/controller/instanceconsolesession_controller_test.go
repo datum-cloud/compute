@@ -431,6 +431,8 @@ func TestInstanceConsoleSessionStatusCopy(t *testing.T) {
 	assert.Equal(t, testInstanceUID, started.Related.UID)
 	assert.Equal(t, map[string]string{
 		computev1alpha.InstanceConsoleSessionRequesterAnnotation: "alice@example.com",
+		computev1alpha.InstanceConsoleSessionCellAnnotation:      testMemberCluster,
+		computev1alpha.InstanceConsoleSessionLocationAnnotation:  testFederatorLocation,
 		sessionEventInstanceAnnotation:                           testSessionInstance,
 		sessionEventContainerAnnotation:                          testContainerName,
 	}, started.Annotations)

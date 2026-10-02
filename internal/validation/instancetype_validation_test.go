@@ -555,11 +555,15 @@ func TestInstanceTypesGateOff(t *testing.T) {
 		}, errs)
 	})
 
+	// Deletes are allowed so types published while the gate was on can be
+	// cleaned up, even one another type still names as its replacement: nothing
+	// reads the catalog while the gate is off.
 	t.Run("delete", func(t *testing.T) {
-		errs := ValidateInstanceTypeDelete(valid, opts)
-		require.Equal(t, field.ErrorList{
-			field.Forbidden(field.NewPath("metadata", "name"), "instance types are not enabled on this control plane"),
-		}, errs)
+		successor := activeType("successor")
+		successor.Spec.Lifecycle.Phase = computev1alpha.InstanceTypePhaseDeprecated
+		successor.Spec.Lifecycle.ReplacementInstanceType = testTypeName
+		errs := ValidateInstanceTypeDelete(valid, options(newValidationClient(successor)))
+		require.Empty(t, errs)
 	})
 }
 

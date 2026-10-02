@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	admissionv1 "k8s.io/api/admission/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
@@ -19,6 +20,8 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
+	"go.datum.net/compute/pkg/instancetype"
+	"go.datum.net/compute/pkg/instancetypecatalog"
 	"go.datum.net/compute/pkg/runtimeclass"
 )
 
@@ -30,16 +33,44 @@ const (
 	testClassBasalt  = "basalt"
 	testClassCitrine = "citrine"
 
+	// Instance type names follow the same rule as the class names above: they
+	// are invented so a test cannot pass by tripping over a compiled-in
+	// fallback.
+	testTypeAzurite = "azurite"
+	testTypeBasalt  = "basalt"
+
 	// The capabilities these tests default and grant with.
 	testCapChown          = "CHOWN"
 	testCapNetBindService = "NET_BIND_SERVICE"
 	testCapSetgid         = "SETGID"
 )
 
+// testDefaultPlacement is the placement name the Workload controller writes
+// when a customer names none.
+const testDefaultPlacement = "default"
+
 func runtimeClass(name string, isDefault bool) computev1alpha.RuntimeClass {
 	return computev1alpha.RuntimeClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec:       computev1alpha.RuntimeClassSpec{Default: isDefault},
+	}
+}
+
+// instanceType builds a catalog entry for the named type at the given lifecycle
+// phase, optionally naming a replacement the phase points at.
+func instanceType(name string, phase computev1alpha.InstanceTypeLifecyclePhase, replacement string) computev1alpha.InstanceType {
+	return computev1alpha.InstanceType{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: computev1alpha.InstanceTypeSpec{
+			Resources: computev1alpha.InstanceTypeResources{
+				CPU:    resource.MustParse("1000m"),
+				Memory: resource.MustParse("1Gi"),
+			},
+			Lifecycle: computev1alpha.InstanceTypeLifecycle{
+				Phase:                   phase,
+				ReplacementInstanceType: replacement,
+			},
+		},
 	}
 }
 
@@ -79,7 +110,7 @@ func TestWorkloadWebhookDefaultMigratesCityCodes(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, false)
 
 	workload := &computev1alpha.Workload{}
-	workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{Name: "default", CityCodes: []string{"DFW"}}}
+	workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{Name: testDefaultPlacement, CityCodes: []string{"DFW"}}}
 
 	if err := (&workloadWebhook{}).Default(context.Background(), workload); err != nil {
 		t.Fatalf("Default: %v", err)
@@ -427,5 +458,212 @@ func TestDefaultStampsSecurityContextOnCreateOnly(t *testing.T) {
 				t.Errorf("security context = %+v, want nothing stamped", got)
 			}
 		})
+	}
+}
+
+// TestDefaultInstanceTypeSelection covers the operator-configured instance
+// type default, mirroring TestDefaultStampsSecurityContextOnCreateOnly's
+// operation-guard table: the value is stamped only on a genuine Create, never
+// overwrites an explicit choice, and a webhook configured with no default is
+// a no-op.
+func TestDefaultInstanceTypeSelection(t *testing.T) {
+	cases := map[string]struct {
+		operation    admissionv1.Operation
+		inContext    bool
+		configured   string
+		selected     string
+		wantSelected string
+	}{
+		"create stamps the configured default": {
+			operation: admissionv1.Create, inContext: true,
+			configured: instancetype.D1Standard2, wantSelected: instancetype.D1Standard2,
+		},
+		"update leaves a stored workload alone": {
+			operation: admissionv1.Update, inContext: true,
+			configured: instancetype.D1Standard2, wantSelected: "",
+		},
+		"an unknown operation stamps nothing": {
+			inContext: false, configured: instancetype.D1Standard2, wantSelected: "",
+		},
+		"a delete admission stamps nothing": {
+			operation: admissionv1.Delete, inContext: true,
+			configured: instancetype.D1Standard2, wantSelected: "",
+		},
+		"an explicit selection is never overwritten": {
+			operation: admissionv1.Create, inContext: true,
+			configured: instancetype.D1Standard2, selected: "datumcloud-d2-standard-2",
+			wantSelected: "datumcloud-d2-standard-2",
+		},
+		"no configured default is a no-op": {
+			operation: admissionv1.Create, inContext: true,
+			configured: "", wantSelected: "",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.inContext {
+				ctx = admission.NewContextWithRequest(ctx, admission.Request{
+					AdmissionRequest: admissionv1.AdmissionRequest{Operation: tc.operation},
+				})
+			}
+
+			webhook := &workloadWebhook{instanceTypeDefault: tc.configured}
+			workload := &computev1alpha.Workload{}
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = tc.selected
+
+			webhook.defaultInstanceTypeSelection(ctx, workload)
+
+			if got := workload.Spec.Template.Spec.Runtime.Resources.InstanceType; got != tc.wantSelected {
+				t.Errorf("instanceType = %q, want %q", got, tc.wantSelected)
+			}
+		})
+	}
+}
+
+// TestWorkloadInstanceTypeWarnings covers the admission warnings that accompany
+// an accepted workload. Validation rejects before warnings are collected, so
+// this table only exercises workloads that would be stored.
+func TestWorkloadInstanceTypeWarnings(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, true)
+
+	cases := map[string]struct {
+		isCreate bool
+		selected string
+		catalog  instancetypecatalog.Catalog
+		want     admission.Warnings
+	}{
+		"no catalog publishes nothing for a named type": {
+			selected: testTypeAzurite,
+			want:     nil,
+		},
+		"an empty selection warns on create before any catalog is published": {
+			selected: "",
+			isCreate: true,
+			want: []string{
+				warningNoInstanceTypeSelected,
+			},
+		},
+		"a retired name finds the deprecated type that replaced it": {
+			selected: instancetype.LegacyD1Standard2,
+			catalog: instancetypecatalog.Catalog{
+				instanceType(instancetype.D1Standard2, computev1alpha.InstanceTypePhaseDeprecated, testTypeAzurite),
+			},
+			want: []string{
+				"InstanceType 'datumcloud/d1-standard-2' is deprecated; please migrate to 'azurite'.",
+			},
+		},
+		"an active type publishes nothing": {
+			selected: testTypeAzurite,
+			catalog: instancetypecatalog.Catalog{
+				instanceType(testTypeAzurite, computev1alpha.InstanceTypePhaseActive, ""),
+			},
+			want: nil,
+		},
+		"an unlisted type publishes nothing": {
+			selected: "not-in-catalog",
+			catalog: instancetypecatalog.Catalog{
+				instanceType(testTypeAzurite, computev1alpha.InstanceTypePhaseActive, ""),
+			},
+			want: nil,
+		},
+		"a deprecated type warns with its replacement": {
+			selected: testTypeBasalt,
+			catalog: instancetypecatalog.Catalog{
+				instanceType(testTypeBasalt, computev1alpha.InstanceTypePhaseDeprecated, testTypeAzurite),
+			},
+			want: []string{
+				"InstanceType 'basalt' is deprecated; please migrate to 'azurite'.",
+			},
+		},
+		"a deprecated type warns without a replacement": {
+			selected: testTypeBasalt,
+			catalog: instancetypecatalog.Catalog{
+				instanceType(testTypeBasalt, computev1alpha.InstanceTypePhaseDeprecated, ""),
+			},
+			want: []string{
+				"InstanceType 'basalt' is deprecated.",
+			},
+		},
+		"an empty selection warns only on create": {
+			selected: "",
+			isCreate: true,
+			catalog: instancetypecatalog.Catalog{
+				instanceType(testTypeAzurite, computev1alpha.InstanceTypePhaseActive, ""),
+			},
+			want: []string{
+				warningNoInstanceTypeSelected,
+			},
+		},
+		"an empty selection is silent on update": {
+			selected: "",
+			catalog: instancetypecatalog.Catalog{
+				instanceType(testTypeAzurite, computev1alpha.InstanceTypePhaseActive, ""),
+			},
+			want: nil,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			workload := &computev1alpha.Workload{}
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = tc.selected
+
+			got := workloadInstanceTypeWarnings(tc.isCreate, workload, tc.catalog)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("warnings diff (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestWorkloadInstanceTypeWarnings_GateOff verifies that nothing is announced
+// while instance type selection is disabled, even for an omitted type on create
+// or a type some stale catalog would call deprecated.
+func TestWorkloadInstanceTypeWarnings_GateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, false)
+
+	catalog := instancetypecatalog.Catalog{
+		instanceType(testTypeBasalt, computev1alpha.InstanceTypePhaseDeprecated, testTypeAzurite),
+	}
+	for _, selected := range []string{"", testTypeBasalt} {
+		workload := &computev1alpha.Workload{}
+		workload.Spec.Template.Spec.Runtime.Resources.InstanceType = selected
+		if got := workloadInstanceTypeWarnings(true, workload, catalog); got != nil {
+			t.Errorf("selected %q: want no warnings with the gate off, got %v", selected, got)
+		}
+	}
+}
+
+// TestInstanceTypeCatalogUnreachable covers the catalog read that feeds
+// selection validation: an unreadable catalog fails the request, and an empty
+// control plane publishes nothing.
+func TestInstanceTypeCatalogUnreachable(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	if err := computev1alpha.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	unreachable := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return errors.New("catalog unavailable")
+			},
+		}).
+		Build()
+
+	if _, err := instanceTypeCatalog(context.Background(), unreachable); err == nil {
+		t.Fatal("expected an unreadable catalog to fail the request")
+	}
+
+	empty := fake.NewClientBuilder().WithScheme(scheme).Build()
+	catalog, err := instanceTypeCatalog(context.Background(), empty)
+	if err != nil {
+		t.Fatalf("reading an empty catalog: %v", err)
+	}
+	if len(catalog) != 0 {
+		t.Errorf("catalog = %v, want nothing published", catalog.Names())
 	}
 }

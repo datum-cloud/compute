@@ -15,6 +15,7 @@ components:
   - ../../components/high-availability
   - ../../components/management-controllers
   - ../../components/alerts
+  - ../../components/dashboards
   - ../../components/csi-webhook-cert
 
 patches:

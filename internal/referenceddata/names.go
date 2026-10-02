@@ -11,11 +11,22 @@ import (
 )
 
 const (
-	// maxNameLength is the maximum length of a Kubernetes object name.
-	maxNameLength = 253
+	// MaxCompanionNameLength is the longest companion name that can propagate.
+	//
+	// It is 10 characters below Kubernetes' 253-character name limit because the
+	// federation engine derives a companion's binding name by appending a kind
+	// suffix ("-configmap", the longer of the two kinds this package names). A
+	// companion named right up to 253 characters would produce a binding name
+	// the API server rejects, and the companion would never leave the hub.
+	//
+	// The resolver rejects an over-long source rather than shortening it:
+	// consumers reference a companion by its source name with no translation
+	// step, so a shortened companion would propagate successfully and then fail
+	// to mount.
+	MaxCompanionNameLength = 243
 
 	// hashSuffixLength is the number of hex characters appended when a name
-	// would otherwise exceed maxNameLength.
+	// would otherwise exceed MaxCompanionNameLength.
 	hashSuffixLength = 8
 )
 
@@ -28,20 +39,25 @@ const (
 // may both be named "app-config" because they are distinct Kubernetes objects of
 // different resource types in the same namespace.
 //
-// If the source name exceeds maxNameLength (253 chars), the name is truncated
-// and a deterministic 8-character FNV-1a hex suffix is appended to avoid
-// collisions. The returned name always satisfies DNS subdomain constraints
-// required by Kubernetes.
+// Callers reject a source name longer than [MaxCompanionNameLength] before
+// reaching here, so the shortening path below only runs for a name that is not
+// a valid DNS subdomain — which the API server does not allow an existing
+// ConfigMap or Secret to have. It remains as a total function so a name is
+// always returned, never an invalid one.
+//
+// Shortening truncates and appends a deterministic 8-character FNV-1a hex
+// suffix to avoid collisions. The returned name always satisfies the DNS
+// subdomain constraints Kubernetes requires.
 func CompanionName(_, sourceName string) string {
-	if len(sourceName) <= maxNameLength && isValidDNSSubdomain(sourceName) {
+	if len(sourceName) <= MaxCompanionNameLength && isValidDNSSubdomain(sourceName) {
 		return sourceName
 	}
 
 	// Truncate the source name so that truncated + "-" + hash fits within
-	// maxNameLength. Format: "<truncated>-<8-char-hash>"
+	// MaxCompanionNameLength. Format: "<truncated>-<8-char-hash>"
 	hashStr := shortHash(sourceName)
 	suffix := "-" + hashStr
-	maxSourceLen := maxNameLength - len(suffix)
+	maxSourceLen := MaxCompanionNameLength - len(suffix)
 	if maxSourceLen < 1 {
 		maxSourceLen = 1
 	}
