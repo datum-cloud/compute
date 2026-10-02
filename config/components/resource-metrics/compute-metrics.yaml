@@ -25,6 +25,23 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
 
+    - name: workload-created
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_created
+          help: "Unix creation timestamp of the workload"
+          type: gauge
+          metrics:
+            - value: "int(timestamp(object.metadata.creationTimestamp))"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
     - name: workload-status-condition
       resource:
         group: compute.datumapis.com
@@ -49,6 +66,156 @@ spec:
                 - name: status
                   value: "item.status"
 
+    - name: workload-replicas
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_status_replicas
+          help: "The number of instances that currently exist for the workload"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.replicas) ? object.status.replicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_status_replicas_desired
+          help: "The desired number of instances for the workload"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.desiredReplicas) ? object.status.desiredReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_status_replicas_ready
+          help: "The number of instances that are ready for the workload"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.readyReplicas) ? object.status.readyReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_status_replicas_current
+          help: "The number of instances running the latest workload settings and programmed"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.currentReplicas) ? object.status.currentReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_status_replicas_updated
+          help: "The number of instances updated to the latest template revision"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.updatedReplicas) ? object.status.updatedReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_status_deployments
+          help: "The number of deployments that currently exist for the workload"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.deployments) ? object.status.deployments : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+    - name: workload-placement-replicas
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_placement_status_replicas
+          help: "The number of instances that currently exist for the placement"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.placements) ? object.status.placements : []"
+              value: "has(item.replicas) ? item.replicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: placement
+                  value: "item.name"
+
+        - name: datum_cloud_compute_workload_placement_status_replicas_desired
+          help: "The desired number of instances for the placement"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.placements) ? object.status.placements : []"
+              value: "has(item.desiredReplicas) ? item.desiredReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: placement
+                  value: "item.name"
+
+        - name: datum_cloud_compute_workload_placement_status_replicas_ready
+          help: "The number of instances that are ready for the placement"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.placements) ? object.status.placements : []"
+              value: "has(item.readyReplicas) ? item.readyReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: placement
+                  value: "item.name"
+
+    - name: workload-placement-location-info
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloads
+      families:
+        - name: datum_cloud_compute_workload_placement_location_info
+          help: "The locations a placement currently resolves to"
+          type: gauge
+          metrics:
+            # One series per (placement, location): the inner map flattens away
+            # because forEach takes a single list.
+            - forEach: |
+                has(object.status) && has(object.status.placements) ?
+                  object.status.placements.map(p,
+                    has(p.locations) ?
+                      p.locations.map(l, {'placement': p.name, 'location': l.name}) :
+                      []
+                  ).flatten() :
+                  []
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: placement
+                  value: "item.placement"
+                - name: location
+                  value: "item.location"
+
     # -------------------------------------------------------------------------
     # WorkloadDeployment metrics
     # -------------------------------------------------------------------------
@@ -71,9 +238,26 @@ spec:
                   value: "object.metadata.uid"
                 - name: compute_datumapis_com_workload_uid
                   value: |
-                    has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
-                      object.metadata.labels['compute_datumapis_com_workload_uid'] :
+                    has(object.metadata.labels) && 'compute.datumapis.com/workload-uid' in object.metadata.labels ?
+                      object.metadata.labels['compute.datumapis.com/workload-uid'] :
                       ''
+
+    - name: workload-deployment-created
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloaddeployments
+      families:
+        - name: datum_cloud_compute_workload_deployment_created
+          help: "Unix creation timestamp of the workload deployment"
+          type: gauge
+          metrics:
+            - value: "int(timestamp(object.metadata.creationTimestamp))"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
 
     - name: workload-deployment-status-condition
       resource:
@@ -99,6 +283,67 @@ spec:
                 - name: status
                   value: "item.status"
 
+    - name: workload-deployment-replicas
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: workloaddeployments
+      families:
+        - name: datum_cloud_compute_workload_deployment_status_replicas
+          help: "The number of instances that currently exist for the deployment"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.replicas) ? object.status.replicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_deployment_status_replicas_desired
+          help: "The desired number of instances for the deployment"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.desiredReplicas) ? object.status.desiredReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_deployment_status_replicas_ready
+          help: "The number of instances that are ready for the deployment"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.readyReplicas) ? object.status.readyReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_deployment_status_replicas_current
+          help: "The number of instances running the latest workload settings and programmed"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.currentReplicas) ? object.status.currentReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+        - name: datum_cloud_compute_workload_deployment_status_replicas_updated
+          help: "The number of instances updated to the latest template revision"
+          type: gauge
+          metrics:
+            - value: "has(object.status) && has(object.status.updatedReplicas) ? object.status.updatedReplicas : 0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
     # -------------------------------------------------------------------------
     # Instance metrics
     # -------------------------------------------------------------------------
@@ -121,13 +366,13 @@ spec:
                   value: "object.metadata.uid"
                 - name: compute_datumapis_com_workload_deployment_uid
                   value: |
-                    has(object.metadata.labels) && 'compute_datumapis_com_workload_deployment_uid' in object.metadata.labels ?
-                      object.metadata.labels['compute_datumapis_com_workload_deployment_uid'] :
+                    has(object.metadata.labels) && 'compute.datumapis.com/workload-deployment-uid' in object.metadata.labels ?
+                      object.metadata.labels['compute.datumapis.com/workload-deployment-uid'] :
                       ''
                 - name: compute_datumapis_com_workload_uid
                   value: |
-                    has(object.metadata.labels) && 'compute_datumapis_com_workload_uid' in object.metadata.labels ?
-                      object.metadata.labels['compute_datumapis_com_workload_uid'] :
+                    has(object.metadata.labels) && 'compute.datumapis.com/workload-uid' in object.metadata.labels ?
+                      object.metadata.labels['compute.datumapis.com/workload-uid'] :
                       ''
                 # Metering and billing break instance cost out by runtime
                 # class, so the value comes from the instance spec rather than
@@ -141,6 +386,33 @@ spec:
                     has(object.spec.runtime) && has(object.spec.runtime.class) && object.spec.runtime.class != '' ?
                       object.spec.runtime.class :
                       ''
+                - name: instance_type
+                  value: |
+                    has(object.spec.runtime) && has(object.spec.runtime.resources) && has(object.spec.runtime.resources.instanceType) ?
+                      object.spec.runtime.resources.instanceType :
+                      ''
+                - name: location
+                  value: |
+                    has(object.spec.location) && has(object.spec.location.name) ?
+                      object.spec.location.name :
+                      ''
+
+    - name: instance-created
+      resource:
+        group: compute.datumapis.com
+        version: v1alpha
+        resource: instances
+      families:
+        - name: datum_cloud_compute_instance_created
+          help: "Unix creation timestamp of the instance"
+          type: gauge
+          metrics:
+            - value: "int(timestamp(object.metadata.creationTimestamp))"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
 
     - name: instance-status-condition
       resource:
