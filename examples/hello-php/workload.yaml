@@ -1,0 +1,33 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: hello-php
+  labels:
+    app: hello-php
+spec:
+  template:
+    metadata:
+      labels:
+        app: hello-php
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: index.unikraft.io/datum/hello-php:latest
+              ports:
+                - name: http
+                  port: 8080
+                  protocol: TCP
+      networkInterfaces:
+        - network:
+            name: default
+  placements:
+    - name: default
+      cityCodes:
+        - DFW
+      scaleSettings:
+        minReplicas: 1
+        instanceManagementPolicy: OrderedReady
