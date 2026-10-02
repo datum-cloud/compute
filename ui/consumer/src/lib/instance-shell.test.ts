@@ -94,22 +94,17 @@ describe('initialContainer', () => {
 });
 
 describe('shellStatusBadge', () => {
-  test('draws an ended session with the solid theme, which stays readable on white', () => {
-    expect(shellStatusBadge({ phase: 'ended' })).toEqual({
-      label: 'Ended',
-      type: 'muted',
-      theme: 'solid',
+  test('names each phase and picks its colour', () => {
+    expect(shellStatusBadge({ phase: 'connected' })).toEqual({
+      label: 'Connected',
+      type: 'success',
     });
+    expect(shellStatusBadge({ phase: 'ended' })).toEqual({ label: 'Ended', type: 'muted' });
   });
 
-  test('keeps the light theme for coloured states', () => {
-    expect(shellStatusBadge({ phase: 'connected' })).toMatchObject({
-      type: 'success',
-      theme: 'light',
-    });
-    expect(shellStatusBadge({ phase: 'waiting' })).toMatchObject({
-      type: 'warning',
-      theme: 'light',
-    });
+  test('treats every phase before the shell as opening', () => {
+    for (const phase of ['starting', 'waiting', 'connecting']) {
+      expect(shellStatusBadge({ phase })).toEqual({ label: 'Opening', type: 'warning' });
+    }
   });
 });

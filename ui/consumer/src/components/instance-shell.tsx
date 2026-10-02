@@ -7,7 +7,11 @@ import {
   getSession,
   watchSession,
 } from '../lib/console-sessions';
-import { initialContainer, shellStatusBadge } from '../lib/instance-shell';
+import {
+  initialContainer,
+  shellStatusBadge,
+  type ShellStatusBadgeStyle,
+} from '../lib/instance-shell';
 import { DEFAULT_SHELL_COMMAND, parseCommand, QUICK_COMMANDS } from '../lib/shell-command';
 import {
   shellLayout,
@@ -27,17 +31,16 @@ import {
 } from '../lib/shell-popout';
 import { ShellSession, type ShellSessionDeps, type ShellState } from '../lib/shell-session';
 import type { Instance } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
 import { Button } from '@datum-cloud/datum-ui/button';
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@datum-cloud/datum-ui/card';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@datum-cloud/datum-ui/dropdown';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Input } from '@datum-cloud/datum-ui/input';
+import { InputGroup, InputGroupAddon, InputGroupButton } from '@datum-cloud/datum-ui/input-group';
 import { Label } from '@datum-cloud/datum-ui/label';
 import {
   Select,
@@ -46,10 +49,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@datum-cloud/datum-ui/select';
+import { Spinner } from '@datum-cloud/datum-ui/spinner';
+import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css?inline';
-import { SquareArrowOutUpRightIcon } from 'lucide-react';
+import { ChevronDownIcon, SquareArrowOutUpRightIcon, SquareTerminalIcon } from 'lucide-react';
 import {
   useEffect,
   useId,
@@ -64,6 +69,34 @@ import { consoleClientAssets } from 'virtual:console-client-assets';
 
 const XTERM_STYLE_ID = 'compute-plugin-xterm-css';
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
+
+// A toolbar sits in its own bar above the terminal, except in the shell
+// window, where it shares the window's header row.
+const TOOLBAR_FRAME = 'border-b px-3 py-2';
+const IN_HEADER = 'min-w-0 flex-1';
+
+// Room for a shell and a few arguments. The field scrolls for anything longer,
+// so the toolbar doesn't stretch it across the page.
+const COMMAND_WIDTH = '20rem';
+
+// The command field draws no frame of its own inside the input group. Inline,
+// so no portal rule can put the datum-ui Input's border back.
+const BARE_INPUT = {
+  border: 0,
+  outline: 'none',
+  boxShadow: 'none',
+  background: 'transparent',
+};
+
+// Text on the terminal's black background. The portal only generates the
+// Tailwind classes it uses itself, and it has no white-on-black ones.
+const ON_TERMINAL = {
+  text: '#fff',
+  body: 'rgba(255, 255, 255, 0.85)',
+  muted: 'rgba(255, 255, 255, 0.55)',
+  faint: 'rgba(255, 255, 255, 0.4)',
+  rule: 'rgba(255, 255, 255, 0.15)',
+};
 
 const STATUS: Record<Exclude<ShellState['phase'], 'idle' | 'ended'>, string> = {
   starting: 'Starting the shell client…',
@@ -101,12 +134,23 @@ function sessionDeps(projectId: string): ShellSessionDeps {
   };
 }
 
-function ShellStatusBadge({ state }: { state: ShellState }) {
+const STATUS_DOT: Record<ShellStatusBadgeStyle['type'], string> = {
+  success: '#22c55e',
+  warning: '#f59e0b',
+  muted: '#a1a1aa',
+};
+
+function ShellStatusDot({ state }: { state: ShellState }) {
   const badge = shellStatusBadge(state);
   return (
-    <Badge type={badge.type} theme={badge.theme} data-testid="compute-plugin-shell-badge">
-      {badge.label}
-    </Badge>
+    <span
+      role="img"
+      aria-label={badge.label}
+      title={badge.label}
+      className="shrink-0"
+      style={{ width: 8, height: 8, borderRadius: 9999, background: STATUS_DOT[badge.type] }}
+      data-testid="compute-plugin-shell-badge"
+    />
   );
 }
 
@@ -138,7 +182,6 @@ function useViewport() {
 }
 
 function useTerminalHeight(
-  enabled: boolean,
   inWindow: boolean,
   narrow: boolean,
   viewportHeight: number,
@@ -149,7 +192,7 @@ function useTerminalHeight(
   useLayoutEffect(() => {
     const root = rootRef.current;
     const region = regionRef.current;
-    if (!enabled || !inWindow || !root || !region) return;
+    if (!inWindow || !root || !region) return;
     const update = () => {
       const below = root.getBoundingClientRect().bottom - region.getBoundingClientRect().bottom;
       setEdges({ top: region.getBoundingClientRect().top, below });
@@ -162,44 +205,46 @@ function useTerminalHeight(
       observer.disconnect();
       stop();
     };
-  }, [enabled, inWindow, rootRef, regionRef]);
+  }, [inWindow, rootRef, regionRef]);
   return terminalHeight({ inWindow, narrow, viewportHeight, ...edges });
 }
 
-interface StartPanelProps {
+interface StartToolbarProps {
   containers: string[];
   container: string | undefined;
   onContainer(name: string): void;
   command: string;
   onCommand(text: string): void;
   commandError: string | undefined;
+  popOutError: string | undefined;
   running: boolean;
   onConnect(): void;
   onPopOut?: () => void;
-  compact?: boolean;
   layout: ShellLayout;
+  frame?: string;
 }
 
-function StartPanel({
+function StartToolbar({
   containers,
   container,
   onContainer,
   command,
   onCommand,
   commandError,
+  popOutError,
   running,
   onConnect,
   onPopOut,
-  compact,
   layout,
-}: StartPanelProps) {
+  frame = TOOLBAR_FRAME,
+}: StartToolbarProps) {
   const control = layout.controlHeight ? { height: layout.controlHeight } : undefined;
   const target = layout.controlHeight ? { minHeight: layout.controlHeight } : undefined;
-  const field = (desktop: string) => ({ flex: layout.narrow ? '1 1 100%' : desktop });
   const containerId = useId();
   const commandId = useId();
   const errorId = useId();
   const canConnect = running && !!container && !commandError;
+  const error = commandError ?? popOutError;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -210,158 +255,236 @@ function StartPanel({
     <form
       onSubmit={submit}
       aria-label="Start a shell"
-      className={compact ? 'flex flex-col gap-3' : 'flex flex-col gap-3 rounded-lg border p-4'}
+      className={`flex flex-col gap-2 ${frame}`}
       data-testid="compute-plugin-shell-start">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="flex min-w-0 flex-col gap-1.5" style={field('0 1 16rem')}>
-          <Label htmlFor={containerId}>Container</Label>
-          <Select value={container ?? ''} onValueChange={onContainer}>
-            <SelectTrigger
+      <div className={layout.narrow ? 'flex flex-col gap-2' : 'flex items-center gap-3'}>
+        <div className="flex min-w-0 shrink-0 items-center gap-2">
+          <Label htmlFor={containerId} className="text-muted-foreground text-xs font-normal">
+            Container
+          </Label>
+          {containers.length === 1 ? (
+            <span
               id={containerId}
-              className="bg-card h-9 w-full"
-              style={control}
+              className="truncate font-mono text-sm"
               data-testid="compute-plugin-shell-container">
-              <SelectValue placeholder="Choose a container" />
-            </SelectTrigger>
-            <SelectContent>
-              {containers.map((name) => (
-                <SelectItem key={name} value={name}>
-                  {name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              {containers[0]}
+            </span>
+          ) : (
+            <Select value={container ?? ''} onValueChange={onContainer}>
+              <SelectTrigger
+                id={containerId}
+                className={layout.narrow ? 'bg-card h-8 flex-1' : 'bg-card h-8 w-44'}
+                style={control}
+                data-testid="compute-plugin-shell-container">
+                <SelectValue placeholder="Choose a container" />
+              </SelectTrigger>
+              <SelectContent>
+                {containers.map((name) => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
-        <div className="flex min-w-0 flex-col gap-1.5" style={field('1 1 18rem')}>
-          <Label htmlFor={commandId}>Command</Label>
-          <Input
+        <InputGroup
+          className="bg-card h-8 min-w-0"
+          style={{ ...control, ...(layout.narrow ? undefined : { width: COMMAND_WIDTH }) }}>
+          <InputGroupAddon aria-hidden className="font-mono">
+            $
+          </InputGroupAddon>
+          <Label htmlFor={commandId} className="sr-only">
+            Command
+          </Label>
+          <input
             id={commandId}
+            data-slot="input-group-control"
             value={command}
             onChange={(event) => onCommand(event.target.value)}
             placeholder={DEFAULT_SHELL_COMMAND}
             autoComplete="off"
             spellCheck={false}
-            className="h-9 font-mono"
-            style={control}
+            className="placeholder:text-muted-foreground h-full min-w-0 flex-1 px-2 font-mono text-sm"
+            style={BARE_INPUT}
             aria-invalid={!!commandError}
             aria-describedby={commandError ? errorId : undefined}
             data-testid="compute-plugin-shell-command"
           />
-          <div className="flex flex-wrap items-center gap-1.5">
-            {QUICK_COMMANDS.map((quick) => (
-              <Button
-                key={quick}
-                htmlType="button"
-                type="secondary"
-                theme={command.trim() === quick ? 'light' : 'outline'}
-                size="xs"
-                className="font-mono"
-                style={target}
-                aria-pressed={command.trim() === quick}
-                onClick={() => onCommand(quick)}>
-                {quick}
-              </Button>
-            ))}
-            {commandError && (
-              <p id={errorId} role="alert" className="text-destructive text-xs">
-                {commandError}
-              </p>
-            )}
-          </div>
-        </div>
-        <div className={layout.narrow ? 'flex w-full flex-col' : 'ml-auto flex flex-col gap-1.5'}>
-          {!layout.narrow && (
-            <Label aria-hidden className="invisible">
-              Actions
-            </Label>
+          <InputGroupAddon align="inline-end">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <InputGroupButton
+                  size="icon-xs"
+                  aria-label="Choose a shell"
+                  data-testid="compute-plugin-shell-presets">
+                  <ChevronDownIcon />
+                </InputGroupButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuRadioGroup value={command.trim()} onValueChange={onCommand}>
+                  {QUICK_COMMANDS.map((quick) => (
+                    <DropdownMenuRadioItem key={quick} value={quick} className="font-mono">
+                      {quick}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </InputGroupAddon>
+        </InputGroup>
+        <div
+          className={
+            layout.narrow ? 'flex items-center gap-2' : 'ml-auto flex shrink-0 items-center gap-2'
+          }>
+          {onPopOut && layout.showPopOut && (
+            <Tooltip message="Open in new window">
+              <span className="inline-flex">
+                <Button
+                  htmlType="button"
+                  type="secondary"
+                  theme="outline"
+                  size="small"
+                  className="h-8"
+                  aria-label="Open in new window"
+                  disabled={!canConnect}
+                  icon={<Icon icon={SquareArrowOutUpRightIcon} size={14} />}
+                  onClick={onPopOut}
+                  data-testid="compute-plugin-shell-pop-out"
+                />
+              </span>
+            </Tooltip>
           )}
-          <div
-            className={
-              layout.narrow
-                ? 'flex w-full flex-col gap-2'
-                : 'flex flex-wrap items-center justify-end gap-2'
-            }>
-            <Button
-              htmlType="submit"
-              type="primary"
-              theme="solid"
-              size="small"
-              className="h-9"
-              block={layout.narrow}
-              style={target}
-              disabled={!canConnect}
-              data-testid="compute-plugin-shell-open">
-              Connect
-            </Button>
-            {onPopOut && layout.showPopOut && (
-              <Button
-                htmlType="button"
-                type="secondary"
-                theme="outline"
-                size="small"
-                className="h-9"
-                style={target}
-                disabled={!canConnect}
-                icon={<Icon icon={SquareArrowOutUpRightIcon} size={12} />}
-                onClick={onPopOut}
-                data-testid="compute-plugin-shell-pop-out">
-                Open in new window
-              </Button>
-            )}
-          </div>
+          <Button
+            htmlType="submit"
+            type="primary"
+            theme="solid"
+            size="small"
+            className="h-8"
+            block={layout.narrow}
+            style={target}
+            disabled={!canConnect}
+            data-testid="compute-plugin-shell-open">
+            Connect
+          </Button>
         </div>
       </div>
-      {!running && (
-        <p className="text-muted-foreground text-xs">
-          A shell can be opened once the instance is running.
+      {error && (
+        <p
+          id={commandError ? errorId : undefined}
+          role="alert"
+          className="text-destructive text-xs"
+          data-testid={commandError ? undefined : 'compute-plugin-shell-pop-out-error'}>
+          {error}
         </p>
       )}
     </form>
   );
 }
 
-function SessionLine({
+function SessionToolbar({
   state,
   container,
   command,
   onClose,
   layout,
+  frame = TOOLBAR_FRAME,
 }: {
   state: ShellState;
   container: string;
   command: string;
   onClose(): void;
   layout: ShellLayout;
+  frame?: string;
 }) {
   const status = state.phase === 'idle' || state.phase === 'ended' ? '' : STATUS[state.phase];
   return (
-    <div className="flex min-w-0 items-center gap-3" data-testid="compute-plugin-shell-session">
-      <p className="min-w-0 flex-1 truncate text-sm" title={`${container} · ${command}`}>
-        <span className="text-muted-foreground">Container </span>
-        <span className="font-mono">{container}</span>
-        <span className="text-muted-foreground"> · </span>
-        <span className="font-mono">{command}</span>
+    <div
+      className={`flex min-w-0 items-center gap-2 ${frame}`}
+      data-testid="compute-plugin-shell-session">
+      <ShellStatusDot state={state} />
+      <p className="min-w-0 flex-1 truncate font-mono text-sm" title={`${container} · ${command}`}>
+        {container}
+        <span className="text-muted-foreground"> · {command}</span>
       </p>
-      <div className="flex shrink-0 items-center gap-2">
-        <p
-          role="status"
-          aria-live="polite"
-          className={layout.narrow ? 'sr-only' : 'text-muted-foreground text-xs'}
-          data-testid="compute-plugin-shell-status">
-          {status}
-        </p>
-        <ShellStatusBadge state={state} />
-        {state.phase !== 'ended' && (
-          <Button
-            type="secondary"
-            theme="outline"
-            size="small"
-            style={layout.controlHeight ? { minHeight: layout.controlHeight } : undefined}
-            onClick={onClose}>
-            Close shell
-          </Button>
+      <p
+        role="status"
+        aria-live="polite"
+        className={layout.narrow ? 'sr-only' : 'text-muted-foreground shrink-0 text-xs'}
+        data-testid="compute-plugin-shell-status">
+        {status}
+      </p>
+      <Button
+        type="secondary"
+        theme="borderless"
+        size="small"
+        className="h-8 shrink-0"
+        style={layout.controlHeight ? { minHeight: layout.controlHeight } : undefined}
+        onClick={onClose}>
+        Close shell
+      </Button>
+    </div>
+  );
+}
+
+// IdleScreen fills the terminal frame before a session reaches the shell, so
+// the page keeps one shape from choosing a command through to typing in it.
+function IdleScreen({
+  running,
+  ended,
+  container,
+  command,
+}: {
+  running: boolean;
+  ended: string | undefined;
+  container: string | undefined;
+  command: string;
+}) {
+  let title: ReactNode;
+  let detail: ReactNode;
+  if (ended) {
+    title = "Couldn't open the shell";
+    detail = ended;
+  } else if (!running) {
+    title = "This instance isn't running";
+    detail = 'A shell can be opened once the instance is running.';
+  } else {
+    title = (
+      <>
+        Connect to run{' '}
+        <span className="font-mono" style={{ color: ON_TERMINAL.text }}>
+          {command || DEFAULT_SHELL_COMMAND}
+        </span>
+        {container && (
+          <>
+            {' '}
+            in{' '}
+            <span className="font-mono" style={{ color: ON_TERMINAL.text }}>
+              {container}
+            </span>
+          </>
         )}
-      </div>
+      </>
+    );
+    detail = 'The session ends when you close it or leave the page.';
+  }
+  return (
+    <div
+      role={ended ? 'alert' : undefined}
+      className="flex h-full flex-col items-center justify-center gap-1 px-4 text-center"
+      data-testid={ended ? 'compute-plugin-shell-ended' : 'compute-plugin-shell-empty'}>
+      <Icon
+        icon={SquareTerminalIcon}
+        size={20}
+        className="mb-2"
+        style={{ color: ON_TERMINAL.faint }}
+      />
+      <p className="text-sm" style={{ color: ON_TERMINAL.body }}>
+        {title}
+      </p>
+      <p className="text-xs" style={{ color: ON_TERMINAL.muted }}>
+        {detail}
+      </p>
     </div>
   );
 }
@@ -380,7 +503,10 @@ export function InstanceShell(props: InstanceShellProps) {
   const [command, setCommand] = useState(() =>
     inWindow ? props.start.command : DEFAULT_SHELL_COMMAND
   );
-  const [running, setRunning] = useState<{ container: string; command: string }>();
+  const [running, setRunning] = useState<{
+    container: string;
+    command: string;
+  }>();
   const [state, setState] = useState<ShellState>({ phase: 'idle' });
   const [reachedShell, setReachedShell] = useState(false);
   const [popOutError, setPopOutError] = useState<string>();
@@ -418,14 +544,7 @@ export function InstanceShell(props: InstanceShellProps) {
   const showTerminal = active || (ended && reachedShell);
   const viewport = useViewport();
   const layout = shellLayout(viewport.width, viewport.coarse);
-  const height = useTerminalHeight(
-    showTerminal,
-    inWindow,
-    layout.narrow,
-    viewport.height,
-    rootRef,
-    regionRef
-  );
+  const height = useTerminalHeight(inWindow, layout.narrow, viewport.height, rootRef, regionRef);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -495,7 +614,11 @@ export function InstanceShell(props: InstanceShellProps) {
     const nonce = storage
       ? createHandoff(
           storage,
-          { target: handoffTarget(projectId, instance.name), container, command },
+          {
+            target: handoffTarget(projectId, instance.name),
+            container,
+            command,
+          },
           Date.now()
         )
       : undefined;
@@ -509,65 +632,79 @@ export function InstanceShell(props: InstanceShellProps) {
     setPopOutError(error);
   };
 
-  const panel = !active && (
-    <StartPanel
-      containers={instance.containers}
-      container={container}
-      onContainer={setContainer}
-      command={command}
-      onCommand={setCommand}
-      commandError={commandError}
-      running={instanceRunning}
-      onConnect={() => connect()}
-      onPopOut={inWindow ? undefined : popOut}
-      compact={inWindow}
-      layout={layout}
-    />
-  );
+  const toolbar =
+    active && running ? (
+      <SessionToolbar
+        state={state}
+        container={running.container}
+        command={running.command}
+        onClose={() => sessionRef.current?.close()}
+        layout={layout}
+        frame={inWindow ? IN_HEADER : undefined}
+      />
+    ) : (
+      <StartToolbar
+        containers={instance.containers}
+        container={container}
+        onContainer={setContainer}
+        command={command}
+        onCommand={setCommand}
+        commandError={commandError}
+        popOutError={popOutError}
+        running={instanceRunning}
+        onConnect={() => connect()}
+        onPopOut={inWindow ? undefined : popOut}
+        layout={layout}
+        frame={inWindow ? IN_HEADER : undefined}
+      />
+    );
 
-  const endedNotice = ended && (
-    <p
-      role="alert"
-      className="bg-muted text-foreground rounded-md border px-3 py-2 text-sm"
-      data-testid="compute-plugin-shell-ended">
-      {state.message}
-    </p>
-  );
+  const endedMessage = ended ? state.message : undefined;
+  const opening =
+    state.phase === 'starting' || state.phase === 'waiting' || state.phase === 'connecting'
+      ? STATUS[state.phase]
+      : undefined;
 
-  const sessionLine = running && (active || (ended && reachedShell)) && (
-    <SessionLine
-      state={state}
-      container={running.container}
-      command={running.command}
-      onClose={() => sessionRef.current?.close()}
-      layout={layout}
-    />
-  );
-
-  const terminalRegion = showTerminal ? (
+  const terminalRegion = (
     <div
       ref={regionRef}
       role="region"
-      aria-label={`Shell in container ${running?.container ?? ''}`}
-      className={inWindow ? 'overflow-hidden' : 'overflow-hidden rounded-md border'}
+      aria-label={running ? `Shell in container ${running.container}` : 'Shell'}
+      className="relative flex flex-col overflow-hidden"
       onClick={() => terminalRef.current?.focus()}
-      style={{
-        height,
-        width: '100%',
-        maxWidth: '100%',
-        padding: 8,
-        background: '#000',
-      }}>
-      <div ref={hostRef} style={{ height: '100%', width: '100%' }} />
+      style={{ height, width: '100%', maxWidth: '100%', background: '#000' }}>
+      {showTerminal ? (
+        <>
+          <div className="min-h-0 flex-1" style={{ padding: 8 }}>
+            <div ref={hostRef} style={{ height: '100%', width: '100%' }} />
+          </div>
+          {opening && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <p className="flex items-center gap-2 text-sm" style={{ color: ON_TERMINAL.muted }}>
+                <Spinner className="size-4" />
+                {opening}
+              </p>
+            </div>
+          )}
+          {endedMessage && (
+            <p
+              role="alert"
+              className="shrink-0 border-t px-3 py-2 text-sm"
+              style={{ color: ON_TERMINAL.body, borderColor: ON_TERMINAL.rule }}
+              data-testid="compute-plugin-shell-ended">
+              {endedMessage}
+            </p>
+          )}
+        </>
+      ) : (
+        <IdleScreen
+          running={instanceRunning}
+          ended={endedMessage}
+          container={container}
+          command={command.trim()}
+        />
+      )}
     </div>
-  ) : (
-    !ended && (
-      <div
-        className="text-muted-foreground flex items-center justify-center rounded-lg border border-dashed px-4 py-10 text-sm"
-        data-testid="compute-plugin-shell-empty">
-        Choose a container and command, then connect.
-      </div>
-    )
   );
 
   if (props.variant === 'window') {
@@ -576,42 +713,22 @@ export function InstanceShell(props: InstanceShellProps) {
         ref={rootRef}
         className="flex min-w-0 flex-col"
         data-testid="compute-plugin-instance-shell">
-        <header className="border-b px-4 py-2">{props.title}</header>
-        {(panel || endedNotice || sessionLine) && (
-          <div className="flex flex-col gap-3 border-b px-4 py-3">
-            {panel}
-            {endedNotice}
-            {sessionLine}
-          </div>
-        )}
-        {showTerminal && terminalRegion}
+        <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b px-4 py-2">
+          <div className="min-w-0">{props.title}</div>
+          {toolbar}
+        </header>
+        {terminalRegion}
       </div>
     );
   }
 
   return (
-    <Card className="bg-card" data-testid="compute-plugin-instance-shell">
-      <CardHeader>
-        <CardTitle>Shell</CardTitle>
-        <CardDescription>
-          Run a command in a container of this instance. The session ends when you close it or leave
-          the page.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {popOutError && (
-          <p
-            role="alert"
-            className="text-destructive text-sm"
-            data-testid="compute-plugin-shell-pop-out-error">
-            {popOutError}
-          </p>
-        )}
-        {panel}
-        {endedNotice}
-        {sessionLine}
-        {terminalRegion}
-      </CardContent>
-    </Card>
+    <section
+      aria-label="Shell"
+      className="bg-card overflow-hidden rounded-lg border"
+      data-testid="compute-plugin-instance-shell">
+      {toolbar}
+      {terminalRegion}
+    </section>
   );
 }
