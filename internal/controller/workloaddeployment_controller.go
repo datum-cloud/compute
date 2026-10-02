@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -210,6 +211,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		logger.Info("instance control action", "instance", action.Object.GetName(), "action", action.ActionType())
 
 		if err := action.Execute(ctx, cl.GetClient()); err != nil {
+			reportRejectedInstance(ctx, cl.GetClient(), &deployment, existingStatus, action, instances.Items, err)
 			return ctrl.Result{}, fmt.Errorf("failed executing instance control action: %w", err)
 		}
 	}
@@ -596,6 +598,83 @@ func selectWDBlockingCondition(
 		Message:            best.message,
 		ObservedGeneration: deployment.Generation,
 	}
+}
+
+// isInstanceRejected reports whether the API server refused an Instance write
+// outright. Such a request fails identically on every retry, unlike a conflict
+// or an unreachable server, so it is worth surfacing to the user.
+func isInstanceRejected(err error) bool {
+	return apierrors.IsInvalid(err) || apierrors.IsForbidden(err)
+}
+
+// reportRejectedInstance writes the rejection onto the deployment's status when
+// err is one retrying cannot clear. A failure to write is logged rather than
+// returned so the caller still requeues on the original error.
+func reportRejectedInstance(
+	ctx context.Context,
+	c client.Client,
+	deployment *computev1alpha.WorkloadDeployment,
+	existingStatus computev1alpha.WorkloadDeploymentStatus,
+	action instancecontrol.Action,
+	instances []computev1alpha.Instance,
+	err error,
+) {
+	if !isInstanceRejected(err) {
+		return
+	}
+	setInstanceRejectedConditions(deployment, action, instances, err)
+	if equality.Semantic.DeepEqual(existingStatus, deployment.Status) {
+		return
+	}
+	if statusErr := c.Status().Update(ctx, deployment); statusErr != nil {
+		log.FromContext(ctx).Error(statusErr, "failed reporting rejected instance on deployment status")
+	}
+}
+
+// setInstanceRejectedConditions records on the deployment that an Instance write
+// was rejected. ReplicasReady always reports it, since the deployment cannot
+// reach its desired replicas. Available reports it only while no instance is
+// ready; a deployment that is already serving stays available.
+func setInstanceRejectedConditions(
+	deployment *computev1alpha.WorkloadDeployment,
+	action instancecontrol.Action,
+	instances []computev1alpha.Instance,
+	err error,
+) {
+	message := fmt.Sprintf("%s of instance %q was rejected: %s",
+		action.ActionType(), action.Object.GetName(), apiErrorMessage(err))
+
+	apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.WorkloadDeploymentReplicasReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.WorkloadDeploymentReasonInstanceRejected,
+		Message:            message,
+		ObservedGeneration: deployment.Generation,
+	})
+
+	for _, instance := range instances {
+		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, computev1alpha.InstanceReady) {
+			return
+		}
+	}
+
+	apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+		Type:               computev1alpha.WorkloadDeploymentAvailable,
+		Status:             metav1.ConditionFalse,
+		Reason:             computev1alpha.WorkloadDeploymentReasonInstanceRejected,
+		Message:            message,
+		ObservedGeneration: deployment.Generation,
+	})
+}
+
+// apiErrorMessage returns the API server's own message for err, without the
+// wrapping added on the way up, falling back to the full error text.
+func apiErrorMessage(err error) string {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) && status.Status().Message != "" {
+		return status.Status().Message
+	}
+	return err.Error()
 }
 
 // wdBlockingReasonPriority returns the relative priority of a blocking reason on
