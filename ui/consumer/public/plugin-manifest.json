@@ -26,7 +26,13 @@
         "comingSoon": true,
         "comingSoonMode": "plugin",
         "roadmapUrl": "https://www.datum.net/platform/build#compute",
-        "serviceRef": "compute.datumapis.com"
+        "serviceRef": "compute.datumapis.com",
+        "children": [
+          {
+            "title": "Workloads",
+            "path": "/"
+          }
+        ]
       }
     },
     {
