@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -81,6 +82,7 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	require.NoError(t, corev1.AddToScheme(s))
 	require.NoError(t, locationsv1alpha1.AddToScheme(s))
 	require.NoError(t, servicesv1alpha1.AddToScheme(s))
+	require.NoError(t, eventsv1.AddToScheme(s))
 	return s
 }
 
@@ -755,6 +757,37 @@ func TestReconcileQuota(t *testing.T) {
 		require.NotNil(t, readyCond)
 		assert.Equal(t, metav1.ConditionFalse, readyCond.Status)
 		assert.Equal(t, computev1alpha.InstanceProgrammedReasonPendingQuota, readyCond.Reason)
+	})
+
+	t.Run("instance becoming available records a lifecycle event once", func(t *testing.T) {
+		s := newTestScheme(t)
+		instance := makeInstance(s)
+		instance.Labels = map[string]string{computev1alpha.WorkloadNameLabel: "web"}
+		instance.Status.Conditions = []metav1.Condition{
+			{Type: computev1alpha.InstanceProgrammed, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceProgrammedReasonProgrammed},
+			{Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceAvailableReasonAvailable},
+			{Type: computev1alpha.InstanceReady, Status: metav1.ConditionFalse, Reason: computev1alpha.InstanceReadyReasonProvisioning},
+		}
+		claim := makeClaim(s, metav1.ConditionTrue, quotav1alpha1.ResourceClaimGrantedReason)
+
+		r, projectClient, _ := newReconciler(t, []client.Object{instance, makeDeployment()}, []client.Object{claim})
+		r.events = newTestLifecycleWriter()
+
+		req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: instanceName}}, ClusterName: clusterName}
+		for range 2 {
+			_, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+		}
+
+		var updated computev1alpha.Instance
+		require.NoError(t, projectClient.Get(context.Background(), req.NamespacedName, &updated))
+		require.Equal(t, computev1alpha.InstanceReadyReasonAvailable, readyReason(&updated))
+
+		events := listLifecycleEvents(t, projectClient)
+		require.Len(t, events, 1, "a transition is recorded once, not on every reconcile")
+		assert.Equal(t, computev1alpha.InstanceReadyReasonAvailable, events[0].Reason)
+		require.NotNil(t, events[0].Related)
+		assert.Equal(t, "web", events[0].Related.Name)
 	})
 
 	t.Run("quota restored: denied claim updated to granted triggers gate removal", func(t *testing.T) {

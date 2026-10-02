@@ -45,6 +45,10 @@ linters:
       - linters:
           - prealloc
         path: internal/controller/instancecontrol/
+      # Policy fixtures are easier to read inline
+      - linters:
+          - goconst
+        path: test/activitypolicy/
       # CLI output helpers (fmt.Fprintf to stdout) have no actionable error.
       - linters:
           - errcheck

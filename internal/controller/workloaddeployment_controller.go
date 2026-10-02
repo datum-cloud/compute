@@ -67,6 +67,8 @@ type WorkloadDeploymentReconciler struct {
 	// from. The zero value reads network services, which is what every
 	// deployment does today.
 	LocationSource locations.Source
+
+	events *lifecycleEventWriter
 }
 
 // networkAttachmentMode translates the attachment the deployment carries into
@@ -106,6 +108,7 @@ func workloadDeploymentPodSelector(deployment *computev1alpha.WorkloadDeployment
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=servinglocations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=servinglocations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch;create;update;patch;delete
@@ -212,6 +215,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		if err := action.Execute(ctx, cl.GetClient()); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed executing instance control action: %w", err)
 		}
+		r.events.recordInstanceTerminating(ctx, cl, action, desiredReplicas)
 	}
 
 	// When networking is disabled, bypass the entire network provisioning path.
@@ -332,6 +336,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			return ctrl.Result{}, fmt.Errorf("failed updating deployment status: %w", err)
 		}
 		logger.Info("deployment status updated")
+		r.events.recordDeploymentScaled(ctx, cl, &deployment, existingStatus)
 	}
 
 	return ctrl.Result{}, nil
@@ -916,6 +921,7 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 	for _, o := range opts {
 		r.enableReferencedDataGate = o.EnableReferencedDataGate
 	}
+	r.events = newLifecycleEventWriter(workloadDeploymentLifecycleReportingController)
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(workloadControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)

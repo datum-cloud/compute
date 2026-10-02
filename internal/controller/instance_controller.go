@@ -186,6 +186,8 @@ type InstanceReconciler struct {
 	// recorder emits Kubernetes events on the Instance object for quota failure
 	// modes so operators can diagnose issues via `kubectl describe`.
 	recorder events.EventRecorder
+	// events records the instance's lifecycle for the project activity timeline.
+	events *lifecycleEventWriter
 	// projectIDForInstance derives the Milo project ID used for quota
 	// ResourceClaim management. In Milo mode it returns string(clusterName); in
 	// single-cell mode it reads the upstream-cluster-name label from the edge
@@ -286,6 +288,8 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
+	priorReadyReason := readyReason(&instance)
+
 	statusChanged, quotaErr := r.reconcileQuotaCondition(ctx, req.ClusterName, &instance)
 
 	// Safety-net requeue while quota is not yet granted, computed up front so
@@ -342,6 +346,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 			}
 			return ctrl.Result{}, err
 		}
+		r.events.recordInstanceReadyTransition(ctx, cl, &instance, priorReadyReason)
 		if readyErr != nil {
 			return ctrl.Result{}, readyErr
 		}
@@ -2136,6 +2141,7 @@ func (r *InstanceReconciler) SetupWithManager(
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
 	r.recorder = mgr.GetLocalManager().GetEventRecorder("instance-controller")
+	r.events = newLifecycleEventWriter(instanceLifecycleReportingController)
 	r.edgeClusterName = edgeClusterName
 	r.projectIDForInstance = projectIDForInstance
 	r.projectNamespaceForInstance = projectNamespaceForInstance
