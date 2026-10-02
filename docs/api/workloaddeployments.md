@@ -908,14 +908,7 @@ May be combined with `resources` to allow for custom instance types for
 instance families that support customization. Instance types which support
 customization will appear in the form `<project>/<instanceFamily>-custom`.
 
-A new Workload that omits this field has it filled in automatically at
-creation, with the instance type the compute operator is configured to
-default to. This is an operator decision, not a value any InstanceType
-declares about itself: no catalog entry is ever marked as the default.
-
-A Workload stored before this defaulting existed, or created while the
-operator had no default configured, keeps this field empty; the
-instance then runs on the platform's hardcoded fallback instance type,
+When omitted, the instance runs on the platform's default instance type,
 `datumcloud-d1-standard-2`, for compatibility with workloads written
 before instance types could be chosen.<br/>
         </td>
@@ -960,6 +953,19 @@ A sandbox is a managed isolated environment capable of running containers.
         <td>
           An optional list of secrets in the same namespace to use for pulling images
 used by the instance.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecruntimesandboxsysctlsindex">sysctls</a></b></td>
+        <td>[]object</td>
+        <td>
+          Linux kernel parameters to set for every container in the sandbox.
+
+Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+value must be published by the selected runtime class; prefixes and
+wildcards are never accepted. This keeps host-level kernel configuration
+outside the workload API while allowing an isolated runtime to expose a
+deliberately small set of guest-kernel options.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -1787,6 +1793,42 @@ reference.
         <td>string</td>
         <td>
           The name of the secret<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.runtime.sandbox.sysctls[index]
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandbox)</sup></sup>
+
+
+
+SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+selected runtime class decides which exact name/value pairs it supports.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The exact dotted sysctl name, for example net.ipv4.ip_forward.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>value</b></td>
+        <td>string</td>
+        <td>
+          The value to write before the sandbox's containers start. The selected
+runtime class must publish this exact value for this name.<br/>
         </td>
         <td>true</td>
       </tr></tbody>

@@ -58,6 +58,7 @@ func validateRuntimeClassSelection(
 		stored := storedSecurityContexts(opts.OldWorkload)
 		allErrs = append(allErrs, validateCapabilityAddsWithoutClasses(spec, stored, fieldPath)...)
 		allErrs = append(allErrs, validatePrivilegeWideningWithoutClasses(spec, stored, fieldPath)...)
+		allErrs = append(allErrs, validateSysctlsWithoutClasses(spec, storedSysctls(opts.OldWorkload), fieldPath)...)
 		return allErrs
 	}
 
@@ -102,6 +103,25 @@ func validateRuntimeClassSelection(
 	allErrs = append(allErrs, runtimeclass.ValidateInstanceSpec(spec, runtimeclass.CapabilitiesFrom(selected), fieldPath)...)
 
 	return allErrs
+}
+
+// validateSysctlsWithoutClasses rejects a new or changed sysctl request when
+// there is no runtime-class contract to say which names and values the runtime
+// can safely apply. A request already stored while the gate was on is retained
+// so disabling the gate does not make that workload permanently unupdatable.
+func validateSysctlsWithoutClasses(
+	spec computev1alpha.InstanceSpec,
+	stored []computev1alpha.SandboxSysctl,
+	fieldPath *field.Path,
+) field.ErrorList {
+	if spec.Runtime.Sandbox == nil || len(spec.Runtime.Sandbox.Sysctls) == 0 {
+		return nil
+	}
+	if apiequality.Semantic.DeepEqual(spec.Runtime.Sandbox.Sysctls, stored) {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(fieldPath.Child("runtime", "sandbox", "sysctls"),
+		"runtime classes are not enabled on this control plane, so sandbox sysctls cannot be set")}
 }
 
 // validateCapabilityAddsWithoutClasses rejects every capability a container
@@ -200,6 +220,13 @@ func storedSecurityContexts(old *computev1alpha.Workload) map[string]*computev1a
 		stored[container.Name] = container.SecurityContext
 	}
 	return stored
+}
+
+func storedSysctls(old *computev1alpha.Workload) []computev1alpha.SandboxSysctl {
+	if old == nil || old.Spec.Template.Spec.Runtime.Sandbox == nil {
+		return nil
+	}
+	return old.Spec.Template.Spec.Runtime.Sandbox.Sysctls
 }
 
 // unchangedSecurityContext reports whether the container carries the security

@@ -30,7 +30,7 @@ type RuntimeClassControllerName string
 // decline. Enumerating the features keeps a class from declaring one that no
 // provider can interpret.
 //
-// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;exec
+// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;sandboxSysctls;exec
 type RuntimeClassFeature string
 
 const (
@@ -74,6 +74,11 @@ const (
 	// which capabilities it grants in grantableCapabilities.
 	RuntimeClassFeatureContainerCapabilities RuntimeClassFeature = "containerCapabilities"
 
+	// RuntimeClassFeatureSandboxSysctls is the ability to set kernel parameters
+	// in a sandbox's own namespaces. A class declaring it publishes the exact
+	// supported name/value pairs in supportedSysctls.
+	RuntimeClassFeatureSandboxSysctls RuntimeClassFeature = "sandboxSysctls"
+
 	// RuntimeClassFeatureExec is the ability to run a command in a running
 	// instance's container through an InstanceConsoleSession, such as an
 	// interactive shell.
@@ -93,6 +98,7 @@ var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureEnvFrom:                 "environment variables sourced from a whole ConfigMap or Secret",
 	RuntimeClassFeatureImagePullSecrets:        "image pull secrets",
 	RuntimeClassFeatureContainerCapabilities:   "container capability requests",
+	RuntimeClassFeatureSandboxSysctls:          "sandbox sysctls",
 	RuntimeClassFeatureExec:                    "shell sessions into running instances",
 }
 
@@ -180,6 +186,9 @@ type RuntimeClassIsolation struct {
 //
 // +kubebuilder:validation:XValidation:message="grantableCapabilities requires the containerCapabilities feature",rule="!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features)"
 // +kubebuilder:validation:XValidation:message="the containerCapabilities feature requires a non-empty grantableCapabilities",rule="!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0)"
+// +kubebuilder:validation:XValidation:message="supportedSysctls requires the sandboxSysctls feature",rule="!has(self.supportedSysctls) || size(self.supportedSysctls) == 0 || (has(self.features) && 'sandboxSysctls' in self.features)"
+// +kubebuilder:validation:XValidation:message="the sandboxSysctls feature requires a non-empty supportedSysctls",rule="!has(self.features) || !('sandboxSysctls' in self.features) || (has(self.supportedSysctls) && size(self.supportedSysctls) > 0)"
+// +kubebuilder:validation:XValidation:message="the sandboxSysctls feature requires the sandboxRuntime feature",rule="!has(self.features) || !('sandboxSysctls' in self.features) || 'sandboxRuntime' in self.features"
 type RuntimeClassCapabilities struct {
 	// The optional parts of the instance API this class serves. Anything absent
 	// is unsupported, so a class that omits a feature rejects requests for it
@@ -208,6 +217,17 @@ type RuntimeClassCapabilities struct {
 	// +kubebuilder:validation:Optional
 	GrantableCapabilities []Capability `json:"grantableCapabilities,omitempty"`
 
+	// The exact Linux kernel parameters and values a sandbox in this class may
+	// request. Names are literal: entries never match prefixes or wildcards.
+	// Providers publish only parameters namespaced by the guest runtime; host
+	// kernel parameters do not belong in this list.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	SupportedSysctls []RuntimeClassSysctl `json:"supportedSysctls,omitempty"`
+
 	// What runs unmodified in this class and what does not. Customers need this
 	// statement before committing an image to the tier.
 	//
@@ -215,6 +235,34 @@ type RuntimeClassCapabilities struct {
 	// +kubebuilder:validation:Optional
 	Compatibility string `json:"compatibility,omitempty"`
 }
+
+// RuntimeClassSysctl is one exact kernel parameter a runtime class can apply,
+// together with the closed set of values it accepts.
+type RuntimeClassSysctl struct {
+	// The exact dotted sysctl name. Prefixes and wildcard suffixes are invalid.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$`
+	Name string `json:"name"`
+
+	// The complete set of values this class accepts for the parameter.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=set
+	AllowedValues []SysctlValue `json:"allowedValues"`
+}
+
+// SysctlValue is an exact value a sandbox may request for a kernel parameter.
+// It is deliberately opaque: the runtime class publishes the finite set that
+// has meaning for each supported name.
+//
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=128
+type SysctlValue string
 
 // RuntimeClassDefaultCapabilities are the Linux capabilities the platform grants
 // a sandbox container in the class when the container states none.

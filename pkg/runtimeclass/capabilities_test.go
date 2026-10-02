@@ -66,6 +66,9 @@ func TestFeatureDescriptions(t *testing.T) {
 		FeatureDeviceVolumeAttachments,
 		FeatureEnvFrom,
 		FeatureImagePullSecrets,
+		FeatureContainerCapabilities,
+		FeatureSandboxSysctls,
+		FeatureExec,
 	}
 
 	for _, feature := range features {

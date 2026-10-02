@@ -40,6 +40,7 @@ const (
 	FeatureEnvFrom                 = computev1alpha.RuntimeClassFeatureEnvFrom
 	FeatureImagePullSecrets        = computev1alpha.RuntimeClassFeatureImagePullSecrets
 	FeatureContainerCapabilities   = computev1alpha.RuntimeClassFeatureContainerCapabilities
+	FeatureSandboxSysctls          = computev1alpha.RuntimeClassFeatureSandboxSysctls
 	FeatureExec                    = computev1alpha.RuntimeClassFeatureExec
 )
 
@@ -47,6 +48,9 @@ const (
 // API type so a class's grantable set and a container's request compare
 // directly.
 type Capability = computev1alpha.Capability
+
+// Sysctl is an exact kernel parameter and its closed set of accepted values.
+type Sysctl = computev1alpha.RuntimeClassSysctl
 
 // Capabilities is a runtime class's declaration of what it can serve, in the
 // form the shared validation works against. Capabilities comes from the
@@ -66,6 +70,11 @@ type Capabilities struct {
 	// the class may add. They apply only when the class declares
 	// FeatureContainerCapabilities.
 	GrantableCapabilities []Capability
+
+	// SupportedSysctls are the exact names and values the class can apply in a
+	// sandbox's kernel namespaces. They apply only when the class declares
+	// FeatureSandboxSysctls.
+	SupportedSysctls []Sysctl
 }
 
 // CapabilitiesFrom reads a class's declaration from its catalog entry.
@@ -77,7 +86,41 @@ func CapabilitiesFrom(class *computev1alpha.RuntimeClass) Capabilities {
 		Class:                 class.Name,
 		Features:              class.Spec.Capabilities.Features,
 		GrantableCapabilities: class.Spec.Capabilities.GrantableCapabilities,
+		SupportedSysctls:      class.Spec.Capabilities.SupportedSysctls,
 	}
+}
+
+// SupportsSysctl reports whether the class accepts this exact kernel parameter
+// name and value. No prefix or wildcard matching is performed.
+func (c Capabilities) SupportsSysctl(name string, value computev1alpha.SysctlValue) bool {
+	if !c.Supports(FeatureSandboxSysctls) {
+		return false
+	}
+	for _, supported := range c.SupportedSysctls {
+		if supported.Name != name {
+			continue
+		}
+		for _, allowed := range supported.AllowedValues {
+			if allowed == value {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// SupportedSysctl returns the class declaration for an exact sysctl name.
+func (c Capabilities) SupportedSysctl(name string) *Sysctl {
+	if !c.Supports(FeatureSandboxSysctls) {
+		return nil
+	}
+	for i := range c.SupportedSysctls {
+		if c.SupportedSysctls[i].Name == name {
+			return &c.SupportedSysctls[i]
+		}
+	}
+	return nil
 }
 
 // Grants reports whether a sandbox container in the class may add the
