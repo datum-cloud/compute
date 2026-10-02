@@ -4,6 +4,7 @@ package runtimeclass
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -11,6 +12,8 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
+
+var sysctlNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$`)
 
 // ValidateInstanceSpec reports every part of the instance spec the class
 // cannot serve.
@@ -95,6 +98,8 @@ func validateSandbox(
 		allErrs = append(allErrs, unsupported(fldPath.Child("imagePullSecrets"), capabilities, FeatureImagePullSecrets))
 	}
 
+	allErrs = append(allErrs, validateSandboxSysctls(sandbox.Sysctls, capabilities, fldPath.Child("sysctls"))...)
+
 	containersPath := fldPath.Child("containers")
 	for i, container := range sandbox.Containers {
 		containerPath := containersPath.Index(i)
@@ -118,6 +123,77 @@ func validateSandbox(
 	}
 
 	return allErrs
+}
+
+// validateSandboxSysctls checks every exact name/value pair against the class's
+// published list. A class cannot accept a prefix, and a supported name with an
+// unsupported value is rejected separately so the customer sees which half of
+// the request to change.
+func validateSandboxSysctls(
+	requested []computev1alpha.SandboxSysctl,
+	capabilities Capabilities,
+	fldPath *field.Path,
+) field.ErrorList {
+	if len(requested) == 0 {
+		return nil
+	}
+	if !capabilities.Supports(FeatureSandboxSysctls) {
+		return field.ErrorList{unsupported(fldPath, capabilities, FeatureSandboxSysctls)}
+	}
+
+	allErrs := field.ErrorList{}
+	seen := map[string]struct{}{}
+	for i, request := range requested {
+		requestPath := fldPath.Index(i)
+		if !sysctlNamePattern.MatchString(request.Name) {
+			allErrs = append(allErrs, field.Invalid(requestPath.Child("name"), request.Name,
+				"must be a dotted sysctl name with non-empty components"))
+			continue
+		}
+		if _, exists := seen[request.Name]; exists {
+			allErrs = append(allErrs, field.Duplicate(requestPath.Child("name"), request.Name))
+			continue
+		}
+		seen[request.Name] = struct{}{}
+		if request.Value == "" {
+			allErrs = append(allErrs, field.Required(requestPath.Child("value"), "must not be empty"))
+			continue
+		}
+		supported := capabilities.SupportedSysctl(request.Name)
+		if supported == nil {
+			allErrs = append(allErrs, field.Forbidden(requestPath.Child("name"), fmt.Sprintf(
+				"sysctl %s is not supported by %s, which supports %s",
+				request.Name, capabilities.ClassDescription(), supportedSysctlNames(capabilities.SupportedSysctls),
+			)))
+			continue
+		}
+		if !capabilities.SupportsSysctl(request.Name, request.Value) {
+			allErrs = append(allErrs, field.NotSupported(
+				requestPath.Child("value"), request.Value, sortedSysctlValues(supported.AllowedValues)))
+		}
+	}
+	return allErrs
+}
+
+func supportedSysctlNames(supported []Sysctl) string {
+	if len(supported) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(supported))
+	for _, sysctl := range supported {
+		names = append(names, sysctl.Name)
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
+}
+
+func sortedSysctlValues(values []computev1alpha.SysctlValue) []string {
+	sorted := make([]string, 0, len(values))
+	for _, value := range values {
+		sorted = append(sorted, string(value))
+	}
+	slices.Sort(sorted)
+	return sorted
 }
 
 // validateContainerCapabilities checks the capabilities a container adds

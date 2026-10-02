@@ -114,6 +114,7 @@ spec:
                       - envFrom
                       - imagePullSecrets
                       - containerCapabilities
+                      - sandboxSysctls
                       - exec
                       type: string
                     maxItems: 32
@@ -155,6 +156,48 @@ spec:
                         'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE',
                         'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE',
                         'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM'])
+                  supportedSysctls:
+                    description: |-
+                      The exact Linux kernel parameters and values a sandbox in this class may
+                      request. Names are literal: entries never match prefixes or wildcards.
+                      Providers publish only parameters namespaced by the guest runtime; host
+                      kernel parameters do not belong in this list.
+                    items:
+                      description: |-
+                        RuntimeClassSysctl is one exact kernel parameter a runtime class can apply,
+                        together with the closed set of values it accepts.
+                      properties:
+                        allowedValues:
+                          description: The complete set of values this class accepts
+                            for the parameter.
+                          items:
+                            description: |-
+                              SysctlValue is an exact value a sandbox may request for a kernel parameter.
+                              It is deliberately opaque: the runtime class publishes the finite set that
+                              has meaning for each supported name.
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                          maxItems: 16
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: The exact dotted sysctl name. Prefixes and
+                            wildcard suffixes are invalid.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$
+                          type: string
+                      required:
+                      - allowedValues
+                      - name
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                 type: object
                 x-kubernetes-validations:
                 - message: grantableCapabilities requires the containerCapabilities
@@ -166,6 +209,17 @@ spec:
                   rule: '!has(self.features) || !(''containerCapabilities'' in self.features)
                     || (has(self.grantableCapabilities) && size(self.grantableCapabilities)
                     > 0)'
+                - message: supportedSysctls requires the sandboxSysctls feature
+                  rule: '!has(self.supportedSysctls) || size(self.supportedSysctls)
+                    == 0 || (has(self.features) && ''sandboxSysctls'' in self.features)'
+                - message: the sandboxSysctls feature requires a non-empty supportedSysctls
+                  rule: '!has(self.features) || !(''sandboxSysctls'' in self.features)
+                    || (has(self.supportedSysctls) && size(self.supportedSysctls)
+                    > 0)'
+                - message: the sandboxSysctls feature requires the sandboxRuntime
+                    feature
+                  rule: '!has(self.features) || !(''sandboxSysctls'' in self.features)
+                    || ''sandboxRuntime'' in self.features'
               controllerName:
                 description: |-
                   The controller that implements this class. A provider watches for classes

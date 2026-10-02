@@ -451,6 +451,57 @@ func TestBuildPodSpecErrors(t *testing.T) {
 	}
 }
 
+func TestBuildPodSpecSysctls(t *testing.T) {
+	requested := []computev1alpha.SandboxSysctl{
+		{Name: "net.ipv6.conf.default.forwarding", Value: "1"},
+		{Name: "net.ipv4.ip_forward", Value: "1"},
+		{Name: "net.ipv6.conf.all.forwarding", Value: "1"},
+	}
+	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+	instance.Spec.Runtime.Sandbox.Sysctls = requested
+	opts := Options{Capabilities: runtimeclass.Capabilities{
+		Class:    testClassBasalt,
+		Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureSandboxSysctls},
+		SupportedSysctls: []runtimeclass.Sysctl{
+			{Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: "net.ipv6.conf.all.forwarding", AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: "net.ipv6.conf.default.forwarding", AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+		},
+	}}
+
+	spec, err := BuildPodSpec(instance, opts)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	want := []corev1.Sysctl{
+		{Name: "net.ipv4.ip_forward", Value: "1"},
+		{Name: "net.ipv6.conf.all.forwarding", Value: "1"},
+		{Name: "net.ipv6.conf.default.forwarding", Value: "1"},
+	}
+	if spec.SecurityContext == nil {
+		t.Fatal("Pod security context is nil")
+	}
+	if err := diff(want, spec.SecurityContext.Sysctls); err != nil {
+		t.Error(err)
+	}
+	if err := diff(requested, instance.Spec.Runtime.Sandbox.Sysctls); err != nil {
+		t.Errorf("BuildPodSpec mutated the Instance sysctls: %v", err)
+	}
+}
+
+func TestBuildPodSpecWithoutSysctlsLeavesPodSecurityContextUnset(t *testing.T) {
+	spec, err := BuildPodSpec(
+		newInstance(computev1alpha.SandboxContainer{Name: testContainerName}),
+		Options{Capabilities: sandboxCapabilities},
+	)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	if spec.SecurityContext != nil {
+		t.Errorf("Pod security context = %#v, want nil", spec.SecurityContext)
+	}
+}
+
 // TestBuildPodSpecSecurityContext covers how a container's capability request
 // reaches the Pod.
 func TestBuildPodSpecSecurityContext(t *testing.T) {

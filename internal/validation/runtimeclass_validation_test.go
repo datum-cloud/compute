@@ -100,6 +100,14 @@ func withFeatures(featureList ...computev1alpha.RuntimeClassFeature) func(*compu
 	}
 }
 
+func withSysctls(sysctls ...computev1alpha.RuntimeClassSysctl) func(*computev1alpha.RuntimeClass) {
+	return func(class *computev1alpha.RuntimeClass) {
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		class.Spec.Capabilities.SupportedSysctls = sysctls
+	}
+}
+
 // defaultCatalog matches a bootstrapped control plane: one default tier and one
 // other tier.
 func defaultCatalog() runtimeclass.Catalog {
@@ -226,6 +234,76 @@ func TestValidateContainerCapabilitiesSelection(t *testing.T) {
 			opts := WorkloadValidationOptions{RuntimeClasses: tc.catalog}
 			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(tc.spec, root, opts))
 		})
+	}
+}
+
+func TestValidateSandboxSysctlSelection(t *testing.T) {
+	root := field.NewPath("spec", "template", "spec")
+	sysctlsPath := root.Child("runtime", "sandbox", "sysctls")
+	spec := func(class, value string) computev1alpha.InstanceSpec {
+		return computev1alpha.InstanceSpec{Runtime: computev1alpha.InstanceRuntimeSpec{
+			Class: class,
+			Sandbox: &computev1alpha.SandboxRuntime{Sysctls: []computev1alpha.SandboxSysctl{{
+				Name: "net.ipv4.ip_forward", Value: computev1alpha.SysctlValue(value),
+			}}},
+		}}
+	}
+	classWithSysctls := runtimeclass.Catalog{makeRuntimeClass(testClassBasalt, withSysctls(
+		computev1alpha.RuntimeClassSysctl{
+			Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
+		},
+	))}
+
+	cases := map[string]struct {
+		gate           bool
+		spec           computev1alpha.InstanceSpec
+		catalog        runtimeclass.Catalog
+		expectedErrors field.ErrorList
+	}{
+		"gate off refuses a sysctl request": {
+			spec:           spec("", "1"),
+			expectedErrors: field.ErrorList{field.Forbidden(sysctlsPath, "")},
+		},
+		"gate on accepts a published pair": {
+			gate: true, spec: spec(testClassBasalt, "1"), catalog: classWithSysctls,
+		},
+		"gate on rejects an unpublished value": {
+			gate: true, spec: spec(testClassBasalt, "2"), catalog: classWithSysctls,
+			expectedErrors: field.ErrorList{field.NotSupported(sysctlsPath.Index(0).Child("value"),
+				computev1alpha.SysctlValue("2"), []string{"0", "1"})},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, tc.gate)
+			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(tc.spec, root,
+				WorkloadValidationOptions{RuntimeClasses: tc.catalog}))
+		})
+	}
+}
+
+func TestValidateStoredSandboxSysctlsAfterGateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, false)
+	root := field.NewPath("spec", "template", "spec")
+	stored := MakeSandboxWorkload("stored-sysctls", func(workload *computev1alpha.Workload) {
+		workload.Spec.Template.Spec.Runtime.Class = testClassBasalt
+		workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
+			Name: "net.ipv4.ip_forward", Value: "1",
+		}}
+	})
+
+	unchanged := stored.DeepCopy()
+	if errs := validateRuntimeClassSelection(unchanged.Spec.Template.Spec, root,
+		WorkloadValidationOptions{OldWorkload: stored}); len(errs) != 0 {
+		t.Fatalf("unchanged stored sysctls must remain updatable after gate off: %v", errs)
+	}
+
+	changed := stored.DeepCopy()
+	changed.Spec.Template.Spec.Runtime.Sandbox.Sysctls[0].Value = "0"
+	if errs := validateRuntimeClassSelection(changed.Spec.Template.Spec, root,
+		WorkloadValidationOptions{OldWorkload: stored}); len(errs) == 0 {
+		t.Fatal("a changed sysctl request must be refused after gate off")
 	}
 }
 

@@ -120,6 +120,38 @@ type SandboxRuntime struct {
 	//
 	// +kubebuilder:validation:Optional
 	ImagePullSecrets []LocalSecretReference `json:"imagePullSecrets,omitempty"`
+
+	// Linux kernel parameters to set for every container in the sandbox.
+	//
+	// Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+	// value must be published by the selected runtime class; prefixes and
+	// wildcards are never accepted. This keeps host-level kernel configuration
+	// outside the workload API while allowing an isolated runtime to expose a
+	// deliberately small set of guest-kernel options.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	Sysctls []SandboxSysctl `json:"sysctls,omitempty"`
+}
+
+// SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+// selected runtime class decides which exact name/value pairs it supports.
+type SandboxSysctl struct {
+	// The exact dotted sysctl name, for example net.ipv4.ip_forward.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$`
+	Name string `json:"name"`
+
+	// The value to write before the sandbox's containers start. The selected
+	// runtime class must publish this exact value for this name.
+	//
+	// +kubebuilder:validation:Required
+	Value SysctlValue `json:"value"`
 }
 
 type SandboxContainer struct {

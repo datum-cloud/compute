@@ -154,6 +154,91 @@ func TestRuntimeClassCRD(t *testing.T) {
 		t.Cleanup(func() { _ = c.Delete(ctx, class) })
 	})
 
+	t.Run("a sandbox class can publish exact sysctl names and values", func(t *testing.T) {
+		class := newCatalogEntry("offers-sysctls")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+			Name:          "net.ipv4.ip_forward",
+			AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
+		}}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	t.Run("a class cannot publish sysctls without the feature", func(t *testing.T) {
+		class := newCatalogEntry("sysctls-without-feature")
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+			Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"1"},
+		}}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"supportedSysctls requires the sandboxSysctls feature")
+	})
+
+	t.Run("the sysctl feature requires a non-empty declaration", func(t *testing.T) {
+		class := newCatalogEntry("sysctl-feature-without-list")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		require.ErrorContains(t, c.Create(ctx, class),
+			"the sandboxSysctls feature requires a non-empty supportedSysctls")
+	})
+
+	t.Run("the sysctl feature requires a sandbox runtime", func(t *testing.T) {
+		class := newCatalogEntry("sysctls-without-sandbox")
+		class.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{
+			computev1alpha.RuntimeClassFeatureVirtualMachineRuntime,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls,
+		}
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+			Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"1"},
+		}}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"the sandboxSysctls feature requires the sandboxRuntime feature")
+	})
+
+	for i, invalid := range []string{
+		"net..ipv4.forwarding",
+		"net.ipv4.forwarding.",
+		"net.ipv4.*",
+		"net/ipv4/ip_forward",
+	} {
+		t.Run("a class cannot publish malformed sysctl "+strings.NewReplacer(".", "-", "/", "-").Replace(invalid), func(t *testing.T) {
+			class := newCatalogEntry(fmt.Sprintf("invalid-sysctl-%d", i))
+			class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+				computev1alpha.RuntimeClassFeatureSandboxSysctls)
+			class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+				Name: invalid, AllowedValues: []computev1alpha.SysctlValue{"1"},
+			}}
+			require.ErrorContains(t, c.Create(ctx, class), "should match")
+		})
+	}
+
+	t.Run("a class cannot publish a sysctl twice", func(t *testing.T) {
+		class := newCatalogEntry("duplicate-sysctl")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{
+			{Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"0"}},
+			{Name: "net.ipv4.ip_forward", AllowedValues: []computev1alpha.SysctlValue{"1"}},
+		}
+		require.Error(t, c.Create(ctx, class))
+	})
+
+	for name, values := range map[string][]computev1alpha.SysctlValue{
+		"empty allowed value":     {""},
+		"duplicate allowed value": {"1", "1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			class := newCatalogEntry(strings.ReplaceAll(name, " ", "-"))
+			class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+				computev1alpha.RuntimeClassFeatureSandboxSysctls)
+			class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+				Name: "net.ipv4.ip_forward", AllowedValues: values,
+			}}
+			require.Error(t, c.Create(ctx, class))
+		})
+	}
+
 	t.Run("a class serving capability requests publishes what it grants", func(t *testing.T) {
 		class := newCatalogEntry("grants-capabilities")
 		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
@@ -268,6 +353,45 @@ func TestRuntimeClassCRD(t *testing.T) {
 		class := newCatalogEntry("no-boundary")
 		class.Spec.Isolation.Boundary = ""
 		require.Error(t, c.Create(ctx, class))
+	})
+
+	t.Run("a workload can request well-formed sandbox sysctls", func(t *testing.T) {
+		workload := MakeSandboxWorkload("valid-sandbox-sysctls", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{
+				{Name: "net.ipv4.ip_forward", Value: "1"},
+				{Name: "net.ipv6.conf.all.forwarding", Value: "1"},
+			}
+		})
+		require.NoError(t, c.Create(ctx, workload))
+		t.Cleanup(func() { _ = c.Delete(ctx, workload) })
+	})
+
+	t.Run("a workload cannot request a malformed sysctl name", func(t *testing.T) {
+		workload := MakeSandboxWorkload("malformed-sandbox-sysctl", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
+				Name: "net..ipv4.forwarding", Value: "1",
+			}}
+		})
+		require.ErrorContains(t, c.Create(ctx, workload), "should match")
+	})
+
+	t.Run("a workload cannot request one sysctl twice", func(t *testing.T) {
+		workload := MakeSandboxWorkload("duplicate-sandbox-sysctl", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{
+				{Name: "net.ipv4.ip_forward", Value: "0"},
+				{Name: "net.ipv4.ip_forward", Value: "1"},
+			}
+		})
+		require.Error(t, c.Create(ctx, workload))
+	})
+
+	t.Run("a workload cannot request an empty sysctl value", func(t *testing.T) {
+		workload := MakeSandboxWorkload("empty-sandbox-sysctl", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
+				Name: "net.ipv4.ip_forward", Value: "",
+			}}
+		})
+		require.Error(t, c.Create(ctx, workload))
 	})
 }
 

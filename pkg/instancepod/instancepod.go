@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -188,10 +189,16 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 		imagePullSecrets = append(imagePullSecrets, corev1.LocalObjectReference{Name: secret.Name})
 	}
 
+	var podSecurityContext *corev1.PodSecurityContext
+	if sysctls := buildSysctls(instance.Spec.Runtime.Sandbox.Sysctls); len(sysctls) > 0 {
+		podSecurityContext = &corev1.PodSecurityContext{Sysctls: sysctls}
+	}
+
 	return corev1.PodSpec{
 		Containers:       containers,
 		Volumes:          volumes,
 		ImagePullSecrets: imagePullSecrets,
+		SecurityContext:  podSecurityContext,
 		// An instance runs customer code and must not reach the Kubernetes API
 		// of the cluster hosting it. Without a projected token it cannot
 		// authenticate to the apiserver. Without service links, the addresses
@@ -202,6 +209,22 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 		NodeSelector:                 opts.NodeSelector,
 		Tolerations:                  opts.Tolerations,
 	}, nil
+}
+
+// buildSysctls translates sandbox-wide kernel parameters to the Pod security
+// context. Kubernetes requires them at Pod scope because the containers share
+// the sandbox's kernel namespaces. Sorting a new slice keeps generated Pods
+// stable without changing the order stored on the Instance.
+func buildSysctls(requested []computev1alpha.SandboxSysctl) []corev1.Sysctl {
+	if len(requested) == 0 {
+		return nil
+	}
+	sysctls := make([]corev1.Sysctl, 0, len(requested))
+	for _, requested := range requested {
+		sysctls = append(sysctls, corev1.Sysctl{Name: requested.Name, Value: string(requested.Value)})
+	}
+	slices.SortFunc(sysctls, func(a, b corev1.Sysctl) int { return strings.Compare(a.Name, b.Name) })
+	return sysctls
 }
 
 func buildVolumes(instance *computev1alpha.Instance, opts Options) ([]corev1.Volume, error) {

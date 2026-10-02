@@ -104,7 +104,7 @@ Spec is the published contract for this execution tier.
         <td>
           What this class can serve, and what it cannot.<br/>
           <br/>
-            <i>Validations</i>:<li>!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features): grantableCapabilities requires the containerCapabilities feature</li><li>!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0): the containerCapabilities feature requires a non-empty grantableCapabilities</li>
+            <i>Validations</i>:<li>!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features): grantableCapabilities requires the containerCapabilities feature</li><li>!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0): the containerCapabilities feature requires a non-empty grantableCapabilities</li><li>!has(self.supportedSysctls) || size(self.supportedSysctls) == 0 || (has(self.features) && 'sandboxSysctls' in self.features): supportedSysctls requires the sandboxSysctls feature</li><li>!has(self.features) || !('sandboxSysctls' in self.features) || (has(self.supportedSysctls) && size(self.supportedSysctls) > 0): the sandboxSysctls feature requires a non-empty supportedSysctls</li><li>!has(self.features) || !('sandboxSysctls' in self.features) || 'sandboxRuntime' in self.features: the sandboxSysctls feature requires the sandboxRuntime feature</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -249,7 +249,7 @@ statement before committing an image to the tier.<br/>
 is unsupported, so a class that omits a feature rejects requests for it
 rather than serving it by accident.<br/>
           <br/>
-            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets, containerCapabilities, exec<br/>
+            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets, containerCapabilities, sandboxSysctls, exec<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -271,6 +271,51 @@ least one.<br/>
             <i>Validations</i>:<li>self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM']): grantableCapabilities must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted</li>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#runtimeclassspeccapabilitiessupportedsysctlsindex">supportedSysctls</a></b></td>
+        <td>[]object</td>
+        <td>
+          The exact Linux kernel parameters and values a sandbox in this class may
+request. Names are literal: entries never match prefixes or wildcards.
+Providers publish only parameters namespaced by the guest runtime; host
+kernel parameters do not belong in this list.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### RuntimeClass.spec.capabilities.supportedSysctls[index]
+<sup><sup>[↩ Parent](#runtimeclassspeccapabilities)</sup></sup>
+
+
+
+RuntimeClassSysctl is one exact kernel parameter a runtime class can apply,
+together with the closed set of values it accepts.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowedValues</b></td>
+        <td>[]string</td>
+        <td>
+          The complete set of values this class accepts for the parameter.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The exact dotted sysctl name. Prefixes and wildcard suffixes are invalid.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

@@ -47,8 +47,81 @@ var fullCapabilities = Capabilities{
 		FeatureEnvFrom,
 		FeatureImagePullSecrets,
 		FeatureContainerCapabilities,
+		FeatureSandboxSysctls,
 	},
 	GrantableCapabilities: []Capability{testCapNetBindService, testCapChown},
+	SupportedSysctls: []Sysctl{{
+		Name:          "net.ipv4.ip_forward",
+		AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
+	}},
+}
+
+func TestValidateSandboxSysctls(t *testing.T) {
+	sysctlsPath := field.NewPath("spec", "runtime", "sandbox", "sysctls")
+	request := func(sysctls ...computev1alpha.SandboxSysctl) computev1alpha.InstanceSpec {
+		spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+		spec.Runtime.Sandbox.Sysctls = sysctls
+		return spec
+	}
+
+	tests := []struct {
+		name         string
+		spec         computev1alpha.InstanceSpec
+		capabilities Capabilities
+		want         field.ErrorList
+	}{
+		{
+			name:         "an exact supported name and value is accepted",
+			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "1"}),
+			capabilities: fullCapabilities,
+		},
+		{
+			name:         "a class without sysctl support rejects the whole request",
+			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "1"}),
+			capabilities: minimalCapabilities,
+			want: field.ErrorList{field.Forbidden(sysctlsPath,
+				`sandbox sysctls are not supported by the "azurite" runtime class`)},
+		},
+		{
+			name:         "a similar name does not match by prefix",
+			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward.extra", Value: "1"}),
+			capabilities: fullCapabilities,
+			want: field.ErrorList{field.Forbidden(sysctlsPath.Index(0).Child("name"),
+				`sysctl net.ipv4.ip_forward.extra is not supported by the "basalt" runtime class, which supports net.ipv4.ip_forward`)},
+		},
+		{
+			name:         "an unsupported value names the finite allowed set",
+			spec:         request(computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "2"}),
+			capabilities: fullCapabilities,
+			want: field.ErrorList{field.NotSupported(sysctlsPath.Index(0).Child("value"),
+				computev1alpha.SysctlValue("2"), []string{"0", "1"})},
+		},
+		{
+			name:         "a malformed dotted name is rejected",
+			spec:         request(computev1alpha.SandboxSysctl{Name: "net..ip_forward", Value: "1"}),
+			capabilities: fullCapabilities,
+			want: field.ErrorList{field.Invalid(sysctlsPath.Index(0).Child("name"), "net..ip_forward",
+				"must be a dotted sysctl name with non-empty components")},
+		},
+		{
+			name: "a duplicate exact name is rejected",
+			spec: request(
+				computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "1"},
+				computev1alpha.SandboxSysctl{Name: "net.ipv4.ip_forward", Value: "0"},
+			),
+			capabilities: fullCapabilities,
+			want:         field.ErrorList{field.Duplicate(sysctlsPath.Index(1).Child("name"), "net.ipv4.ip_forward")},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ValidateInstanceSpec(test.spec, test.capabilities, field.NewPath("spec"))
+			if delta := cmp.Diff(test.want, got, cmpopts.EquateEmpty()); delta != "" {
+				t.Errorf("unexpected rejections (-want +got):\n%s", delta)
+			}
+		})
+	}
 }
 
 // minimalCapabilities is the narrow set a fast-start class serves. It covers
