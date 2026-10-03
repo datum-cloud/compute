@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	eventsv1 "k8s.io/api/events/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -1183,4 +1184,54 @@ func TestWDAvailableCondition_AnnotationMalformedJSON(t *testing.T) {
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
 		"malformed annotation must be silently ignored; fallback to InstancesProvisioning")
+}
+
+func TestWorkloadDeploymentReconcile_RecordsScaleDown(t *testing.T) {
+	t.Parallel()
+
+	deployment := wdControllerTestDeployment(1)
+	deployment.Finalizers = []string{workloadControllerFinalizer}
+	deployment.Status.DesiredReplicas = 2
+	deployment.Status.ObservedGeneration = 1
+	objs := make([]client.Object, 0, 3)
+	objs = append(objs, deployment)
+	for _, index := range []string{"0", "1"} {
+		instance := wdControllerTestInstance(wdControllerTestName + "-" + index)
+		instance.Labels[computev1alpha.InstanceIndexLabel] = index
+		instance.Labels[computev1alpha.WorkloadNameLabel] = wdControllerTestWorkload
+		instance.CreationTimestamp = metav1.Now()
+		// A ready, current instance 0 leaves the scale-down as the only action.
+		instance.Spec.Controller = &computev1alpha.InstanceController{
+			TemplateHash: instancecontrol.ComputeHash(deployment.Spec.Template),
+		}
+		instance.Status.Conditions = []metav1.Condition{{
+			Type: computev1alpha.InstanceReady, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceReadyReasonAvailable,
+		}}
+		objs = append(objs, &instance)
+	}
+	cl := newProjectFakeClient(objs...)
+	r := newTestWDReconciler(cl)
+	r.events = newTestLifecycleWriter()
+	req := mcreconcile.Request{
+		ClusterName: testCluster,
+		Request: ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: wdControllerTestName, Namespace: wdControllerTestNS},
+		},
+	}
+
+	_, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	byReason := map[string]eventsv1.Event{}
+	for _, e := range listLifecycleEvents(t, cl) {
+		byReason[e.Reason] = e
+	}
+	require.Len(t, byReason, 2)
+	scaled := byReason[eventReasonDeploymentScaled]
+	assert.Equal(t, "Scaled from 2 to 1 replicas", scaled.Note)
+	assert.Equal(t, wdControllerTestWorkload, scaled.Related.Name)
+	terminating := byReason[eventReasonInstanceTerminating]
+	assert.Equal(t, wdControllerTestName+"-1", terminating.Regarding.Name)
+	assert.Equal(t, "Scaling down to 1 replicas", terminating.Note)
+	assert.Equal(t, wdControllerTestWorkload, terminating.Related.Name)
 }

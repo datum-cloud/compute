@@ -9,6 +9,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,6 +36,7 @@ func newProjectScheme() *runtime.Scheme {
 	_ = corev1.AddToScheme(s)
 	_ = computev1alpha.AddToScheme(s)
 	_ = locationsv1alpha1.AddToScheme(s)
+	_ = eventsv1.AddToScheme(s)
 	return s
 }
 
