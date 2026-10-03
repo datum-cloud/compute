@@ -834,7 +834,7 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 			Name:      key.Name,
 			Labels:    labels,
 		},
-		Spec: desiredNetworkInterfaceClaimSpec(networkInterface, networkAttachmentMode(deployment)),
+		Spec: desiredNetworkInterfaceClaimSpec(networkInterface, networkAttachmentMode(deployment), instance.Name),
 	}
 
 	// The claim belongs to the instance, not the deployment: the instance going
