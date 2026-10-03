@@ -673,9 +673,9 @@ export default function WorkloadList() {
   const goToDemoWorkload = () =>
     demoDialog.goToWorkload((name) => navigate(workloadHref(name)));
 
-  // `?tryDemo=1` arrives from the project-home Workloads column / top-header hint, which
-  // link here from elsewhere in the project rather than opening the dialog
-  // themselves (it lives on this page). Pop it once, then strip the param so
+  // `?tryDemo=1` arrives from the top-header hint, which links here from
+  // elsewhere in the project rather than opening the dialog itself (it lives
+  // on this page). Pop it once, then strip the param so
   // a refresh or the browser back button doesn't reopen it.
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
