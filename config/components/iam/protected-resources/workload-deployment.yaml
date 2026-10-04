@@ -22,6 +22,11 @@ spec:
         - get
         - update
         - patch
+    - name: scale
+      permissions:
+        - get
+        - update
+        - patch
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project
