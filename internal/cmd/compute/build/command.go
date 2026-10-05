@@ -13,6 +13,7 @@ type Options struct {
 	Analyze            bool
 	BuildArgs          []string
 	BuildTarget        string
+	BuildkitHost       string
 	ContextDir         string
 	Dockerfile         string
 	DockerfileExplicit bool
@@ -63,6 +64,12 @@ shared libraries that were not copied into the final image.
 The optional --fix flag applies safe exact-line fixes to the selected Dockerfile,
 then rebuilds from that file.
 
+Builds run on BuildKit. By default, build uses the BuildKit built into your
+container engine (Docker Desktop, OrbStack, Colima, Docker Engine, ...), honoring
+DOCKER_HOST and DOCKER_CONTEXT the same way the docker CLI does. Use
+--buildkit-host (or BUILDKIT_HOST) to build with a different BuildKit, such as a
+buildx builder (docker-container://NAME) or a remote one (tcp://HOST:PORT).
+
 Advanced users can provide a Kraftfile with --kraftfile (or by placing one in
 the build context) to delegate the entire build to the unikraft CLI instead,
 which must be installed separately. Most projects do not need one.`,
@@ -91,6 +98,9 @@ datumctl compute build --target production .
 # Check the built app before packaging it
 datumctl compute build --analyze .
 
+# Build with a specific BuildKit
+datumctl compute build --buildkit-host docker-container://buildx_buildkit_default .
+
 # Advanced: delegate to unikraft build using an existing Kraftfile
 datumctl compute build --kraftfile ./Kraftfile .
 `,
@@ -107,6 +117,7 @@ datumctl compute build --kraftfile ./Kraftfile .
 	cmd.Flags().BoolVar(&opts.Analyze, "analyze", false, "Analyze the Dockerfile output for Compute compatibility before packaging")
 	cmd.Flags().StringArrayVar(&opts.BuildArgs, "build-arg", nil, "Set build-time variables (KEY=VALUE or KEY to inherit from env)")
 	cmd.Flags().StringVar(&opts.BuildTarget, "target", "", "Dockerfile stage to build")
+	cmd.Flags().StringVar(&opts.BuildkitHost, "buildkit-host", "", "BuildKit address to build with (default: $BUILDKIT_HOST, then your container engine's BuildKit)")
 	cmd.Flags().StringVarP(&opts.Dockerfile, "file", "f", "Dockerfile", "Path to Dockerfile")
 	cmd.Flags().BoolVar(&opts.Fix, "fix", false, "Apply safe exact-line fixes to the selected Dockerfile and rebuild (implies --analyze)")
 	cmd.Flags().StringVar(&opts.Kraftfile, "kraftfile", "", "Advanced: delegate the build to the unikraft CLI using this Kraftfile")

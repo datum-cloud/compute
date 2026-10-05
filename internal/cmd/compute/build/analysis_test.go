@@ -1003,10 +1003,7 @@ func TestRootfsBuildError(t *testing.T) {
 	}{
 		{name: "keeps Dockerfile build failures as-is",
 			input:  `process "/bin/sh -c go build ./..." did not complete successfully: exit code: 1`,
-			wantIn: "go build", wantNotIn: "Docker is not running"},
-		{name: "simplifies Docker availability failures",
-			input: "could not connect to buildkit: could not start ephemeral BuildKit container",
-			want:  "building root filesystem: Docker is not running or is not accessible"},
+			wantIn: "go build"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

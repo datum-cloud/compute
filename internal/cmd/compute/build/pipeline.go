@@ -136,6 +136,7 @@ func buildStageRootFS(ctx context.Context, opts *Options, stage string, entrypoi
 	stageOpts.BuildTarget = stage
 	progress("searching stage %q for runtime files", stage)
 	if _, err := buildDockerfileFinalStageQuietly(ctx, dockerfileFinalStageRequest{
+		Address:    stageOpts.BuildkitHost,
 		ContextDir: stageOpts.ContextDir,
 		Dockerfile: stageOpts.Dockerfile,
 		Target:     stageOpts.BuildTarget,
@@ -143,7 +144,7 @@ func buildStageRootFS(ctx context.Context, opts *Options, stage string, entrypoi
 		RootFSTar:  rootfsTar,
 		OCITar:     ociTar,
 	}); err != nil {
-		return nil, rootfsBuildError(err)
+		return nil, rootfsBuildError(withConnectDetails(opts, err))
 	}
 	view, err := openTarFSView(rootfsTar)
 	if err != nil {

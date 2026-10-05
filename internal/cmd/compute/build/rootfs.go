@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,22 +32,24 @@ type packagingArtifact struct {
 // fragile against upstream wording changes, but there's no structured error
 // type to match on instead.
 func rootfsBuildError(err error) error {
+	if errors.As(err, new(*connectError)) {
+		return err
+	}
 	msg := err.Error()
 	if strings.Contains(msg, "could not create EroFS archive") && strings.Contains(msg, "could not create symlink") {
 		return fmt.Errorf("building root filesystem: EROFS packaging failed on duplicate symlink metadata")
 	}
-	for _, s := range []string{
-		"could not connect to buildkit",
-		"could not start ephemeral BuildKit container",
-		"creating buildkit container",
-		"creating container buildkit client",
-		"connecting to buildkit client",
-	} {
-		if strings.Contains(msg, s) {
-			return fmt.Errorf("building root filesystem: Docker is not running or is not accessible")
-		}
-	}
 	return fmt.Errorf("building root filesystem: %w", err)
+}
+
+// withConnectDetails appends a connection failure's underlying cause when
+// --verbose is set.
+func withConnectDetails(opts *Options, err error) error {
+	var ce *connectError
+	if opts.Verbose && errors.As(err, &ce) && ce.cause != nil {
+		return &connectError{message: ce.message + "\n\nDetails: " + ce.cause.Error(), cause: ce.cause}
+	}
+	return err
 }
 
 func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, error) {
@@ -73,6 +76,7 @@ func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, err
 		fmt.Fprintln(os.Stderr, "Building Dockerfile ...")
 	}
 	result, err := buildDockerfileFinalStageQuietly(ctx, dockerfileFinalStageRequest{
+		Address:     opts.BuildkitHost,
 		ContextDir:  opts.ContextDir,
 		Dockerfile:  opts.Dockerfile,
 		Target:      opts.BuildTarget,
@@ -85,7 +89,7 @@ func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, err
 		task.Done(err)
 	}
 	if err != nil {
-		return packagingArtifact{}, rootfsBuildError(err)
+		return packagingArtifact{}, rootfsBuildError(withConnectDetails(opts, err))
 	}
 	return result, nil
 }
