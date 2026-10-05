@@ -227,8 +227,8 @@ func newLocationTestReconcilableWD(name string) *computev1alpha.WorkloadDeployme
 }
 
 // newLocationTestInstance builds an instance shaped the way the instance-control
-// strategy creates it: ordinal name, deployment UID label, and the scheduling
-// gates stamped at creation. The CreationTimestamp (which the fake client does
+// strategy creates it: ordinal name and label, deployment UID label, and the
+// scheduling gates stamped at creation. The CreationTimestamp (which the fake client does
 // not stamp on Create) keeps the strategy in its wait path.
 func newLocationTestInstance(deployment *computev1alpha.WorkloadDeployment) *computev1alpha.Instance {
 	return &computev1alpha.Instance{
@@ -238,6 +238,7 @@ func newLocationTestInstance(deployment *computev1alpha.WorkloadDeployment) *com
 			CreationTimestamp: metav1.Now(),
 			Labels: map[string]string{
 				computev1alpha.WorkloadDeploymentUIDLabel: string(deployment.UID),
+				computev1alpha.InstanceIndexLabel:         "0",
 			},
 		},
 		Spec: computev1alpha.InstanceSpec{
