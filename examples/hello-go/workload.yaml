@@ -1,0 +1,33 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: hello-go
+  labels:
+    app: hello-go
+spec:
+  template:
+    metadata:
+      labels:
+        app: hello-go
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: index.unikraft.io/datum/hello-go:latest
+              ports:
+                - name: http
+                  port: 8080
+                  protocol: TCP
+      networkInterfaces:
+        - network:
+            name: default
+  placements:
+    - name: default
+      cityCodes:
+        - DFW
+      scaleSettings:
+        minReplicas: 1
+        instanceManagementPolicy: OrderedReady
