@@ -16,7 +16,17 @@ spec:
     - patch
     - delete
     - watch
-    - updateStatus
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
+    - name: scale
+      permissions:
+        - get
+        - update
+        - patch
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

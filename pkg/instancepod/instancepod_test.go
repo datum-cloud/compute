@@ -44,6 +44,10 @@ const (
 	// Translating an instance must not depend on what its class is called.
 	testClassAzurite = "azurite"
 	testClassBasalt  = "basalt"
+
+	testIPv4ForwardingSysctl     = "net.ipv4.ip_forward"
+	testIPv6AllForwardingSysctl  = "net.ipv6.conf.all.forwarding"
+	testIPv6DefaultForwardSysctl = "net.ipv6.conf.default.forwarding"
 )
 
 // sandboxCapabilities serves the whole sandbox surface, so a translation test
@@ -448,6 +452,57 @@ func TestBuildPodSpecErrors(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err, test.wantContains)
 			}
 		})
+	}
+}
+
+func TestBuildPodSpecSysctls(t *testing.T) {
+	requested := []computev1alpha.SandboxSysctl{
+		{Name: testIPv6DefaultForwardSysctl, Value: "1"},
+		{Name: testIPv4ForwardingSysctl, Value: "1"},
+		{Name: testIPv6AllForwardingSysctl, Value: "1"},
+	}
+	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+	instance.Spec.Runtime.Sandbox.Sysctls = requested
+	opts := Options{Capabilities: runtimeclass.Capabilities{
+		Class:    testClassBasalt,
+		Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureSandboxSysctls},
+		SupportedSysctls: []runtimeclass.Sysctl{
+			{Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: testIPv6AllForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: testIPv6DefaultForwardSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+		},
+	}}
+
+	spec, err := BuildPodSpec(instance, opts)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	want := []corev1.Sysctl{
+		{Name: testIPv4ForwardingSysctl, Value: "1"},
+		{Name: testIPv6AllForwardingSysctl, Value: "1"},
+		{Name: testIPv6DefaultForwardSysctl, Value: "1"},
+	}
+	if spec.SecurityContext == nil {
+		t.Fatal("Pod security context is nil")
+	}
+	if err := diff(want, spec.SecurityContext.Sysctls); err != nil {
+		t.Error(err)
+	}
+	if err := diff(requested, instance.Spec.Runtime.Sandbox.Sysctls); err != nil {
+		t.Errorf("BuildPodSpec mutated the Instance sysctls: %v", err)
+	}
+}
+
+func TestBuildPodSpecWithoutSysctlsLeavesPodSecurityContextUnset(t *testing.T) {
+	spec, err := BuildPodSpec(
+		newInstance(computev1alpha.SandboxContainer{Name: testContainerName}),
+		Options{Capabilities: sandboxCapabilities},
+	)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	if spec.SecurityContext != nil {
+		t.Errorf("Pod security context = %#v, want nil", spec.SecurityContext)
 	}
 }
 

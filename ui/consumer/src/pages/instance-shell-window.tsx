@@ -21,19 +21,15 @@ function ShellWindowTitle({
   location?: string;
   locationTooltip?: string;
 }) {
+  // The instance name already carries its workload and location, so the rest
+  // waits in a tooltip and the header stays one quiet line.
+  const details = [workloadName && `Workload ${workloadName}`, locationTooltip ?? location]
+    .filter(Boolean)
+    .join(' · ');
   return (
-    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-      <h1 className="truncate font-mono text-sm font-semibold">{instanceName}</h1>
-      <p className="text-muted-foreground truncate text-xs">
-        {workloadName && <>Workload {workloadName}</>}
-        {location && (
-          <span title={locationTooltip}>
-            {workloadName && ' · '}
-            {location}
-          </span>
-        )}
-      </p>
-    </div>
+    <h1 className="truncate font-mono text-sm font-medium" title={details || undefined}>
+      {instanceName}
+    </h1>
   );
 }
 

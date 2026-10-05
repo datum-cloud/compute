@@ -73,7 +73,7 @@ export default function WorkloadsHomeColumn() {
           root && (
             <LinkButton
               as={Link}
-              href={`${root}?tryDemo=1`}
+              href={root}
               type="primary"
               theme="solid"
               size="xs"

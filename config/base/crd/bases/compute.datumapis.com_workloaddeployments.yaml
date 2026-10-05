@@ -953,6 +953,43 @@ spec:
                                   - name
                                   type: object
                                 type: array
+                              sysctls:
+                                description: |-
+                                  Linux kernel parameters to set for every container in the sandbox.
+
+                                  Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+                                  value must be published by the selected runtime class; prefixes and
+                                  wildcards are never accepted. This keeps host-level kernel configuration
+                                  outside the workload API while allowing an isolated runtime to expose a
+                                  deliberately small set of guest-kernel options.
+                                items:
+                                  description: |-
+                                    SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+                                    selected runtime class decides which exact name/value pairs it supports.
+                                  properties:
+                                    name:
+                                      description: The exact dotted sysctl name, for
+                                        example net.ipv4.ip_forward.
+                                      maxLength: 253
+                                      minLength: 1
+                                      pattern: ^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$
+                                      type: string
+                                    value:
+                                      description: |-
+                                        The value to write before the sandbox's containers start. The selected
+                                        runtime class must publish this exact value for this name.
+                                      maxLength: 128
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - name
+                                  - value
+                                  type: object
+                                maxItems: 32
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
                             required:
                             - containers
                             type: object

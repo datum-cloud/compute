@@ -51,6 +51,8 @@ const (
 	testCapPrefixedChown = "CAP_CHOWN"
 )
 
+const testIPv4ForwardingSysctl = "net.ipv4.ip_forward"
+
 // makeRuntimeClass builds a catalog entry that serves every capability, so a
 // test only has to state the part of the contract it exercises.
 func makeRuntimeClass(name string, tweaks ...func(*computev1alpha.RuntimeClass)) computev1alpha.RuntimeClass {
@@ -97,6 +99,14 @@ func withAvailable(status metav1.ConditionStatus, reason, message string) func(*
 func withFeatures(featureList ...computev1alpha.RuntimeClassFeature) func(*computev1alpha.RuntimeClass) {
 	return func(class *computev1alpha.RuntimeClass) {
 		class.Spec.Capabilities.Features = featureList
+	}
+}
+
+func withSysctls(sysctls ...computev1alpha.RuntimeClassSysctl) func(*computev1alpha.RuntimeClass) {
+	return func(class *computev1alpha.RuntimeClass) {
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		class.Spec.Capabilities.SupportedSysctls = sysctls
 	}
 }
 
@@ -226,6 +236,76 @@ func TestValidateContainerCapabilitiesSelection(t *testing.T) {
 			opts := WorkloadValidationOptions{RuntimeClasses: tc.catalog}
 			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(tc.spec, root, opts))
 		})
+	}
+}
+
+func TestValidateSandboxSysctlSelection(t *testing.T) {
+	root := field.NewPath("spec", "template", "spec")
+	sysctlsPath := root.Child("runtime", "sandbox", "sysctls")
+	spec := func(class, value string) computev1alpha.InstanceSpec {
+		return computev1alpha.InstanceSpec{Runtime: computev1alpha.InstanceRuntimeSpec{
+			Class: class,
+			Sandbox: &computev1alpha.SandboxRuntime{Sysctls: []computev1alpha.SandboxSysctl{{
+				Name: testIPv4ForwardingSysctl, Value: computev1alpha.SysctlValue(value),
+			}}},
+		}}
+	}
+	classWithSysctls := runtimeclass.Catalog{makeRuntimeClass(testClassBasalt, withSysctls(
+		computev1alpha.RuntimeClassSysctl{
+			Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
+		},
+	))}
+
+	cases := map[string]struct {
+		gate           bool
+		spec           computev1alpha.InstanceSpec
+		catalog        runtimeclass.Catalog
+		expectedErrors field.ErrorList
+	}{
+		"gate off refuses a sysctl request": {
+			spec:           spec("", "1"),
+			expectedErrors: field.ErrorList{field.Forbidden(sysctlsPath, "")},
+		},
+		"gate on accepts a published pair": {
+			gate: true, spec: spec(testClassBasalt, "1"), catalog: classWithSysctls,
+		},
+		"gate on rejects an unpublished value": {
+			gate: true, spec: spec(testClassBasalt, "2"), catalog: classWithSysctls,
+			expectedErrors: field.ErrorList{field.NotSupported(sysctlsPath.Index(0).Child("value"),
+				computev1alpha.SysctlValue("2"), []string{"0", "1"})},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, tc.gate)
+			cmpErrs(t, tc.expectedErrors, validateRuntimeClassSelection(tc.spec, root,
+				WorkloadValidationOptions{RuntimeClasses: tc.catalog}))
+		})
+	}
+}
+
+func TestValidateStoredSandboxSysctlsAfterGateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, false)
+	root := field.NewPath("spec", "template", "spec")
+	stored := MakeSandboxWorkload("stored-sysctls", func(workload *computev1alpha.Workload) {
+		workload.Spec.Template.Spec.Runtime.Class = testClassBasalt
+		workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
+			Name: testIPv4ForwardingSysctl, Value: "1",
+		}}
+	})
+
+	unchanged := stored.DeepCopy()
+	if errs := validateRuntimeClassSelection(unchanged.Spec.Template.Spec, root,
+		WorkloadValidationOptions{OldWorkload: stored}); len(errs) != 0 {
+		t.Fatalf("unchanged stored sysctls must remain updatable after gate off: %v", errs)
+	}
+
+	changed := stored.DeepCopy()
+	changed.Spec.Template.Spec.Runtime.Sandbox.Sysctls[0].Value = "0"
+	if errs := validateRuntimeClassSelection(changed.Spec.Template.Spec, root,
+		WorkloadValidationOptions{OldWorkload: stored}); len(errs) == 0 {
+		t.Fatal("a changed sysctl request must be refused after gate off")
 	}
 }
 
