@@ -105,6 +105,7 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Platform,Project"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.spec.lifecycle.phase`
 // +kubebuilder:printcolumn:name="CPU",type=string,JSONPath=`.spec.resources.cpu`
 // +kubebuilder:printcolumn:name="Memory",type=string,JSONPath=`.spec.resources.memory`
