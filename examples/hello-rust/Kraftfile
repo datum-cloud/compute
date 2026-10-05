@@ -1,0 +1,20 @@
+# Kraftfile for the static-PIE Rust runtime proof.
+#
+# A static-PIE Rust binary (x86_64-unknown-linux-musl), packaged FROM scratch, run
+# on the base:latest runtime (app-elfloader). The app IS the binary -- there is no
+# dynamic interpreter for the elfloader's PIE gate to reject (the trap the prior
+# non-PIE bun image hit). `rootfs: ./Dockerfile` makes kraft build the rootfs from
+# the multi-stage Dockerfile.
+#
+# Build/push (push-only, do not start):
+#   kraft cloud --metro <metro>/v1 --token <token> \
+#     --buildkit-host docker-container://buildkit \
+#     deploy --no-start -M 512 --name hello-rust \
+#     --runtime base:latest --rootfs ./Dockerfile .
+spec: v0.6
+
+runtime: base:latest
+
+rootfs: ./Dockerfile
+
+cmd: ["/server"]
