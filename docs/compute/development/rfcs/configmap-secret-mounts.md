@@ -4,7 +4,7 @@ status: proposed
 
 # Mounting ConfigMaps and Secrets into Compute Instances (Unikraft Provider)
 
-> Drafted 2026-05-30, revised 2026-05-31. **This is the foundational referenced-data delivery design for compute, and it ships before [Image Pull Credentials](./image-pull-credentials.md)** — it introduces the resolver, companion delivery, and the scheduling gate; pull secrets become a later consumer of the same path.
+> Drafted 2026-05-30, revised 2026-05-31; revised 2026-06-10 to move hub-to-cell delivery onto Karmada's native dependency propagation. **This is the foundational referenced-data delivery design for compute, and it ships before [Image Pull Credentials](./image-pull-credentials.md)** — it introduces the resolver, companion delivery, and the scheduling gate; pull secrets become a later consumer of the same path.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ status: proposed
 - [The gap: cross-plane delivery](#the-gap-cross-plane-delivery)
 - [Design](#design)
   - [The referenced-data resolver](#the-referenced-data-resolver)
+  - [Hub-to-cell delivery: native dependency propagation](#hub-to-cell-delivery-native-dependency-propagation)
   - [Consumption on the provider](#consumption-on-the-provider)
   - [Scheduling gate](#scheduling-gate)
   - [Rotation and restart](#rotation-and-restart)
@@ -45,9 +46,11 @@ referencing data that isn't there.
 This RFC closes that gap. It keeps the user contract unchanged (create a
 ConfigMap/Secret, reference it by name), resolves the reference in the trusted
 management plane, and delivers the data to the edge as a derived companion object —
-secret bytes **never enter the Workload or Instance spec**. Both environment
-variables and file mounts work, because once the data is present the runtime's
-existing Pod-spec consumption handles the rest.
+secret bytes **never enter the Workload or Instance spec**. From the federation hub
+to each cell, the companion rides Karmada's native dependency propagation, so shared
+data follows every workload that references it — to every location it runs. Both
+environment variables and file mounts work, because once the data is present the
+runtime's existing Pod-spec consumption handles the rest.
 
 ## What this enables for users
 
@@ -89,8 +92,8 @@ sequenceDiagram
     RDC->>P: 4. Read referenced ConfigMap/Secret (scoped, trusted)
     RDC->>K: 5. Materialize a companion copy in the project's federation namespace
     RDC->>P: 6. Record the expected companion set on the WorkloadDeployment
-    F->>K: 7. Replicate the WorkloadDeployment + routing policy
-    K->>C: 8. Propagate the deployment + companions to each matching cell
+    F->>K: 7. Replicate the WorkloadDeployment + placement policy (dependencies follow)
+    K->>C: 8. Propagate the deployment to each matching cell; companions follow as its declared dependencies
     C->>C: 9. Create the Instance, held by a referenced-data gate
     C->>C: 10. Companions present? clear the gate, mark data ready
     PR->>C: 11. Translate the Instance into a Pod spec referencing the companions
@@ -129,14 +132,77 @@ WorkloadDeployment it:
    federation namespace.
 4. **Records** the expected companion set on the WorkloadDeployment, so the cell
    knows exactly what to wait for rather than guessing.
-5. **Routes** companions to cells by extending the existing federation routing policy
-   to carry the labeled companions alongside the deployment.
+5. **Declares** the companions as the deployment's dependencies — the same expected
+   set recorded in step 4 is what the federation layer reads to deliver each
+   companion wherever the deployment goes (see
+   [Hub-to-cell delivery](#hub-to-cell-delivery-native-dependency-propagation)).
 
 One companion exists per referenced object and is replicated to each placed cell — a
 single object to create, update, and delete. When several deployments reference the
 same object the companion is shared and reference-counted, removed only when the last
 reference goes away. In single-cluster mode the same resolver runs and the companion
 is simply a local copy.
+
+### Hub-to-cell delivery: native dependency propagation
+
+Companions travel from the federation hub to cells through Karmada's native
+[dependency propagation](https://karmada.io/docs/userguide/scheduling/propagate-dependencies/),
+not through hand-built routing rules:
+
+- The deployment's placement policy sets `propagateDeps: true` — "wherever this
+  deployment goes, its dependencies go too."
+- A declarative dependency-interpretation hook — a small Lua script added to the
+  WorkloadDeployment's existing
+  [resource-interpreter customization](https://karmada.io/docs/userguide/globalview/customizing-resource-interpreter/)
+  — tells the engine *what* those dependencies are: it reads the expected companion
+  set the resolver recorded on the deployment and returns the companion
+  ConfigMap/Secret references, pinned to the deployment's own namespace.
+- For each companion, the engine maintains an *attached* binding whose destinations
+  are the **union of every referencing deployment's placements** (`spec.requiredBy`).
+  A shared companion lands on every cell that runs any workload referencing it — and
+  only those cells. When one referencing deployment goes away, only its destinations
+  are pruned; deleting the companion itself (last reference released) drains the
+  binding and every cell copy through the engine's own garbage collection.
+
+Because the interpreter runs inside the federation engine — code compute does not
+deploy — the expected companion set graduates from internal bookkeeping to a
+**versioned contract**: a compact JSON array of `Kind/name` tokens (e.g.
+`["ConfigMap/app-config","Secret/db-creds"]`), written only by the resolver and
+consumed by the interpreter on the hub and the scheduling gate on the cell.
+Consumers never re-derive companion names; the resolver's name derivation is the
+single source of truth. Any change to the format is a lockstep, versioned change
+across all three parties.
+
+**Why this replaced per-city routing policies.** The first implementation
+([#129](https://github.com/datum-cloud/compute/pull/129)) delivered companions by
+adding them as resource selectors on each city's routing policy. That works when a
+project runs in a single city — but Karmada lets exactly one policy claim a given
+object, exclusively and stickily. In a project running workloads in two or more
+cities, a shared companion is claimed by one city's policy and delivered to that
+city alone; instances everywhere else wait on data that never arrives, and no error
+is raised anywhere — the hub considers the companion successfully propagated
+([#155](https://github.com/datum-cloud/compute/issues/155)). Dependency propagation
+removes the failure dimension rather than patching it: no policy ever claims a
+companion, so there is no claim to win or lose — destinations are computed per
+referencing deployment and unioned. The defect cannot be reintroduced by adding
+cities or reordering policy creation.
+
+**Prerequisites (design requirements):**
+
+- **Hub Karmada ≥ v1.15.3.** v1.15.0 silently fails to sync changes when a
+  deployment declares multiple dependencies of the same kind — rotating one of two
+  referenced ConfigMaps would leave a stale copy on the cell indefinitely. Fixed
+  upstream in [karmada#6931](https://github.com/karmada-io/karmada/pull/6931).
+- **The `PropagateDeps` feature gate enabled on the hub** (currently pinned off).
+  The mechanism is opt-in per policy, so enabling the gate changes nothing for
+  other hub tenants until a policy asks for it.
+- **Webhook protection for the expected-companion annotation.** Under this design
+  the annotation authorizes propagation (see [Security](#security)); writes by
+  anything other than the resolver must be rejected.
+- **Annotation mirroring on removal.** When a deployment drops its last reference,
+  the federator must delete the annotation downstream as well — a stale declaration
+  would otherwise keep delivering data the workload no longer uses. Already
+  implemented in [#129](https://github.com/datum-cloud/compute/pull/129).
 
 ### Consumption on the provider
 
@@ -229,6 +295,16 @@ controller.
 - **Trust boundary at the edge.** Resolving in the management plane is deliberate, so
   the shared, lower-trust edge never holds a credential that can read project
   ConfigMaps/Secrets. Companions are isolated per project namespace on each cell.
+- **The expected-companion annotation is propagation-authorizing.** With native
+  dependency propagation, the recorded companion set is what the federation engine
+  delivers — naming an object there is what causes it to ship to cells. That is a
+  shift from the previous label-selector design, where only resolver-labeled objects
+  could ever leave the hub. The mitigation is a validating webhook that rejects
+  writes to the annotation by anyone but the resolver, keeping the resolver — and
+  its admission-checked inputs — the sole authority over what propagates.
+- **Delivery stays need-to-know.** A companion lands only on cells that run a
+  workload referencing it, never on every cell — the broadcast alternative was
+  rejected for exactly this reason (see [Alternatives](#alternatives)).
 - **At rest.** Companions live in storage on the project plane, the hub, and each
   cell; this presumes encryption at rest on every plane.
 
@@ -248,6 +324,29 @@ controller.
 - **A separate controller for pull secrets.** Rejected — same machinery; pull secrets
   become a thin consumer of this resolver instead.
 
+On the hub-to-cell delivery mechanism specifically:
+
+- **Per-city routing-policy selectors (the first implementation,
+  [#129](https://github.com/datum-cloud/compute/pull/129)).** Companions ride each
+  city's routing policy as extra resource selectors. Works for a single city;
+  structurally broken for shared data across cities because policy claiming is
+  exclusive ([#155](https://github.com/datum-cloud/compute/issues/155)). Retained
+  behind a validation guard (referenced data limited to single-city projects) until
+  the native mechanism lands.
+- **Broadcast via a single static policy.** One (Cluster)PropagationPolicy sends
+  every labeled companion to every cell — zero bookkeeping, but it places Secrets on
+  cells that never run the referencing workload: a least-privilege regression at the
+  most exposed tier of the platform. Rejected.
+- **Hand-maintained union placement.** A compute controller maintains a companions
+  policy whose destination list is the computed union of every referencing
+  deployment's placements. Rejected — it re-implements the engine's `requiredBy`
+  union by hand, with its own claiming, cleanup, and lifecycle bugs to own.
+- **Platform-level dependency federation.** A platform-owned, declarative mechanism
+  (e.g. CEL-declared dependencies, Milo-owned) could subsume this per-service wiring
+  — a natural future home consistent with
+  [Platform direction](#platform-direction). This design is implementable now and
+  does not preclude it.
+
 ## Failure modes
 
 - **Source missing, unauthorized, or too large** → gate held, status names the
@@ -256,6 +355,17 @@ controller.
   transient state during placement.
 - **Source changed, instances not rolled** → stale by design until restarted;
   last-synced state is surfaced so it's observable.
+- **Dependency interpretation fails** (a script error on the hub) → the engine
+  records a Warning event (`GetDependenciesFailed`) on the hub deployment and
+  retries; on the cell the gate holds with awaiting-propagation. Visible at both
+  layers, never a silent drop.
+- **Companion name too long** → companion names are capped at **243 characters**:
+  the engine appends a kind suffix when naming a companion's binding, and a longer
+  name would exceed Kubernetes' 253-character limit and never propagate. The
+  resolver's name derivation enforces the cap.
+- **Rollback** → if the native delivery path is rolled back, attached bindings drain
+  through the engine itself and cell copies are removed; hub companions are
+  untouched, so re-enabling re-delivers without data loss.
 - **Single-cluster mode** → the local-copy path must be exercised so the absence of
   federation never silently disables delivery.
 
@@ -265,8 +375,12 @@ controller.
   reference-count, and clean up companions.
 - A **scoped project-plane read identity** for the resolver (built here; reused later
   by image pull credentials).
-- **Federation routing** extended to carry companions to the same cells as the
-  deployment.
+- **Dependency-propagation wiring**: `propagateDeps` on the deployment's placement
+  policy, and the dependency-interpretation hook that turns the expected companion
+  set into the engine's delivery list — replacing companion selectors on per-city
+  routing policies.
+- **Webhook protection** for the expected-companion annotation (resolver-only
+  writes).
 - A **referenced-data scheduling gate**, cell-side clearing, and the
   `ReferencedDataReady` status with reasons, events, and metrics.
 - **API additions**: a bulk "import all keys" env form, and completing volume
@@ -280,9 +394,17 @@ controller.
 ## Decisions
 
 - **Delivery:** management-plane companions (not edge-read).
+- **Hub-to-cell mechanism:** Karmada native dependency propagation (`propagateDeps`
+  + a dependency-interpretation hook), replacing per-city routing-policy selectors
+  — *proposed pending review (revised 2026-06-10)*. Prerequisites are design
+  requirements: hub Karmada ≥ v1.15.3, the `PropagateDeps` feature gate enabled,
+  webhook protection for the expected-companion annotation, and downstream
+  annotation mirroring on removal. The per-city selector path stays behind a
+  single-city validation guard until these land.
 - **Rotation:** no auto-roll; explicit restart.
 - **Gate contract:** an explicit expected-companion set recorded on the deployment,
-  not guessed.
+  not guessed — and, under native delivery, the same set is the versioned contract
+  the dependency interpreter consumes.
 - **One resolver, not two:** pull secrets are a later consumer.
 - **Platform direction:** build delivery behind a capability-shaped seam in compute
   now; promote it to a platform-owned, policy-driven capability when a second
@@ -298,3 +420,6 @@ controller.
 3. **Bulk env import in v1**, or per-key references only for the first release?
 4. **VM runtime** consumption — out of scope for Unikraft (sandbox-only); confirm
    deferral.
+5. **Lab hub gate state:** is `PropagateDeps` already enabled on the lab hub, or
+   pinned off as on staging? Determines whether the infrastructure change there is a
+   flip or just a confirmation.
