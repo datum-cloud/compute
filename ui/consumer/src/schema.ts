@@ -9,7 +9,14 @@ import { z } from 'zod';
 
 // ── Workload ─────────────────────────────────────────────────────────────
 
-export type WorkloadHealth = 'Available' | 'Degraded' | 'Unavailable' | 'Unknown';
+/**
+ * `Deploying` covers a workload that has not served yet and is still being
+ * brought up — the controller reports `Available=False` with a transient
+ * reason. See `adapter.ts`'s `deriveWorkloadHealth`.
+ */
+export type WorkloadHealth = 'Available' | 'Degraded' | 'Deploying' | 'Unavailable' | 'Unknown';
+
+const WORKLOAD_HEALTH = ['Available', 'Degraded', 'Deploying', 'Unavailable', 'Unknown'] as const;
 
 const workloadConditionSchema = z.object({
   type: z.string(),
@@ -27,7 +34,7 @@ export const workloadPlacementRegionSchema = z.object({
   locationSelector: z.string().optional(),
   readyReplicas: z.number(),
   desiredReplicas: z.number(),
-  health: z.enum(['Available', 'Degraded', 'Unavailable', 'Unknown']),
+  health: z.enum(WORKLOAD_HEALTH),
 });
 
 export type WorkloadPlacementRegion = z.infer<typeof workloadPlacementRegionSchema>;
@@ -41,7 +48,7 @@ export const workloadResourceSchema = z.object({
   /** Latest status condition transition, when present — used for “Updated … ago”. */
   updatedAt: z.coerce.date().optional(),
   image: z.string().optional(),
-  health: z.enum(['Available', 'Degraded', 'Unavailable', 'Unknown']),
+  health: z.enum(WORKLOAD_HEALTH),
   /** Programmed replicas (latest template applied) — not the same as ready. */
   currentReplicas: z.number(),
   /** Ready-to-serve replicas — prefer this for health counts. */
@@ -79,10 +86,12 @@ export type WorkloadList = z.infer<typeof workloadListSchema>;
  */
 export function workloadHealthToBadgeType(
   health: WorkloadHealth
-): 'success' | 'warning' | 'danger' | 'muted' {
+): 'success' | 'warning' | 'danger' | 'info' | 'muted' {
   switch (health) {
     case 'Available':
       return 'success';
+    case 'Deploying':
+      return 'info';
     case 'Degraded':
       return 'warning';
     case 'Unavailable':

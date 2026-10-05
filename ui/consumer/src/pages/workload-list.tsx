@@ -11,7 +11,7 @@ import { ComputeEnablementBanner } from "../components/compute-enablement-banner
 import { formatKpiValue } from "../components/metric-area-chart";
 import { CpuMemorySparks } from "../components/metric-sparkline";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
-import { WorkloadStatusBadge } from "../components/workload-status-badge";
+import { HealthDot, WorkloadStatusBadge } from "../components/workload-status-badge";
 import { WorkloadListCardsSkeleton, WorkloadListTableSkeleton } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
 import {
@@ -34,7 +34,7 @@ import {
 import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
 import { useOverviewRange } from "../components/overview-range";
 import { useLocationIndex, type LocationIndex } from "../lib/locations";
-import { HEALTH_DOT_CLASS, regionLabel } from "../lib/workload-presenters";
+import { regionLabel } from "../lib/workload-presenters";
 import type { Workload } from "../schema";
 import { Badge } from "@datum-cloud/datum-ui/badge";
 import { Button, LinkButton } from "@datum-cloud/datum-ui/button";
@@ -367,7 +367,11 @@ function TryDemoDialog({
       <Dialog.Content>
         <Dialog.Header
           title="Deploy a workload"
-          description={DEMO_PHASE_COPY[phase]}
+          description={
+            // Two lines held for every phase: the copy changes length as the
+            // deploy moves on, and a centred dialog would jump with it.
+            <span style={{ display: "block", minHeight: "2lh" }}>{DEMO_PHASE_COPY[phase]}</span>
+          }
           onClose={canClose ? onClose : undefined}
         />
         <Dialog.Footer>
@@ -548,13 +552,7 @@ function WorkloadCard({
                 className="flex items-center justify-between gap-2 text-sm"
               >
                 <div className="flex min-w-0 items-center gap-2">
-                  <span
-                    className={cn(
-                      "size-2 shrink-0 rounded-full",
-                      HEALTH_DOT_CLASS[region.health],
-                    )}
-                    aria-label={region.health}
-                  />
+                  <HealthDot health={region.health} label={region.health} />
                   <span className="truncate" title={region.locations.join(", ") || region.locationSelector}>
                     {regionLabel(region, locationIndex)}
                   </span>

@@ -108,7 +108,10 @@ plugin queries live in the host's cache next to built-in pages. This plugin
 does **not** create its own `QueryClient`. In place of PR #1315's watch-stream
 hook (`useResourceWatch`, portal-internal and unavailable to plugins), each
 query hook in `src/lib/api.ts` sets `refetchInterval: 10_000` for live-ish
-updates — a deliberate v1 trade-off, not equivalent to a real watch.
+updates — a deliberate v1 trade-off, not equivalent to a real watch. Workload
+and instance queries drop to 3s while a workload is deploying, and the
+load balancer lookup does the same while an ALB is coming up, so the page
+catches up as soon as either serves.
 
 ### RBAC — known v1 gap
 

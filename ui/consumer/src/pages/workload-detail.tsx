@@ -37,6 +37,14 @@ import {
   type PublishedUrl,
 } from "../lib/api";
 import { splitSlashValue } from "../lib/format";
+import { albStatus, anyAlbProvisioning, albStatusDisplay, type AlbStatus } from "../lib/alb-status";
+import { useNow } from "../lib/use-now";
+import {
+  deployStatus,
+  instanceFailureSummary,
+  instanceStatusLabel,
+  type StatusDisplay,
+} from "../lib/workload-presenters";
 import {
   formatLocationName,
   formatLocationNames,
@@ -67,7 +75,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@datum-cloud/datum-ui/card";
-import { Icon } from "@datum-cloud/datum-ui/icons";
+import { Icon, SpinnerIcon } from "@datum-cloud/datum-ui/icons";
 import {
   Select,
   SelectContent,
@@ -111,10 +119,12 @@ function LoadBalancerValue({
   projectId,
   published,
   isLoading,
+  albStatuses,
 }: {
   projectId?: string;
   published?: PublishedUrl | null;
   isLoading: boolean;
+  albStatuses: Record<string, AlbStatus>;
 }) {
   if (isLoading) {
     return <span className="text-muted-foreground">—</span>;
@@ -127,6 +137,16 @@ function LoadBalancerValue({
     <div className="flex flex-col gap-1">
       {published.proxies.map((alb) => {
         const label = alb.displayName || alb.proxyName;
+        const albStatus = albStatuses[alb.proxyName];
+        const display = albStatus ? albStatusDisplay(albStatus) : undefined;
+        const badge =
+          albStatus && albStatus.phase !== "ready" && display ? (
+            <span title={albStatus.message}>
+              <StatusBadge type={display.tone}>
+                {albStatus.phase === "provisioning" ? albStatus.step : "Error"}
+              </StatusBadge>
+            </span>
+          ) : null;
         if (!projectId) {
           return (
             <span
@@ -139,18 +159,21 @@ function LoadBalancerValue({
                 className="text-muted-foreground shrink-0"
               />
               {label}
+              {badge}
             </span>
           );
         }
         return (
-          <Link
-            key={alb.proxyName}
-            to={albOverviewHref(projectId, alb.proxyName)}
-            className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline"
-          >
-            <Icon icon={GlobeIcon} size={14} className="shrink-0" />
-            {label}
-          </Link>
+          <span key={alb.proxyName} className="inline-flex items-center gap-2">
+            <Link
+              to={albOverviewHref(projectId, alb.proxyName)}
+              className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline"
+            >
+              <Icon icon={GlobeIcon} size={14} className="shrink-0" />
+              {label}
+            </Link>
+            {badge}
+          </span>
         );
       })}
     </div>
@@ -159,6 +182,8 @@ function LoadBalancerValue({
 
 function GeneralCard({
   workload,
+  status,
+  albStatuses,
   healthyCount,
   totalCount,
   projectId,
@@ -166,6 +191,8 @@ function GeneralCard({
   publishedLoading,
 }: {
   workload: Workload;
+  status: StatusDisplay;
+  albStatuses: Record<string, AlbStatus>;
   healthyCount: number;
   totalCount: number;
   projectId?: string;
@@ -191,9 +218,7 @@ function GeneralCard({
             {
               label: "Status",
               content: (
-                <StatusBadge type={workloadHealthToBadgeType(workload.health)}>
-                  {workload.health}
-                </StatusBadge>
+                <StatusBadge type={status.tone}>{status.label}</StatusBadge>
               ),
             },
             {
@@ -209,6 +234,7 @@ function GeneralCard({
                   projectId={projectId}
                   published={published}
                   isLoading={publishedLoading}
+                  albStatuses={albStatuses}
                 />
               ),
             },
@@ -389,10 +415,13 @@ function LiveTrafficCard({
 function InstancesPanel({
   instances,
   locationIndex,
+  deploying,
   onOpen,
 }: {
   instances: Instance[];
   locationIndex: LocationIndex;
+  /** The workload is still coming up, so no instances yet is expected. */
+  deploying: boolean;
   onOpen: (name: string) => void;
 }) {
   return (
@@ -409,7 +438,15 @@ function InstancesPanel({
         </CardAction>
       </CardHeader>
       <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
-        {instances.length === 0 ? (
+        {instances.length === 0 && deploying ? (
+          <p
+            className="text-muted-foreground flex items-center gap-2 px-4 py-6 text-sm"
+            data-testid="compute-plugin-instances-deploying"
+          >
+            <SpinnerIcon size="xs" aria-hidden />
+            Instances are being created…
+          </p>
+        ) : instances.length === 0 ? (
           <p className="text-muted-foreground px-4 py-6 text-sm">
             No running instances
           </p>
@@ -448,7 +485,7 @@ function InstancesPanel({
                     theme="light"
                     className="w-fit shrink-0"
                   >
-                    {instance.status}
+                    {instanceStatusLabel(instance)}
                   </Badge>
                   <Icon
                     icon={ArrowRightIcon}
@@ -494,6 +531,7 @@ function WorkloadLayoutShell({
   const { data: instances = [] } = useWorkloadInstances(
     projectId,
     workloadName,
+    workload?.health === "Deploying",
   );
   const published = usePublishedUrl(projectId, workloadName);
   const locationIndex = useLocationIndex(projectId);
@@ -625,10 +663,46 @@ function WorkloadOverview() {
     : workload.readyReplicas;
   const totalCount = instances.length || workload.desiredReplicas;
 
+  // A crash loop or bad image still reads as provisioning at the workload
+  // level; only the instances say otherwise.
+  const instanceFailure =
+    workload.health !== "Available" && !workload.deleting
+      ? instanceFailureSummary(instances)
+      : undefined;
+  const health = instanceFailure ? "Unavailable" : workload.health;
+  // Otherwise an unavailable workload explains itself through its condition.
+  const failure =
+    instanceFailure ??
+    (health === "Unavailable"
+      ? workload.conditions.find((c) => c.type === "Available")?.message
+      : undefined);
+  const albs = published?.proxies;
+  const now = useNow(
+    health === "Deploying" || (!!albs && anyAlbProvisioning(albs)),
+  );
+  const deploy = instanceFailure ? undefined : deployStatus(workload, now);
+  const albStatuses = useMemo(
+    () =>
+      Object.fromEntries(
+        (albs ?? []).map((alb) => [
+          alb.proxyName,
+          albStatus(alb, { workloadServing: workload.health === "Available", now }),
+        ]),
+      ),
+    [albs, workload.health, now],
+  );
+  const status: StatusDisplay = deploy
+    ? { tone: deploy.tone, label: deploy.label }
+    : { tone: workloadHealthToBadgeType(health), label: health };
+
   return (
     <>
       <WorkloadHealthStrip
-        health={workload.health}
+        health={health}
+        deploy={deploy}
+        failure={failure}
+        alb={primaryAlb ? albStatuses[primaryAlb.proxyName] : undefined}
+        now={now}
         healthyCount={healthyCount}
         totalCount={totalCount}
         locationCount={workload.locations.length}
@@ -643,6 +717,8 @@ function WorkloadOverview() {
       <TopologyCard
         projectId={projectId}
         workload={workload}
+        status={status}
+        albStatuses={albStatuses}
         instances={instances}
         albs={published?.proxies ?? []}
         locationIndex={locationIndex}
@@ -675,6 +751,7 @@ function WorkloadOverview() {
           <InstancesPanel
             instances={instances}
             locationIndex={locationIndex}
+            deploying={!!deploy}
             onOpen={(name) => navigate(instanceHref(name))}
           />
         </div>
@@ -683,6 +760,8 @@ function WorkloadOverview() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <GeneralCard
           workload={workload}
+          status={status}
+          albStatuses={albStatuses}
           healthyCount={healthyCount}
           totalCount={totalCount}
           projectId={projectId}

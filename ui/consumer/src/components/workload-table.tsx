@@ -10,7 +10,8 @@
  * identical to the host's, so it picks up the same compiled styles.
  */
 import { CpuMemorySparks, MetricSparkline } from './metric-sparkline';
-import { WorkloadStatusBadge } from './workload-status-badge';
+import { HealthDot, WorkloadStatusBadge } from './workload-status-badge';
+import { albStatus } from '../lib/alb-status';
 import type { PublishedUrl } from '../lib/api';
 import type { LocationIndex } from '../lib/locations';
 import {
@@ -21,7 +22,6 @@ import {
 } from '../lib/metrics-queries';
 import type { PrometheusTimeRange } from '../lib/prometheus';
 import {
-  HEALTH_DOT_CLASS,
   HEALTH_ORDER,
   imageShortName,
   regionLabel,
@@ -35,11 +35,11 @@ import {
   type DataTableFeatures,
 } from '@datum-cloud/datum-ui/data-table';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
-import { Icon } from '@datum-cloud/datum-ui/icons';
+import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import type { ColumnDef, Row } from '@tanstack/react-table';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { GlobeIcon } from 'lucide-react';
+import { GlobeIcon, TriangleAlertIcon } from 'lucide-react';
 import { useCallback, useMemo, type MouseEvent } from 'react';
 import { Link } from 'react-router';
 
@@ -220,10 +220,7 @@ export function WorkloadTable({
             <div className="flex max-w-48 flex-col gap-0.5">
               {regions.map((region) => (
                 <span key={region.name} className="flex items-center gap-1.5 text-xs">
-                  <span
-                    className={cn('size-1.5 shrink-0 rounded-full', HEALTH_DOT_CLASS[region.health])}
-                    aria-label={region.health}
-                  />
+                  <HealthDot health={region.health} className="size-1.5" label={region.health} />
                   <span className="truncate" title={region.locations.join(', ') || region.locationSelector}>
                     {regionLabel(region, locationIndex)}
                   </span>
@@ -241,22 +238,44 @@ export function WorkloadTable({
           const published = publishedByWorkload[row.original.name];
           if (!published) return <span className="text-muted-foreground">—</span>;
           const label = published.hostname ?? published.displayName;
-          // Same pill the ALB list uses for its Compute workload origin link.
+          const status = albStatus(published.proxies[0], {
+            workloadServing: row.original.health === 'Available',
+          });
+          // Same pill the ALB list uses for its Compute workload origin link,
+          // with a spinner or warning while the ALB isn't serving yet.
           const pill = (
             <Badge
               type="quaternary"
               theme="outline"
-              className="h-6 max-w-full gap-1.5 rounded-xl px-2 text-xs font-normal">
-              <Icon icon={GlobeIcon} size={12} className="shrink-0" />
+              className="h-6 max-w-full gap-1.5 rounded-xl px-2 text-xs font-normal"
+              data-e2e={status.phase === 'ready' ? undefined : `workload-list-alb-${status.phase}`}>
+              {status.phase === 'provisioning' ? (
+                <SpinnerIcon size="xs" className="shrink-0" aria-hidden />
+              ) : status.phase === 'error' ? (
+                <Icon
+                  icon={TriangleAlertIcon}
+                  size={12}
+                  className="shrink-0"
+                  style={{ color: 'var(--color-badge-danger)' }}
+                />
+              ) : (
+                <Icon icon={GlobeIcon} size={12} className="shrink-0" />
+              )}
               <span className="truncate">{label}</span>
             </Badge>
           );
-          if (!albHref) return <span className="inline-flex max-w-full">{pill}</span>;
+          const title =
+            status.phase === 'provisioning'
+              ? `${label} — ${status.step}`
+              : status.phase === 'error'
+                ? `${label} — ${status.message}`
+                : label;
+          if (!albHref) return <span className="inline-flex max-w-full" title={title}>{pill}</span>;
           return (
             <Link
               to={albHref(published.proxyName)}
               className="inline-flex max-w-full"
-              title={label}
+              title={title}
               data-e2e="workload-list-alb">
               {pill}
             </Link>

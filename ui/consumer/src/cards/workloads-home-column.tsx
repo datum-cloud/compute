@@ -19,11 +19,9 @@ import { ColumnEmpty, ColumnSkeleton, COLUMN_ROW_CLASS } from './home-column-par
 import { ComputeEnablementBanner } from '../components/compute-enablement-banner';
 import { useComputeEntitlement, useWorkloads } from '../lib/api';
 import { ownPluginHref, useOwnPluginSlug } from '../lib/plugin-slug';
-import {
-  HEALTH_DOT_CLASS,
-  homeColumnWorkloads,
-  statusLabel,
-} from '../lib/workload-presenters';
+import { HealthDot } from '../components/workload-status-badge';
+import { useNow } from '../lib/use-now';
+import { deployStatus, homeColumnWorkloads, statusLabel } from '../lib/workload-presenters';
 import { LinkButton } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
@@ -40,6 +38,7 @@ export default function WorkloadsHomeColumn() {
   const enabled = entitlement?.phase === 'Active';
   const { data: workloads, isLoading: workloadsLoading, error } = useWorkloads(projectId, enabled);
   const { data: slug } = useOwnPluginSlug(projectId);
+  const now = useNow(!!workloads?.some((w) => w.health === 'Deploying' && !w.deleting), 5_000);
 
   if (!projectId || entitlementLoading) return <ColumnSkeleton label="Workloads" />;
 
@@ -98,12 +97,11 @@ export default function WorkloadsHomeColumn() {
         const content = (
           <>
             <span className="flex size-3.5 shrink-0 items-center justify-center" aria-hidden>
-              <span
-                className={cn(
-                  'size-2 rounded-full',
-                  workload.deleting ? 'bg-muted-foreground' : HEALTH_DOT_CLASS[workload.health]
-                )}
-              />
+              {workload.deleting ? (
+                <span className="bg-muted-foreground size-2 rounded-full" />
+              ) : (
+                <HealthDot health={workload.health} deploy={deployStatus(workload, now)} />
+              )}
             </span>
             <span className="min-w-0 flex-1 truncate text-sm">{workload.name}</span>
             <span className="text-muted-foreground shrink-0 text-xs">
