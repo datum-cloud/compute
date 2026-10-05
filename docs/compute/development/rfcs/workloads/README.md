@@ -653,6 +653,8 @@ sequenceDiagram
   WorkloadDeploymentScheduler-->>Controller: Return (no requeue)
 ```
 
+Once a `WorkloadDeployment` is assigned a location, the compute operator at that location creates the individual Instances. How an edge location turns these Instances into running unikernels — host assignment, networking, and boot via Kraftlet — is documented in [Instance Provisioning via Kraftlet](https://github.com/datum-cloud/unikraft-provider/blob/main/docs/enhancements/instance-provisioning.md) in the unikraft-provider repository.
+
 ## Production Readiness Review Questionnaire
 
 <!--
