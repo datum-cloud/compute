@@ -12,6 +12,8 @@ import {
 import type { ConnectedAlb } from '../lib/api';
 import { formatUptime, splitSlashValue } from '../lib/format';
 import { formatLocationName, type LocationIndex } from '../lib/locations';
+import { albStatusDisplay, type AlbStatus } from '../lib/alb-status';
+import { instanceStatusLabel, type StatusDisplay } from '../lib/workload-presenters';
 import {
   ALB_INSTANT_WINDOW,
   albErrorRateQuery,
@@ -186,7 +188,13 @@ function InstanceBody({
           )
         }
       />
-      {ip ? <TopologyRow label={instance.externalIP ? 'public' : 'internal'} value={ip} mono title={ip} /> : null}
+      {/* Always rendered so the node doesn't grow when the address is assigned. */}
+      <TopologyRow
+        label={instance.externalIP ? 'public' : 'internal'}
+        value={ip ?? <span className="cpt-muted">—</span>}
+        mono={!!ip}
+        title={ip}
+      />
     </>
   );
 }
@@ -201,6 +209,8 @@ export function TopologyCard({
   instanceMetricsHref,
   albHref,
   albMetricsHref,
+  status,
+  albStatuses = {},
 }: {
   projectId?: string;
   workload: Workload;
@@ -211,6 +221,10 @@ export function TopologyCard({
   instanceMetricsHref: (name: string) => string;
   albHref?: (proxyName: string) => string;
   albMetricsHref?: (proxyName: string) => string;
+  /** Overrides the workload's raw health, e.g. while it is deploying. */
+  status?: StatusDisplay;
+  /** Per-proxy serving state, keyed by HTTPProxy name. */
+  albStatuses?: Record<string, AlbStatus>;
 }) {
   const [traffic, setTraffic] = useState<Record<string, number | undefined>>({});
   const handleTraffic = useCallback((proxyId: string, rps: number | undefined) => {
@@ -230,18 +244,36 @@ export function TopologyCard({
 
   const albNodes: TopologyAlb[] = useMemo(
     () =>
-      albs.map((alb) => ({
-        id: alb.proxyName,
-        title: alb.displayName || alb.proxyName,
-        hostname: alb.hostname,
-        traffic: traffic[alb.proxyName],
-        href: albHref?.(alb.proxyName),
-        metricsHref: albMetricsHref?.(alb.proxyName),
-        body: projectId ? (
-          <AlbBody projectId={projectId} proxyId={alb.proxyName} onTraffic={handleTraffic} />
-        ) : undefined,
-      })),
-    [albs, projectId, traffic, handleTraffic, albHref, albMetricsHref]
+      albs.map((alb) => {
+        const albStatus = albStatuses[alb.proxyName];
+        const display = albStatus ? albStatusDisplay(albStatus) : undefined;
+        return {
+          id: alb.proxyName,
+          title: alb.displayName || alb.proxyName,
+          hostname: alb.hostname,
+          traffic: traffic[alb.proxyName],
+          href: albHref?.(alb.proxyName),
+          metricsHref: albMetricsHref?.(alb.proxyName),
+          status: display ? { tone: display.tone, label: display.short } : undefined,
+          // No traffic to show until it serves: say what it is waiting on
+          // instead, in as many rows as the traffic body so the node keeps its size.
+          body:
+            albStatus && albStatus.phase !== 'ready' ? (
+              <>
+                <TopologyRow
+                  label={albStatus.phase === 'error' ? 'error' : 'status'}
+                  value={albStatus.phase === 'error' ? albStatus.message : albStatus.step}
+                  title={albStatus.message}
+                />
+                <TopologyRow label={`traffic · ${ALB_INSTANT_WINDOW}`} value={<span className="cpt-muted">—</span>} />
+                <TopologyRow label="errors" value={<span className="cpt-muted">—</span>} />
+              </>
+            ) : projectId ? (
+              <AlbBody projectId={projectId} proxyId={alb.proxyName} onTraffic={handleTraffic} />
+            ) : undefined,
+        };
+      }),
+    [albs, albStatuses, projectId, traffic, handleTraffic, albHref, albMetricsHref]
   );
 
   const instanceNodes: TopologyInstance[] = useMemo(
@@ -257,7 +289,7 @@ export function TopologyCard({
           location,
           group: location,
           status: instanceStatusToBadgeType(instance.status),
-          statusLabel: instance.status,
+          statusLabel: instanceStatusLabel(instance),
           href: instanceHref(instance.name),
           metricsHref: instanceMetricsHref(instance.name),
           body: <InstanceBody projectId={projectId} instance={instance} />,
@@ -273,6 +305,42 @@ export function TopologyCard({
         };
       }),
     [instances, locationIndex, projectId, instanceHref, instanceMetricsHref]
+  );
+
+  // While the workload deploys, stand in for the instances it hasn't created
+  // yet. The graph then has its final shape from the start, rather than
+  // re-fitting (and jumping) as each instance appears.
+  const deploying = workload.health === 'Deploying' && !workload.deleting;
+  const pendingNodes: TopologyInstance[] = useMemo(() => {
+    if (!deploying) return [];
+    const instanceClass = workload.resources ? splitSlashValue(workload.resources).main : undefined;
+    return workload.placementRegions.flatMap((region) => {
+      const created = instances.filter((instance) => instance.placement === region.name).length;
+      const missing = Math.max(0, region.desiredReplicas - created);
+      // Same grouping key a real instance gets, so swapping one in doesn't regroup.
+      const location =
+        region.locations.length === 1 ? formatLocationName(region.locations[0], locationIndex) : undefined;
+      return Array.from({ length: missing }, (_, i) => ({
+        id: `pending:${region.name}:${i}`,
+        title: 'Creating instance…',
+        location,
+        group: location,
+        status: 'info' as const,
+        statusLabel: 'Creating',
+        body: (
+          <>
+            <TopologyRow label="CPU · Mem" value={<span className="cpt-muted">—</span>} />
+            <TopologyRow label="internal" value={<span className="cpt-muted">—</span>} />
+          </>
+        ),
+        footLeft: instanceClass ?? '—',
+        footRight: <span className="cpt-status-info">Creating…</span>,
+      }));
+    });
+  }, [deploying, workload.placementRegions, workload.resources, instances, locationIndex]);
+  const graphInstances = useMemo(
+    () => (pendingNodes.length ? [...instanceNodes, ...pendingNodes] : instanceNodes),
+    [instanceNodes, pendingNodes]
   );
 
   const summary = [
@@ -291,7 +359,8 @@ export function TopologyCard({
     ? instances.filter((instance) => instance.status === 'Available').length
     : workload.readyReplicas;
   const total = instances.length || workload.desiredReplicas;
-  const workloadStatus = workloadHealthToBadgeType(workload.health);
+  const workloadStatus = status?.tone ?? workloadHealthToBadgeType(workload.health);
+  const workloadStatusLabel = status?.label ?? workload.health;
   const instanceClass = instances[0]?.instanceType
     ? splitSlashValue(instances[0].instanceType).main
     : workload.resources
@@ -323,7 +392,7 @@ export function TopologyCard({
             location: workloadLocation,
             image: workload.image,
             status: workloadStatus,
-            statusLabel: workload.health,
+            statusLabel: workloadStatusLabel,
             body: (
               <>
                 <TopologyRow
@@ -352,11 +421,11 @@ export function TopologyCard({
             ),
           }}
           albs={albNodes}
-          instances={instanceNodes}
+          instances={graphInstances}
           chromeLeft={
             <span className="cpt-chip">
               <span className={`cpt-chip-dot cpt-bg-${workloadStatus}`} />
-              {workload.health}
+              {workloadStatusLabel}
             </span>
           }
           chromeRight={

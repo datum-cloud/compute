@@ -20,6 +20,7 @@
  *    (`runDetailLoader`, portal-internal) — see `ApiError` below.
  */
 import { toInstance, toInstanceList, toWorkload, toWorkloadList, INSTANCE_LABELS } from '../adapter';
+import { anyAlbProvisioning } from './alb-status';
 import type { RawInstance, RawInstanceList, RawWorkload, RawWorkloadList } from '../adapter';
 import type { Instance, Workload } from '../schema';
 import {
@@ -40,6 +41,8 @@ export const PLUGIN_ID = 'workload.compute.datumapis.com';
 
 /** Live-ish polling interval — the v1 substitute for watch-stream updates. */
 const REFETCH_INTERVAL_MS = 10_000;
+/** While a workload or its load balancer is coming up, so the page catches up as soon as it serves. */
+const DEPLOYING_REFETCH_INTERVAL_MS = 3_000;
 
 /** Thrown for non-ok proxy responses; carries the HTTP status for 403 handling. */
 export class ApiError extends Error {
@@ -92,7 +95,10 @@ export function useWorkloads(
     queryKey: [PLUGIN_ID, 'workloads', projectId],
     enabled: !!projectId && enabled,
     queryFn: () => fetchWorkloads(projectId as string),
-    refetchInterval: REFETCH_INTERVAL_MS,
+    refetchInterval: (query) =>
+      query.state.data?.some((w) => w.health === 'Deploying' && !w.deleting)
+        ? DEPLOYING_REFETCH_INTERVAL_MS
+        : REFETCH_INTERVAL_MS,
     retry: false, // RBAC/entitlement failures shouldn't retry-storm
   });
 }
@@ -406,7 +412,10 @@ export function useWorkload(
     queryKey: [PLUGIN_ID, 'workload', projectId, name],
     enabled: !!projectId && !!name,
     queryFn: () => fetchWorkload(projectId as string, name as string),
-    refetchInterval: REFETCH_INTERVAL_MS,
+    refetchInterval: (query) =>
+      query.state.data?.health === 'Deploying' && !query.state.data.deleting
+        ? DEPLOYING_REFETCH_INTERVAL_MS
+        : REFETCH_INTERVAL_MS,
     retry: false,
   });
 }
@@ -456,15 +465,17 @@ export function useInstances(
   });
 }
 
+/** `deploying` polls faster while the workload is coming up — see `useWorkload`. */
 export function useWorkloadInstances(
   projectId: string | undefined,
-  workloadName: string | undefined
+  workloadName: string | undefined,
+  deploying = false
 ): UseQueryResult<Instance[], ApiError> {
   return useQuery({
     queryKey: [PLUGIN_ID, 'workload-instances', projectId, workloadName],
     enabled: !!projectId && !!workloadName,
     queryFn: () => fetchWorkloadInstances(projectId as string, workloadName as string),
-    refetchInterval: REFETCH_INTERVAL_MS,
+    refetchInterval: deploying ? DEPLOYING_REFETCH_INTERVAL_MS : REFETCH_INTERVAL_MS,
     retry: false,
   });
 }
@@ -495,6 +506,15 @@ const HTTPPROXIES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/defa
 const NETWORKSERVICES_PATH =
   '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkservices';
 
+/** A status condition on an HTTPProxy or NetworkService, as served. */
+export interface ResourceCondition {
+  type: string;
+  status: 'True' | 'False' | 'Unknown';
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+}
+
 interface RawNetworkService {
   metadata?: { name?: string; labels?: Record<string, string> };
   spec?: {
@@ -502,11 +522,13 @@ interface RawNetworkService {
       selector?: { matchLabels?: Record<string, string> };
     };
   };
+  status?: { conditions?: ResourceCondition[] };
 }
 
 interface RawHttpProxy {
   metadata?: {
     name?: string;
+    creationTimestamp?: string;
     labels?: Record<string, string>;
     annotations?: Record<string, string>;
   };
@@ -518,7 +540,7 @@ interface RawHttpProxy {
       }>;
     }>;
   };
-  status?: { canonicalHostname?: string };
+  status?: { canonicalHostname?: string; conditions?: ResourceCondition[] };
 }
 
 export interface ConnectedAlb {
@@ -530,6 +552,11 @@ export interface ConnectedAlb {
   customHostnames: string[];
   /** Portal display name (`app.kubernetes.io/name`, then `kubernetes.io/display-name`). */
   displayName: string;
+  createdAt?: Date;
+  /** HTTPProxy status conditions (Accepted, Programmed, CertificatesReady, …). */
+  conditions: ResourceCondition[];
+  /** This workload's NetworkServices the proxy backends to, with their `Ready` condition. */
+  services: Array<{ name: string; ready?: ResourceCondition }>;
 }
 
 export interface PublishedUrl {
@@ -593,15 +620,23 @@ function workloadNameForService(svc: RawNetworkService): string | undefined {
   );
 }
 
-function toConnectedAlb(proxy: RawHttpProxy): ConnectedAlb | null {
+/** `services` are the workload's own NetworkServices the proxy names as backends. */
+function toConnectedAlb(proxy: RawHttpProxy, services: RawNetworkService[] = []): ConnectedAlb | null {
   const proxyName = proxy.metadata?.name ?? '';
   if (!proxyName) return null;
   const hostname = proxyHostname(proxy);
+  const created = proxy.metadata?.creationTimestamp;
   return {
     proxyName,
     hostname,
     customHostnames: proxyCustomHostnames(proxy, hostname),
     displayName: proxyDisplayName(proxy),
+    createdAt: created ? new Date(created) : undefined,
+    conditions: proxy.status?.conditions ?? [],
+    services: services.map((svc) => ({
+      name: svc.metadata?.name ?? '',
+      ready: svc.status?.conditions?.find((c) => c.type === 'Ready'),
+    })),
   };
 }
 
@@ -659,10 +694,23 @@ async function fetchPublishedUrls(projectId: string): Promise<Record<string, Pub
   ]);
   if (services === null || proxies === null) return {};
 
-  const { proxiesByWorkload } = indexWorkloadProxies(services, proxies);
+  const { serviceNamesByWorkload, proxiesByWorkload } = indexWorkloadProxies(services, proxies);
+  const servicesByName = new Map(
+    services.flatMap((svc) => (svc.metadata?.name ? [[svc.metadata.name, svc] as const] : []))
+  );
   const result: Record<string, PublishedUrl> = {};
   for (const [workload, workloadProxies] of proxiesByWorkload) {
-    const albs = workloadProxies.map(toConnectedAlb).filter((alb): alb is ConnectedAlb => !!alb);
+    const own = serviceNamesByWorkload.get(workload) ?? new Set<string>();
+    const albs = workloadProxies
+      .map((proxy) =>
+        toConnectedAlb(
+          proxy,
+          [...new Set(proxyNetworkServiceNames(proxy))]
+            .filter((name) => own.has(name))
+            .flatMap((name) => servicesByName.get(name) ?? [])
+        )
+      )
+      .filter((alb): alb is ConnectedAlb => !!alb);
     const published = publishedFromAlbs(albs);
     if (published) result[workload] = published;
   }
@@ -677,7 +725,10 @@ export function usePublishedUrls(
     queryKey: [PLUGIN_ID, 'published-urls', projectId],
     enabled: !!projectId && enabled,
     queryFn: () => fetchPublishedUrls(projectId as string),
-    refetchInterval: REFETCH_INTERVAL_MS,
+    refetchInterval: (query) =>
+      Object.values(query.state.data ?? {}).some((published) => anyAlbProvisioning(published.proxies))
+        ? DEPLOYING_REFETCH_INTERVAL_MS
+        : REFETCH_INTERVAL_MS,
     retry: false,
   });
 }

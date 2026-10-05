@@ -33,7 +33,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 
-export type TopologyStatus = 'success' | 'warning' | 'danger' | 'muted';
+export type TopologyStatus = 'success' | 'warning' | 'danger' | 'info' | 'muted';
 
 export type TopologyAlb = {
   id: string;
@@ -47,6 +47,8 @@ export type TopologyAlb = {
   href?: string;
   /** Chart button target. */
   metricsHref?: string;
+  /** Set while the load balancer isn't serving yet; replaces the protocol in the footer. */
+  status?: { tone: TopologyStatus; label: string };
 };
 
 export type TopologyInstance = {
@@ -188,6 +190,7 @@ const STYLES = `
 .cpt-icon-success{background:var(--color-badge-success);color:#fff}
 .cpt-icon-warning{background:var(--color-badge-warning);color:#fff}
 .cpt-icon-danger{background:var(--color-badge-danger);color:#fff}
+.cpt-icon-info{background:var(--color-badge-info);color:#fff}
 .cpt-icon-muted{background:var(--muted);color:var(--muted-foreground)}
 .cpt-text{min-width:0;flex:1}
 .cpt-title{margin:0;font-size:13px;font-weight:500;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -217,10 +220,12 @@ html.dark .cpt-foot{background:color-mix(in oklab,black 22%,var(--card))}
 .cpt-status-success{color:var(--color-badge-success)}
 .cpt-status-warning{color:var(--color-badge-warning)}
 .cpt-status-danger{color:var(--color-badge-danger)}
+.cpt-status-info{color:var(--color-badge-info)}
 .cpt-status-muted{color:var(--muted-foreground)}
 .cpt-bg-success{background:var(--color-badge-success)}
 .cpt-bg-warning{background:var(--color-badge-warning)}
 .cpt-bg-danger{background:var(--color-badge-danger)}
+.cpt-bg-info{background:var(--color-badge-info)}
 .cpt-bg-muted{background:var(--muted-foreground)}
 .cpt-port{position:absolute;width:6px;height:6px;border-radius:9999px;background:var(--primary);box-shadow:0 0 0 2px var(--card);z-index:1}
 .cpt-port-right{top:50%;right:-3px;transform:translateY(-50%)}
@@ -433,8 +438,9 @@ type InstanceGroup = {
 const STATUS_PRIORITY: Record<TopologyStatus, number> = {
   danger: 0,
   warning: 1,
-  muted: 2,
-  success: 3,
+  info: 2,
+  muted: 3,
+  success: 4,
 };
 
 /** Unhealthy first so they survive folding, then natural name order (…-2 before …-10). */
@@ -834,7 +840,13 @@ export function TopologyCanvas({
                     leftTitle={alb.hostname}
                     copyValue={alb.hostname}
                     copyLabel={`Copy hostname ${alb.hostname ?? ''}`}
-                    right={<span className="cpt-muted">HTTPS</span>}
+                    right={
+                      alb.status ? (
+                        <span className={`cpt-status-${alb.status.tone}`}>{alb.status.label}</span>
+                      ) : (
+                        <span className="cpt-muted">HTTPS</span>
+                      )
+                    }
                   />
                 </GraphCard>
                 <Port id={`alb-${alb.id}`} side="right" />

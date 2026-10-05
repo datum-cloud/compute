@@ -114,17 +114,54 @@ export interface RawWorkloadList {
   items?: RawWorkload[];
 }
 
+/**
+ * `Available=False` reasons the controller reports while a workload is still
+ * coming up on its own — mirrors the constants in `api/v1alpha/instance_types.go`.
+ * Nothing the user has to fix; given time the workload should serve.
+ */
+const DEPLOYING_REASONS = new Set([
+  'NoAvailableDeployments',
+  'NoAvailablePlacements',
+  'NoMatchingLocation',
+  'NetworkProvisioning',
+  'InstancesProvisioning',
+  'AwaitingPropagation',
+  'Resolving',
+]);
+
+/**
+ * Quota blocks the rollout until it is granted. Reported as deploying (it
+ * proceeds once quota frees up), but `deployStatus` gives it a warning tone
+ * because the user usually has to act.
+ */
+export const QUOTA_REASONS = new Set(['QuotaNotGranted', 'PendingQuota']);
+
+/**
+ * `ReferencedDataNotReady` covers both companions still propagating (transient)
+ * and a source that will never resolve. The controller only says which in the
+ * message, so propagation is told apart by its wording.
+ */
+function isReferencedDataPropagating(condition: RawCondition): boolean {
+  return condition.reason === 'ReferencedDataNotReady' && /propagat/i.test(condition.message ?? '');
+}
+
+/**
+ * The Workload API has a single `Available` condition, with no `Progressing`
+ * one: a workload that hasn't served yet is `Available=False` whether it is
+ * mid-rollout or stuck. The reason tells the two apart. A workload with no
+ * `Available` condition hasn't been reconciled yet, so it is deploying too.
+ */
 function deriveWorkloadHealth(conditions: RawCondition[]): WorkloadHealth {
-  if (!conditions || conditions.length === 0) return 'Unknown';
-
-  const available = conditions.find((c) => c.type === 'Available');
-  const progressing = conditions.find((c) => c.type === 'Progressing');
-
-  if (!available) return 'Unknown';
+  const available = conditions?.find((c) => c.type === 'Available');
+  if (!available) return 'Deploying';
 
   if (available.status === 'True') return 'Available';
-  if (available.status === 'False' && progressing?.status === 'True') return 'Degraded';
-  if (available.status === 'False') return 'Unavailable';
+  if (available.status === 'False') {
+    const reason = available.reason ?? '';
+    if (DEPLOYING_REASONS.has(reason) || QUOTA_REASONS.has(reason)) return 'Deploying';
+    if (isReferencedDataPropagating(available)) return 'Deploying';
+    return 'Unavailable';
+  }
   return 'Unknown';
 }
 
@@ -253,19 +290,16 @@ function toPlacementRegions(
     const status = statusByName.get(p.name);
     const desired = status?.desiredReplicas ?? p.scaleSettings?.minReplicas ?? 0;
     const ready = status?.readyReplicas ?? 0;
-    const fromConditions = deriveWorkloadHealth(status?.conditions ?? []);
-    // When placement conditions are absent, infer from ready/desired so the
-    // region status dot still reflects health (green / yellow / red).
-    const health =
-      fromConditions !== 'Unknown'
-        ? fromConditions
-        : desired > 0 && ready >= desired
-          ? 'Available'
-          : ready > 0
-            ? 'Degraded'
-            : desired > 0
-              ? 'Unavailable'
-              : 'Unknown';
+    const conditions = status?.conditions ?? [];
+    // When the placement's Available condition is absent, infer from
+    // ready/desired so the region status dot still reflects health.
+    const health: WorkloadHealth = conditions.some((c) => c.type === 'Available')
+      ? deriveWorkloadHealth(conditions)
+      : desired > 0 && ready >= desired
+        ? 'Available'
+        : ready > 0
+          ? 'Degraded'
+          : 'Deploying';
 
     return {
       name: p.name,
@@ -353,15 +387,35 @@ export interface RawInstanceList {
   items?: RawInstance[];
 }
 
+/**
+ * Reasons an instance's `Ready` (or `Programmed`) condition carries when it
+ * won't come up without the user changing something — see the
+ * `InstanceReadyReason*` constants in `api/v1alpha/instance_types.go`. The
+ * owning deployment still reports `InstancesProvisioning` for these, so this is
+ * the only place a bad image or crash loop shows up.
+ */
+const INSTANCE_FAILURE_REASONS = new Set(['ImageUnavailable', 'InstanceCrashing', 'ConfigurationError']);
+
+/** The condition explaining why an instance is failing, if it is. */
+export function instanceFailure<T extends RawCondition>(conditions: readonly T[]): T | undefined {
+  return conditions.find(
+    (c) =>
+      (c.type === 'Ready' || c.type === 'Programmed') &&
+      c.status === 'False' &&
+      INSTANCE_FAILURE_REASONS.has(c.reason ?? '')
+  );
+}
+
 // The compute API has no explicit "Failed" status field, so we infer it from
-// the Available condition's reason/message text — best-effort, matching PR
-// #1315's heuristic.
+// the failure reasons above, then from the Available condition's
+// reason/message text — best-effort, matching PR #1315's heuristic.
 function deriveInstanceStatus(conditions: RawCondition[]): InstanceStatusValue {
   if (!conditions || conditions.length === 0) return 'Unknown';
 
   const available = conditions.find((c) => c.type === 'Available');
+  if (available?.status === 'True') return 'Available';
+  if (instanceFailure(conditions)) return 'Failed';
   if (!available) return 'Unknown';
-  if (available.status === 'True') return 'Available';
 
   const text = `${available.reason ?? ''} ${available.message ?? ''}`;
   if (/fail|error/i.test(text)) return 'Failed';
