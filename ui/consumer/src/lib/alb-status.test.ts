@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { albStatus, albStatusDisplay, anyAlbProvisioning } from './alb-status';
+import { albStatus, albStatusDisplay, anyAlbProvisioning, workloadUrlState } from './alb-status';
 import type { ConnectedAlb, ResourceCondition } from './api';
 
 const T0 = '2026-10-05T12:00:00Z';
@@ -152,5 +152,25 @@ describe('anyAlbProvisioning', () => {
     expect(anyAlbProvisioning([alb([accepted, programmed])])).toBe(false);
     expect(anyAlbProvisioning([alb([accepted, programmed]), alb([])])).toBe(true);
     expect(anyAlbProvisioning([alb([cond('Accepted', 'False', 'Invalid')])])).toBe(false);
+  });
+});
+
+describe('workloadUrlState', () => {
+  test('links only once the workload and its load balancer serve', () => {
+    expect(workloadUrlState(true, { phase: 'ready' })).toEqual({ live: true });
+    expect(workloadUrlState(true, undefined)).toEqual({ live: true });
+    expect(workloadUrlState(false, { phase: 'ready' })).toEqual({ live: false, status: 'Not serving yet' });
+  });
+
+  test('a load balancer that is not ready explains itself first', () => {
+    const provisioning = albStatus(alb([]), serving);
+    expect(workloadUrlState(false, provisioning)).toEqual({
+      live: false,
+      status: 'Provisioning load balancer',
+    });
+    expect(workloadUrlState(true, { phase: 'error', message: 'x' })).toEqual({
+      live: false,
+      status: 'Load balancer not serving',
+    });
   });
 });

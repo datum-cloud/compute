@@ -37,7 +37,14 @@ import {
   type PublishedUrl,
 } from "../lib/api";
 import { splitSlashValue } from "../lib/format";
-import { albStatus, anyAlbProvisioning, albStatusDisplay, type AlbStatus } from "../lib/alb-status";
+import {
+  albStatus,
+  anyAlbProvisioning,
+  albStatusDisplay,
+  workloadUrlState,
+  type AlbStatus,
+} from "../lib/alb-status";
+import { WorkloadUrl } from "../components/workload-url";
 import { useNow } from "../lib/use-now";
 import {
   deployStatus,
@@ -546,6 +553,14 @@ function WorkloadLayoutShell({
     [instances],
   );
   const proxyId = published.data?.proxyName;
+  const headerAlb = published.data?.proxies[0];
+  const headerUrl =
+    workload && headerAlb?.hostname
+      ? workloadUrlState(
+          !workload.deleting && workload.health === "Available",
+          albStatus(headerAlb, { workloadServing: workload.health === "Available" }),
+        )
+      : undefined;
   const navigate = useNavigate();
   const permissions = useDeletePermissions(projectId);
   const deleteDialog = useDeleteWorkloadDialog();
@@ -562,6 +577,25 @@ function WorkloadLayoutShell({
       metricsHref={metricsHref}
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
+      // Held until the workload is known too, since that decides whether it links.
+      urlLoading={published.isLoading || (isLoading && !!headerAlb?.hostname)}
+      deleteLoading={(isLoading || permissions.isLoading) && !workload?.deleting}
+      visit={
+        headerAlb?.hostname && headerUrl
+          ? { href: `https://${headerAlb.hostname}`, live: headerUrl.live, status: headerUrl.status }
+          : undefined
+      }
+      url={
+        headerAlb?.hostname && headerUrl ? (
+          <WorkloadUrl
+            hostname={headerAlb.hostname}
+            customHostnames={headerAlb.customHostnames}
+            live={headerUrl.live}
+            status={headerUrl.status}
+            plain
+          />
+        ) : undefined
+      }
       onDelete={canDelete && workload ? () => deleteDialog.show(workload) : undefined}>
       <DeleteWorkloadDialog
         projectId={projectId}
@@ -710,8 +744,6 @@ function WorkloadOverview() {
           projectId && proxyId ? albOverviewHref(projectId, proxyId) : undefined
         }
         albLabel={albLabel}
-        albHostname={primaryAlb?.hostname}
-        customHostnames={primaryAlb?.customHostnames}
       />
 
       <TopologyCard

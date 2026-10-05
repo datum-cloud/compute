@@ -43,61 +43,6 @@ function Chip({
   );
 }
 
-function PublishedHostname({
-  prefix,
-  hostname,
-  customHostnames,
-}: {
-  prefix: string;
-  hostname: string;
-  customHostnames: string[];
-}) {
-  const extras = customHostnames.filter((host) => host && host !== hostname);
-  const hostnameEl = (
-    <span className="min-w-0 truncate" title={hostname}>
-      {hostname}
-    </span>
-  );
-
-  return (
-    <span className="flex min-w-0 items-baseline gap-1">
-      <span className="shrink-0">{prefix}</span>
-      {extras.length === 0 ? (
-        hostnameEl
-      ) : (
-        <Tooltip
-          side="bottom"
-          align="start"
-          message={
-            <span className="flex flex-col items-start gap-0.5 text-left">
-              {extras.map((host) => (
-                <span key={host} className="font-mono">
-                  {host}
-                </span>
-              ))}
-            </span>
-          }
-        >
-          <span
-            tabIndex={0}
-            className="flex min-w-0 items-baseline gap-1"
-            style={{
-              cursor: "help",
-              textDecoration: "underline",
-              textDecorationStyle: "dotted",
-              textUnderlineOffset: "2px",
-            }}
-            aria-label={`Also published at ${extras.join(", ")}`}
-          >
-            {hostnameEl}
-            <span className="shrink-0">+{extras.length}</span>
-          </span>
-        </Tooltip>
-      )}
-    </span>
-  );
-}
-
 export function WorkloadHealthStrip({
   health,
   healthyCount,
@@ -105,8 +50,6 @@ export function WorkloadHealthStrip({
   locationCount,
   albHref,
   albLabel,
-  albHostname,
-  customHostnames = [],
   deploy,
   failure,
   alb,
@@ -118,10 +61,6 @@ export function WorkloadHealthStrip({
   locationCount: number;
   albHref?: string;
   albLabel?: string;
-  /** Platform default hostname of the attached load balancer. */
-  albHostname?: string;
-  /** User-attached hostnames. Listed in the reachable-at tooltip. */
-  customHostnames?: string[];
   /** Set while the workload is coming up — see `deployStatus`. */
   deploy?: DeployStatus;
   /** Why instances are failing, shown in place of the generic unavailable copy. */
@@ -252,7 +191,7 @@ export function WorkloadHealthStrip({
             </Chip>
           ) : (
             <Chip tone="muted" icon={GlobeIcon}>
-              View ALB
+              Configure ALB
             </Chip>
           )}
         </Link>
@@ -263,13 +202,6 @@ export function WorkloadHealthStrip({
       </Chip>
     );
 
-  // Only claim reachability once both the workload and its ALB are serving.
-  const hostnamePrefix =
-    alb?.phase === "provisioning"
-      ? "Publishing at"
-      : (health === "Available" || health === "Degraded") && alb?.phase !== "error"
-        ? "Reachable at"
-        : "Published at";
   // Only standing states get the extra line; a slow ALB says so in its chip
   // and tooltip, so the strip keeps its height while things come up.
   const note =
@@ -277,49 +209,39 @@ export function WorkloadHealthStrip({
 
   return (
     <Card size="sm" data-testid="compute-plugin-workload-health">
-      <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <span
-            className="flex size-9 shrink-0 items-center justify-center rounded-full"
-            // Inline: the host does not compile `bg-(--color-badge-*)/10` for every tone.
-            style={{
-              background: `color-mix(in oklab, ${headline.ring} 10%, transparent)`,
-            }}
-          >
-            {headline.icon}
-          </span>
-          <div className="flex min-w-0 flex-col">
-            <span className="truncate text-sm font-semibold" title={headline.tooltip}>
-              {headline.title}
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <span
+              className="flex size-9 shrink-0 items-center justify-center rounded-full"
+              // Inline: the host does not compile `bg-(--color-badge-*)/10` for every tone.
+              style={{
+                background: `color-mix(in oklab, ${headline.ring} 10%, transparent)`,
+              }}
+            >
+              {headline.icon}
             </span>
-            <span className="text-muted-foreground flex min-w-0 items-baseline gap-1.5 text-xs">
-              {albHostname ? (
-                <>
-                  <PublishedHostname
-                    prefix={hostnamePrefix}
-                    hostname={albHostname}
-                    customHostnames={customHostnames}
-                  />
-                  <span className="shrink-0">·</span>
-                </>
-              ) : null}
-              <span className="shrink-0">{headline.detail}</span>
-            </span>
-            {note ? (
-              <span
-                className="text-muted-foreground text-xs"
-                data-testid="compute-plugin-workload-health-note"
-              >
-                {note}
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate text-sm font-semibold" title={headline.tooltip}>
+                {headline.title}
               </span>
-            ) : null}
+              <span className="text-muted-foreground text-xs">{headline.detail}</span>
+              {note ? (
+                <span
+                  className="text-muted-foreground text-xs"
+                  data-testid="compute-plugin-workload-health-note"
+                >
+                  {note}
+                </span>
+              ) : null}
+            </div>
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-          <Chip tone={tone} icon={deploy ? ClockIcon : CircleCheckIcon}>
-            {deploy?.label ?? health}
-          </Chip>
-          {albChip}
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <Chip tone={tone} icon={deploy ? ClockIcon : CircleCheckIcon}>
+              {deploy?.label ?? health}
+            </Chip>
+            {albChip}
+          </div>
         </div>
       </CardContent>
     </Card>

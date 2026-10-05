@@ -12,6 +12,8 @@ import { formatKpiValue } from "../components/metric-area-chart";
 import { CpuMemorySparks } from "../components/metric-sparkline";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
 import { HealthDot, WorkloadStatusBadge } from "../components/workload-status-badge";
+import { WorkloadUrl } from "../components/workload-url";
+import { albStatus, workloadUrlState } from "../lib/alb-status";
 import { WorkloadListCardsSkeleton, WorkloadListTableSkeleton } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
 import {
@@ -21,6 +23,7 @@ import {
   usePublishedUrls,
   useWorkload,
   useWorkloads,
+  type PublishedUrl,
 } from "../lib/api";
 import {
   albRpsQuery,
@@ -430,7 +433,7 @@ function WorkloadCard({
   workload,
   projectId,
   instanceKeys,
-  proxyId,
+  published,
   identityLabel,
   identityLoading,
   identityDenied,
@@ -441,7 +444,8 @@ function WorkloadCard({
   workload: Workload;
   projectId?: string;
   instanceKeys: string[];
-  proxyId?: string;
+  /** The workload's connected load balancers, when it has any. */
+  published?: PublishedUrl;
   identityLabel?: InstanceIdentityLabel;
   identityLoading?: boolean;
   identityDenied?: boolean;
@@ -456,6 +460,13 @@ function WorkloadCard({
       : workload.runtimeType
         ? [workload.runtimeType]
         : [];
+  const proxyId = published?.proxyName;
+  const primaryAlb = published?.proxies[0];
+  const serving = !workload.deleting && (workload.health === "Available" || workload.health === "Degraded");
+  const url = workloadUrlState(
+    serving,
+    primaryAlb ? albStatus(primaryAlb, { workloadServing: workload.health === "Available" }) : undefined,
+  );
   const enabled = !!projectId && !!identityLabel && instanceKeys.length > 0;
   const cpuQuery =
     enabled && identityLabel && projectId
@@ -515,6 +526,15 @@ function WorkloadCard({
       </CardHeader>
       {/* Dimmed while deleting: the numbers are the last ones before teardown. */}
       <CardContent className={cn("flex flex-col gap-4", workload.deleting && "opacity-50")}>
+        {primaryAlb?.hostname ? (
+          <WorkloadUrl
+            hostname={primaryAlb.hostname}
+            customHostnames={primaryAlb.customHostnames}
+            live={url.live}
+            status={url.status}
+            size="sm"
+          />
+        ) : null}
         <CpuMemorySparks
           cpuQuery={cpuQuery}
           memoryQuery={memoryQuery}
@@ -817,7 +837,7 @@ export default function WorkloadList() {
                   workload={workload}
                   projectId={projectId}
                   instanceKeys={keysByWorkload.get(workload.name) ?? []}
-                  proxyId={publishedByWorkload[workload.name]?.proxyName}
+                  published={publishedByWorkload[workload.name]}
                   identityLabel={identityLabel}
                   identityLoading={identityLoading}
                   identityDenied={identityDenied}

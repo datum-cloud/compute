@@ -101,6 +101,21 @@ const ALBS_KEY = '\u0000albs';
  */
 const SINGLE_GROUP_LAYOUT = { columns: 4, limit: 8 } as const;
 const MULTI_GROUP_LAYOUT = { columns: 2, limit: 4 } as const;
+const COMPACT_LAYOUT = { columns: 1, limit: 3 } as const;
+
+/**
+ * Below this frame width the tree stacks into one column (load balancers over
+ * the workload over its instances) and renders at its natural size with no
+ * pan or zoom: the side-by-side tree is ~1000px wide and on a phone would
+ * shrink past readable or clip. The frame grows to the content instead, so
+ * the page scrolls as usual and the canvas never traps a touch.
+ */
+const COMPACT_BREAKPOINT = 560;
+/** Fixed frame height outside compact mode. Inline: the host does not compile `h-[28rem]`. */
+const FRAME_HEIGHT = '28rem';
+/** Compact top inset, clearing the corner chips. */
+const COMPACT_TOP = 52;
+const COMPACT_BOTTOM = 20;
 const MIN_SCALE = 0.4;
 const MAX_SCALE = 2.5;
 
@@ -234,6 +249,10 @@ html.dark .cpt-foot{background:color-mix(in oklab,black 22%,var(--card))}
 .cpt-port-top{top:-3px;left:50%;transform:translateX(-50%)}
 .cpt-flow{transition:opacity 400ms ease}
 .cpt-flow-idle{opacity:.55}
+.cpt-root.cpt-compact{cursor:default;touch-action:auto}
+.cpt-compact .cpt-zoom{display:none}
+.cpt-compact .cpt-top-ingress{grid-template-columns:264px;row-gap:48px}
+.cpt-compact .cpt-replicas{flex-direction:column;align-items:center;gap:24px}
 @media (prefers-reduced-motion:reduce){.cpt-flow{display:none}}
 `;
 
@@ -265,6 +284,19 @@ function fitView(viewport: HTMLElement, world: HTMLElement): View {
   return { scale, x: (vw - ww * scale) / 2, y: (vh - wh * scale) / 2 };
 }
 
+/** Compact fit: natural size (shrunk only if wider than the frame), top-aligned, with the frame height that holds it. */
+function compactView(viewport: HTMLElement, world: HTMLElement): { view: View; height: number } {
+  const vw = viewport.clientWidth;
+  const ww = world.offsetWidth;
+  const wh = world.offsetHeight;
+  if (!vw || !ww || !wh) return { view: { x: 0, y: COMPACT_TOP, scale: 1 }, height: 0 };
+  const scale = Math.min(1, (vw - 32) / ww);
+  return {
+    view: { scale, x: (vw - ww * scale) / 2, y: COMPACT_TOP },
+    height: Math.ceil(wh * scale + COMPACT_TOP + COMPACT_BOTTOM),
+  };
+}
+
 function zoomAt(current: View, px: number, py: number, nextScale: number): View {
   const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, nextScale));
   const wx = (px - current.x) / current.scale;
@@ -283,6 +315,13 @@ function elbowH(from: Point, to: Point) {
   if (Math.abs(from.y - to.y) < 8) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
   const midX = snap((from.x + to.x) / 2);
   return `M ${from.x} ${from.y} H ${midX} V ${to.y} H ${to.x}`;
+}
+
+/** Vertical → horizontal → vertical elbow from a bottom port to a top port. */
+function elbowV(from: Point, to: Point) {
+  if (Math.abs(from.x - to.x) < 8) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
+  const midY = snap((from.y + to.y) / 2);
+  return `M ${from.x} ${from.y} V ${midY} H ${to.x} V ${to.y}`;
 }
 
 /** Trunk down from a bottom port to a bus, then drops to each top port. */
@@ -514,11 +553,27 @@ export function TopologyCanvas({
   const [panning, setPanning] = useState(false);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const [compact, setCompact] = useState(false);
+  const [compactHeight, setCompactHeight] = useState(0);
   viewRef.current = view;
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const check = () => setCompact(viewport.clientWidth > 0 && viewport.clientWidth < COMPACT_BREAKPOINT);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   const groups = instanceGroups(instances);
   const branchToGroups = groups.length > 1;
-  const { columns, limit } = branchToGroups ? MULTI_GROUP_LAYOUT : SINGLE_GROUP_LAYOUT;
+  const { columns, limit } = compact
+    ? COMPACT_LAYOUT
+    : branchToGroups
+      ? MULTI_GROUP_LAYOUT
+      : SINGLE_GROUP_LAYOUT;
   const laidOut = groups.map((group) => {
     const key = group.label ?? 'all';
     const sorted = [...group.instances].sort(byAttention);
@@ -552,7 +607,7 @@ export function TopologyCanvas({
   const shownKey = laidOut
     .map((group) => `${group.key}:${group.shown.map((i) => i.id).join(',')}:${group.folded.length}`)
     .join('\u0000');
-  const layoutKey = `${workload.id}\u0000${albIds}\u0000${shownKey}`;
+  const layoutKey = `${compact}\u0000${workload.id}\u0000${albIds}\u0000${shownKey}`;
 
   useLayoutEffect(() => {
     const world = worldRef.current;
@@ -567,7 +622,8 @@ export function TopologyCanvas({
       for (const albId of albList) {
         const from = portCenter(world, world.querySelector(`[data-port="alb-${albId}"]`));
         if (from && workloadIn) {
-          next.push({ kind: 'ingress', d: elbowH(from, workloadIn), albId, to: workloadIn });
+          const d = compact ? elbowV(from, workloadIn) : elbowH(from, workloadIn);
+          next.push({ kind: 'ingress', d, albId, to: workloadIn });
         }
       }
 
@@ -596,20 +652,35 @@ export function TopologyCanvas({
     observer.observe(world);
     for (const el of world.querySelectorAll('.cpt-node, .cpt-group')) observer.observe(el);
     return () => observer.disconnect();
-  }, [albIds, shownKey, workload.id]);
+  }, [albIds, shownKey, workload.id, compact]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const world = worldRef.current;
     if (!viewport || !world) return;
-    const next = fitView(viewport, world);
-    viewRef.current = next;
-    setView(next);
-  }, [layoutKey]);
+    if (!compact) {
+      const next = fitView(viewport, world);
+      viewRef.current = next;
+      setView(next);
+      return;
+    }
+    // Compact: track the tree's size, since the frame grows with it.
+    const apply = () => {
+      const { view: next, height } = compactView(viewport, world);
+      viewRef.current = next;
+      setView(next);
+      setCompactHeight(height);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(world);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [layoutKey, compact]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport) return;
+    if (!viewport || compact) return;
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
@@ -630,11 +701,11 @@ export function TopologyCanvas({
 
     viewport.addEventListener('wheel', onWheel, { passive: false });
     return () => viewport.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [compact]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport) return;
+    if (!viewport || compact) return;
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0 && event.button !== 1) return;
@@ -664,7 +735,7 @@ export function TopologyCanvas({
 
     viewport.addEventListener('pointerdown', onPointerDown);
     return () => viewport.removeEventListener('pointerdown', onPointerDown);
-  }, []);
+  }, [compact]);
 
   const hasIngress = albs.length > 0;
   const hasReplicas = instances.length > 0;
@@ -695,8 +766,13 @@ export function TopologyCanvas({
     <div
       ref={viewportRef}
       data-testid="compute-plugin-topology-canvas"
-      className={`cpt-root${panning ? ' cpt-panning' : ''}`}
-      aria-label="Topology diagram. Drag the background to move. Pinch or use the zoom buttons to zoom.">
+      className={`cpt-root${panning ? ' cpt-panning' : ''}${compact ? ' cpt-compact' : ''}`}
+      style={{ position: 'relative', height: compact ? compactHeight || FRAME_HEIGHT : FRAME_HEIGHT }}
+      aria-label={
+        compact
+          ? 'Topology diagram.'
+          : 'Topology diagram. Drag the background to move. Pinch or use the zoom buttons to zoom.'
+      }>
       <style>{STYLES}</style>
       <div
         aria-hidden
@@ -849,7 +925,7 @@ export function TopologyCanvas({
                     }
                   />
                 </GraphCard>
-                <Port id={`alb-${alb.id}`} side="right" />
+                <Port id={`alb-${alb.id}`} side={compact ? 'bottom' : 'right'} />
               </div>
             ))}
             {foldedAlbs.length > 0 ? (
@@ -886,11 +962,11 @@ export function TopologyCanvas({
               right={<span className={`cpt-status-${workload.status}`}>{workload.statusLabel}</span>}
             />
           </GraphCard>
-          {hasIngress ? <Port id="workload-in" side="left" /> : null}
+          {hasIngress ? <Port id="workload-in" side={compact ? 'top' : 'left'} /> : null}
           {hasReplicas ? <Port id="workload-out" side="bottom" /> : null}
         </div>
         {/* Balances the balancer column so the workload stays centered. */}
-        {hasIngress ? <div aria-hidden /> : null}
+        {hasIngress && !compact ? <div aria-hidden /> : null}
         </div>
 
         {hasReplicas ? (
