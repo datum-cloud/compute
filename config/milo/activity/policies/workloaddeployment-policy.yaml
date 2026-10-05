@@ -1,0 +1,19 @@
+# ActivityPolicy for WorkloadDeployment resources (compute.datumapis.com).
+# Product noun is "workload": users never see deployments, only the workload
+# they belong to and where it scaled.
+#
+# Event rules only: users never write deployments. Like the Instance policy,
+# it requires the related project Workload that compute's events carry.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: compute.datumapis.com-workloaddeployment
+spec:
+  resource:
+    apiGroup: compute.datumapis.com
+    kind: WorkloadDeployment
+
+  eventRules:
+    - name: scaled
+      match: "has(event.related) && event.related.kind == 'Workload' && event.reason == 'Scaled' && has(event.note)"
+      summary: "Workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }}: {{ event.note }}"

@@ -22,6 +22,9 @@ spec:
     - compute.datumapis.com/runtimeclasses.list
     - compute.datumapis.com/runtimeclasses.get
     - compute.datumapis.com/runtimeclasses.watch
+    - compute.datumapis.com/instancetypes.list
+    - compute.datumapis.com/instancetypes.get
+    - compute.datumapis.com/instancetypes.watch
     # Viewers can see who has a shell session open, but opening one runs
     # commands inside an instance, so creating a session needs Compute Admin.
     - compute.datumapis.com/instanceconsolesessions.list

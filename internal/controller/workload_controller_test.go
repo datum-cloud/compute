@@ -604,6 +604,9 @@ func TestWorkloadBlockingReasonPriority(t *testing.T) {
 		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
 		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
 		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
+		{computev1alpha.InstanceReadyReasonImageUnavailable, 5},
+		{computev1alpha.InstanceReadyReasonInstanceCrashing, 5},
+		{computev1alpha.InstanceReadyReasonConfigurationError, 5},
 		// Priority 6
 		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
 	}
