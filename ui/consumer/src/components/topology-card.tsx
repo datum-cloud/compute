@@ -382,9 +382,9 @@ export function TopologyCard({
           <span className="text-muted-foreground text-xs">{summary}</span>
         </CardAction>
       </CardHeader>
-      {/* Inline height: the host does not compile `h-[28rem]`. The canvas fills
-          this frame and pans inside it, so the card does not grow with the tree. */}
-      <CardContent padding="none" className="relative" style={{ height: '28rem' }}>
+      {/* The canvas sets its own height: a fixed frame it pans inside, or on a
+          narrow screen the height of its stacked tree. */}
+      <CardContent padding="none" className="relative">
         <TopologyCanvas
           workload={{
             id: workload.name,

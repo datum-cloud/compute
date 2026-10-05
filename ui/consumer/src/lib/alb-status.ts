@@ -146,3 +146,15 @@ export function albStatusDisplay(
 export function anyAlbProvisioning(albs: readonly ConnectedAlb[]): boolean {
   return albs.some((alb) => albStatus(alb, { workloadServing: false }).phase === 'provisioning');
 }
+
+/**
+ * Whether a workload's URL should link, and if not, a short reason. A load
+ * balancer that isn't ready says so first; otherwise it's the workload not
+ * serving. No status (a proxy with nothing to judge) counts as ready.
+ */
+export function workloadUrlState(serving: boolean, alb?: AlbStatus): { live: boolean; status?: string } {
+  if (alb?.phase === 'provisioning') return { live: false, status: 'Provisioning load balancer' };
+  if (alb?.phase === 'error') return { live: false, status: 'Load balancer not serving' };
+  if (!serving) return { live: false, status: 'Not serving yet' };
+  return { live: true };
+}
