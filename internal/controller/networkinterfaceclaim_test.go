@@ -97,7 +97,7 @@ func TestDesiredNetworkInterfaceClaimSpec(t *testing.T) {
 
 	spec := desiredNetworkInterfaceClaimSpec(computev1alpha.InstanceNetworkInterface{
 		Network:       networkingv1alpha.NetworkRef{Namespace: "other-namespace", Name: claimTestNetwork},
-		Name:          "eth1",
+		Name:          claimTestSecondInterface,
 		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol},
 		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
 		Addresses: []computev1alpha.InstanceNetworkInterfaceAddressRequest{
@@ -248,7 +248,7 @@ func TestInstanceNetworkInterfaceStatus(t *testing.T) {
 		},
 	}
 
-	status := instanceNetworkInterfaceStatus(defaultInterfaceName, claim)
+	status := instanceNetworkInterfaceStatus(defaultInterfaceName, claim, nil)
 
 	assert.Equal(t, defaultInterfaceName, status.Name)
 	require.Len(t, status.Addresses, 2)
@@ -281,11 +281,92 @@ func TestInstanceNetworkInterfaceStatus(t *testing.T) {
 func TestInstanceNetworkInterfaceStatus_NoClaim(t *testing.T) {
 	t.Parallel()
 
-	status := instanceNetworkInterfaceStatus(defaultInterfaceName, nil)
+	status := instanceNetworkInterfaceStatus(defaultInterfaceName, nil, nil)
 
 	assert.Equal(t, defaultInterfaceName, status.Name)
 	assert.Empty(t, status.Addresses)
 	assert.Nil(t, status.Assignments.NetworkIP)
+}
+
+// TestInstanceNetworkInterfaceStatus_Egress verifies the egress addresses the
+// bound interface reports are carried onto the instance entry unaltered,
+// including every address when there is more than one, because a consumer
+// allow-listing at a destination has to admit all of them.
+func TestInstanceNetworkInterfaceStatus_Egress(t *testing.T) {
+	t.Parallel()
+
+	boundInterface := &networkingv1alpha.NetworkInterface{
+		Status: networkingv1alpha.NetworkInterfaceStatus{
+			Egress: &networkingv1alpha.NetworkInterfaceEgressStatus{
+				Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
+					SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{
+						{
+							Family:    networkingv1alpha.IPv4Protocol,
+							Address:   claimTestEgressIPv4,
+							Stability: networkingv1alpha.InternetEgressAddressStabilityNetwork,
+						},
+						{
+							Family:    networkingv1alpha.IPv6Protocol,
+							Address:   claimTestEgressIPv6,
+							Stability: networkingv1alpha.InternetEgressAddressStabilityNone,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	status := instanceNetworkInterfaceStatus(defaultInterfaceName,
+		&networkingv1alpha.NetworkInterfaceClaim{}, boundInterface)
+
+	require.NotNil(t, status.Egress)
+	require.NotNil(t, status.Egress.Internet)
+	require.Len(t, status.Egress.Internet.SourceAddresses, 2,
+		"every reported address reaches the consumer, not just the first")
+	assert.Equal(t, claimTestEgressIPv4, status.Egress.Internet.SourceAddresses[0].Address)
+	assert.Equal(t, networkingv1alpha.InternetEgressAddressStabilityNetwork,
+		status.Egress.Internet.SourceAddresses[0].Stability,
+		"stability decides whether the address may be allow-listed at all")
+	assert.Equal(t, claimTestEgressIPv6, status.Egress.Internet.SourceAddresses[1].Address)
+	assert.Equal(t, networkingv1alpha.InternetEgressAddressStabilityNone,
+		status.Egress.Internet.SourceAddresses[1].Stability)
+}
+
+// TestInstanceNetworkInterfaceStatus_NoEgressReported verifies nothing is
+// published when nothing is reported. A wrong egress address allow-lists the
+// wrong sender at a destination, so an empty or placeholder block is worse than
+// an absent one.
+func TestInstanceNetworkInterfaceStatus_NoEgressReported(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]*networkingv1alpha.NetworkInterface{
+		"no interface bound": nil,
+		"interface reports no egress at all": {
+			Status: networkingv1alpha.NetworkInterfaceStatus{},
+		},
+		"interface reports egress with no internet": {
+			Status: networkingv1alpha.NetworkInterfaceStatus{
+				Egress: &networkingv1alpha.NetworkInterfaceEgressStatus{},
+			},
+		},
+		"interface reports internet egress with no addresses": {
+			Status: networkingv1alpha.NetworkInterfaceStatus{
+				Egress: &networkingv1alpha.NetworkInterfaceEgressStatus{
+					Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{},
+				},
+			},
+		},
+	}
+
+	for name, boundInterface := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			status := instanceNetworkInterfaceStatus(defaultInterfaceName,
+				&networkingv1alpha.NetworkInterfaceClaim{}, boundInterface)
+			assert.Nil(t, status.Egress)
+		})
+	}
 }
 
 // claimCondition builds a claim status condition with a message, mirroring the

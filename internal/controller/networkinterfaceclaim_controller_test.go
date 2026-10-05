@@ -39,6 +39,15 @@ const (
 
 	// claimTestPendingReason is the reason NSO seeds a data-plane condition with.
 	claimTestPendingReason = "Pending"
+
+	// claimTestSecondInterface is the second interface on an instance, which
+	// carries addresses and egress of its own.
+	claimTestSecondInterface = "eth1"
+
+	// The source addresses an interface's outbound traffic leaves on, which NSO
+	// publishes on the interface rather than on the claim.
+	claimTestEgressIPv4 = "198.51.100.7"
+	claimTestEgressIPv6 = "2001:db8:e000::7"
 )
 
 // newClaimTestScheme builds a scheme carrying compute and networking types, the
@@ -119,7 +128,7 @@ func TestReconcileNetworkInterfaceClaims_CreatesClaimPerInterface(t *testing.T) 
 		},
 		computev1alpha.InstanceNetworkInterface{
 			Network:       networkingv1alpha.NetworkRef{Name: claimTestNetwork},
-			Name:          "eth1",
+			Name:          claimTestSecondInterface,
 			IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
 			ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
 			Addresses: []computev1alpha.InstanceNetworkInterfaceAddressRequest{
@@ -434,9 +443,93 @@ func TestInstancePublishesTheBoundNetworkInterface(t *testing.T) {
 
 	// An unbound claim publishes no reference rather than an empty one.
 	unbound := instanceNetworkInterfaceStatus(defaultInterfaceName,
-		&networkingv1alpha.NetworkInterfaceClaim{})
+		&networkingv1alpha.NetworkInterfaceClaim{}, nil)
 	assert.Nil(t, unbound.NetworkInterfaceRef)
-	assert.Nil(t, instanceNetworkInterfaceStatus(defaultInterfaceName, nil).NetworkInterfaceRef)
+	assert.Nil(t, instanceNetworkInterfaceStatus(defaultInterfaceName, nil, nil).NetworkInterfaceRef)
+}
+
+// TestInstancePublishesInterfaceEgress covers the whole pull: the reconciler
+// follows the claim's reference to the bound interface, reads the egress the
+// interface reports, and publishes it on the entry for that interface. An
+// instance with two interfaces reports each separately, so a consumer reads the
+// answer for the interface its traffic leaves from.
+func TestInstancePublishesInterfaceEgress(t *testing.T) {
+	t.Parallel()
+
+	instance := newClaimTestInstance(claimTestDeployment+"-0",
+		computev1alpha.InstanceNetworkInterface{
+			Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+			Name:    defaultInterfaceName,
+		},
+		computev1alpha.InstanceNetworkInterface{
+			Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork},
+			Name:    claimTestSecondInterface,
+		})
+
+	egressInterface := &networkingv1alpha.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Name: "nic-egress", Namespace: claimTestNamespace},
+		Status: networkingv1alpha.NetworkInterfaceStatus{
+			Egress: &networkingv1alpha.NetworkInterfaceEgressStatus{
+				Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
+					SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{
+						{
+							Family:    networkingv1alpha.IPv4Protocol,
+							Address:   claimTestEgressIPv4,
+							Stability: networkingv1alpha.InternetEgressAddressStabilityNetwork,
+						},
+						{
+							Family:    networkingv1alpha.IPv6Protocol,
+							Address:   claimTestEgressIPv6,
+							Stability: networkingv1alpha.InternetEgressAddressStabilityNetwork,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	silentInterface := &networkingv1alpha.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Name: "nic-silent", Namespace: claimTestNamespace},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newClaimTestScheme()).
+		WithObjects(
+			instance,
+			egressInterface,
+			silentInterface,
+			&networkingv1alpha.NetworkInterfaceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: instance.Name + "-eth0", Namespace: claimTestNamespace},
+				Status: networkingv1alpha.NetworkInterfaceClaimStatus{
+					NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: egressInterface.Name},
+				},
+			},
+			&networkingv1alpha.NetworkInterfaceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: instance.Name + "-eth1", Namespace: claimTestNamespace},
+				Status: networkingv1alpha.NetworkInterfaceClaimStatus{
+					NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: silentInterface.Name},
+				},
+			},
+		).
+		Build()
+
+	r := &InstanceReconciler{NetworkingEnabled: true}
+	changed, err := r.reconcileNetworkInterfaceStatus(context.Background(), cl, instance)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	require.Len(t, instance.Status.NetworkInterfaces, 2)
+
+	eth0 := instance.Status.NetworkInterfaces[0]
+	require.NotNil(t, eth0.Egress)
+	require.NotNil(t, eth0.Egress.Internet)
+	require.Len(t, eth0.Egress.Internet.SourceAddresses, 2)
+	assert.Equal(t, claimTestEgressIPv4, eth0.Egress.Internet.SourceAddresses[0].Address)
+	assert.Equal(t, claimTestEgressIPv6, eth0.Egress.Internet.SourceAddresses[1].Address)
+
+	eth1 := instance.Status.NetworkInterfaces[1]
+	assert.Nil(t, eth1.Egress,
+		"an interface reporting nothing publishes nothing, rather than borrowing the other interface's answer")
 }
 
 // TestNetworkGateReleasesWhileProgrammedIsNotTrue is the deadlock guard. The
@@ -506,7 +599,7 @@ func TestNetworkGateReleasesWhileProgrammedIsNotTrue(t *testing.T) {
 			}
 
 			// The condition still reaches the consumer, just through status.
-			published := instanceNetworkInterfaceStatus(defaultInterfaceName, claim)
+			published := instanceNetworkInterfaceStatus(defaultInterfaceName, claim, nil)
 			mirrored := false
 			for _, condition := range published.Conditions {
 				if condition.Type == networkingv1alpha.NetworkInterfaceClaimProgrammed {
