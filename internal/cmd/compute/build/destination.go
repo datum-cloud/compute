@@ -40,9 +40,6 @@ type outputSpec struct {
 func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Image) (string, error) {
 	switch spec.kind {
 	case outputDebug:
-		if opts.Push {
-			return "", fmt.Errorf("--push requires a registry output: use --output ghcr.io/acme/api:tag")
-		}
 		name := imageNameFor(opts.ContextDir)
 		fmt.Fprintf(os.Stderr, "Preview complete. The image wasn't saved: add --output ./%s.tar to save it,\n"+
 			"or --output <registry>/<account>/%s:latest to push it.\n", name, name)
@@ -54,19 +51,13 @@ func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Im
 				return "", err
 			}
 			if !ok {
-				return "", fmt.Errorf("push cancelled")
+				return "", &userError{message: "push cancelled, so nothing was pushed."}
 			}
 		}
 		return pushImage(ctx, opts, img)
 	case outputArchive:
-		if opts.Push {
-			return "", fmt.Errorf("--push is only valid with registry outputs")
-		}
 		return "", exportArchive(spec.value, img)
 	case outputLayout:
-		if opts.Push {
-			return "", fmt.Errorf("--push is only valid with registry outputs")
-		}
 		return "", exportLayout(spec.value, img)
 	default:
 		return "", fmt.Errorf("unknown output type")
@@ -154,20 +145,37 @@ func validateOutputOptions(opts *Options, spec outputSpec) error {
 			return err
 		}
 	}
-	if !opts.Push {
-		return nil
-	}
-	if spec.kind != outputRegistry {
-		return fmt.Errorf("--push requires a registry output: use --output ghcr.io/acme/api:tag")
+	pushHint := fmt.Sprintf("--output <registry>/<account>/%s:latest", imageNameFor(opts.ContextDir))
+	switch {
+	case opts.Push && spec.kind == outputDebug:
+		return &userError{message: paragraphs(
+			"--push needs a registry image to push to.",
+			"Add "+pushHint+".",
+		)}
+	case opts.Push && spec.kind != outputRegistry:
+		what := "a file"
+		if spec.kind == outputLayout {
+			what = "a folder"
+		}
+		return &userError{message: paragraphs(
+			fmt.Sprintf("--push only works with a registry image, and %s is %s.", spec.value, what),
+			fmt.Sprintf("Leave out --push to save to %s, or use %s to push.", spec.value, pushHint),
+		)}
+	case !opts.Push && spec.kind == outputRegistry && !stdinIsTerminal():
+		// Checked before building: without a terminal there's no one to
+		// confirm the push, so the build would be wasted.
+		return &userError{message: paragraphs(
+			fmt.Sprintf("%s is a registry image, so saving it means pushing it.", spec.value),
+			"Add --push to push without being asked.",
+		)}
 	}
 	return nil
 }
 
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
 func confirmRegistryPush(ref string) (bool, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return false, fmt.Errorf("output %q looks like a registry reference; rerun with --push to push without confirmation", ref)
-	}
-	fmt.Fprintf(os.Stderr, "Output %q looks like a registry reference. Push it? [y/N] ", ref)
+	fmt.Fprintf(os.Stderr, "Push to %s? [y/N] ", ref)
 	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && err != io.EOF {
 		return false, err

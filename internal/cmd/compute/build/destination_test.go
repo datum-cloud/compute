@@ -122,17 +122,52 @@ func TestParseOutput(t *testing.T) {
 	}
 }
 
-func TestValidateOutputOptionsRequiresRegistryForPush(t *testing.T) {
-	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}); err != nil {
-		t.Fatalf("registry output with --push returned error: %v", err)
-	}
+func TestValidateOutputOptionsPush(t *testing.T) {
+	prev := stdinIsTerminal
+	t.Cleanup(func() { stdinIsTerminal = prev })
+	opts := func(push bool) *Options { return &Options{Push: push, ContextDir: "/src/hello"} }
 
-	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputArchive, value: "image.tar"}); err == nil {
-		t.Fatal("expected local archive output with --push to fail")
+	tests := []struct {
+		name     string
+		push     bool
+		terminal bool
+		spec     outputSpec
+		want     []string
+	}{
+		{name: "push to registry", push: true, spec: outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}},
+		{name: "registry in a terminal asks later", terminal: true, spec: outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}},
+		{
+			name: "push without output", push: true, spec: outputSpec{kind: outputDebug},
+			want: []string{"--push needs a registry image to push to.", "Add --output <registry>/<account>/hello:latest."},
+		},
+		{
+			name: "push to a file", push: true, spec: outputSpec{kind: outputArchive, value: "./image.tar"},
+			want: []string{"--push only works with a registry image, and ./image.tar is a file.", "Leave out --push to save to ./image.tar"},
+		},
+		{
+			name: "push to a folder", push: true, spec: outputSpec{kind: outputLayout, value: filepath.Join(t.TempDir(), "out")},
+			want: []string{"is a folder."},
+		},
+		{
+			name: "registry without a terminal", spec: outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"},
+			want: []string{"ghcr.io/acme/api:dev is a registry image, so saving it means pushing it.", "Add --push to push without being asked."},
+		},
 	}
-
-	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputDebug}); err == nil {
-		t.Fatal("expected debug output with --push to fail")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdinIsTerminal = func() bool { return tt.terminal }
+			err := validateOutputOptions(opts(tt.push), tt.spec)
+			if len(tt.want) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			assertContains(t, err.Error(), tt.want...)
+		})
 	}
 }
 
