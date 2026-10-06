@@ -17,13 +17,9 @@ const TOPOLOGY_STYLE = { height: '28rem' } as const;
 const TABLE_COLUMNS = [
   'Name',
   'Status',
-  'Activity',
-  'CPU / Memory',
-  'Instances',
+  'CPU',
+  'Memory',
   'Locations',
-  'Load balancer',
-  'Image',
-  'Created',
 ] as const;
 
 function Bone({ className, style }: { className?: string; style?: CSSProperties }) {

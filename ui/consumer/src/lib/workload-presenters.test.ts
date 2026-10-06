@@ -4,6 +4,7 @@ import {
   deployStatus,
   formatElapsed,
   homeColumnWorkloads,
+  newestFirst,
   instanceFailureSummary,
   instanceStatusLabel,
   statusLabel,
@@ -29,6 +30,18 @@ function workload(name: string, health: WorkloadHealth, createdAt: string): Work
     deleting: false,
   };
 }
+
+describe('newestFirst', () => {
+  test('orders by creation time, newest first, regardless of health', () => {
+    const input = [
+      workload('old', 'Unavailable', '2026-01-01'),
+      workload('newest', 'Available', '2026-03-01'),
+      workload('middle', 'Degraded', '2026-02-01'),
+    ];
+    expect(newestFirst(input).map((w) => w.name)).toEqual(['newest', 'middle', 'old']);
+    expect(input.map((w) => w.name)).toEqual(['old', 'newest', 'middle']);
+  });
+});
 
 describe('homeColumnWorkloads', () => {
   test('puts unhealthy workloads first', () => {

@@ -37,7 +37,7 @@ import {
 import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
 import { useOverviewRange } from "../components/overview-range";
 import { useLocationIndex, type LocationIndex } from "../lib/locations";
-import { regionLabel } from "../lib/workload-presenters";
+import { newestFirst, regionLabel } from "../lib/workload-presenters";
 import type { Workload } from "../schema";
 import { Badge } from "@datum-cloud/datum-ui/badge";
 import { Button, LinkButton } from "@datum-cloud/datum-ui/button";
@@ -87,7 +87,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 
 // The table bundles datum-ui's DataTable plus @tanstack/react-table and nuqs
 // (the host shares none of them), which is most of this route's weight. Load
-// it only when the user picks the table view so card-view users don't pay.
+// it lazily so users who switch to cards don't pay.
 const WorkloadTable = lazy(() =>
   import("../components/workload-table").then((m) => ({
     default: m.WorkloadTable,
@@ -95,17 +95,20 @@ const WorkloadTable = lazy(() =>
 );
 
 type WorkloadView = "cards" | "table";
-const VIEW_STORAGE_KEY = "compute-plugin:workload-view";
+// v2: the default flipped from cards to table. The old key holds "cards" for
+// anyone who ever loaded the page (the view is written back on mount), so
+// reading it would keep almost everyone on cards.
+const VIEW_STORAGE_KEY = "compute-plugin:workload-view:v2";
 
 function readStoredView(): WorkloadView {
   try {
-    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "table" ? "table" : "cards";
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "cards" ? "cards" : "table";
   } catch {
-    return "cards";
+    return "table";
   }
 }
 
-/** Cards / table switch — datum-ui's segmented Tabs, placed in the page title actions like ALB's toolbar. */
+/** Table / cards switch — datum-ui's segmented Tabs, placed in the page title actions like ALB's toolbar. */
 function ViewToggle({
   view,
   onChange,
@@ -120,13 +123,13 @@ function ViewToggle({
       data-testid="compute-plugin-workload-view-toggle"
     >
       <TabsList aria-label="Workload view" className="border-card-border border">
-        <TabsTrigger value="cards" className="gap-1.5">
-          <Icon icon={LayoutGridIcon} size={14} />
-          Cards
-        </TabsTrigger>
         <TabsTrigger value="table" className="gap-1.5">
           <Icon icon={Rows3Icon} size={14} />
           Table
+        </TabsTrigger>
+        <TabsTrigger value="cards" className="gap-1.5">
+          <Icon icon={LayoutGridIcon} size={14} />
+          Cards
         </TabsTrigger>
       </TabsList>
     </Tabs>
@@ -635,6 +638,8 @@ export default function WorkloadList() {
     error,
     refetch,
   } = useWorkloads(projectId, computeEnabled);
+  // Both views list newest first; table header sorts start from this order.
+  const sortedWorkloads = useMemo(() => newestFirst(workloads ?? []), [workloads]);
   const { data: instances = [] } = useInstances(projectId, computeEnabled);
   const { data: publishedByWorkload = {} } = usePublishedUrls(projectId, computeEnabled);
   const {
@@ -710,14 +715,6 @@ export default function WorkloadList() {
     // Only ever meant to fire once, off the param that brought us here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
-  const albHref = useMemo(
-    () =>
-      projectId
-        ? (proxyName: string) =>
-            `/project/${projectId}/alb/${proxyName}/overview`
-        : undefined,
-    [projectId],
-  );
 
   return (
     <div
@@ -812,9 +809,8 @@ export default function WorkloadList() {
           {view === "table" ? (
             <Suspense fallback={<WorkloadListTableSkeleton summary={false} />}>
               <WorkloadTable
-                workloads={workloads}
+                workloads={sortedWorkloads}
                 projectId={projectId}
-                publishedByWorkload={publishedByWorkload}
                 instanceKeysByWorkload={instanceKeysByWorkload}
                 identityLabel={identityLabel}
                 identityLoading={identityLoading}
@@ -822,7 +818,6 @@ export default function WorkloadList() {
                 timeRange={listRange.timeRange}
                 locationIndex={locationIndex}
                 workloadHref={workloadHref}
-                albHref={albHref}
                 onOpen={(name) => navigate(workloadHref(name))}
               />
             </Suspense>
@@ -831,7 +826,7 @@ export default function WorkloadList() {
               className="grid grid-cols-1 gap-4 lg:grid-cols-2"
               data-testid="compute-plugin-workload-grid"
             >
-              {workloads.map((workload) => (
+              {sortedWorkloads.map((workload) => (
                 <WorkloadCard
                   key={workload.uid || workload.name}
                   workload={workload}

@@ -2,32 +2,28 @@
  * Table view of the workloads list, built on the same datum-ui `DataTable`
  * the portal's ALB list renders through `Table.Client`: search toolbar,
  * sortable column headers, bordered panel, conditional pagination and
- * whole-row click-through. `RowsContent` ignores clicks that bubble from an
- * `<a>`, so nested links need no `stopPropagation`.
+ * whole-row click-through. Columns are kept to what identifies a workload
+ * and how it's doing (status, CPU, memory, where it runs) so the list fits
+ * without horizontal scrolling; image, load balancer and instance detail
+ * live on the workload's own page. `RowsContent` ignores clicks that bubble
+ * from an `<a>`, so nested links need no `stopPropagation`.
  *
  * The host does not share `datum-ui/data-table`, so this plugin bundles its
  * own copy (plus the `@tanstack/react-table` / `nuqs` peers). Class names are
  * identical to the host's, so it picks up the same compiled styles.
  */
-import { CpuMemorySparks, MetricSparkline } from './metric-sparkline';
+import { MetricSparkline } from './metric-sparkline';
+import { SortableHeader } from './sortable-header';
 import { HealthDot, WorkloadStatusBadge } from './workload-status-badge';
-import { albStatus } from '../lib/alb-status';
-import type { PublishedUrl } from '../lib/api';
 import type { LocationIndex } from '../lib/locations';
 import {
-  albRpsQuery,
   type InstanceIdentityLabel,
   workloadCpuSumQuery,
   workloadMemorySumQuery,
 } from '../lib/metrics-queries';
 import type { PrometheusTimeRange } from '../lib/prometheus';
-import {
-  HEALTH_ORDER,
-  imageShortName,
-  regionLabel,
-} from '../lib/workload-presenters';
-import type { Workload } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
+import { HEALTH_ORDER, regionLabel } from '../lib/workload-presenters';
+import type { Workload, WorkloadPlacementRegion } from '../schema';
 import {
   DataTable,
   useDataTablePagination,
@@ -35,11 +31,9 @@ import {
   type DataTableFeatures,
 } from '@datum-cloud/datum-ui/data-table';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
-import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
+import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import type { ColumnDef, Row } from '@tanstack/react-table';
-import { formatDistanceToNowStrict } from 'date-fns';
-import { GlobeIcon, TriangleAlertIcon } from 'lucide-react';
+import type { ColumnDef } from '@tanstack/react-table';
 import { useCallback, useMemo, type MouseEvent } from 'react';
 import { Link } from 'react-router';
 
@@ -48,8 +42,8 @@ type WorkloadColumn = ColumnDef<DataTableFeatures, Workload, unknown>;
 /**
  * Row-click delegation, as the portal's `TableContent` does: datum-ui's
  * `DataTable.Content` has no onRowClick, so walk up from the click target to
- * the `<tr>` and look the row up in the store. Nested links (load balancer
- * pill, name) navigate on their own without also opening the row.
+ * the `<tr>` and look the row up in the store. The nested name link
+ * navigates on its own without also opening the row.
  */
 function RowsContent({ onOpen }: { onOpen: (workload: Workload) => void }) {
   const { rows } = useDataTableRows<Workload>();
@@ -82,6 +76,57 @@ function RowsContent({ onOpen }: { onOpen: (workload: Workload) => void }) {
   );
 }
 
+/**
+ * One line however many regions a workload spans, so a multi-region workload
+ * doesn't stretch its row: the least healthy region (so trouble is what
+ * shows), then "+N" with every region listed in the tooltip.
+ */
+function LocationsCell({
+  regions,
+  locationIndex,
+}: {
+  regions: WorkloadPlacementRegion[];
+  locationIndex: LocationIndex;
+}) {
+  if (regions.length === 0) return <span className="text-muted-foreground">—</span>;
+  const sorted = [...regions].sort((a, b) => HEALTH_ORDER[a.health] - HEALTH_ORDER[b.health]);
+  const [first] = sorted;
+  const extra = sorted.length - 1;
+  const line = (
+    <span className="flex max-w-48 items-center gap-1.5 text-xs">
+      <HealthDot health={first.health} className="size-1.5" label={first.health} />
+      <span className="truncate">{regionLabel(first, locationIndex)}</span>
+      {extra > 0 ? <span className="text-muted-foreground shrink-0">+{extra}</span> : null}
+    </span>
+  );
+  return (
+    <Tooltip
+      message={
+        <span className="flex flex-col gap-0.5">
+          {sorted.map((region) => (
+            <span key={region.name} className="flex items-center gap-1.5">
+              <HealthDot health={region.health} className="size-1.5" label={region.health} />
+              {region.locations.join(', ') || regionLabel(region, locationIndex)}
+            </span>
+          ))}
+        </span>
+      }>
+      {line}
+    </Tooltip>
+  );
+}
+
+/** Free-text search over the row plus fields the table doesn't show (image, runtime, tags). */
+function matchesSearch(workload: Workload, search: string): boolean {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
+  return [workload.name, workload.image, workload.runtimeType, ...workload.tags, ...workload.locations]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .includes(needle);
+}
+
 /** Same rule as the portal: no pagination bar when everything fits on one page. */
 function ConditionalPagination() {
   const { pageCount } = useDataTablePagination();
@@ -92,7 +137,6 @@ function ConditionalPagination() {
 export function WorkloadTable({
   workloads,
   projectId,
-  publishedByWorkload,
   instanceKeysByWorkload,
   identityLabel,
   identityLoading = false,
@@ -100,12 +144,10 @@ export function WorkloadTable({
   timeRange,
   locationIndex,
   workloadHref,
-  albHref,
   onOpen,
 }: {
   workloads: Workload[];
   projectId?: string;
-  publishedByWorkload: Record<string, PublishedUrl>;
   instanceKeysByWorkload: Record<string, string[]>;
   identityLabel?: InstanceIdentityLabel;
   identityLoading?: boolean;
@@ -113,7 +155,6 @@ export function WorkloadTable({
   timeRange: PrometheusTimeRange;
   locationIndex: LocationIndex;
   workloadHref: (name: string) => string;
-  albHref?: (proxyName: string) => string;
   onOpen: (name: string) => void;
 }) {
   const columns = useMemo<WorkloadColumn[]>(
@@ -121,9 +162,9 @@ export function WorkloadTable({
       {
         id: 'name',
         accessorKey: 'name',
-        header: ({ column }) => <DataTable.ColumnHeader column={column} title="Name" />,
+        header: ({ column }) => <SortableHeader column={column} title="Name" />,
         cell: ({ row }) => (
-          <div className="flex min-w-0 flex-col" style={{ minWidth: 160 }}>
+          <div className="flex min-w-0" style={{ minWidth: 160 }}>
             <Link
               to={workloadHref(row.original.name)}
               className={cn('truncate font-medium hover:underline', row.original.deleting && 'text-muted-foreground')}
@@ -131,203 +172,62 @@ export function WorkloadTable({
               data-e2e="workload-name">
               {row.original.name}
             </Link>
-            {row.original.runtimeType ? (
-              <span className="text-muted-foreground truncate text-xs">{row.original.runtimeType}</span>
-            ) : null}
           </div>
         ),
       },
       {
         id: 'status',
         accessorFn: (workload) => HEALTH_ORDER[workload.health],
-        header: ({ column }) => <DataTable.ColumnHeader column={column} title="Status" />,
+        header: ({ column }) => <SortableHeader column={column} title="Status" />,
         cell: ({ row }) => <WorkloadStatusBadge workload={row.original} />,
       },
       {
-        id: 'activity',
-        header: 'Activity',
-        enableSorting: false,
-        cell: ({ row }) => {
-          const published = publishedByWorkload[row.original.name];
-          if (!projectId || !published) {
-            return (
-              <span className="text-muted-foreground text-xs" title="No load balancer connected">
-                —
-              </span>
-            );
-          }
-          return (
-            <MetricSparkline
-              query={albRpsQuery(projectId, published.proxyName)}
-              timeRange={timeRange}
-              format="requestsPerSecond"
-              flatWhenZero
-              emptyTitle="No load balancer connected"
-            />
-          );
-        },
-      },
-      {
-        id: 'resources',
-        header: 'CPU / Memory',
+        id: 'cpu',
+        header: 'CPU',
         enableSorting: false,
         cell: ({ row }) => {
           const keys = instanceKeysByWorkload[row.original.name] ?? [];
-          const ready = projectId && identityLabel && keys.length > 0;
-          const cpuQuery = ready
-            ? workloadCpuSumQuery(projectId, identityLabel, keys)
-            : undefined;
-          const memoryQuery = ready
-            ? workloadMemorySumQuery(projectId, identityLabel, keys)
-            : undefined;
           return (
-            <CpuMemorySparks
-              cpuQuery={cpuQuery}
-              memoryQuery={memoryQuery}
+            <MetricSparkline
+              query={projectId && identityLabel && keys.length > 0 ? workloadCpuSumQuery(projectId, identityLabel, keys) : undefined}
               timeRange={timeRange}
+              format="number"
               compact
               pending={identityLoading}
               denied={identityDenied}
+              emptyTitle="CPU metrics aren't available yet"
             />
           );
         },
       },
       {
-        id: 'instances',
-        accessorFn: (workload) => workload,
-        sortingFn: (a: Row<DataTableFeatures, Workload>, b: Row<DataTableFeatures, Workload>) =>
-          a.original.desiredReplicas - b.original.desiredReplicas ||
-          a.original.readyReplicas - b.original.readyReplicas,
-        header: ({ column }) => <DataTable.ColumnHeader column={column} title="Instances" />,
+        id: 'memory',
+        header: 'Memory',
+        enableSorting: false,
         cell: ({ row }) => {
-          const { readyReplicas: ready, desiredReplicas: desired } = row.original;
+          const keys = instanceKeysByWorkload[row.original.name] ?? [];
           return (
-            <span className="tabular-nums">
-              <span className={cn(desired > 0 && ready < desired && 'text-yellow-600')}>{ready}</span>
-              <span className="text-muted-foreground"> / {desired}</span>
-            </span>
+            <MetricSparkline
+              query={projectId && identityLabel && keys.length > 0 ? workloadMemorySumQuery(projectId, identityLabel, keys) : undefined}
+              timeRange={timeRange}
+              format="bytes"
+              color="var(--color-chart-1)"
+              compact
+              pending={identityLoading}
+              denied={identityDenied}
+              emptyTitle="Memory metrics aren't available yet"
+            />
           );
         },
       },
       {
         id: 'locations',
         accessorFn: (workload) => workload.locations.length,
-        header: ({ column }) => <DataTable.ColumnHeader column={column} title="Locations" />,
-        cell: ({ row }) => {
-          const regions = row.original.placementRegions;
-          if (regions.length === 0) return <span className="text-muted-foreground">—</span>;
-          return (
-            <div className="flex max-w-48 flex-col gap-0.5">
-              {regions.map((region) => (
-                <span key={region.name} className="flex items-center gap-1.5 text-xs">
-                  <HealthDot health={region.health} className="size-1.5" label={region.health} />
-                  <span className="truncate" title={region.locations.join(', ') || region.locationSelector}>
-                    {regionLabel(region, locationIndex)}
-                  </span>
-                </span>
-              ))}
-            </div>
-          );
-        },
-      },
-      {
-        id: 'loadBalancer',
-        header: 'Load balancer',
-        enableSorting: false,
-        cell: ({ row }) => {
-          const published = publishedByWorkload[row.original.name];
-          if (!published) return <span className="text-muted-foreground">—</span>;
-          const label = published.hostname ?? published.displayName;
-          const status = albStatus(published.proxies[0], {
-            workloadServing: row.original.health === 'Available',
-          });
-          // Same pill the ALB list uses for its Compute workload origin link,
-          // with a spinner or warning while the ALB isn't serving yet.
-          const pill = (
-            <Badge
-              type="quaternary"
-              theme="outline"
-              className="h-6 max-w-full gap-1.5 rounded-xl px-2 text-xs font-normal"
-              data-e2e={status.phase === 'ready' ? undefined : `workload-list-alb-${status.phase}`}>
-              {status.phase === 'provisioning' ? (
-                <SpinnerIcon size="xs" className="shrink-0" aria-hidden />
-              ) : status.phase === 'error' ? (
-                <Icon
-                  icon={TriangleAlertIcon}
-                  size={12}
-                  className="shrink-0"
-                  style={{ color: 'var(--color-badge-danger)' }}
-                />
-              ) : (
-                <Icon icon={GlobeIcon} size={12} className="shrink-0" />
-              )}
-              <span className="truncate">{label}</span>
-            </Badge>
-          );
-          const title =
-            status.phase === 'provisioning'
-              ? `${label} — ${status.step}`
-              : status.phase === 'error'
-                ? `${label} — ${status.message}`
-                : label;
-          if (!albHref) return <span className="inline-flex max-w-full" title={title}>{pill}</span>;
-          return (
-            <Link
-              to={albHref(published.proxyName)}
-              className="inline-flex max-w-full"
-              title={title}
-              data-e2e="workload-list-alb">
-              {pill}
-            </Link>
-          );
-        },
-      },
-      {
-        id: 'image',
-        header: 'Image',
-        enableSorting: false,
-        cell: ({ row }) => {
-          const image = imageShortName(row.original.image);
-          if (!image) return <span className="text-muted-foreground">—</span>;
-          return (
-            <span className="text-muted-foreground block max-w-48 truncate font-mono text-xs" title={row.original.image}>
-              {image}
-            </span>
-          );
-        },
-      },
-      {
-        id: 'createdAt',
-        accessorFn: (workload) => workload.createdAt.getTime(),
-        header: ({ column }) => <DataTable.ColumnHeader column={column} title="Created" />,
-        cell: ({ row }) => (
-          <span className="text-muted-foreground text-xs whitespace-nowrap" title={row.original.createdAt.toLocaleString()}>
-            {formatDistanceToNowStrict(row.original.createdAt, { addSuffix: true })}
-          </span>
-        ),
+        header: ({ column }) => <SortableHeader column={column} title="Locations" />,
+        cell: ({ row }) => <LocationsCell regions={row.original.placementRegions} locationIndex={locationIndex} />,
       },
     ],
-    [projectId, publishedByWorkload, instanceKeysByWorkload, identityLabel, identityLoading, identityDenied, locationIndex, workloadHref, albHref, timeRange]
-  );
-
-  const searchFn = useCallback(
-    (workload: Workload, search: string) => {
-      const needle = search.trim().toLowerCase();
-      if (!needle) return true;
-      return [
-        workload.name,
-        workload.image,
-        workload.runtimeType,
-        ...workload.tags,
-        ...workload.locations,
-        publishedByWorkload[workload.name]?.hostname,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-        .includes(needle);
-    },
-    [publishedByWorkload]
+    [projectId, instanceKeysByWorkload, identityLabel, identityLoading, identityDenied, timeRange, locationIndex, workloadHref]
   );
 
   const open = useCallback((workload: Workload) => onOpen(workload.name), [onOpen]);
@@ -337,8 +237,7 @@ export function WorkloadTable({
       data={workloads}
       columns={columns}
       getRowId={(workload) => workload.uid || workload.name}
-      defaultSort={[{ id: 'name', desc: false }]}
-      searchFn={searchFn}
+      searchFn={matchesSearch}
       className="space-y-6">
       <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <DataTable.Search placeholder="Search" className="w-full sm:max-w-xs" />
