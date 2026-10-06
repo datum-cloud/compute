@@ -40,6 +40,12 @@ export function HealthDot({
   );
 }
 
+/**
+ * Matches the portal's own status badge (`BadgeStatus`, e.g. the ALB list's
+ * "ACTIVE"): small bold caps. The host compiles every one of these classes.
+ */
+const BADGE_CLASS = 'text-5xs px-1 py-0.5 font-bold tracking-[0.03em] uppercase';
+
 export function WorkloadStatusBadge({
   workload,
   label = statusLabel(workload),
@@ -57,7 +63,7 @@ export function WorkloadStatusBadge({
     return (
       <span className="flex shrink-0 items-center gap-2" data-e2e="workload-status-deleting">
         {dot && <span className="bg-muted-foreground size-2 shrink-0 rounded-full" aria-hidden />}
-        <Badge type="muted" theme="light" className="gap-1.5">
+        <Badge type="muted" theme="light" className={cn('gap-1.5', BADGE_CLASS)}>
           <SpinnerIcon size="xs" aria-hidden />
           Deleting
         </Badge>
@@ -71,7 +77,7 @@ export function WorkloadStatusBadge({
         data-e2e="workload-status-deploying"
         title={deploy.message}>
         {dot && <HealthDot health={workload.health} deploy={deploy} />}
-        <Badge type={deploy.tone} theme="light" className="gap-1.5">
+        <Badge type={deploy.tone} theme="light" className={cn('gap-1.5', BADGE_CLASS)}>
           {deploy.inProgress && <SpinnerIcon size="xs" aria-hidden />}
           {deploy.label}
         </Badge>
@@ -81,7 +87,7 @@ export function WorkloadStatusBadge({
   return (
     <span className="flex shrink-0 items-center gap-2">
       {dot && <HealthDot health={workload.health} />}
-      <Badge type={workloadHealthToBadgeType(workload.health)} theme="light">
+      <Badge type={workloadHealthToBadgeType(workload.health)} theme="light" className={BADGE_CLASS}>
         {label}
       </Badge>
     </span>

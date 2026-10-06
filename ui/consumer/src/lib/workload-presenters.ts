@@ -196,6 +196,11 @@ export function imageShortName(image?: string): string | undefined {
   return noDigest.split('/').pop() || noDigest;
 }
 
+/** Workloads list order (cards and table): newest first. Returns a new array. */
+export function newestFirst(workloads: readonly Workload[]): Workload[] {
+  return [...workloads].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
 /**
  * Workloads for the project home page column: unhealthy first so problems
  * surface, then newest, capped to `limit`. Returns a new array.
