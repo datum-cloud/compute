@@ -22,10 +22,13 @@ func Run(ctx context.Context, opts *Options) (string, error) {
 	}
 	opts.ContextDir = contextDir
 
-	if opts.Kraftfile == "" {
-		opts.Kraftfile = FindKraftfile(opts.ContextDir)
-	}
 	if opts.Kraftfile != "" {
+		if opts.DockerfileExplicit {
+			return "", &userError{message: paragraphs(
+				"--kraftfile and --file can't be used together.",
+				"Use --file to build from a Dockerfile, or --kraftfile to build from a Kraftfile.",
+			)}
+		}
 		return "", runKraftBuild(ctx, opts)
 	}
 
@@ -44,6 +47,14 @@ func Run(ctx context.Context, opts *Options) (string, error) {
 	opts.Dockerfile, err = resolveDockerfilePath(opts.ContextDir, opts.Dockerfile, opts.DockerfileExplicit)
 	if err != nil {
 		return "", err
+	}
+	kraftfile := FindKraftfile(opts.ContextDir)
+	if _, err := os.Stat(opts.Dockerfile); os.IsNotExist(err) {
+		return "", missingDockerfileError(opts, kraftfile)
+	}
+	if kraftfile != "" && !opts.DockerfileExplicit {
+		fmt.Fprintf(os.Stderr, "Building from %s. To build from %s instead, add --kraftfile %s.\n\n",
+			filepath.Base(opts.Dockerfile), filepath.Base(kraftfile), displayPath(kraftfile))
 	}
 
 	printBuildConfig(opts)

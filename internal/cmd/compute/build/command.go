@@ -70,9 +70,9 @@ DOCKER_HOST and DOCKER_CONTEXT the same way the docker CLI does. Use
 --buildkit-host (or BUILDKIT_HOST) to build with a different BuildKit, such as a
 buildx builder (docker-container://NAME) or a remote one (tcp://HOST:PORT).
 
-Advanced users can provide a Kraftfile with --kraftfile (or by placing one in
-the build context) to delegate the entire build to the unikraft CLI instead,
-which must be installed separately. Most projects do not need one.`,
+Advanced users can pass a Kraftfile with --kraftfile to delegate the entire
+build to the unikraft CLI instead, which must be installed separately. A
+Kraftfile is only used when passed this way. Most projects do not need one.`,
 		Example: `
 # Check that the current Dockerfile builds for Compute
 datumctl compute build .
