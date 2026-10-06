@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -42,7 +43,9 @@ func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Im
 		if opts.Push {
 			return "", fmt.Errorf("--push requires a registry output: use --output ghcr.io/acme/api:tag")
 		}
-		fmt.Fprintln(os.Stderr, "Preview complete (image discarded)")
+		name := imageNameFor(opts.ContextDir)
+		fmt.Fprintf(os.Stderr, "Preview complete. The image wasn't saved: add --output ./%s.tar to save it,\n"+
+			"or --output <registry>/<account>/%s:latest to push it.\n", name, name)
 		return "", nil
 	case outputRegistry:
 		if !opts.Push {
@@ -68,6 +71,19 @@ func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Im
 	default:
 		return "", fmt.Errorf("unknown output type")
 	}
+}
+
+var invalidImageNameChars = regexp.MustCompile(`[^a-z0-9]+`)
+
+// imageNameFor suggests an image name from the build folder's name, made
+// valid for a registry reference.
+func imageNameFor(contextDir string) string {
+	name := invalidImageNameChars.ReplaceAllString(strings.ToLower(filepath.Base(contextDir)), "-")
+	name = strings.Trim(name, "-")
+	if name == "" {
+		return "app"
+	}
+	return name
 }
 
 // pushImage pushes img to opts.Ref and returns the pushed image pinned by

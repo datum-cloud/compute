@@ -366,3 +366,17 @@ func TestOutputFolderIsCheckedBeforeBuilding(t *testing.T) {
 		}
 	}
 }
+
+func TestImageNameFor(t *testing.T) {
+	for dir, want := range map[string]string{
+		"/src/hello":         "hello",
+		"/src/My App":        "my-app",
+		"/src/api_v2.server": "api-v2-server",
+		"/":                  "app",
+		"/src/___":           "app",
+	} {
+		if got := imageNameFor(dir); got != want {
+			t.Errorf("imageNameFor(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}
