@@ -151,7 +151,7 @@ func printBuildConfig(opts *Options) {
 
 	row("Context", displayPath(opts.ContextDir))
 	dockerfileLabel := displayPath(opts.Dockerfile)
-	if !opts.DockerfileExplicit && filepath.Base(opts.Dockerfile) == "Dockerfile.datum" {
+	if !opts.DockerfileExplicit && filepath.Base(opts.Dockerfile) == datumDockerfileName {
 		dockerfileLabel += " (override)"
 	}
 	row("Dockerfile", dockerfileLabel)
@@ -166,7 +166,10 @@ func printBuildConfig(opts *Options) {
 	fmt.Fprintln(os.Stderr)
 }
 
-const sourceDateEpochEnv = "SOURCE_DATE_EPOCH"
+const (
+	sourceDateEpochEnv  = "SOURCE_DATE_EPOCH"
+	datumDockerfileName = "Dockerfile.datum"
+)
 
 func parseSourceDateEpoch() (*time.Time, error) {
 	value := os.Getenv(sourceDateEpochEnv)
@@ -207,7 +210,7 @@ func resolveDockerfilePath(contextDir, dockerfile string, explicit bool) (string
 		}
 		return filepath.Join(contextDir, dockerfile), nil
 	}
-	datumDockerfile := filepath.Join(contextDir, "Dockerfile.datum")
+	datumDockerfile := filepath.Join(contextDir, datumDockerfileName)
 	if _, err := os.Stat(datumDockerfile); err == nil {
 		return datumDockerfile, nil
 	} else if !os.IsNotExist(err) {

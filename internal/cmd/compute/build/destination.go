@@ -64,6 +64,8 @@ func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Im
 	}
 }
 
+const defaultImageName = "app"
+
 var invalidImageNameChars = regexp.MustCompile(`[^a-z0-9]+`)
 
 // imageNameFor suggests an image name from the build folder's name, made
@@ -72,7 +74,7 @@ func imageNameFor(contextDir string) string {
 	name := invalidImageNameChars.ReplaceAllString(strings.ToLower(filepath.Base(contextDir)), "-")
 	name = strings.Trim(name, "-")
 	if name == "" {
-		return "app"
+		return defaultImageName
 	}
 	return name
 }

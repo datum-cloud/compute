@@ -1,3 +1,4 @@
+//nolint:goconst // table-driven test cases intentionally repeat literals
 package build
 
 import (
@@ -177,7 +178,7 @@ func TestEngineUnreachableErrorWindowsPipeMissing(t *testing.T) {
 	// doesn't exist: its connection error wrapping the dial's PathError.
 	err := fmt.Errorf("failed to connect to the docker API at npipe:////./pipe/docker_engine; "+
 		"check if the path is correct and if the daemon is running: %w",
-		&os.PathError{Op: "open", Path: `\\.\pipe\docker_engine`, Err: os.ErrNotExist})
+		&os.PathError{Op: "dial", Path: `\\.\pipe\docker_engine`, Err: os.ErrNotExist})
 
 	got := engineUnreachableError(engineSelection{}, "npipe:////./pipe/docker_engine", "windows", err).Error()
 	assertContains(t, got,

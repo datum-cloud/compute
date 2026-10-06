@@ -1,3 +1,4 @@
+//nolint:goconst // table-driven test cases intentionally repeat literals
 package build
 
 import (

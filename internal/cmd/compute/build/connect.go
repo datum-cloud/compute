@@ -28,7 +28,13 @@ import (
 const (
 	buildkitHostFlag = "--buildkit-host"
 	dockerDesktop    = "Docker Desktop"
-	buildkitHostEnv  = "BUILDKIT_HOST"
+	orbStack         = "OrbStack"
+	colima           = "Colima"
+
+	goosDarwin      = "darwin"
+	goosLinux       = "linux"
+	goosWindows     = "windows"
+	buildkitHostEnv = "BUILDKIT_HOST"
 
 	whyBuildkit = "Datum Compute runs your app in a lightweight virtual machine, built from your\n" +
 		"Dockerfile. datumctl uses BuildKit as part of the build process."
@@ -103,9 +109,9 @@ func currentEngineSelection() engineSelection {
 func engineName(sel engineSelection, host string) string {
 	switch {
 	case sel.context == "orbstack" || strings.Contains(host, "/.orbstack/"):
-		return "OrbStack"
+		return orbStack
 	case strings.HasPrefix(sel.context, "colima") || strings.Contains(host, "/.colima/"):
-		return "Colima"
+		return colima
 	case sel.context == "rancher-desktop" || strings.Contains(host, "/.rd/"):
 		return "Rancher Desktop"
 	case sel.context == "desktop-linux" || strings.Contains(host, "/.docker/run/"):
@@ -192,7 +198,7 @@ func dialTarget(host string) (network, addr string, ok bool) {
 
 func installOptions(goos string) string {
 	// Standalone BuildKit only runs natively on Linux-like hosts.
-	return formatInstallOptions(engineInstallOptions(goos, goos != "darwin" && goos != "windows"))
+	return formatInstallOptions(engineInstallOptions(goos, goos != goosDarwin && goos != goosWindows))
 }
 
 type installOption struct{ name, link string }
@@ -201,17 +207,17 @@ func engineInstallOptions(goos string, withBuildKit bool) []installOption {
 	type option = installOption
 	var opts []option
 	switch goos {
-	case "darwin":
+	case goosDarwin:
 		opts = []option{
 			{dockerDesktop, "https://docs.docker.com/desktop/setup/install/mac-install/"},
-			{"OrbStack", "https://orbstack.dev/download"},
-			{"Colima", "https://colima.run/docs/installation/"},
+			{orbStack, "https://orbstack.dev/download"},
+			{colima, "https://colima.run/docs/installation/"},
 		}
-	case "linux":
+	case goosLinux:
 		opts = []option{
 			{"Docker Engine", "https://docs.docker.com/engine/install/"},
 		}
-	case "windows":
+	case goosWindows:
 		opts = []option{
 			{dockerDesktop, "https://docs.docker.com/desktop/setup/install/windows-install/"},
 		}

@@ -17,8 +17,10 @@ var kraftfileNames = []string{
 	"kraft.yml",
 	"Kraftfile.yml",
 	"Kraftfile.yaml",
-	"Kraftfile",
+	kraftfileName,
 }
+
+const kraftfileName = "Kraftfile"
 
 // FindKraftfile returns the path of the first Kraftfile found in dir, or ""
 // if none exist. Builds only use one when it's passed with --kraftfile.
