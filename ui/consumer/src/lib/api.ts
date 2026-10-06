@@ -24,9 +24,12 @@ import { anyAlbProvisioning } from './alb-status';
 import type { RawInstance, RawInstanceList, RawWorkload, RawWorkloadList } from '../adapter';
 import type { Instance, Workload } from '../schema';
 import {
+  mutationOptions,
+  queryOptions,
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query';
@@ -43,6 +46,19 @@ export const PLUGIN_ID = 'workload.compute.datumapis.com';
 const REFETCH_INTERVAL_MS = 10_000;
 /** While a workload or its load balancer is coming up, so the page catches up as soon as it serves. */
 const DEPLOYING_REFETCH_INTERVAL_MS = 3_000;
+
+/**
+ * Shared by every polled query. Polling pauses while the tab is hidden, so a
+ * returning user sees old data until the next tick; focus refetch closes that
+ * gap. It only fires for stale data, and the host's 5-minute default
+ * `staleTime` would keep a polled result fresh, so stale time matches the poll.
+ */
+const POLLED_QUERY = {
+  refetchInterval: REFETCH_INTERVAL_MS,
+  staleTime: REFETCH_INTERVAL_MS,
+  refetchOnWindowFocus: true,
+  retry: false, // RBAC/entitlement failures shouldn't retry-storm
+} as const;
 
 /** Thrown for non-ok proxy responses; carries the HTTP status for 403 handling. */
 export class ApiError extends Error {
@@ -87,20 +103,24 @@ async function fetchWorkload(projectId: string, name: string): Promise<Workload>
   return toWorkload(raw);
 }
 
-export function useWorkloads(
-  projectId: string | undefined,
-  enabled = true
-): UseQueryResult<Workload[], ApiError> {
-  return useQuery({
+export function workloadsQueryOptions(projectId: string | undefined, enabled = true) {
+  return queryOptions<Workload[], ApiError>({
     queryKey: [PLUGIN_ID, 'workloads', projectId],
     enabled: !!projectId && enabled,
     queryFn: () => fetchWorkloads(projectId as string),
+    ...POLLED_QUERY,
     refetchInterval: (query) =>
       query.state.data?.some((w) => w.health === 'Deploying' && !w.deleting)
         ? DEPLOYING_REFETCH_INTERVAL_MS
         : REFETCH_INTERVAL_MS,
-    retry: false, // RBAC/entitlement failures shouldn't retry-storm
   });
+}
+
+export function useWorkloads(
+  projectId: string | undefined,
+  enabled = true
+): UseQueryResult<Workload[], ApiError> {
+  return useQuery(workloadsQueryOptions(projectId, enabled));
 }
 
 // ── Compute service entitlement ─────────────────────────────────────────
@@ -154,15 +174,35 @@ async function fetchComputeEntitlement(projectId: string): Promise<ComputeEntitl
   return { phase: isEntitlementPhase(rawPhase) ? rawPhase : 'PendingApproval' };
 }
 
+/** cloud-portal's `serviceEntitlementKeys.active(projectId)`: the sidebar's service gate. */
+function hostActiveEntitlementsKey(projectId: string | undefined): unknown[] {
+  return ['service-entitlements', 'active', projectId];
+}
+
+export function computeEntitlementQueryOptions(projectId: string | undefined) {
+  return queryOptions<ComputeEntitlement, ApiError>({
+    queryKey: [PLUGIN_ID, 'compute-entitlement', projectId],
+    enabled: !!projectId,
+    queryFn: async ({ client, queryKey }) => {
+      const previous = client.getQueryData<ComputeEntitlement>(queryKey);
+      const next = await fetchComputeEntitlement(projectId as string);
+      // Approval happens elsewhere, so the host's cached gate is still the
+      // pre-approval one; refresh it so the Compute nav item unlocks.
+      if (previous && previous.phase !== 'Active' && next.phase === 'Active') {
+        void client.invalidateQueries({ queryKey: hostActiveEntitlementsKey(projectId) });
+      }
+      return next;
+    },
+    // Wait for approval; an Active entitlement doesn't go back.
+    refetchInterval: (query) => (query.state.data?.phase === 'Active' ? false : REFETCH_INTERVAL_MS),
+    retry: false,
+  });
+}
+
 export function useComputeEntitlement(
   projectId: string | undefined
 ): UseQueryResult<ComputeEntitlement, ApiError> {
-  return useQuery({
-    queryKey: [PLUGIN_ID, 'compute-entitlement', projectId],
-    enabled: !!projectId,
-    queryFn: () => fetchComputeEntitlement(projectId as string),
-    retry: false,
-  });
+  return useQuery(computeEntitlementQueryOptions(projectId));
 }
 
 async function requestComputeEntitlement(projectId: string): Promise<void> {
@@ -390,18 +430,22 @@ async function createDemoWorkload(projectId: string): Promise<string> {
   return workloadName;
 }
 
+export function createDemoWorkloadMutationOptions(projectId: string | undefined) {
+  return mutationOptions<string, ApiError, void>({
+    mutationFn: () => createDemoWorkload(projectId as string),
+    onSuccess: (_name, _input, _result, { client }) => {
+      void client.invalidateQueries({ queryKey: [PLUGIN_ID, 'workloads', projectId] });
+      void client.invalidateQueries({ queryKey: [PLUGIN_ID, 'instances', projectId] });
+      void client.invalidateQueries({ queryKey: [PLUGIN_ID, 'published-urls', projectId] });
+      invalidateHostCaches(client);
+    },
+  });
+}
+
 export function useCreateDemoWorkload(
   projectId: string | undefined
 ): UseMutationResult<string, ApiError, void> {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => createDemoWorkload(projectId as string),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'workloads', projectId] });
-      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'instances', projectId] });
-      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'published-urls', projectId] });
-    },
-  });
+  return useMutation(createDemoWorkloadMutationOptions(projectId));
 }
 
 export function useWorkload(
@@ -412,11 +456,11 @@ export function useWorkload(
     queryKey: [PLUGIN_ID, 'workload', projectId, name],
     enabled: !!projectId && !!name,
     queryFn: () => fetchWorkload(projectId as string, name as string),
+    ...POLLED_QUERY,
     refetchInterval: (query) =>
       query.state.data?.health === 'Deploying' && !query.state.data.deleting
         ? DEPLOYING_REFETCH_INTERVAL_MS
         : REFETCH_INTERVAL_MS,
-    retry: false,
   });
 }
 
@@ -460,8 +504,7 @@ export function useInstances(
     queryKey: [PLUGIN_ID, 'instances', projectId],
     enabled: !!projectId && enabled,
     queryFn: () => fetchInstances(projectId as string),
-    refetchInterval: REFETCH_INTERVAL_MS,
-    retry: false,
+    ...POLLED_QUERY,
   });
 }
 
@@ -475,8 +518,8 @@ export function useWorkloadInstances(
     queryKey: [PLUGIN_ID, 'workload-instances', projectId, workloadName],
     enabled: !!projectId && !!workloadName,
     queryFn: () => fetchWorkloadInstances(projectId as string, workloadName as string),
+    ...POLLED_QUERY,
     refetchInterval: deploying ? DEPLOYING_REFETCH_INTERVAL_MS : REFETCH_INTERVAL_MS,
-    retry: false,
   });
 }
 
@@ -488,8 +531,7 @@ export function useInstance(
     queryKey: [PLUGIN_ID, 'instance', projectId, instanceName],
     enabled: !!projectId && !!instanceName,
     queryFn: () => fetchInstance(projectId as string, instanceName as string),
-    refetchInterval: REFETCH_INTERVAL_MS,
-    retry: false,
+    ...POLLED_QUERY,
   });
 }
 
@@ -725,11 +767,11 @@ export function usePublishedUrls(
     queryKey: [PLUGIN_ID, 'published-urls', projectId],
     enabled: !!projectId && enabled,
     queryFn: () => fetchPublishedUrls(projectId as string),
+    ...POLLED_QUERY,
     refetchInterval: (query) =>
       Object.values(query.state.data ?? {}).some((published) => anyAlbProvisioning(published.proxies))
         ? DEPLOYING_REFETCH_INTERVAL_MS
         : REFETCH_INTERVAL_MS,
-    retry: false,
   });
 }
 
@@ -990,18 +1032,25 @@ async function deleteWorkload(
  */
 const HOST_QUERY_ROOTS = [['http-proxies'], ['network-services'], ['compute-workloads']] as const;
 
+/** cloud-portal's `domainKeys.all`: an ALB's hostnames show on the Domains pages. */
+const HOST_DOMAINS_KEY = ['domains'] as const;
+
+/** Refreshes the host pages that list what a workload write creates or removes. */
+function invalidateHostCaches(client: QueryClient): void {
+  for (const queryKey of [...HOST_QUERY_ROOTS, HOST_DOMAINS_KEY]) {
+    void client.invalidateQueries({ queryKey: [...queryKey] });
+  }
+}
+
 type DeleteWorkloadContext = { previous?: Workload[] };
 
-export function useDeleteWorkload(
-  projectId: string | undefined
-): UseMutationResult<DeleteWorkloadResult, ApiError, DeleteWorkloadInput, DeleteWorkloadContext> {
-  const queryClient = useQueryClient();
+export function deleteWorkloadMutationOptions(projectId: string | undefined) {
   const listKey = [PLUGIN_ID, 'workloads', projectId];
-  return useMutation({
+  return mutationOptions<DeleteWorkloadResult, ApiError, DeleteWorkloadInput, DeleteWorkloadContext>({
     mutationFn: (input) => deleteWorkload(projectId as string, input),
     // Show "Deleting" straight away: the detail page navigates to the list on
     // confirm, before the DELETE has returned for the next poll to pick up.
-    onMutate: async (input) => {
+    onMutate: async (input, { client: queryClient }) => {
       await queryClient.cancelQueries({ queryKey: listKey });
       const previous = queryClient.getQueryData<Workload[]>(listKey);
       queryClient.setQueryData<Workload[]>(listKey, (list) =>
@@ -1009,16 +1058,14 @@ export function useDeleteWorkload(
       );
       return { previous };
     },
-    onError: (_error, _input, context) => {
+    onError: (_error, _input, context, { client: queryClient }) => {
       if (context?.previous) queryClient.setQueryData(listKey, context.previous);
     },
-    onSettled: (_data, _error, input) => {
+    onSettled: (_data, _error, input, _context, { client: queryClient }) => {
       for (const key of ['workloads', 'instances', 'published-urls', 'workload-related']) {
         void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, key, projectId] });
       }
-      for (const queryKey of HOST_QUERY_ROOTS) {
-        void queryClient.invalidateQueries({ queryKey: [...queryKey] });
-      }
+      invalidateHostCaches(queryClient);
       const detailKeys = [
         [PLUGIN_ID, 'workload', projectId, input.workloadName],
         [PLUGIN_ID, 'workload-instances', projectId, input.workloadName],
@@ -1032,4 +1079,10 @@ export function useDeleteWorkload(
       }, 0);
     },
   });
+}
+
+export function useDeleteWorkload(
+  projectId: string | undefined
+): UseMutationResult<DeleteWorkloadResult, ApiError, DeleteWorkloadInput, DeleteWorkloadContext> {
+  return useMutation(deleteWorkloadMutationOptions(projectId));
 }
