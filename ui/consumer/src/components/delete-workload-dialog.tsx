@@ -125,10 +125,14 @@ function RelatedRow({
     </label>
   );
   if (!disabled) return row;
+  // Tooltip wraps its trigger in an inline-flex span, which would shrink the
+  // row to its content; the column flex stretches the span and flex-1 the row.
   return (
-    <Tooltip message={disabledReason} side="top">
-      <div>{row}</div>
-    </Tooltip>
+    <div className="flex flex-col">
+      <Tooltip message={disabledReason} side="top">
+        <div className="min-w-0 flex-1">{row}</div>
+      </Tooltip>
+    </div>
   );
 }
 
