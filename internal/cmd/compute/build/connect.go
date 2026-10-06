@@ -38,17 +38,6 @@ const (
 	minEngineMajor = 23
 )
 
-// connectError's cause is only shown with --verbose.
-type connectError struct {
-	message string
-	cause   error
-}
-
-func (e *connectError) Error() string { return e.message }
-func (e *connectError) Unwrap() error { return e.cause }
-
-func paragraphs(p ...string) string { return strings.Join(p, "\n\n") }
-
 // connectBuildkit returns a BuildKit client, a cleanup func (possibly nil),
 // and a short name for what it connected to. An explicit address
 // (--buildkit-host, then BUILDKIT_HOST) is used as-is; otherwise a running
@@ -246,7 +235,7 @@ func formatInstallOptions(opts []installOption) string {
 }
 
 func noBuildkitError(goos string, cause error) error {
-	return &connectError{
+	return &userError{
 		message: paragraphs(
 			"no BuildKit is available, so your image can't be built.",
 			whyBuildkit,
@@ -262,7 +251,7 @@ func noBuildkitError(goos string, cause error) error {
 func engineSetupError(sel engineSelection, err error) error {
 	if sel.context != "" && errors.As(err, new(interface{ NotFound() })) {
 		if sel.setBy == command.EnvOverrideContext {
-			return &connectError{
+			return &userError{
 				message: paragraphs(
 					fmt.Sprintf("DOCKER_CONTEXT is set to %q, but there's no Docker context with that name.", sel.context),
 					"Unset DOCKER_CONTEXT to use your default container engine, then run this command again.",
@@ -270,7 +259,7 @@ func engineSetupError(sel engineSelection, err error) error {
 				cause: err,
 			}
 		}
-		return &connectError{
+		return &userError{
 			message: paragraphs(
 				fmt.Sprintf("your Docker config selects the context %q, but there's no context with that name.", sel.context),
 				fmt.Sprintf("Remove \"currentContext\" from %s\nto use your default container engine, then run this command again.",
@@ -279,7 +268,7 @@ func engineSetupError(sel engineSelection, err error) error {
 			cause: err,
 		}
 	}
-	return &connectError{
+	return &userError{
 		message: paragraphs(
 			"your container engine settings couldn't be loaded, so your image can't be built.",
 			"Run with --verbose to see why.",
@@ -316,7 +305,7 @@ func engineUnreachableError(sel engineSelection, host, goos string, err error) e
 		if sel.setBy == mobyclient.EnvOverrideHost {
 			fix = "Start it, or unset DOCKER_HOST to use your default container engine,\nthen run this command again."
 		}
-		return &connectError{
+		return &userError{
 			message: paragraphs(
 				subject+" isn't running, so your image can't be built.",
 				origin+", but nothing is listening there.\n"+fix,
@@ -324,7 +313,7 @@ func engineUnreachableError(sel engineSelection, host, goos string, err error) e
 			cause: err,
 		}
 	case errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM):
-		return &connectError{
+		return &userError{
 			message: paragraphs(
 				fmt.Sprintf("your user can't access %s (permission denied on %s), so your image can't be built.", subject, host),
 				"Add yourself to the docker group, then log out and back in:\n  sudo usermod -aG docker $USER",
@@ -332,7 +321,7 @@ func engineUnreachableError(sel engineSelection, host, goos string, err error) e
 			cause: err,
 		}
 	default:
-		return &connectError{
+		return &userError{
 			message: paragraphs(
 				fmt.Sprintf("couldn't connect to %s at %s, so your image can't be built.", subject, host),
 				"Check that it's running and reachable, then run this command again.\nRun with --verbose for details.",
@@ -380,7 +369,7 @@ func noEngineBuildkitError(sel engineSelection, host string, v mobyclient.Server
 	}
 	version := v.Version
 	if major, err := strconv.Atoi(strings.Split(version, ".")[0]); err == nil && major < minEngineMajor {
-		return &connectError{
+		return &userError{
 			message: paragraphs(
 				fmt.Sprintf("%s (version %s) is too old to build images.", subject, version),
 				whyBuildkit,
@@ -389,7 +378,7 @@ func noEngineBuildkitError(sel engineSelection, host string, v mobyclient.Server
 			cause: err,
 		}
 	}
-	return &connectError{
+	return &userError{
 		message: paragraphs(
 			subject+" is running, but its BuildKit didn't respond, so your image can't be built.",
 			"Restart it, then run this command again. Run with --verbose for details.",
@@ -418,7 +407,7 @@ func explicitBuildkitError(address, source string, err error) error {
 	case strings.Contains(msg, "no such file or directory") || strings.Contains(msg, "connection refused"):
 		reason = "nothing is listening there."
 	}
-	return &connectError{
+	return &userError{
 		message: paragraphs(
 			fmt.Sprintf("can't reach BuildKit at %s (from %s):\n%s", address, source, reason),
 			"Check the address, or "+unset+" to use your container engine's\nbuilt-in BuildKit.",

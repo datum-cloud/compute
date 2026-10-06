@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -99,12 +98,15 @@ func pushImage(ctx context.Context, opts *Options, img v1.Image) (string, error)
 	index := computeImageIndex(img)
 	err = remote.WriteIndex(ref, index,
 		remote.WithContext(ctx),
-		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+		remote.WithAuthFromKeychain(registryKeychain),
 		remote.WithProgress(updates),
 	)
 	<-done
 	task.Done(err)
 	if err != nil {
+		if rerr := registryError(ref, true, err); rerr != err {
+			return "", withErrorDetails(opts.Verbose, rerr)
+		}
 		return "", fmt.Errorf("pushing image: %w", err)
 	}
 	digest, err := index.Digest()

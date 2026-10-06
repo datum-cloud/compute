@@ -144,7 +144,7 @@ func buildStageRootFS(ctx context.Context, opts *Options, stage string, entrypoi
 		RootFSTar:  rootfsTar,
 		OCITar:     ociTar,
 	}); err != nil {
-		return nil, rootfsBuildError(withConnectDetails(opts, err))
+		return nil, withErrorDetails(opts.Verbose, rootfsBuildError(err))
 	}
 	view, err := openTarFSView(rootfsTar)
 	if err != nil {

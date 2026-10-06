@@ -32,24 +32,17 @@ type packagingArtifact struct {
 // fragile against upstream wording changes, but there's no structured error
 // type to match on instead.
 func rootfsBuildError(err error) error {
-	if errors.As(err, new(*connectError)) {
+	if errors.As(err, new(*userError)) {
 		return err
 	}
 	msg := err.Error()
+	if strings.Contains(msg, "error getting credentials") && isMissingCredentialHelper(err) {
+		return credentialStoreError("", "your Dockerfile's base images can't be pulled", true, err)
+	}
 	if strings.Contains(msg, "could not create EroFS archive") && strings.Contains(msg, "could not create symlink") {
 		return fmt.Errorf("building root filesystem: EROFS packaging failed on duplicate symlink metadata")
 	}
 	return fmt.Errorf("building root filesystem: %w", err)
-}
-
-// withConnectDetails appends a connection failure's underlying cause when
-// --verbose is set.
-func withConnectDetails(opts *Options, err error) error {
-	var ce *connectError
-	if opts.Verbose && errors.As(err, &ce) && ce.cause != nil {
-		return &connectError{message: ce.message + "\n\nDetails: " + ce.cause.Error(), cause: ce.cause}
-	}
-	return err
 }
 
 func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, error) {
@@ -89,7 +82,7 @@ func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, err
 		task.Done(err)
 	}
 	if err != nil {
-		return packagingArtifact{}, rootfsBuildError(withConnectDetails(opts, err))
+		return packagingArtifact{}, withErrorDetails(opts.Verbose, rootfsBuildError(err))
 	}
 	return result, nil
 }

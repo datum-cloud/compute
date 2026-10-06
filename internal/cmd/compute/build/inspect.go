@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -95,10 +94,13 @@ func runInspect(cmd *cobra.Command, imageRef string, opts inspectOptions) error 
 
 	ropts := []remote.Option{
 		remote.WithContext(cmd.Context()),
-		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+		remote.WithAuthFromKeychain(registryKeychain),
 	}
 	desc, err := remote.Get(ref, ropts...)
 	if err != nil {
+		if rerr := registryError(ref, false, err); rerr != err {
+			return rerr
+		}
 		return fmt.Errorf("fetching %s: %w", imageRef, err)
 	}
 

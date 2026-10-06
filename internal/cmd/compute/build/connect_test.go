@@ -17,12 +17,12 @@ import (
 )
 
 // connectErr runs connectBuildkit and returns its user-facing error.
-func connectErr(t *testing.T, address string) *connectError {
+func connectErr(t *testing.T, address string) *userError {
 	t.Helper()
 	_, _, _, err := connectBuildkit(context.Background(), address)
-	var ce *connectError
+	var ce *userError
 	if !errors.As(err, &ce) {
-		t.Fatalf("expected a connectError, got %v", err)
+		t.Fatalf("expected a userError, got %v", err)
 		return nil
 	}
 	return ce
