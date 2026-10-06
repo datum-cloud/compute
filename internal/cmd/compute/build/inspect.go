@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/spf13/cobra"
@@ -66,17 +67,26 @@ type inspectOptions struct {
 func inspectCommand() *cobra.Command {
 	opts := inspectOptions{}
 	cmd := &cobra.Command{
-		Use:   "inspect IMAGE",
+		Use:   "inspect IMAGE|PATH",
 		Short: "Inspect a built Compute image",
 		Long: `Inspect a built Compute image and summarize whether it has the pieces
 needed to launch on Datum Compute.
 
-This is a diagnostic command for images that were already written or pushed. It
-shows the selected image variant, packaged filesystem metadata, startup
+This is a diagnostic command for images that were already saved or pushed. Pass
+a registry image, or an image you saved with build --output. Inspect shows the
+selected image variant, packaged filesystem metadata, startup
 configuration, environment, and any issues that make the image look incomplete.
 
 Inspection is lightweight and never downloads the packaged filesystem layer. Use
 --extended to show additional OCI metadata from the image index and manifest.`,
+		Example: `
+# Inspect an image in a registry
+datumctl compute build inspect ghcr.io/acme/api:latest
+
+# Inspect an image saved with build --output
+datumctl compute build inspect ./compute-image.tar
+datumctl compute build inspect ./compute-image
+`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInspect(cmd, args[0], opts)
@@ -87,6 +97,20 @@ Inspection is lightweight and never downloads the packaged filesystem layer. Use
 }
 
 func runInspect(cmd *cobra.Command, imageRef string, opts inspectOptions) error {
+	idx, cleanup, err := openLocalImage(imageRef)
+	if err != nil {
+		return err
+	}
+	if idx != nil {
+		defer cleanup()
+		inspection := imageInspection{Ref: imageRef, Extended: opts.extended}
+		if err := inspectIndex(&inspection, idx); err != nil {
+			return err
+		}
+		printInspection(inspection)
+		return nil
+	}
+
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return fmt.Errorf("parsing image reference: %w", err)
@@ -128,6 +152,65 @@ func runInspect(cmd *cobra.Command, imageRef string, opts inspectOptions) error 
 
 	printInspection(inspection)
 	return nil
+}
+
+const inspectTargetHint = "build inspect takes a registry image, like ghcr.io/acme/api:latest, or an image\n" +
+	"you saved with build --output."
+
+// openLocalImage opens arg as the OCI archive or layout directory that
+// build --output writes. Like --output, only path-looking arguments (./x,
+// /x, ~/x, x.tar) are local; anything else, such as nginx, is a registry
+// reference and gets a nil index.
+func openLocalImage(arg string) (v1.ImageIndex, func(), error) {
+	if parseOutput(arg).kind == outputRegistry {
+		return nil, nil, nil
+	}
+	path := expandPath(arg)
+	info, err := os.Stat(path)
+	switch {
+	case os.IsNotExist(err):
+		return nil, nil, &userError{message: paragraphs(
+			fmt.Sprintf("%s doesn't exist.", arg),
+			inspectTargetHint,
+		)}
+	case err != nil:
+		return nil, nil, err
+	}
+
+	if info.IsDir() {
+		idx, err := layout.ImageIndexFromPath(path)
+		if err != nil {
+			return nil, nil, notLocalImageError(arg, err)
+		}
+		return idx, func() {}, nil
+	}
+
+	dir, err := os.MkdirTemp("", "datumctl-inspect-*")
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	if err := untar(path, dir); err != nil {
+		cleanup()
+		return nil, nil, notLocalImageError(arg, err)
+	}
+	idx, err := layout.ImageIndexFromPath(dir)
+	if err != nil {
+		cleanup()
+		return nil, nil, notLocalImageError(arg, err)
+	}
+	return idx, cleanup, nil
+}
+
+func notLocalImageError(arg string, err error) error {
+	return &userError{
+		message: paragraphs(
+			fmt.Sprintf("%s isn't an image saved with build --output.", arg),
+			inspectTargetHint,
+			"Details: "+err.Error(),
+		),
+		cause: err,
+	}
 }
 
 func inspectIndex(out *imageInspection, idx v1.ImageIndex) error {

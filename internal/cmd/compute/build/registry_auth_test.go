@@ -79,7 +79,7 @@ func TestRegistryKeychainUsesPlatformCredentialStore(t *testing.T) {
 	useDockerConfig(t, `{}`)
 	fakePlatformCredentialHelper(t)
 
-	for _, ref := range []string{"ghcr.io/acme/api:latest", "acme/api:latest"} {
+	for _, ref := range []string{testImageRef, "acme/api:latest"} {
 		cfg := resolveBasic(t, ref)
 		if cfg.Username != "user" || cfg.Password != "secret" {
 			t.Errorf("%s: got %+v, want user/secret from the credential helper", ref, cfg)
@@ -92,7 +92,7 @@ func TestRegistryKeychainUsesConfigAuths(t *testing.T) {
 	useDockerConfig(t, `{"auths": {"ghcr.io": {"auth": "dXNlcjpwYXNz"}}}`)
 	t.Setenv("PATH", t.TempDir())
 
-	cfg := resolveBasic(t, "ghcr.io/acme/api:latest")
+	cfg := resolveBasic(t, testImageRef)
 	if cfg.Username != "user" || cfg.Password != "pass" {
 		t.Errorf("got %+v, want user/pass from config.json", cfg)
 	}
@@ -105,7 +105,7 @@ func TestRegistryKeychainAnonymousWithoutCredentials(t *testing.T) {
 	t.Setenv("REGISTRY_AUTH_FILE", "")
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	r, err := name.ParseReference("ghcr.io/acme/api:latest")
+	r, err := name.ParseReference(testImageRef)
 	if err != nil {
 		t.Fatal(err)
 	}

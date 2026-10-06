@@ -261,6 +261,7 @@ func tarDirectory(src, dest string) error {
 	return closeOutErr
 }
 
+// untar extracts a tar archive, gzipped or not, into dest.
 func untar(archivePath, dest string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -268,7 +269,18 @@ func untar(archivePath, dest string) error {
 	}
 	defer f.Close()
 
-	tr := tar.NewReader(f)
+	br := bufio.NewReader(f)
+	var r io.Reader = br
+	if magic, _ := br.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			return err
+		}
+		defer gz.Close()
+		r = gz
+	}
+
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
