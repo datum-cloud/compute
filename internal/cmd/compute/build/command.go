@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -26,6 +28,8 @@ type Options struct {
 	Ref                string
 	TmpDir             string
 	Verbose            bool
+
+	sourceDateEpoch *time.Time
 }
 
 func Command() *cobra.Command {
@@ -63,6 +67,10 @@ shared libraries that were not copied into the final image.
 
 The optional --fix flag applies safe exact-line fixes to the selected Dockerfile,
 then rebuilds from that file.
+
+Building the same files twice gives the same image digest. If your Dockerfile's
+steps write files stamped with the current time, set SOURCE_DATE_EPOCH (seconds
+since 1970, for example from git log -1 --format=%ct) so those builds match too.
 
 Builds run on BuildKit. By default, build uses the BuildKit built into your
 container engine (Docker Desktop, OrbStack, Colima, Docker Engine, ...), honoring
@@ -156,6 +164,24 @@ func printBuildConfig(opts *Options) {
 		row("Output", opts.Output)
 	}
 	fmt.Fprintln(os.Stderr)
+}
+
+const sourceDateEpochEnv = "SOURCE_DATE_EPOCH"
+
+func parseSourceDateEpoch() (*time.Time, error) {
+	value := os.Getenv(sourceDateEpochEnv)
+	if value == "" {
+		return nil, nil
+	}
+	secs, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || secs < 0 {
+		return nil, &userError{message: paragraphs(
+			fmt.Sprintf("SOURCE_DATE_EPOCH is set to %q, which isn't a valid timestamp.", value),
+			"Set it to a time in seconds since 1970, like 1700000000, or unset it.",
+		)}
+	}
+	t := time.Unix(secs, 0).UTC()
+	return &t, nil
 }
 
 func displayPath(path string) string {

@@ -92,7 +92,7 @@ func packageRootFS(opts *Options, build packagingArtifact) (packagingArtifact, e
 	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
 		return packagingArtifact{}, err
 	}
-	if err := withProgress("Packaging root filesystem", func() error { return createErofsFromTar(build.Path, rootfsPath) }); err != nil {
+	if err := withProgress("Packaging root filesystem", func() error { return createErofsFromTar(build.Path, rootfsPath, opts.sourceDateEpoch) }); err != nil {
 		return packagingArtifact{}, rootfsBuildError(err)
 	}
 	return packagingArtifact{Path: rootfsPath, Config: build.Config}, nil

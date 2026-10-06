@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/cli/cli/config"
 	erofs "github.com/erofs/go-erofs"
@@ -90,7 +91,11 @@ func buildDockerfileFinalStage(ctx context.Context, req dockerfileFinalStageRequ
 	return packagingArtifact{Path: req.RootFSTar, Config: config}, nil
 }
 
-func createErofsFromTar(tarPath, output string) error {
+// createErofsFromTar packs a rootfs tar into an EROFS image. The image's
+// build time is fixed so identical input gives identical bytes; with epoch
+// set, file times are also clamped to it (SOURCE_DATE_EPOCH semantics), so
+// rebuilds that only touched timestamps match too.
+func createErofsFromTar(tarPath, output string, epoch *time.Time) error {
 	out, err := os.OpenFile(output, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("creating EROFS image: %w", err)
@@ -109,7 +114,11 @@ func createErofsFromTar(tarPath, output string) error {
 	}
 	defer os.RemoveAll(tempDir)
 
-	w := erofs.Create(out, erofs.WithTempDir(tempDir))
+	var buildTime uint64
+	if epoch != nil {
+		buildTime = uint64(epoch.Unix())
+	}
+	w := erofs.Create(out, erofs.WithTempDir(tempDir), erofs.WithBuildTime(buildTime, 0))
 	regularFiles := make(map[string]string)
 	tr := tar.NewReader(in)
 	for {
@@ -120,10 +129,21 @@ func createErofsFromTar(tarPath, output string) error {
 		if err != nil {
 			return fmt.Errorf("reading rootfs tar: %w", err)
 		}
+		if epoch != nil {
+			hdr.ModTime = clampTime(hdr.ModTime, *epoch)
+			hdr.AccessTime = clampTime(hdr.AccessTime, *epoch)
+		}
 		if err := addTarEntryToErofs(w, tempDir, regularFiles, tr, hdr); err != nil {
 			return err
 		}
 	}
+}
+
+func clampTime(t, limit time.Time) time.Time {
+	if t.After(limit) {
+		return limit
+	}
+	return t
 }
 
 func addTarEntryToErofs(w *erofs.Writer, tempDir string, regularFiles map[string]string, tr *tar.Reader, hdr *tar.Header) error {
@@ -375,6 +395,10 @@ func buildSolveOpt(req buildRequest, output io.WriteCloser) (*bkclient.SolveOpt,
 	}
 	if req.Target != "" {
 		attrs["target"] = req.Target
+	}
+	if epoch := os.Getenv(sourceDateEpochEnv); epoch != "" {
+		// Like docker buildx; an explicit --build-arg below still wins.
+		attrs["build-arg:"+sourceDateEpochEnv] = epoch
 	}
 	for _, arg := range req.BuildArgs {
 		key, value, ok := strings.Cut(arg, "=")

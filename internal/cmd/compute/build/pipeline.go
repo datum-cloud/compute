@@ -32,6 +32,10 @@ func Run(ctx context.Context, opts *Options) (string, error) {
 		return "", runKraftBuild(ctx, opts)
 	}
 
+	if opts.sourceDateEpoch, err = parseSourceDateEpoch(); err != nil {
+		return "", err
+	}
+
 	output := parseOutput(opts.Output)
 	if err := validateOutputOptions(opts, output); err != nil {
 		return "", err
