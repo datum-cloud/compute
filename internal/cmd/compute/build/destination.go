@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -132,6 +133,11 @@ func parseOutput(value string) outputSpec {
 }
 
 func validateOutputOptions(opts *Options, spec outputSpec) error {
+	if spec.kind == outputLayout {
+		if err := checkLayoutDestination(spec.value); err != nil {
+			return err
+		}
+	}
 	if !opts.Push {
 		return nil
 	}
@@ -182,12 +188,57 @@ func exportArchive(path string, img v1.Image) error {
 	return nil
 }
 
+// layoutEntries are the only files a saved image folder contains.
+var layoutEntries = []string{"blobs", "index.json", "oci-layout"}
+
+// checkLayoutDestination runs before building, so a folder the image can't
+// be saved in is reported before the build's time is spent. It allows a
+// missing or empty folder, or one holding only a previously saved image.
+func checkLayoutDestination(arg string) error {
+	entries, err := os.ReadDir(expandPath(arg))
+	if os.IsNotExist(err) || (err == nil && len(entries) == 0) {
+		return nil
+	}
+	if err != nil {
+		if info, statErr := os.Stat(expandPath(arg)); statErr == nil && !info.IsDir() {
+			return &userError{message: paragraphs(
+				fmt.Sprintf("%s is a file, so the image can't be saved there as a folder.", arg),
+				"Use a new or empty folder, or save to a file with --output "+strings.TrimSuffix(arg, filepath.Ext(arg))+".tar.",
+			)}
+		}
+		return fmt.Errorf("checking output folder: %w", err)
+	}
+	hasMarker := false
+	for _, e := range entries {
+		if !slices.Contains(layoutEntries, e.Name()) {
+			return folderHasFilesError(arg)
+		}
+		hasMarker = hasMarker || e.Name() == "oci-layout"
+	}
+	// Without the marker it may be the user's own blobs/ or index.json.
+	if !hasMarker {
+		return folderHasFilesError(arg)
+	}
+	return nil
+}
+
+func folderHasFilesError(arg string) error {
+	return &userError{message: paragraphs(
+		fmt.Sprintf("%s already has files in it, so the image can't be saved there.", arg),
+		"Use a new or empty folder, or save to a file with --output "+strings.TrimSuffix(arg, "/")+".tar.",
+	)}
+}
+
 func exportLayout(path string, img v1.Image) error {
+	if err := checkLayoutDestination(path); err != nil {
+		return err
+	}
 	path = expandPath(path)
-	if entries, err := os.ReadDir(path); err == nil && len(entries) > 0 {
-		return fmt.Errorf("OCI layout directory %s already exists and is not empty", path)
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("checking OCI layout directory: %w", err)
+	// Anything left here is a previously saved image; replace it.
+	for _, name := range layoutEntries {
+		if err := os.RemoveAll(filepath.Join(path, name)); err != nil {
+			return fmt.Errorf("replacing the previous image in %s: %w", path, err)
+		}
 	}
 	if err := writeOCILayout(path, img); err != nil {
 		return fmt.Errorf("writing OCI layout directory: %w", err)
