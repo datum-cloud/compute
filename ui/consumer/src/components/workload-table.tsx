@@ -165,17 +165,6 @@ function NetworkCell({ networks, projectId }: { networks: string[]; projectId?: 
   );
 }
 
-/** Free-text search over the row plus fields the table doesn't show (image, runtime, tags). */
-function matchesSearch(workload: Workload, search: string): boolean {
-  const needle = search.trim().toLowerCase();
-  if (!needle) return true;
-  return [workload.name, workload.image, workload.runtimeType, ...workload.tags, ...workload.locations, ...workload.networks]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase()
-    .includes(needle);
-}
-
 /** Same rule as the portal: no pagination bar when everything fits on one page. */
 function ConditionalPagination() {
   const { pageCount } = useDataTablePagination();
@@ -297,11 +286,7 @@ export function WorkloadTable({
       data={workloads}
       columns={columns}
       getRowId={(workload) => workload.uid || workload.name}
-      searchFn={matchesSearch}
       className="space-y-6">
-      <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <DataTable.Search placeholder="Search" className="w-full sm:max-w-xs" />
-      </div>
       <div className="overflow-hidden rounded-lg border" data-testid="compute-plugin-workload-table">
         <RowsContent onOpen={open} />
       </div>

@@ -214,3 +214,34 @@ export function homeColumnWorkloads(workloads: readonly Workload[], limit = 5): 
     )
     .slice(0, limit);
 }
+
+/**
+ * Does `workload` match a free-text search? Shared by both list views so the
+ * cards grid and the table agree on what a query means: name, image, runtime
+ * type, tags, placement locations, attached networks, and the published
+ * hostname.
+ *
+ * `publishedHostname` is passed in rather than read off the workload because
+ * the published URL comes from a separate HTTPProxy lookup in the page.
+ */
+export function matchesWorkloadSearch(
+  workload: Workload,
+  search: string,
+  publishedHostname?: string
+): boolean {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
+  return [
+    workload.name,
+    workload.image,
+    workload.runtimeType,
+    ...workload.tags,
+    ...workload.locations,
+    ...workload.networks,
+    publishedHostname,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .includes(needle);
+}
