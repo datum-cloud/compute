@@ -108,6 +108,15 @@ const (
 	//
 	// alpha: v0.1
 	InstanceConsoleSessions featuregate.Feature = "InstanceConsoleSessions"
+
+	// InternalDNSPublishing enables the instance identity publisher. The
+	// publisher reads DNS-owned managed namespace bindings and writes
+	// registrations, grants, and leased contributions to project control planes.
+	// It is deliberately off by default: an installation with the gate disabled
+	// neither discovers DNS API types nor needs DNS RBAC.
+	//
+	// alpha: v0.1
+	InternalDNSPublishing featuregate.Feature = "InternalDNSPublishing"
 )
 
 // MutableFeatureGate is the mutable feature gate for the compute operator.
@@ -127,6 +136,7 @@ func init() {
 		RuntimeClasses:          {Default: false, PreRelease: featuregate.Alpha},
 		InstanceTypes:           {Default: false, PreRelease: featuregate.Alpha},
 		InstanceConsoleSessions: {Default: false, PreRelease: featuregate.Alpha},
+		InternalDNSPublishing:   {Default: false, PreRelease: featuregate.Alpha},
 	}); err != nil {
 		panic(err)
 	}

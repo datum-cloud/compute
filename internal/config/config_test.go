@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -26,6 +27,30 @@ func decode(t *testing.T, data string) *WorkloadOperator {
 		t.Fatalf("decode: %v", err)
 	}
 	return &cfg
+}
+
+func TestInternalDNSConfigDecodeAndDeepCopy(t *testing.T) {
+	cfg := decode(t, `
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: WorkloadOperator
+metricsServer:
+  bindAddress: "0"
+internalDNS:
+  principalSubject: system:serviceaccount:compute-system:compute-manager
+  leaseDuration: 60s
+  projects:
+    - name: project-a
+      projectUID: project-uid
+      sourceClusterUID: source-uid
+`)
+	if cfg.InternalDNS.LeaseDuration.Duration != 60*time.Second {
+		t.Fatalf("leaseDuration = %s, want 60s", cfg.InternalDNS.LeaseDuration.Duration)
+	}
+	copy := cfg.DeepCopy()
+	copy.InternalDNS.Projects[0].ProjectUID = "changed"
+	if cfg.InternalDNS.Projects[0].ProjectUID != "project-uid" {
+		t.Fatal("WorkloadOperator DeepCopy aliases internal DNS project identities")
+	}
 }
 
 func TestWebhookServer_Absent(t *testing.T) {
