@@ -51,6 +51,7 @@ export default defineConfig({
       exposes: {
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
+        './InstanceDetail': './src/pages/instance-detail.tsx',
         './FleetWorkloads': './src/pages/fleet-workloads.tsx',
         './ServiceOverview': './src/pages/service-overview.tsx',
       },

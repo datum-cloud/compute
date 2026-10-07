@@ -1,6 +1,6 @@
 {
   "name": "workloads.staff-portal.datumapis.com",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "sdk": {
     "name": "@datum-cloud/portal-plugin-sdk",
     "range": "^1.0.0"
@@ -10,7 +10,8 @@
     "WorkloadList": "./src/pages/workload-list.tsx",
     "WorkloadDetail": "./src/pages/workload-detail.tsx",
     "FleetWorkloads": "./src/pages/fleet-workloads.tsx",
-    "ServiceOverview": "./src/pages/service-overview.tsx"
+    "ServiceOverview": "./src/pages/service-overview.tsx",
+    "InstanceDetail": "./src/pages/instance-detail.tsx"
   },
   "extensions": [
     {
@@ -41,6 +42,14 @@
         "id": "compute-workload-detail",
         "path": ":workloadName",
         "component": { "$codeRef": "WorkloadDetail" }
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "id": "compute-instance-detail",
+        "path": ":workloadName/instances/:instanceName",
+        "component": { "$codeRef": "InstanceDetail" }
       }
     },
     {
