@@ -22,6 +22,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"go.miloapis.com/telemetry/cli/logql"
+	logsapi "go.miloapis.com/telemetry/cli/logs"
+
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/cmd/compute/util"
 )
@@ -262,18 +265,18 @@ func run(cmd *cobra.Command, workload string, opts *options) error {
 	if err != nil {
 		return err
 	}
-	logs, err := newLogsClient(project)
+	lc, err := newLogsClient(project)
 	if err != nil {
 		return err
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	err = execute(ctx, env{kube, logs, cmd.OutOrStdout(), cmd.ErrOrStderr()}, workload, opts, w)
+	err = execute(ctx, env{kube, lc, cmd.OutOrStdout(), cmd.ErrOrStderr()}, workload, opts, w)
 	if ctx.Err() != nil {
 		return nil // Interrupted; stopping isn't a failure.
 	}
-	return err
+	return withHint(err)
 }
 
 type env struct {
@@ -298,7 +301,7 @@ func execute(ctx context.Context, e env, workload string, opts *options, w windo
 		p.loc = time.UTC
 	}
 
-	var sel selector
+	var sel logql.Selector
 	var err error
 	if opts.alb {
 		sel, err = albSelector(ctx, e.kube, workload)
@@ -315,24 +318,24 @@ func execute(ctx context.Context, e env, workload string, opts *options, w windo
 
 	// With --follow, the backlog seeds the follower so the first poll doesn't
 	// reprint it.
-	var f follower
-	emit := p.emit
-	if opts.follow {
-		emit = func(en entry) {
-			f.admit([]entry{en})
+	f := &logsapi.Follower{Querier: e.logs, Query: query, Status: e.status}
+	show := func(entries []logsapi.Entry) bool {
+		if opts.follow {
+			f.Backlog(entries...)
+		}
+		for _, en := range entries {
 			p.emit(en)
 		}
+		return true
 	}
 
 	if w.tail >= 0 {
-		entries, err := tail(ctx, e.logs, query, w.start, w.end, w.tail)
+		entries, err := logsapi.Tail(ctx, e.logs, query, w.start, w.end, w.tail)
 		if err != nil {
 			return err
 		}
-		for _, en := range entries {
-			emit(en)
-		}
-	} else if err := all(ctx, e.logs, query, w.start, w.end, emit); err != nil {
+		show(entries)
+	} else if err := logsapi.Pages(ctx, e.logs, logsapi.Query{Query: query, Start: w.start, End: w.end, Direction: logsapi.Forward}, show); err != nil {
 		return err
 	}
 
@@ -343,13 +346,12 @@ func execute(ctx context.Context, e env, workload string, opts *options, w windo
 		return nil
 	}
 
-	f.floor = f.cursor
 	fmt.Fprintf(e.status, "Following logs for workload %q. Ctrl-C to stop.\n", workload)
-	return follow(ctx, e.logs, query, &f, time.Now().Add(-followOverlap), p.emit, e.status)
+	return f.Run(ctx, p.emit)
 }
 
-func appSelector(ctx context.Context, e env, workload string, opts *options, w window, p *printer) (selector, error) {
-	var sel selector
+func appSelector(ctx context.Context, e env, workload string, opts *options, w window, p *printer) (logql.Selector, error) {
+	var sel logql.Selector
 	wl, err := requireWorkload(ctx, e, workload, w.end)
 	if err != nil {
 		return sel, err
@@ -359,13 +361,12 @@ func appSelector(ctx context.Context, e env, workload string, opts *options, w w
 		return sel, err
 	}
 
-	sel.eq(labelWorkload, workload)
-	sel.oneOf(labelInstance, instances)
+	sel.Eq(labelWorkload, workload).OneOf(labelInstance, instances...)
 	if len(opts.locations) > 0 {
-		sel.re(labelInstance, locationPattern(workload, opts.locations))
+		sel.Re(labelInstance, locationPattern(workload, opts.locations))
 	}
 	if opts.container != "" {
-		sel.eq(labelContainer, opts.container)
+		sel.Eq(labelContainer, opts.container)
 	}
 	// Find generations before applying the search, or --previous would pick
 	// the newest earlier generation that happened to log the text.
@@ -374,7 +375,7 @@ func appSelector(ctx context.Context, e env, workload string, opts *options, w w
 			return sel, err
 		}
 	}
-	sel.search = opts.search
+	sel.Contains(opts.search)
 	return sel, nil
 }
 
@@ -402,7 +403,7 @@ func requireWorkload(ctx context.Context, e env, workload string, end time.Time)
 	if !k8serrors.IsNotFound(err) {
 		return nil, fmt.Errorf("getting workload %q: %w", workload, err)
 	}
-	names, err := e.logs.labelValues(ctx, labelWorkload, end.Add(-deletedLookback), end)
+	names, err := e.logs.LabelValues(ctx, labelWorkload, end.Add(-deletedLookback), end)
 	if err != nil || !slices.Contains(names, workload) {
 		return nil, fmt.Errorf("workload %q not found", workload)
 	}
@@ -453,7 +454,7 @@ func isolationOf(ctx context.Context, kube client.Client, wl *computev1alpha.Wor
 	return ""
 }
 
-func narrowToGeneration(ctx context.Context, q querier, sel *selector, previous bool, w window, p *printer) error {
+func narrowToGeneration(ctx context.Context, q logsapi.Querier, sel *logql.Selector, previous bool, w window, p *printer) error {
 	index, which := 0, flagCurrent
 	if previous {
 		index, which = 1, flagPrevious
@@ -472,7 +473,7 @@ func narrowToGeneration(ctx context.Context, q querier, sel *selector, previous 
 		}
 		return errors.New("no logs with a generation identity found in the window")
 	}
-	f.apply(sel)
+	sel.OneOf(f.label, f.ids...)
 
 	fmt.Fprintf(p.status, "Showing the %s generation of %d instance(s).\n", which, len(f.ids))
 	if len(f.missing) > 0 {
@@ -485,8 +486,8 @@ func narrowToGeneration(ctx context.Context, q querier, sel *selector, previous 
 	return nil
 }
 
-func albSelector(ctx context.Context, kube client.Client, workload string) (selector, error) {
-	var sel selector
+func albSelector(ctx context.Context, kube client.Client, workload string) (logql.Selector, error) {
+	var sel logql.Selector
 	proxies, err := proxiesFor(ctx, kube, workload)
 	if err != nil {
 		return sel, fmt.Errorf("looking up workload %q's URL: %w", workload, err)
@@ -494,7 +495,7 @@ func albSelector(ctx context.Context, kube client.Client, workload string) (sele
 	if len(proxies) == 0 {
 		return sel, fmt.Errorf("workload %q has no published URL, so it has no access logs — deploy with --http-port to publish one", workload)
 	}
-	sel.re(labelRouteName, albRoutePattern(proxies))
+	sel.Re(labelRouteName, albRoutePattern(proxies))
 	return sel, nil
 }
 

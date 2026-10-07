@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+
+	logsapi "go.miloapis.com/telemetry/cli/logs"
 )
 
 const timestampLayout = "Jan 02 15:04:05.000"
@@ -41,7 +43,7 @@ type printer struct {
 	printed int
 }
 
-func (p *printer) emit(e entry) {
+func (p *printer) emit(e logsapi.Entry) {
 	if p.alb {
 		p.emitALB(e)
 	} else {
@@ -49,20 +51,20 @@ func (p *printer) emit(e entry) {
 	}
 }
 
-func (p *printer) emitApp(e entry) {
-	inst := e.labels[labelInstance]
-	container := e.labels[labelContainer]
-	gen := generationOf(e.labels)
+func (p *printer) emitApp(e logsapi.Entry) {
+	inst := e.Labels[labelInstance]
+	container := e.Labels[labelContainer]
+	gen := generationOf(e.Labels)
 
 	if p.json {
 		p.writeJSON(map[string]string{
-			"timestamp":  rfc3339(e.ts),
-			"workload":   e.labels[labelWorkload],
+			"timestamp":  rfc3339(e.Time),
+			"workload":   e.Labels[labelWorkload],
 			"instance":   inst,
 			"container":  container,
-			"stream":     e.labels[labelStream],
+			"stream":     e.Labels[labelStream],
 			"generation": gen.id,
-			"line":       e.line,
+			"line":       e.Line,
 		})
 		return
 	}
@@ -82,18 +84,18 @@ func (p *printer) emitApp(e entry) {
 		b.WriteString(p.prefixFor(inst, container) + " ")
 	}
 	if p.timestamps {
-		b.WriteString(p.timestamp(e.ts) + "  ")
+		b.WriteString(p.timestamp(e.Time) + "  ")
 	}
-	b.WriteString(e.line)
+	b.WriteString(e.Line)
 	p.writeLine(b.String())
 }
 
 // emitALB builds the line from labels; access log bodies are empty.
-func (p *printer) emitALB(e entry) {
-	l := e.labels
+func (p *printer) emitALB(e logsapi.Entry) {
+	l := e.Labels
 	if p.json {
 		p.writeJSON(map[string]string{
-			"timestamp":   rfc3339(e.ts),
+			"timestamp":   rfc3339(e.Time),
 			"method":      l[labelMethod],
 			"path":        l[labelPath],
 			"status":      l[labelResponseCode],
@@ -110,7 +112,7 @@ func (p *printer) emitALB(e entry) {
 
 	line := fmt.Sprintf("%-6s %s %6sms  %s", l[labelMethod], l[labelResponseCode], l[labelDuration], l[labelPath])
 	if p.timestamps {
-		line = p.timestamp(e.ts) + "  " + line
+		line = p.timestamp(e.Time) + "  " + line
 	}
 	p.writeLine(line)
 }
@@ -132,12 +134,12 @@ func (p *printer) writeJSON(fields map[string]string) {
 }
 
 // timestamp is dimmed so it reads apart from timestamps in the line itself.
-func (p *printer) timestamp(ts int64) string {
-	return timestampColor.Sprint(time.Unix(0, ts).In(p.loc).Format(timestampLayout))
+func (p *printer) timestamp(t time.Time) string {
+	return timestampColor.Sprint(t.In(p.loc).Format(timestampLayout))
 }
 
-func rfc3339(ts int64) string {
-	return time.Unix(0, ts).UTC().Format(time.RFC3339Nano)
+func rfc3339(t time.Time) string {
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // short drops the workload name every instance of it starts with.

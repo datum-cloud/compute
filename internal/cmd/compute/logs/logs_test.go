@@ -5,6 +5,7 @@ package logs
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,17 +16,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	logsapi "go.miloapis.com/telemetry/cli/logs"
+
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/cmd/compute/util"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 const (
-	testWorkload      = "api"
-	testContainer     = "app"
-	testInstance      = "api-default-us-central-1-0"
-	testOtherInstance = "api-default-us-east-1-0"
-	testVMWorkload    = "bare"
+	testWorkload        = "api"
+	testContainer       = "app"
+	testInstance        = "api-default-us-central-1-0"
+	testOtherInstance   = "api-default-us-east-1-0"
+	testVMWorkload      = "bare"
+	testDeletedWorkload = "gone"
 )
 
 func newFakeKube(t *testing.T, objs ...client.Object) client.Client {
@@ -170,19 +174,19 @@ func TestExecute(t *testing.T) {
 		proxy("hand-written", nil, "api-svc"),
 		proxy("unrelated", nil, "other-svc"),
 	)
-	appLines := []entry{
+	appLines := []logsapi.Entry{
 		genLine(2*sec, testInstance, labelVMGeneration, "g2"),
 		genLine(1*sec, testInstance, labelVMGeneration, "g1"),
 	}
 	for i := range appLines {
-		appLines[i].line = "hello " + appLines[i].labels[labelVMGeneration]
+		appLines[i].Line = "hello " + appLines[i].Labels[labelVMGeneration]
 	}
 
 	tests := []struct {
 		name       string
 		workload   string
 		opts       options
-		entries    []entry
+		entries    []logsapi.Entry
 		values     map[string][]string
 		wantErr    string
 		wantQuery  string // the final query
@@ -215,8 +219,8 @@ func TestExecute(t *testing.T) {
 		},
 		{
 			name:       "deleted workload",
-			workload:   "gone",
-			values:     map[string][]string{labelWorkload: {"gone"}},
+			workload:   testDeletedWorkload,
+			values:     map[string][]string{labelWorkload: {testDeletedWorkload}},
 			wantQuery:  `{datum_workload_name="gone"}`,
 			wantStatus: "no longer exists",
 		},
@@ -234,7 +238,7 @@ func TestExecute(t *testing.T) {
 			name:     "access logs",
 			workload: testWorkload,
 			opts:     options{alb: true},
-			entries: []entry{{ts: sec, labels: map[string]string{
+			entries: []logsapi.Entry{{Time: time.Unix(0, sec), Labels: map[string]string{
 				labelMethod: "GET", labelResponseCode: "200", labelDuration: "3", labelPath: "/",
 			}}},
 			wantQuery: `{route_name=~"httproute/[^/]+/(cli|hand-written)/.*"}`,
@@ -266,12 +270,12 @@ func TestExecute(t *testing.T) {
 				t.Fatalf("execute() = %v", err)
 			}
 			last := len(q.queries) - 1
-			if got := q.queries[last].query; got != tt.wantQuery {
+			if got := q.queries[last].Query; got != tt.wantQuery {
 				t.Errorf("query = %s\nwant    %s", got, tt.wantQuery)
 			}
 			for _, r := range q.queries[:last] {
-				if strings.Contains(r.query, "|=") {
-					t.Errorf("generation discovery used the search: %s", r.query)
+				if strings.Contains(r.Query, "|=") {
+					t.Errorf("generation discovery used the search: %s", r.Query)
 				}
 			}
 			if out.String() != tt.wantOut {
@@ -279,6 +283,50 @@ func TestExecute(t *testing.T) {
 			}
 			if !strings.Contains(status.String(), tt.wantStatus) {
 				t.Errorf("status = %q, want it to contain %q", status.String(), tt.wantStatus)
+			}
+		})
+	}
+}
+
+// stopAfter cancels following when the follower polls again, so its first
+// poll is printed.
+type stopAfter struct {
+	*fakeQuerier
+	queries int
+	cancel  context.CancelFunc
+}
+
+func (s *stopAfter) QueryRange(ctx context.Context, q logsapi.Query) ([]logsapi.Entry, error) {
+	if len(s.fakeQuerier.queries) == s.queries {
+		s.cancel()
+	}
+	return s.fakeQuerier.QueryRange(ctx, q)
+}
+
+func TestFollowSkipsBacklog(t *testing.T) {
+	for _, tail := range []int{1, -1} {
+		t.Run(strconv.Itoa(tail), func(t *testing.T) {
+			now := time.Now()
+			old, recent := line(now.Add(-3*time.Second).UnixNano(), "old"), line(now.Add(-2*time.Second).UnixNano(), "recent")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// One backlog query, then the follower's first poll, which
+			// overlaps the backlog.
+			fake := &fakeQuerier{entries: []logsapi.Entry{old, recent}, values: map[string][]string{labelWorkload: {testDeletedWorkload}}}
+			q := &stopAfter{fakeQuerier: fake, queries: 2, cancel: cancel}
+			var out, status strings.Builder
+			opts := options{follow: true}
+
+			err := execute(ctx, env{newFakeKube(t), q, &out, &status}, testDeletedWorkload, &opts, window{start: now.Add(-time.Hour), end: now, tail: tail})
+			if err != nil {
+				t.Fatalf("execute() = %v", err)
+			}
+			want := "recent\n"
+			if tail < 0 {
+				want = "old\nrecent\n"
+			}
+			if out.String() != want {
+				t.Errorf("out = %q, want %q", out.String(), want)
 			}
 		})
 	}
