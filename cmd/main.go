@@ -450,7 +450,8 @@ func main() {
 	// not registered at all while its default-off feature gate is disabled.
 	if features.FeatureGate.Enabled(features.InternalDNSPublishing) {
 		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo || !enableManagementControllers {
-			setupLog.Error(nil, "InternalDNSPublishing requires Milo discovery mode and management controllers so leases are renewed only from the authoritative project Instance")
+			setupLog.Error(nil,
+				"InternalDNSPublishing requires Milo discovery mode and management controllers")
 			os.Exit(1)
 		}
 		identities, identityErr := internalDNSProjectIdentities(serverConfig.InternalDNS)
@@ -967,7 +968,9 @@ func computeWatchProviderClaims(mode multiclusterproviders.Provider) bool {
 	return mode == multiclusterproviders.ProviderMilo
 }
 
-func internalDNSProjectIdentities(cfg config.InternalDNSConfig) (map[string]controller.InternalDNSProjectIdentity, error) {
+func internalDNSProjectIdentities(
+	cfg config.InternalDNSConfig,
+) (map[string]controller.InternalDNSProjectIdentity, error) {
 	if cfg.PrincipalSubject == "" {
 		return nil, errors.New("internalDNS.principalSubject is required")
 	}
@@ -989,7 +992,8 @@ func internalDNSProjectIdentities(cfg config.InternalDNSConfig) (map[string]cont
 		return nil, errors.New("internalDNS.projects must contain at least one project")
 	}
 	if cfg.LeaseDuration.Duration > 90*time.Second {
-		return nil, fmt.Errorf("internalDNS.leaseDuration %s exceeds the DNS platform maximum 90s", cfg.LeaseDuration.Duration)
+		return nil, fmt.Errorf(
+			"internalDNS.leaseDuration %s exceeds the DNS platform maximum 90s", cfg.LeaseDuration.Duration)
 	}
 	return identities, nil
 }

@@ -29,7 +29,9 @@ func TestInternalDNSProjectIdentities(t *testing.T) {
 	identities, err := internalDNSProjectIdentities(config.InternalDNSConfig{
 		PrincipalSubject: "system:serviceaccount:compute-system:compute-manager",
 		LeaseDuration:    metav1.Duration{Duration: 60 * time.Second},
-		Projects:         []config.InternalDNSProjectIdentity{{Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid"}},
+		Projects: []config.InternalDNSProjectIdentity{{
+			Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid",
+		}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "source-uid", identities["project-a"].SourceClusterUID)
@@ -39,7 +41,9 @@ func TestInternalDNSProjectIdentities(t *testing.T) {
 	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{
 		PrincipalSubject: "subject",
 		LeaseDuration:    metav1.Duration{Duration: 91 * time.Second},
-		Projects:         []config.InternalDNSProjectIdentity{{Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid"}},
+		Projects: []config.InternalDNSProjectIdentity{{
+			Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid",
+		}},
 	})
 	assert.Error(t, err, "a producer must not configure a lease DNS admission rejects")
 }

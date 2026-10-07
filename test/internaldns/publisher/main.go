@@ -40,7 +40,9 @@ func main() {
 	flags.StringVar(&subject, "subject", "system:serviceaccount:compute-system:dns-publisher", "Authenticated writer")
 	flags.StringVar(&gates, "feature-gates", "", "Compute feature gates")
 	flags.DurationVar(&lease, "lease", 60*time.Second, "Contribution lease")
-	flags.Parse(os.Args[1:])
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		panic(err)
+	}
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	if err := features.MutableFeatureGate.Set(gates); err != nil {
 		panic(err)

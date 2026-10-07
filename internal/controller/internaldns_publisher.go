@@ -34,17 +34,23 @@ import (
 )
 
 const (
-	internalDNSGroup       = "dns.networking.miloapis.com"
-	internalDNSVersion     = "v1alpha1"
-	internalDNSInstanceUID = "internal-dns.compute.datumapis.com/instance-uid"
-	internalDNSVPCUID      = "internal-dns.compute.datumapis.com/vpc-uid"
-	internalDNSManagedBy   = "internal-dns.compute.datumapis.com/managed-by"
-	internalDNSManager     = "compute-instance-publisher"
-	defaultDNSLease        = 60 * time.Second
-	maxDNSLease            = 90 * time.Second
-	internalDNSPendingWait = 10 * time.Second
-	internalDNSAPITimeout  = 10 * time.Second
-	defaultDNSConcurrency  = 4
+	internalDNSInstanceKind   = "Instance"
+	internalDNSRecordTypeAAAA = "AAAA"
+	internalDNSNameField      = "name"
+	internalDNSStatusField    = "status"
+	internalDNSReasonField    = "reason"
+	internalDNSUIDField       = "uid"
+	internalDNSGroup          = "dns.networking.miloapis.com"
+	internalDNSVersion        = "v1alpha1"
+	internalDNSInstanceUID    = "internal-dns.compute.datumapis.com/instance-uid"
+	internalDNSVPCUID         = "internal-dns.compute.datumapis.com/vpc-uid"
+	internalDNSManagedBy      = "internal-dns.compute.datumapis.com/managed-by"
+	internalDNSManager        = "compute-instance-publisher"
+	defaultDNSLease           = 60 * time.Second
+	maxDNSLease               = 90 * time.Second
+	internalDNSPendingWait    = 10 * time.Second
+	internalDNSAPITimeout     = 10 * time.Second
+	defaultDNSConcurrency     = 4
 )
 
 var (
@@ -146,7 +152,7 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	}
 	owner := metav1.OwnerReference{
 		APIVersion: computev1alpha.GroupVersion.String(),
-		Kind:       "Instance",
+		Kind:       internalDNSInstanceKind,
 		Name:       projectInstance.Name,
 		UID:        projectInstance.UID,
 		Controller: ptrBool(true),
@@ -222,11 +228,11 @@ func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNa
 			}
 			rrtype, field := "A", "a"
 			if addr.Is6() {
-				rrtype, field = "AAAA", "aaaa"
+				rrtype, field = internalDNSRecordTypeAAAA, "aaaa"
 			}
 			attachment.RecordSets = append(attachment.RecordSets, map[string]any{
 				"recordType": rrtype,
-				"records":    []any{map[string]any{"name": "", field: map[string]any{"content": addr.String()}}},
+				"records":    []any{map[string]any{internalDNSNameField: "", field: map[string]any{"content": addr.String()}}},
 			})
 		}
 	}
@@ -247,7 +253,7 @@ func internalDNSInterfaceName(nic computev1alpha.InstanceNetworkInterface) strin
 	if nic.Name != "" {
 		return nic.Name
 	}
-	return "eth0"
+	return defaultInterfaceName
 }
 
 func interfaceDNSPublishable(status computev1alpha.InstanceNetworkInterfaceStatus) bool {
@@ -275,8 +281,8 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	if managed == nil {
 		return false, nil
 	}
-	zoneRef, _, _ := unstructured.NestedMap(managed.Object, "status", "dnsZoneRef")
-	if stringValue(zoneRef, "name") == "" || stringValue(zoneRef, "uid") == "" {
+	zoneRef, _, _ := unstructured.NestedMap(managed.Object, internalDNSStatusField, "dnsZoneRef")
+	if stringValue(zoneRef, internalDNSNameField) == "" || stringValue(zoneRef, internalDNSUIDField) == "" {
 		return false, nil
 	}
 
@@ -290,16 +296,16 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		rrset := attachment.RecordSets[i].(map[string]any)
 		records := rrset["records"].([]any)
 		for _, record := range records {
-			record.(map[string]any)["name"] = ownerName
+			record.(map[string]any)[internalDNSNameField] = ownerName
 		}
 	}
 
 	registrationSpec := map[string]any{
-		"dnsZoneRef":        zoneRef,
-		"name":              ownerName,
-		"recordTypes":       []any{"A", "AAAA"},
-		"publicationPolicy": "EligibleContributions",
-		"ttlSeconds":        int64(30),
+		"dnsZoneRef":         zoneRef,
+		internalDNSNameField: ownerName,
+		"recordTypes":        []any{"A", internalDNSRecordTypeAAAA},
+		"publicationPolicy":  "EligibleContributions",
+		"ttlSeconds":         int64(30),
 	}
 	registration, changed, err := ensureDNSObject(ctx, access, dnsRegistrationGVK, namespace, resourceName, labels, owner, registrationSpec)
 	if err != nil || changed {
@@ -314,15 +320,15 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 			"clusterUID": identity.SourceClusterUID,
 			"subject":    r.PrincipalSubject,
 		},
-		"recordTypes": []any{"A", "AAAA"},
+		"recordTypes": []any{"A", internalDNSRecordTypeAAAA},
 	}
 	grant, changed, err := ensureDNSObject(ctx, access, dnsGrantGVK, namespace, resourceName, labels, owner, grantSpec)
 	if err != nil || changed {
 		return false, err
 	}
-	writerEpoch, _, _ := unstructured.NestedInt64(grant.Object, "status", "activeWriterEpoch")
-	observedGrant, _, _ := unstructured.NestedInt64(grant.Object, "status", "observedGrantGeneration")
-	observedRegistration, _, _ := unstructured.NestedInt64(grant.Object, "status", "observedRegistrationGeneration")
+	writerEpoch, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "activeWriterEpoch")
+	observedGrant, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "observedGrantGeneration")
+	observedRegistration, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "observedRegistrationGeneration")
 	if writerEpoch < 1 || observedGrant != grant.GetGeneration() || observedRegistration != registration.GetGeneration() {
 		return false, nil
 	}
@@ -336,7 +342,7 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	if err != nil || changed {
 		return false, err
 	}
-	boundEpoch, _, _ := unstructured.NestedInt64(contribution.Object, "status", "writerEpoch")
+	boundEpoch, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, "writerEpoch")
 	if boundEpoch != writerEpoch {
 		return false, nil
 	}
@@ -349,26 +355,26 @@ func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context,
 	if r.Now != nil {
 		now = r.Now()
 	}
-	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, "status", "eligible")
-	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, "status", "observedGeneration")
-	validUntilRaw, _, _ := unstructured.NestedString(contribution.Object, "status", "validUntil")
+	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, "eligible")
+	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, "observedGeneration")
+	validUntilRaw, _, _ := unstructured.NestedString(contribution.Object, internalDNSStatusField, "validUntil")
 	validUntil, _ := time.Parse(time.RFC3339Nano, validUntilRaw)
 	if oldEligible == eligible && observedGeneration == contribution.GetGeneration() && validUntil.After(now.Add(r.leaseDuration()/2)) {
 		return true, nil
 	}
 
 	base := contribution.DeepCopy()
-	sequence, _, _ := unstructured.NestedInt64(contribution.Object, "status", "sequence")
+	sequence, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, "sequence")
 	owned := []struct {
 		path  []string
 		value any
 	}{
-		{[]string{"status", "observedGeneration"}, contribution.GetGeneration()},
-		{[]string{"status", "writerEpoch"}, writerEpoch},
-		{[]string{"status", "sequence"}, sequence + 1},
-		{[]string{"status", "eligible"}, eligible},
-		{[]string{"status", "reason"}, map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[eligible]},
-		{[]string{"status", "validUntil"}, now.Add(r.leaseDuration()).UTC().Format(time.RFC3339Nano)},
+		{[]string{internalDNSStatusField, "observedGeneration"}, contribution.GetGeneration()},
+		{[]string{internalDNSStatusField, "writerEpoch"}, writerEpoch},
+		{[]string{internalDNSStatusField, "sequence"}, sequence + 1},
+		{[]string{internalDNSStatusField, "eligible"}, eligible},
+		{[]string{internalDNSStatusField, internalDNSReasonField}, map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[eligible]},
+		{[]string{internalDNSStatusField, "validUntil"}, now.Add(r.leaseDuration()).UTC().Format(time.RFC3339Nano)},
 	}
 	for _, field := range owned {
 		if err := unstructured.SetNestedField(contribution.Object, field.value, field.path...); err != nil {
@@ -397,7 +403,7 @@ func findManagedNamespace(ctx context.Context, reader client.Reader, namespace s
 			continue
 		}
 		puid, _, _ := unstructured.NestedString(item.Object, "spec", "projectUID")
-		vid, _, _ := unstructured.NestedString(item.Object, "spec", "vpcRef", "uid")
+		vid, _, _ := unstructured.NestedString(item.Object, "spec", "vpcRef", internalDNSUIDField)
 		if puid != string(projectUID) || vid != string(vpcUID) || !unstructuredConditionTrue(item, "Accepted") {
 			continue
 		}
@@ -410,10 +416,10 @@ func findManagedNamespace(ctx context.Context, reader client.Reader, namespace s
 }
 
 func unstructuredConditionTrue(obj *unstructured.Unstructured, conditionType string) bool {
-	conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	conditions, _, _ := unstructured.NestedSlice(obj.Object, internalDNSStatusField, "conditions")
 	for _, raw := range conditions {
 		condition, ok := raw.(map[string]any)
-		if ok && condition["type"] == conditionType && condition["status"] == "True" {
+		if ok && condition["type"] == conditionType && condition[internalDNSStatusField] == string(metav1.ConditionTrue) {
 			return true
 		}
 	}
@@ -509,7 +515,7 @@ func newDNSObject(gvk schema.GroupVersionKind, namespace, name string) *unstruct
 }
 
 func objectReference(obj *unstructured.Unstructured, includeGeneration bool) map[string]any {
-	ref := map[string]any{"name": obj.GetName(), "uid": string(obj.GetUID())}
+	ref := map[string]any{internalDNSNameField: obj.GetName(), internalDNSUIDField: string(obj.GetUID())}
 	if includeGeneration {
 		ref["generation"] = obj.GetGeneration()
 	}
