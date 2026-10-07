@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,20 +32,15 @@ type packagingArtifact struct {
 // fragile against upstream wording changes, but there's no structured error
 // type to match on instead.
 func rootfsBuildError(err error) error {
+	if errors.As(err, new(*userError)) {
+		return err
+	}
 	msg := err.Error()
+	if strings.Contains(msg, "error getting credentials") && isMissingCredentialHelper(err) {
+		return credentialStoreError("", "your Dockerfile's base images can't be pulled", true, err)
+	}
 	if strings.Contains(msg, "could not create EroFS archive") && strings.Contains(msg, "could not create symlink") {
 		return fmt.Errorf("building root filesystem: EROFS packaging failed on duplicate symlink metadata")
-	}
-	for _, s := range []string{
-		"could not connect to buildkit",
-		"could not start ephemeral BuildKit container",
-		"creating buildkit container",
-		"creating container buildkit client",
-		"connecting to buildkit client",
-	} {
-		if strings.Contains(msg, s) {
-			return fmt.Errorf("building root filesystem: Docker is not running or is not accessible")
-		}
 	}
 	return fmt.Errorf("building root filesystem: %w", err)
 }
@@ -73,6 +69,7 @@ func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, err
 		fmt.Fprintln(os.Stderr, "Building Dockerfile ...")
 	}
 	result, err := buildDockerfileFinalStageQuietly(ctx, dockerfileFinalStageRequest{
+		Address:     opts.BuildkitHost,
 		ContextDir:  opts.ContextDir,
 		Dockerfile:  opts.Dockerfile,
 		Target:      opts.BuildTarget,
@@ -85,7 +82,7 @@ func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, err
 		task.Done(err)
 	}
 	if err != nil {
-		return packagingArtifact{}, rootfsBuildError(err)
+		return packagingArtifact{}, withErrorDetails(opts.Verbose, rootfsBuildError(err))
 	}
 	return result, nil
 }
@@ -95,7 +92,7 @@ func packageRootFS(opts *Options, build packagingArtifact) (packagingArtifact, e
 	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
 		return packagingArtifact{}, err
 	}
-	if err := withProgress("Packaging root filesystem", func() error { return createErofsFromTar(build.Path, rootfsPath) }); err != nil {
+	if err := withProgress("Packaging root filesystem", func() error { return createErofsFromTar(build.Path, rootfsPath, opts.sourceDateEpoch) }); err != nil {
 		return packagingArtifact{}, rootfsBuildError(err)
 	}
 	return packagingArtifact{Path: rootfsPath, Config: build.Config}, nil

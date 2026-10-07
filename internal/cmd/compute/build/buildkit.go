@@ -10,10 +10,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/cli/cli/config"
-	dockerclient "github.com/docker/docker/client"
-	dockerbuildkit "github.com/docker/docker/client/buildkit"
 	erofs "github.com/erofs/go-erofs"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
@@ -21,7 +20,6 @@ import (
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
-	bkappdefaults "github.com/moby/buildkit/util/appdefaults"
 	"github.com/moby/buildkit/util/progress/progressui"
 	"github.com/tonistiigi/fsutil"
 	"golang.org/x/sync/errgroup"
@@ -44,6 +42,7 @@ type buildRequest struct {
 }
 
 type dockerfileFinalStageRequest struct {
+	Address     string
 	ContextDir  string
 	Dockerfile  string
 	Target      string
@@ -55,6 +54,7 @@ type dockerfileFinalStageRequest struct {
 
 func buildDockerfileFinalStage(ctx context.Context, req dockerfileFinalStageRequest) (packagingArtifact, error) {
 	if err := buildDockerfileExports(ctx, buildRequest{
+		Address:     req.Address,
 		ContextDir:  req.ContextDir,
 		Dockerfile:  req.Dockerfile,
 		Target:      req.Target,
@@ -91,7 +91,11 @@ func buildDockerfileFinalStage(ctx context.Context, req dockerfileFinalStageRequ
 	return packagingArtifact{Path: req.RootFSTar, Config: config}, nil
 }
 
-func createErofsFromTar(tarPath, output string) error {
+// createErofsFromTar packs a rootfs tar into an EROFS image. The image's
+// build time is fixed so identical input gives identical bytes; with epoch
+// set, file times are also clamped to it (SOURCE_DATE_EPOCH semantics), so
+// rebuilds that only touched timestamps match too.
+func createErofsFromTar(tarPath, output string, epoch *time.Time) error {
 	out, err := os.OpenFile(output, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("creating EROFS image: %w", err)
@@ -110,7 +114,11 @@ func createErofsFromTar(tarPath, output string) error {
 	}
 	defer os.RemoveAll(tempDir)
 
-	w := erofs.Create(out, erofs.WithTempDir(tempDir))
+	var buildTime uint64
+	if epoch != nil {
+		buildTime = uint64(epoch.Unix())
+	}
+	w := erofs.Create(out, erofs.WithTempDir(tempDir), erofs.WithBuildTime(buildTime, 0))
 	regularFiles := make(map[string]string)
 	tr := tar.NewReader(in)
 	for {
@@ -121,10 +129,21 @@ func createErofsFromTar(tarPath, output string) error {
 		if err != nil {
 			return fmt.Errorf("reading rootfs tar: %w", err)
 		}
+		if epoch != nil {
+			hdr.ModTime = clampTime(hdr.ModTime, *epoch)
+			hdr.AccessTime = clampTime(hdr.AccessTime, *epoch)
+		}
 		if err := addTarEntryToErofs(w, tempDir, regularFiles, tr, hdr); err != nil {
 			return err
 		}
 	}
+}
+
+func clampTime(t, limit time.Time) time.Time {
+	if t.After(limit) {
+		return limit
+	}
+	return t
 }
 
 func addTarEntryToErofs(w *erofs.Writer, tempDir string, regularFiles map[string]string, tr *tar.Reader, hdr *tar.Header) error {
@@ -282,13 +301,16 @@ func firstImageFromIndex(idx v1.ImageIndex) (v1.Image, error) {
 }
 
 func buildDockerfileExports(ctx context.Context, req buildRequest, rootfsTarPath string, ociTarPath string) error {
-	bk, cleanup, err := connectBuildkit(ctx, req.Address)
+	bk, cleanup, endpoint, err := connectBuildkit(ctx, req.Address)
 	if err != nil {
 		return err
 	}
 	defer bk.Close()
 	if cleanup != nil {
 		defer cleanup()
+	}
+	if req.progressOut != nil {
+		fmt.Fprintf(req.progressOut, "Building with %s\n", endpoint)
 	}
 
 	rootfsTar, err := os.OpenFile(rootfsTarPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
@@ -357,61 +379,6 @@ func closeExportFile(f *os.File) error {
 	return err
 }
 
-func connectBuildkit(ctx context.Context, address string) (*bkclient.Client, func(), error) {
-	if address == "" {
-		address = os.Getenv("BUILDKIT_HOST")
-	}
-	if address != "" {
-		c, err := bkclient.New(ctx, address)
-		if err != nil {
-			return nil, nil, fmt.Errorf("creating configured BuildKit client: %w", err)
-		}
-		if _, err := c.Info(ctx); err != nil {
-			_ = c.Close()
-			return nil, nil, fmt.Errorf("connecting to configured BuildKit client: %w", err)
-		}
-		return c, nil, nil
-	}
-
-	if c, err := bkclient.New(ctx, bkappdefaults.Address); err == nil {
-		if _, err := c.Info(ctx); err == nil {
-			return c, nil, nil
-		}
-		_ = c.Close()
-	}
-
-	c, cleanup, err := connectDockerBuildkit(ctx)
-	if err == nil && c != nil {
-		return c, cleanup, nil
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, nil, fmt.Errorf("could not connect to BuildKit: set BUILDKIT_HOST, start buildkitd, or enable Docker's BuildKit backend")
-}
-
-func connectDockerBuildkit(ctx context.Context) (*bkclient.Client, func(), error) {
-	docker, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
-	if err != nil {
-		return nil, nil, nil
-	}
-	if _, err := docker.ServerVersion(ctx); err != nil {
-		_ = docker.Close()
-		return nil, nil, nil
-	}
-	c, err := bkclient.New(ctx, "", dockerbuildkit.ClientOpts(docker)...)
-	if err != nil {
-		_ = docker.Close()
-		return nil, nil, fmt.Errorf("creating Docker BuildKit client: %w", err)
-	}
-	if _, err := c.Info(ctx); err != nil {
-		_ = c.Close()
-		_ = docker.Close()
-		return nil, nil, nil
-	}
-	return c, func() { _ = docker.Close() }, nil
-}
-
 func buildSolveOpt(req buildRequest, output io.WriteCloser) (*bkclient.SolveOpt, error) {
 	contextMount, err := fsutil.NewFS(req.ContextDir)
 	if err != nil {
@@ -428,6 +395,10 @@ func buildSolveOpt(req buildRequest, output io.WriteCloser) (*bkclient.SolveOpt,
 	}
 	if req.Target != "" {
 		attrs["target"] = req.Target
+	}
+	if epoch := os.Getenv(sourceDateEpochEnv); epoch != "" {
+		// Like docker buildx; an explicit --build-arg below still wins.
+		attrs["build-arg:"+sourceDateEpochEnv] = epoch
 	}
 	for _, arg := range req.BuildArgs {
 		key, value, ok := strings.Cut(arg, "=")

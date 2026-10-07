@@ -10,9 +10,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -39,10 +40,9 @@ type outputSpec struct {
 func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Image) (string, error) {
 	switch spec.kind {
 	case outputDebug:
-		if opts.Push {
-			return "", fmt.Errorf("--push requires a registry output: use --output ghcr.io/acme/api:tag")
-		}
-		fmt.Fprintln(os.Stderr, "Preview complete (image discarded)")
+		name := imageNameFor(opts.ContextDir)
+		fmt.Fprintf(os.Stderr, "Preview complete. The image wasn't saved: add --output ./%s.tar to save it,\n"+
+			"or --output <registry>/<account>/%s:latest to push it.\n", name, name)
 		return "", nil
 	case outputRegistry:
 		if !opts.Push {
@@ -51,23 +51,32 @@ func handleOutput(ctx context.Context, opts *Options, spec outputSpec, img v1.Im
 				return "", err
 			}
 			if !ok {
-				return "", fmt.Errorf("push cancelled")
+				return "", &userError{message: "push cancelled, so nothing was pushed."}
 			}
 		}
 		return pushImage(ctx, opts, img)
 	case outputArchive:
-		if opts.Push {
-			return "", fmt.Errorf("--push is only valid with registry outputs")
-		}
 		return "", exportArchive(spec.value, img)
 	case outputLayout:
-		if opts.Push {
-			return "", fmt.Errorf("--push is only valid with registry outputs")
-		}
 		return "", exportLayout(spec.value, img)
 	default:
 		return "", fmt.Errorf("unknown output type")
 	}
+}
+
+const defaultImageName = "app"
+
+var invalidImageNameChars = regexp.MustCompile(`[^a-z0-9]+`)
+
+// imageNameFor suggests an image name from the build folder's name, made
+// valid for a registry reference.
+func imageNameFor(contextDir string) string {
+	name := invalidImageNameChars.ReplaceAllString(strings.ToLower(filepath.Base(contextDir)), "-")
+	name = strings.Trim(name, "-")
+	if name == "" {
+		return defaultImageName
+	}
+	return name
 }
 
 // pushImage pushes img to opts.Ref and returns the pushed image pinned by
@@ -99,12 +108,15 @@ func pushImage(ctx context.Context, opts *Options, img v1.Image) (string, error)
 	index := computeImageIndex(img)
 	err = remote.WriteIndex(ref, index,
 		remote.WithContext(ctx),
-		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+		remote.WithAuthFromKeychain(registryKeychain),
 		remote.WithProgress(updates),
 	)
 	<-done
 	task.Done(err)
 	if err != nil {
+		if rerr := registryError(ref, true, err); rerr != err {
+			return "", withErrorDetails(opts.Verbose, rerr)
+		}
 		return "", fmt.Errorf("pushing image: %w", err)
 	}
 	digest, err := index.Digest()
@@ -130,20 +142,42 @@ func parseOutput(value string) outputSpec {
 }
 
 func validateOutputOptions(opts *Options, spec outputSpec) error {
-	if !opts.Push {
-		return nil
+	if spec.kind == outputLayout {
+		if err := checkLayoutDestination(spec.value); err != nil {
+			return err
+		}
 	}
-	if spec.kind != outputRegistry {
-		return fmt.Errorf("--push requires a registry output: use --output ghcr.io/acme/api:tag")
+	pushHint := fmt.Sprintf("--output <registry>/<account>/%s:latest", imageNameFor(opts.ContextDir))
+	switch {
+	case opts.Push && spec.kind == outputDebug:
+		return &userError{message: paragraphs(
+			"--push needs a registry image to push to.",
+			"Add "+pushHint+".",
+		)}
+	case opts.Push && spec.kind != outputRegistry:
+		what := "a file"
+		if spec.kind == outputLayout {
+			what = "a folder"
+		}
+		return &userError{message: paragraphs(
+			fmt.Sprintf("--push only works with a registry image, and %s is %s.", spec.value, what),
+			fmt.Sprintf("Leave out --push to save to %s, or use %s to push.", spec.value, pushHint),
+		)}
+	case !opts.Push && spec.kind == outputRegistry && !stdinIsTerminal():
+		// Checked before building: without a terminal there's no one to
+		// confirm the push, so the build would be wasted.
+		return &userError{message: paragraphs(
+			fmt.Sprintf("%s is a registry image, so saving it means pushing it.", spec.value),
+			"Add --push to push without being asked.",
+		)}
 	}
 	return nil
 }
 
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
 func confirmRegistryPush(ref string) (bool, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return false, fmt.Errorf("output %q looks like a registry reference; rerun with --push to push without confirmation", ref)
-	}
-	fmt.Fprintf(os.Stderr, "Output %q looks like a registry reference. Push it? [y/N] ", ref)
+	fmt.Fprintf(os.Stderr, "Push to %s? [y/N] ", ref)
 	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && err != io.EOF {
 		return false, err
@@ -180,12 +214,57 @@ func exportArchive(path string, img v1.Image) error {
 	return nil
 }
 
+// layoutEntries are the only files a saved image folder contains.
+var layoutEntries = []string{"blobs", "index.json", "oci-layout"}
+
+// checkLayoutDestination runs before building, so a folder the image can't
+// be saved in is reported before the build's time is spent. It allows a
+// missing or empty folder, or one holding only a previously saved image.
+func checkLayoutDestination(arg string) error {
+	entries, err := os.ReadDir(expandPath(arg))
+	if os.IsNotExist(err) || (err == nil && len(entries) == 0) {
+		return nil
+	}
+	if err != nil {
+		if info, statErr := os.Stat(expandPath(arg)); statErr == nil && !info.IsDir() {
+			return &userError{message: paragraphs(
+				fmt.Sprintf("%s is a file, so the image can't be saved there as a folder.", arg),
+				"Use a new or empty folder, or save to a file with --output "+strings.TrimSuffix(arg, filepath.Ext(arg))+".tar.",
+			)}
+		}
+		return fmt.Errorf("checking output folder: %w", err)
+	}
+	hasMarker := false
+	for _, e := range entries {
+		if !slices.Contains(layoutEntries, e.Name()) {
+			return folderHasFilesError(arg)
+		}
+		hasMarker = hasMarker || e.Name() == "oci-layout"
+	}
+	// Without the marker it may be the user's own blobs/ or index.json.
+	if !hasMarker {
+		return folderHasFilesError(arg)
+	}
+	return nil
+}
+
+func folderHasFilesError(arg string) error {
+	return &userError{message: paragraphs(
+		fmt.Sprintf("%s already has files in it, so the image can't be saved there.", arg),
+		"Use a new or empty folder, or save to a file with --output "+strings.TrimSuffix(arg, "/")+".tar.",
+	)}
+}
+
 func exportLayout(path string, img v1.Image) error {
+	if err := checkLayoutDestination(path); err != nil {
+		return err
+	}
 	path = expandPath(path)
-	if entries, err := os.ReadDir(path); err == nil && len(entries) > 0 {
-		return fmt.Errorf("OCI layout directory %s already exists and is not empty", path)
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("checking OCI layout directory: %w", err)
+	// Anything left here is a previously saved image; replace it.
+	for _, name := range layoutEntries {
+		if err := os.RemoveAll(filepath.Join(path, name)); err != nil {
+			return fmt.Errorf("replacing the previous image in %s: %w", path, err)
+		}
 	}
 	if err := writeOCILayout(path, img); err != nil {
 		return fmt.Errorf("writing OCI layout directory: %w", err)
@@ -259,6 +338,7 @@ func tarDirectory(src, dest string) error {
 	return closeOutErr
 }
 
+// untar extracts a tar archive, gzipped or not, into dest.
 func untar(archivePath, dest string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -266,7 +346,18 @@ func untar(archivePath, dest string) error {
 	}
 	defer f.Close()
 
-	tr := tar.NewReader(f)
+	br := bufio.NewReader(f)
+	var r io.Reader = br
+	if magic, _ := br.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			return err
+		}
+		defer gz.Close()
+		r = gz
+	}
+
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {

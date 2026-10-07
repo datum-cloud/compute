@@ -4,8 +4,10 @@ package build
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -120,17 +122,52 @@ func TestParseOutput(t *testing.T) {
 	}
 }
 
-func TestValidateOutputOptionsRequiresRegistryForPush(t *testing.T) {
-	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}); err != nil {
-		t.Fatalf("registry output with --push returned error: %v", err)
-	}
+func TestValidateOutputOptionsPush(t *testing.T) {
+	prev := stdinIsTerminal
+	t.Cleanup(func() { stdinIsTerminal = prev })
+	opts := func(push bool) *Options { return &Options{Push: push, ContextDir: "/src/hello"} }
 
-	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputArchive, value: "image.tar"}); err == nil {
-		t.Fatal("expected local archive output with --push to fail")
+	tests := []struct {
+		name     string
+		push     bool
+		terminal bool
+		spec     outputSpec
+		want     []string
+	}{
+		{name: "push to registry", push: true, spec: outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}},
+		{name: "registry in a terminal asks later", terminal: true, spec: outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"}},
+		{
+			name: "push without output", push: true, spec: outputSpec{kind: outputDebug},
+			want: []string{"--push needs a registry image to push to.", "Add --output <registry>/<account>/hello:latest."},
+		},
+		{
+			name: "push to a file", push: true, spec: outputSpec{kind: outputArchive, value: "./image.tar"},
+			want: []string{"--push only works with a registry image, and ./image.tar is a file.", "Leave out --push to save to ./image.tar"},
+		},
+		{
+			name: "push to a folder", push: true, spec: outputSpec{kind: outputLayout, value: filepath.Join(t.TempDir(), "out")},
+			want: []string{"is a folder."},
+		},
+		{
+			name: "registry without a terminal", spec: outputSpec{kind: outputRegistry, value: "ghcr.io/acme/api:dev"},
+			want: []string{"ghcr.io/acme/api:dev is a registry image, so saving it means pushing it.", "Add --push to push without being asked."},
+		},
 	}
-
-	if err := validateOutputOptions(&Options{Push: true}, outputSpec{kind: outputDebug}); err == nil {
-		t.Fatal("expected debug output with --push to fail")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdinIsTerminal = func() bool { return tt.terminal }
+			err := validateOutputOptions(opts(tt.push), tt.spec)
+			if len(tt.want) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			assertContains(t, err.Error(), tt.want...)
+		})
 	}
 }
 
@@ -276,5 +313,105 @@ func TestAssembleImageUsesComputeIndexAndInitrdAnnotation(t *testing.T) {
 	platform := idxManifest.Manifests[0].Platform
 	if platform == nil || platform.OS != "kraftcloud" || platform.Architecture != "x86_64" {
 		t.Fatalf("expected kraftcloud/x86_64 platform, got %#v", platform)
+	}
+}
+
+func TestExportLayoutReplacesPreviousImage(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out")
+	for range 2 {
+		if err := exportLayout(out, testComputeImage(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, cleanup, err := openLocalImage(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	manifest, err := idx.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Manifests) != 1 {
+		t.Fatalf("expected the second save to replace the first, got %d manifests", len(manifest.Manifests))
+	}
+}
+
+func TestExportLayoutRefusesFoldersWithOtherFiles(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(out, "main.go")
+	if err := os.WriteFile(keep, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := exportLayout(out, testComputeImage(t))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	assertContains(t, err.Error(),
+		out+" already has files in it, so the image can't be saved there.",
+		"save to a file with --output "+out+".tar.",
+	)
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("existing file was touched: %v", err)
+	}
+}
+
+func TestExportLayoutRefusesUnmarkedImageLikeFolders(t *testing.T) {
+	// A folder with only blobs/ isn't a saved image without the oci-layout
+	// marker, so it must not be cleared.
+	out := filepath.Join(t.TempDir(), "data")
+	keep := filepath.Join(out, "blobs", "mine.bin")
+	if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := exportLayout(out, testComputeImage(t))
+	if err == nil || !strings.Contains(err.Error(), "already has files in it") {
+		t.Fatalf("expected the folder to be refused, got: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("existing file was removed: %v", err)
+	}
+}
+
+func TestOutputFolderIsCheckedBeforeBuilding(t *testing.T) {
+	t.Setenv("BUILDKIT_HOST", "unix://"+filepath.Join(shortTempDir(t), "missing.sock"))
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(notes, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct{ output, want string }{
+		{dir, "already has files in it"},
+		{notes, "is a file, so the image can't be saved there as a folder."},
+	} {
+		_, err := Run(context.Background(), &Options{ContextDir: dir, Dockerfile: "Dockerfile", Output: tt.output})
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("--output %s: expected %q before building, got: %v", tt.output, tt.want, err)
+		}
+	}
+}
+
+func TestImageNameFor(t *testing.T) {
+	for dir, want := range map[string]string{
+		"/src/hello":         "hello",
+		"/src/My App":        "my-app",
+		"/src/api_v2.server": "api-v2-server",
+		"/":                  "app",
+		"/src/___":           "app",
+	} {
+		if got := imageNameFor(dir); got != want {
+			t.Errorf("imageNameFor(%q) = %q, want %q", dir, got, want)
+		}
 	}
 }

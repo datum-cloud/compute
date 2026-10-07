@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -311,18 +312,21 @@ func runDeploy(cmd *cobra.Command, args []string, opts *options) error {
 
 	if len(args) > 0 && opts.image != "" {
 		if opts.build != "" {
-			if kraftfile := build.FindKraftfile(opts.build); kraftfile != "" {
+			// --build only builds Dockerfiles, so a Kraftfile-only project
+			// has to build and deploy separately.
+			const dockerfile = "Dockerfile"
+			if kraftfile := build.FindKraftfile(opts.build); kraftfile != "" && !build.HasDockerfile(opts.build, dockerfile) {
 				return fmt.Errorf(
-					"found %s: Kraftfile-based builds aren't supported by --build, since they delegate entirely to the "+
-						"unikraft CLI. Run the build and deploy steps separately instead:\n"+
-						"  datumctl compute build --push --output <ref> .\n"+
-						"  datumctl compute deploy --image <ref>", kraftfile)
+					"there's no Dockerfile in %s, and --build only builds from a Dockerfile.\n\n"+
+						"To build from %s, build and deploy separately:\n"+
+						"  datumctl compute build --kraftfile %s --push --output <ref>\n"+
+						"  datumctl compute deploy --image <ref>", opts.build, filepath.Base(kraftfile), kraftfile)
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "Building %s and pushing to %s...\n", opts.build, opts.image)
 			digest, err := build.Run(cmd.Context(), &build.Options{
 				ContextDir: opts.build,
-				Dockerfile: "Dockerfile",
+				Dockerfile: dockerfile,
 				Output:     opts.image,
 				Push:       true, // a combined build+deploy step always pushes: there's nothing to confirm
 				Fix:        true, // deploying a broken image is worse than auto-fixing and rebuilding

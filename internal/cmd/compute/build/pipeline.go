@@ -22,11 +22,18 @@ func Run(ctx context.Context, opts *Options) (string, error) {
 	}
 	opts.ContextDir = contextDir
 
-	if opts.Kraftfile == "" {
-		opts.Kraftfile = FindKraftfile(opts.ContextDir)
-	}
 	if opts.Kraftfile != "" {
+		if opts.DockerfileExplicit {
+			return "", &userError{message: paragraphs(
+				"--kraftfile and --file can't be used together.",
+				"Use --file to build from a Dockerfile, or --kraftfile to build from a Kraftfile.",
+			)}
+		}
 		return "", runKraftBuild(ctx, opts)
+	}
+
+	if opts.sourceDateEpoch, err = parseSourceDateEpoch(); err != nil {
+		return "", err
 	}
 
 	output := parseOutput(opts.Output)
@@ -44,6 +51,14 @@ func Run(ctx context.Context, opts *Options) (string, error) {
 	opts.Dockerfile, err = resolveDockerfilePath(opts.ContextDir, opts.Dockerfile, opts.DockerfileExplicit)
 	if err != nil {
 		return "", err
+	}
+	kraftfile := FindKraftfile(opts.ContextDir)
+	if _, err := os.Stat(opts.Dockerfile); os.IsNotExist(err) {
+		return "", missingDockerfileError(opts, kraftfile)
+	}
+	if kraftfile != "" && !opts.DockerfileExplicit {
+		fmt.Fprintf(os.Stderr, "Building from %s. To build from %s instead, add --kraftfile %s.\n\n",
+			filepath.Base(opts.Dockerfile), filepath.Base(kraftfile), displayPath(kraftfile))
 	}
 
 	printBuildConfig(opts)
@@ -136,6 +151,7 @@ func buildStageRootFS(ctx context.Context, opts *Options, stage string, entrypoi
 	stageOpts.BuildTarget = stage
 	progress("searching stage %q for runtime files", stage)
 	if _, err := buildDockerfileFinalStageQuietly(ctx, dockerfileFinalStageRequest{
+		Address:    stageOpts.BuildkitHost,
 		ContextDir: stageOpts.ContextDir,
 		Dockerfile: stageOpts.Dockerfile,
 		Target:     stageOpts.BuildTarget,
@@ -143,7 +159,7 @@ func buildStageRootFS(ctx context.Context, opts *Options, stage string, entrypoi
 		RootFSTar:  rootfsTar,
 		OCITar:     ociTar,
 	}); err != nil {
-		return nil, rootfsBuildError(err)
+		return nil, withErrorDetails(opts.Verbose, rootfsBuildError(err))
 	}
 	view, err := openTarFSView(rootfsTar)
 	if err != nil {

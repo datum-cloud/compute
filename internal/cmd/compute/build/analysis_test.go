@@ -1003,10 +1003,11 @@ func TestRootfsBuildError(t *testing.T) {
 	}{
 		{name: "keeps Dockerfile build failures as-is",
 			input:  `process "/bin/sh -c go build ./..." did not complete successfully: exit code: 1`,
-			wantIn: "go build", wantNotIn: "Docker is not running"},
-		{name: "simplifies Docker availability failures",
-			input: "could not connect to buildkit: could not start ephemeral BuildKit container",
-			want:  "building root filesystem: Docker is not running or is not accessible"},
+			wantIn: "go build"},
+		{name: "explains a missing credential helper",
+			input: `failed to solve: error getting credentials - err: exec: "docker-credential-desktop": executable file not found in $PATH, out: ` + "``",
+			wantIn: `can't be read, so your Dockerfile's base images can't be pulled.` + "\n\n" +
+				`Your Docker config says sign-ins are stored by "desktop"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
