@@ -36,7 +36,9 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    minify: false,
+    // Minified: the browser parses every byte of a plugin chunk on first load.
+    // Sourcemaps keep stack traces readable without shipping readable code.
+    sourcemap: true,
   },
   plugins: [
     react(),
