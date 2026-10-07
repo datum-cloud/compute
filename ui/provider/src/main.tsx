@@ -1,4 +1,5 @@
 import FleetWorkloads from './pages/fleet-workloads';
+import InstanceDetail from './pages/instance-detail';
 import ServiceOverview from './pages/service-overview';
 import WorkloadDetail from './pages/workload-detail';
 import WorkloadList from './pages/workload-list';
@@ -51,6 +52,10 @@ createRoot(document.getElementById('root')!).render(
           <Routes>
             <Route path={base} element={<WorkloadList />} />
             <Route path={`${base}/:workloadName`} element={<WorkloadDetail />} />
+            <Route
+              path={`${base}/:workloadName/instances/:instanceName`}
+              element={<InstanceDetail />}
+            />
             <Route path={workloadsBase} element={<FleetWorkloads />} />
             <Route path={overviewBase} element={<ServiceOverview />} />
           </Routes>
