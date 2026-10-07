@@ -3,7 +3,8 @@
  * the portal's ALB list renders through `Table.Client`: search toolbar,
  * sortable column headers, bordered panel, conditional pagination and
  * whole-row click-through. Columns are kept to what identifies a workload
- * and how it's doing (status, CPU, memory, where it runs) so the list fits
+ * and how it's doing (status, CPU, memory, where it runs, which network it's
+ * on) so the list fits
  * without horizontal scrolling; image, load balancer and instance detail
  * live on the workload's own page. `RowsContent` ignores clicks that bubble
  * from an `<a>`, so nested links need no `stopPropagation`.
@@ -116,11 +117,58 @@ function LocationsCell({
   );
 }
 
+/**
+ * The Galactic VPC plugin's network detail page (network-services-operator),
+ * which the host mounts under the project's `services/networking-datumapis-com`.
+ */
+function networkHref(projectId: string, networkName: string): string {
+  return `/project/${projectId}/services/networking-datumapis-com/networks/${encodeURIComponent(networkName)}`;
+}
+
+/**
+ * The network on the template's first interface (`deriveNetworks` keeps
+ * interface order), linked to its Galactic VPC page, then "+N" with every
+ * network in the tooltip when the template attaches to more than one.
+ */
+function NetworkCell({ networks, projectId }: { networks: string[]; projectId?: string }) {
+  if (networks.length === 0) return <span className="text-muted-foreground">—</span>;
+  const [first] = networks;
+  const extra = networks.length - 1;
+  const name = projectId ? (
+    <Link to={networkHref(projectId, first)} className="truncate hover:underline" title={first} data-e2e="workload-network">
+      {first}
+    </Link>
+  ) : (
+    <span className="truncate" title={first}>
+      {first}
+    </span>
+  );
+  const line = (
+    <span className="flex max-w-48 items-center gap-1.5 text-xs">
+      {name}
+      {extra > 0 ? <span className="text-muted-foreground shrink-0">+{extra}</span> : null}
+    </span>
+  );
+  if (extra === 0) return line;
+  return (
+    <Tooltip
+      message={
+        <span className="flex flex-col gap-0.5">
+          {networks.map((network) => (
+            <span key={network}>{network}</span>
+          ))}
+        </span>
+      }>
+      {line}
+    </Tooltip>
+  );
+}
+
 /** Free-text search over the row plus fields the table doesn't show (image, runtime, tags). */
 function matchesSearch(workload: Workload, search: string): boolean {
   const needle = search.trim().toLowerCase();
   if (!needle) return true;
-  return [workload.name, workload.image, workload.runtimeType, ...workload.tags, ...workload.locations]
+  return [workload.name, workload.image, workload.runtimeType, ...workload.tags, ...workload.locations, ...workload.networks]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()
@@ -219,6 +267,12 @@ export function WorkloadTable({
             />
           );
         },
+      },
+      {
+        id: 'network',
+        accessorFn: (workload) => workload.networks[0] ?? '',
+        header: ({ column }) => <SortableHeader column={column} title="Network" />,
+        cell: ({ row }) => <NetworkCell networks={row.original.networks} projectId={projectId} />,
       },
       {
         id: 'locations',
