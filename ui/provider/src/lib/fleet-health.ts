@@ -36,8 +36,13 @@ const REFETCH_INTERVAL_MS = 30_000;
  */
 const FLEET_SHAPE_STALE_TIME_MS = 5 * 60_000;
 
-/** Bounded fan-out — see the "Fan-out cost" risk in the design doc. */
-const MAX_CONCURRENT_PROJECT_FETCHES = 5;
+/**
+ * Bounded fan-out — see the "Fan-out cost" risk in the design doc. The host
+ * serves HTTP/2, so the browser's per-host connection cap doesn't apply and
+ * this is the only limit: at 5, 32 consumers took 7 serial waves (~1.2s on
+ * staging); at 12 it's 3.
+ */
+const MAX_CONCURRENT_PROJECT_FETCHES = 12;
 
 interface RawServiceOwner {
   producerProjectRef?: { name?: string };
