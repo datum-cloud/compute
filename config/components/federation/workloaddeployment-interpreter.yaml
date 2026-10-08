@@ -10,11 +10,17 @@ spec:
     retention:
       luaScript: |
         function Retain(desiredObj, observedObj)
-          if observedObj.spec == nil or observedObj.spec.replicas == nil then
+          -- An HPA updates replicas in the cell. For deployments without an HPA,
+          -- the project deployment owns replicas and changes must propagate.
+          if desiredObj.spec == nil or desiredObj.spec.scaleSettings == nil then
             return desiredObj
           end
-          if desiredObj.spec == nil then
-            desiredObj.spec = {}
+          local scaleSettings = desiredObj.spec.scaleSettings
+          if scaleSettings.maxReplicas == nil or scaleSettings.metrics == nil or #scaleSettings.metrics == 0 then
+            return desiredObj
+          end
+          if observedObj.spec == nil or observedObj.spec.replicas == nil then
+            return desiredObj
           end
           desiredObj.spec.replicas = observedObj.spec.replicas
           return desiredObj

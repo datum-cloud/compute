@@ -1,0 +1,21 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  name: test-wd
+  namespace: default
+spec:
+  workloadRef:
+    name: test
+  placementName: default
+  locationRef:
+    name: us-east-1
+  template: {}
+  scaleSettings:
+    minReplicas: 1
+    maxReplicas: 10
+    metrics:
+      - resource:
+          name: cpu
+          target:
+            averageUtilization: 50
+  replicas: 1
