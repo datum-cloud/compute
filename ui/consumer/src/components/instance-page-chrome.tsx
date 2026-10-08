@@ -30,7 +30,7 @@ export function instanceDetailTabs(
     { label: 'Logs', href: logsHref },
     ...(shellHref ? [{ label: 'Shell', href: shellHref }] : []),
     { label: 'Manage' },
-    { label: 'Activity' },
+    { label: 'Activity', href: `${overviewHref}/activity` },
   ];
 }
 

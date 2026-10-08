@@ -8,6 +8,8 @@ import { useOutletContext } from 'react-router';
 export type InstanceOutletContext = {
   instance: Instance;
   workloadName?: string;
+  /** The parent workload's overview page. */
+  workloadHref: string;
   projectId?: string;
   logsHref: string;
   metricsHref: string;
