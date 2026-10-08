@@ -1,11 +1,11 @@
-import { formatKpiValue } from './metric-area-chart';
+import { formatKpiValue, type ChartFormat } from './metric-area-chart';
 import {
   isPrometheusDenied,
   transformForRecharts,
   usePrometheusChart,
-  type MetricFormat,
   type PrometheusTimeRange,
 } from '../lib/prometheus';
+import type { Allocation } from '../lib/resource-usage';
 import { SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import { useId, useMemo, type ReactNode } from 'react';
@@ -24,10 +24,12 @@ export function MetricSparkline({
   wide = false,
   pending = false,
   denied = false,
+  allocated,
 }: {
   query?: string;
   timeRange: PrometheusTimeRange;
-  format: MetricFormat;
+  /** Format of the raw values; shown when `allocated` is unknown. */
+  format: ChartFormat;
   color?: string;
   emptyTitle?: string;
   /** Draw a baseline instead of a spark when every sample is 0 (ALB idle). */
@@ -38,6 +40,8 @@ export function MetricSparkline({
   wide?: boolean;
   pending?: boolean;
   denied?: boolean;
+  /** When set, plot usage as a percentage of it; the raw figure moves to the value's hover title. */
+  allocated?: number;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const chart = usePrometheusChart(query, timeRange, { enabled: !!query && !denied });
@@ -45,16 +49,23 @@ export function MetricSparkline({
   const dataKey = chart.data?.series[0]?.name || 'value';
   const rows = useMemo(() => {
     if (!chart.data || chart.error) return [];
-    return transformForRecharts(chart.data).filter((row) => {
-      const v = row[dataKey];
-      return typeof v === 'number' && Number.isFinite(v);
-    });
-  }, [chart.data, chart.error, dataKey]);
+    return transformForRecharts(chart.data)
+      .filter((row) => {
+        const v = row[dataKey];
+        return typeof v === 'number' && Number.isFinite(v);
+      })
+      .map((row) => (allocated ? { ...row, [dataKey]: Number(row[dataKey]) / allocated } : row));
+  }, [chart.data, chart.error, dataKey, allocated]);
 
   const max = rows.reduce((m, row) => Math.max(m, Number(row[dataKey])), 0);
   const last = rows.length > 0 ? Number(rows[rows.length - 1]?.[dataKey]) : undefined;
   const queryDenied = isPrometheusDenied(chart.error);
-  const sparkClass = cn(compact ? 'h-6' : 'h-8', wide ? 'min-w-0 flex-1' : compact ? 'w-28' : 'w-40');
+  // Table cells (compact) and cards (wide) fill the remaining width. In a table
+  // the floor keeps auto layout from collapsing the column to its value text.
+  // `relative` + an absolute chart: the measured SVG must not feed back into
+  // the table's column widths, or whichever column renders first grows.
+  const sparkClass = cn('relative', compact ? 'h-6' : 'h-8', wide || compact ? 'min-w-0 flex-1' : 'w-40');
+  const sparkStyle = compact && !wide ? { minWidth: 112 } : undefined;
   const sparkHeight = compact ? 24 : 32;
 
   const labeled = (content: ReactNode) => (
@@ -73,7 +84,7 @@ export function MetricSparkline({
   }
   if (pending || chart.isLoading) {
     return labeled(
-      <div className={cn('flex items-center justify-center', sparkClass)}>
+      <div className={cn('flex items-center justify-center', sparkClass)} style={sparkStyle}>
         <SpinnerIcon size="sm" />
       </div>
     );
@@ -90,12 +101,13 @@ export function MetricSparkline({
   const yMax = max === 0 ? 1 : max * 1.1;
   return labeled(
     <>
-      <div className={sparkClass} aria-hidden>
+      <div className={sparkClass} style={sparkStyle} aria-hidden>
         {idle ? (
           <div className="flex h-full items-center">
             <div className="bg-border h-px w-full" />
           </div>
         ) : (
+          <div className="absolute inset-0">
           <AreaChart
             data={rows}
             responsive
@@ -121,13 +133,22 @@ export function MetricSparkline({
               isAnimationActive={false}
             />
           </AreaChart>
+          </div>
         )}
       </div>
-      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-        {formatKpiValue(Number.isFinite(last) ? last : undefined, format)}
+      <span
+        className="text-muted-foreground shrink-0 text-xs tabular-nums"
+        title={allocated && last !== undefined && Number.isFinite(last) ? rawTitle(last * allocated, allocated, format) : undefined}>
+        {formatKpiValue(Number.isFinite(last) ? last : undefined, allocated ? 'percent' : format)}
       </span>
     </>
   );
+}
+
+/** "0.0081 of 4 vCPU" / "190 MB of 2.0 GB" behind a percentage. */
+function rawTitle(used: number, allocated: number, format: ChartFormat): string {
+  const unit = format === 'cores' ? ' vCPU' : '';
+  return `${formatKpiValue(used, format)} of ${formatKpiValue(allocated, format)}${unit}`;
 }
 
 export function CpuMemorySparks({
@@ -138,6 +159,7 @@ export function CpuMemorySparks({
   wide = false,
   pending = false,
   denied = false,
+  allocation,
 }: {
   cpuQuery?: string;
   memoryQuery?: string;
@@ -146,6 +168,7 @@ export function CpuMemorySparks({
   wide?: boolean;
   pending?: boolean;
   denied?: boolean;
+  allocation?: Allocation;
 }) {
   if (denied) {
     return (
@@ -166,7 +189,8 @@ export function CpuMemorySparks({
       <MetricSparkline
         query={cpuQuery}
         timeRange={timeRange}
-        format="number"
+        format="cores"
+        allocated={allocation?.cores}
         label="CPU"
         compact={compact}
         wide={wide}
@@ -176,6 +200,7 @@ export function CpuMemorySparks({
         query={memoryQuery}
         timeRange={timeRange}
         format="bytes"
+        allocated={allocation?.memoryBytes}
         color="var(--color-chart-1)"
         label="Mem"
         compact={compact}

@@ -17,6 +17,7 @@ import { MetricSparkline } from './metric-sparkline';
 import { SortableHeader } from './sortable-header';
 import { HealthDot, WorkloadStatusBadge } from './workload-status-badge';
 import type { LocationIndex } from '../lib/locations';
+import type { Allocation } from '../lib/resource-usage';
 import {
   type InstanceIdentityLabel,
   workloadCpuSumQuery,
@@ -186,6 +187,7 @@ export function WorkloadTable({
   workloads,
   projectId,
   instanceKeysByWorkload,
+  allocationByWorkload,
   identityLabel,
   identityLoading = false,
   identityDenied = false,
@@ -197,6 +199,8 @@ export function WorkloadTable({
   workloads: Workload[];
   projectId?: string;
   instanceKeysByWorkload: Record<string, string[]>;
+  /** Allocated vCPU / memory per workload, so the sparks read as a percentage. */
+  allocationByWorkload: Record<string, Allocation>;
   identityLabel?: InstanceIdentityLabel;
   identityLoading?: boolean;
   identityDenied?: boolean;
@@ -227,7 +231,7 @@ export function WorkloadTable({
         id: 'status',
         accessorFn: (workload) => HEALTH_ORDER[workload.health],
         header: ({ column }) => <SortableHeader column={column} title="Status" />,
-        cell: ({ row }) => <WorkloadStatusBadge workload={row.original} />,
+        cell: ({ row }) => <WorkloadStatusBadge workload={row.original} dot={false} />,
       },
       {
         id: 'cpu',
@@ -239,7 +243,8 @@ export function WorkloadTable({
             <MetricSparkline
               query={projectId && identityLabel && keys.length > 0 ? workloadCpuSumQuery(projectId, identityLabel, keys) : undefined}
               timeRange={timeRange}
-              format="number"
+              format="cores"
+              allocated={allocationByWorkload[row.original.name]?.cores}
               compact
               pending={identityLoading}
               denied={identityDenied}
@@ -259,6 +264,7 @@ export function WorkloadTable({
               query={projectId && identityLabel && keys.length > 0 ? workloadMemorySumQuery(projectId, identityLabel, keys) : undefined}
               timeRange={timeRange}
               format="bytes"
+              allocated={allocationByWorkload[row.original.name]?.memoryBytes}
               color="var(--color-chart-1)"
               compact
               pending={identityLoading}
@@ -281,7 +287,7 @@ export function WorkloadTable({
         cell: ({ row }) => <LocationsCell regions={row.original.placementRegions} locationIndex={locationIndex} />,
       },
     ],
-    [projectId, instanceKeysByWorkload, identityLabel, identityLoading, identityDenied, timeRange, locationIndex, workloadHref]
+    [projectId, instanceKeysByWorkload, allocationByWorkload, identityLabel, identityLoading, identityDenied, timeRange, locationIndex, workloadHref]
   );
 
   const open = useCallback((workload: Workload) => onOpen(workload.name), [onOpen]);
