@@ -23,9 +23,6 @@
         "path": "/",
         "order": 10,
         "section": "build",
-        "comingSoon": true,
-        "comingSoonMode": "plugin",
-        "roadmapUrl": "https://www.datum.net/platform/build#compute",
         "serviceRef": "compute.datumapis.com",
         "children": [
           {
