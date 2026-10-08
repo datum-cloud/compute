@@ -49,6 +49,16 @@ const (
 	// a copied InstanceConsoleSession targets. The hub and cell Instance share
 	// the copy's namespace and this name.
 	InstanceConsoleSessionInstanceNameLabel = LabelNamespace + "/instance-name"
+
+	// InstanceTypeCatalogLabel marks an InstanceType on the federation hub as a
+	// copy of the platform catalog written by the InstanceTypeProjector. The
+	// instance-types ClusterPropagationPolicy selects on it to carry the catalog
+	// to every cell, and the projector prunes only labelled copies, so an
+	// InstanceType it did not write is neither propagated nor removed.
+	InstanceTypeCatalogLabel = LabelNamespace + "/instance-type-catalog"
+
+	// InstanceTypeCatalogLabelValue is the value used for InstanceTypeCatalogLabel.
+	InstanceTypeCatalogLabelValue = "true"
 )
 
 // Runtime class labels. Placement, provider dispatch, and per-tier metrics all
