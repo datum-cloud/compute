@@ -21,15 +21,28 @@
 import { fetchWorkloads, proxyFetchAbsolute, ApiError, PLUGIN_ID } from './api';
 import { fetchLocations, type Location } from './locations';
 import type { Workload } from '../schema';
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 
 const FLEET_QUERY_KEY = [PLUGIN_ID, 'fleet-health'];
 
 /** Live-ish polling interval — matches the per-project views (`api.ts`). */
 const REFETCH_INTERVAL_MS = 30_000;
 
-/** Bounded fan-out — see the "Fan-out cost" risk in the design doc. */
-const MAX_CONCURRENT_PROJECT_FETCHES = 5;
+/**
+ * How long the resolved Service, consumer list and Locations catalog are
+ * reused across polls. They change on the order of approvals and new regions,
+ * not seconds, so only the per-project workload fan-out repeats every
+ * {@link REFETCH_INTERVAL_MS}.
+ */
+const FLEET_SHAPE_STALE_TIME_MS = 5 * 60_000;
+
+/**
+ * Bounded fan-out — see the "Fan-out cost" risk in the design doc. The host
+ * serves HTTP/2, so the browser's per-host connection cap doesn't apply and
+ * this is the only limit: at 5, 32 consumers took 7 serial waves (~1.2s on
+ * staging); at 12 it's 3.
+ */
+const MAX_CONCURRENT_PROJECT_FETCHES = 12;
 
 interface RawServiceOwner {
   producerProjectRef?: { name?: string };
@@ -71,9 +84,14 @@ async function fetchService(serviceResourceName: string): Promise<ResolvedServic
 
 interface RawServiceConsumer {
   name: string;
-  serviceName: string | null;
   phase: string | null;
-  consumerProject: { name: string; displayName: string };
+  consumerProject: {
+    name: string;
+    displayName: string;
+    /** Empty when the gateway couldn't read the project. */
+    organizationName: string;
+    organizationDisplayName: string;
+  };
 }
 
 /**
@@ -103,19 +121,29 @@ async function postGraphQL<T>(query: string, variables: Record<string, unknown>)
   return body.data as T;
 }
 
-async function fetchServiceConsumers(producerProject: string): Promise<RawServiceConsumer[]> {
+/**
+ * `serviceNames` makes the gateway filter by service before it enriches each
+ * row with project and organization lookups. Without it the gateway resolved
+ * every consumer of every service the producer project owns (805 rows for
+ * datum-cloud, 36 of them compute) and took ~2.5s doing it. The consumer's
+ * `serviceRef` may hold either the Service's resource name or its canonical
+ * name, so both are passed.
+ */
+async function fetchServiceConsumers(
+  producerProject: string,
+  serviceNames: string[]
+): Promise<RawServiceConsumer[]> {
   const data = await postGraphQL<{ serviceConsumers?: RawServiceConsumer[] }>(
     `
-      query FleetHealthConsumers($producerProject: ID!) {
-        serviceConsumers(producerProject: $producerProject) {
+      query FleetHealthConsumers($producerProject: ID!, $serviceNames: [String!]) {
+        serviceConsumers(producerProject: $producerProject, serviceNames: $serviceNames) {
           name
-          serviceName
           phase
-          consumerProject { name displayName }
+          consumerProject { name displayName organizationName organizationDisplayName }
         }
       }
     `,
-    { producerProject }
+    { producerProject, serviceNames }
   );
   return data.serviceConsumers ?? [];
 }
@@ -148,98 +176,6 @@ export interface FailedProject {
   error: string;
 }
 
-interface RawGraphQLProject {
-  organizationName: string;
-  organizationDisplayName: string;
-}
-
-/**
- * Batches at most this many projects into one aliased GraphQL request (see
- * {@link fetchProjectOrganizationsChunk}) — an unbounded single query risks
- * tripping the gateway's query-size/complexity limits once the fleet grows
- * past a few hundred consumers.
- */
-const ORG_LOOKUP_CHUNK_SIZE = 50;
-
-/**
- * Resolves every project's owning organization via one aliased GraphQL
- * request per {@link ORG_LOOKUP_CHUNK_SIZE}-project chunk — the gateway's
- * `Project` type already carries `organizationName` / `organizationDisplayName`
- * resolved server-side (unlike the thin `ConsumerProject` the consumers query
- * returns), so this doesn't need a per-project `Project` GET plus a per-org
- * `Organization` GET: one query with a `p<i>: project(name: $name<i>) { ... }`
- * alias per project batches a whole chunk into a single request. (Aliases
- * are index-based within each chunk since GraphQL identifiers can't contain
- * the hyphens Kubernetes resource names commonly do — the real name travels
- * as the arg value, not the alias.) A chunk that fails outright just yields
- * no organizations for its projects — best-effort, doesn't fail the page.
- */
-async function fetchProjectOrganizationsChunk(
-  projectNames: string[]
-): Promise<Map<string, FleetConsumerOrganization>> {
-  const result = new Map<string, FleetConsumerOrganization>();
-  if (projectNames.length === 0) return result;
-
-  const variableDefs = projectNames.map((_, i) => `$name${i}: String!`).join(', ');
-  const fields = projectNames
-    .map((_, i) => `p${i}: project(name: $name${i}) { organizationName organizationDisplayName }`)
-    .join('\n');
-  const variables = Object.fromEntries(projectNames.map((name, i) => [`name${i}`, name]));
-
-  const res = await fetch('/api/graphql', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({
-      query: `query FleetHealthProjectOrgs(${variableDefs}) {\n${fields}\n}`,
-      variables,
-    }),
-  });
-  if (!res.ok) return result;
-
-  const body = (await res.json()) as { data?: Record<string, RawGraphQLProject | null> };
-  const data = body.data ?? {};
-  projectNames.forEach((name, i) => {
-    const p = data[`p${i}`];
-    if (p?.organizationName) {
-      result.set(name, {
-        name: p.organizationName,
-        displayName: p.organizationDisplayName || p.organizationName,
-      });
-    }
-  });
-  return result;
-}
-
-function chunk<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
-  return chunks;
-}
-
-async function fetchProjectOrganizations(
-  projectNames: string[]
-): Promise<Map<string, FleetConsumerOrganization>> {
-  const chunks = await Promise.all(
-    chunk(projectNames, ORG_LOOKUP_CHUNK_SIZE).map(fetchProjectOrganizationsChunk)
-  );
-  return new Map(chunks.flatMap((m) => [...m]));
-}
-
-/**
- * Attaches each project's owning organization. Best-effort: a project whose
- * org can't be resolved (or a wholesale request failure) just renders
- * without one, it doesn't fail the whole page.
- */
-async function attachOrganizations(
-  projects: FleetConsumerProject[]
-): Promise<FleetConsumerProject[]> {
-  const orgByProject = await fetchProjectOrganizations(projects.map((p) => p.name));
-  return projects.map((project) => {
-    const organization = orgByProject.get(project.name);
-    return organization ? { ...project, organization } : project;
-  });
-}
-
 export interface FleetHealth {
   /** Every active consumer project that was queried. */
   consumerCount: number;
@@ -251,8 +187,9 @@ export interface FleetHealth {
   workloads: FleetWorkload[];
   failed: FailedProject[];
   /**
-   * Merged Locations catalogs from the same per-project fan-out as workloads.
-   * Empty when no project could list `locations.miloapis.com`.
+   * The producer project's Locations catalog. Every consumer project sees the
+   * same platform catalog, so this is fetched once instead of once per
+   * consumer. Empty when it can't be listed; rows then show raw names.
    */
   locations: Location[];
 }
@@ -313,35 +250,63 @@ const SEVERITY_RANK: Record<Workload['health'], number> = {
   Available: 3,
 };
 
-async function fetchFleetHealth(serviceResourceName: string): Promise<FleetHealth> {
+interface FleetShape {
+  activeConsumerProjects: FleetConsumerProject[];
+  locations: Location[];
+}
+
+/**
+ * Who to fan out to, plus the Locations catalog. Everything here depends only
+ * on the Service, so it runs once per {@link FLEET_SHAPE_STALE_TIME_MS} rather
+ * than on every poll, and the catalog fetch overlaps the consumer query.
+ */
+async function fetchFleetShape(serviceResourceName: string): Promise<FleetShape> {
   const service = await fetchService(serviceResourceName);
-  const consumers = await fetchServiceConsumers(service.producerProject);
+  const serviceNames = [...new Set([service.resourceName, service.canonicalName])];
 
-  const activeConsumerProjectsRaw: FleetConsumerProject[] = consumers
-    .filter(
-      (c) =>
-        c.phase === 'Active' &&
-        (c.serviceName === service.resourceName || c.serviceName === service.canonicalName)
-    )
-    .map((c) => c.consumerProject);
+  const [consumers, locations] = await Promise.all([
+    fetchServiceConsumers(service.producerProject, serviceNames),
+    fetchLocations(service.producerProject).catch(() => [] as Location[]),
+  ]);
 
-  const activeConsumerProjects = await attachOrganizations(activeConsumerProjectsRaw);
+  const activeConsumerProjects: FleetConsumerProject[] = consumers
+    .filter((c) => c.phase === 'Active')
+    .map(({ consumerProject: p }) => ({
+      name: p.name,
+      displayName: p.displayName,
+      ...(p.organizationName && {
+        organization: {
+          name: p.organizationName,
+          displayName: p.organizationDisplayName || p.organizationName,
+        },
+      }),
+    }));
+
+  return { activeConsumerProjects, locations };
+}
+
+async function fetchFleetHealth(
+  queryClient: QueryClient,
+  serviceResourceName: string
+): Promise<FleetHealth> {
+  const { activeConsumerProjects, locations } = await queryClient.fetchQuery({
+    queryKey: [FLEET_QUERY_KEY, 'shape', serviceResourceName],
+    queryFn: () => fetchFleetShape(serviceResourceName),
+    staleTime: FLEET_SHAPE_STALE_TIME_MS,
+    retry: false,
+  });
 
   const outcomes = await mapWithConcurrency(
     activeConsumerProjects,
     MAX_CONCURRENT_PROJECT_FETCHES,
     async (project) => {
       try {
-        const [workloads, locations] = await Promise.all([
-          fetchWorkloads(project.name),
-          fetchLocations(project.name).catch(() => [] as Location[]),
-        ]);
-        return { project, workloads, locations, error: null as string | null };
+        const workloads = await fetchWorkloads(project.name);
+        return { project, workloads, error: null as string | null };
       } catch (err) {
         return {
           project,
           workloads: [] as Workload[],
-          locations: [] as Location[],
           error: err instanceof Error ? err.message : 'Failed to load workloads',
         };
       }
@@ -381,13 +346,6 @@ async function fetchFleetHealth(serviceResourceName: string): Promise<FleetHealt
     else severityCounts[w.workload.health]++;
   }
 
-  const locationsByName = new Map<string, Location>();
-  for (const location of outcomes.flatMap((o) => o.locations)) {
-    if (location.name && !locationsByName.has(location.name)) {
-      locationsByName.set(location.name, location);
-    }
-  }
-
   return {
     consumerCount: activeConsumerProjects.length,
     totalWorkloads: workloads.length,
@@ -395,17 +353,18 @@ async function fetchFleetHealth(serviceResourceName: string): Promise<FleetHealt
     severityCounts,
     workloads,
     failed,
-    locations: [...locationsByName.values()],
+    locations,
   };
 }
 
 export function useFleetHealth(
   serviceResourceName: string | undefined
 ): UseQueryResult<FleetHealth, Error> {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: [FLEET_QUERY_KEY, serviceResourceName],
     enabled: !!serviceResourceName,
-    queryFn: () => fetchFleetHealth(serviceResourceName as string),
+    queryFn: () => fetchFleetHealth(queryClient, serviceResourceName as string),
     refetchInterval: REFETCH_INTERVAL_MS,
     retry: false,
   });
