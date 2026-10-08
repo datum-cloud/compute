@@ -14,22 +14,28 @@ import {
 } from "./resource-usage";
 
 describe("formatCores", () => {
-  test("plain decimals, never SI prefixes", () => {
-    expect(formatCores(0.0021, false)).toBe("0.0021");
-    expect(formatCores(0.0007, true)).toBe("0.0007");
+  test("stops at hundredths of a core, never SI prefixes", () => {
+    expect(formatCores(0.0072, false)).toBe("0.01");
     expect(formatCores(0.02, false)).toBe("0.02");
     expect(formatCores(0.12345, false)).toBe("0.12");
+    expect(formatCores(0.5, false)).toBe("0.5");
   });
 
-  test("keeps three decimals above one core", () => {
-    expect(formatCores(1.002, false)).toBe("1.002");
-    expect(formatCores(1.002, true)).toBe("1");
+  test("rounds whole cores the same way", () => {
+    expect(formatCores(1.002, false)).toBe("1");
+    expect(formatCores(1.256, false)).toBe("1.26");
     expect(formatCores(2, false)).toBe("2");
   });
 
   test("zero and vanishing values", () => {
     expect(formatCores(0, true)).toBe("0");
-    expect(formatCores(2e-7, false)).toBe("<0.000001");
+    expect(formatCores(0, false)).toBe("0");
+    expect(formatCores(0.001, false)).toBe("<0.01");
+  });
+
+  test("axis ticks keep two significant digits", () => {
+    expect(formatCores(0.0007, true)).toBe("0.0007");
+    expect(formatCores(0.0021, true)).toBe("0.0021");
   });
 });
 
@@ -77,9 +83,10 @@ describe("allocatedCores", () => {
 describe("formatCpuUsage", () => {
   test("percent of allocation, or cores without one", () => {
     expect(formatCpuUsage(0.014, 7)).toBe("0.2%");
-    expect(formatCpuUsage(0.014, undefined)).toBe("0.014");
+    expect(formatCpuUsage(0.014, undefined)).toBe("0.01");
     expect(formatCpuUsage(undefined, 7)).toBe("—");
-    expect(cpuUsageHint(0.0081, 5)).toBe("0.0081 of 5 vCPU");
+    expect(cpuUsageHint(0.0081, 5)).toBe("0.01 of 5 vCPU");
+    expect(cpuUsageHint(0.002, 1)).toBe("<0.01 of 1 vCPU");
     expect(cpuUsageHint(0.0081, undefined)).toBe("cores in use");
   });
 });

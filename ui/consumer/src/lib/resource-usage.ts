@@ -120,8 +120,10 @@ function decimalsFor(n: number, significant: number): number {
 }
 
 /**
- * Cores as a plain decimal (0.0021, 1.002), never SI-prefixed: "2.1m" reads
- * as minutes or millions.
+ * Cores as a plain decimal, never SI-prefixed: "2.1m" reads as minutes or
+ * millions. Values stop at hundredths of a core ("0.01", "1.5"); a non-zero
+ * figure below that reads "<0.01" rather than looking like none. Axis ticks
+ * keep two significant digits so an idle instance's axis isn't all "0".
  */
 export function formatCores(value: number, forTick: boolean): string {
   if (!Number.isFinite(value)) return forTick ? '' : '—';
@@ -129,8 +131,12 @@ export function formatCores(value: number, forTick: boolean): string {
   if (n < 1e-9) return '0';
   const sign = value < 0 ? '-' : '';
   if (n >= 100) return `${sign}${n.toFixed(0)}`;
-  if (n >= 1) return `${sign}${trimmedFixed(n, forTick ? 2 : 3)}`;
-  if (n < 1e-6) return forTick ? `${sign}${n.toExponential(0)}` : '<0.000001';
+  if (!forTick) {
+    const rounded = trimmedFixed(n, 2);
+    return rounded === '0' ? '<0.01' : `${sign}${rounded}`;
+  }
+  if (n >= 1) return `${sign}${trimmedFixed(n, 2)}`;
+  if (n < 1e-6) return `${sign}${n.toExponential(0)}`;
   return `${sign}${trimmedFixed(n, Math.min(6, decimalsFor(n, 2)))}`;
 }
 
