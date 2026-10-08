@@ -17,6 +17,9 @@ spec:
        label meta.datumapis.com/upstream-cluster-name: cluster-single.
     6. InstanceProjector on control-plane creates a projection of the Instance
        in the project namespace.
+    7. Scale to two replicas, then back to one. Hold the second project
+       projection with a test finalizer and verify the hub write-back and cell
+       Instance remain until the projection is removed.
 
     Cluster-name label: "cluster-single".
     The value is NOT the cell's cluster name. The management operator federates
@@ -171,3 +174,236 @@ spec:
           # environment-dependent, so only the status is asserted.
           (status.conditions[?type == 'Ready'] | [0]):
             status: "False"
+
+  - name: scale-up
+    description: Request a second replica on the project WorkloadDeployment.
+    try:
+    - patch:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-full-fed-wd
+          spec:
+            replicas: 2
+
+  - name: assert-second-instance-on-pop-dfw
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-full-fed-wd-1
+
+  - name: assert-second-writeback-in-downstream
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-full-fed-wd-1
+            finalizers:
+            - compute.datumapis.com/instance-projection
+
+  - name: assert-second-projection
+    try:
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($namespace)
+            name: test-full-fed-wd-1
+
+  - name: hold-second-projection
+    description: Keep the project Instance during scale-down to check deletion order.
+    try:
+    - patch:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($namespace)
+            name: test-full-fed-wd-1
+            finalizers:
+            - compute.datumapis.com/e2e-projection-hold
+    cleanup:
+    - script:
+        content: |
+          kubectl patch instance test-full-fed-wd-1 -n "$NAMESPACE" \
+            --type=merge -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+
+  - name: scale-down
+    description: Return to one replica while the second projection is held.
+    try:
+    - patch:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-full-fed-wd
+          spec:
+            replicas: 1
+
+  - name: assert-projection-deletion-started
+    description: The projector must request removal of the second project Instance.
+    try:
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($namespace)
+            name: test-full-fed-wd-1
+            (deletionTimestamp != null): true
+
+  - name: assert-writeback-still-present
+    description: The hub write-back must wait for the held project projection.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-full-fed-wd-1
+            finalizers:
+            - compute.datumapis.com/instance-projection
+
+  - name: assert-cell-instance-still-present
+    description: The cell Instance must wait for its hub write-back to disappear.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-full-fed-wd-1
+
+  - name: release-second-projection
+    description: Allow the project Instance and then its upstream copies to disappear.
+    try:
+    - script:
+        content: |
+          kubectl patch instance test-full-fed-wd-1 -n "$NAMESPACE" \
+            --type=merge -p '{"metadata":{"finalizers":[]}}'
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: Instance
+        namespace: ($namespace)
+        name: test-full-fed-wd-1
+        timeout: 120s
+        for:
+          deletion: {}
+
+  - name: assert-second-writeback-deleted
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: Instance
+        namespace: ($downstreamNS)
+        name: test-full-fed-wd-1
+        timeout: 120s
+        for:
+          deletion: {}
+
+  - name: assert-second-cell-instance-deleted
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: Instance
+        namespace: ($downstreamNS)
+        name: test-full-fed-wd-1
+        timeout: 120s
+        for:
+          deletion: {}
+
+  - name: assert-first-replica-and-deployment-remain
+    try:
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-full-fed-wd
+          spec:
+            replicas: 1
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($namespace)
+            name: test-full-fed-wd-0
+    - script:
+        content: |
+          instances=$(kubectl get instances -n "$NAMESPACE" \
+            -l compute.datumapis.com/workload-deployment-name=test-full-fed-wd \
+            -o jsonpath='{.items[*].metadata.name}')
+          test "$instances" = test-full-fed-wd-0
