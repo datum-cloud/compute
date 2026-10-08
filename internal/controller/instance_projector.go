@@ -36,8 +36,8 @@ import (
 //
 // Ownership: each projected Instance is owned by the project WorkloadDeployment
 // so that it is garbage-collected when the deployment is removed. The projector
-// deletes individual projections when their write-back Instances disappear,
-// including during scale-down while the deployment remains.
+// finalizes write-back Instances by removing their project projections before
+// the write-backs disappear, including during scale-down.
 //
 // The controller is registered on the leader-elected local manager so only the
 // elected replica writes projections, and watches Instances through the
@@ -52,7 +52,10 @@ type InstanceProjector struct {
 	MCManager mcmanager.Manager
 }
 
+const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
+
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/finalizers,verbs=update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/status,verbs=get;update;patch
 
 func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -77,10 +80,19 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("failed getting upstream instance: %w", err)
 	}
 
-	// A write-back on its way out must stop appearing as a Ready Instance in
-	// the project, even though its WorkloadDeployment still exists.
+	// Keep the write-back until its project projection has been deleted.
 	if !downstreamInstance.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.deleteProjection(ctx, req.NamespacedName, downstreamInstance.Labels)
+		if err := r.deleteProjection(ctx, req.NamespacedName, downstreamInstance.Labels); err != nil {
+			return ctrl.Result{}, err
+		}
+		if controllerutil.ContainsFinalizer(&downstreamInstance, instanceProjectionFinalizer) {
+			base := downstreamInstance.DeepCopy()
+			controllerutil.RemoveFinalizer(&downstreamInstance, instanceProjectionFinalizer)
+			if err := r.FederationClient.Patch(ctx, &downstreamInstance, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed removing projection finalizer from write-back instance %s: %w", req.NamespacedName, err)
+			}
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Federation-plane Instances exist exclusively as write-back copies, and the
@@ -148,6 +160,15 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("failed getting WorkloadDeployment %s/%s in project cluster %s: %w",
 			targetNamespace, wdName, clusterName, err)
 	}
+	// Adopt older write-backs that predate the finalizer before projecting them.
+	// New write-backs already carry it from the cell reconciler.
+	if !controllerutil.ContainsFinalizer(&downstreamInstance, instanceProjectionFinalizer) {
+		base := downstreamInstance.DeepCopy()
+		controllerutil.AddFinalizer(&downstreamInstance, instanceProjectionFinalizer)
+		if err := r.FederationClient.Patch(ctx, &downstreamInstance, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed adding projection finalizer to write-back instance %s: %w", req.NamespacedName, err)
+		}
+	}
 
 	projection := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
@@ -214,7 +235,15 @@ func (r *InstanceProjector) deleteProjection(ctx context.Context, key types.Name
 	if err := projectClient.Delete(ctx, &projection); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("failed deleting instance projection %s in project cluster %q: %w", projectionKey, clusterName, err)
 	}
-	return nil
+	// A project-side finalizer may keep the Instance after Delete returns. Do
+	// not release the write-back until the project API confirms it is gone.
+	if err := projectClient.Get(ctx, projectionKey, &projection); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed checking instance projection %s deletion in project cluster %q: %w", projectionKey, clusterName, err)
+	}
+	return fmt.Errorf("waiting for instance projection %s to be deleted in project cluster %q", projectionKey, clusterName)
 }
 
 // SetupWithManager registers the InstanceProjector on mgr, which must be the

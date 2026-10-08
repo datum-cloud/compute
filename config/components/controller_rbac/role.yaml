@@ -52,7 +52,6 @@ rules:
   - compute.datumapis.com
   resources:
   - instanceconsolesessions/finalizers
-  - instances/finalizers
   - instancetypes/finalizers
   - workloaddeployments/finalizers
   - workloads/finalizers
@@ -85,6 +84,13 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instances/finalizers
+  verbs:
+  - patch
+  - update
 - apiGroups:
   - compute.datumapis.com
   resources:

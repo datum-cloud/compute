@@ -145,6 +145,8 @@ func TestWriteBackToUpstream_CreatePath_AllLabels(t *testing.T) {
 	require.NoError(t, upstreamClient.Get(context.Background(),
 		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
 		&created))
+	assert.Contains(t, created.Finalizers, instanceProjectionFinalizer,
+		"write-back must retain its project projection until cleanup")
 
 	assert.Equal(t, wbTestEncodedCluster, created.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
 		"UpstreamOwnerClusterNameLabel must be set")
@@ -208,6 +210,8 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 	require.NoError(t, upstreamClient.Get(context.Background(),
 		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
 		&updated))
+	assert.Contains(t, updated.Finalizers, instanceProjectionFinalizer,
+		"existing write-backs must acquire the projection finalizer")
 
 	// All five owned labels must be present with correct values.
 	assert.Equal(t, wbTestEncodedCluster, updated.Labels[downstreamclient.UpstreamOwnerClusterNameLabel])

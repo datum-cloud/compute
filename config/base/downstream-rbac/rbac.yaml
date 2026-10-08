@@ -16,6 +16,9 @@ rules:
   - apiGroups: ["compute.datumapis.com"]
     resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instances/finalizers"]
+    verbs: ["update", "patch"]
   # Compute delivers each shell session as a copy in the hub namespace of its
   # instance's deployment, reads back the status Karmada reflects onto it from
   # the cell, annotates it to revoke the session, and removes it when the
