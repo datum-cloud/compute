@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -33,13 +35,9 @@ import (
 // namespaces in the project cluster to find the target namespace.
 //
 // Ownership: each projected Instance is owned by the project WorkloadDeployment
-// so that it is garbage-collected via cascading deletion when the deployment is
-// removed from the project cluster.
-//
-// The projector never deletes anything. Reclamation belongs to hub ownership:
-// hub Instances are owned by their hub WorkloadDeployment, and write-back is
-// owner-gated, so an object the projector cannot resolve is not something for it
-// to clean up.
+// so that it is garbage-collected when the deployment is removed. The projector
+// deletes individual projections when their write-back Instances disappear,
+// including during scale-down while the deployment remains.
 //
 // The controller is registered on the leader-elected local manager so only the
 // elected replica writes projections, and watches Instances through the
@@ -63,18 +61,26 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var downstreamInstance computev1alpha.Instance
 	if err := r.FederationClient.Get(ctx, req.NamespacedName, &downstreamInstance); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Instance was deleted from the upstream control plane. Projections
-			// are owned by the project WorkloadDeployment, so cascading deletion
-			// handles cleanup.
-			return ctrl.Result{}, nil
+			// The Instance is gone, so recover its project route from the hub
+			// namespace, which the federator labels before creating write-backs.
+			var namespace corev1.Namespace
+			if err := r.FederationClient.Get(ctx, client.ObjectKey{Name: req.Namespace}, &namespace); err != nil {
+				if apierrors.IsNotFound(err) {
+					// Project teardown also removes the hub namespace; the project
+					// deployment's owner reference handles its projections.
+					return ctrl.Result{}, nil
+				}
+				return ctrl.Result{}, fmt.Errorf("failed getting federation namespace %q for deleted instance: %w", req.Namespace, err)
+			}
+			return ctrl.Result{}, r.deleteProjection(ctx, req.NamespacedName, namespace.Labels)
 		}
 		return ctrl.Result{}, fmt.Errorf("failed getting upstream instance: %w", err)
 	}
 
-	// An object on its way out has nothing to project, and its projection is
-	// reclaimed by the owner reference rather than by this controller.
+	// A write-back on its way out must stop appearing as a Ready Instance in
+	// the project, even though its WorkloadDeployment still exists.
 	if !downstreamInstance.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.deleteProjection(ctx, req.NamespacedName, downstreamInstance.Labels)
 	}
 
 	// Federation-plane Instances exist exclusively as write-back copies, and the
@@ -179,6 +185,36 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// deleteProjection only removes the projected copy for the source route. The
+// labels on the hub namespace allow this even after the source Instance is gone.
+func (r *InstanceProjector) deleteProjection(ctx context.Context, key types.NamespacedName, route map[string]string) error {
+	encodedClusterName := route[downstreamclient.UpstreamOwnerClusterNameLabel]
+	targetNamespace := route[downstreamclient.UpstreamOwnerNamespaceLabel]
+	clusterName := projectClusterNameFromLabel(encodedClusterName)
+	if clusterName == "" || targetNamespace == "" {
+		return fmt.Errorf("cannot resolve project route for deleted instance %s from cluster %q and namespace %q", key, encodedClusterName, targetNamespace)
+	}
+
+	projectCluster, err := r.MCManager.GetCluster(ctx, multicluster.ClusterName(clusterName))
+	if err != nil {
+		return fmt.Errorf("failed getting project cluster %q for deleted instance %s: %w", clusterName, key, err)
+	}
+	projectClient := projectCluster.GetClient()
+	var projection computev1alpha.Instance
+	projectionKey := client.ObjectKey{Namespace: targetNamespace, Name: key.Name}
+	if err := projectClient.Get(ctx, projectionKey, &projection); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if projection.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] != encodedClusterName ||
+		projection.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] != targetNamespace {
+		return fmt.Errorf("refusing to delete instance %s in project cluster %q: projection route does not match federation instance %s", projectionKey, clusterName, key)
+	}
+	if err := projectClient.Delete(ctx, &projection); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("failed deleting instance projection %s in project cluster %q: %w", projectionKey, clusterName, err)
+	}
+	return nil
 }
 
 // SetupWithManager registers the InstanceProjector on mgr, which must be the

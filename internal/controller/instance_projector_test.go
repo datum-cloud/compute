@@ -99,6 +99,16 @@ func projTestProjectNS() *corev1.Namespace {
 	}
 }
 
+func projTestHubNamespace() *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: projTestKarmadaNS,
+		Labels: map[string]string{
+			downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
+			downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
+		},
+	}}
+}
+
 // projTestWorkloadDeployment builds the project WorkloadDeployment that owns
 // projected Instances.
 func projTestWorkloadDeployment() *computev1alpha.WorkloadDeployment {
@@ -402,6 +412,108 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 				assert.Empty(t, projection.OwnerReferences,
 					"projected instance should have no owner reference")
 			}
+		})
+	}
+}
+
+func TestInstanceProjector_RemovesProjectionOnScaleDown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		source            *computev1alpha.Instance
+		hubNamespace      bool
+		projectionExists  bool
+		projectionMatches bool
+		wantDeleted       bool
+		wantErr           bool
+	}{
+		{
+			name:              "write-back already gone",
+			hubNamespace:      true,
+			projectionExists:  true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name: "write-back deleting",
+			source: func() *computev1alpha.Instance {
+				instance := projTestKarmadaInstance(nil)
+				now := metav1.Now()
+				instance.DeletionTimestamp = &now
+				instance.Finalizers = []string{"test-finalizer"}
+				return instance
+			}(),
+			projectionExists:  true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name:              "already removed",
+			hubNamespace:      true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name:              "different route is preserved",
+			hubNamespace:      true,
+			projectionExists:  true,
+			projectionMatches: false,
+			wantErr:           true,
+		},
+		{
+			name:              "hub namespace removed during project teardown",
+			projectionExists:  true,
+			projectionMatches: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var hubObjects []client.Object
+			if tt.source != nil {
+				hubObjects = append(hubObjects, tt.source)
+			}
+			if tt.hubNamespace {
+				hubObjects = append(hubObjects, projTestHubNamespace())
+			}
+			var projectObjects []client.Object
+			projectObjects = append(projectObjects, projTestProjectNS(), projTestWorkloadDeployment())
+			if tt.projectionExists {
+				projection := projTestKarmadaInstance(nil)
+				projection.Namespace = projTestProjNS
+				if !tt.projectionMatches {
+					projection.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = "another-namespace"
+				}
+				projectObjects = append(projectObjects, projection)
+			}
+
+			projectClient := fake.NewClientBuilder().
+				WithScheme(newProjectScheme()).
+				WithObjects(projectObjects...).
+				Build()
+			r := newTestProjector(newKarmadaFakeClient(hubObjects...), projectClient)
+			_, err := r.Reconcile(context.Background(), projectorRequest())
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			var projection computev1alpha.Instance
+			err = projectClient.Get(context.Background(), types.NamespacedName{
+				Name: projTestInstanceName, Namespace: projTestProjNS,
+			}, &projection)
+			if tt.wantDeleted || !tt.projectionExists {
+				assert.True(t, apierrors.IsNotFound(err), "projection should be absent")
+			} else {
+				require.NoError(t, err, "unrelated projection should remain")
+			}
+			var owner computev1alpha.WorkloadDeployment
+			require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{
+				Name: projTestWDName, Namespace: projTestProjNS,
+			}, &owner), "scale-down must preserve the WorkloadDeployment")
 		})
 	}
 }
