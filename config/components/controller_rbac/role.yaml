@@ -162,6 +162,7 @@ rules:
   - services.miloapis.com
   resources:
   - serviceavailabilities
+  - serviceconfigurations
   - serviceconsumers
   - services
   verbs:
