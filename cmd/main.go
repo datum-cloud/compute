@@ -456,7 +456,7 @@ func main() {
 	// The fail-loud guard above ensures federationRestConfig is non-nil when
 	// management controllers are enabled; the nil check here is defensive.
 	if enableManagementControllers && federationRestConfig != nil {
-		extra, err := setupManagementControllers(mgr, federationClient)
+		extra, err := setupManagementControllers(mgr, federationClient, serverConfig, deploymentCluster)
 		if err != nil {
 			setupLog.Error(err, "unable to set up management controllers")
 			os.Exit(1)
@@ -873,11 +873,17 @@ func ignoreCanceled(err error) error {
 }
 
 // setupManagementControllers wires the WorkloadDeploymentFederator,
-// InstanceProjector and, behind its feature gate, the InstanceConsoleSession
-// controller onto mgr. It returns the federation cluster as a Runnable
-// that must be started alongside the main manager. Called only when management
-// controllers are enabled and a federation REST config is available.
-func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
+// InstanceProjector and, behind their feature gates, the InstanceConsoleSession
+// controller and InstanceTypeProjector onto mgr. It returns the federation
+// cluster, and any catalog cluster the InstanceTypeProjector reads from, as
+// Runnables that must be started alongside the main manager. Called only when
+// management controllers are enabled and a federation REST config is available.
+func setupManagementControllers(
+	mgr mcmanager.Manager,
+	federationClient client.Client,
+	serverConfig config.WorkloadOperator,
+	deploymentCluster cluster.Cluster,
+) ([]manager.Runnable, error) {
 	// The federation cluster provides a cached, watchable handle to the Karmada
 	// federation control plane. It backs the InstanceProjector's Instance watch
 	// and the WorkloadDeploymentFederator's downstream WorkloadDeployment status
@@ -929,7 +935,71 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 		}
 	}
 
-	return []manager.Runnable{federationCluster}, nil
+	runnables := []manager.Runnable{federationCluster}
+
+	// InstanceTypeProjector publishes the instance type catalog to the
+	// federation hub so a single ClusterPropagationPolicy can carry it to every
+	// cell. The InstanceTypeReconciler only maintains per-project status; the
+	// projection is what makes a type a workload can actually select on a cell.
+	if features.FeatureGate.Enabled(features.InstanceTypes) {
+		catalog, catalogCluster, extra, err := instanceTypeCatalogSource(serverConfig, deploymentCluster)
+		if err != nil {
+			return nil, fmt.Errorf("InstanceTypeProjector: %w", err)
+		}
+		if err := (&controller.InstanceTypeProjector{
+			FederationClient: federationClient,
+			Catalog:          catalog,
+		}).SetupWithManager(mgr.GetLocalManager(), catalogCluster, federationCluster); err != nil {
+			return nil, fmt.Errorf("InstanceTypeProjector: %w", err)
+		}
+		runnables = append(runnables, extra...)
+	}
+
+	return runnables, nil
+}
+
+// instanceTypeCatalogSource returns where the InstanceTypeProjector reads the
+// instance type catalog from, the cluster it is read through, and any Runnable
+// that cluster needs started.
+//
+// In milo mode the catalog is the InstanceTypes the compute ServiceConfiguration
+// provisions into every entitled project, read from the root Milo control plane
+// for the services named in discovery.consumerScopedProjection.serviceNames.
+// Reading the one declaration rather than the per-project copies keeps a single
+// writer on the hub. In single mode the one managed cluster holds the catalog
+// itself.
+func instanceTypeCatalogSource(
+	serverConfig config.WorkloadOperator,
+	deploymentCluster cluster.Cluster,
+) (controller.InstanceTypeCatalog, cluster.Cluster, []manager.Runnable, error) {
+	switch serverConfig.Discovery.Mode {
+	case multiclusterproviders.ProviderSingle:
+		// The deployment cluster is already started by cluster discovery.
+		return controller.ClusterCatalog{}, deploymentCluster, nil, nil
+
+	case multiclusterproviders.ProviderMilo:
+		csp := serverConfig.Discovery.ConsumerScopedProjection
+		if csp == nil || len(csp.ServiceNames) == 0 {
+			return nil, nil, nil, fmt.Errorf("milo mode requires discovery.consumerScopedProjection.serviceNames: " +
+				"the catalog is read from the ServiceConfiguration of those services")
+		}
+		rootRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+		}
+		rootCluster, err := cluster.New(rootRestConfig, func(o *cluster.Options) {
+			o.Scheme = scheme
+			o.Cache.DefaultTransform = cache.TransformStripManagedFields()
+		})
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("catalog cluster: %w", err)
+		}
+		return controller.ServiceConfigurationCatalog{ServiceNames: csp.ServiceNames}, rootCluster,
+			[]manager.Runnable{rootCluster}, nil
+
+	default:
+		return nil, nil, nil, fmt.Errorf("unsupported cluster discovery mode %s", serverConfig.Discovery.Mode)
+	}
 }
 
 // computeWatchProviderClaims reports whether the direct ResourceClaim watch
