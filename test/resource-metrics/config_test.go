@@ -10,6 +10,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+const nodeQueryKind = "node"
+
 // TestShippedQueries exercises the query templates from the installed ConfigMap.
 func TestShippedQueries(t *testing.T) {
 	promtool, err := exec.LookPath("promtool")
@@ -34,17 +36,22 @@ func TestShippedQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rules []map[string]string
-	for name, queries := range map[string]queryPair{"cpu": config.ResourceRules.CPU, "memory": config.ResourceRules.Memory} {
-		for kind, query := range map[string]string{"container": queries.ContainerQuery, "node": queries.NodeQuery} {
+	for name, queries := range map[string]queryPair{
+		"cpu":    config.ResourceRules.CPU,
+		"memory": config.ResourceRules.Memory,
+	} {
+		for kind, query := range map[string]string{"container": queries.ContainerQuery, nodeQueryKind: queries.NodeQuery} {
 			group := "namespace,pod,container"
-			if kind == "node" {
-				group = "node"
+			if kind == nodeQueryKind {
+				group = nodeQueryKind
 			}
 			query = strings.NewReplacer("<<.LabelMatchers>>", `node="worker"`, "<<.GroupBy>>", group).Replace(query)
 			rules = append(rules, map[string]string{"record": "test_" + name + "_" + kind, "expr": query})
 		}
 	}
-	generated, err := yaml.Marshal(map[string]any{"groups": []any{map[string]any{"name": "adapter", "interval": "30s", "rules": rules}}})
+	generated, err := yaml.Marshal(map[string]any{
+		"groups": []any{map[string]any{"name": "adapter", "interval": "30s", "rules": rules}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
