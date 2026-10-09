@@ -57,9 +57,10 @@ overlapping addresses or private zone names.
 
 ## Proposal
 
-For a VPC with managed DNS enabled, Compute reserves an instance name in the
-namespace allocated by DNS. The name remains stable for that instance's
-lifetime. A replacement instance receives a distinct identity. Additional names
+Every VPC with managed DNS enabled uses `internal` as its default domain. DNS
+manages a separate zone within each VPC's context. Compute reserves an instance
+name beneath its resource namespace. The name remains stable for that instance's
+lifetime; a replacement instance receives a distinct identity. Additional names
 can follow the VPC's DNS naming policy without adding a zone choice to each
 Compute resource.
 
@@ -75,15 +76,16 @@ from another instance in that VPC:
 ```console
 $ cat /etc/resolv.conf
 nameserver fd53::53
-search production.vpc-a7c9.project-p4e2.internal vpc-a7c9.project-p4e2.internal
+search production.internal internal
 $ dig +search +short A web-01-k7m2
 10.20.0.10
-$ dig +short AAAA web-01-k7m2.production.vpc-a7c9.project-p4e2.internal.
+$ dig +short AAAA web-01-k7m2.production.internal.
 fd20::10
 ```
 
-Names, suffixes, and addresses are illustrative. DNS supplies the canonical name;
-consumers do not construct it from a workload display name.
+Instance names and addresses are illustrative; `internal` is the proposed shared
+default domain. DNS supplies the canonical name; consumers do not construct it
+from a workload display name.
 The example resolver file describes effective settings; runtimes can apply them
 through their native resolver configuration. `dig` requires
 [`+search`](https://bind9.readthedocs.io/en/stable/manpages.html#dig-dns-lookup-utility)
@@ -137,22 +139,29 @@ for these contracts.
 
 ### Names and search domains
 
-Use `<allocated-instance-name>.<resource-namespace>.<vpc-managed-suffix>` for
-instance identity. The resource namespace is the customer-visible project
-namespace, not a mapped federation or edge namespace.
+Use `<allocated-instance-name>.<resource-namespace>.internal` for instance
+identity in every VPC. The resource namespace is the customer-visible project
+namespace, not a mapped federation or edge namespace. VPC and project identifiers
+do not appear in the default domain.
 
-For a guest in `production`, try `production.<vpc-managed-suffix>` before
-`<vpc-managed-suffix>`. This resolves short instance names locally and supports
+For a guest in `production`, try `production.internal` before `internal`.
+This resolves short instance names locally and supports
 VPC-scoped names without a product prefix. Use a fully qualified name to select
 another namespace unambiguously. Namespace names organize resolution; VPC access
 authorization provides the network isolation boundary.
 
-Network services supply the VPC suffix and approved additional search domains.
+Two VPCs can resolve `web-01-k7m2.production.internal` to different addresses.
+The authorized DNS context selects the zone before lookup and cache access;
+matching domain names do not share records or grant access across VPCs. An
+instance attached to several VPCs uses the same allocated label in each context,
+with only that VPC's addresses in its answers.
+
+Network services supply the managed domain and approved additional search domains.
 Compute providers prepend the guest's resource namespace and report the effective
 ordered list. Associating a private zone does not automatically add it to the
 search list. Bound list size and qualify resolver search order across runtimes.
-The namespace-aware naming and search contract requires joint DNS and network
-services API review.
+The consistent default domain, namespace-aware naming, and search contract
+require joint DNS and network services API review.
 
 ### Resolver configuration
 
@@ -178,8 +187,8 @@ status:
     nameservers: ["fd53::53"]
     # Resolve resource-namespace names before VPC-scoped names.
     searches:
-      - production.vpc-a7c9.project-p4e2.internal
-      - vpc-a7c9.project-p4e2.internal
+      - production.internal
+      - internal
   conditions:
     # The provider reports success after applying authorized settings to the guest.
     - type: DNSConfigured
@@ -233,7 +242,7 @@ spec:
   ttlSeconds: 30
 status:
   # DNS-owned output used to display the assigned name to consumers.
-  canonicalFQDN: web-01-k7m2.production.vpc-a7c9.project-p4e2.internal
+  canonicalFQDN: web-01-k7m2.production.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordContribution
@@ -314,7 +323,8 @@ shared Kubernetes end-to-end environment with actual Compute publishers and
 providers. Require two isolated VPCs with overlapping names and addresses, UDP
 and TCP queries from guests, renewal stability, address changes, deletion,
 publisher outages, grant revocation, stale replay, and restart coverage.
-Test equal short names in different namespaces, search precedence, fully
+Test the same default domain and hostname with different answers across VPCs,
+equal short names in different namespaces, search precedence, fully
 qualified queries, and explicit additional-zone search configuration.
 Qualify guest configuration per runtime and mixed controller versions before
 enabling production. These are release criteria, not validation claims.
