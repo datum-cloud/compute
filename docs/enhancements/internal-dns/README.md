@@ -105,6 +105,7 @@ flowchart LR
   P -->|DNS intent| D[Shared DNS platform]
   P -->|Workload and network desired state| K[Karmada]
   K --> E[Edge interfaces and workload providers]
+  N -->|Internal resolver delivery contract| E
   E -->|Verified instance and interface state| C
   E -->|Resolver settings| G[Guest]
   G -->|VPC-authorized private service path| D
@@ -127,8 +128,10 @@ for these contracts.
 
 ### Resolver configuration
 
-Providers consume `NetworkInterface.spec.dns` at the edge. This selected-field
-example shows generated settings, not a manifest users submit:
+`NetworkInterface` is a public API. Its proposed read-only DNS status exposes
+resolver addresses, search domains, and configuration readiness. Customers
+select the network; they do not supply DNS authorization or renewal values.
+This selected-field example includes proposed controller-written status:
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
@@ -139,30 +142,33 @@ spec:
   network:
     name: application
   interfaceName: eth0
-  # Network services own inherited resolver settings.
+status:
+  # Report effective settings without exposing internal authorization state.
   dns:
-    # Pin the source DNS context and access lifetimes.
-    contextRef:
-      name: application
-      uid: 33333333-3333-4333-8333-333333333333
-    accessBindingRef:
-      name: application-us-central-1
-      uid: 44444444-4444-4444-8444-444444444444
-    # Reject stale settings and preserve the original authorization deadline.
-    writerEpoch: 3
-    sequence: 27
-    validUntil: "2026-10-09T20:05:00Z"
     # Galactic exposes this well-known address inside the authorized VPC.
     nameservers: ["fd53::53"]
     # DNS allocates the managed suffix.
     searches: [vpc-a7c9.project-p4e2.internal]
+  conditions:
+    # The provider reports success after applying authorized settings to the guest.
+    - type: DNSConfigured
+      status: "True"
+      reason: ResolverConfigured
+      lastTransitionTime: "2026-10-09T20:00:00Z"
 ```
 
-Providers apply current settings to the guest and report `DNSConfigured` only
-after successful application. They reconcile updates and expiry, retain source
-identity across federation, and reject stale revisions. Resolver failure must
-not send private names to a public resolver. The guest configuration mechanism
-requires qualification for each supported runtime.
+Network services deliver authorization through a separate, access-restricted
+provider contract bound to the project, interface, and VPC lifetimes. That
+contract carries source references, fencing epochs, renewal sequences, and
+expiry deadlines. These fields do not belong in the public interface's spec or
+status. Public DNS status reports observed configuration; it cannot authorize
+provider actions.
+
+Providers apply current, authorized settings and report `DNSConfigured` only
+after successful application. They reconcile updates and expiry and reject
+stale revisions. Resolver failure must not send private names to a public
+resolver. The internal delivery schema and runtime-specific guest configuration
+mechanism require joint review with network services before implementation.
 
 ### Record publication
 
