@@ -57,7 +57,7 @@ overlapping addresses or private zone names.
 
 ## Proposal
 
-Every VPC with managed DNS enabled uses `internal` as its default domain. DNS
+Every VPC with managed DNS enabled uses `datum.internal` as its default domain. DNS
 manages a separate zone within each VPC's context. Compute reserves an instance
 name beneath its resource namespace. The name remains stable for that instance's
 lifetime; a replacement instance receives a distinct identity. Additional names
@@ -76,14 +76,14 @@ from another instance in that VPC:
 ```console
 $ cat /etc/resolv.conf
 nameserver fd53::53
-search production.internal internal
+search production.datum.internal datum.internal
 $ dig +search +short A web-01-k7m2
 10.20.0.10
-$ dig +short AAAA web-01-k7m2.production.internal.
+$ dig +short AAAA web-01-k7m2.production.datum.internal.
 fd20::10
 ```
 
-Instance names and addresses are illustrative; `internal` is the proposed shared
+Instance names and addresses are illustrative; `datum.internal` is the proposed shared
 default domain. DNS supplies the canonical name; consumers do not construct it
 from a workload display name.
 The example resolver file describes effective settings; runtimes can apply them
@@ -139,18 +139,18 @@ for these contracts.
 
 ### Names and search domains
 
-Use `<allocated-instance-name>.<resource-namespace>.internal` for instance
+Use `<allocated-instance-name>.<resource-namespace>.datum.internal` for instance
 identity in every VPC. The resource namespace is the customer-visible project
 namespace, not a mapped federation or edge namespace. VPC and project identifiers
 do not appear in the default domain.
 
-For a guest in `production`, try `production.internal` before `internal`.
+For a guest in `production`, try `production.datum.internal` before `datum.internal`.
 This resolves short instance names locally and supports
 VPC-scoped names without a product prefix. Use a fully qualified name to select
 another namespace unambiguously. Namespace names organize resolution; VPC access
 authorization provides the network isolation boundary.
 
-Two VPCs can resolve `web-01-k7m2.production.internal` to different addresses.
+Two VPCs can resolve `web-01-k7m2.production.datum.internal` to different addresses.
 The authorized DNS context selects the zone before lookup and cache access;
 matching domain names do not share records or grant access across VPCs. An
 instance attached to several VPCs uses the same allocated label in each context,
@@ -187,8 +187,8 @@ status:
     nameservers: ["fd53::53"]
     # Resolve resource-namespace names before VPC-scoped names.
     searches:
-      - production.internal
-      - internal
+      - production.datum.internal
+      - datum.internal
   conditions:
     # The provider reports success after applying authorized settings to the guest.
     - type: DNSConfigured
@@ -242,7 +242,7 @@ spec:
   ttlSeconds: 30
 status:
   # DNS-owned output used to display the assigned name to consumers.
-  canonicalFQDN: web-01-k7m2.production.internal
+  canonicalFQDN: web-01-k7m2.production.datum.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordContribution
