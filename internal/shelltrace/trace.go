@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -23,8 +24,39 @@ import (
 
 const tracerName = "go.datum.net/compute/shell-session"
 
-// Init configures OTLP only when its endpoint is set. Local and cell-only
-// managers otherwise keep the default no-op provider.
+// StartDelivery starts the trace at the project controller's delivery attempt.
+// Its traceparent travels on the session object to the hub and cell.
+func StartDelivery(ctx context.Context, session *computev1alpha.InstanceConsoleSession, first bool) (context.Context, trace.Span, string) {
+	options := []trace.SpanStartOption{trace.WithNewRoot(), trace.WithAttributes(attribute.String("session.uid", string(session.UID)))}
+	if first && !session.CreationTimestamp.IsZero() {
+		options = append(options, trace.WithTimestamp(session.CreationTimestamp.Time))
+	}
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "shell.session.delivery", options...)
+	carrier := propagation.MapCarrier{}
+	(propagation.TraceContext{}).Inject(ctx, carrier)
+	return ctx, span, carrier.Get("traceparent")
+}
+
+// ParentContext extracts the controller's span context from a session copy.
+// Karmada preserves this annotation while propagating the object to a cell.
+func ParentContext(ctx context.Context, session *computev1alpha.InstanceConsoleSession) context.Context {
+	if session.Annotations == nil {
+		return ctx
+	}
+	carrier := propagation.MapCarrier{"traceparent": session.Annotations[computev1alpha.InstanceConsoleSessionTraceParentAnnotation]}
+	return (propagation.TraceContext{}).Extract(ctx, carrier)
+}
+
+// StartAgentSpan records work performed by a cell agent as a child of the
+// controller span, even though reconciliation runs in another process.
+func StartAgentSpan(ctx context.Context, session *computev1alpha.InstanceConsoleSession, name string) (context.Context, trace.Span) {
+	uid := session.Labels[computev1alpha.InstanceConsoleSessionUIDLabel]
+	return otel.Tracer(tracerName).Start(ParentContext(ctx, session), name,
+		trace.WithAttributes(attribute.String("session.uid", uid)))
+}
+
+// Init configures OTLP only when its endpoint is set. Processes without an
+// endpoint keep the default no-op provider.
 func Init(ctx context.Context, service string) (func(context.Context) error, error) {
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" && os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == "" {
 		return func(context.Context) error { return nil }, nil
@@ -67,7 +99,7 @@ func RecordConnection(session *computev1alpha.InstanceConsoleSession, endReason 
 		attribute.String("cell", session.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation]),
 		attribute.String("location", session.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation]),
 	}
-	ctx, root := otel.Tracer(tracerName).Start(context.Background(), "shell.session.connect",
+	ctx, root := otel.Tracer(tracerName).Start(ParentContext(context.Background(), session), "shell.session.connect",
 		trace.WithTimestamp(start), trace.WithAttributes(attrs...))
 	defer root.End(trace.WithTimestamp(end))
 	if endReason != "" {

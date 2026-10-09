@@ -50,6 +50,14 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: o11y-system
+            app.kubernetes.io/name: gateway-collector-collector
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

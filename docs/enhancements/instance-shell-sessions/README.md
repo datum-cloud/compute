@@ -447,25 +447,24 @@ runbook.
 
 #### Tracing
 
-The management-plane controller exports one OpenTelemetry trace per connection
-attempt, because production connection p95 exceeded the five-second goal.
-The trace is reconstructed when the activity event is recorded, using the
-session's creation time, the controller's delivery annotation, the cell
-agent's `status.claimedAt`, and `status.startedAt`. It has `deliver`, `claim`
-and `client_connect` spans, so an operator can tell whether the delay was
-before the federation hub, between hub delivery and agent claim, or between
-claim and the client's connection. Attempts ending before a connection emit
-an error trace with the ending reason. A missing or out-of-order timestamp
-leaves that portion in an `unattributed` span instead of assigning it to the
-wrong phase.
+The management controller starts an OpenTelemetry delivery span and writes its
+W3C `traceparent` into the project session and hub copy. Karmada propagates the
+annotation to the cell copy. The shell agent extracts it and exports child
+spans for claim checks, connection handling and backend exec startup through
+the cell's OTLP gateway. The management controller also reconstructs an
+end-to-end connection timeline from creation, delivery, claim and connection
+timestamps, so time spent waiting between processes remains visible. A missing
+or out-of-order timestamp becomes `unattributed` time. Attempts ending before
+connection produce an error span with the ending reason.
 
-The management controller sends OTLP to the existing core OpenTelemetry
-collector. Search Tempo for service `compute-manager`, span
-`shell.session.connect`, and the session UID from the activity event. Spans
-include only session UID, cell, location and ending reason: no requester,
-command arguments, keystrokes or output. The agent does not export telemetry
-itself, so these spans do not yet split agent claim checks, relay setup or
-backend exec startup. Cell and manager clocks must be synchronized for phase
+The manager and hub sink send spans to the same Tempo OTLP service so core
+collector tail sampling cannot split a trace across processes. The cell OTLP
+gateway and hub sink need traces pipelines and a durable NATS consumer before
+deploying this change. Search for the
+session UID from the activity event across `compute-manager` and
+`compute-shell-agent` spans. Spans contain session UID, cell, location and end
+reason; they contain no requester, command arguments, keystrokes or output.
+Cell and manager clocks must be synchronized for the reconstructed phase
 durations to be meaningful.
 
 #### Privacy

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,6 +17,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/consolesession"
+	"go.datum.net/compute/internal/shelltrace"
 )
 
 // Handler serves the connection protocol's exec endpoint.
@@ -95,6 +97,8 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 		http.Error(w, "Session not found.", http.StatusNotFound)
 		return
 	}
+	ctx, connectSpan := shelltrace.StartAgentSpan(ctx, &current, "shell.session.agent.connect")
+	defer connectSpan.End()
 	if !current.DeletionTimestamp.IsZero() || revoked(&current) {
 		http.Error(w, endMessage(computev1alpha.InstanceConsoleSessionReasonRevoked), http.StatusGone)
 		return
@@ -132,6 +136,7 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 	current.Status.ExpiresAt = &expires
 	setReady(&current, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonConnected, "A client is connected.")
 	if err := a.cell.Status().Update(ctx, &current); err != nil {
+		connectSpan.SetStatus(codes.Error, "session status update failed")
 		if apierrors.IsConflict(err) {
 			http.Error(w, "The session already has a connection or has ended.", http.StatusConflict)
 			return
@@ -140,6 +145,7 @@ func (a *Agent) serveExec(ctx context.Context, w http.ResponseWriter, r *http.Re
 		http.Error(w, "The session could not be started.", http.StatusInternalServerError)
 		return
 	}
+	connectSpan.End()
 	logger.Info("session connected", "pod", held.pod.String(), "container", held.container)
 
 	result := a.runSession(runCtx, w, r, &current, held, live)
@@ -159,7 +165,12 @@ func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.R
 		Stdin:     session.Spec.Stdin,
 		TTY:       session.Spec.Terminal,
 	}
-	resp, backend, fromBackend, err := a.exec.Open(ctx, held.pod, opts, r.Header)
+	execCtx, execSpan := shelltrace.StartAgentSpan(ctx, session, "shell.session.agent.exec_open")
+	resp, backend, fromBackend, err := a.exec.Open(execCtx, held.pod, opts, r.Header)
+	if err != nil {
+		execSpan.SetStatus(codes.Error, "backend exec open failed")
+	}
+	execSpan.End()
 	if err != nil {
 		log.FromContext(ctx).Error(err, "open exec stream", "session", uid)
 		http.Error(w, "The instance could not start the command.", http.StatusBadGateway)

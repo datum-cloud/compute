@@ -71,6 +71,8 @@ spec:
                   fieldPath: metadata.namespace
             - name: FEATURE_GATES
               value: InstanceConsoleSessions=true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://gateway-collector-collector.o11y-system.svc.cluster.local:4317
           # exec-relays also carries CELL_NAME, the cell's name on the agent's
           # metrics and logs; the agent reads it from the environment.
           envFrom:

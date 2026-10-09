@@ -97,4 +97,8 @@ const (
 	// first delivered a session to the federation hub. The cell copy inherits
 	// it, allowing the controller to reconstruct connection phases later.
 	InstanceConsoleSessionDeliveredAtAnnotation = AnnotationNamespace + "/delivered-at"
+
+	// InstanceConsoleSessionTraceParentAnnotation carries W3C trace context
+	// from the project controller through Karmada to the cell agent.
+	InstanceConsoleSessionTraceParentAnnotation = AnnotationNamespace + "/traceparent"
 )
