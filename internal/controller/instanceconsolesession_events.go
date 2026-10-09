@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/shelltrace"
 )
 
 const (
@@ -69,6 +70,7 @@ func (r *InstanceConsoleSessionReconciler) recordLifecycleEvents(
 				sessionConnectSeconds.WithLabelValues(placement.location).Observe(connect.Seconds())
 			}
 			logger.Info("session started", "startedAt", session.Status.StartedAt, "connectTime", connect)
+			shelltrace.RecordConnection(session, "")
 		}
 	}
 
@@ -98,6 +100,9 @@ func (r *InstanceConsoleSessionReconciler) recordLifecycleEvents(
 		return err
 	}
 	sessionsEnded.WithLabelValues(placement.location, endReason).Inc()
+	if session.Status.StartedAt == nil {
+		shelltrace.RecordConnection(session, endReason)
+	}
 	if duration >= 0 {
 		sessionDurationSeconds.WithLabelValues(placement.location, endReason).Observe(duration.Seconds())
 	}

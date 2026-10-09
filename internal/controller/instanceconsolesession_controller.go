@@ -295,6 +295,7 @@ func (r *InstanceConsoleSessionReconciler) deliver(
 		session.Annotations[computev1alpha.FederationNamespaceAnnotation] = hubCopy.Namespace
 		session.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation] = placement.location
 		session.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation] = placement.cell
+		session.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation] = r.now().UTC().Format(time.RFC3339Nano)
 		if err := projectClient.Patch(ctx, session, patch); err != nil {
 			return nil, fmt.Errorf("failed recording federation namespace on session: %w", err)
 		}
@@ -307,6 +308,11 @@ func (r *InstanceConsoleSessionReconciler) deliver(
 	if err := controllerutil.SetControllerReference(hubDeployment, hubCopy, federationScheme(r.FederationClient.Scheme())); err != nil {
 		return nil, fmt.Errorf("failed setting hub session owner: %w", err)
 	}
+	if hubCopy.Annotations == nil {
+		hubCopy.Annotations = map[string]string{}
+	}
+	hubCopy.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation] =
+		session.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation]
 	if err := r.FederationClient.Create(ctx, hubCopy); err != nil {
 		return nil, fmt.Errorf("failed creating hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)
 	}

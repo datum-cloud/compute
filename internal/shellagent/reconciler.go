@@ -175,6 +175,7 @@ func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConso
 		RelayURLs:  a.cfg.RelayURLs,
 		Target:     a.cfg.Target,
 	}
+	claimed.Status.ClaimedAt = &metav1.Time{Time: now}
 	claimed.Status.ConnectBefore = &connectBefore
 	setReady(claimed, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonSessionReady,
 		"Connect before the connection deadline.")

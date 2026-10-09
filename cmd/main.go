@@ -51,6 +51,7 @@ import (
 	"go.datum.net/compute/internal/controller"
 	"go.datum.net/compute/internal/features"
 	quotametrics "go.datum.net/compute/internal/quota"
+	"go.datum.net/compute/internal/shelltrace"
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
 	"go.datum.net/compute/pkg/instancetype"
@@ -184,6 +185,20 @@ func main() {
 	)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	if enableManagementControllers {
+		shutdownTraces, err := shelltrace.Init(context.Background(), "compute-manager")
+		if err != nil {
+			setupLog.Error(err, "unable to configure shell tracing")
+		} else {
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := shutdownTraces(ctx); err != nil {
+					setupLog.Error(err, "unable to flush shell traces")
+				}
+			}()
+		}
+	}
 
 	// Set GOMEMLIMIT from the container's cgroup memory limit so the Go GC
 	// backpressures before the kernel OOMKills the process. Without this the
