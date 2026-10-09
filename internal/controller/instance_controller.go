@@ -1196,8 +1196,8 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 	}
 }
 
-// Finalize removes the downstream write-back Instance when the local Instance is
-// deleted.
+// Finalize removes the write-back Instance before releasing the cell Instance.
+// The write-back's projection finalizer removes the project copy first.
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	instance := obj.(*computev1alpha.Instance)
 
@@ -1213,8 +1213,15 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 	if err := r.FederationClient.Delete(ctx, downstreamInstance); client.IgnoreNotFound(err) != nil {
 		return finalizer.Result{}, fmt.Errorf("failed deleting downstream write-back instance: %w", err)
 	}
-
-	return finalizer.Result{}, nil
+	// Delete returns before the write-back's projection finalizer has run. Keep
+	// the cell Instance until the project projection and write-back are gone.
+	if err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(instance), downstreamInstance); err != nil {
+		if apierrors.IsNotFound(err) {
+			return finalizer.Result{}, nil
+		}
+		return finalizer.Result{}, fmt.Errorf("failed checking downstream write-back deletion: %w", err)
+	}
+	return finalizer.Result{}, fmt.Errorf("waiting for downstream write-back instance %s/%s to be deleted", instance.Namespace, instance.Name)
 }
 
 // writeBackToUpstream copies the Instance spec and status to the upstream
@@ -1297,8 +1304,9 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 
 	writeBack := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
+			Name:       instance.Name,
+			Namespace:  instance.Namespace,
+			Finalizers: []string{instanceProjectionFinalizer},
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: encodedClusterName,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamNamespace,
@@ -1358,7 +1366,8 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		return err
 	}
 
-	if ownerChanged ||
+	finalizerChanged := controllerutil.AddFinalizer(existing, instanceProjectionFinalizer)
+	if ownerChanged || finalizerChanged ||
 		!apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
 		!apiequality.Semantic.DeepEqual(ownedLabels, writeBack.Labels) {
 		existing.Spec = instance.Spec
