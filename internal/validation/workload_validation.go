@@ -267,7 +267,7 @@ func validateMetricSpec(metric computev1alpha.MetricSpec, fieldPath *field.Path)
 	return allErrs
 }
 
-var supportedResourceMetrics = sets.New(k8scorev1.ResourceCPU)
+var supportedResourceMetrics = sets.New(k8scorev1.ResourceCPU, k8scorev1.ResourceMemory)
 
 func validateResourceMetricSource(source computev1alpha.ResourceMetricSource, fieldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
