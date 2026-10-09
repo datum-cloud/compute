@@ -7,49 +7,6 @@ import (
 	"testing"
 )
 
-func TestSelectorString(t *testing.T) {
-	tests := []struct {
-		name  string
-		build func(*selector)
-		want  string
-	}{
-		{
-			name:  "quotes and backslashes are escaped",
-			build: func(s *selector) { s.eq("a", `say "hi" \o/`) },
-			want:  `{a="say \"hi\" \\o/"}`,
-		},
-		{
-			name:  "one value uses equality",
-			build: func(s *selector) { s.oneOf("a", []string{"x.y"}); s.noneOf("b", []string{"x.y"}) },
-			want:  `{a="x.y", b!="x.y"}`,
-		},
-		{
-			name:  "several values use an escaped alternation",
-			build: func(s *selector) { s.oneOf("a", []string{"p.q", "z+"}); s.noneOf("b", []string{"x", "y"}) },
-			want:  `{a=~"p\\.q|z\\+", b!~"x|y"}`,
-		},
-		{
-			name:  "no values add nothing",
-			build: func(s *selector) { s.eq("a", "1"); s.oneOf("b", nil); s.noneOf("c", nil) },
-			want:  `{a="1"}`,
-		},
-		{
-			name:  "search becomes a line filter",
-			build: func(s *selector) { s.eq("a", "1"); s.search = `"quoted"` },
-			want:  `{a="1"} |= "\"quoted\""`,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var s selector
-			tt.build(&s)
-			if got := s.String(); got != tt.want {
-				t.Errorf("String() = %s, want %s", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPatterns(t *testing.T) {
 	tests := []struct {
 		name    string

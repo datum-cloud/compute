@@ -29,6 +29,7 @@ require (
 require (
 	github.com/distribution/reference v0.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
@@ -83,7 +84,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/locker v1.0.1 // indirect
-	github.com/moby/moby/api v1.55.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/spdystream v0.5.1 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
@@ -202,6 +202,7 @@ require (
 	github.com/moby/buildkit v0.31.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/tonistiigi/fsutil v0.0.0-20260609091201-0257b3308df4
-	go.datum.net/datumctl v0.19.0
+	go.datum.net/datumctl v0.20.1
+	go.miloapis.com/telemetry/cli v0.5.0
 	mvdan.cc/sh/v3 v3.12.0
 )
