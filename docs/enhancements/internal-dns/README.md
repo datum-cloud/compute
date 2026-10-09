@@ -152,6 +152,15 @@ matching domain names do not share records or grant access across VPCs. An
 instance attached to several VPCs uses the same allocated label in each context,
 with only that VPC's addresses in its answers.
 
+For peered networks, support optional qualified aliases such as
+`web-01-k7m2.application.production.datum.internal`, using
+`<instance-name>.<network-name>.<network-namespace>.datum.internal`. Explicit DNS
+sharing makes the peer's qualified zone available in the local context. Keep
+the local `datum.internal` zone and search domain; do not import a peer's default
+zone or automatically add peer search domains. Cross-project peers require a
+unique project qualifier or an explicitly chosen unique domain. Peer naming and
+sharing authorization require review alongside the peering design.
+
 Network services supply the managed domain and approved additional search
 domains. Compute providers apply and report the effective ordered list.
 Associating a private zone does not automatically add it to the search list.
@@ -322,6 +331,8 @@ name collisions between product publishers, short-name resolution, fully
 qualified queries, and explicit additional-zone search configuration.
 Qualify guest configuration per runtime and mixed controller versions before
 enabling production. These are release criteria, not validation claims.
+Before enabling peer DNS sharing, test qualified aliases, zone collisions,
+sharing revocation, and unchanged local short-name resolution.
 
 ### Monitoring Requirements
 
