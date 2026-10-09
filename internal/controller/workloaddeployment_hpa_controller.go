@@ -8,11 +8,15 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -30,6 +34,7 @@ type WorkloadDeploymentHPAReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 
 func (r *WorkloadDeploymentHPAReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -52,7 +57,10 @@ func (r *WorkloadDeploymentHPAReconciler) Reconcile(ctx context.Context, req mcr
 	}
 
 	if !workloadDeploymentAutoscalingEnabled(&deployment) {
-		return ctrl.Result{}, deleteWorkloadDeploymentHPA(ctx, cl.GetClient(), &deployment)
+		if err := deleteWorkloadDeploymentHPA(ctx, cl.GetClient(), &deployment); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, updateDeploymentAutoscalingStatus(ctx, cl.GetClient(), &deployment, nil, nil)
 	}
 
 	logger.Info("reconciling deployment HPA")
@@ -60,6 +68,9 @@ func (r *WorkloadDeploymentHPAReconciler) Reconcile(ctx context.Context, req mcr
 
 	metrics, err := workloadDeploymentHPAMetrics(&deployment)
 	if err != nil {
+		if statusErr := updateDeploymentAutoscalingStatus(ctx, cl.GetClient(), &deployment, nil, err); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -96,10 +107,58 @@ func (r *WorkloadDeploymentHPAReconciler) Reconcile(ctx context.Context, req mcr
 		return nil
 	})
 	if err != nil {
+		if statusErr := updateDeploymentAutoscalingStatus(ctx, cl.GetClient(), &deployment, nil, err); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
 		return ctrl.Result{}, fmt.Errorf("failed reconciling deployment HPA: %w", err)
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, updateDeploymentAutoscalingStatus(ctx, cl.GetClient(), &deployment, &hpa, nil)
+}
+
+// Each status writer preserves the other controllers' conditions, including
+// availability. Retrying from a fresh read prevents concurrent replica updates
+// from losing an autoscaling failure (or vice versa).
+func updateDeploymentAutoscalingStatus(ctx context.Context, c client.Client, observed *computev1alpha.WorkloadDeployment, hpa *autoscalingv2.HorizontalPodAutoscaler, reconcileErr error) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var deployment computev1alpha.WorkloadDeployment
+		if err := c.Get(ctx, client.ObjectKeyFromObject(observed), &deployment); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if deployment.Generation != observed.Generation || !deployment.DeletionTimestamp.IsZero() {
+			return nil // A newer spec will be reconciled separately.
+		}
+		before := deployment.Status.DeepCopy()
+		for _, conditionType := range autoscalingConditionTypes {
+			apimeta.RemoveStatusCondition(&deployment.Status.Conditions, conditionType)
+		}
+		if workloadDeploymentAutoscalingEnabled(&deployment) {
+			for _, condition := range deploymentAutoscalingConditions(&deployment, hpa, reconcileErr) {
+				// Restore previous transition times when the status is unchanged.
+				if previous := apimeta.FindStatusCondition(before.Conditions, condition.Type); previous != nil {
+					deployment.Status.Conditions = append(deployment.Status.Conditions, *previous)
+				}
+				apimeta.SetStatusCondition(&deployment.Status.Conditions, condition)
+			}
+		}
+		if equality.Semantic.DeepEqual(before, &deployment.Status) {
+			return nil
+		}
+		return c.Status().Update(ctx, &deployment)
+	})
+}
+
+// Utilization samples change frequently; only changes that affect the customer
+// autoscaling conditions need to enqueue this controller.
+func hpaStatusPredicate() predicate.Predicate {
+	return predicate.Or(predicate.GenerationChangedPredicate{}, predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldHPA, oldOK := e.ObjectOld.(*autoscalingv2.HorizontalPodAutoscaler)
+			newHPA, newOK := e.ObjectNew.(*autoscalingv2.HorizontalPodAutoscaler)
+			return oldOK && newOK && (!equality.Semantic.DeepEqual(oldHPA.Status.ObservedGeneration, newHPA.Status.ObservedGeneration) ||
+				!equality.Semantic.DeepEqual(oldHPA.Status.Conditions, newHPA.Status.Conditions))
+		},
+	})
 }
 
 func workloadDeploymentAutoscalingEnabled(deployment *computev1alpha.WorkloadDeployment) bool {
@@ -201,7 +260,7 @@ func (r *WorkloadDeploymentHPAReconciler) SetupWithManager(mgr mcmanager.Manager
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("workload-deployment-hpa").
-		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Owns(&autoscalingv2.HorizontalPodAutoscaler{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&computev1alpha.WorkloadDeployment{}, mcbuilder.WithEngageWithLocalCluster(false), mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Owns(&autoscalingv2.HorizontalPodAutoscaler{}, mcbuilder.WithPredicates(hpaStatusPredicate())).
 		Complete(r)
 }
