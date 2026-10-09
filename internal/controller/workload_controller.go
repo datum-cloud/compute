@@ -412,6 +412,7 @@ func (r *WorkloadReconciler) reconcileWorkloadStatus(
 	}
 
 	apimeta.SetStatusCondition(&newWorkloadStatus.Conditions, availableCondition)
+	reconcileWorkloadAutoscalingStatus(workload, newWorkloadStatus, placementDeployments)
 
 	reconcileInstanceTypeCondition(ctx, upstreamClient, workload, newWorkloadStatus)
 
