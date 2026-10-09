@@ -44,7 +44,7 @@ overlapping addresses or private zone names.
 ### Goals
 
 - Assign an instance identity name within each attached VPC's managed namespace.
-- Resolve short instance names within the resource's namespace.
+- Resolve short instance names within the attached VPC.
 - Configure guest resolvers from verified network-interface settings.
 - Publish IPv4 and IPv6 host addresses only while their network attachment is valid.
 - Bound stale answers when instances disappear or publishers lose connectivity.
@@ -59,7 +59,7 @@ overlapping addresses or private zone names.
 
 Every VPC with managed DNS enabled uses `datum.internal` as its default domain. DNS
 manages a separate zone within each VPC's context. Compute reserves an instance
-name beneath its resource namespace. The name remains stable for that instance's
+name in that zone. The name remains stable for that instance's
 lifetime; a replacement instance receives a distinct identity. Additional names
 can follow the VPC's DNS naming policy without adding a zone choice to each
 Compute resource.
@@ -76,10 +76,10 @@ from another instance in that VPC:
 ```console
 $ cat /etc/resolv.conf
 nameserver fd53::53
-search production.datum.internal datum.internal
+search datum.internal
 $ dig +search +short A web-01-k7m2
 10.20.0.10
-$ dig +short AAAA web-01-k7m2.production.datum.internal.
+$ dig +short AAAA web-01-k7m2.datum.internal.
 fd20::10
 ```
 
@@ -139,29 +139,24 @@ for these contracts.
 
 ### Names and search domains
 
-Use `<allocated-instance-name>.<resource-namespace>.datum.internal` for instance
-identity in every VPC. The resource namespace is the customer-visible project
-namespace, not a mapped federation or edge namespace. VPC and project identifiers
-do not appear in the default domain.
+Use `<allocated-instance-name>.datum.internal` for instance identity in every
+VPC and `datum.internal` as the default search domain. The authorized DNS context
+scopes resolution to the attached network. Resource namespaces remain API
+ownership boundaries; namespace, VPC, and project labels are unnecessary in the
+default hostname. Reserve unique names across product publishers within each
+context.
 
-For a guest in `production`, try `production.datum.internal` before `datum.internal`.
-This resolves short instance names locally and supports
-VPC-scoped names without a product prefix. Use a fully qualified name to select
-another namespace unambiguously. Namespace names organize resolution; VPC access
-authorization provides the network isolation boundary.
-
-Two VPCs can resolve `web-01-k7m2.production.datum.internal` to different addresses.
+Two VPCs can resolve `web-01-k7m2.datum.internal` to different addresses.
 The authorized DNS context selects the zone before lookup and cache access;
 matching domain names do not share records or grant access across VPCs. An
 instance attached to several VPCs uses the same allocated label in each context,
 with only that VPC's addresses in its answers.
 
-Network services supply the managed domain and approved additional search domains.
-Compute providers prepend the guest's resource namespace and report the effective
-ordered list. Associating a private zone does not automatically add it to the
-search list. Bound list size and qualify resolver search order across runtimes.
-The consistent default domain, namespace-aware naming, and search contract
-require joint DNS and network services API review.
+Network services supply the managed domain and approved additional search
+domains. Compute providers apply and report the effective ordered list.
+Associating a private zone does not automatically add it to the search list.
+Bound list size and qualify resolver search order across runtimes. The default
+domain and naming contract require joint DNS and network services API review.
 
 ### Resolver configuration
 
@@ -185,9 +180,8 @@ status:
   dns:
     # Galactic exposes this well-known address inside the authorized VPC.
     nameservers: ["fd53::53"]
-    # Resolve resource-namespace names before VPC-scoped names.
+    # Resolve short names within the attached VPC's DNS context.
     searches:
-      - production.datum.internal
       - datum.internal
   conditions:
     # The provider reports success after applying authorized settings to the guest.
@@ -234,15 +228,15 @@ spec:
   dnsZoneRef:
     name: managed-application
     uid: 55555555-5555-4555-8555-555555555555
-  # Reserve the allocated instance name within its resource namespace.
-  name: web-01-k7m2.production
+  # Reserve the allocated instance name within this VPC's managed zone.
+  name: web-01-k7m2
   recordTypes: [A, AAAA]
   # Publish addresses only under a current eligible contribution.
   publicationPolicy: EligibleContributions
   ttlSeconds: 30
 status:
   # DNS-owned output used to display the assigned name to consumers.
-  canonicalFQDN: web-01-k7m2.production.datum.internal
+  canonicalFQDN: web-01-k7m2.datum.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordContribution
@@ -263,13 +257,13 @@ spec:
   recordSets:
     - recordType: A
       records:
-        - name: web-01-k7m2.production
+        - name: web-01-k7m2
           ttl: 30
           a:
             content: 10.20.0.10
     - recordType: AAAA
       records:
-        - name: web-01-k7m2.production
+        - name: web-01-k7m2
           ttl: 30
           aaaa:
             content: fd20::10
@@ -324,7 +318,7 @@ providers. Require two isolated VPCs with overlapping names and addresses, UDP
 and TCP queries from guests, renewal stability, address changes, deletion,
 publisher outages, grant revocation, stale replay, and restart coverage.
 Test the same default domain and hostname with different answers across VPCs,
-equal short names in different namespaces, search precedence, fully
+name collisions between product publishers, short-name resolution, fully
 qualified queries, and explicit additional-zone search configuration.
 Qualify guest configuration per runtime and mixed controller versions before
 enabling production. These are release criteria, not validation claims.
