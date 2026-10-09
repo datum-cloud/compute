@@ -10,6 +10,7 @@ import {
   type TopologyInstance,
 } from './topology-canvas';
 import type { ConnectedAlb } from '../lib/api';
+import { parseCpuCores, parseMemoryBytes } from '../lib/resource-usage';
 import { formatUptime, splitSlashValue } from '../lib/format';
 import { formatLocationName, type LocationIndex } from '../lib/locations';
 import { albStatusDisplay, type AlbStatus } from '../lib/alb-status';
@@ -40,49 +41,6 @@ import {
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { WaypointsIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-
-/**
- * Kubernetes quantity ("2Gi", "512Mi", "1G", "1e9", "500m") → bytes, for a
- * usage percentage. Suffixes are case-sensitive as in k8s: `m` is milli, `M`
- * mega; binary suffixes end in `i`.
- */
-function parseQuantityBytes(value?: string): number | undefined {
-  if (!value) return undefined;
-  const match = value.trim().match(/^(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(Ki|Mi|Gi|Ti|Pi|Ei|[mkKMGTPE])?$/);
-  if (!match) return undefined;
-  const n = Number(match[1]);
-  if (!Number.isFinite(n)) return undefined;
-  const table: Record<string, number> = {
-    m: 1e-3,
-    k: 1e3,
-    K: 1e3,
-    M: 1e6,
-    G: 1e9,
-    T: 1e12,
-    P: 1e15,
-    E: 1e18,
-    Ki: 1024,
-    Mi: 1024 ** 2,
-    Gi: 1024 ** 3,
-    Ti: 1024 ** 4,
-    Pi: 1024 ** 5,
-    Ei: 1024 ** 6,
-  };
-  const factor = match[2] ? table[match[2]] : 1;
-  return factor ? n * factor : undefined;
-}
-
-/** "500m" → 0.5, "2" → 2. */
-function parseCpuCores(value?: string): number | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (trimmed.endsWith('m')) {
-    const n = Number(trimmed.slice(0, -1));
-    return Number.isFinite(n) ? n / 1000 : undefined;
-  }
-  const n = Number(trimmed);
-  return Number.isFinite(n) ? n : undefined;
-}
 
 function percent(numerator?: number, denominator?: number): string | undefined {
   if (numerator === undefined || !denominator) return undefined;
@@ -165,7 +123,7 @@ function InstanceBody({
   );
 
   const cpuPct = percent(cpu.data?.value, parseCpuCores(instance.cpu));
-  const memPct = percent(memory.data?.value, parseQuantityBytes(instance.memory));
+  const memPct = percent(memory.data?.value, parseMemoryBytes(instance.memory));
   const ip = instance.externalIP ?? instance.internalIP;
 
   return (

@@ -35,6 +35,7 @@ import {
   workloadMemorySumQuery,
 } from "../lib/metrics-queries";
 import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
+import { allocationOf, type Allocation } from "../lib/resource-usage";
 import { useOverviewRange } from "../components/overview-range";
 import { useLocationIndex, type LocationIndex } from "../lib/locations";
 import { newestFirst, regionLabel } from "../lib/workload-presenters";
@@ -436,6 +437,7 @@ function WorkloadCard({
   workload,
   projectId,
   instanceKeys,
+  allocation,
   published,
   identityLabel,
   identityLoading,
@@ -447,6 +449,8 @@ function WorkloadCard({
   workload: Workload;
   projectId?: string;
   instanceKeys: string[];
+  /** Allocated vCPU / memory, so the sparks read as a percentage. */
+  allocation?: Allocation;
   /** The workload's connected load balancers, when it has any. */
   published?: PublishedUrl;
   identityLabel?: InstanceIdentityLabel;
@@ -542,6 +546,7 @@ function WorkloadCard({
           cpuQuery={cpuQuery}
           memoryQuery={memoryQuery}
           timeRange={timeRange}
+          allocation={allocation}
           wide
           pending={identityLoading}
           denied={identityDenied}
@@ -649,8 +654,7 @@ export default function WorkloadList() {
   } = useProjectResourceIdentity(projectId, { enabled: computeEnabled });
   const listRange = useOverviewRange("1h");
   const locationIndex = useLocationIndex(computeEnabled ? projectId : undefined);
-  const keysByWorkload = useMemo(() => {
-    const map = new Map<string, string[]>();
+  const instancesByWorkload = useMemo(() => {
     const grouped = new Map<string, typeof instances>();
     for (const instance of instances) {
       const key = instance.workloadName;
@@ -659,14 +663,22 @@ export default function WorkloadList() {
       group.push(instance);
       grouped.set(key, group);
     }
-    for (const [name, group] of grouped) {
-      map.set(name, identityValues(group));
-    }
-    return map;
+    return grouped;
   }, [instances]);
+  const keysByWorkload = useMemo(
+    () => new Map([...instancesByWorkload].map(([name, group]) => [name, identityValues(group)])),
+    [instancesByWorkload]
+  );
   const instanceKeysByWorkload = useMemo(
     () => Object.fromEntries(keysByWorkload),
     [keysByWorkload]
+  );
+  const allocationByWorkload = useMemo(
+    () =>
+      Object.fromEntries(
+        [...instancesByWorkload].map(([name, group]) => [name, allocationOf(group)])
+      ),
+    [instancesByWorkload]
   );
   const fleetProxyIds = useMemo(
     () => Object.values(publishedByWorkload).map((published) => published.proxyName),
@@ -812,6 +824,7 @@ export default function WorkloadList() {
                 workloads={sortedWorkloads}
                 projectId={projectId}
                 instanceKeysByWorkload={instanceKeysByWorkload}
+                allocationByWorkload={allocationByWorkload}
                 identityLabel={identityLabel}
                 identityLoading={identityLoading}
                 identityDenied={identityDenied}
@@ -832,6 +845,7 @@ export default function WorkloadList() {
                   workload={workload}
                   projectId={projectId}
                   instanceKeys={keysByWorkload.get(workload.name) ?? []}
+                  allocation={allocationByWorkload[workload.name]}
                   published={publishedByWorkload[workload.name]}
                   identityLabel={identityLabel}
                   identityLoading={identityLoading}
