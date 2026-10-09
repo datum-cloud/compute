@@ -50,7 +50,7 @@ func TestRecordConnectionPhases(t *testing.T) {
 		t.Fatalf("got %d spans, want 4", len(spans))
 	}
 	want := map[string][2]time.Time{
-		"shell.session.connect":        {created, connected},
+		connectSpanName:                {created, connected},
 		"shell.session.deliver":        {created, delivered},
 		"shell.session.claim":          {delivered, claimed},
 		"shell.session.client_connect": {claimed, connected},
@@ -83,11 +83,11 @@ func TestRecordConnectionFailureWithoutClaim(t *testing.T) {
 	if len(spans) != 2 {
 		t.Fatalf("got %d spans, want 2", len(spans))
 	}
-	if spans[0].Name != "shell.session.unattributed" {
+	if spans[0].Name != unattributedSpanName {
 		t.Errorf("missing timestamps should produce an unattributed phase, got %q", spans[0].Name)
 	}
 	for _, span := range spans {
-		if span.Name == "shell.session.connect" {
+		if span.Name == connectSpanName {
 			if span.Status.Code != codes.Error || !span.EndTime.Equal(ended) {
 				t.Errorf("failure span has status %v and end %s", span.Status, span.EndTime)
 			}
@@ -131,7 +131,7 @@ func TestTraceContextCrossesSessionCopy(t *testing.T) {
 			deliverySpan = span
 		case "shell.session.agent.claim":
 			agentSpan = span
-		case "shell.session.connect":
+		case connectSpanName:
 			connectSpan = span
 		}
 	}

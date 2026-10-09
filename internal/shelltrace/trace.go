@@ -22,7 +22,11 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-const tracerName = "go.datum.net/compute/shell-session"
+const (
+	tracerName           = "go.datum.net/compute/shell-session"
+	connectSpanName      = "shell.session.connect"
+	unattributedSpanName = "shell.session.unattributed"
+)
 
 // StartDelivery starts the trace at the project controller's delivery attempt.
 // Its traceparent travels on the session object to the hub and cell.
@@ -99,7 +103,7 @@ func RecordConnection(session *computev1alpha.InstanceConsoleSession, endReason 
 		attribute.String("cell", session.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation]),
 		attribute.String("location", session.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation]),
 	}
-	ctx, root := otel.Tracer(tracerName).Start(ParentContext(context.Background(), session), "shell.session.connect",
+	ctx, root := otel.Tracer(tracerName).Start(ParentContext(context.Background(), session), connectSpanName,
 		trace.WithTimestamp(start), trace.WithAttributes(attrs...))
 	defer root.End(trace.WithTimestamp(end))
 	if endReason != "" {
@@ -122,7 +126,7 @@ func RecordConnection(session *computev1alpha.InstanceConsoleSession, endReason 
 	if session.Status.ClaimedAt != nil {
 		claimed := session.Status.ClaimedAt.Time
 		if !claimed.Before(last) && !claimed.After(end) {
-			name := "shell.session.unattributed"
+			name := unattributedSpanName
 			if hasDelivery {
 				name = "shell.session.claim"
 			}
@@ -131,7 +135,7 @@ func RecordConnection(session *computev1alpha.InstanceConsoleSession, endReason 
 			hasClaim = true
 		}
 	}
-	name := "shell.session.unattributed"
+	name := unattributedSpanName
 	if hasClaim {
 		name = "shell.session.client_connect"
 	}
