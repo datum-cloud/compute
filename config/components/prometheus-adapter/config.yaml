@@ -1,48 +1,202 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: compute-prometheus-adapter-config
-  namespace: compute-system
-  labels:
-    app.kubernetes.io/name: compute-prometheus-adapter
-    app.kubernetes.io/part-of: compute
-data:
-  config.yaml: |
-    resourceRules:
-      cpu:
-        containerQuery: |
-          sum by (<<.GroupBy>>) (
-            rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,container!=""}[2m])
+resourceRules:
+  cpu:
+    containerQuery: |
+      sum by (<<.GroupBy>>) (
+        rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,container!="",runtime_class!="general-purpose"}[2m])
+        or (
+          rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,container!="",runtime_class="general-purpose"}[2m])
+          and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+          and on(namespace,pod,uid) (
+            (
+              count by(namespace,pod,uid) (
+                (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) >= 0)
+                and on(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) < +Inf)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= 0)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < +Inf)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="cpu",unit="core"} > 0)
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="memory",unit="byte"} > 0)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m])) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+              )
+              == on(namespace,pod,uid) count by(namespace,pod,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+            )
+            and on(namespace,pod,uid) (
+              time() - min by(namespace,pod,uid) (timestamp(kube_pod_container_resource_requests{resource=~"cpu|memory"})) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - max by(namespace,pod,uid) (timestamp(kube_pod_info)) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - timestamp(kube_pod_created) < 90
+            )
           )
-        nodeQuery: |
-          sum by (<<.GroupBy>>) (
-            rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>}[2m])
+        )
+      )
+    nodeQuery: |
+      sum by (<<.GroupBy>>) (
+        rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class!="general-purpose"}[2m])
+        or (
+          rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose"}[2m])
+          and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+          and on(namespace,pod,uid) (
+            (
+              count by(namespace,pod,uid) (
+                (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) >= 0)
+                and on(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) < +Inf)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= 0)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < +Inf)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="cpu",unit="core"} > 0)
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="memory",unit="byte"} > 0)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m])) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+              )
+              == on(namespace,pod,uid) count by(namespace,pod,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+            )
+            and on(namespace,pod,uid) (
+              time() - min by(namespace,pod,uid) (timestamp(kube_pod_container_resource_requests{resource=~"cpu|memory"})) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - max by(namespace,pod,uid) (timestamp(kube_pod_info)) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - timestamp(kube_pod_created) < 90
+            )
           )
-        resources:
-          overrides:
-            namespace:
-              resource: namespace
-            pod:
-              resource: pod
-            node:
-              resource: node
-        containerLabel: container
-      memory:
-        containerQuery: |
-          sum by (<<.GroupBy>>) (
-            datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,container!=""}
+        )
+      )
+    resources:
+      overrides:
+        namespace:
+          resource: namespace
+        pod:
+          resource: pod
+        node:
+          resource: node
+    containerLabel: container
+  memory:
+    containerQuery: |
+      sum by (<<.GroupBy>>) (
+        datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,container!="",runtime_class!="general-purpose"}
+        or (
+          datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,container!="",runtime_class="general-purpose"}
+          and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+          and on(namespace,pod,uid) (
+            (
+              count by(namespace,pod,uid) (
+                (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) >= 0)
+                and on(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) < +Inf)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= 0)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < +Inf)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="cpu",unit="core"} > 0)
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="memory",unit="byte"} > 0)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m])) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+              )
+              == on(namespace,pod,uid) count by(namespace,pod,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+            )
+            and on(namespace,pod,uid) (
+              time() - min by(namespace,pod,uid) (timestamp(kube_pod_container_resource_requests{resource=~"cpu|memory"})) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - max by(namespace,pod,uid) (timestamp(kube_pod_info)) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - timestamp(kube_pod_created) < 90
+            )
           )
-        nodeQuery: |
-          sum by (<<.GroupBy>>) (
-            datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>}
+        )
+      )
+    nodeQuery: |
+      sum by (<<.GroupBy>>) (
+        datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class!="general-purpose"}
+        or (
+          datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose"}
+          and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+          and on(namespace,pod,uid) (
+            (
+              count by(namespace,pod,uid) (
+                (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) >= 0)
+                and on(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m]) < +Inf)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= 0)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < +Inf)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - timestamp(datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (time() - datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} < 90)
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} <= time())
+                and on(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""} >= on(namespace,pod,uid) group_left kube_pod_created)
+                and on(namespace,pod,container,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="cpu",unit="core"} > 0)
+                and on(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource="memory",unit="byte"} > 0)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}[2m])) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_cpu_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+                and on(namespace,pod,container,uid) (count by(namespace,pod,container,uid) (datum_compute_instance_memory_source_timestamp_seconds{<<.LabelMatchers>>,runtime_class="general-purpose",container!=""}) == 1)
+              )
+              == on(namespace,pod,uid) count by(namespace,pod,uid) (max by(namespace,pod,container,uid) (kube_pod_container_resource_requests{resource=~"cpu|memory"}))
+            )
+            and on(namespace,pod,uid) (
+              time() - min by(namespace,pod,uid) (timestamp(kube_pod_container_resource_requests{resource=~"cpu|memory"})) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - max by(namespace,pod,uid) (timestamp(kube_pod_info)) < 90
+            )
+            and on(namespace,pod,uid) (
+              time() - timestamp(kube_pod_created) < 90
+            )
           )
-        resources:
-          overrides:
-            namespace:
-              resource: namespace
-            pod:
-              resource: pod
-            node:
-              resource: node
-        containerLabel: container
-      window: 2m
+        )
+      )
+    resources:
+      overrides:
+        namespace:
+          resource: namespace
+        pod:
+          resource: pod
+        node:
+          resource: node
+    containerLabel: container
+  window: 2m
