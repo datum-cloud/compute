@@ -17,6 +17,7 @@ Tracking issue: [Internal DNS for Galactic VPC](https://github.com/datum-cloud/e
   - [Risks and mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
   - [Integration boundaries](#integration-boundaries)
+  - [Names and search domains](#names-and-search-domains)
   - [Resolver configuration](#resolver-configuration)
   - [Record publication](#record-publication)
   - [Lifecycle and health](#lifecycle-and-health)
@@ -43,6 +44,7 @@ overlapping addresses or private zone names.
 ### Goals
 
 - Assign an instance identity name within each attached VPC's managed namespace.
+- Resolve short instance names within the resource's namespace.
 - Configure guest resolvers from verified network-interface settings.
 - Publish IPv4 and IPv6 host addresses only while their network attachment is valid.
 - Bound stale answers when instances disappear or publishers lose connectivity.
@@ -71,14 +73,21 @@ A user attaches a workload to a VPC and queries an instance's assigned name
 from another instance in that VPC:
 
 ```console
-$ dig +short A web-01.instances.vpc-a7c9.project-p4e2.internal
+$ cat /etc/resolv.conf
+nameserver fd53::53
+search production.vpc-a7c9.project-p4e2.internal vpc-a7c9.project-p4e2.internal
+$ dig +search +short A web-01-k7m2
 10.20.0.10
-$ dig +short AAAA web-01.instances.vpc-a7c9.project-p4e2.internal
+$ dig +short AAAA web-01-k7m2.production.vpc-a7c9.project-p4e2.internal.
 fd20::10
 ```
 
 Names, suffixes, and addresses are illustrative. DNS supplies the canonical name;
 consumers do not construct it from a workload display name.
+The example resolver file describes effective settings; runtimes can apply them
+through their native resolver configuration. `dig` requires
+[`+search`](https://bind9.readthedocs.io/en/stable/manpages.html#dig-dns-lookup-utility)
+to use the configured search list.
 
 When an address is released, subsequent answers omit it after withdrawal and
 client-cache expiry. An application failing its readiness check does not remove
@@ -126,6 +135,25 @@ See the [DNS architecture proposal](https://github.com/datum-cloud/dns-operator/
 and [Private Service Connect design](https://github.com/datum-cloud/galactic/blob/main/docs/enhancements/networking/private-service-connect/README.md)
 for these contracts.
 
+### Names and search domains
+
+Use `<allocated-instance-name>.<resource-namespace>.<vpc-managed-suffix>` for
+instance identity. The resource namespace is the customer-visible project
+namespace, not a mapped federation or edge namespace.
+
+For a guest in `production`, try `production.<vpc-managed-suffix>` before
+`<vpc-managed-suffix>`. This resolves short instance names locally and supports
+VPC-scoped names without a product prefix. Use a fully qualified name to select
+another namespace unambiguously. Namespace names organize resolution; VPC access
+authorization provides the network isolation boundary.
+
+Network services supply the VPC suffix and approved additional search domains.
+Compute providers prepend the guest's resource namespace and report the effective
+ordered list. Associating a private zone does not automatically add it to the
+search list. Bound list size and qualify resolver search order across runtimes.
+The namespace-aware naming and search contract requires joint DNS and network
+services API review.
+
 ### Resolver configuration
 
 `NetworkInterface` is a public API. Its proposed read-only DNS status exposes
@@ -138,6 +166,7 @@ apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkInterface
 metadata:
   name: web-01-eth0
+  namespace: production
 spec:
   network:
     name: application
@@ -147,8 +176,10 @@ status:
   dns:
     # Galactic exposes this well-known address inside the authorized VPC.
     nameservers: ["fd53::53"]
-    # DNS allocates the managed suffix.
-    searches: [vpc-a7c9.project-p4e2.internal]
+    # Resolve resource-namespace names before VPC-scoped names.
+    searches:
+      - production.vpc-a7c9.project-p4e2.internal
+      - vpc-a7c9.project-p4e2.internal
   conditions:
     # The provider reports success after applying authorized settings to the guest.
     - type: DNSConfigured
@@ -194,15 +225,15 @@ spec:
   dnsZoneRef:
     name: managed-application
     uid: 55555555-5555-4555-8555-555555555555
-  # Reserve the allocated instance identity name relative to the zone.
-  name: web-01.instances
+  # Reserve the allocated instance name within its resource namespace.
+  name: web-01-k7m2.production
   recordTypes: [A, AAAA]
   # Publish addresses only under a current eligible contribution.
   publicationPolicy: EligibleContributions
   ttlSeconds: 30
 status:
   # DNS-owned output used to display the assigned name to consumers.
-  canonicalFQDN: web-01.instances.vpc-a7c9.project-p4e2.internal
+  canonicalFQDN: web-01-k7m2.production.vpc-a7c9.project-p4e2.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordContribution
@@ -223,13 +254,13 @@ spec:
   recordSets:
     - recordType: A
       records:
-        - name: web-01.instances
+        - name: web-01-k7m2.production
           ttl: 30
           a:
             content: 10.20.0.10
     - recordType: AAAA
       records:
-        - name: web-01.instances
+        - name: web-01-k7m2.production
           ttl: 30
           aaaa:
             content: fd20::10
@@ -283,6 +314,8 @@ shared Kubernetes end-to-end environment with actual Compute publishers and
 providers. Require two isolated VPCs with overlapping names and addresses, UDP
 and TCP queries from guests, renewal stability, address changes, deletion,
 publisher outages, grant revocation, stale replay, and restart coverage.
+Test equal short names in different namespaces, search precedence, fully
+qualified queries, and explicit additional-zone search configuration.
 Qualify guest configuration per runtime and mixed controller versions before
 enabling production. These are release criteria, not validation claims.
 
