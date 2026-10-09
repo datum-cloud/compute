@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/shelltrace"
 )
 
 const (
@@ -113,6 +114,8 @@ func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConso
 	if !a.claiming() || a.openCount() >= a.cfg.MaxOpenSessions {
 		return ctrl.Result{RequeueAfter: claimRetryInterval}, nil
 	}
+	ctx, claimSpan := shelltrace.StartAgentSpan(ctx, session, "shell.session.agent.claim")
+	defer claimSpan.End()
 	ready, err := a.endpointReady(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -175,6 +178,7 @@ func (a *Agent) claim(ctx context.Context, session *computev1alpha.InstanceConso
 		RelayURLs:  a.cfg.RelayURLs,
 		Target:     a.cfg.Target,
 	}
+	claimed.Status.ClaimedAt = &metav1.Time{Time: now}
 	claimed.Status.ConnectBefore = &connectBefore
 	setReady(claimed, metav1.ConditionTrue, computev1alpha.InstanceConsoleSessionReasonSessionReady,
 		"Connect before the connection deadline.")

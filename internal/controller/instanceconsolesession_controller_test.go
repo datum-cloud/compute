@@ -314,6 +314,8 @@ func TestInstanceConsoleSessionDelivery(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, session.Finalizers, computev1alpha.InstanceConsoleSessionFinalizer)
 	assert.Equal(t, testKarmadaNSStr, session.Annotations[computev1alpha.FederationNamespaceAnnotation])
+	assert.Equal(t, env.now.UTC().Format(time.RFC3339Nano),
+		session.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation])
 
 	hubCopy, ok := env.hubSession(t)
 	require.True(t, ok, "session should be copied into the deployment's hub namespace")
@@ -328,6 +330,8 @@ func TestInstanceConsoleSessionDelivery(t *testing.T) {
 		downstreamclient.UpstreamOwnerNamespaceLabel:           testProjNS,
 	}, hubCopy.Labels)
 	assert.Equal(t, session.Spec, hubCopy.Spec)
+	assert.Equal(t, session.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation],
+		hubCopy.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation])
 
 	owner := metav1.GetControllerOf(hubCopy)
 	require.NotNil(t, owner, "hub copy should be owned by the hub deployment")
@@ -392,6 +396,7 @@ func TestInstanceConsoleSessionStatusCopy(t *testing.T) {
 			Target:     "exec-agent-0.exec-agent.compute-shell-system.svc.cluster.local:7777",
 		}
 		status.StartedAt = &startedAt
+		status.ClaimedAt = ptr.To(metav1.NewTime(startedAt.Add(-2 * time.Second)))
 		status.ExpiresAt = ptr.To(metav1.NewTime(startedAt.Add(15 * time.Minute)))
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               computev1alpha.InstanceConsoleSessionReady,

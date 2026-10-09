@@ -47,6 +47,16 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: o11y-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway-collector-collector
+      ports:
+        - protocol: TCP
+          port: 4317
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

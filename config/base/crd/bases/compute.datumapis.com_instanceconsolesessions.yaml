@@ -158,6 +158,11 @@ spec:
               InstanceConsoleSessionStatus is the session's progress as the platform
               reports it. Every field is output only.
             properties:
+              claimedAt:
+                description: When the cell agent claimed the session and made its
+                  endpoint available.
+                format: date-time
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

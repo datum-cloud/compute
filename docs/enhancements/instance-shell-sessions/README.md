@@ -447,10 +447,25 @@ runbook.
 
 #### Tracing
 
-Distributed tracing is not adopted now. The data path bypasses the control
-plane, so a trace would cover only session creation, and the session UID
-already correlates control-plane logs. Revisit this decision if connect
-latency misses its p95 goal.
+The management controller starts an OpenTelemetry delivery span and writes its
+W3C `traceparent` into the project session and hub copy. Karmada propagates the
+annotation to the cell copy. The shell agent extracts it and exports child
+spans for claim checks, connection handling and backend exec startup through
+the cell's OTLP gateway. The management controller also reconstructs an
+end-to-end connection timeline from creation, delivery, claim and connection
+timestamps, so time spent waiting between processes remains visible. A missing
+or out-of-order timestamp becomes `unattributed` time. Attempts ending before
+connection produce an error span with the ending reason.
+
+The manager and hub sink send spans to the same Tempo OTLP service so core
+collector tail sampling cannot split a trace across processes. The cell OTLP
+gateway and hub sink need traces pipelines and a durable NATS consumer before
+deploying this change. Search for the
+session UID from the activity event across `compute-manager` and
+`compute-shell-agent` spans. Spans contain session UID, cell, location and end
+reason; they contain no requester, command arguments, keystrokes or output.
+Cell and manager clocks must be synchronized for the reconstructed phase
+durations to be meaningful.
 
 #### Privacy
 

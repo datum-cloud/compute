@@ -34,6 +34,7 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/shellagent"
+	"go.datum.net/compute/internal/shelltrace"
 )
 
 var setupLog = ctrl.Log.WithName("setup")
@@ -105,6 +106,18 @@ func run(opts options, cfg shellagent.Config) error {
 		setupLog.Info("the InstanceConsoleSessions feature gate is off; not serving sessions")
 		<-signals
 		return nil
+	}
+	shutdownTraces, err := shelltrace.Init(context.Background(), "compute-shell-agent")
+	if err != nil {
+		setupLog.Error(err, "unable to configure shell tracing")
+	} else {
+		defer func() {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := shutdownTraces(flushCtx); err != nil {
+				setupLog.Error(err, "unable to flush shell traces")
+			}
+		}()
 	}
 
 	podName, namespace := os.Getenv("POD_NAME"), os.Getenv("POD_NAMESPACE")

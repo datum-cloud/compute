@@ -101,6 +101,10 @@ type InstanceConsoleSessionStatus struct {
 	// +kubebuilder:validation:Optional
 	Connection *InstanceConsoleSessionConnection `json:"connection,omitempty"`
 
+	// When the cell agent claimed the session and made its endpoint available.
+	// +kubebuilder:validation:Optional
+	ClaimedAt *metav1.Time `json:"claimedAt,omitempty"`
+
 	// The deadline for connecting. A session nobody connects to by then ends
 	// with NotConnected.
 	//

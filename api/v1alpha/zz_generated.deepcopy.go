@@ -431,6 +431,10 @@ func (in *InstanceConsoleSessionStatus) DeepCopyInto(out *InstanceConsoleSession
 		*out = new(InstanceConsoleSessionConnection)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.ClaimedAt != nil {
+		in, out := &in.ClaimedAt, &out.ClaimedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.ConnectBefore != nil {
 		in, out := &in.ConnectBefore, &out.ConnectBefore
 		*out = (*in).DeepCopy()

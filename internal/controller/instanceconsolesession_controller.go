@@ -29,6 +29,7 @@ import (
 	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/shelltrace"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 	milosource "go.miloapis.com/milo/pkg/multicluster-runtime/source"
 )
@@ -278,6 +279,9 @@ func (r *InstanceConsoleSessionReconciler) deliver(
 	if err != nil {
 		return nil, err
 	}
+	firstDelivery := session.Annotations[computev1alpha.FederationNamespaceAnnotation] != hubCopy.Namespace
+	ctx, deliverySpan, traceParent := shelltrace.StartDelivery(ctx, session, firstDelivery)
+	defer deliverySpan.End()
 
 	// Record the hub namespace before writing into it, so finalization can
 	// always find the copy even once the instance and its deployment are gone.
@@ -287,25 +291,41 @@ func (r *InstanceConsoleSessionReconciler) deliver(
 		location: hubCopy.Labels[locationLabel],
 		cell:     hubCopy.Labels[sessionMemberClusterLabel],
 	}
-	if session.Annotations[computev1alpha.FederationNamespaceAnnotation] != hubCopy.Namespace {
+	if firstDelivery || traceParent != "" && session.Annotations[computev1alpha.InstanceConsoleSessionTraceParentAnnotation] != traceParent {
 		patch := client.MergeFrom(session.DeepCopy())
 		if session.Annotations == nil {
 			session.Annotations = map[string]string{}
 		}
-		session.Annotations[computev1alpha.FederationNamespaceAnnotation] = hubCopy.Namespace
-		session.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation] = placement.location
-		session.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation] = placement.cell
+		if firstDelivery {
+			session.Annotations[computev1alpha.FederationNamespaceAnnotation] = hubCopy.Namespace
+			session.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation] = placement.location
+			session.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation] = placement.cell
+			session.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation] = r.now().UTC().Format(time.RFC3339Nano)
+		}
+		if traceParent != "" {
+			session.Annotations[computev1alpha.InstanceConsoleSessionTraceParentAnnotation] = traceParent
+		}
 		if err := projectClient.Patch(ctx, session, patch); err != nil {
 			return nil, fmt.Errorf("failed recording federation namespace on session: %w", err)
 		}
 		// The first delivery is the one time a session is counted as created:
 		// a copy redelivered after vanishing unclaimed finds the namespace
 		// already recorded.
-		sessionsCreated.WithLabelValues(session.Namespace, placement.location).Inc()
+		if firstDelivery {
+			sessionsCreated.WithLabelValues(session.Namespace, placement.location).Inc()
+		}
 	}
 
 	if err := controllerutil.SetControllerReference(hubDeployment, hubCopy, federationScheme(r.FederationClient.Scheme())); err != nil {
 		return nil, fmt.Errorf("failed setting hub session owner: %w", err)
+	}
+	if hubCopy.Annotations == nil {
+		hubCopy.Annotations = map[string]string{}
+	}
+	hubCopy.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation] =
+		session.Annotations[computev1alpha.InstanceConsoleSessionDeliveredAtAnnotation]
+	if parent := session.Annotations[computev1alpha.InstanceConsoleSessionTraceParentAnnotation]; parent != "" {
+		hubCopy.Annotations[computev1alpha.InstanceConsoleSessionTraceParentAnnotation] = parent
 	}
 	if err := r.FederationClient.Create(ctx, hubCopy); err != nil {
 		return nil, fmt.Errorf("failed creating hub session %s/%s: %w", hubCopy.Namespace, hubCopy.Name, err)

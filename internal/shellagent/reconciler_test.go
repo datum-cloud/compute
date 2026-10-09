@@ -40,6 +40,9 @@ func TestClaimPublishesConnection(t *testing.T) {
 	if want := h.clock.now().Add(time.Minute); !s.Status.ConnectBefore.Time.Equal(want) {
 		t.Fatalf("connectBefore = %v, want %v", s.Status.ConnectBefore, want)
 	}
+	if s.Status.ClaimedAt == nil || !s.Status.ClaimedAt.Time.Equal(h.clock.now()) {
+		t.Fatalf("claimedAt = %v, want %v", s.Status.ClaimedAt, h.clock.now())
+	}
 	if res.RequeueAfter != time.Minute {
 		t.Fatalf("requeue after %v, want the connect timeout", res.RequeueAfter)
 	}

@@ -18,3 +18,5 @@ patches:
                 env:
                   - name: ENABLE_MANAGEMENT_CONTROLLERS
                     value: "true"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: http://tempo.telemetry-system.svc.cluster.local:4317
