@@ -98,7 +98,7 @@ import {
   Settings2Icon,
   SquareLibraryIcon,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import {
   Link,
   Outlet,
@@ -108,6 +108,9 @@ import {
   useNavigate,
   useParams,
 } from "react-router";
+
+// activity-ui is sizeable; load it only when the tab is opened.
+const WorkloadActivity = lazy(() => import("./workload-activity"));
 
 const COMING_SOON = "Coming soon";
 // Inline rather than `h-[27rem]`: the host only compiles that class because its
@@ -817,7 +820,7 @@ export default function WorkloadDetail() {
   const location = useLocation();
 
   const path = location.pathname.replace(/\/$/, "");
-  const overviewHref = path.replace(/\/(logs|metrics)$/, "");
+  const overviewHref = path.replace(/\/(logs|metrics|activity)$/, "");
   const logsHref = `${overviewHref}/logs`;
   const metricsHref = `${overviewHref}/metrics`;
   const workloadsHref = overviewHref.replace(/\/[^/]+$/, "");
@@ -841,6 +844,14 @@ export default function WorkloadDetail() {
         <Route index element={<WorkloadOverview />} />
         <Route path="metrics" element={<WorkloadMetrics />} />
         <Route path="logs" element={<WorkloadLogs />} />
+        <Route
+          path="activity"
+          element={
+            <Suspense fallback={null}>
+              <WorkloadActivity />
+            </Suspense>
+          }
+        />
       </Route>
     </Routes>
   );
