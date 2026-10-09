@@ -15,6 +15,11 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
+const (
+	reasonAwaitingAutoscaler = "AwaitingAutoscaler"
+	reasonAutoscalerReady    = "AutoscalerReady"
+)
+
 var autoscalingConditionTypes = []string{
 	computev1alpha.AutoscalingReady,
 	computev1alpha.AutoscalingLimited,
@@ -23,7 +28,7 @@ var autoscalingConditionTypes = []string{
 func pendingAutoscalingCondition(generation int64) metav1.Condition {
 	return metav1.Condition{
 		Type: computev1alpha.AutoscalingReady, Status: metav1.ConditionUnknown,
-		Reason: "AwaitingAutoscaler", Message: "Waiting for the autoscaler to evaluate the current scaling settings",
+		Reason: reasonAwaitingAutoscaler, Message: "Waiting for the autoscaler to evaluate the current scaling settings",
 		ObservedGeneration: generation,
 	}
 }
@@ -70,7 +75,7 @@ func deploymentAutoscalingConditions(deployment *computev1alpha.WorkloadDeployme
 	active, activeExists := byType[autoscalingv2.ScalingActive]
 	if ableExists && activeExists && able.Status == corev1.ConditionTrue && active.Status == corev1.ConditionTrue {
 		summary.Status = metav1.ConditionTrue
-		summary.Reason = "AutoscalerReady"
+		summary.Reason = reasonAutoscalerReady
 		summary.Message = "The autoscaler can evaluate and apply scaling decisions"
 	}
 	return append(conditions, summary)
@@ -163,7 +168,7 @@ func aggregateAutoscalingConditions(conditions []metav1.Condition, generation in
 func pendingAutoscalingLimit(generation int64) metav1.Condition {
 	return metav1.Condition{
 		Type: computev1alpha.AutoscalingLimited, Status: metav1.ConditionUnknown,
-		Reason: "AwaitingAutoscaler", Message: "Waiting for the autoscaler to report scaling limits",
+		Reason: reasonAwaitingAutoscaler, Message: "Waiting for the autoscaler to report scaling limits",
 		ObservedGeneration: generation,
 	}
 }

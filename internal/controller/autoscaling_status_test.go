@@ -23,7 +23,13 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
-const hpaTestScalingLimitReason = "TooManyReplicas"
+const (
+	hpaTestScalingLimitReason  = "TooManyReplicas"
+	hpaTestMetricFailureReason = "FailedGetResourceMetric"
+	hpaTestPlacement           = "primary"
+	hpaTestDeploymentResource  = "workloaddeployments"
+	hpaTestHealthyCase         = "healthy"
+)
 
 func readyTestHPA() *autoscalingv2.HorizontalPodAutoscaler {
 	return &autoscalingv2.HorizontalPodAutoscaler{
@@ -47,11 +53,11 @@ func TestDeploymentAutoscalingConditions(t *testing.T) {
 		status metav1.ConditionStatus
 		reason string
 	}{
-		{name: "healthy", status: metav1.ConditionTrue, reason: "AutoscalerReady"},
+		{name: hpaTestHealthyCase, status: metav1.ConditionTrue, reason: reasonAutoscalerReady},
 		{name: "missing metrics", change: func(h *autoscalingv2.HorizontalPodAutoscaler) {
 			h.Status.Conditions[1].Status = corev1.ConditionFalse
-			h.Status.Conditions[1].Reason = "FailedGetResourceMetric"
-		}, status: metav1.ConditionFalse, reason: "FailedGetResourceMetric"},
+			h.Status.Conditions[1].Reason = hpaTestMetricFailureReason
+		}, status: metav1.ConditionFalse, reason: hpaTestMetricFailureReason},
 		{name: "scale target unavailable", change: func(h *autoscalingv2.HorizontalPodAutoscaler) {
 			h.Status.Conditions[0].Status = corev1.ConditionFalse
 			h.Status.Conditions[0].Reason = "FailedGetScale"
@@ -59,14 +65,14 @@ func TestDeploymentAutoscalingConditions(t *testing.T) {
 		{name: "bounds are independent", change: func(h *autoscalingv2.HorizontalPodAutoscaler) {
 			h.Status.Conditions[2].Status = corev1.ConditionTrue
 			h.Status.Conditions[2].Reason = hpaTestScalingLimitReason
-		}, status: metav1.ConditionTrue, reason: "AutoscalerReady"},
-		{name: "old settings", change: func(h *autoscalingv2.HorizontalPodAutoscaler) { h.Generation++ }, status: metav1.ConditionUnknown, reason: "AwaitingAutoscaler"},
-		{name: "native controller omits generation", change: func(h *autoscalingv2.HorizontalPodAutoscaler) { h.Status.ObservedGeneration = nil }, status: metav1.ConditionTrue, reason: "AutoscalerReady"},
+		}, status: metav1.ConditionTrue, reason: reasonAutoscalerReady},
+		{name: "old settings", change: func(h *autoscalingv2.HorizontalPodAutoscaler) { h.Generation++ }, status: metav1.ConditionUnknown, reason: reasonAwaitingAutoscaler},
+		{name: "native controller omits generation", change: func(h *autoscalingv2.HorizontalPodAutoscaler) { h.Status.ObservedGeneration = nil }, status: metav1.ConditionTrue, reason: reasonAutoscalerReady},
 		{name: "no observation yet", change: func(h *autoscalingv2.HorizontalPodAutoscaler) {
 			h.Status.ObservedGeneration = nil
 			h.Status.Conditions = nil
-		}, status: metav1.ConditionUnknown, reason: "AwaitingAutoscaler"},
-		{name: "incomplete status", change: func(h *autoscalingv2.HorizontalPodAutoscaler) { h.Status.Conditions = h.Status.Conditions[:1] }, status: metav1.ConditionUnknown, reason: "AwaitingAutoscaler"},
+		}, status: metav1.ConditionUnknown, reason: reasonAwaitingAutoscaler},
+		{name: "incomplete status", change: func(h *autoscalingv2.HorizontalPodAutoscaler) { h.Status.Conditions = h.Status.Conditions[:1] }, status: metav1.ConditionUnknown, reason: reasonAwaitingAutoscaler},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hpa := readyTestHPA()
@@ -110,14 +116,14 @@ func TestWorkloadDeploymentHPAReconciler_StatusLifecycle(t *testing.T) {
 	hpa.Status = readyTestHPA().Status
 	hpa.Status.ObservedGeneration = nil // The native HPA controller omits this optional field.
 	hpa.Status.Conditions[1].Status = corev1.ConditionFalse
-	hpa.Status.Conditions[1].Reason = "FailedGetResourceMetric"
+	hpa.Status.Conditions[1].Reason = hpaTestMetricFailureReason
 	hpa.Status.Conditions[1].Message = "CPU metrics are unavailable"
 	require.NoError(t, cl.Status().Update(ctx, &hpa))
 	reconcileHPA(t, r, deployment)
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(deployment), &stored))
 	failed := apimeta.FindStatusCondition(stored.Status.Conditions, computev1alpha.AutoscalingReady)
 	require.NotNil(t, failed)
-	assert.Equal(t, "FailedGetResourceMetric", failed.Reason)
+	assert.Equal(t, hpaTestMetricFailureReason, failed.Reason)
 	assert.True(t, apimeta.IsStatusConditionTrue(stored.Status.Conditions, computev1alpha.WorkloadDeploymentAvailable))
 
 	hpa.Status.Conditions[1] = readyTestHPA().Status.Conditions[1]
@@ -166,7 +172,7 @@ func TestAutoscalingStatusPreservesConcurrentConditions(t *testing.T) {
 				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(deployment), &concurrent))
 				apimeta.SetStatusCondition(&concurrent.Status.Conditions, metav1.Condition{Type: computev1alpha.WorkloadDeploymentReplicasReady, Status: metav1.ConditionFalse, Reason: "QuotaExceeded", Message: "waiting on quota"})
 				require.NoError(t, c.Status().Update(ctx, &concurrent))
-				return apierrors.NewConflict(schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "workloaddeployments"}, deployment.Name, errors.New("concurrent status update"))
+				return apierrors.NewConflict(schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: hpaTestDeploymentResource}, deployment.Name, errors.New("concurrent status update"))
 			}
 			return c.SubResource(subresource).Update(ctx, obj, opts...)
 		}}).Build()
@@ -208,36 +214,36 @@ func TestReconcileWorkloadStatus_Autoscaling(t *testing.T) {
 		change func(*computev1alpha.Workload, map[string][]computev1alpha.WorkloadDeployment)
 		want   metav1.ConditionStatus
 	}{
-		{name: "healthy", want: metav1.ConditionTrue},
+		{name: hpaTestHealthyCase, want: metav1.ConditionTrue},
 		{name: "recovery", want: metav1.ConditionTrue, change: func(w *computev1alpha.Workload, ds map[string][]computev1alpha.WorkloadDeployment) {
-			failed := metav1.Condition{Type: computev1alpha.AutoscalingReady, Status: metav1.ConditionFalse, Reason: "FailedGetResourceMetric", Message: "old failure"}
+			failed := metav1.Condition{Type: computev1alpha.AutoscalingReady, Status: metav1.ConditionFalse, Reason: hpaTestMetricFailureReason, Message: "old failure"}
 			w.Status.Conditions = []metav1.Condition{failed}
-			w.Status.Placements = []computev1alpha.WorkloadPlacementStatus{{Name: "primary", Conditions: []metav1.Condition{failed}}}
+			w.Status.Placements = []computev1alpha.WorkloadPlacementStatus{{Name: hpaTestPlacement, Conditions: []metav1.Condition{failed}}}
 		}},
 		{name: "failure in another location", want: metav1.ConditionFalse, change: func(w *computev1alpha.Workload, ds map[string][]computev1alpha.WorkloadDeployment) {
-			failed := *ds["primary"][0].DeepCopy()
+			failed := *ds[hpaTestPlacement][0].DeepCopy()
 			failed.Name = "broken"
 			failed.Spec.LocationRef.Name = "other-region"
-			apimeta.SetStatusCondition(&failed.Status.Conditions, metav1.Condition{Type: computev1alpha.AutoscalingReady, Status: metav1.ConditionFalse, Reason: "FailedGetResourceMetric", Message: "metrics unavailable", ObservedGeneration: failed.Generation})
-			ds["primary"] = append(ds["primary"], failed)
+			apimeta.SetStatusCondition(&failed.Status.Conditions, metav1.Condition{Type: computev1alpha.AutoscalingReady, Status: metav1.ConditionFalse, Reason: hpaTestMetricFailureReason, Message: "metrics unavailable", ObservedGeneration: failed.Generation})
+			ds[hpaTestPlacement] = append(ds[hpaTestPlacement], failed)
 		}},
 		{name: "no deployments", want: metav1.ConditionUnknown, change: func(w *computev1alpha.Workload, ds map[string][]computev1alpha.WorkloadDeployment) {
-			ds["primary"] = nil
+			ds[hpaTestPlacement] = nil
 		}},
 		{name: "no observed health", want: metav1.ConditionUnknown, change: func(w *computev1alpha.Workload, ds map[string][]computev1alpha.WorkloadDeployment) {
-			ds["primary"][0].Status.Conditions = ds["primary"][0].Status.Conditions[:1]
+			ds[hpaTestPlacement][0].Status.Conditions = ds[hpaTestPlacement][0].Status.Conditions[:1]
 		}},
 		{name: "new customer settings", want: metav1.ConditionUnknown, change: func(w *computev1alpha.Workload, ds map[string][]computev1alpha.WorkloadDeployment) {
 			w.Spec.Placements[0].ScaleSettings.MaxReplicas = new(int32(12))
 		}},
 		{name: "new cell generation", want: metav1.ConditionUnknown, change: func(w *computev1alpha.Workload, ds map[string][]computev1alpha.WorkloadDeployment) {
-			ds["primary"][0].Status.ObservedGeneration++
+			ds[hpaTestPlacement][0].Status.ObservedGeneration++
 		}},
 		{name: "disabled before deployment catches up", change: func(w *computev1alpha.Workload, ds map[string][]computev1alpha.WorkloadDeployment) {
 			w.Spec.Placements[0].ScaleSettings.MaxReplicas = nil
-			previous := ds["primary"][0].Status.Conditions
+			previous := ds[hpaTestPlacement][0].Status.Conditions
 			w.Status.Conditions = append([]metav1.Condition(nil), previous...)
-			w.Status.Placements = []computev1alpha.WorkloadPlacementStatus{{Name: "primary", Conditions: append([]metav1.Condition(nil), previous...)}}
+			w.Status.Placements = []computev1alpha.WorkloadPlacementStatus{{Name: hpaTestPlacement, Conditions: append([]metav1.Condition(nil), previous...)}}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,8 +256,8 @@ func TestReconcileWorkloadStatus_Autoscaling(t *testing.T) {
 			hpa.Status.Conditions[2].Reason = hpaTestScalingLimitReason
 			deployment.Status.Conditions = append(deployment.Status.Conditions, deploymentAutoscalingConditions(deployment, hpa, nil)...)
 			workload := makeWorkload(11)
-			workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{Name: "primary", ScaleSettings: deployment.Spec.ScaleSettings}}
-			deployments := map[string][]computev1alpha.WorkloadDeployment{"primary": {*deployment}}
+			workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{Name: hpaTestPlacement, ScaleSettings: deployment.Spec.ScaleSettings}}
+			deployments := map[string][]computev1alpha.WorkloadDeployment{hpaTestPlacement: {*deployment}}
 			if tc.change != nil {
 				tc.change(workload, deployments)
 			}
@@ -271,11 +277,11 @@ func TestReconcileWorkloadStatus_Autoscaling(t *testing.T) {
 			if tc.name != "no deployments" {
 				assert.Equal(t, metav1.ConditionTrue, available.Status, "autoscaling must not redefine availability")
 			}
-			if tc.name == "healthy" {
+			if tc.name == hpaTestHealthyCase {
 				assert.True(t, apimeta.IsStatusConditionTrue(workload.Status.Conditions, computev1alpha.AutoscalingLimited))
 			}
 			if tc.name == "failure in another location" {
-				assert.Contains(t, condition.Message, "primary")
+				assert.Contains(t, condition.Message, hpaTestPlacement)
 				assert.Contains(t, condition.Message, "other-region")
 				assert.Contains(t, condition.Message, "metrics unavailable")
 			}
