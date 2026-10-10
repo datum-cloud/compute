@@ -224,6 +224,28 @@ and source-cluster identity for the registration, record types, and owner name.
 The runtime publisher cannot issue its own `DNSContributionGrant` or authorize
 resolver access. Project authorization and DNS admission enforce both boundaries.
 
+Consumers read assigned names and publication readiness from `Instance.status.dns`:
+
+```yaml
+status:
+  dns:
+    - network:
+        name: application
+        namespace: production
+      # Pin the attached network's lifetime.
+      networkUID: 55555555-5555-4555-8555-555555555555
+      # Display names allocated by DNS within this network.
+      hostnames: [web-01-k7m2.datum.internal]
+      # Report publication independently of runtime readiness.
+      conditions:
+        - type: Ready
+          status: "True"
+          reason: Published
+          message: Private name is published
+          observedGeneration: 1
+          lastTransitionTime: "2026-10-09T20:00:00Z"
+```
+
 These examples use the proposed DNS API. UIDs, generations, and times are
 illustrative. Controllers write the resources; `status` shows controller output.
 
@@ -336,8 +358,8 @@ sharing revocation, and unchanged local short-name resolution.
 
 ### Monitoring Requirements
 
-Expose assigned names and DNS publication conditions through Instance status;
-the exact Compute status schema requires API review. Track publication lag,
+Expose assigned names and DNS publication conditions through `Instance.status.dns`.
+Track publication lag,
 renewal failures, withdrawal delay, and guest configuration failures without
 per-instance metric labels. Set latency and withdrawal targets before release.
 
