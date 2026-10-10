@@ -11,6 +11,7 @@ import { ComputeEnablementBanner } from "../components/compute-enablement-banner
 import { formatKpiValue } from "../components/metric-area-chart";
 import { CpuMemorySparks } from "../components/metric-sparkline";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
+import { WorkloadSearch } from "../components/workload-search";
 import { HealthDot, WorkloadStatusBadge } from "../components/workload-status-badge";
 import { WorkloadUrl } from "../components/workload-url";
 import { albStatus, workloadUrlState } from "../lib/alb-status";
@@ -38,7 +39,7 @@ import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
 import { allocationOf, type Allocation } from "../lib/resource-usage";
 import { useOverviewRange } from "../components/overview-range";
 import { useLocationIndex, type LocationIndex } from "../lib/locations";
-import { newestFirst, regionLabel } from "../lib/workload-presenters";
+import { matchesWorkloadSearch, newestFirst, regionLabel } from "../lib/workload-presenters";
 import type { Workload } from "../schema";
 import { Badge } from "@datum-cloud/datum-ui/badge";
 import { Button, LinkButton } from "@datum-cloud/datum-ui/button";
@@ -59,6 +60,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@datum-cloud/datum-ui/card";
+import { EmptyContent } from "@datum-cloud/datum-ui/empty-content";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
 import { Tabs, TabsList, TabsTrigger } from "@datum-cloud/datum-ui/tabs";
 import { toast } from "@datum-cloud/datum-ui/toast";
@@ -321,11 +323,13 @@ function useDemoWorkloadDialog(projectId: string | undefined) {
   return { open, phase, canClose, openDialog, close, confirm, goToWorkload };
 }
 
-/** Static CTA card offering a one-click demo deploy — always the last card in
- * the grid (the only one when the project has no workloads yet). Purely
- * presentational: the dialog it opens is owned and rendered by the parent
- * (see `useDemoWorkloadDialog`), since this card gets unmounted/remounted
- * when the grid switches branches once the demo appears. */
+/** Static CTA card offering a one-click demo deploy, shown in the empty state
+ * of a project with no workloads yet. Once there are workloads, the same
+ * action lives in the list toolbar instead, where both views can reach it.
+ * Purely presentational: the dialog it opens is owned and rendered by the
+ * parent (see `useDemoWorkloadDialog`), since this card gets
+ * unmounted/remounted when the page switches branches once the demo
+ * appears. */
 function TryDemoWorkloadCard({
   projectId,
   onOpen,
@@ -621,6 +625,9 @@ export default function WorkloadList() {
   const navigate = useNavigate();
   const location = useLocation();
   const [view, setView] = useState<WorkloadView>(readStoredView);
+  // Page-level, so a query survives switching between cards and table — the
+  // table used to own its search and unmounts on every toggle.
+  const [search, setSearch] = useState("");
   useEffect(() => {
     try {
       window.localStorage.setItem(VIEW_STORAGE_KEY, view);
@@ -691,6 +698,17 @@ export default function WorkloadList() {
   const fleetRps = usePrometheusCard(fleetRpsQuery, "requestsPerSecond", {
     enabled: computeEnabled && fleetProxyIds.length > 0,
   });
+
+  // Filtered once here and handed to both views, so cards and table agree on
+  // what a query matches (see `matchesWorkloadSearch`). Filters the
+  // newest-first list so a query keeps that order.
+  const visibleWorkloads = useMemo(
+    () =>
+      sortedWorkloads.filter((workload) =>
+        matchesWorkloadSearch(workload, search, publishedByWorkload[workload.name]?.hostname)
+      ),
+    [sortedWorkloads, search, publishedByWorkload]
+  );
 
   const isLoading = isEntitlementLoading || (computeEnabled && isWorkloadsLoading);
 
@@ -818,10 +836,28 @@ export default function WorkloadList() {
                 : "—"
             }
           />
+          {/* Shared by both views: search on the left, page actions on the
+              right — the shape the portal's own table toolbar uses. */}
+          <div className="flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <WorkloadSearch value={search} onChange={setSearch} />
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
+              <Button
+                type="secondary"
+                theme="solid"
+                size="small"
+                disabled={!projectId}
+                onClick={demoDialog.openDialog}
+                data-testid="compute-plugin-try-demo-button"
+              >
+                <Icon icon={RocketIcon} size={14} />
+                Deploy Now
+              </Button>
+            </div>
+          </div>
           {view === "table" ? (
             <Suspense fallback={<WorkloadListTableSkeleton summary={false} />}>
               <WorkloadTable
-                workloads={sortedWorkloads}
+                workloads={visibleWorkloads}
                 projectId={projectId}
                 instanceKeysByWorkload={instanceKeysByWorkload}
                 allocationByWorkload={allocationByWorkload}
@@ -834,12 +870,17 @@ export default function WorkloadList() {
                 onOpen={(name) => navigate(workloadHref(name))}
               />
             </Suspense>
+          ) : visibleWorkloads.length === 0 ? (
+            <EmptyContent
+              title="Try adjusting your search"
+              data-testid="compute-plugin-workload-grid-empty"
+            />
           ) : (
             <div
               className="grid grid-cols-1 gap-4 lg:grid-cols-2"
               data-testid="compute-plugin-workload-grid"
             >
-              {sortedWorkloads.map((workload) => (
+              {visibleWorkloads.map((workload) => (
                 <WorkloadCard
                   key={workload.uid || workload.name}
                   workload={workload}
@@ -855,7 +896,6 @@ export default function WorkloadList() {
                   href={workloadHref(workload.name)}
                 />
               ))}
-              <TryDemoWorkloadCard projectId={projectId} onOpen={demoDialog.openDialog} />
             </div>
           )}
         </>

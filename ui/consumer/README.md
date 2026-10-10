@@ -160,14 +160,22 @@ server you want running:
 `public/plugin-manifest.json` declares:
 
 - **`portal.nav/project`** — **Compute** under Build (`section: "build"`,
-  `order: 10`). Soft-launch via `comingSoon` + `comingSoonMode: "plugin"`
-  ([Build → Compute](https://www.datum.net/platform/build#compute))
-  and `serviceRef: "compute.datumapis.com"` (canonical Service
-  `spec.serviceName`). Projects without an Active entitlement for that service
-  still open the live `path: ""` mount (request-access / enablement UI)
-  with a Coming Soon badge; entitled projects get the same path with no badge.
-  Optional `roadmapUrl` is documentation / holding-page CTA material, not the
-  sidebar target.
+  `order: 10`), with `serviceRef: "compute.datumapis.com"` (canonical Service
+  `spec.serviceName`). Every project opens the live `path: ""` mount; one
+  without an Active entitlement for that service lands on the same page and
+  gets the enablement UI there.
+
+  The soft launch is over, so the `comingSoon` / `comingSoonMode` /
+  `roadmapUrl` trio is gone. While `comingSoon` was set, the portal showed a
+  Coming Soon badge on any project lacking an Active entitlement — which
+  outlived the launch and made a fresh project look unreleased
+  (cloud-portal#1622). `comingSoonMode: "plugin"` only chose where the badged
+  item linked (the live mount rather than a holding page), so dropping it
+  changes the badge and the muted styling and nothing else; the nav already
+  pointed at the real page. Note that the service catalog has had
+  `visibility: entitlement: None` throughout
+  (`config/components/service-catalog/service-configuration.yaml`) — the nav
+  item was never gated, only badged.
 - **`portal.page/project`** ×3 — `""` (`WorkloadList`, at the mount root),
   `:workloadName/*` (`WorkloadDetail`), and
   `:workloadName/instances/:instanceName/*` (`InstanceDetail`
