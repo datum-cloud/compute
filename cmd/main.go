@@ -159,7 +159,8 @@ func main() {
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
 		"A set of key=value pairs that describe feature gates for the compute operator. "+
 			"Example: --feature-gates=NetworkingIntegration=true. "+
-			"Available features: NetworkingIntegration (default=false).")
+			"Available features: NetworkingIntegration, RuntimeClasses, InstanceTypes, InstanceConsoleSessions, "+
+			"InternalDNSPublishing (all default=false).")
 
 	opts := zap.Options{
 		Development: true,
@@ -181,6 +182,7 @@ func main() {
 		"RuntimeClasses", features.FeatureGate.Enabled(features.RuntimeClasses),
 		"InstanceTypes", features.FeatureGate.Enabled(features.InstanceTypes),
 		"InstanceConsoleSessions", features.FeatureGate.Enabled(features.InstanceConsoleSessions),
+		"InternalDNSPublishing", features.FeatureGate.Enabled(features.InternalDNSPublishing),
 	)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
@@ -440,6 +442,36 @@ func main() {
 		)
 		if err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
+			os.Exit(1)
+		}
+	}
+
+	// DNS publication is its own asynchronous management-plane controller. It is
+	// not registered at all while its default-off feature gate is disabled.
+	if features.FeatureGate.Enabled(features.InternalDNSPublishing) {
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo || !enableManagementControllers {
+			setupLog.Error(nil,
+				"InternalDNSPublishing requires Milo discovery mode and management controllers")
+			os.Exit(1)
+		}
+		identities, identityErr := internalDNSProjectIdentities(serverConfig.InternalDNS)
+		if identityErr != nil {
+			setupLog.Error(identityErr, "invalid internal DNS publisher configuration")
+			os.Exit(1)
+		}
+		observers, observationErr := internalDNSObservationSources(serverConfig.InternalDNS)
+		if observationErr != nil {
+			setupLog.Error(observationErr, "invalid internal DNS network observation configuration")
+			os.Exit(1)
+		}
+		dnsPublisher := &controller.InternalDNSPublisherReconciler{
+			ProjectIdentities:  identities,
+			PrincipalSubject:   serverConfig.InternalDNS.PrincipalSubject,
+			LeaseDuration:      serverConfig.InternalDNS.LeaseDuration.Duration,
+			ObservationSources: observers,
+		}
+		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSPublisher")
 			os.Exit(1)
 		}
 	}
@@ -1010,4 +1042,62 @@ func instanceTypeCatalogSource(
 // owning project's quota API) run in any mode.
 func computeWatchProviderClaims(mode multiclusterproviders.Provider) bool {
 	return mode == multiclusterproviders.ProviderMilo
+}
+
+func internalDNSObservationSources(
+	cfg config.InternalDNSConfig,
+) (map[string]controller.InternalDNSObservationSource, error) {
+	sources := make(map[string]controller.InternalDNSObservationSource, len(cfg.ObservationSources))
+	for i, source := range cfg.ObservationSources {
+		if source.Location == "" || source.ClusterUID == "" || source.KubeconfigPath == "" {
+			return nil, fmt.Errorf("internalDNS.observationSources[%d] requires location, clusterUID, and kubeconfigPath", i)
+		}
+		if _, exists := sources[source.Location]; exists {
+			return nil, fmt.Errorf("duplicate internal DNS observation location %q", source.Location)
+		}
+		cfg, err := clientcmd.BuildConfigFromFlags("", source.KubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("load network observation credentials for %q: %w", source.Location, err)
+		}
+		cfg.Timeout = 5 * time.Second
+		reader, err := client.New(cfg, client.Options{Scheme: scheme})
+		if err != nil {
+			return nil, fmt.Errorf("create network observation client for %q: %w", source.Location, err)
+		}
+		sources[source.Location] = controller.InternalDNSObservationSource{Reader: reader, ClusterUID: source.ClusterUID}
+	}
+	if len(sources) == 0 {
+		return nil, errors.New("internalDNS.observationSources must contain at least one authenticated edge API")
+	}
+	return sources, nil
+}
+
+func internalDNSProjectIdentities(
+	cfg config.InternalDNSConfig,
+) (map[string]controller.InternalDNSProjectIdentity, error) {
+	if cfg.PrincipalSubject == "" {
+		return nil, errors.New("internalDNS.principalSubject is required")
+	}
+	identities := make(map[string]controller.InternalDNSProjectIdentity, len(cfg.Projects))
+	for i, project := range cfg.Projects {
+		if project.Name == "" || project.ProjectUID == "" || project.SourceClusterUID == "" {
+			return nil, fmt.Errorf("internalDNS.projects[%d] requires name, projectUID, and sourceClusterUID", i)
+		}
+		if _, duplicate := identities[project.Name]; duplicate {
+			return nil, fmt.Errorf("internalDNS.projects contains duplicate project %q", project.Name)
+		}
+		identities[project.Name] = controller.InternalDNSProjectIdentity{
+			ProjectName:      project.Name,
+			ProjectUID:       project.ProjectUID,
+			SourceClusterUID: project.SourceClusterUID,
+		}
+	}
+	if len(identities) == 0 {
+		return nil, errors.New("internalDNS.projects must contain at least one project")
+	}
+	if cfg.LeaseDuration.Duration > 90*time.Second {
+		return nil, fmt.Errorf(
+			"internalDNS.leaseDuration %s exceeds the DNS platform maximum 90s", cfg.LeaseDuration.Duration)
+	}
+	return identities, nil
 }

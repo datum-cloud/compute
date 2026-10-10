@@ -44,12 +44,51 @@ type WorkloadOperator struct {
 	// ReferencedData configures the ReferencedDataController.
 	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
 
+	// InternalDNS configures producer identity for the optional instance DNS
+	// publisher. It is ignored unless the InternalDNSPublishing feature gate is
+	// enabled.
+	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
+
 	// LocationSource names the API group locations are read from. Use
 	// "NetworkServices" for networking.datumapis.com LocationBindings and
 	// ServingLocations, or "Locations" for the dedicated locations.miloapis.com
 	// service. It governs reads only; nothing about what compute writes changes
 	// with it. Defaults to "NetworkServices".
 	LocationSource locations.Source `json:"locationSource,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSConfig struct {
+	// PrincipalSubject is the authenticated Kubernetes username used by this
+	// process when writing project DNS resources. DNS admission verifies it; it
+	// is not an authentication substitute.
+	PrincipalSubject string `json:"principalSubject,omitempty"`
+
+	// LeaseDuration bounds how long an instance address can remain published
+	// without a fresh observation. DNS admission currently permits at most 90s.
+	LeaseDuration metav1.Duration `json:"leaseDuration,omitempty"`
+
+	// Projects pins each Milo project name to the trusted project and source API
+	// UIDs configured by the DNS control plane.
+	Projects []InternalDNSProjectIdentity `json:"projects,omitempty"`
+
+	// ObservationSources selects authenticated edge APIs for live interface and
+	// node observations. Credentials must have read-only observation permissions.
+	ObservationSources []InternalDNSObservationSource `json:"observationSources,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSObservationSource struct {
+	Location       string    `json:"location"`
+	ClusterUID     types.UID `json:"clusterUID"`
+	KubeconfigPath string    `json:"kubeconfigPath"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSProjectIdentity struct {
+	Name             string    `json:"name"`
+	ProjectUID       types.UID `json:"projectUID"`
+	SourceClusterUID string    `json:"sourceClusterUID"`
 }
 
 func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {

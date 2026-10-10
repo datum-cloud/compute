@@ -9,6 +9,8 @@ const (
 	WorkloadDeploymentUIDLabel = LabelNamespace + "/workload-deployment-uid"
 
 	InstanceIndexLabel = LabelNamespace + "/instance-index"
+	// InstanceSourceUIDLabel pins the edge Instance lifetime on its projections.
+	InstanceSourceUIDLabel = LabelNamespace + "/source-instance-uid"
 
 	// WorkloadDeploymentNameLabel carries the name of the WorkloadDeployment
 	// that owns an Instance. Stamped at creation and kept current on updates.

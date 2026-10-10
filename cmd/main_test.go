@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/yaml"
@@ -19,8 +21,64 @@ import (
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
+	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/locations"
 )
+
+func TestInternalDNSProjectIdentities(t *testing.T) {
+	identities, err := internalDNSProjectIdentities(config.InternalDNSConfig{
+		PrincipalSubject: "system:serviceaccount:compute-system:compute-manager",
+		LeaseDuration:    metav1.Duration{Duration: 60 * time.Second},
+		Projects: []config.InternalDNSProjectIdentity{{
+			Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid",
+		}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "source-uid", identities["project-a"].SourceClusterUID)
+
+	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{PrincipalSubject: "subject"})
+	assert.Error(t, err, "enabled publishing requires at least one pinned project identity")
+	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{
+		PrincipalSubject: "subject",
+		LeaseDuration:    metav1.Duration{Duration: 91 * time.Second},
+		Projects: []config.InternalDNSProjectIdentity{{
+			Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid",
+		}},
+	})
+	assert.Error(t, err, "a producer must not configure a lease DNS admission rejects")
+}
+
+func TestInternalDNSObservationSourcesRequireExplicitCredentials(t *testing.T) {
+	_, err := internalDNSObservationSources(config.InternalDNSConfig{})
+	require.Error(t, err)
+	_, err = internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{{Location: "dfw"}},
+	})
+	require.Error(t, err)
+	path := filepath.Join(t.TempDir(), "edge.kubeconfig")
+	require.NoError(t, os.WriteFile(path, []byte(`apiVersion: v1
+kind: Config
+clusters:
+  - name: edge
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: edge
+    context:
+      cluster: edge
+current-context: edge
+`), 0o600))
+	source := config.InternalDNSObservationSource{Location: "dfw", ClusterUID: "edge-uid", KubeconfigPath: path}
+	sources, err := internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{source},
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, "edge-uid", sources["dfw"].ClusterUID)
+	_, err = internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{source, source},
+	})
+	require.Error(t, err)
+}
 
 // TestComputeWatchProviderClaims is the #171 guard: quota enforcement (and thus
 // the ResourceClaim watch) is wired only in Milo mode. Single/cluster mode must

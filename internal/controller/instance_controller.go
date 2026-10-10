@@ -1305,6 +1305,7 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 				computev1alpha.WorkloadUIDLabel:                instance.Labels[computev1alpha.WorkloadUIDLabel],
 				computev1alpha.WorkloadDeploymentUIDLabel:      instance.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
 				computev1alpha.InstanceIndexLabel:              instance.Labels[computev1alpha.InstanceIndexLabel],
+				computev1alpha.InstanceSourceUIDLabel:          string(instance.UID),
 				computev1alpha.WorkloadDeploymentNameLabel:     instance.Labels[computev1alpha.WorkloadDeploymentNameLabel],
 				computev1alpha.LocationLabel:                   instance.Labels[computev1alpha.LocationLabel],
 				computev1alpha.WorkloadNameLabel:               instance.Labels[computev1alpha.WorkloadNameLabel],

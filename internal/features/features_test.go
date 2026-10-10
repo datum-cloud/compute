@@ -135,3 +135,20 @@ func TestInstanceConsoleSessions_ExplicitlyEnabled(t *testing.T) {
 		t.Error("InstanceConsoleSessions = false after Set=true, want true")
 	}
 }
+
+func TestInternalDNSPublishing_DefaultDisabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(InternalDNSPublishing) {
+		t.Error("InternalDNSPublishing default = true, want false")
+	}
+}
+
+func TestInternalDNSPublishing_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InternalDNSPublishing=true"); err != nil {
+		t.Fatalf("Set(InternalDNSPublishing=true): %v", err)
+	}
+	if !gate.Enabled(InternalDNSPublishing) {
+		t.Error("InternalDNSPublishing = false after Set=true, want true")
+	}
+}
