@@ -44,6 +44,9 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 		{name: "runtime exited", mutate: func(_ *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node, _ *coordinationv1.Lease) {
 			p.Status.Phase = corev1.PodFailed
 		}},
+		{name: "different runtime slot", mutate: func(_ *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node, _ *coordinationv1.Lease) {
+			p.Labels[computev1alpha.InstanceIndexLabel] = "different-slot"
+		}},
 		{name: "node unavailable", mutate: func(_ *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, _ *corev1.Pod, n *corev1.Node, _ *coordinationv1.Lease) {
 			n.Status.Conditions[0].Status = corev1.ConditionFalse
 		}},
@@ -68,6 +71,8 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: edgeInstance.Namespace, OwnerReferences: []metav1.OwnerReference{{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: edgeInstance.Name, UID: edgeInstance.UID, Controller: ptrBool(true)}}}, Spec: corev1.PodSpec{NodeName: "worker"}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}}}
 			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker", UID: "node-uid"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
 			lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: node.Name, Namespace: "kube-node-lease", OwnerReferences: []metav1.OwnerReference{{Kind: "Node", Name: node.Name, UID: node.UID}}}, Spec: coordinationv1.LeaseSpec{RenewTime: &metav1.MicroTime{Time: now.Add(-10 * time.Second)}}}
+			edgeInstance.Labels = map[string]string{computev1alpha.WorkloadDeploymentUIDLabel: "dns-deployment", computev1alpha.InstanceIndexLabel: "0"}
+			pod.Labels = map[string]string{computev1alpha.WorkloadDeploymentUIDLabel: "dns-deployment", computev1alpha.InstanceIndexLabel: "0"}
 			if tc.mutate != nil {
 				tc.mutate(edgeInstance, iface, pod, node, lease)
 			}

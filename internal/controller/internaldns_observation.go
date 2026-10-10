@@ -148,7 +148,15 @@ func observeProgrammedInterface(ctx context.Context, reader client.Reader, curre
 
 func observeRuntimeNode(ctx context.Context, reader client.Reader, current *computev1alpha.Instance) (string, error) {
 	var pods corev1.PodList
-	if err := reader.List(ctx, &pods, client.InNamespace(current.Namespace)); err != nil {
+	options := []client.ListOption{client.InNamespace(current.Namespace)}
+	deployment, index := current.Labels[computev1alpha.WorkloadDeploymentUIDLabel], current.Labels[computev1alpha.InstanceIndexLabel]
+	if deployment != "" && index != "" {
+		options = append(options, client.MatchingLabels{
+			computev1alpha.WorkloadDeploymentUIDLabel: deployment,
+			computev1alpha.InstanceIndexLabel:         index,
+		})
+	}
+	if err := reader.List(ctx, &pods, options...); err != nil {
 		return "", err
 	}
 	var nodeName string
