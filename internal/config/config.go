@@ -71,6 +71,17 @@ type InternalDNSConfig struct {
 	// Projects pins each Milo project name to the trusted project and source API
 	// UIDs configured by the DNS control plane.
 	Projects []InternalDNSProjectIdentity `json:"projects,omitempty"`
+
+	// ObservationSources selects authenticated edge APIs for live interface and
+	// node observations. Credentials must have read-only observation permissions.
+	ObservationSources []InternalDNSObservationSource `json:"observationSources,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSObservationSource struct {
+	Location       string    `json:"location"`
+	ClusterUID     types.UID `json:"clusterUID"`
+	KubeconfigPath string    `json:"kubeconfigPath"`
 }
 
 // +k8s:deepcopy-gen=true

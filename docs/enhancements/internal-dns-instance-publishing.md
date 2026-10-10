@@ -1,65 +1,91 @@
 # Internal DNS instance publishing
 
-Compute can publish stable private instance identity names through the internal
-DNS API. The integration is disabled by default and supports `Instance`
-resources only. It does not infer service discovery intent or publish public
-addresses.
+Compute publishes private instance names in each attached VPC's `datum.internal`
+zone. Users attach a workload to a network; they do not select a DNS zone. The
+assigned label combines the Instance name with its immutable lifetime identity.
+For example, an instance can receive `web-01-43ce24f81d265cdf.datum.internal`.
+Each VPC uses an independent DNS context, including when zone names overlap.
 
-Enable it with `--feature-gates=InternalDNSPublishing=true` and configure the
-identity that the DNS control plane trusts for each Milo project:
+`Instance.status.dns` reports assigned hostnames and publication readiness per
+network. DNS errors do not change runtime readiness. Application readiness does
+not remove an instance's identity name.
+
+```yaml
+status:
+  dns:
+    - network:
+        name: application
+        namespace: production
+      networkUID: 00000000-0000-0000-0000-000000000020
+      hostnames: [web-01-43ce24f81d265cdf.datum.internal]
+      conditions:
+        - type: Ready
+          status: "True"
+          reason: Published
+          message: Private name is published
+          observedGeneration: 1
+          lastTransitionTime: "2026-10-09T20:00:00Z"
+```
+
+Enable the default-off `InternalDNSPublishing` feature gate only after
+provisioning the DNS platform, project permissions, and edge observation access.
+The management controller requires Milo discovery.
 
 ```yaml
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: WorkloadOperator
 internalDNS:
+  # Match the authenticated subject used for project DNS writes.
   principalSubject: system:serviceaccount:compute-system:compute-manager
   leaseDuration: 60s
   projects:
     - name: example-project
       projectUID: 00000000-0000-0000-0000-000000000001
+      # Match the project source API identity trusted by DNS admission.
       sourceClusterUID: 00000000-0000-0000-0000-000000000010
+  observationSources:
+    - location: dfw
+      # Pin the edge cluster's kube-system namespace lifetime.
+      clusterUID: 00000000-0000-0000-0000-000000000030
+      # Use separately provisioned read-only edge credentials.
+      kubeconfigPath: /etc/compute/edge-dfw.kubeconfig
 ```
 
-`projectUID` and `sourceClusterUID` must match the trusted project entry in the
-DNS control-plane configuration. The principal must be the authenticated
-Kubernetes username used for project API writes. These values select and
-authorize an existing DNS-owned namespace; they do not authenticate the
-publisher by themselves.
+Compute selects the ready resolver context whose `consumerID` is
+`<projectUID>/<NetworkUID>` and reads its managed zone. It reserves a name through
+`DNSRegistration` and waits for a trusted issuer's scoped `DNSContributionGrant`.
+Compute can read grants but cannot create, update, or delete them. Contributions
+pin both registration and grant lifetimes and generations. DNS admission checks
+the authenticated publisher subject and source identity.
 
-The project API must separately authorize the authenticated principal to read
-managed namespaces and to manage registrations, grants, contributions, and
-producer-owned contribution status. In Milo this requires the corresponding DNS
-`ProtectedResource`/IAM policy (or equivalent project authorization) for the
-client certificate or token subject. The
-`config/components/internal-dns-rbac` component supplies direct Kubernetes RBAC
-for a same-API development environment; applying it only to Compute's deployment
-cluster does not grant access through a Milo project control-plane endpoint.
-Production rollout therefore requires matching infra/IAM provisioning before
-the feature gate is enabled.
+The optional `config/components/internal-dns-rbac` component grants DNS access
+on a direct Kubernetes API. Milo project authorization must grant equivalent
+permissions separately, including Instance status writes. Applying a role in
+the deployment cluster does not authorize project API access.
 
-The first integration requires `discovery.mode: milo` and management
-controllers. It uses the engaged project client's authenticated connection and
-renews leases only from an uncached read of the authoritative project Instance.
-An edge or federation copy with a different UID is rejected, preventing an old
-copy from publishing into a replacement Instance lifetime.
+Edge observation credentials require reads of Instances, NetworkInterfaces,
+NetworkInterfaceClaims, NetworkContexts, Pods, Nodes, node leases, and the `kube-system` namespace.
+Scope namespaced reads to the supported projects' edge namespaces. Credentials
+cannot publish records or issue grants. Cluster-wide reads are limited to nodes
+and the pinned namespace.
 
-For each VPC attachment, the publisher reads the project `Network` UID and
-selects an accepted `DNSManagedNamespace` whose project and VPC UIDs both
-match. It creates a generation-pinned `DNSRegistration`,
-`DNSContributionGrant`, and `DNSRecordContribution`. The name combines the
-immutable Instance UID with its allocated name, so display-name reuse cannot
-adopt an earlier identity. A separate registration is used for every VPC.
+Only private IPv4 and IPv6 host addresses from live allocated, programmed
+interfaces are eligible. Public addresses and delegated prefixes are excluded.
+The observer checks the source Instance lifetime, interface claim, running
+runtime Pod, ready Node, and its original heartbeat. Publication cannot outlive
+that heartbeat by more than 45 seconds or exceed the configured lease.
+Unsupported runtimes, cross-namespace network attachments, ambiguous runtime
+Pods, and observation failures are ineligible. Projected positive status cannot
+renew a lease. This requires a runtime represented by an Instance-owned Pod and
+a node heartbeat lease.
 
-Only allocated and programmed private host addresses are published. IPv4 and
-IPv6 are supported; a delegated prefix is not treated as one instance address.
-Application readiness does not affect instance identity. Address release or
-network deprogramming writes an ineligible observation, and deletion is
-garbage-collected through the project-side Instance owner reference. The
-publisher refreshes a bounded lease from current Instance/interface state, so a
-disconnected publisher cannot retain an address indefinitely.
+Interface withdrawal makes the contribution ineligible. Instance deletion and
+replacement reclaim records through project-side owner references. DNS retains
+ownership of publication status; Compute patches only its observation fields.
 
-DNS reconciliation errors requeue this controller and do not modify Compute
-readiness. Publication state remains available on the DNS registration and
-contribution resources. With the feature gate disabled, Compute does not
-register the publisher, discover DNS resources, make DNS API calls, or require
-the optional DNS RBAC component.
+Guest resolver application belongs to workload providers. It requires the
+access-restricted network services delivery contract described in the
+[Compute enhancement](https://github.com/datum-cloud/compute/pull/470).
+This publisher does not configure guests, expose authorization leases on public
+NetworkInterfaces, or implement peer DNS aliases. Supported guests use
+`datum.internal` as their default search domain when resolver delivery is enabled.

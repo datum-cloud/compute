@@ -438,6 +438,34 @@ func TestInstanceProjector_SpecCopied(t *testing.T) {
 	assert.Equal(t, "test-gate", projection.Spec.Controller.SchedulingGates[0].Name)
 }
 
+func TestInstanceProjectorPreservesProjectDNSStatus(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: "edge-instance"})
+	upstream.Status.DNS = []computev1alpha.InstanceDNSStatus{{NetworkUID: "untrusted-edge-status"}}
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: "edge-instance"}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{NetworkUID: "project-network", Hostnames: []string{"web.datum.internal"}}}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	_, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, "project-network", projection.Status.DNS[0].NetworkUID)
+}
+
+func TestInstanceProjectorReplacesDifferentSourceLifetime(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: "new-edge-instance"})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, UID: "old-project-instance", Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: "old-edge-instance"}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	result, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.Positive(t, result.RequeueAfter)
+	require.True(t, apierrors.IsNotFound(cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection)))
+	_, err = r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, "new-edge-instance", projection.Labels[computev1alpha.InstanceSourceUIDLabel])
+	require.Empty(t, projection.Status.DNS)
+}
+
 // TestInstanceProjector_NamespaceResolution verifies that the projector resolves
 // the target project namespace directly from the UpstreamOwnerNamespaceLabel on
 // the Karmada Instance, landing the projection in the correct namespace.

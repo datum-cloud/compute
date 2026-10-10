@@ -15,7 +15,6 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -51,13 +50,14 @@ const (
 	internalDNSPendingWait    = 10 * time.Second
 	internalDNSAPITimeout     = 10 * time.Second
 	defaultDNSConcurrency     = 4
+	defaultInternalDNSDomain  = "datum.internal"
 )
 
 var (
-	dnsManagedNamespaceGVK = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSManagedNamespace"}
-	dnsRegistrationGVK     = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSRegistration"}
-	dnsGrantGVK            = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSContributionGrant"}
-	dnsContributionGVK     = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSRecordContribution"}
+	dnsResolverContextGVK = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSResolverContext"}
+	dnsRegistrationGVK    = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSRegistration"}
+	dnsGrantGVK           = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSContributionGrant"}
+	dnsContributionGVK    = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSRecordContribution"}
 )
 
 // InternalDNSProjectIdentity is the trusted identity shared with the DNS
@@ -101,6 +101,8 @@ type InternalDNSPublisherReconciler struct {
 	LeaseDuration               time.Duration
 	MaxConcurrentReconciles     int
 	Now                         func() time.Time
+	ObservationSources          map[string]InternalDNSObservationSource
+	ObserveInterface            InternalDNSObserveFunc
 }
 
 func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -162,41 +164,50 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		return ctrl.Result{}, r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, nil)
 	}
 
-	attachments, err := instanceDNSAttachments(ctx, access.Reader, projectNamespace, &projectInstance)
+	attachments, err := instanceDNSAttachments(ctx, access.Reader, projectNamespace, &projectInstance, r.observeInterface)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	desired := make(map[string]struct{}, len(attachments))
+	publicationStatus := make([]computev1alpha.InstanceDNSStatus, 0, len(attachments))
+	var publicationErr error
 	pending := false
 	for _, attachment := range attachments {
 		resourceName := internalDNSResourceName(projectInstance.UID, attachment.VPCUID)
 		desired[resourceName] = struct{}{}
 		ready, err := r.reconcileAttachment(ctx, access, identity, projectNamespace, &projectInstance, owner, attachment, resourceName)
+		publication, statusErr := r.publicationStatus(ctx, access.Reader, projectNamespace, &projectInstance, attachment, resourceName, ready, err)
+		publicationStatus = append(publicationStatus, publication)
+		if statusErr != nil {
+			publicationErr = errors.Join(publicationErr, statusErr)
+		}
 		if err != nil {
-			return ctrl.Result{}, err
+			publicationErr = errors.Join(publicationErr, err)
 		}
 		pending = pending || !ready
+	}
+	if err := r.reportPublication(ctx, access.Writer, &projectInstance, publicationStatus); err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, desired); err != nil {
 		return ctrl.Result{}, err
 	}
 	if pending {
-		return ctrl.Result{RequeueAfter: internalDNSPendingWait}, nil
+		return ctrl.Result{RequeueAfter: internalDNSPendingWait}, publicationErr
 	}
-	return ctrl.Result{RequeueAfter: r.leaseDuration() / 2}, nil
+	return ctrl.Result{RequeueAfter: r.leaseDuration() / 3}, publicationErr
 }
 
 type instanceDNSAttachment struct {
-	VPCUID     types.UID
-	RecordSets []any
-	Eligible   bool
+	VPCUID           types.UID
+	Network          networkingv1alpha.NetworkRef
+	RecordSets       []any
+	Eligible         bool
+	ValidUntil       time.Time
+	ObservationError error
 }
 
-func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNamespace string, instance *computev1alpha.Instance) ([]instanceDNSAttachment, error) {
-	statusByName := make(map[string]computev1alpha.InstanceNetworkInterfaceStatus, len(instance.Status.NetworkInterfaces))
-	for _, status := range instance.Status.NetworkInterfaces {
-		statusByName[status.Name] = status
-	}
+func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNamespace string, instance *computev1alpha.Instance, observe InternalDNSObserveFunc) ([]instanceDNSAttachment, error) {
 	byVPC := map[types.UID]*instanceDNSAttachment{}
 	for _, nic := range instance.Spec.NetworkInterfaces {
 		namespace := nic.Network.Namespace
@@ -212,16 +223,27 @@ func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNa
 		}
 		attachment := byVPC[network.UID]
 		if attachment == nil {
-			attachment = &instanceDNSAttachment{VPCUID: network.UID, RecordSets: []any{}}
+			attachment = &instanceDNSAttachment{VPCUID: network.UID, Network: networkingv1alpha.NetworkRef{Name: network.Name, Namespace: namespace}, RecordSets: []any{}}
 			byVPC[network.UID] = attachment
 		}
 
-		status, found := statusByName[internalDNSInterfaceName(nic)]
-		if !found || !interfaceDNSPublishable(status) {
+		if observe == nil {
+			attachment.ObservationError = fmt.Errorf("no current interface observation is available")
+			continue
+		}
+		observation, err := observe(ctx, reader, projectNamespace, instance, nic)
+		if err != nil {
+			attachment.ObservationError = errors.Join(attachment.ObservationError, err)
+			continue
+		}
+		if !observation.Eligible {
 			continue
 		}
 		attachment.Eligible = true
-		for _, address := range status.Addresses {
+		if attachment.ValidUntil.IsZero() || observation.ValidUntil.Before(attachment.ValidUntil) {
+			attachment.ValidUntil = observation.ValidUntil
+		}
+		for _, address := range observation.Addresses {
 			addr, ok := hostAddress(address.Address)
 			if !ok {
 				continue
@@ -232,7 +254,7 @@ func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNa
 			}
 			attachment.RecordSets = append(attachment.RecordSets, map[string]any{
 				"recordType": rrtype,
-				"records":    []any{map[string]any{internalDNSNameField: "", field: map[string]any{"content": addr.String()}}},
+				"records":    []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), field: map[string]any{"content": addr.String()}}},
 			})
 		}
 	}
@@ -256,12 +278,6 @@ func internalDNSInterfaceName(nic computev1alpha.InstanceNetworkInterface) strin
 	return defaultInterfaceName
 }
 
-func interfaceDNSPublishable(status computev1alpha.InstanceNetworkInterfaceStatus) bool {
-	allocated := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceNetworkInterfaceAllocated)
-	programmed := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceNetworkInterfaceProgrammed)
-	return allocated != nil && allocated.Status == metav1.ConditionTrue && programmed != nil && programmed.Status == metav1.ConditionTrue
-}
-
 func hostAddress(raw string) (netip.Addr, bool) {
 	if addr, err := netip.ParseAddr(raw); err == nil {
 		return addr.Unmap(), true
@@ -274,14 +290,18 @@ func hostAddress(raw string) (netip.Addr, bool) {
 }
 
 func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context, access InternalDNSProjectAccess, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, owner metav1.OwnerReference, attachment instanceDNSAttachment, resourceName string) (bool, error) {
-	managed, err := findManagedNamespace(ctx, access.Reader, namespace, identity.ProjectUID, attachment.VPCUID)
+	managed, err := findResolverContext(ctx, access.Reader, namespace, identity.ProjectUID, attachment.VPCUID)
 	if err != nil {
 		return false, err
 	}
 	if managed == nil {
 		return false, nil
 	}
-	zoneRef, _, _ := unstructured.NestedMap(managed.Object, internalDNSStatusField, "dnsZoneRef")
+	suffix, _, _ := unstructured.NestedString(managed.Object, internalDNSStatusField, "managedNamespace", "suffix")
+	if strings.TrimSuffix(strings.ToLower(suffix), ".") != defaultInternalDNSDomain {
+		return false, fmt.Errorf("DNS context %q must allocate the default domain %q", managed.GetName(), defaultInternalDNSDomain)
+	}
+	zoneRef, _, _ := unstructured.NestedMap(managed.Object, internalDNSStatusField, "managedNamespace", "dnsZoneRef")
 	if stringValue(zoneRef, internalDNSNameField) == "" || stringValue(zoneRef, internalDNSUIDField) == "" {
 		return false, nil
 	}
@@ -311,20 +331,14 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	if err != nil || changed {
 		return false, err
 	}
-	registrationRef := objectReference(registration, true)
+	registrationRef := objectReference(registration)
 
-	grantSpec := map[string]any{
-		"registrationRef": registrationRef,
-		"producerID":      internalDNSManager,
-		"principal": map[string]any{
-			"clusterUID": identity.SourceClusterUID,
-			"subject":    r.PrincipalSubject,
-		},
-		"recordTypes": []any{"A", internalDNSRecordTypeAAAA},
-	}
-	grant, changed, err := ensureDNSObject(ctx, access, dnsGrantGVK, namespace, resourceName, labels, owner, grantSpec)
-	if err != nil || changed {
+	grant, err := findContributionGrant(ctx, access.Reader, namespace, registration, identity.SourceClusterUID, r.PrincipalSubject, ownerName)
+	if err != nil {
 		return false, err
+	}
+	if grant == nil {
+		return false, nil
 	}
 	writerEpoch, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "activeWriterEpoch")
 	observedGrant, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "observedGrantGeneration")
@@ -335,7 +349,7 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 
 	contributionSpec := map[string]any{
 		"registrationRef": registrationRef,
-		"grantRef":        objectReference(grant, false),
+		"grantRef":        objectReference(grant),
 		"recordSets":      attachment.RecordSets,
 	}
 	contribution, changed, err := ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
@@ -347,19 +361,27 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		return false, nil
 	}
 
-	return r.refreshObservation(ctx, access.Writer, contribution, writerEpoch, attachment.Eligible)
+	return r.refreshObservation(ctx, access.Writer, contribution, writerEpoch, attachment.Eligible, attachment.ValidUntil)
 }
 
-func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context, writer client.Client, contribution *unstructured.Unstructured, writerEpoch int64, eligible bool) (bool, error) {
+func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context, writer client.Client, contribution *unstructured.Unstructured, writerEpoch int64, eligible bool, deadline time.Time) (bool, error) {
 	now := time.Now()
 	if r.Now != nil {
 		now = r.Now()
+	}
+	validThrough := now.Add(r.leaseDuration())
+	if eligible {
+		if deadline.IsZero() || !deadline.After(now) {
+			eligible = false
+		} else if deadline.Before(validThrough) {
+			validThrough = deadline
+		}
 	}
 	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, "eligible")
 	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, "observedGeneration")
 	validUntilRaw, _, _ := unstructured.NestedString(contribution.Object, internalDNSStatusField, "validUntil")
 	validUntil, _ := time.Parse(time.RFC3339Nano, validUntilRaw)
-	if oldEligible == eligible && observedGeneration == contribution.GetGeneration() && validUntil.After(now.Add(r.leaseDuration()/2)) {
+	if oldEligible == eligible && observedGeneration == contribution.GetGeneration() && validUntil.After(now.Add(r.leaseDuration()/3)) && !validUntil.After(validThrough) {
 		return true, nil
 	}
 
@@ -374,7 +396,7 @@ func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context,
 		{[]string{internalDNSStatusField, "sequence"}, sequence + 1},
 		{[]string{internalDNSStatusField, "eligible"}, eligible},
 		{[]string{internalDNSStatusField, internalDNSReasonField}, map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[eligible]},
-		{[]string{internalDNSStatusField, "validUntil"}, now.Add(r.leaseDuration()).UTC().Format(time.RFC3339Nano)},
+		{[]string{internalDNSStatusField, "validUntil"}, validThrough.UTC().Format(time.RFC3339Nano)},
 	}
 	for _, field := range owned {
 		if err := unstructured.SetNestedField(contribution.Object, field.value, field.path...); err != nil {
@@ -390,36 +412,74 @@ func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context,
 	return true, nil
 }
 
-func findManagedNamespace(ctx context.Context, reader client.Reader, namespace string, projectUID, vpcUID types.UID) (*unstructured.Unstructured, error) {
+func findResolverContext(ctx context.Context, reader client.Reader, namespace string, projectUID, vpcUID types.UID) (*unstructured.Unstructured, error) {
 	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(dnsManagedNamespaceGVK.GroupVersion().WithKind(dnsManagedNamespaceGVK.Kind + "List"))
+	list.SetGroupVersionKind(dnsResolverContextGVK.GroupVersion().WithKind(dnsResolverContextGVK.Kind + "List"))
 	if err := reader.List(ctx, list, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("list managed DNS namespaces: %w", err)
+		return nil, fmt.Errorf("list DNS resolver contexts: %w", err)
 	}
 	var match *unstructured.Unstructured
 	for i := range list.Items {
 		item := &list.Items[i]
-		if !item.GetDeletionTimestamp().IsZero() {
+		if !item.GetDeletionTimestamp().IsZero() || item.GetUID() == "" || item.GetGeneration() < 1 {
 			continue
 		}
-		puid, _, _ := unstructured.NestedString(item.Object, "spec", "projectUID")
-		vid, _, _ := unstructured.NestedString(item.Object, "spec", "vpcRef", internalDNSUIDField)
-		if puid != string(projectUID) || vid != string(vpcUID) || !unstructuredConditionTrue(item, "Accepted") {
+		consumerID, _, _ := unstructured.NestedString(item.Object, "spec", "consumerID")
+		if consumerID != string(projectUID)+"/"+string(vpcUID) || !unstructuredConditionCurrent(item, "Accepted") || !unstructuredConditionCurrent(item, "Ready") {
 			continue
 		}
 		if match != nil {
-			return nil, fmt.Errorf("multiple accepted managed DNS namespaces match project UID %q and VPC UID %q", projectUID, vpcUID)
+			return nil, fmt.Errorf("multiple ready DNS resolver contexts match project UID %q and VPC UID %q", projectUID, vpcUID)
 		}
 		match = item.DeepCopy()
 	}
 	return match, nil
 }
 
-func unstructuredConditionTrue(obj *unstructured.Unstructured, conditionType string) bool {
+func unstructuredConditionCurrent(obj *unstructured.Unstructured, conditionType string) bool {
 	conditions, _, _ := unstructured.NestedSlice(obj.Object, internalDNSStatusField, "conditions")
 	for _, raw := range conditions {
 		condition, ok := raw.(map[string]any)
-		if ok && condition["type"] == conditionType && condition[internalDNSStatusField] == string(metav1.ConditionTrue) {
+		if ok && condition["type"] == conditionType && condition[internalDNSStatusField] == string(metav1.ConditionTrue) && condition["observedGeneration"] == obj.GetGeneration() {
+			return true
+		}
+	}
+	return false
+}
+
+func findContributionGrant(ctx context.Context, reader client.Reader, namespace string, registration *unstructured.Unstructured, clusterUID, subject, ownerName string) (*unstructured.Unstructured, error) {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(dnsGrantGVK.GroupVersion().WithKind(dnsGrantGVK.Kind + "List"))
+	if err := reader.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list DNS contribution grants: %w", err)
+	}
+	var match *unstructured.Unstructured
+	for i := range list.Items {
+		grant := &list.Items[i]
+		if !grant.GetDeletionTimestamp().IsZero() || grant.GetUID() == "" || grant.GetGeneration() < 1 || !unstructuredConditionCurrent(grant, "Active") {
+			continue
+		}
+		ref, _, _ := unstructured.NestedMap(grant.Object, "spec", "registrationRef")
+		principal, _, _ := unstructured.NestedMap(grant.Object, "spec", "principal")
+		if !reflect.DeepEqual(ref, objectReference(registration)) || stringValue(principal, "clusterUID") != clusterUID || stringValue(principal, "subject") != subject {
+			continue
+		}
+		scopes, _, _ := unstructured.NestedStringSlice(grant.Object, "spec", "nameScopes")
+		types, _, _ := unstructured.NestedStringSlice(grant.Object, "spec", "recordTypes")
+		if !containsDNSString(scopes, ownerName) || !containsDNSString(types, "A") || !containsDNSString(types, "AAAA") {
+			continue
+		}
+		if match != nil {
+			return nil, fmt.Errorf("multiple contribution grants authorize registration %q", registration.GetName())
+		}
+		match = grant.DeepCopy()
+	}
+	return match, nil
+}
+
+func containsDNSString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
 			return true
 		}
 	}
@@ -487,7 +547,7 @@ func authorityReferencesChanged(gvk schema.GroupVersionKind, current, desired ma
 
 func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, instanceUID types.UID, keep map[string]struct{}) error {
 	selector := client.MatchingLabels{internalDNSInstanceUID: string(instanceUID), internalDNSManagedBy: internalDNSManager}
-	for _, gvk := range []schema.GroupVersionKind{dnsContributionGVK, dnsGrantGVK, dnsRegistrationGVK} {
+	for _, gvk := range []schema.GroupVersionKind{dnsContributionGVK, dnsRegistrationGVK} {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
 		if err := access.Reader.List(ctx, list, client.InNamespace(namespace), selector); err != nil {
@@ -514,11 +574,9 @@ func newDNSObject(gvk schema.GroupVersionKind, namespace, name string) *unstruct
 	return obj
 }
 
-func objectReference(obj *unstructured.Unstructured, includeGeneration bool) map[string]any {
+func objectReference(obj *unstructured.Unstructured) map[string]any {
 	ref := map[string]any{internalDNSNameField: obj.GetName(), internalDNSUIDField: string(obj.GetUID())}
-	if includeGeneration {
-		ref["generation"] = obj.GetGeneration()
-	}
+	ref["generation"] = obj.GetGeneration()
 	return ref
 }
 
@@ -544,7 +602,7 @@ func allocatedInstanceDNSName(instance *computev1alpha.Instance) string {
 	if len(base) > 40 {
 		base = strings.TrimRight(base[:40], "-")
 	}
-	return base + "-" + shortHash(string(instance.UID)) + ".instances"
+	return base + "-" + shortHash(string(instance.UID))
 }
 
 func internalDNSResourceName(instanceUID, vpcUID types.UID) string {

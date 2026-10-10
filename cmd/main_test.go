@@ -48,6 +48,38 @@ func TestInternalDNSProjectIdentities(t *testing.T) {
 	assert.Error(t, err, "a producer must not configure a lease DNS admission rejects")
 }
 
+func TestInternalDNSObservationSourcesRequireExplicitCredentials(t *testing.T) {
+	_, err := internalDNSObservationSources(config.InternalDNSConfig{})
+	require.Error(t, err)
+	_, err = internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{{Location: "dfw"}},
+	})
+	require.Error(t, err)
+	path := filepath.Join(t.TempDir(), "edge.kubeconfig")
+	require.NoError(t, os.WriteFile(path, []byte(`apiVersion: v1
+kind: Config
+clusters:
+  - name: edge
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: edge
+    context:
+      cluster: edge
+current-context: edge
+`), 0o600))
+	source := config.InternalDNSObservationSource{Location: "dfw", ClusterUID: "edge-uid", KubeconfigPath: path}
+	sources, err := internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{source},
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, "edge-uid", sources["dfw"].ClusterUID)
+	_, err = internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{source, source},
+	})
+	require.Error(t, err)
+}
+
 // TestComputeWatchProviderClaims is the #171 guard: quota enforcement (and thus
 // the ResourceClaim watch) is wired only in Milo mode. Single/cluster mode must
 // stay false, so the manager never engages a ResourceClaim watch against a cell

@@ -15,12 +15,14 @@ import (
 	"go.datum.net/compute/internal/controller"
 	"go.datum.net/compute/internal/features"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -31,6 +33,7 @@ import (
 
 func main() {
 	var kubeconfig, namespace, projectUID, sourceUID, subject, gates string
+	var edgeKubeconfig, edgeUID, location string
 	var lease time.Duration
 	flags := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	flags.StringVar(&kubeconfig, "kubeconfig", "", "Disposable project kubeconfig")
@@ -40,6 +43,9 @@ func main() {
 	flags.StringVar(&subject, "subject", "system:serviceaccount:compute-system:dns-publisher", "Authenticated writer")
 	flags.StringVar(&gates, "feature-gates", "", "Compute feature gates")
 	flags.DurationVar(&lease, "lease", 60*time.Second, "Contribution lease")
+	flags.StringVar(&edgeKubeconfig, "edge-kubeconfig", "", "Read-only edge observation kubeconfig")
+	flags.StringVar(&edgeUID, "edge-uid", "", "Edge kube-system namespace UID")
+	flags.StringVar(&location, "location", "", "Instance location label")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		panic(err)
 	}
@@ -51,16 +57,28 @@ func main() {
 		fmt.Println("InternalDNSPublishing is disabled; no DNS client or controller started")
 		return
 	}
+	if edgeKubeconfig == "" || edgeUID == "" || location == "" {
+		panic("edge-kubeconfig, edge-uid, and location are required")
+	}
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		panic(err)
 	}
 	cfg.Timeout = 10 * time.Second
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, computev1alpha.AddToScheme, networkingv1alpha.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, coordinationv1.AddToScheme, computev1alpha.AddToScheme, networkingv1alpha.AddToScheme} {
 		if err := add(scheme); err != nil {
 			panic(err)
 		}
+	}
+	edgeConfig, err := clientcmd.BuildConfigFromFlags("", edgeKubeconfig)
+	if err != nil {
+		panic(err)
+	}
+	edgeConfig.Timeout = 5 * time.Second
+	edge, err := client.New(edgeConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		panic(err)
 	}
 	cl, err := cluster.New(cfg, func(o *cluster.Options) {
 		o.Scheme = scheme
@@ -77,6 +95,7 @@ func main() {
 		panic(err)
 	}
 	publisher := &controller.InternalDNSPublisherReconciler{
+		ObservationSources: map[string]controller.InternalDNSObservationSource{location: {Reader: edge, ClusterUID: types.UID(edgeUID)}},
 		ProjectIdentities: map[string]controller.InternalDNSProjectIdentity{"single": {
 			ProjectName: "single", ProjectUID: types.UID(projectUID), SourceClusterUID: sourceUID,
 		}}, PrincipalSubject: subject, LeaseDuration: lease,

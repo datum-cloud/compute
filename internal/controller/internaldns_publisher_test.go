@@ -53,15 +53,19 @@ func TestInstanceDNSAttachmentsMapsTenancyAndAddressFamilies(t *testing.T) {
 		},
 	}
 
-	attachments, err := instanceDNSAttachments(context.Background(), cl, internalDNSTestNamespace, instance)
+	eligible := true
+	observation := func(context.Context, client.Reader, string, *computev1alpha.Instance, computev1alpha.InstanceNetworkInterface) (InternalDNSObservedInterface, error) {
+		return InternalDNSObservedInterface{Addresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: "10.0.0.8/32"}, {Address: "2001:db8::8/128"}, {Address: "2001:db8:1::/96"}}, Eligible: eligible, ValidUntil: time.Now().Add(time.Minute)}, nil
+	}
+	attachments, err := instanceDNSAttachments(context.Background(), cl, internalDNSTestNamespace, instance, observation)
 	require.NoError(t, err)
 	require.Len(t, attachments, 1)
 	assert.Equal(t, types.UID("vpc-uid"), attachments[0].VPCUID)
 	assert.True(t, attachments[0].Eligible)
 	assert.Len(t, attachments[0].RecordSets, 2, "A and AAAA host addresses should be retained")
 
-	instance.Status.NetworkInterfaces[0].Conditions[1].Status = metav1.ConditionFalse
-	attachments, err = instanceDNSAttachments(context.Background(), cl, internalDNSTestNamespace, instance)
+	eligible = false
+	attachments, err = instanceDNSAttachments(context.Background(), cl, internalDNSTestNamespace, instance, observation)
 	require.NoError(t, err)
 	require.Len(t, attachments, 1)
 	assert.False(t, attachments[0].Eligible)
@@ -69,58 +73,60 @@ func TestInstanceDNSAttachmentsMapsTenancyAndAddressFamilies(t *testing.T) {
 	assert.Empty(t, attachments[0].RecordSets)
 }
 
-func TestFindManagedNamespaceRequiresProjectAndVPCUID(t *testing.T) {
+func TestFindResolverContextRequiresProjectAndVPCUID(t *testing.T) {
 	s := runtime.NewScheme()
-	s.AddKnownTypeWithName(dnsManagedNamespaceGVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(dnsManagedNamespaceGVK.GroupVersion().WithKind("DNSManagedNamespaceList"), &unstructured.UnstructuredList{})
-	wrong := managedNamespaceObject("wrong", "other-project", "vpc-a", true)
-	right := managedNamespaceObject("right", "project-a", "vpc-a", true)
-	wrongVPC := managedNamespaceObject("wrong-vpc", "project-a", "vpc-b", true)
-	pending := managedNamespaceObject("pending", "project-a", "vpc-a", false)
+	s.AddKnownTypeWithName(dnsResolverContextGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(dnsResolverContextGVK.GroupVersion().WithKind("DNSResolverContextList"), &unstructured.UnstructuredList{})
+	wrong := resolverContextObject("wrong", "other-project", "vpc-a", true)
+	right := resolverContextObject("right", "project-a", "vpc-a", true)
+	wrongVPC := resolverContextObject("wrong-vpc", "project-a", "vpc-b", true)
+	pending := resolverContextObject("pending", "project-a", "vpc-a", false)
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(wrong, wrongVPC, pending, right).Build()
 
-	got, err := findManagedNamespace(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
+	got, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "right", got.GetName())
 
-	got, err = findManagedNamespace(context.Background(), cl, internalDNSTestNamespace, "project-b", "vpc-a")
+	got, err = findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-b", "vpc-a")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
 
-func TestFindManagedNamespaceRejectsAmbiguityAndIgnoresTerminatingBinding(t *testing.T) {
+func TestFindResolverContextRejectsAmbiguityAndIgnoresTerminatingBinding(t *testing.T) {
 	s := runtime.NewScheme()
-	s.AddKnownTypeWithName(dnsManagedNamespaceGVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(dnsManagedNamespaceGVK.GroupVersion().WithKind("DNSManagedNamespaceList"), &unstructured.UnstructuredList{})
-	first := managedNamespaceObject("first", "project-a", "vpc-a", true)
-	second := managedNamespaceObject("second", "project-a", "vpc-a", true)
+	s.AddKnownTypeWithName(dnsResolverContextGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(dnsResolverContextGVK.GroupVersion().WithKind("DNSResolverContextList"), &unstructured.UnstructuredList{})
+	first := resolverContextObject("first", "project-a", "vpc-a", true)
+	second := resolverContextObject("second", "project-a", "vpc-a", true)
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(first, second).Build()
 
-	_, err := findManagedNamespace(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
+	_, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "multiple accepted")
+	assert.Contains(t, err.Error(), "multiple ready")
 
 	now := metav1.Now()
 	second.SetDeletionTimestamp(&now)
 	second.SetFinalizers([]string{"test.example/finalizer"})
 	cl = fake.NewClientBuilder().WithScheme(s).WithObjects(first, second).Build()
-	got, err := findManagedNamespace(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
+	got, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "first", got.GetName())
 }
 
-func managedNamespaceObject(name, projectUID, vpcUID string, accepted bool) *unstructured.Unstructured {
+func resolverContextObject(name, projectUID, vpcUID string, accepted bool) *unstructured.Unstructured {
 	status := string(metav1.ConditionFalse)
 	if accepted {
 		status = string(metav1.ConditionTrue)
 	}
-	obj := newDNSObject(dnsManagedNamespaceGVK, internalDNSTestNamespace, name)
-	obj.Object["spec"] = map[string]any{"projectUID": projectUID, "vpcRef": map[string]any{internalDNSUIDField: vpcUID}}
+	obj := newDNSObject(dnsResolverContextGVK, internalDNSTestNamespace, name)
+	obj.SetUID(types.UID(name + "-uid"))
+	obj.SetGeneration(1)
+	obj.Object["spec"] = map[string]any{"consumerID": projectUID + "/" + vpcUID}
 	obj.Object[internalDNSStatusField] = map[string]any{
-		"conditions": []any{map[string]any{"type": "Accepted", internalDNSStatusField: status}},
-		"dnsZoneRef": map[string]any{internalDNSNameField: "zone", internalDNSUIDField: "zone-uid", "generation": int64(1)},
+		"conditions":       []any{map[string]any{"type": "Accepted", internalDNSStatusField: status, "observedGeneration": int64(1)}, map[string]any{"type": "Ready", internalDNSStatusField: status, "observedGeneration": int64(1)}},
+		"managedNamespace": map[string]any{"suffix": "datum.internal", "dnsZoneRef": map[string]any{internalDNSNameField: "zone", internalDNSUIDField: "zone-uid"}},
 	}
 	return obj
 }
@@ -148,7 +154,7 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	var live unstructured.Unstructured
 	live.SetGroupVersionKind(dnsContributionGVK)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), &live))
-	ready, err := r.refreshObservation(context.Background(), cl, &live, 7, true)
+	ready, err := r.refreshObservation(context.Background(), cl, &live, 7, true, now.Add(40*time.Second))
 	require.NoError(t, err)
 	assert.True(t, ready)
 

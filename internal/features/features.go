@@ -110,8 +110,8 @@ const (
 	InstanceConsoleSessions featuregate.Feature = "InstanceConsoleSessions"
 
 	// InternalDNSPublishing enables the instance identity publisher. The
-	// publisher reads DNS-owned managed namespace bindings and writes
-	// registrations, grants, and leased contributions to project control planes.
+	// publisher reads DNS contexts and independently issued grants and writes
+	// registrations and leased contributions to project control planes.
 	// It is deliberately off by default: an installation with the gate disabled
 	// neither discovers DNS API types nor needs DNS RBAC.
 	//

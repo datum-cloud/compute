@@ -1,38 +1,46 @@
-# Internal DNS publisher smoke test
+# Internal DNS publisher validation
 
-This test runs the production Compute publisher against a disposable Kubernetes
-API and the shared DNS serving fleet in the sibling `dns-operator` repository.
-The DNS checkout must include the internal DNS implementation and its local test
-harness. The test requires Go, Docker Compose, Kind, kubectl, OpenSSL, and an
-ARM64 Docker runtime.
+The publisher uses the shared Kubernetes internal DNS environment in the
+`dns-operator` repository. Use that environment's cluster lifecycle, TLS
+admission, NATS transport, and shared serving fleet. Select every API through an
+explicit kubeconfig.
+
+Run the Compute contract tests with Kubernetes envtest assets installed:
+
+```sh
+make envtest
+bin/setup-envtest use 1.31.0 --bin-dir bin -p path
+go test ./internal/controller ./internal/config ./cmd/...
+```
+
+The tests cover context identity, flat instance names, independently issued
+grants, fenced contribution renewal, live edge observations, source lifetime
+replacement, and project DNS status ownership. They use fixtures and do not
+qualify guest resolution.
+
+The standalone runner starts the production publisher on an existing project API:
 
 ```sh
 go build -o /tmp/compute-dns-publisher ./test/internaldns/publisher
-python3 test/internaldns/fleet_smoke.py \
-  --dns-repo ../dns-operator \
-  --publisher-binary /tmp/compute-dns-publisher
+/tmp/compute-dns-publisher --feature-gates=InternalDNSPublishing=true \
+  --kubeconfig /tmp/project-publisher.kubeconfig \
+  --namespace production --project-uid PROJECT_UID \
+  --source-uid PROJECT_API_UID \
+  --subject system:serviceaccount:compute-system:compute-manager \
+  --edge-kubeconfig /tmp/edge-observer.kubeconfig \
+  --edge-uid EDGE_KUBE_SYSTEM_UID --location dfw
 ```
 
-The runner starts only the production publisher controller. Its default feature
-gate is off, and the test first checks that it exits without constructing a
-Kubernetes client. The enabled phase uses a scoped Compute service account and
-the real DNS admission, publication, transport, and serving components.
+Provision a resolver context with a `datum.internal` managed zone, the scoped
+project publisher role, and a separate trusted grant issuer. Instances must
+carry their source lifetime and location labels. Edge namespaces use the project
+namespace UID. The observer requires allocated, programmed interfaces, live
+claims, Instance-owned runtime Pods, and current node heartbeat leases.
+The disabled runner starts without creating Kubernetes clients.
 
-The checks cover IPv4 and IPv6 over UDP and TCP, VPC isolation, application
-readiness independence, address changes, allocation withdrawal and recovery,
-publisher lease expiry and restart, and instance deletion with DNS resource
-cleanup. Serving process identities must remain constant.
-
-The recorded run passed all 23 checks. Both VPCs served their own Compute
-records. A query for the other VPC's managed suffix returned `SERVFAIL` with no
-private answer because the fixture's public fallback is unavailable. The test
-records the response code and checks isolation; it does not qualify public
-recursion or require a specific negative response code.
-
-Instance objects and allocated-address observations are fixtures. This test does
-not boot a guest, allocate addresses through NSO, validate Milo IAM deployment,
-or test regional replication. The full Compute binary separately requires Milo
-discovery and management controllers when the feature gate is enabled.
-
-The harness removes its own Kind cluster, containers, volumes, and temporary
-files. Results and redacted evidence are saved under `test/internaldns/results`.
+Release qualification must exercise two VPCs using the same default domain,
+real address allocation, guest resolver application, and UDP/TCP queries through
+Galactic. Include address changes, withdrawal, publisher outages, grant
+revocation, stale replay, source replacement, and controller restarts. Keep this
+qualification local and reuse the shared Kubernetes foundation. The publisher
+contract tests and runner do not establish that those release criteria pass.
