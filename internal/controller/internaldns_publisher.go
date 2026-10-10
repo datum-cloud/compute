@@ -33,24 +33,39 @@ import (
 )
 
 const (
-	internalDNSInstanceKind   = "Instance"
-	internalDNSRecordTypeAAAA = "AAAA"
-	internalDNSNameField      = "name"
-	internalDNSStatusField    = "status"
-	internalDNSReasonField    = "reason"
-	internalDNSUIDField       = "uid"
-	internalDNSGroup          = "dns.networking.miloapis.com"
-	internalDNSVersion        = "v1alpha1"
-	internalDNSInstanceUID    = "internal-dns.compute.datumapis.com/instance-uid"
-	internalDNSVPCUID         = "internal-dns.compute.datumapis.com/vpc-uid"
-	internalDNSManagedBy      = "internal-dns.compute.datumapis.com/managed-by"
-	internalDNSManager        = "compute-instance-publisher"
-	defaultDNSLease           = 60 * time.Second
-	maxDNSLease               = 90 * time.Second
-	internalDNSPendingWait    = 10 * time.Second
-	internalDNSAPITimeout     = 10 * time.Second
-	defaultDNSConcurrency     = 4
-	defaultInternalDNSDomain  = "datum.internal"
+	internalDNSInstanceKind            = "Instance"
+	internalDNSRecordTypeAAAA          = "AAAA"
+	internalDNSNameField               = "name"
+	internalDNSStatusField             = "status"
+	internalDNSReasonField             = "reason"
+	internalDNSUIDField                = "uid"
+	internalDNSGroup                   = "dns.networking.miloapis.com"
+	internalDNSVersion                 = "v1alpha1"
+	internalDNSInstanceUID             = "internal-dns.compute.datumapis.com/instance-uid"
+	internalDNSVPCUID                  = "internal-dns.compute.datumapis.com/vpc-uid"
+	internalDNSManagedBy               = "internal-dns.compute.datumapis.com/managed-by"
+	internalDNSManager                 = "compute-instance-publisher"
+	defaultDNSLease                    = 60 * time.Second
+	maxDNSLease                        = 90 * time.Second
+	internalDNSPendingWait             = 10 * time.Second
+	internalDNSAPITimeout              = 10 * time.Second
+	defaultDNSConcurrency              = 4
+	defaultInternalDNSDomain           = "datum.internal"
+	internalDNSConditionsField         = "conditions"
+	internalDNSObservedGenerationField = "observedGeneration"
+	internalDNSWriterEpochField        = "writerEpoch"
+	internalDNSRegistrationRefField    = "registrationRef"
+	internalDNSRecordTypesField        = "recordTypes"
+	internalDNSNameScopesField         = "nameScopes"
+	internalDNSClusterUIDField         = "clusterUID"
+	internalDNSConditionActive         = "Active"
+	internalDNSConditionPublished      = "Published"
+	internalDNSPrincipalField          = "principal"
+	internalDNSConditionTypeField      = "type"
+	internalDNSSpecField               = "spec"
+	internalDNSSubjectField            = "subject"
+	internalDNSGrantRefField           = "grantRef"
+	internalDNSRecordSetsField         = "recordSets"
 )
 
 var (
@@ -321,11 +336,11 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	}
 
 	registrationSpec := map[string]any{
-		"dnsZoneRef":         zoneRef,
-		internalDNSNameField: ownerName,
-		"recordTypes":        []any{"A", internalDNSRecordTypeAAAA},
-		"publicationPolicy":  "EligibleContributions",
-		"ttlSeconds":         int64(30),
+		"dnsZoneRef":                zoneRef,
+		internalDNSNameField:        ownerName,
+		internalDNSRecordTypesField: []any{"A", internalDNSRecordTypeAAAA},
+		"publicationPolicy":         "EligibleContributions",
+		"ttlSeconds":                int64(30),
 	}
 	registration, changed, err := ensureDNSObject(ctx, access, dnsRegistrationGVK, namespace, resourceName, labels, owner, registrationSpec)
 	if err != nil || changed {
@@ -348,15 +363,15 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	}
 
 	contributionSpec := map[string]any{
-		"registrationRef": registrationRef,
-		"grantRef":        objectReference(grant),
-		"recordSets":      attachment.RecordSets,
+		internalDNSRegistrationRefField: registrationRef,
+		internalDNSGrantRefField:        objectReference(grant),
+		internalDNSRecordSetsField:      attachment.RecordSets,
 	}
 	contribution, changed, err := ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
 	if err != nil || changed {
 		return false, err
 	}
-	boundEpoch, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, "writerEpoch")
+	boundEpoch, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSWriterEpochField)
 	if boundEpoch != writerEpoch {
 		return false, nil
 	}
@@ -378,7 +393,7 @@ func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context,
 		}
 	}
 	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, "eligible")
-	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, "observedGeneration")
+	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSObservedGenerationField)
 	validUntilRaw, _, _ := unstructured.NestedString(contribution.Object, internalDNSStatusField, "validUntil")
 	validUntil, _ := time.Parse(time.RFC3339Nano, validUntilRaw)
 	if oldEligible == eligible && observedGeneration == contribution.GetGeneration() && validUntil.After(now.Add(r.leaseDuration()/3)) && !validUntil.After(validThrough) {
@@ -391,8 +406,8 @@ func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context,
 		path  []string
 		value any
 	}{
-		{[]string{internalDNSStatusField, "observedGeneration"}, contribution.GetGeneration()},
-		{[]string{internalDNSStatusField, "writerEpoch"}, writerEpoch},
+		{[]string{internalDNSStatusField, internalDNSObservedGenerationField}, contribution.GetGeneration()},
+		{[]string{internalDNSStatusField, internalDNSWriterEpochField}, writerEpoch},
 		{[]string{internalDNSStatusField, "sequence"}, sequence + 1},
 		{[]string{internalDNSStatusField, "eligible"}, eligible},
 		{[]string{internalDNSStatusField, internalDNSReasonField}, map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[eligible]},
@@ -424,7 +439,7 @@ func findResolverContext(ctx context.Context, reader client.Reader, namespace st
 		if !item.GetDeletionTimestamp().IsZero() || item.GetUID() == "" || item.GetGeneration() < 1 {
 			continue
 		}
-		consumerID, _, _ := unstructured.NestedString(item.Object, "spec", "consumerID")
+		consumerID, _, _ := unstructured.NestedString(item.Object, internalDNSSpecField, "consumerID")
 		if consumerID != string(projectUID)+"/"+string(vpcUID) || !unstructuredConditionCurrent(item, "Accepted") || !unstructuredConditionCurrent(item, "Ready") {
 			continue
 		}
@@ -437,10 +452,10 @@ func findResolverContext(ctx context.Context, reader client.Reader, namespace st
 }
 
 func unstructuredConditionCurrent(obj *unstructured.Unstructured, conditionType string) bool {
-	conditions, _, _ := unstructured.NestedSlice(obj.Object, internalDNSStatusField, "conditions")
+	conditions, _, _ := unstructured.NestedSlice(obj.Object, internalDNSStatusField, internalDNSConditionsField)
 	for _, raw := range conditions {
 		condition, ok := raw.(map[string]any)
-		if ok && condition["type"] == conditionType && condition[internalDNSStatusField] == string(metav1.ConditionTrue) && condition["observedGeneration"] == obj.GetGeneration() {
+		if ok && condition[internalDNSConditionTypeField] == conditionType && condition[internalDNSStatusField] == string(metav1.ConditionTrue) && condition[internalDNSObservedGenerationField] == obj.GetGeneration() {
 			return true
 		}
 	}
@@ -456,16 +471,16 @@ func findContributionGrant(ctx context.Context, reader client.Reader, namespace 
 	var match *unstructured.Unstructured
 	for i := range list.Items {
 		grant := &list.Items[i]
-		if !grant.GetDeletionTimestamp().IsZero() || grant.GetUID() == "" || grant.GetGeneration() < 1 || !unstructuredConditionCurrent(grant, "Active") {
+		if !grant.GetDeletionTimestamp().IsZero() || grant.GetUID() == "" || grant.GetGeneration() < 1 || !unstructuredConditionCurrent(grant, internalDNSConditionActive) {
 			continue
 		}
-		ref, _, _ := unstructured.NestedMap(grant.Object, "spec", "registrationRef")
-		principal, _, _ := unstructured.NestedMap(grant.Object, "spec", "principal")
-		if !reflect.DeepEqual(ref, objectReference(registration)) || stringValue(principal, "clusterUID") != clusterUID || stringValue(principal, "subject") != subject {
+		ref, _, _ := unstructured.NestedMap(grant.Object, internalDNSSpecField, internalDNSRegistrationRefField)
+		principal, _, _ := unstructured.NestedMap(grant.Object, internalDNSSpecField, internalDNSPrincipalField)
+		if !reflect.DeepEqual(ref, objectReference(registration)) || stringValue(principal, internalDNSClusterUIDField) != clusterUID || stringValue(principal, internalDNSSubjectField) != subject {
 			continue
 		}
-		scopes, _, _ := unstructured.NestedStringSlice(grant.Object, "spec", "nameScopes")
-		types, _, _ := unstructured.NestedStringSlice(grant.Object, "spec", "recordTypes")
+		scopes, _, _ := unstructured.NestedStringSlice(grant.Object, internalDNSSpecField, internalDNSNameScopesField)
+		types, _, _ := unstructured.NestedStringSlice(grant.Object, internalDNSSpecField, internalDNSRecordTypesField)
 		if !containsDNSString(scopes, ownerName) || !containsDNSString(types, "A") || !containsDNSString(types, "AAAA") {
 			continue
 		}
@@ -490,7 +505,7 @@ func ensureDNSObject(ctx context.Context, access InternalDNSProjectAccess, gvk s
 	desired := newDNSObject(gvk, namespace, name)
 	desired.SetLabels(labels)
 	desired.SetOwnerReferences([]metav1.OwnerReference{owner})
-	desired.Object["spec"] = spec
+	desired.Object[internalDNSSpecField] = spec
 	current := newDNSObject(gvk, namespace, name)
 	err := access.Reader.Get(ctx, client.ObjectKeyFromObject(desired), current)
 	if apierrors.IsNotFound(err) {
@@ -508,7 +523,7 @@ func ensureDNSObject(ctx context.Context, access InternalDNSProjectAccess, gvk s
 	if current.GetLabels()[internalDNSManagedBy] != internalDNSManager || current.GetLabels()[internalDNSInstanceUID] != labels[internalDNSInstanceUID] || !ownedBy(current, owner) {
 		return nil, false, fmt.Errorf("refusing to adopt foreign %s %s/%s", gvk.Kind, namespace, name)
 	}
-	currentSpec, _, _ := unstructured.NestedMap(current.Object, "spec")
+	currentSpec, _, _ := unstructured.NestedMap(current.Object, internalDNSSpecField)
 	if authorityReferencesChanged(gvk, currentSpec, spec) {
 		if err := access.Writer.Delete(ctx, current); client.IgnoreNotFound(err) != nil {
 			return nil, false, err
@@ -516,7 +531,7 @@ func ensureDNSObject(ctx context.Context, access InternalDNSProjectAccess, gvk s
 		return current, true, nil
 	}
 	if !reflect.DeepEqual(currentSpec, spec) || !reflect.DeepEqual(current.GetLabels(), labels) || !reflect.DeepEqual(current.GetOwnerReferences(), []metav1.OwnerReference{owner}) {
-		current.Object["spec"] = spec
+		current.Object[internalDNSSpecField] = spec
 		current.SetLabels(labels)
 		current.SetOwnerReferences([]metav1.OwnerReference{owner})
 		if err := access.Writer.Update(ctx, current); err != nil {
@@ -542,7 +557,7 @@ func authorityReferencesChanged(gvk schema.GroupVersionKind, current, desired ma
 	if gvk != dnsContributionGVK {
 		return false
 	}
-	return !reflect.DeepEqual(current["registrationRef"], desired["registrationRef"]) || !reflect.DeepEqual(current["grantRef"], desired["grantRef"])
+	return !reflect.DeepEqual(current[internalDNSRegistrationRefField], desired[internalDNSRegistrationRefField]) || !reflect.DeepEqual(current[internalDNSGrantRefField], desired[internalDNSGrantRefField])
 }
 
 func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, instanceUID types.UID, keep map[string]struct{}) error {

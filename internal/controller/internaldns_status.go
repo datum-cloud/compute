@@ -45,7 +45,7 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		return result, err
 	}
 	if err == nil {
-		canonical, _, _ := unstructured.NestedString(registration.Object, "status", "canonicalFQDN")
+		canonical, _, _ := unstructured.NestedString(registration.Object, internalDNSStatusField, "canonicalFQDN")
 		canonical = strings.TrimSuffix(strings.ToLower(canonical), ".")
 		if canonical == allocatedInstanceDNSName(instance)+"."+defaultInternalDNSDomain {
 			result.Hostnames = []string{canonical}
@@ -54,10 +54,10 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
 			return result, err
 		}
-		deadlineRaw, _, _ := unstructured.NestedString(contribution.Object, "status", "validUntil")
+		deadlineRaw, _, _ := unstructured.NestedString(contribution.Object, internalDNSStatusField, "validUntil")
 		deadline, _ := time.Parse(time.RFC3339Nano, deadlineRaw)
-		if authorized && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, "Published") && unstructuredConditionCurrent(contribution, "Published") && deadline.After(r.now()) && attachment.Eligible && attachment.ObservationError == nil {
-			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, "Published", "Private name is published"
+		if authorized && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && deadline.After(r.now()) && attachment.Eligible && attachment.ObservationError == nil {
+			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
 		}
 	}
 	if attachment.ObservationError != nil {

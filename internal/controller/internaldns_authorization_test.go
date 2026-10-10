@@ -20,7 +20,7 @@ import (
 )
 
 func TestFindContributionGrantRequiresCurrentScopedAuthority(t *testing.T) {
-	registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, "web")
+	registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
 	registration.SetUID("registration-uid")
 	registration.SetGeneration(2)
 	for _, tc := range []struct {
@@ -30,14 +30,14 @@ func TestFindContributionGrantRequiresCurrentScopedAuthority(t *testing.T) {
 		found bool
 	}{
 		{name: "active matching grant", found: true},
-		{name: "different principal", path: []string{"spec", "principal", "subject"}, value: "other"},
-		{name: "different source cluster", path: []string{"spec", "principal", "clusterUID"}, value: "other"},
-		{name: "different registration lifetime", path: []string{"spec", "registrationRef", "uid"}, value: "other"},
-		{name: "stale registration generation", path: []string{"spec", "registrationRef", "generation"}, value: int64(1)},
-		{name: "different name scope", path: []string{"spec", "nameScopes"}, value: []any{"other"}},
-		{name: "missing record type", path: []string{"spec", "recordTypes"}, value: []any{"A"}},
-		{name: "inactive grant", path: []string{"status", "conditions"}, value: []any{map[string]any{"type": "Active", "status": "False", "observedGeneration": int64(1)}}},
-		{name: "stale active condition", path: []string{"status", "conditions"}, value: []any{map[string]any{"type": "Active", "status": "True", "observedGeneration": int64(0)}}},
+		{name: "different principal", path: []string{internalDNSSpecField, internalDNSPrincipalField, internalDNSSubjectField}, value: internalDNSTestForeignValue},
+		{name: "different source cluster", path: []string{internalDNSSpecField, internalDNSPrincipalField, internalDNSClusterUIDField}, value: internalDNSTestForeignValue},
+		{name: "different registration lifetime", path: []string{internalDNSSpecField, internalDNSRegistrationRefField, "uid"}, value: internalDNSTestForeignValue},
+		{name: "stale registration generation", path: []string{internalDNSSpecField, internalDNSRegistrationRefField, "generation"}, value: int64(1)},
+		{name: "different name scope", path: []string{internalDNSSpecField, internalDNSNameScopesField}, value: []any{internalDNSTestForeignValue}},
+		{name: "missing record type", path: []string{internalDNSSpecField, internalDNSRecordTypesField}, value: []any{"A"}},
+		{name: "inactive grant", path: []string{internalDNSStatusField, internalDNSConditionsField}, value: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionActive, internalDNSStatusField: string(metav1.ConditionFalse), internalDNSObservedGenerationField: int64(1)}}},
+		{name: "stale active condition", path: []string{internalDNSStatusField, internalDNSConditionsField}, value: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionActive, internalDNSStatusField: string(metav1.ConditionTrue), internalDNSObservedGenerationField: int64(0)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := runtime.NewScheme()
@@ -46,13 +46,13 @@ func TestFindContributionGrantRequiresCurrentScopedAuthority(t *testing.T) {
 			grant := newDNSObject(dnsGrantGVK, internalDNSTestNamespace, "trusted-grant")
 			grant.SetUID("grant-uid")
 			grant.SetGeneration(1)
-			grant.Object["spec"] = map[string]any{"registrationRef": objectReference(registration), "principal": map[string]any{"clusterUID": "project-api", "subject": "compute"}, "nameScopes": []any{"web"}, "recordTypes": []any{"A", "AAAA"}}
-			grant.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Active", "status": "True", "observedGeneration": int64(1)}}}
+			grant.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: objectReference(registration), internalDNSPrincipalField: map[string]any{internalDNSClusterUIDField: internalDNSTestSourceAPIUID, internalDNSSubjectField: internalDNSTestSubject}, internalDNSNameScopesField: []any{internalDNSTestInstanceName}, internalDNSRecordTypesField: []any{"A", "AAAA"}}
+			grant.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionActive, internalDNSStatusField: string(metav1.ConditionTrue), internalDNSObservedGenerationField: int64(1)}}}
 			if len(tc.path) > 0 {
 				require.NoError(t, unstructured.SetNestedField(grant.Object, tc.value, tc.path...))
 			}
 			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(grant).Build()
-			got, err := findContributionGrant(context.Background(), cl, internalDNSTestNamespace, registration, "project-api", "compute", "web")
+			got, err := findContributionGrant(context.Background(), cl, internalDNSTestNamespace, registration, internalDNSTestSourceAPIUID, internalDNSTestSubject, internalDNSTestInstanceName)
 			require.NoError(t, err)
 			require.Equal(t, tc.found, got != nil)
 		})
@@ -63,7 +63,7 @@ func TestRefreshObservationCannotExtendSourceDeadline(t *testing.T) {
 	now := time.Date(2026, 10, 9, 20, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
 	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
-	c := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "web")
+	c := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
 	c.SetUID("contribution")
 	c.SetGeneration(1)
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(c).WithStatusSubresource(c).Build()
@@ -74,10 +74,10 @@ func TestRefreshObservationCannotExtendSourceDeadline(t *testing.T) {
 		require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(c), c))
 		_, err := r.refreshObservation(context.Background(), cl, c, 3, true, deadline)
 		require.NoError(t, err)
-		eligible, _, _ := unstructured.NestedBool(c.Object, "status", "eligible")
+		eligible, _, _ := unstructured.NestedBool(c.Object, internalDNSStatusField, "eligible")
 		require.Equal(t, step < 25*time.Second, eligible)
 		if eligible {
-			raw, _, _ := unstructured.NestedString(c.Object, "status", "validUntil")
+			raw, _, _ := unstructured.NestedString(c.Object, internalDNSStatusField, "validUntil")
 			got, err := time.Parse(time.RFC3339Nano, raw)
 			require.NoError(t, err)
 			require.True(t, got.Equal(deadline))
@@ -100,7 +100,7 @@ func TestPublisherWaitsForIssuerAndNeverMutatesGrants(t *testing.T) {
 		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
 	}
-	contextObject := resolverContextObject("context", "project-a", "vpc-a", true)
+	contextObject := resolverContextObject("context", "project-a", internalDNSTestVPCUID, true)
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(contextObject).WithStatusSubresource(newDNSObject(dnsRegistrationGVK, "", ""), newDNSObject(dnsContributionGVK, "", "")).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 		obj.SetUID(types.UID(obj.GetName() + "-uid"))
 		obj.SetGeneration(1)
@@ -121,12 +121,12 @@ func TestPublisherWaitsForIssuerAndNeverMutatesGrants(t *testing.T) {
 		},
 	})
 	now := time.Now().UTC().Truncate(time.Second)
-	r := &InternalDNSPublisherReconciler{PrincipalSubject: "compute", Now: func() time.Time { return now }}
-	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: internalDNSTestNamespace, UID: "instance-uid"}}
-	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: "Instance", Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
+	r := &InternalDNSPublisherReconciler{PrincipalSubject: internalDNSTestSubject, Now: func() time.Time { return now }}
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestNamespace, UID: internalDNSTestInstanceUID}}
+	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
 	access := InternalDNSProjectAccess{Reader: guard, Writer: guard}
-	identity := InternalDNSProjectIdentity{ProjectUID: "project-a", SourceClusterUID: "project-api"}
-	attachment := instanceDNSAttachment{VPCUID: "vpc-a", Eligible: true, ValidUntil: now.Add(40 * time.Second), RecordSets: []any{map[string]any{"recordType": "A", "records": []any{map[string]any{"name": "", "ttl": int64(30), "a": map[string]any{"content": "10.0.0.8"}}}}}}
+	identity := InternalDNSProjectIdentity{ProjectUID: "project-a", SourceClusterUID: internalDNSTestSourceAPIUID}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, ValidUntil: now.Add(40 * time.Second), RecordSets: []any{map[string]any{"recordType": "A", "records": []any{map[string]any{"name": "", "ttl": int64(30), "a": map[string]any{"content": "10.0.0.8"}}}}}}
 	ctx := context.Background()
 	for range 2 {
 		ready, err := r.reconcileAttachment(ctx, access, identity, internalDNSTestNamespace, instance, owner, attachment, "record")
@@ -135,18 +135,18 @@ func TestPublisherWaitsForIssuerAndNeverMutatesGrants(t *testing.T) {
 	}
 	registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, "record")
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(registration), registration))
-	name, _, _ := unstructured.NestedString(registration.Object, "spec", "name")
+	name, _, _ := unstructured.NestedString(registration.Object, internalDNSSpecField, "name")
 	require.Equal(t, allocatedInstanceDNSName(instance), name)
 	grant := newDNSObject(dnsGrantGVK, internalDNSTestNamespace, "issuer-grant")
-	grant.Object["spec"] = map[string]any{"registrationRef": objectReference(registration), "principal": map[string]any{"clusterUID": "project-api", "subject": "compute"}, "nameScopes": []any{name}, "recordTypes": []any{"A", "AAAA"}}
-	grant.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Active", "status": "True", "observedGeneration": int64(1)}}, "activeWriterEpoch": int64(3), "observedGrantGeneration": int64(1), "observedRegistrationGeneration": int64(1)}
+	grant.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: objectReference(registration), internalDNSPrincipalField: map[string]any{internalDNSClusterUIDField: internalDNSTestSourceAPIUID, internalDNSSubjectField: internalDNSTestSubject}, internalDNSNameScopesField: []any{name}, internalDNSRecordTypesField: []any{"A", "AAAA"}}
+	grant.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionActive, internalDNSStatusField: string(metav1.ConditionTrue), internalDNSObservedGenerationField: int64(1)}}, "activeWriterEpoch": int64(3), "observedGrantGeneration": int64(1), "observedRegistrationGeneration": int64(1)}
 	require.NoError(t, cl.Create(ctx, grant))
 	ready, err := r.reconcileAttachment(ctx, access, identity, internalDNSTestNamespace, instance, owner, attachment, "record")
 	require.NoError(t, err)
 	require.False(t, ready)
 	contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(contribution), contribution))
-	contribution.Object["status"] = map[string]any{"writerEpoch": int64(3)}
+	contribution.Object[internalDNSStatusField] = map[string]any{internalDNSWriterEpochField: int64(3)}
 	require.NoError(t, cl.Status().Update(ctx, contribution))
 	ready, err = r.reconcileAttachment(ctx, access, identity, internalDNSTestNamespace, instance, owner, attachment, "record")
 	require.NoError(t, err)

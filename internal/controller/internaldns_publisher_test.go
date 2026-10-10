@@ -21,9 +21,16 @@ import (
 )
 
 const (
-	internalDNSTestNamespace    = "dns-test"
-	internalDNSTestInstanceName = "api"
-	internalDNSTestInstanceUID  = "dns-instance-uid"
+	internalDNSTestNamespace            = "dns-test"
+	internalDNSTestInstanceName         = "api"
+	internalDNSTestInstanceUID          = "dns-instance-uid"
+	internalDNSTestEdgeUID              = "dns-edge-instance"
+	internalDNSTestForeignValue         = "dns-unauthorized"
+	internalDNSTestSubject              = "system:serviceaccount:dns-test:publisher"
+	internalDNSTestObservationNamespace = "dns-observation-project"
+	internalDNSTestNetworkName          = "dns-application"
+	internalDNSTestVPCUID               = "dns-test-vpc"
+	internalDNSTestSourceAPIUID         = "dns-project-api"
 )
 
 func TestInstanceDNSAttachmentsMapsTenancyAndAddressFamilies(t *testing.T) {
@@ -77,18 +84,18 @@ func TestFindResolverContextRequiresProjectAndVPCUID(t *testing.T) {
 	s := runtime.NewScheme()
 	s.AddKnownTypeWithName(dnsResolverContextGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(dnsResolverContextGVK.GroupVersion().WithKind("DNSResolverContextList"), &unstructured.UnstructuredList{})
-	wrong := resolverContextObject("wrong", "other-project", "vpc-a", true)
-	right := resolverContextObject("right", "project-a", "vpc-a", true)
+	wrong := resolverContextObject("wrong", "other-project", internalDNSTestVPCUID, true)
+	right := resolverContextObject("right", "project-a", internalDNSTestVPCUID, true)
 	wrongVPC := resolverContextObject("wrong-vpc", "project-a", "vpc-b", true)
-	pending := resolverContextObject("pending", "project-a", "vpc-a", false)
+	pending := resolverContextObject("pending", "project-a", internalDNSTestVPCUID, false)
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(wrong, wrongVPC, pending, right).Build()
 
-	got, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
+	got, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", internalDNSTestVPCUID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "right", got.GetName())
 
-	got, err = findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-b", "vpc-a")
+	got, err = findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-b", internalDNSTestVPCUID)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -97,11 +104,11 @@ func TestFindResolverContextRejectsAmbiguityAndIgnoresTerminatingBinding(t *test
 	s := runtime.NewScheme()
 	s.AddKnownTypeWithName(dnsResolverContextGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(dnsResolverContextGVK.GroupVersion().WithKind("DNSResolverContextList"), &unstructured.UnstructuredList{})
-	first := resolverContextObject("first", "project-a", "vpc-a", true)
-	second := resolverContextObject("second", "project-a", "vpc-a", true)
+	first := resolverContextObject("first", "project-a", internalDNSTestVPCUID, true)
+	second := resolverContextObject("second", "project-a", internalDNSTestVPCUID, true)
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(first, second).Build()
 
-	_, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
+	_, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", internalDNSTestVPCUID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "multiple ready")
 
@@ -109,7 +116,7 @@ func TestFindResolverContextRejectsAmbiguityAndIgnoresTerminatingBinding(t *test
 	second.SetDeletionTimestamp(&now)
 	second.SetFinalizers([]string{"test.example/finalizer"})
 	cl = fake.NewClientBuilder().WithScheme(s).WithObjects(first, second).Build()
-	got, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", "vpc-a")
+	got, err := findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-a", internalDNSTestVPCUID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "first", got.GetName())
@@ -123,10 +130,10 @@ func resolverContextObject(name, projectUID, vpcUID string, accepted bool) *unst
 	obj := newDNSObject(dnsResolverContextGVK, internalDNSTestNamespace, name)
 	obj.SetUID(types.UID(name + "-uid"))
 	obj.SetGeneration(1)
-	obj.Object["spec"] = map[string]any{"consumerID": projectUID + "/" + vpcUID}
+	obj.Object[internalDNSSpecField] = map[string]any{"consumerID": projectUID + "/" + vpcUID}
 	obj.Object[internalDNSStatusField] = map[string]any{
-		"conditions":       []any{map[string]any{"type": "Accepted", internalDNSStatusField: status, "observedGeneration": int64(1)}, map[string]any{"type": "Ready", internalDNSStatusField: status, "observedGeneration": int64(1)}},
-		"managedNamespace": map[string]any{"suffix": "datum.internal", "dnsZoneRef": map[string]any{internalDNSNameField: "zone", internalDNSUIDField: "zone-uid"}},
+		internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: "Accepted", internalDNSStatusField: status, internalDNSObservedGenerationField: int64(1)}, map[string]any{internalDNSConditionTypeField: "Ready", internalDNSStatusField: status, internalDNSObservedGenerationField: int64(1)}},
+		"managedNamespace":         map[string]any{"suffix": "datum.internal", "dnsZoneRef": map[string]any{internalDNSNameField: "zone", internalDNSUIDField: "zone-uid"}},
 	}
 	return obj
 }
@@ -139,13 +146,13 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	contribution.SetUID("contribution-uid")
 	contribution.SetGeneration(3)
 	contribution.SetResourceVersion("1")
-	contribution.Object["spec"] = map[string]any{"recordSets": []any{}}
+	contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRecordSetsField: []any{}}
 	contribution.Object[internalDNSStatusField] = map[string]any{
-		"writerEpoch":       int64(7),
-		"sequence":          int64(11),
-		"eligible":          false,
-		"publishedRevision": int64(44),
-		"conditions":        []any{map[string]any{"type": "Published", internalDNSStatusField: string(metav1.ConditionTrue)}},
+		internalDNSWriterEpochField: int64(7),
+		"sequence":                  int64(11),
+		"eligible":                  false,
+		"publishedRevision":         int64(44),
+		internalDNSConditionsField:  []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(contribution).WithStatusSubresource(contribution).Build()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
@@ -163,7 +170,7 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), &got))
 	sequence, _, _ := unstructured.NestedInt64(got.Object, internalDNSStatusField, "sequence")
 	published, _, _ := unstructured.NestedInt64(got.Object, internalDNSStatusField, "publishedRevision")
-	conditions, _, _ := unstructured.NestedSlice(got.Object, internalDNSStatusField, "conditions")
+	conditions, _, _ := unstructured.NestedSlice(got.Object, internalDNSStatusField, internalDNSConditionsField)
 	assert.Equal(t, int64(12), sequence)
 	assert.Equal(t, int64(44), published)
 	assert.Len(t, conditions, 1)
@@ -175,7 +182,7 @@ func TestEnsureDNSObjectRefusesForeignCollision(t *testing.T) {
 	s.AddKnownTypeWithName(dnsRegistrationGVK.GroupVersion().WithKind("DNSRegistrationList"), &unstructured.UnstructuredList{})
 	foreign := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, "instance-collision")
 	foreign.SetUID("foreign")
-	foreign.Object["spec"] = map[string]any{internalDNSNameField: "someone-else"}
+	foreign.Object[internalDNSSpecField] = map[string]any{internalDNSNameField: "someone-else"}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(foreign).Build()
 	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: internalDNSTestInstanceName, UID: internalDNSTestInstanceUID}
 

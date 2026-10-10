@@ -439,9 +439,9 @@ func TestInstanceProjector_SpecCopied(t *testing.T) {
 }
 
 func TestInstanceProjectorPreservesProjectDNSStatus(t *testing.T) {
-	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: "edge-instance"})
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
 	upstream.Status.DNS = []computev1alpha.InstanceDNSStatus{{NetworkUID: "untrusted-edge-status"}}
-	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: "edge-instance"}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{NetworkUID: "project-network", Hostnames: []string{"web.datum.internal"}}}}}
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{NetworkUID: "project-network", Hostnames: []string{"web.datum.internal"}}}}}
 	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
 	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
 	_, err := r.Reconcile(context.Background(), projectorRequest())
