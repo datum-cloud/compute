@@ -1,17 +1,16 @@
 /**
  * Shown on the Workloads page in place of the CLI empty-state when the
  * project doesn't (yet) have an Active `compute` ServiceEntitlement — see
- * `lib/api.ts`'s `useComputeEntitlement`/`useRequestComputeAccess`. The
+ * `lib/api.ts`'s `useComputeEntitlement`/`useEnableCompute`. The
  * "Enable Compute" button creates the same ServiceEntitlement object that
- * `datumctl compute deploy`'s "Would you like to request access?" prompt
- * does, so a request made here shows up identically to one made via the CLI.
+ * `datumctl compute deploy` creates on first use.
  *
  * The `compact` variant is the same states and wording, sized for the
  * project home page's Workloads column.
  */
 import { Banner } from './cli-section';
 import { ColumnEmpty } from '../cards/home-column-parts';
-import { useRequestComputeAccess, type EntitlementPhase } from '../lib/api';
+import { useEnableCompute, type EntitlementPhase } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { toast } from '@datum-cloud/datum-ui/toast';
@@ -19,7 +18,7 @@ import { ClockIcon, ShieldAlertIcon, XCircleIcon } from 'lucide-react';
 
 type BannerState = 'NotRequested' | 'PendingApproval' | 'Rejected';
 
-const COPY: Record<BannerState, { title: string; description: string; icon: React.ReactNode; cta: string }> = {
+const COPY: Record<BannerState, { title: string; description: string; icon: React.ReactNode; cta?: string }> = {
   NotRequested: {
     title: 'This project does not have Compute enabled',
     description: 'You need to enable Compute to create Workloads in this project.',
@@ -27,17 +26,14 @@ const COPY: Record<BannerState, { title: string; description: string; icon: Reac
     cta: 'Enable Compute',
   },
   PendingApproval: {
-    title: 'Your request is pending',
-    description:
-      'Thanks for requesting access to Compute. We will be in touch shortly with a response.',
+    title: 'Enabling Compute',
+    description: 'Compute is being enabled for this project. This usually takes a moment.',
     icon: <Icon icon={ClockIcon} size={32} className="text-primary shrink-0" />,
-    cta: 'Enable Compute',
   },
   Rejected: {
-    title: 'Compute access was declined',
-    description: 'The request to enable Compute for this project was declined. You can request access again.',
+    title: 'Compute could not be enabled',
+    description: 'Run datumctl compute access request --renew to retry, or contact support.',
     icon: <Icon icon={XCircleIcon} size={32} className="text-destructive shrink-0" />,
-    cta: 'Request access again',
   },
 };
 
@@ -63,18 +59,18 @@ export function ComputeEnablementBanner({
   phase: EntitlementPhase | null;
   compact?: boolean;
 }) {
-  const { mutate, isPending } = useRequestComputeAccess(projectId);
+  const { mutate, isPending } = useEnableCompute(projectId);
   const state = bannerState(phase);
   const copy = COPY[state];
 
   const handleClick = () => {
     mutate(undefined, {
-      onSuccess: () => toast.success('Requested Compute access for this project'),
-      onError: () => toast.error('Failed to request Compute access'),
+      onSuccess: () => toast.success('Enabling Compute for this project'),
+      onError: () => toast.error('Failed to enable Compute'),
     });
   };
 
-  const action = state !== 'PendingApproval' && (
+  const action = state === 'NotRequested' && (
     <Button
       loading={isPending}
       disabled={isPending}

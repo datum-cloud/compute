@@ -12,9 +12,8 @@ import (
 
 // TestComputeServiceResolvesFromPublishedManifest checks the gate's lookup
 // against the Service manifest compute publishes. If the name drifts from the
-// manifest, every gated command fails. If the manifest loses its enablement
-// policy, the gate treats compute as self-service and submits access requests
-// without asking.
+// manifest, every gated command fails. Keep the explicit self-service policy
+// in sync with the service we publish.
 func TestComputeServiceResolvesFromPublishedManifest(t *testing.T) {
 	raw, err := os.ReadFile("../../../../config/components/service-catalog/service.yaml")
 	if err != nil {
@@ -33,8 +32,11 @@ func TestComputeServiceResolvesFromPublishedManifest(t *testing.T) {
 	if info.ObjectName != "compute" {
 		t.Errorf("ObjectName = %q, want %q", info.ObjectName, "compute")
 	}
-	if info.EnablementMode != servicesv1alpha1.EnablementModeGatedByProvider {
-		t.Errorf("EnablementMode = %q, want %q", info.EnablementMode, servicesv1alpha1.EnablementModeGatedByProvider)
+	if svc.Spec.EnablementPolicy == nil || svc.Spec.EnablementPolicy.Mode != servicesv1alpha1.EnablementModeSelfService {
+		t.Fatalf("published Compute service must explicitly enable self-service")
+	}
+	if info.EnablementMode != servicesv1alpha1.EnablementModeSelfService {
+		t.Errorf("EnablementMode = %q, want %q", info.EnablementMode, servicesv1alpha1.EnablementModeSelfService)
 	}
 }
 
