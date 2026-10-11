@@ -101,6 +101,7 @@ func TestPublisherWaitsForIssuerAndNeverMutatesGrants(t *testing.T) {
 		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
 	}
 	contextObject := resolverContextObject("context", "project-a", internalDNSTestVPCUID, true)
+	require.NoError(t, unstructured.SetNestedField(contextObject.Object, "private.example.net", internalDNSStatusField, "managedNamespace", "suffix"))
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(contextObject).WithStatusSubresource(newDNSObject(dnsRegistrationGVK, "", ""), newDNSObject(dnsContributionGVK, "", "")).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 		obj.SetUID(types.UID(obj.GetName() + "-uid"))
 		obj.SetGeneration(1)

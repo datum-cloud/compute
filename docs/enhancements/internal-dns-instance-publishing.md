@@ -1,7 +1,9 @@
 # Internal DNS instance publishing
 
-Compute publishes private instance names in each attached VPC's `datum.internal`
-zone. Users attach a workload to a network; they do not select a DNS zone. The
+Compute publishes private instance names in the zone allocated for each attached
+VPC. Network services selects `datum.internal` as the default domain and requests
+the zone from DNS. Compute reads the allocated suffix. Users attach a workload
+to a network; they do not select a DNS zone. The
 assigned label combines the Instance name with its immutable lifetime identity.
 For example, an instance can receive `web-01-43ce24f81d265cdf.datum.internal`.
 Each VPC uses an independent DNS context, including when zone names overlap.

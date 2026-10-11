@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -39,6 +40,7 @@ const (
 	internalDNSStatusField             = "status"
 	internalDNSReasonField             = "reason"
 	internalDNSUIDField                = "uid"
+	internalDNSZoneRefField            = "dnsZoneRef"
 	internalDNSGroup                   = "dns.networking.miloapis.com"
 	internalDNSVersion                 = "v1alpha1"
 	internalDNSInstanceUID             = "internal-dns.compute.datumapis.com/instance-uid"
@@ -50,7 +52,6 @@ const (
 	internalDNSPendingWait             = 10 * time.Second
 	internalDNSAPITimeout              = 10 * time.Second
 	defaultDNSConcurrency              = 4
-	defaultInternalDNSDomain           = "datum.internal"
 	internalDNSConditionsField         = "conditions"
 	internalDNSObservedGenerationField = "observedGeneration"
 	internalDNSWriterEpochField        = "writerEpoch"
@@ -191,7 +192,7 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		resourceName := internalDNSResourceName(projectInstance.UID, attachment.VPCUID)
 		desired[resourceName] = struct{}{}
 		ready, err := r.reconcileAttachment(ctx, access, identity, projectNamespace, &projectInstance, owner, attachment, resourceName)
-		publication, statusErr := r.publicationStatus(ctx, access.Reader, projectNamespace, &projectInstance, attachment, resourceName, ready, err)
+		publication, statusErr := r.publicationStatus(ctx, access.Reader, identity, projectNamespace, &projectInstance, attachment, resourceName, ready, err)
 		publicationStatus = append(publicationStatus, publication)
 		if statusErr != nil {
 			publicationErr = errors.Join(publicationErr, statusErr)
@@ -312,13 +313,9 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	if managed == nil {
 		return false, nil
 	}
-	suffix, _, _ := unstructured.NestedString(managed.Object, internalDNSStatusField, "managedNamespace", "suffix")
-	if strings.TrimSuffix(strings.ToLower(suffix), ".") != defaultInternalDNSDomain {
-		return false, fmt.Errorf("DNS context %q must allocate the default domain %q", managed.GetName(), defaultInternalDNSDomain)
-	}
-	zoneRef, _, _ := unstructured.NestedMap(managed.Object, internalDNSStatusField, "managedNamespace", "dnsZoneRef")
-	if stringValue(zoneRef, internalDNSNameField) == "" || stringValue(zoneRef, internalDNSUIDField) == "" {
-		return false, nil
+	_, zoneRef, err := allocatedDNSNamespace(managed)
+	if err != nil {
+		return false, err
 	}
 
 	labels := map[string]string{
@@ -336,7 +333,7 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	}
 
 	registrationSpec := map[string]any{
-		"dnsZoneRef":                zoneRef,
+		internalDNSZoneRefField:     zoneRef,
 		internalDNSNameField:        ownerName,
 		internalDNSRecordTypesField: []any{"A", internalDNSRecordTypeAAAA},
 		"publicationPolicy":         "EligibleContributions",
@@ -440,7 +437,7 @@ func findResolverContext(ctx context.Context, reader client.Reader, namespace st
 			continue
 		}
 		consumerID, _, _ := unstructured.NestedString(item.Object, internalDNSSpecField, "consumerID")
-		if consumerID != string(projectUID)+"/"+string(vpcUID) || !unstructuredConditionCurrent(item, "Accepted") || !unstructuredConditionCurrent(item, "Ready") {
+		if consumerID != string(projectUID)+"/"+string(vpcUID) || !unstructuredConditionCurrent(item, "Ready") {
 			continue
 		}
 		if match != nil {
@@ -449,6 +446,16 @@ func findResolverContext(ctx context.Context, reader client.Reader, namespace st
 		match = item.DeepCopy()
 	}
 	return match, nil
+}
+
+func allocatedDNSNamespace(resolver *unstructured.Unstructured) (string, map[string]any, error) {
+	suffix, _, _ := unstructured.NestedString(resolver.Object, internalDNSStatusField, "managedNamespace", "suffix")
+	suffix = strings.TrimSuffix(strings.ToLower(suffix), ".")
+	zoneRef, _, _ := unstructured.NestedMap(resolver.Object, internalDNSStatusField, "managedNamespace", internalDNSZoneRefField)
+	if len(validation.IsDNS1123Subdomain(suffix)) > 0 || stringValue(zoneRef, internalDNSNameField) == "" || stringValue(zoneRef, internalDNSUIDField) == "" {
+		return "", nil, fmt.Errorf("DNS context %q has no valid allocated namespace", resolver.GetName())
+	}
+	return suffix, zoneRef, nil
 }
 
 func unstructuredConditionCurrent(obj *unstructured.Unstructured, conditionType string) bool {

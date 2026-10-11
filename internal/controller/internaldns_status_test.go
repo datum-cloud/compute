@@ -21,16 +21,27 @@ func TestPublicationStatusRequiresCurrentUnexpiredPublication(t *testing.T) {
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, UID: internalDNSTestInstanceUID, Generation: 2}}
 	for _, tc := range []struct {
 		name                           string
+		domain                         string
+		foreignZone                    bool
 		deadline                       time.Time
 		current, authorized, wantReady bool
 	}{
 		{name: "published", deadline: now.Add(time.Minute), current: true, authorized: true, wantReady: true},
+		{name: "custom domain", domain: "private.example.net", deadline: now.Add(time.Minute), current: true, authorized: true, wantReady: true},
+		{name: "different zone lifetime", foreignZone: true, deadline: now.Add(time.Minute), current: true, authorized: true},
 		{name: "expired", deadline: now.Add(-time.Second), current: true, authorized: true},
 		{name: "stale generation", deadline: now.Add(time.Minute), authorized: true},
 		{name: "revoked grant", deadline: now.Add(time.Minute), current: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.domain == "" {
+				tc.domain = "datum.internal"
+			}
 			s := runtime.NewScheme()
+			s.AddKnownTypeWithName(dnsResolverContextGVK, &unstructured.Unstructured{})
+			s.AddKnownTypeWithName(dnsResolverContextGVK.GroupVersion().WithKind("DNSResolverContextList"), &unstructured.UnstructuredList{})
+			resolver := resolverContextObject("context", "project-a", internalDNSTestVPCUID, true)
+			require.NoError(t, unstructured.SetNestedField(resolver.Object, tc.domain, internalDNSStatusField, "managedNamespace", "suffix"))
 			s.AddKnownTypeWithName(dnsRegistrationGVK, &unstructured.Unstructured{})
 			s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
 			registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
@@ -42,13 +53,22 @@ func TestPublicationStatusRequiresCurrentUnexpiredPublication(t *testing.T) {
 				observed = 2
 			}
 			conditions := []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue), internalDNSObservedGenerationField: observed}}
-			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": allocatedInstanceDNSName(instance) + ".datum.internal.", internalDNSConditionsField: conditions}
+			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": allocatedInstanceDNSName(instance) + "." + tc.domain + ".", internalDNSConditionsField: conditions}
+			zoneUID := "zone-uid"
+			if tc.foreignZone {
+				zoneUID = internalDNSTestForeignValue
+			}
+			registration.Object[internalDNSSpecField] = map[string]any{internalDNSZoneRefField: map[string]any{internalDNSNameField: "zone", internalDNSUIDField: zoneUID}}
 			contribution.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: conditions, "validUntil": tc.deadline.Format(time.RFC3339Nano)}
-			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(registration, contribution).Build()
+			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, registration, contribution).Build()
 			r := &InternalDNSPublisherReconciler{Now: func() time.Time { return now }}
-			got, err := r.publicationStatus(context.Background(), cl, internalDNSTestNamespace, instance, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true}, internalDNSTestInstanceName, tc.authorized, nil)
+			got, err := r.publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true}, internalDNSTestInstanceName, tc.authorized, nil)
 			require.NoError(t, err)
-			require.Equal(t, []string{allocatedInstanceDNSName(instance) + ".datum.internal"}, got.Hostnames)
+			if tc.foreignZone {
+				require.Empty(t, got.Hostnames)
+			} else {
+				require.Equal(t, []string{allocatedInstanceDNSName(instance) + "." + tc.domain}, got.Hostnames)
+			}
 			require.Equal(t, tc.wantReady, got.Conditions[0].Status == metav1.ConditionTrue)
 		})
 	}

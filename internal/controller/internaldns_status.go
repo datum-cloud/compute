@@ -31,7 +31,7 @@ func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, r
 	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]], r.now())
 }
 
-func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, authorized bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
+func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, authorized bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
 	result := computev1alpha.InstanceDNSStatus{Network: attachment.Network, NetworkUID: string(attachment.VPCUID)}
 	for _, previous := range instance.Status.DNS {
 		if previous.NetworkUID == result.NetworkUID {
@@ -47,7 +47,11 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 	if err == nil {
 		canonical, _, _ := unstructured.NestedString(registration.Object, internalDNSStatusField, "canonicalFQDN")
 		canonical = strings.TrimSuffix(strings.ToLower(canonical), ".")
-		if canonical == allocatedInstanceDNSName(instance)+"."+defaultInternalDNSDomain {
+		matches, err := publicationMatchesContext(ctx, reader, identity, namespace, instance, attachment, registration, canonical)
+		if err != nil {
+			return result, err
+		}
+		if matches {
 			result.Hostnames = []string{canonical}
 		}
 		contribution := newDNSObject(dnsContributionGVK, namespace, resourceName)
@@ -70,6 +74,19 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 	}
 	apimeta.SetStatusCondition(&result.Conditions, condition)
 	return result, nil
+}
+
+func publicationMatchesContext(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, registration *unstructured.Unstructured, canonical string) (bool, error) {
+	resolver, err := findResolverContext(ctx, reader, namespace, identity.ProjectUID, attachment.VPCUID)
+	if err != nil || resolver == nil {
+		return false, err
+	}
+	suffix, zone, err := allocatedDNSNamespace(resolver)
+	if err != nil {
+		return false, err
+	}
+	registeredZone, _, _ := unstructured.NestedMap(registration.Object, internalDNSSpecField, internalDNSZoneRefField)
+	return canonical == allocatedInstanceDNSName(instance)+"."+suffix && stringValue(registeredZone, internalDNSNameField) == stringValue(zone, internalDNSNameField) && stringValue(registeredZone, internalDNSUIDField) == stringValue(zone, internalDNSUIDField), nil
 }
 
 func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {
