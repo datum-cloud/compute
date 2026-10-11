@@ -57,9 +57,10 @@ overlapping addresses or private zone names.
 
 ## Proposal
 
-Every VPC with managed DNS enabled uses `datum.internal` as its default domain. DNS
-manages a separate zone within each VPC's context. Compute reserves an instance
-name in that zone. The name remains stable for that instance's
+Network services selects `datum.internal` as the default domain for VPCs with
+managed DNS enabled and requests the zone from DNS. DNS manages a separate zone
+within each VPC's context. Compute reads the allocated suffix and reserves an
+instance name in that zone. The name remains stable for that instance's
 lifetime; a replacement instance receives a distinct identity. Additional names
 can follow the VPC's DNS naming policy without adding a zone choice to each
 Compute resource.
