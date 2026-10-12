@@ -100,9 +100,9 @@ the instance identity name, which can still support diagnostics.
 
 - Cross-VPC publication: pin project, VPC, context, and registration lifetimes;
   authorize publishers through scoped grants.
-- Stale addresses: require fresh network eligibility observations and preserve
-  their deadlines through replication, retry, and restart.
-- Incorrect guest resolution: apply only verified, unexpired settings and reject
+- Stale addresses: publish explicit eligibility changes and retain the last
+  reported state when observations are unavailable.
+- Incorrect guest resolution: apply verified settings and reject
   unsupported combinations of managed contexts across interfaces.
 
 ## Design Details
@@ -369,19 +369,18 @@ per-instance metric labels. Set latency and withdrawal targets before release.
 
 Project APIs and scoped authorization support publication. Network services,
 Galactic, and the DNS fleet support resolver access. API outages stop fresh
-observations; installed records and access remain subject to their original
-deadlines. DNS errors requeue independently of Compute runtime readiness.
+observations; installed records and access persist until explicit withdrawal. DNS errors requeue independently of Compute runtime readiness.
 
 ### Scalability
 
 Budget registrations per instance/VPC and contributions per interface. Measure
-project API renewal load, controller queues, and grant provisioning at fleet
-scale. Spread renewals with jitter and bound concurrent project operations.
+project API publication load, controller queues, and grant provisioning at fleet
+scale. Spread observation polls with jitter and bound concurrent project operations.
 
 ### Troubleshooting
 
 Trace the Instance and VPC lifetimes through context, registration, grant, and
-contribution status. Check current network eligibility and deadlines, then
+contribution status. Check network eligibility, observation health, and version fences, then
 compare inherited settings with guest configuration and query results.
 
 ## Implementation History
@@ -390,7 +389,7 @@ compare inherited settings with guest configuration and query results.
 
 ## Drawbacks
 
-Publication adds project API traffic and freshness coordination. DNS outages can
+Publication adds project API traffic and endpoint observation coordination. DNS outages can
 interrupt applications that depend on assigned names despite a healthy runtime.
 
 ## Alternatives
