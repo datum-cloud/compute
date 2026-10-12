@@ -86,7 +86,12 @@ func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 
 	var networkInterface networkingv1alpha.NetworkInterface
 	if err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: claim.Status.NetworkInterfaceRef.Name}, &networkInterface); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// The claim status can arrive before the interface appears in this
+			// controller's cache. There is no interface watch to wake this Pod.
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		return ctrl.Result{}, err
 	}
 	// Cloud currently names the prepared NAD after the VPCAttachment. Keep
 	// the readiness check tied to the provider-published attachment ref;

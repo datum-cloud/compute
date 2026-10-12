@@ -56,6 +56,22 @@ func TestPodNetworkAttachmentReconcile(t *testing.T) {
 	if err := cl.Update(ctx, claim); err != nil {
 		t.Fatal(err)
 	}
+	// NSO can publish the interface reference before the interface is visible
+	// in Compute's cache. The Pod must keep polling because it has no interface
+	// watch, and must remain gated until the provider artifact is available.
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatal("missing interface did not requeue")
+	}
+	if err := cl.Get(ctx, key, pod); err != nil {
+		t.Fatal(err)
+	}
+	if !hasPodNetworkGate(pod) || pod.Annotations[MultusDefaultNetworkAnnotation] != "" {
+		t.Fatal("Pod changed before its network interface was visible")
+	}
 	interfaceObject := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: "pod-nic"}}
 	interfaceObject.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{APIGroup: "cloud.datumapis.com", Kind: "VPCAttachment", Name: "pod-nic"}
 	if err := cl.Create(ctx, interfaceObject); err != nil {
