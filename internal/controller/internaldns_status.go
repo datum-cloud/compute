@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"time"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,13 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-func (r *InternalDNSPublisherReconciler) now() time.Time {
-	if r.Now != nil {
-		return r.Now()
-	}
-	return time.Now()
-}
 
 func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, reader client.Reader, namespace string, instance *computev1alpha.Instance, nic computev1alpha.InstanceNetworkInterface) (InternalDNSObservedInterface, error) {
 	if r.ObserveInterface != nil {
