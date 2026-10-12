@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: compute-system
+resources:
+  - ../cell
+components:
+  - ../../components/pod-network-attachment
+  - ../../components/csi-webhook-cert
