@@ -60,7 +60,7 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 	} else if !attachment.Eligible {
 		condition.Reason, condition.Message = "AddressUnavailable", "No currently eligible private host address is available"
 	}
-	if reconcileErr != nil {
+	if reconcileErr != nil && attachment.ObservationError == nil {
 		condition.Reason, condition.Message = "PublicationFailed", "DNS publication could not be reconciled"
 	}
 	apimeta.SetStatusCondition(&result.Conditions, condition)

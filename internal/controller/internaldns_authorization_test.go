@@ -79,10 +79,19 @@ func TestObservationPersistsUntilExplicitWithdrawal(t *testing.T) {
 
 func TestUnavailableObservationLeavesPublishedStateUntouched(t *testing.T) {
 	s := runtime.NewScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
+	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
+	published := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
+	published.SetUID("contribution")
+	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{"recordType": "A", "records": []any{map[string]any{"name": "api", "a": map[string]any{"content": "10.0.0.8"}}}}}}
+	published.Object[internalDNSStatusField] = map[string]any{"writerEpoch": int64(3), "sequence": int64(9), "eligible": true}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).WithStatusSubresource(published).Build()
 	r := &InternalDNSPublisherReconciler{}
-	_, err := r.reconcileAttachment(context.Background(), InternalDNSProjectAccess{Reader: cl, Writer: cl}, InternalDNSProjectIdentity{}, internalDNSTestNamespace, nil, metav1.OwnerReference{}, instanceDNSAttachment{ObservationError: context.DeadlineExceeded}, "record")
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: internalDNSTestInstanceUID}}
+	_, err := r.reconcileAttachment(context.Background(), InternalDNSProjectAccess{Reader: cl, Writer: cl}, InternalDNSProjectIdentity{}, internalDNSTestNamespace, instance, metav1.OwnerReference{}, instanceDNSAttachment{ObservationError: context.DeadlineExceeded}, "record")
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+	current := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(published), current))
+	require.Equal(t, published.Object, current.Object)
 }
 
 func TestAllocatedInstanceDNSName(t *testing.T) {
