@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -37,23 +36,17 @@ metricsServer:
   bindAddress: "0"
 internalDNS:
   principalSubject: system:serviceaccount:compute-system:compute-manager
-  leaseDuration: 60s
   observationSources:
     - location: dfw
-      clusterUID: edge-uid
       kubeconfigPath: /etc/compute/edge.kubeconfig
   projects:
     - name: project-a
       projectUID: project-uid
-      sourceClusterUID: source-uid
 `)
-	if cfg.InternalDNS.LeaseDuration.Duration != 60*time.Second {
-		t.Fatalf("leaseDuration = %s, want 60s", cfg.InternalDNS.LeaseDuration.Duration)
-	}
 	copy := cfg.DeepCopy()
 	copy.InternalDNS.Projects[0].ProjectUID = "changed"
-	copy.InternalDNS.ObservationSources[0].ClusterUID = "changed"
-	if cfg.InternalDNS.ObservationSources[0].ClusterUID != "edge-uid" {
+	copy.InternalDNS.ObservationSources[0].Location = "changed"
+	if cfg.InternalDNS.ObservationSources[0].Location != "dfw" {
 		t.Fatal("WorkloadOperator DeepCopy aliases observation identities")
 	}
 	if cfg.InternalDNS.Projects[0].ProjectUID != "project-uid" {

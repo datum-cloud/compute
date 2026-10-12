@@ -62,7 +62,7 @@ func TestInstanceDNSAttachmentsMapsTenancyAndAddressFamilies(t *testing.T) {
 
 	eligible := true
 	observation := func(context.Context, client.Reader, string, *computev1alpha.Instance, computev1alpha.InstanceNetworkInterface) (InternalDNSObservedInterface, error) {
-		return InternalDNSObservedInterface{Addresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: "10.0.0.8/32"}, {Address: "2001:db8::8/128"}, {Address: "2001:db8:1::/96"}}, Eligible: eligible, ValidUntil: time.Now().Add(time.Minute)}, nil
+		return InternalDNSObservedInterface{Addresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: "10.0.0.8/32"}, {Address: "2001:db8::8/128"}, {Address: "2001:db8:1::/96"}}, Eligible: eligible}, nil
 	}
 	attachments, err := instanceDNSAttachments(context.Background(), cl, internalDNSTestNamespace, instance, observation)
 	require.NoError(t, err)
@@ -156,12 +156,12 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(contribution).WithStatusSubresource(contribution).Build()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	r := &InternalDNSPublisherReconciler{LeaseDuration: 60 * time.Second, Now: func() time.Time { return now }}
+	r := &InternalDNSPublisherReconciler{Now: func() time.Time { return now }}
 
 	var live unstructured.Unstructured
 	live.SetGroupVersionKind(dnsContributionGVK)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), &live))
-	ready, err := r.refreshObservation(context.Background(), cl, &live, 7, true, now.Add(40*time.Second))
+	ready, err := r.refreshObservation(context.Background(), cl, &live, 7, true)
 	require.NoError(t, err)
 	assert.True(t, ready)
 

@@ -5,55 +5,38 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const dnsNodeObservationLifetime = 45 * time.Second
-
-// InternalDNSObservedInterface is a live interface observation bounded by node liveness.
-// The original deadline is preserved when publishing the contribution.
+// InternalDNSObservedInterface reports confirmed interface eligibility.
 type InternalDNSObservedInterface struct {
-	Addresses  []networkingv1alpha.NetworkInterfaceAddress
-	Eligible   bool
-	ValidUntil time.Time
+	Addresses []networkingv1alpha.NetworkInterfaceAddress
+	Eligible  bool
 }
 
 type InternalDNSObserveFunc func(context.Context, client.Reader, string, *computev1alpha.Instance, computev1alpha.InstanceNetworkInterface) (InternalDNSObservedInterface, error)
 
-// InternalDNSObservationSource is an authenticated, uncached edge API reader.
-// ClusterUID pins the kube-system namespace UID of the selected edge cluster.
+// InternalDNSObservationSource supplies an authenticated edge API reader.
 type InternalDNSObservationSource struct {
-	Reader     client.Reader
-	ClusterUID types.UID
+	Reader client.Reader
 }
 
-// ObserveInternalDNSInterface validates source identity, interface programming,
-// runtime placement, and a current node heartbeat. Projected positive status is
-// never sufficient to renew a private address.
-func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, namespace string, instance *computev1alpha.Instance, nic computev1alpha.InstanceNetworkInterface, source InternalDNSObservationSource, now time.Time) (InternalDNSObservedInterface, error) {
+// ObserveInternalDNSInterface checks interface programming and runtime health.
+func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, namespace string, instance *computev1alpha.Instance, nic computev1alpha.InstanceNetworkInterface, source InternalDNSObservationSource) (InternalDNSObservedInterface, error) {
 	var result InternalDNSObservedInterface
 	if nic.Network.Namespace != "" && nic.Network.Namespace != namespace {
 		return result, fmt.Errorf("interface observations require a network in the Instance namespace")
 	}
-	if source.Reader == nil || source.ClusterUID == "" {
+	if source.Reader == nil {
 		return result, fmt.Errorf("no authenticated network observation source is configured for location %q", instance.Labels[computev1alpha.LocationLabel])
 	}
-	var cluster, projectNS corev1.Namespace
-	if err := source.Reader.Get(ctx, client.ObjectKey{Name: "kube-system"}, &cluster); err != nil {
-		return result, err
-	}
-	if cluster.UID != source.ClusterUID {
-		return result, fmt.Errorf("network observation source cluster lifetime does not match")
-	}
+	var projectNS corev1.Namespace
 	if err := project.Get(ctx, client.ObjectKey{Name: namespace}, &projectNS); err != nil {
 		return result, err
 	}
@@ -86,13 +69,12 @@ func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, nam
 	if err != nil || nodeName == "" {
 		return result, err
 	}
-	deadline, err := observeNodeDeadline(ctx, source.Reader, nodeName, now)
-	if err != nil || deadline.IsZero() {
+	healthy, err := observeNodeHealth(ctx, source.Reader, nodeName)
+	if err != nil || !healthy {
 		return result, err
 	}
 	result.Addresses = append([]networkingv1alpha.NetworkInterfaceAddress(nil), iface.Spec.Addresses...)
 	result.Eligible = true
-	result.ValidUntil = deadline
 	return result, nil
 }
 
@@ -172,33 +154,24 @@ func observeRuntimeNode(ctx context.Context, reader client.Reader, current *comp
 	return nodeName, nil
 }
 
-func observeNodeDeadline(ctx context.Context, reader client.Reader, nodeName string, now time.Time) (time.Time, error) {
+func observeNodeHealth(ctx context.Context, reader client.Reader, nodeName string) (bool, error) {
 	var node corev1.Node
 	if err := reader.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
-		return time.Time{}, err
+		return false, err
 	}
-	ready := false
-	for _, c := range node.Status.Conditions {
-		ready = ready || (c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue)
+	if node.UID == "" || !node.DeletionTimestamp.IsZero() {
+		return false, nil
 	}
-	if !ready || node.UID == "" || !node.DeletionTimestamp.IsZero() {
-		return time.Time{}, nil
+	for _, condition := range node.Status.Conditions {
+		if condition.Type != corev1.NodeReady {
+			continue
+		}
+		switch condition.Status {
+		case corev1.ConditionTrue:
+			return true, nil
+		case corev1.ConditionFalse:
+			return false, nil
+		}
 	}
-	var lease coordinationv1.Lease
-	if err := reader.Get(ctx, client.ObjectKey{Namespace: "kube-node-lease", Name: node.Name}, &lease); err != nil {
-		return time.Time{}, err
-	}
-	owned := false
-	for _, owner := range lease.OwnerReferences {
-		owned = owned || (owner.Kind == "Node" && owner.UID == node.UID && owner.Name == node.Name)
-	}
-	if !owned || lease.Spec.RenewTime == nil || !lease.DeletionTimestamp.IsZero() {
-		return time.Time{}, nil
-	}
-	renewed := lease.Spec.RenewTime.Time
-	deadline := renewed.Add(dnsNodeObservationLifetime)
-	if renewed.After(now.Add(5*time.Second)) || !deadline.After(now) {
-		return time.Time{}, nil
-	}
-	return deadline, nil
+	return false, fmt.Errorf("node %q health is unknown", nodeName)
 }

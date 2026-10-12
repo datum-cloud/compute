@@ -64,12 +64,7 @@ type InternalDNSConfig struct {
 	// is not an authentication substitute.
 	PrincipalSubject string `json:"principalSubject,omitempty"`
 
-	// LeaseDuration bounds how long an instance address can remain published
-	// without a fresh observation. DNS admission currently permits at most 90s.
-	LeaseDuration metav1.Duration `json:"leaseDuration,omitempty"`
-
-	// Projects pins each Milo project name to the trusted project and source API
-	// UIDs configured by the DNS control plane.
+	// Projects identifies the consumer project APIs.
 	Projects []InternalDNSProjectIdentity `json:"projects,omitempty"`
 
 	// ObservationSources selects authenticated edge APIs for live interface and
@@ -79,16 +74,14 @@ type InternalDNSConfig struct {
 
 // +k8s:deepcopy-gen=true
 type InternalDNSObservationSource struct {
-	Location       string    `json:"location"`
-	ClusterUID     types.UID `json:"clusterUID"`
-	KubeconfigPath string    `json:"kubeconfigPath"`
+	Location       string `json:"location"`
+	KubeconfigPath string `json:"kubeconfigPath"`
 }
 
 // +k8s:deepcopy-gen=true
 type InternalDNSProjectIdentity struct {
-	Name             string    `json:"name"`
-	ProjectUID       types.UID `json:"projectUID"`
-	SourceClusterUID string    `json:"sourceClusterUID"`
+	Name       string    `json:"name"`
+	ProjectUID types.UID `json:"projectUID"`
 }
 
 func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {

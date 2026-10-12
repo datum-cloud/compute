@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.4
+    controller-gen.kubebuilder.io/version: v0.19.0
     discovery.miloapis.com/parent-contexts: Project
   name: instances.compute.datumapis.com
 spec:
@@ -1263,7 +1263,7 @@ spec:
               dns:
                 description: |-
                   DNS reports assigned private names and publication readiness per network.
-                  Resolver authorization and publisher leases are managed by platform services.
+                  Resolver access and record eligibility are managed by platform services.
                 items:
                   description: InstanceDNSStatus describes private name publication
                     within one network.

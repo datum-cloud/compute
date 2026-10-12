@@ -814,7 +814,7 @@ type InstanceStatus struct {
 	NetworkInterfaces []InstanceNetworkInterfaceStatus `json:"networkInterfaces,omitempty"`
 
 	// DNS reports assigned private names and publication readiness per network.
-	// Resolver authorization and publisher leases are managed by platform services.
+	// Resolver access and record eligibility are managed by platform services.
 	// +kubebuilder:validation:Optional
 	// +listType=map
 	// +listMapKey=networkUID

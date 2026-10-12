@@ -28,7 +28,7 @@ func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, r
 	if r.ObserveInterface != nil {
 		return r.ObserveInterface(ctx, reader, namespace, instance, nic)
 	}
-	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]], r.now())
+	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]])
 }
 
 func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, authorized bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
@@ -58,13 +58,12 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
 			return result, err
 		}
-		deadlineRaw, _, _ := unstructured.NestedString(contribution.Object, internalDNSStatusField, "validUntil")
-		deadline, _ := time.Parse(time.RFC3339Nano, deadlineRaw)
-		if authorized && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && deadline.After(r.now()) && attachment.Eligible && attachment.ObservationError == nil {
+		if authorized && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
 		}
 	}
 	if attachment.ObservationError != nil {
+		condition.Status = metav1.ConditionUnknown
 		condition.Reason, condition.Message = "NetworkObservationUnavailable", "No current network observation is available"
 	} else if !attachment.Eligible {
 		condition.Reason, condition.Message = "AddressUnavailable", "No currently eligible private host address is available"

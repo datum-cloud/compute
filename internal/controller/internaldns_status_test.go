@@ -23,15 +23,13 @@ func TestPublicationStatusRequiresCurrentUnexpiredPublication(t *testing.T) {
 		name                           string
 		domain                         string
 		foreignZone                    bool
-		deadline                       time.Time
 		current, authorized, wantReady bool
 	}{
-		{name: "published", deadline: now.Add(time.Minute), current: true, authorized: true, wantReady: true},
-		{name: "custom domain", domain: "private.example.net", deadline: now.Add(time.Minute), current: true, authorized: true, wantReady: true},
-		{name: "different zone lifetime", foreignZone: true, deadline: now.Add(time.Minute), current: true, authorized: true},
-		{name: "expired", deadline: now.Add(-time.Second), current: true, authorized: true},
-		{name: "stale generation", deadline: now.Add(time.Minute), authorized: true},
-		{name: "revoked grant", deadline: now.Add(time.Minute), current: true},
+		{name: "published", current: true, authorized: true, wantReady: true},
+		{name: "custom domain", domain: "private.example.net", current: true, authorized: true, wantReady: true},
+		{name: "different zone lifetime", foreignZone: true, current: true, authorized: true},
+		{name: "stale generation", authorized: true},
+		{name: "revoked grant", current: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.domain == "" {
@@ -59,7 +57,7 @@ func TestPublicationStatusRequiresCurrentUnexpiredPublication(t *testing.T) {
 				zoneUID = internalDNSTestForeignValue
 			}
 			registration.Object[internalDNSSpecField] = map[string]any{internalDNSZoneRefField: map[string]any{internalDNSNameField: "zone", internalDNSUIDField: zoneUID}}
-			contribution.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: conditions, "validUntil": tc.deadline.Format(time.RFC3339Nano)}
+			contribution.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: conditions}
 			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, registration, contribution).Build()
 			r := &InternalDNSPublisherReconciler{Now: func() time.Time { return now }}
 			got, err := r.publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true}, internalDNSTestInstanceName, tc.authorized, nil)

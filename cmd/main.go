@@ -467,7 +467,6 @@ func main() {
 		dnsPublisher := &controller.InternalDNSPublisherReconciler{
 			ProjectIdentities:  identities,
 			PrincipalSubject:   serverConfig.InternalDNS.PrincipalSubject,
-			LeaseDuration:      serverConfig.InternalDNS.LeaseDuration.Duration,
 			ObservationSources: observers,
 		}
 		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
@@ -979,8 +978,8 @@ func internalDNSObservationSources(
 ) (map[string]controller.InternalDNSObservationSource, error) {
 	sources := make(map[string]controller.InternalDNSObservationSource, len(cfg.ObservationSources))
 	for i, source := range cfg.ObservationSources {
-		if source.Location == "" || source.ClusterUID == "" || source.KubeconfigPath == "" {
-			return nil, fmt.Errorf("internalDNS.observationSources[%d] requires location, clusterUID, and kubeconfigPath", i)
+		if source.Location == "" || source.KubeconfigPath == "" {
+			return nil, fmt.Errorf("internalDNS.observationSources[%d] requires location and kubeconfigPath", i)
 		}
 		if _, exists := sources[source.Location]; exists {
 			return nil, fmt.Errorf("duplicate internal DNS observation location %q", source.Location)
@@ -994,7 +993,7 @@ func internalDNSObservationSources(
 		if err != nil {
 			return nil, fmt.Errorf("create network observation client for %q: %w", source.Location, err)
 		}
-		sources[source.Location] = controller.InternalDNSObservationSource{Reader: reader, ClusterUID: source.ClusterUID}
+		sources[source.Location] = controller.InternalDNSObservationSource{Reader: reader}
 	}
 	if len(sources) == 0 {
 		return nil, errors.New("internalDNS.observationSources must contain at least one authenticated edge API")
@@ -1010,24 +1009,20 @@ func internalDNSProjectIdentities(
 	}
 	identities := make(map[string]controller.InternalDNSProjectIdentity, len(cfg.Projects))
 	for i, project := range cfg.Projects {
-		if project.Name == "" || project.ProjectUID == "" || project.SourceClusterUID == "" {
-			return nil, fmt.Errorf("internalDNS.projects[%d] requires name, projectUID, and sourceClusterUID", i)
+		if project.Name == "" || project.ProjectUID == "" {
+			return nil, fmt.Errorf("internalDNS.projects[%d] requires name and projectUID", i)
 		}
 		if _, duplicate := identities[project.Name]; duplicate {
 			return nil, fmt.Errorf("internalDNS.projects contains duplicate project %q", project.Name)
 		}
 		identities[project.Name] = controller.InternalDNSProjectIdentity{
-			ProjectName:      project.Name,
-			ProjectUID:       project.ProjectUID,
-			SourceClusterUID: project.SourceClusterUID,
+			ProjectName: project.Name,
+			ProjectUID:  project.ProjectUID,
 		}
 	}
 	if len(identities) == 0 {
 		return nil, errors.New("internalDNS.projects must contain at least one project")
 	}
-	if cfg.LeaseDuration.Duration > 90*time.Second {
-		return nil, fmt.Errorf(
-			"internalDNS.leaseDuration %s exceeds the DNS platform maximum 90s", cfg.LeaseDuration.Duration)
-	}
+
 	return identities, nil
 }

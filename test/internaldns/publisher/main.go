@@ -32,19 +32,15 @@ import (
 )
 
 func main() {
-	var kubeconfig, namespace, projectUID, sourceUID, subject, gates string
-	var edgeKubeconfig, edgeUID, location string
-	var lease time.Duration
+	var kubeconfig, namespace, projectUID, subject, gates string
+	var edgeKubeconfig, location string
 	flags := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	flags.StringVar(&kubeconfig, "kubeconfig", "", "Disposable project kubeconfig")
 	flags.StringVar(&namespace, "namespace", "project-e2e", "Project namespace")
 	flags.StringVar(&projectUID, "project-uid", "project-e2e-uid", "DNS project UID")
-	flags.StringVar(&sourceUID, "source-uid", "internal-dns-e2e-cluster", "DNS trusted source UID")
 	flags.StringVar(&subject, "subject", "system:serviceaccount:compute-system:dns-publisher", "Authenticated writer")
 	flags.StringVar(&gates, "feature-gates", "", "Compute feature gates")
-	flags.DurationVar(&lease, "lease", 60*time.Second, "Contribution lease")
 	flags.StringVar(&edgeKubeconfig, "edge-kubeconfig", "", "Read-only edge observation kubeconfig")
-	flags.StringVar(&edgeUID, "edge-uid", "", "Edge kube-system namespace UID")
 	flags.StringVar(&location, "location", "", "Instance location label")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		panic(err)
@@ -57,8 +53,8 @@ func main() {
 		fmt.Println("InternalDNSPublishing is disabled; no DNS client or controller started")
 		return
 	}
-	if edgeKubeconfig == "" || edgeUID == "" || location == "" {
-		panic("edge-kubeconfig, edge-uid, and location are required")
+	if edgeKubeconfig == "" || location == "" {
+		panic("edge-kubeconfig and location are required")
 	}
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
@@ -95,10 +91,10 @@ func main() {
 		panic(err)
 	}
 	publisher := &controller.InternalDNSPublisherReconciler{
-		ObservationSources: map[string]controller.InternalDNSObservationSource{location: {Reader: edge, ClusterUID: types.UID(edgeUID)}},
+		ObservationSources: map[string]controller.InternalDNSObservationSource{location: {Reader: edge}},
 		ProjectIdentities: map[string]controller.InternalDNSProjectIdentity{"single": {
-			ProjectName: "single", ProjectUID: types.UID(projectUID), SourceClusterUID: sourceUID,
-		}}, PrincipalSubject: subject, LeaseDuration: lease,
+			ProjectName: "single", ProjectUID: types.UID(projectUID),
+		}}, PrincipalSubject: subject,
 	}
 	if err := publisher.SetupWithManager(mgr); err != nil {
 		panic(err)

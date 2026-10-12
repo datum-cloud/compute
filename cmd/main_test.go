@@ -28,24 +28,12 @@ import (
 func TestInternalDNSProjectIdentities(t *testing.T) {
 	identities, err := internalDNSProjectIdentities(config.InternalDNSConfig{
 		PrincipalSubject: "system:serviceaccount:compute-system:compute-manager",
-		LeaseDuration:    metav1.Duration{Duration: 60 * time.Second},
-		Projects: []config.InternalDNSProjectIdentity{{
-			Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid",
-		}},
+		Projects:         []config.InternalDNSProjectIdentity{{Name: "project-a", ProjectUID: "project-uid"}},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "source-uid", identities["project-a"].SourceClusterUID)
-
+	assert.EqualValues(t, "project-uid", identities["project-a"].ProjectUID)
 	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{PrincipalSubject: "subject"})
-	assert.Error(t, err, "enabled publishing requires at least one pinned project identity")
-	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{
-		PrincipalSubject: "subject",
-		LeaseDuration:    metav1.Duration{Duration: 91 * time.Second},
-		Projects: []config.InternalDNSProjectIdentity{{
-			Name: "project-a", ProjectUID: "project-uid", SourceClusterUID: "source-uid",
-		}},
-	})
-	assert.Error(t, err, "a producer must not configure a lease DNS admission rejects")
+	assert.Error(t, err)
 }
 
 func TestInternalDNSObservationSourcesRequireExplicitCredentials(t *testing.T) {
@@ -68,12 +56,12 @@ contexts:
       cluster: edge
 current-context: edge
 `), 0o600))
-	source := config.InternalDNSObservationSource{Location: "dfw", ClusterUID: "edge-uid", KubeconfigPath: path}
+	source := config.InternalDNSObservationSource{Location: "dfw", KubeconfigPath: path}
 	sources, err := internalDNSObservationSources(config.InternalDNSConfig{
 		ObservationSources: []config.InternalDNSObservationSource{source},
 	})
 	require.NoError(t, err)
-	require.EqualValues(t, "edge-uid", sources["dfw"].ClusterUID)
+	require.NotNil(t, sources["dfw"].Reader)
 	_, err = internalDNSObservationSources(config.InternalDNSConfig{
 		ObservationSources: []config.InternalDNSObservationSource{source, source},
 	})
