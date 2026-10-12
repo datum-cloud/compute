@@ -444,6 +444,10 @@ spec:
             status: "True"
             reason: "Ready"
 
+    catch:
+    - script:
+        content: sh diagnose-referenced-data.sh
+
   - name: assert-instance-ready-on-pop-ord
     description: |
       Assert the ord cell did the same. Under the retired delivery path this is
@@ -470,6 +474,10 @@ spec:
           (status.conditions[?type == 'ReferencedDataReady'] | [0]):
             status: "True"
             reason: "Ready"
+
+    catch:
+    - script:
+        content: sh diagnose-referenced-data.sh
 
   - name: assert-referenced-data-gate-cleared-on-both-cells
     description: |
