@@ -132,7 +132,7 @@ func resolverContextObject(name, projectUID, vpcUID string, accepted bool) *unst
 	obj.SetGeneration(1)
 	obj.Object[internalDNSSpecField] = map[string]any{"consumerID": projectUID + "/" + vpcUID}
 	obj.Object[internalDNSStatusField] = map[string]any{
-		internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: "Ready", internalDNSStatusField: status, internalDNSObservedGenerationField: int64(1)}},
+		internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionReady, internalDNSStatusField: status, internalDNSObservedGenerationField: int64(1)}},
 		"managedNamespace":         map[string]any{"suffix": "datum.internal", internalDNSZoneRefField: map[string]any{internalDNSNameField: "zone", internalDNSUIDField: "zone-uid"}},
 	}
 	return obj

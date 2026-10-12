@@ -60,6 +60,7 @@ const (
 	internalDNSNameScopesField         = "nameScopes"
 	internalDNSClusterUIDField         = "clusterUID"
 	internalDNSConditionActive         = "Active"
+	internalDNSConditionReady          = "Ready"
 	internalDNSConditionPublished      = "Published"
 	internalDNSPrincipalField          = "principal"
 	internalDNSConditionTypeField      = "type"
@@ -437,7 +438,7 @@ func findResolverContext(ctx context.Context, reader client.Reader, namespace st
 			continue
 		}
 		consumerID, _, _ := unstructured.NestedString(item.Object, internalDNSSpecField, "consumerID")
-		if consumerID != string(projectUID)+"/"+string(vpcUID) || !unstructuredConditionCurrent(item, "Ready") {
+		if consumerID != string(projectUID)+"/"+string(vpcUID) || !unstructuredConditionCurrent(item, internalDNSConditionReady) {
 			continue
 		}
 		if match != nil {

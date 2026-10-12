@@ -38,7 +38,7 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 			result.Conditions = append([]metav1.Condition(nil), previous.Conditions...)
 		}
 	}
-	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "PendingPublication", Message: "Waiting for DNS publication", ObservedGeneration: instance.Generation}
+	condition := metav1.Condition{Type: internalDNSConditionReady, Status: metav1.ConditionFalse, Reason: "PendingPublication", Message: "Waiting for DNS publication", ObservedGeneration: instance.Generation}
 	registration := newDNSObject(dnsRegistrationGVK, namespace, resourceName)
 	err := reader.Get(ctx, client.ObjectKeyFromObject(registration), registration)
 	if err != nil && !apierrors.IsNotFound(err) {
