@@ -78,9 +78,9 @@ from another instance in that VPC:
 $ cat /etc/resolv.conf
 nameserver fd53::53
 search datum.internal
-$ dig +search +short A web-01-k7m2
+$ dig +search +short A web-01
 10.20.0.10
-$ dig +short AAAA web-01-k7m2.datum.internal.
+$ dig +short AAAA web-01.datum.internal.
 fd20::10
 ```
 
@@ -140,21 +140,21 @@ for these contracts.
 
 ### Names and search domains
 
-Use `<allocated-instance-name>.datum.internal` for instance identity in every
+Use `<instance-name>.datum.internal` for instance identity in every
 VPC and `datum.internal` as the default search domain. The authorized DNS context
 scopes resolution to the attached network. Resource namespaces remain API
 ownership boundaries; namespace, VPC, and project labels are unnecessary in the
 default hostname. Reserve unique names across product publishers within each
 context.
 
-Two VPCs can resolve `web-01-k7m2.datum.internal` to different addresses.
+Two VPCs can resolve `web-01.datum.internal` to different addresses.
 The authorized DNS context selects the zone before lookup and cache access;
 matching domain names do not share records or grant access across VPCs. An
-instance attached to several VPCs uses the same allocated label in each context,
+instance attached to several VPCs uses the same label in each context,
 with only that VPC's addresses in its answers.
 
 For peered networks, support optional qualified aliases such as
-`web-01-k7m2.application.production.datum.internal`, using
+`web-01.application.production.datum.internal`, using
 `<instance-name>.<network-name>.<network-namespace>.datum.internal`. Explicit DNS
 sharing makes the peer's qualified zone available in the local context. Keep
 the local `datum.internal` zone and search domain; do not import a peer's default
@@ -203,27 +203,28 @@ status:
 
 Network services deliver authorization through a separate, access-restricted
 provider contract bound to the project, interface, and VPC lifetimes. That
-contract carries source references, fencing epochs, renewal sequences, and
-expiry deadlines. These fields do not belong in the public interface's spec or
+contract carries source references, fencing epochs, and sequences for explicit
+access changes. These fields do not belong in the public interface's spec or
 status. Public DNS status reports observed configuration; it cannot authorize
 provider actions.
 
 Providers apply current, authorized settings and report `DNSConfigured` only
-after successful application. They reconcile updates and expiry and reject
-stale revisions. Resolver failure must not send private names to a public
+after successful application. They reconcile explicit updates and reject stale revisions. Applied settings
+persist during control plane outages. Resolver failure must not send private names to a public
 resolver. The internal delivery schema and runtime-specific guest configuration
 mechanism require joint review with network services before implementation.
 
 ### Record publication
 
 Compute creates one registration per instance and VPC, using the managed zone
-reported by the matching DNS context. Allocation ties the name to the immutable
-Instance UID; name reuse cannot adopt another instance's registration.
+reported by the matching DNS context. The registration pins the immutable Instance lifetime; the hostname uses the
+instance name. A recreated instance can use the same hostname after the previous
+registration is withdrawn.
 
 A trusted grant issuer authorizes the Compute publisher's authenticated subject
-and source-cluster identity for the registration, record types, and owner name.
+for the registration, record types, and owner name.
 The runtime publisher cannot issue its own `DNSContributionGrant` or authorize
-resolver access. Project authorization and DNS admission enforce both boundaries.
+resolver access. Project RBAC controls resource access; DNS validates references and version fences.
 
 Consumers read assigned names and publication readiness from `Instance.status.dns`:
 
@@ -236,7 +237,7 @@ status:
       # Pin the attached network's lifetime.
       networkUID: 55555555-5555-4555-8555-555555555555
       # Display names allocated by DNS within this network.
-      hostnames: [web-01-k7m2.datum.internal]
+      hostnames: [web-01.datum.internal]
       # Report publication independently of runtime readiness.
       conditions:
         - type: Ready
@@ -261,14 +262,14 @@ spec:
     name: managed-application
     uid: 55555555-5555-4555-8555-555555555555
   # Reserve the allocated instance name within this VPC's managed zone.
-  name: web-01-k7m2
+  name: web-01
   recordTypes: [A, AAAA]
   # Publish addresses only under a current eligible contribution.
   publicationPolicy: EligibleContributions
   ttlSeconds: 30
 status:
   # DNS-owned output used to display the assigned name to consumers.
-  canonicalFQDN: web-01-k7m2.datum.internal
+  canonicalFQDN: web-01.datum.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordContribution
@@ -289,13 +290,13 @@ spec:
   recordSets:
     - recordType: A
       records:
-        - name: web-01-k7m2
+        - name: web-01
           ttl: 30
           a:
             content: 10.20.0.10
     - recordType: AAAA
       records:
-        - name: web-01-k7m2
+        - name: web-01
           ttl: 30
           aaaa:
             content: fd20::10
@@ -307,14 +308,12 @@ status:
   sequence: 18
   eligible: true
   reason: NetworkInterfaceProgrammed
-  # DNS preserves this deadline and withdraws expired contributions locally.
-  validUntil: "2026-10-09T20:01:00Z"
 ```
 
 Compute renews observations from the authoritative project Instance and verified
 interface state. Federation and edge copies retain source lifetime identity;
 their locally assigned UIDs cannot establish publication authority. Status writes
-preserve DNS-owned fields. Retries cannot extend an observation's deadline.
+preserve DNS-owned fields. Observation sequences advance when endpoint state changes.
 
 ### Lifecycle and health
 
@@ -323,9 +322,11 @@ private host addresses. Public addresses and delegated prefixes are excluded.
 Each interface contributes only addresses from its own VPC.
 
 Address release, network deprogramming, or instance deletion triggers a
-higher-sequence ineligible observation and cleanup. Project-side owner references
-and bounded leases cover interrupted cleanup. Serving agents enforce expiry
-during publisher outages; client caches remain bounded by the advertised TTL.
+higher-sequence ineligible observation and cleanup. Project-side owner references support cleanup. Failed API observations and
+unknown runtime health retain published state and report unknown readiness.
+Confirmed unhealthy state or deletion withdraws records explicitly. DNS retains
+last reported eligibility during publisher outages; client caches follow the
+advertised TTL.
 
 Workload service discovery needs a separate registration and explicit application
 eligibility policy. It must withdraw unhealthy endpoints and accept recovery
