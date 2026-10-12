@@ -17,6 +17,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+const testPodNICName = "pod-nic"
+
 func TestPodNetworkAttachmentReconcile(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -28,7 +30,7 @@ func TestPodNetworkAttachmentReconcile(t *testing.T) {
 	}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "tenant", Name: "dns-abc", UID: types.UID("79f1fbc8-2e37-4140-8185-b6c2f9e320dd"),
-		Labels:      map[string]string{PodPrimaryNetworkEnabledLabel: "true"},
+		Labels:      map[string]string{PodPrimaryNetworkEnabledLabel: PodPrimaryNetworkEnabledValue},
 		Annotations: map[string]string{PodPrimaryNetworkAnnotation: "galactic"},
 	}, Spec: corev1.PodSpec{SchedulingGates: []corev1.PodSchedulingGate{{Name: PodNetworkSchedulingGate}}}}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod).Build()
@@ -45,11 +47,11 @@ func TestPodNetworkAttachmentReconcile(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: podNetworkClaimName(pod.UID)}, claim); err != nil {
 		t.Fatal(err)
 	}
-	if claim.Spec.Network.Name != "galactic" || claim.Spec.InterfaceName != "eth0" || !metav1.IsControlledBy(claim, pod) {
+	if claim.Spec.Network.Name != "galactic" || claim.Spec.InterfaceName != defaultInterfaceName || !metav1.IsControlledBy(claim, pod) {
 		t.Fatalf("bad Pod claim: %+v", claim)
 	}
 
-	claim.Status.NetworkInterfaceRef = &networkingv1alpha.LocalNetworkInterfaceRef{Name: "pod-nic"}
+	claim.Status.NetworkInterfaceRef = &networkingv1alpha.LocalNetworkInterfaceRef{Name: testPodNICName}
 	for _, conditionType := range []string{networkingv1alpha.NetworkInterfaceClaimBound, networkingv1alpha.NetworkInterfaceClaimAllocated, networkingv1alpha.NetworkInterfaceClaimPrepared} {
 		claim.Status.Conditions = append(claim.Status.Conditions, metav1.Condition{Type: conditionType, Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()})
 	}
@@ -72,8 +74,8 @@ func TestPodNetworkAttachmentReconcile(t *testing.T) {
 	if !hasPodNetworkGate(pod) || pod.Annotations[MultusDefaultNetworkAnnotation] != "" {
 		t.Fatal("Pod changed before its network interface was visible")
 	}
-	interfaceObject := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: "pod-nic"}}
-	interfaceObject.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{APIGroup: "cloud.datumapis.com", Kind: "VPCAttachment", Name: "pod-nic"}
+	interfaceObject := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: testPodNICName}}
+	interfaceObject.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{APIGroup: "cloud.datumapis.com", Kind: "VPCAttachment", Name: testPodNICName}
 	if err := cl.Create(ctx, interfaceObject); err != nil {
 		t.Fatal(err)
 	}

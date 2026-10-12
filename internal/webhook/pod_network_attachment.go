@@ -26,7 +26,7 @@ func (h *PodNetworkAttachmentHandler) Handle(_ context.Context, req admission.Re
 	if err := h.Decoder.Decode(req, &pod); err != nil {
 		return admission.Errored(400, err)
 	}
-	if pod.Labels[controller.PodPrimaryNetworkEnabledLabel] != "true" {
+	if pod.Labels[controller.PodPrimaryNetworkEnabledLabel] != controller.PodPrimaryNetworkEnabledValue {
 		return admission.Allowed("Pod did not request a primary VPC network")
 	}
 	if pod.Annotations[controller.PodPrimaryNetworkAnnotation] == "" {

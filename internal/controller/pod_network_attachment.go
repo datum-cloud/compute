@@ -22,6 +22,7 @@ import (
 
 const (
 	PodPrimaryNetworkEnabledLabel  = "compute.datumapis.com/primary-network-enabled"
+	PodPrimaryNetworkEnabledValue  = "true"
 	PodPrimaryNetworkAnnotation    = "compute.datumapis.com/primary-network"
 	PodNetworkSchedulingGate       = "compute.datumapis.com/network-prepared"
 	MultusDefaultNetworkAnnotation = "v1.multus-cni.io/default-network"
@@ -43,7 +44,7 @@ func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if pod.Labels[PodPrimaryNetworkEnabledLabel] != "true" || pod.Annotations[PodPrimaryNetworkAnnotation] == "" || !pod.DeletionTimestamp.IsZero() {
+	if pod.Labels[PodPrimaryNetworkEnabledLabel] != PodPrimaryNetworkEnabledValue || pod.Annotations[PodPrimaryNetworkAnnotation] == "" || !pod.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 	if !hasPodNetworkGate(&pod) {
@@ -63,7 +64,7 @@ func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 			ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: claimName},
 			Spec: networkingv1alpha.NetworkInterfaceClaimSpec{
 				Network:        networkingv1alpha.LocalNetworkRef{Name: pod.Annotations[PodPrimaryNetworkAnnotation]},
-				InterfaceName:  "eth0",
+				InterfaceName:  defaultInterfaceName,
 				AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
 			},
 		}
@@ -109,7 +110,7 @@ func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 	// differ. The named NAD is unique to this Pod's UID-backed claim.
 	defaultNetwork := pod.Namespace + "/" + ref.Name
 	if existing := pod.Annotations[MultusDefaultNetworkAnnotation]; existing != "" && existing != defaultNetwork {
-		return ctrl.Result{}, fmt.Errorf("Pod %s already specifies a different Multus default network", pod.Name)
+		return ctrl.Result{}, fmt.Errorf("pod %s already specifies a different Multus default network", pod.Name)
 	}
 	// Persist the annotation while the Pod is still gated, then remove the gate
 	// in a separate API write so the scheduler cannot bind it between steps.

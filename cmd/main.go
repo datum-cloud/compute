@@ -417,7 +417,10 @@ func main() {
 				setupLog.Error(nil, "Pod primary network admission requires a cell webhook server")
 				os.Exit(1)
 			}
-			mgr.GetLocalManager().GetWebhookServer().Register(computewebhook.PodNetworkWebhookPath, computewebhook.NewPodNetworkAttachmentHandler(scheme))
+			mgr.GetLocalManager().GetWebhookServer().Register(
+				computewebhook.PodNetworkWebhookPath,
+				computewebhook.NewPodNetworkAttachmentHandler(scheme),
+			)
 			if err = (&controller.PodNetworkAttachmentReconciler{}).SetupWithManager(mgr.GetLocalManager()); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "PodNetworkAttachment")
 				os.Exit(1)

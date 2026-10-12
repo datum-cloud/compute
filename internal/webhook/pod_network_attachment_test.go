@@ -29,9 +29,9 @@ func TestPodNetworkAdmission(t *testing.T) {
 		patched bool
 	}{
 		{"ordinary", corev1.Pod{}, true, false},
-		{"opted in", corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{controller.PodPrimaryNetworkEnabledLabel: "true"}, Annotations: map[string]string{controller.PodPrimaryNetworkAnnotation: "galactic"}}}, true, true},
-		{"missing network", corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{controller.PodPrimaryNetworkEnabledLabel: "true"}}}, false, false},
-		{"host network", corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{controller.PodPrimaryNetworkEnabledLabel: "true"}, Annotations: map[string]string{controller.PodPrimaryNetworkAnnotation: "galactic"}}, Spec: corev1.PodSpec{HostNetwork: true}}, false, false},
+		{"opted in", corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{controller.PodPrimaryNetworkEnabledLabel: controller.PodPrimaryNetworkEnabledValue}, Annotations: map[string]string{controller.PodPrimaryNetworkAnnotation: "galactic"}}}, true, true},
+		{"missing network", corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{controller.PodPrimaryNetworkEnabledLabel: controller.PodPrimaryNetworkEnabledValue}}}, false, false},
+		{"host network", corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{controller.PodPrimaryNetworkEnabledLabel: controller.PodPrimaryNetworkEnabledValue}, Annotations: map[string]string{controller.PodPrimaryNetworkAnnotation: "galactic"}}, Spec: corev1.PodSpec{HostNetwork: true}}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data, _ := json.Marshal(tc.pod)
