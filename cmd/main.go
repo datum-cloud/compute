@@ -408,6 +408,21 @@ func main() {
 	}
 
 	if enableCellControllers {
+		if features.FeatureGate.Enabled(features.PodNetworkAttachment) {
+			if !features.FeatureGate.Enabled(features.NetworkingIntegration) {
+				setupLog.Error(nil, "Pod network attachment requires NetworkingIntegration")
+				os.Exit(1)
+			}
+			if serverConfig.WebhookServer == nil {
+				setupLog.Error(nil, "Pod primary network admission requires a cell webhook server")
+				os.Exit(1)
+			}
+			mgr.GetLocalManager().GetWebhookServer().Register(computewebhook.PodNetworkWebhookPath, computewebhook.NewPodNetworkAttachmentHandler(scheme))
+			if err = (&controller.PodNetworkAttachmentReconciler{}).SetupWithManager(mgr.GetLocalManager()); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "PodNetworkAttachment")
+				os.Exit(1)
+			}
+		}
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
