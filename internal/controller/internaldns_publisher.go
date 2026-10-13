@@ -46,6 +46,7 @@ const (
 	internalDNSReasonField             = "reason"
 	internalDNSUIDField                = "uid"
 	internalDNSZoneRefField            = "dnsZoneRef"
+	internalDNSConditionAccepted       = "Accepted"
 	internalDNSGroup                   = "dns.networking.miloapis.com"
 	internalDNSVersion                 = "v1alpha1"
 	internalDNSInstanceUID             = "internal-dns.compute.datumapis.com/instance-uid"

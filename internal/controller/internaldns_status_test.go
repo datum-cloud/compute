@@ -24,6 +24,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 		name                           string
 		domain                         string
 		foreignZone                    bool
+		rejectedRegistration           bool
 		current, authorized, wantReady bool
 	}{
 		{name: "published", current: true, authorized: true, wantReady: true},
@@ -31,6 +32,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 		{name: "different zone", foreignZone: true, current: true, authorized: true},
 		{name: "stale generation", authorized: true},
 		{name: "revoked grant", current: true},
+		{name: "rejected registration", current: true, authorized: true, rejectedRegistration: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.domain == "" {
@@ -52,7 +54,12 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 				observed = 2
 			}
 			conditions := []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue), internalDNSObservedGenerationField: observed}}
-			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": allocatedInstanceDNSName(instance) + "." + tc.domain + ".", internalDNSConditionsField: conditions}
+			accepted := metav1.ConditionTrue
+			if tc.rejectedRegistration {
+				accepted = metav1.ConditionFalse
+			}
+			registrationConditions := append(append([]any(nil), conditions...), map[string]any{internalDNSConditionTypeField: internalDNSConditionAccepted, internalDNSStatusField: string(accepted), internalDNSObservedGenerationField: observed})
+			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": allocatedInstanceDNSName(instance) + "." + tc.domain + ".", internalDNSConditionsField: registrationConditions}
 			zoneName := "zone"
 			if tc.foreignZone {
 				zoneName = internalDNSTestForeignValue
