@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -137,43 +136,6 @@ func resolverContextObject(name, projectUID, vpcUID string, accepted bool) *unst
 		"managedNamespace":         map[string]any{"suffix": internalDNSTestDefaultDomain, internalDNSZoneRefField: map[string]any{internalDNSNameField: "zone"}},
 	}
 	return obj
-}
-
-func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.T) {
-	s := runtime.NewScheme()
-	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(dnsContributionGVK.GroupVersion().WithKind("DNSRecordContributionList"), &unstructured.UnstructuredList{})
-	contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "endpoint")
-	contribution.SetUID("contribution-uid")
-	contribution.SetGeneration(3)
-	contribution.SetResourceVersion("1")
-	contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRecordSetsField: []any{}}
-	contribution.Object[internalDNSStatusField] = map[string]any{
-		internalDNSSequenceField:   int64(11),
-		internalDNSEligibleField:   false,
-		"publishedRevision":        int64(44),
-		internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}},
-	}
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(contribution).WithStatusSubresource(contribution).Build()
-	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	r := &InternalDNSPublisherReconciler{Now: func() time.Time { return now }}
-
-	var live unstructured.Unstructured
-	live.SetGroupVersionKind(dnsContributionGVK)
-	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), &live))
-	ready, err := r.refreshObservation(context.Background(), cl, &live, true)
-	require.NoError(t, err)
-	assert.True(t, ready)
-
-	var got unstructured.Unstructured
-	got.SetGroupVersionKind(dnsContributionGVK)
-	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), &got))
-	sequence, _, _ := unstructured.NestedInt64(got.Object, internalDNSStatusField, internalDNSSequenceField)
-	published, _, _ := unstructured.NestedInt64(got.Object, internalDNSStatusField, "publishedRevision")
-	conditions, _, _ := unstructured.NestedSlice(got.Object, internalDNSStatusField, internalDNSConditionsField)
-	assert.Equal(t, int64(12), sequence)
-	assert.Equal(t, int64(44), published)
-	assert.Len(t, conditions, 1)
 }
 
 func TestEnsureDNSObjectRefusesForeignCollision(t *testing.T) {

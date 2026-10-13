@@ -41,10 +41,10 @@ internalDNS:
 ```
 
 Compute selects the network's resolver context and reads its managed zone. It
-reserves a name through `DNSRegistration` and publishes endpoint observations
-through `DNSRecordContribution`. Project RBAC authorizes writes. Object lifetime
-references and observation sequences prevent
-stale publishers from changing replacement resources.
+reserves a name through `DNSRegistration` and publishes addresses and eligibility
+atomically through `DNSRecordContribution`. Project RBAC authorizes writes.
+Object lifetime references and contribution generations prevent stale publishers
+from changing replacement resources.
 
 Only allocated, programmed private host addresses are eligible. Confirmed
 interface withdrawal, stopped runtime, or unhealthy node withdraws addresses.

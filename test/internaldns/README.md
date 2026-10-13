@@ -13,8 +13,8 @@ bin/setup-envtest use 1.31.0 --bin-dir bin -p path
 go test ./internal/controller ./internal/config ./cmd/...
 ```
 
-The tests cover context identity, flat instance names, versioned endpoint observations, live edge observations, source lifetime
-replacement, and project DNS status ownership. They use fixtures and do not
+The tests cover context identity, flat instance names, atomic endpoint publications, live edge observations,
+source lifetime replacement, and DNS-owned publication status. They use fixtures and do not
 qualify guest resolution.
 
 The standalone runner starts the production publisher on an existing project API:
@@ -28,8 +28,8 @@ go build -o /tmp/compute-dns-publisher ./test/internaldns/publisher
   --location dfw
 ```
 
-Provision a resolver context with a `datum.internal` managed zone, the scoped
-project publisher role. Instances must
+Provision a resolver context with a `datum.internal` managed zone and scoped
+project publisher permissions. Instances must
 carry their source lifetime and location labels. Edge namespaces use the project
 namespace UID. The observer requires allocated, programmed interfaces, live
 claims, Instance-owned runtime Pods, and confirmed node health.

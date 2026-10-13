@@ -18,32 +18,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-func TestObservationPersistsUntilExplicitWithdrawal(t *testing.T) {
-	s := runtime.NewScheme()
-	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
-	c := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
-	c.SetUID("contribution")
-	c.SetGeneration(1)
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(c).WithStatusSubresource(c).Build()
-	r := &InternalDNSPublisherReconciler{}
-	for _, eligible := range []bool{true, true, false} {
-		require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(c), c))
-		_, err := r.refreshObservation(context.Background(), cl, c, eligible)
-		require.NoError(t, err)
-		got, _, _ := unstructured.NestedBool(c.Object, internalDNSStatusField, internalDNSEligibleField)
-		require.Equal(t, eligible, got)
-		_, found, _ := unstructured.NestedString(c.Object, internalDNSStatusField, "validUntil")
-		require.False(t, found)
-	}
-}
-
 func TestUnavailableObservationLeavesPublishedStateUntouched(t *testing.T) {
 	s := runtime.NewScheme()
 	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
 	published := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	published.SetUID("contribution")
 	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
-	published.Object[internalDNSStatusField] = map[string]any{internalDNSSequenceField: int64(9), internalDNSEligibleField: true}
+	published.Object[internalDNSSpecField].(map[string]any)[internalDNSEligibleField] = true
+	published.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}}}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).WithStatusSubresource(published).Build()
 	r := &InternalDNSPublisherReconciler{}
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: internalDNSTestInstanceUID}}
@@ -91,10 +73,23 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	require.True(t, ready)
 	contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), contribution))
-	eligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, internalDNSEligibleField)
-	sequence, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSSequenceField)
+	eligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSSpecField, internalDNSEligibleField)
 	require.True(t, eligible)
-	require.Equal(t, int64(1), sequence)
-	_, found, _ := unstructured.NestedFieldNoCopy(contribution.Object, internalDNSSpecField, "grantRef")
-	require.False(t, found)
+	reason, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSReasonField)
+	require.Equal(t, "AddressAllocatedAndProgrammed", reason)
+
+	contribution.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}}}
+	require.NoError(t, cl.Status().Update(context.Background(), contribution))
+	publishedStatus := contribution.Object[internalDNSStatusField]
+	attachment.Eligible = false
+	attachment.RecordSets = []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: "10.0.0.9"}}}}}
+	_, err := reconciler.reconcileAttachment(context.Background(), access, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, owner, attachment, "record")
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), contribution))
+	eligible, _, _ = unstructured.NestedBool(contribution.Object, internalDNSSpecField, internalDNSEligibleField)
+	require.False(t, eligible)
+	recordSets, _, _ := unstructured.NestedSlice(contribution.Object, internalDNSSpecField, internalDNSRecordSetsField)
+	record := recordSets[0].(map[string]any)[internalDNSRecordsField].([]any)[0].(map[string]any)
+	require.Equal(t, "10.0.0.9", record["a"].(map[string]any)[internalDNSContentField])
+	require.Equal(t, publishedStatus, contribution.Object[internalDNSStatusField])
 }

@@ -34,7 +34,6 @@ import (
 )
 
 const (
-	internalDNSSequenceField           = "sequence"
 	internalDNSEligibleField           = "eligible"
 	internalDNSContentField            = "content"
 	internalDNSRecordTypeField         = "recordType"
@@ -322,7 +321,6 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		internalDNSZoneRefField:     zoneRef,
 		internalDNSNameField:        ownerName,
 		internalDNSRecordTypesField: []any{"A", internalDNSRecordTypeAAAA},
-		"publicationPolicy":         "EligibleContributions",
 		"ttlSeconds":                int64(30),
 	}
 	registration, changed, err := ensureDNSObject(ctx, access, dnsRegistrationGVK, namespace, resourceName, labels, owner, registrationSpec)
@@ -334,43 +332,11 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	contributionSpec := map[string]any{
 		internalDNSRegistrationRefField: registrationRef,
 		internalDNSRecordSetsField:      attachment.RecordSets,
+		internalDNSEligibleField:        attachment.Eligible,
+		internalDNSReasonField:          map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[attachment.Eligible],
 	}
-	contribution, changed, err := ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
-	if err != nil || changed {
-		return false, err
-	}
-	return r.refreshObservation(ctx, access.Writer, contribution, attachment.Eligible)
-}
-
-func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context, writer client.Client, contribution *unstructured.Unstructured, eligible bool) (bool, error) {
-	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, internalDNSEligibleField)
-	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSObservedGenerationField)
-	if oldEligible == eligible && observedGeneration == contribution.GetGeneration() {
-		return true, nil
-	}
-	base := contribution.DeepCopy()
-	sequence, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSSequenceField)
-	owned := []struct {
-		path  []string
-		value any
-	}{
-		{[]string{internalDNSStatusField, internalDNSObservedGenerationField}, contribution.GetGeneration()},
-		{[]string{internalDNSStatusField, internalDNSSequenceField}, sequence + 1},
-		{[]string{internalDNSStatusField, internalDNSEligibleField}, eligible},
-		{[]string{internalDNSStatusField, internalDNSReasonField}, map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[eligible]},
-	}
-	for _, field := range owned {
-		if err := unstructured.SetNestedField(contribution.Object, field.value, field.path...); err != nil {
-			return false, err
-		}
-	}
-	// Optimistic locking turns a concurrent DNS status write into a conflict and
-	// retry. The retry reads the live sequence and platform-owned status fields;
-	// it cannot overwrite a publication condition from a stale snapshot.
-	if err := writer.Status().Patch(ctx, contribution, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		return false, fmt.Errorf("refresh DNS contribution observation: %w", err)
-	}
-	return true, nil
+	_, changed, err = ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
+	return err == nil && !changed, err
 }
 
 func findResolverContext(ctx context.Context, reader client.Reader, namespace string, projectUID, vpcUID types.UID) (*unstructured.Unstructured, error) {
