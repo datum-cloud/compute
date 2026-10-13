@@ -429,10 +429,10 @@ func allocatedDNSNamespace(resolver *unstructured.Unstructured) (string, map[str
 	suffix, _, _ := unstructured.NestedString(resolver.Object, internalDNSStatusField, "managedNamespace", "suffix")
 	suffix = strings.TrimSuffix(strings.ToLower(suffix), ".")
 	zoneRef, _, _ := unstructured.NestedMap(resolver.Object, internalDNSStatusField, "managedNamespace", internalDNSZoneRefField)
-	if len(validation.IsDNS1123Subdomain(suffix)) > 0 || stringValue(zoneRef, internalDNSNameField) == "" || stringValue(zoneRef, internalDNSUIDField) == "" {
+	if len(validation.IsDNS1123Subdomain(suffix)) > 0 || stringValue(zoneRef, internalDNSNameField) == "" {
 		return "", nil, fmt.Errorf("DNS context %q has no valid allocated namespace", resolver.GetName())
 	}
-	return suffix, zoneRef, nil
+	return suffix, map[string]any{internalDNSNameField: stringValue(zoneRef, internalDNSNameField)}, nil
 }
 
 func unstructuredConditionCurrent(obj *unstructured.Unstructured, conditionType string) bool {

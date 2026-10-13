@@ -28,7 +28,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 	}{
 		{name: "published", current: true, authorized: true, wantReady: true},
 		{name: "custom domain", domain: "private.example.net", current: true, authorized: true, wantReady: true},
-		{name: "different zone lifetime", foreignZone: true, current: true, authorized: true},
+		{name: "different zone", foreignZone: true, current: true, authorized: true},
 		{name: "stale generation", authorized: true},
 		{name: "revoked grant", current: true},
 	} {
@@ -53,11 +53,11 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			}
 			conditions := []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue), internalDNSObservedGenerationField: observed}}
 			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": allocatedInstanceDNSName(instance) + "." + tc.domain + ".", internalDNSConditionsField: conditions}
-			zoneUID := "zone-uid"
+			zoneName := "zone"
 			if tc.foreignZone {
-				zoneUID = internalDNSTestForeignValue
+				zoneName = internalDNSTestForeignValue
 			}
-			registration.Object[internalDNSSpecField] = map[string]any{internalDNSZoneRefField: map[string]any{internalDNSNameField: "zone", internalDNSUIDField: zoneUID}}
+			registration.Object[internalDNSSpecField] = map[string]any{internalDNSZoneRefField: map[string]any{internalDNSNameField: zoneName}}
 			contribution.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: conditions}
 			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, registration, contribution).Build()
 			r := &InternalDNSPublisherReconciler{Now: func() time.Time { return now }}
