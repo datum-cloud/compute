@@ -234,8 +234,6 @@ status:
     - network:
         name: application
         namespace: production
-      # Pin the attached network's lifetime.
-      networkUID: 55555555-5555-4555-8555-555555555555
       # Display names allocated by DNS within this network.
       hostnames: [web-01.datum.internal]
       # Report publication independently of runtime readiness.
