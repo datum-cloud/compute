@@ -51,7 +51,7 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 		scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 		scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
 	}
-	resolver := resolverContextObject("context", "project-a", internalDNSTestVPCUID, true)
+	resolver := resolverContextObject("context", internalDNSTestProjectUID, internalDNSTestVPCUID, true)
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver).WithStatusSubresource(newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			obj.SetUID(types.UID(obj.GetName() + "-uid"))
@@ -67,7 +67,7 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	ready := false
 	for range 3 {
 		var err error
-		ready, err = reconciler.reconcileAttachment(context.Background(), access, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, owner, attachment, "record")
+		ready, err = reconciler.reconcileAttachment(context.Background(), access, InternalDNSProjectIdentity{ProjectUID: internalDNSTestProjectUID}, internalDNSTestNamespace, instance, owner, attachment, "record")
 		require.NoError(t, err)
 	}
 	require.True(t, ready)
@@ -83,7 +83,7 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	publishedStatus := contribution.Object[internalDNSStatusField]
 	attachment.Eligible = false
 	attachment.RecordSets = []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: "10.0.0.9"}}}}}
-	_, err := reconciler.reconcileAttachment(context.Background(), access, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, owner, attachment, "record")
+	_, err := reconciler.reconcileAttachment(context.Background(), access, InternalDNSProjectIdentity{ProjectUID: internalDNSTestProjectUID}, internalDNSTestNamespace, instance, owner, attachment, "record")
 	require.NoError(t, err)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), contribution))
 	eligible, _, _ = unstructured.NestedBool(contribution.Object, internalDNSSpecField, internalDNSEligibleField)

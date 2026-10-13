@@ -41,7 +41,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			s := runtime.NewScheme()
 			s.AddKnownTypeWithName(dnsResolverContextGVK, &unstructured.Unstructured{})
 			s.AddKnownTypeWithName(dnsResolverContextGVK.GroupVersion().WithKind("DNSResolverContextList"), &unstructured.UnstructuredList{})
-			resolver := resolverContextObject("context", "project-a", internalDNSTestVPCUID, true)
+			resolver := resolverContextObject("context", internalDNSTestProjectUID, internalDNSTestVPCUID, true)
 			require.NoError(t, unstructured.SetNestedField(resolver.Object, tc.domain, internalDNSStatusField, "managedNamespace", "suffix"))
 			s.AddKnownTypeWithName(dnsRegistrationGVK, &unstructured.Unstructured{})
 			s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
@@ -68,7 +68,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			contribution.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: conditions}
 			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, registration, contribution).Build()
 			r := &InternalDNSPublisherReconciler{Now: func() time.Time { return now }}
-			got, err := r.publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true}, internalDNSTestInstanceName, tc.observed, nil)
+			got, err := r.publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{ProjectUID: internalDNSTestProjectUID}, internalDNSTestNamespace, instance, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true}, internalDNSTestInstanceName, tc.observed, nil)
 			require.NoError(t, err)
 			if tc.foreignZone {
 				require.Empty(t, got.Hostnames)

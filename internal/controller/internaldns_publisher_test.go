@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	internalDNSTestProjectUID           = "project-a"
 	internalDNSTestNamespace            = "dns-test"
 	internalDNSTestDefaultDomain        = "datum.internal"
 	internalDNSTestInstanceName         = "api"
