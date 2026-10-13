@@ -59,25 +59,18 @@ const (
 	defaultDNSConcurrency              = 4
 	internalDNSConditionsField         = "conditions"
 	internalDNSObservedGenerationField = "observedGeneration"
-	internalDNSWriterEpochField        = "writerEpoch"
 	internalDNSRegistrationRefField    = "registrationRef"
 	internalDNSRecordTypesField        = "recordTypes"
-	internalDNSNameScopesField         = "nameScopes"
-	internalDNSConditionActive         = "Active"
 	internalDNSConditionReady          = "Ready"
 	internalDNSConditionPublished      = "Published"
-	internalDNSPrincipalField          = "principal"
 	internalDNSConditionTypeField      = "type"
 	internalDNSSpecField               = "spec"
-	internalDNSSubjectField            = "subject"
-	internalDNSGrantRefField           = "grantRef"
 	internalDNSRecordSetsField         = "recordSets"
 )
 
 var (
 	dnsResolverContextGVK = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSResolverContext"}
 	dnsRegistrationGVK    = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSRegistration"}
-	dnsGrantGVK           = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSContributionGrant"}
 	dnsContributionGVK    = schema.GroupVersionKind{Group: internalDNSGroup, Version: internalDNSVersion, Kind: "DNSRecordContribution"}
 )
 
@@ -112,7 +105,6 @@ type InternalDNSPublisherReconciler struct {
 	ProjectNamespaceForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) (string, error)
 	ProjectAccess               InternalDNSProjectAccessFunc
 	ProjectIdentities           map[string]InternalDNSProjectIdentity
-	PrincipalSubject            string
 	MaxConcurrentReconciles     int
 	Now                         func() time.Time
 	ObservationSources          map[string]InternalDNSObservationSource
@@ -339,38 +331,18 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	}
 	registrationRef := objectReference(registration)
 
-	grant, err := findContributionGrant(ctx, access.Reader, namespace, registration, r.PrincipalSubject, ownerName)
-	if err != nil {
-		return false, err
-	}
-	if grant == nil {
-		return false, nil
-	}
-	writerEpoch, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "activeWriterEpoch")
-	observedGrant, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "observedGrantGeneration")
-	observedRegistration, _, _ := unstructured.NestedInt64(grant.Object, internalDNSStatusField, "observedRegistrationGeneration")
-	if writerEpoch < 1 || observedGrant != grant.GetGeneration() || observedRegistration != registration.GetGeneration() {
-		return false, nil
-	}
-
 	contributionSpec := map[string]any{
 		internalDNSRegistrationRefField: registrationRef,
-		internalDNSGrantRefField:        objectReference(grant),
 		internalDNSRecordSetsField:      attachment.RecordSets,
 	}
 	contribution, changed, err := ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
 	if err != nil || changed {
 		return false, err
 	}
-	boundEpoch, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSWriterEpochField)
-	if boundEpoch != writerEpoch {
-		return false, nil
-	}
-
-	return r.refreshObservation(ctx, access.Writer, contribution, writerEpoch, attachment.Eligible)
+	return r.refreshObservation(ctx, access.Writer, contribution, attachment.Eligible)
 }
 
-func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context, writer client.Client, contribution *unstructured.Unstructured, writerEpoch int64, eligible bool) (bool, error) {
+func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context, writer client.Client, contribution *unstructured.Unstructured, eligible bool) (bool, error) {
 	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, internalDNSEligibleField)
 	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSObservedGenerationField)
 	if oldEligible == eligible && observedGeneration == contribution.GetGeneration() {
@@ -383,7 +355,6 @@ func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context,
 		value any
 	}{
 		{[]string{internalDNSStatusField, internalDNSObservedGenerationField}, contribution.GetGeneration()},
-		{[]string{internalDNSStatusField, internalDNSWriterEpochField}, writerEpoch},
 		{[]string{internalDNSStatusField, internalDNSSequenceField}, sequence + 1},
 		{[]string{internalDNSStatusField, internalDNSEligibleField}, eligible},
 		{[]string{internalDNSStatusField, internalDNSReasonField}, map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[eligible]},
@@ -447,45 +418,6 @@ func unstructuredConditionCurrent(obj *unstructured.Unstructured, conditionType 
 	return false
 }
 
-func findContributionGrant(ctx context.Context, reader client.Reader, namespace string, registration *unstructured.Unstructured, subject, ownerName string) (*unstructured.Unstructured, error) {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(dnsGrantGVK.GroupVersion().WithKind(dnsGrantGVK.Kind + "List"))
-	if err := reader.List(ctx, list, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("list DNS contribution grants: %w", err)
-	}
-	var match *unstructured.Unstructured
-	for i := range list.Items {
-		grant := &list.Items[i]
-		if !grant.GetDeletionTimestamp().IsZero() || grant.GetUID() == "" || grant.GetGeneration() < 1 || !unstructuredConditionCurrent(grant, internalDNSConditionActive) {
-			continue
-		}
-		ref, _, _ := unstructured.NestedMap(grant.Object, internalDNSSpecField, internalDNSRegistrationRefField)
-		principal, _, _ := unstructured.NestedMap(grant.Object, internalDNSSpecField, internalDNSPrincipalField)
-		if !reflect.DeepEqual(ref, objectReference(registration)) || stringValue(principal, internalDNSSubjectField) != subject {
-			continue
-		}
-		scopes, _, _ := unstructured.NestedStringSlice(grant.Object, internalDNSSpecField, internalDNSNameScopesField)
-		types, _, _ := unstructured.NestedStringSlice(grant.Object, internalDNSSpecField, internalDNSRecordTypesField)
-		if !containsDNSString(scopes, ownerName) || !containsDNSString(types, "A") || !containsDNSString(types, "AAAA") {
-			continue
-		}
-		if match != nil {
-			return nil, fmt.Errorf("multiple contribution grants authorize registration %q", registration.GetName())
-		}
-		match = grant.DeepCopy()
-	}
-	return match, nil
-}
-
-func containsDNSString(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
-}
-
 func ensureDNSObject(ctx context.Context, access InternalDNSProjectAccess, gvk schema.GroupVersionKind, namespace, name string, labels map[string]string, owner metav1.OwnerReference, spec map[string]any) (*unstructured.Unstructured, bool, error) {
 	desired := newDNSObject(gvk, namespace, name)
 	desired.SetLabels(labels)
@@ -542,7 +474,7 @@ func authorityReferencesChanged(gvk schema.GroupVersionKind, current, desired ma
 	if gvk != dnsContributionGVK {
 		return false
 	}
-	return !reflect.DeepEqual(current[internalDNSRegistrationRefField], desired[internalDNSRegistrationRefField]) || !reflect.DeepEqual(current[internalDNSGrantRefField], desired[internalDNSGrantRefField])
+	return !reflect.DeepEqual(current[internalDNSRegistrationRefField], desired[internalDNSRegistrationRefField])
 }
 
 func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, instanceUID types.UID, keep map[string]struct{}) error {
@@ -636,9 +568,6 @@ func (r *InternalDNSPublisherReconciler) projectAccess(ctx context.Context, proj
 }
 
 func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager) error {
-	if strings.TrimSpace(r.PrincipalSubject) == "" {
-		return errors.New("internal DNS principal subject is required")
-	}
 	if len(r.ProjectIdentities) == 0 {
 		return errors.New("at least one internal DNS project identity is required")
 	}

@@ -32,13 +32,12 @@ import (
 )
 
 func main() {
-	var kubeconfig, namespace, projectUID, subject, gates string
+	var kubeconfig, namespace, projectUID, gates string
 	var edgeKubeconfig, location string
 	flags := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	flags.StringVar(&kubeconfig, "kubeconfig", "", "Disposable project kubeconfig")
 	flags.StringVar(&namespace, "namespace", "project-e2e", "Project namespace")
 	flags.StringVar(&projectUID, "project-uid", "project-e2e-uid", "DNS project UID")
-	flags.StringVar(&subject, "subject", "system:serviceaccount:compute-system:dns-publisher", "Authenticated writer")
 	flags.StringVar(&gates, "feature-gates", "", "Compute feature gates")
 	flags.StringVar(&edgeKubeconfig, "edge-kubeconfig", "", "Read-only edge observation kubeconfig")
 	flags.StringVar(&location, "location", "", "Instance location label")
@@ -94,7 +93,7 @@ func main() {
 		ObservationSources: map[string]controller.InternalDNSObservationSource{location: {Reader: edge}},
 		ProjectIdentities: map[string]controller.InternalDNSProjectIdentity{"single": {
 			ProjectName: "single", ProjectUID: types.UID(projectUID),
-		}}, PrincipalSubject: subject,
+		}},
 	}
 	if err := publisher.SetupWithManager(mgr); err != nil {
 		panic(err)

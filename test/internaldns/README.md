@@ -13,8 +13,7 @@ bin/setup-envtest use 1.31.0 --bin-dir bin -p path
 go test ./internal/controller ./internal/config ./cmd/...
 ```
 
-The tests cover context identity, flat instance names, independently issued
-grants, fenced eligibility updates, live edge observations, source lifetime
+The tests cover context identity, flat instance names, versioned endpoint observations, live edge observations, source lifetime
 replacement, and project DNS status ownership. They use fixtures and do not
 qualify guest resolution.
 
@@ -25,13 +24,12 @@ go build -o /tmp/compute-dns-publisher ./test/internaldns/publisher
 /tmp/compute-dns-publisher --feature-gates=InternalDNSPublishing=true \
   --kubeconfig /tmp/project-publisher.kubeconfig \
   --namespace production --project-uid PROJECT_UID \
-  --subject system:serviceaccount:compute-system:compute-manager \
   --edge-kubeconfig /tmp/edge-observer.kubeconfig \
   --location dfw
 ```
 
 Provision a resolver context with a `datum.internal` managed zone, the scoped
-project publisher role, and a separate trusted grant issuer. Instances must
+project publisher role. Instances must
 carry their source lifetime and location labels. Edge namespaces use the project
 namespace UID. The observer requires allocated, programmed interfaces, live
 claims, Instance-owned runtime Pods, and confirmed node health.
@@ -39,7 +37,6 @@ The disabled runner starts without creating Kubernetes clients.
 
 Release qualification must exercise two VPCs using the same default domain,
 real address allocation, guest resolver application, and UDP/TCP queries through
-Galactic. Include address changes, withdrawal, publisher outages, grant
-revocation, stale replay, source replacement, and controller restarts. Run this
+Galactic. Include address changes, withdrawal, publisher outages, stale replay, source replacement, and controller restarts. Run this
 qualification in CI and reuse the shared Kubernetes foundation. The publisher
 contract tests and runner do not establish that those release criteria pass.

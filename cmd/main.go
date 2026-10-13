@@ -466,7 +466,6 @@ func main() {
 		}
 		dnsPublisher := &controller.InternalDNSPublisherReconciler{
 			ProjectIdentities:  identities,
-			PrincipalSubject:   serverConfig.InternalDNS.PrincipalSubject,
 			ObservationSources: observers,
 		}
 		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
@@ -1004,9 +1003,6 @@ func internalDNSObservationSources(
 func internalDNSProjectIdentities(
 	cfg config.InternalDNSConfig,
 ) (map[string]controller.InternalDNSProjectIdentity, error) {
-	if cfg.PrincipalSubject == "" {
-		return nil, errors.New("internalDNS.principalSubject is required")
-	}
 	identities := make(map[string]controller.InternalDNSProjectIdentity, len(cfg.Projects))
 	for i, project := range cfg.Projects {
 		if project.Name == "" || project.ProjectUID == "" {

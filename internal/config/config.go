@@ -44,7 +44,7 @@ type WorkloadOperator struct {
 	// ReferencedData configures the ReferencedDataController.
 	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
 
-	// InternalDNS configures producer identity for the optional instance DNS
+	// InternalDNS configures project identities for the optional instance DNS
 	// publisher. It is ignored unless the InternalDNSPublishing feature gate is
 	// enabled.
 	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
@@ -59,11 +59,6 @@ type WorkloadOperator struct {
 
 // +k8s:deepcopy-gen=true
 type InternalDNSConfig struct {
-	// PrincipalSubject is the authenticated Kubernetes username used by this
-	// process when writing project DNS resources. DNS admission verifies it; it
-	// is not an authentication substitute.
-	PrincipalSubject string `json:"principalSubject,omitempty"`
-
 	// Projects identifies the consumer project APIs.
 	Projects []InternalDNSProjectIdentity `json:"projects,omitempty"`
 

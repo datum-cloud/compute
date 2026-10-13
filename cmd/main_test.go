@@ -25,12 +25,11 @@ import (
 
 func TestInternalDNSProjectIdentities(t *testing.T) {
 	identities, err := internalDNSProjectIdentities(config.InternalDNSConfig{
-		PrincipalSubject: "system:serviceaccount:compute-system:compute-manager",
-		Projects:         []config.InternalDNSProjectIdentity{{Name: "project-a", ProjectUID: "project-uid"}},
+		Projects: []config.InternalDNSProjectIdentity{{Name: "project-a", ProjectUID: "project-uid"}},
 	})
 	require.NoError(t, err)
 	assert.EqualValues(t, "project-uid", identities["project-a"].ProjectUID)
-	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{PrincipalSubject: "subject"})
+	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{})
 	assert.Error(t, err)
 }
 

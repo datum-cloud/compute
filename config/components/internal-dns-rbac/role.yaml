@@ -4,7 +4,7 @@ metadata:
   name: compute-internal-dns-publisher
 rules:
   - apiGroups: ["dns.networking.miloapis.com"]
-    resources: ["dnsresolvercontexts", "dnscontributiongrants"]
+    resources: ["dnsresolvercontexts"]
     verbs: ["get", "list"]
   - apiGroups: ["dns.networking.miloapis.com"]
     resources: ["dnsregistrations", "dnsrecordcontributions"]

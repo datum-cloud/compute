@@ -149,11 +149,10 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	contribution.SetResourceVersion("1")
 	contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRecordSetsField: []any{}}
 	contribution.Object[internalDNSStatusField] = map[string]any{
-		internalDNSWriterEpochField: int64(7),
-		internalDNSSequenceField:    int64(11),
-		internalDNSEligibleField:    false,
-		"publishedRevision":         int64(44),
-		internalDNSConditionsField:  []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}},
+		internalDNSSequenceField:   int64(11),
+		internalDNSEligibleField:   false,
+		"publishedRevision":        int64(44),
+		internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(contribution).WithStatusSubresource(contribution).Build()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
@@ -162,7 +161,7 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	var live unstructured.Unstructured
 	live.SetGroupVersionKind(dnsContributionGVK)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), &live))
-	ready, err := r.refreshObservation(context.Background(), cl, &live, 7, true)
+	ready, err := r.refreshObservation(context.Background(), cl, &live, true)
 	require.NoError(t, err)
 	assert.True(t, ready)
 

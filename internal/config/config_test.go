@@ -35,7 +35,6 @@ kind: WorkloadOperator
 metricsServer:
   bindAddress: "0"
 internalDNS:
-  principalSubject: system:serviceaccount:compute-system:compute-manager
   observationSources:
     - location: dfw
       kubeconfigPath: /etc/compute/edge.kubeconfig

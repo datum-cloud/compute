@@ -31,8 +31,6 @@ DNS, project permissions, and read-only edge observation credentials.
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: WorkloadOperator
 internalDNS:
-  # Match the authenticated subject used for project DNS writes.
-  principalSubject: system:serviceaccount:compute-system:compute-manager
   projects:
     - name: example-project
       projectUID: 00000000-0000-0000-0000-000000000001
@@ -43,9 +41,9 @@ internalDNS:
 ```
 
 Compute selects the network's resolver context and reads its managed zone. It
-reserves a name through `DNSRegistration`, reads an independently issued scoped
-`DNSContributionGrant`, and publishes `DNSRecordContribution` resources. Project
-RBAC authorizes writes. Object lifetime references and writer versions prevent
+reserves a name through `DNSRegistration` and publishes endpoint observations
+through `DNSRecordContribution`. Project RBAC authorizes writes. Object lifetime
+references and observation sequences prevent
 stale publishers from changing replacement resources.
 
 Only allocated, programmed private host addresses are eligible. Confirmed
@@ -56,7 +54,7 @@ requirement. Instance deletion reclaims records through project owner references
 
 Observation credentials read Instances, NetworkInterfaces, NetworkInterfaceClaims,
 NetworkContexts, Pods, Nodes, and project namespaces. Scope namespaced reads to
-supported edge namespaces. These credentials cannot publish records or issue grants.
+supported edge namespaces. These credentials cannot publish DNS records.
 
 Workload providers apply the network's resolver address and allocated search
 domain to guests. Resolver delivery belongs to network services. The publisher

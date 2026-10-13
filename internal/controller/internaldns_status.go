@@ -23,7 +23,7 @@ func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, r
 	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]])
 }
 
-func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, authorized bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
+func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, observed bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
 	result := computev1alpha.InstanceDNSStatus{Network: attachment.Network}
 	for _, previous := range instance.Status.DNS {
 		if previous.Network.Name == result.Network.Name && previous.Network.Namespace == result.Network.Namespace {
@@ -50,7 +50,7 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
 			return result, err
 		}
-		if authorized && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
+		if observed && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
 		}
 	}

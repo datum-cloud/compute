@@ -21,18 +21,18 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, UID: internalDNSTestInstanceUID, Generation: 2}}
 	for _, tc := range []struct {
-		name                           string
-		domain                         string
-		foreignZone                    bool
-		rejectedRegistration           bool
-		current, authorized, wantReady bool
+		name                         string
+		domain                       string
+		foreignZone                  bool
+		rejectedRegistration         bool
+		current, observed, wantReady bool
 	}{
-		{name: "published", current: true, authorized: true, wantReady: true},
-		{name: "custom domain", domain: "private.example.net", current: true, authorized: true, wantReady: true},
-		{name: "different zone", foreignZone: true, current: true, authorized: true},
-		{name: "stale generation", authorized: true},
-		{name: "revoked grant", current: true},
-		{name: "rejected registration", current: true, authorized: true, rejectedRegistration: true},
+		{name: "published", current: true, observed: true, wantReady: true},
+		{name: "custom domain", domain: "private.example.net", current: true, observed: true, wantReady: true},
+		{name: "different zone", foreignZone: true, current: true, observed: true},
+		{name: "stale generation", observed: true},
+		{name: "rejected contribution", current: true},
+		{name: "rejected registration", current: true, observed: true, rejectedRegistration: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.domain == "" {
@@ -68,7 +68,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			contribution.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: conditions}
 			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, registration, contribution).Build()
 			r := &InternalDNSPublisherReconciler{Now: func() time.Time { return now }}
-			got, err := r.publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true}, internalDNSTestInstanceName, tc.authorized, nil)
+			got, err := r.publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{ProjectUID: "project-a"}, internalDNSTestNamespace, instance, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true}, internalDNSTestInstanceName, tc.observed, nil)
 			require.NoError(t, err)
 			if tc.foreignZone {
 				require.Empty(t, got.Hostnames)
