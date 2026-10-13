@@ -38,18 +38,11 @@ internalDNS:
   observationSources:
     - location: dfw
       kubeconfigPath: /etc/compute/edge.kubeconfig
-  projects:
-    - name: project-a
-      projectUID: project-uid
 `)
 	copy := cfg.DeepCopy()
-	copy.InternalDNS.Projects[0].ProjectUID = "changed"
 	copy.InternalDNS.ObservationSources[0].Location = "changed"
 	if cfg.InternalDNS.ObservationSources[0].Location != "dfw" {
 		t.Fatal("WorkloadOperator DeepCopy aliases observation identities")
-	}
-	if cfg.InternalDNS.Projects[0].ProjectUID != "project-uid" {
-		t.Fatal("WorkloadOperator DeepCopy aliases internal DNS project identities")
 	}
 }
 

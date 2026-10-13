@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,6 +18,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 )
 
 const (
@@ -172,4 +174,54 @@ func TestEnsureDNSObjectCreatesProjectInstanceOwnershipWithoutDeleteBlock(t *tes
 	assert.Equal(t, types.UID("project-instance-uid"), created.GetOwnerReferences()[0].UID)
 	assert.Nil(t, created.GetOwnerReferences()[0].BlockOwnerDeletion,
 		"publisher must not require delete permission on the owning Instance")
+}
+
+func TestDNSProjectIdentityDiscoversNewProjectsAndReplacementIdentities(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, resourcemanagerv1alpha1.AddToScheme(scheme))
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	resolve := InternalDNSProjectIdentityResolver(cl)
+	_, err := resolve(context.Background(), "project-b")
+	require.Error(t, err)
+
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "project-b", UID: "project-b-first"}}
+	require.NoError(t, cl.Create(context.Background(), project))
+	identity, err := resolve(context.Background(), project.Name)
+	require.NoError(t, err)
+	assert.Equal(t, InternalDNSProjectIdentity{ProjectName: project.Name, ProjectUID: project.UID}, identity)
+
+	require.NoError(t, cl.Delete(context.Background(), project))
+	project.ResourceVersion = ""
+	project.UID = "project-b-second"
+	require.NoError(t, cl.Create(context.Background(), project))
+	identity, err = resolve(context.Background(), project.Name)
+	require.NoError(t, err)
+	assert.Equal(t, project.UID, identity.ProjectUID)
+}
+
+func TestDNSProjectIdentityRejectsInactiveProjectsAndReadFailures(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, resourcemanagerv1alpha1.AddToScheme(scheme))
+	now := metav1.Now()
+	for _, project := range []*resourcemanagerv1alpha1.Project{
+		{ObjectMeta: metav1.ObjectMeta{Name: "project-b"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "project-b", UID: "project-b", DeletionTimestamp: &now, Finalizers: []string{"test.datum.net/cleanup"}}},
+	} {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project).Build()
+		_, err := InternalDNSProjectIdentityResolver(cl)(context.Background(), project.Name)
+		require.Error(t, err)
+	}
+	unavailable := errors.New("project API unavailable")
+	reader := &unavailableDNSProjectReader{err: unavailable}
+	_, err := InternalDNSProjectIdentityResolver(reader)(context.Background(), "project-b")
+	require.ErrorIs(t, err, unavailable)
+}
+
+type unavailableDNSProjectReader struct {
+	client.Reader
+	err error
+}
+
+func (r *unavailableDNSProjectReader) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return r.err
 }

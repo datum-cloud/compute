@@ -454,9 +454,14 @@ func main() {
 				"InternalDNSPublishing requires Milo discovery mode and management controllers")
 			os.Exit(1)
 		}
-		identities, identityErr := internalDNSProjectIdentities(serverConfig.InternalDNS)
+		identityConfig, identityErr := serverConfig.Discovery.DiscoveryRestConfig()
 		if identityErr != nil {
-			setupLog.Error(identityErr, "invalid internal DNS publisher configuration")
+			setupLog.Error(identityErr, "unable to load internal DNS project discovery credentials")
+			os.Exit(1)
+		}
+		identityClient, identityErr := client.New(identityConfig, client.Options{Scheme: scheme})
+		if identityErr != nil {
+			setupLog.Error(identityErr, "unable to create internal DNS project discovery client")
 			os.Exit(1)
 		}
 		observers, observationErr := internalDNSObservationSources(serverConfig.InternalDNS)
@@ -465,8 +470,8 @@ func main() {
 			os.Exit(1)
 		}
 		dnsPublisher := &controller.InternalDNSPublisherReconciler{
-			ProjectIdentities:  identities,
-			ObservationSources: observers,
+			ResolveProjectIdentity: controller.InternalDNSProjectIdentityResolver(identityClient),
+			ObservationSources:     observers,
 		}
 		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSPublisher")
@@ -998,27 +1003,4 @@ func internalDNSObservationSources(
 		return nil, errors.New("internalDNS.observationSources must contain at least one authenticated edge API")
 	}
 	return sources, nil
-}
-
-func internalDNSProjectIdentities(
-	cfg config.InternalDNSConfig,
-) (map[string]controller.InternalDNSProjectIdentity, error) {
-	identities := make(map[string]controller.InternalDNSProjectIdentity, len(cfg.Projects))
-	for i, project := range cfg.Projects {
-		if project.Name == "" || project.ProjectUID == "" {
-			return nil, fmt.Errorf("internalDNS.projects[%d] requires name and projectUID", i)
-		}
-		if _, duplicate := identities[project.Name]; duplicate {
-			return nil, fmt.Errorf("internalDNS.projects contains duplicate project %q", project.Name)
-		}
-		identities[project.Name] = controller.InternalDNSProjectIdentity{
-			ProjectName: project.Name,
-			ProjectUID:  project.ProjectUID,
-		}
-	}
-	if len(identities) == 0 {
-		return nil, errors.New("internalDNS.projects must contain at least one project")
-	}
-
-	return identities, nil
 }

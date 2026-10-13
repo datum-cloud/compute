@@ -59,9 +59,6 @@ type WorkloadOperator struct {
 
 // +k8s:deepcopy-gen=true
 type InternalDNSConfig struct {
-	// Projects identifies the consumer project APIs.
-	Projects []InternalDNSProjectIdentity `json:"projects,omitempty"`
-
 	// ObservationSources selects authenticated edge APIs for live interface and
 	// node observations. Credentials must have read-only observation permissions.
 	ObservationSources []InternalDNSObservationSource `json:"observationSources,omitempty"`
@@ -71,12 +68,6 @@ type InternalDNSConfig struct {
 type InternalDNSObservationSource struct {
 	Location       string `json:"location"`
 	KubeconfigPath string `json:"kubeconfigPath"`
-}
-
-// +k8s:deepcopy-gen=true
-type InternalDNSProjectIdentity struct {
-	Name       string    `json:"name"`
-	ProjectUID types.UID `json:"projectUID"`
 }
 
 func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {

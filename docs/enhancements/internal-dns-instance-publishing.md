@@ -25,15 +25,13 @@ status:
 ```
 
 Enable the default-off `InternalDNSPublishing` feature gate after provisioning
-DNS, project permissions, and read-only edge observation credentials.
+DNS, project permissions, and read-only edge observation credentials. Compute
+resolves project identities through Milo discovery, including newly created projects.
 
 ```yaml
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: WorkloadOperator
 internalDNS:
-  projects:
-    - name: example-project
-      projectUID: 00000000-0000-0000-0000-000000000001
   observationSources:
     - location: dfw
       # Authenticate to the edge API that owns instance observations.

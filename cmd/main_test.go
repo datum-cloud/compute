@@ -23,16 +23,6 @@ import (
 	"go.datum.net/compute/internal/locations"
 )
 
-func TestInternalDNSProjectIdentities(t *testing.T) {
-	identities, err := internalDNSProjectIdentities(config.InternalDNSConfig{
-		Projects: []config.InternalDNSProjectIdentity{{Name: "project-a", ProjectUID: "project-uid"}},
-	})
-	require.NoError(t, err)
-	assert.EqualValues(t, "project-uid", identities["project-a"].ProjectUID)
-	_, err = internalDNSProjectIdentities(config.InternalDNSConfig{})
-	assert.Error(t, err)
-}
-
 func TestInternalDNSObservationSourcesRequireExplicitCredentials(t *testing.T) {
 	_, err := internalDNSObservationSources(config.InternalDNSConfig{})
 	require.Error(t, err)

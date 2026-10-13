@@ -31,6 +31,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 )
 
 const (
@@ -103,6 +104,7 @@ type InternalDNSPublisherReconciler struct {
 	ProjectIDForInstance        func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) (string, error)
 	ProjectNamespaceForInstance func(context.Context, multicluster.ClusterName, *computev1alpha.Instance) (string, error)
 	ProjectAccess               InternalDNSProjectAccessFunc
+	ResolveProjectIdentity      func(context.Context, string) (InternalDNSProjectIdentity, error)
 	ProjectIdentities           map[string]InternalDNSProjectIdentity
 	MaxConcurrentReconciles     int
 	Now                         func() time.Time
@@ -132,9 +134,9 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("resolve DNS project namespace: %w", err)
 	}
-	identity, ok := r.ProjectIdentities[projectID]
-	if !ok || identity.ProjectUID == "" {
-		return ctrl.Result{}, fmt.Errorf("internal DNS identity is not configured for project %q", projectID)
+	identity, err := r.projectIdentity(ctx, projectID)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 	access, err := r.projectAccess(ctx, projectID, providerCluster)
 	if err != nil {
@@ -533,9 +535,35 @@ func (r *InternalDNSPublisherReconciler) projectAccess(ctx context.Context, proj
 	return InternalDNSProjectAccess{Reader: providerCluster.GetAPIReader(), Writer: providerCluster.GetClient()}, nil
 }
 
+// InternalDNSProjectIdentityResolver reads the current project identity from Milo.
+// Unavailable or terminating projects stop publication without withdrawing records.
+func InternalDNSProjectIdentityResolver(reader client.Reader) func(context.Context, string) (InternalDNSProjectIdentity, error) {
+	return func(ctx context.Context, projectName string) (InternalDNSProjectIdentity, error) {
+		var project resourcemanagerv1alpha1.Project
+		if err := reader.Get(ctx, client.ObjectKey{Name: projectName}, &project); err != nil {
+			return InternalDNSProjectIdentity{}, fmt.Errorf("read DNS project %q: %w", projectName, err)
+		}
+		if project.UID == "" || !project.DeletionTimestamp.IsZero() {
+			return InternalDNSProjectIdentity{}, fmt.Errorf("DNS project %q has no active identity", projectName)
+		}
+		return InternalDNSProjectIdentity{ProjectName: project.Name, ProjectUID: project.UID}, nil
+	}
+}
+
+func (r *InternalDNSPublisherReconciler) projectIdentity(ctx context.Context, projectName string) (InternalDNSProjectIdentity, error) {
+	if r.ResolveProjectIdentity != nil {
+		return r.ResolveProjectIdentity(ctx, projectName)
+	}
+	identity, ok := r.ProjectIdentities[projectName]
+	if !ok || identity.ProjectUID == "" {
+		return InternalDNSProjectIdentity{}, fmt.Errorf("internal DNS identity is not configured for project %q", projectName)
+	}
+	return identity, nil
+}
+
 func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager) error {
-	if len(r.ProjectIdentities) == 0 {
-		return errors.New("at least one internal DNS project identity is required")
+	if r.ResolveProjectIdentity == nil && len(r.ProjectIdentities) == 0 {
+		return errors.New("an internal DNS project identity resolver is required")
 	}
 	r.mgr = mgr
 	concurrency := r.MaxConcurrentReconciles
