@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestPublicationStatusRequiresCurrentUnexpiredPublication(t *testing.T) {
+func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, UID: internalDNSTestInstanceUID, Generation: 2}}
 	for _, tc := range []struct {
@@ -79,8 +80,40 @@ func TestReportPublicationPreservesRuntimeStatus(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(instance).WithStatusSubresource(instance).Build()
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
 	r := &InternalDNSPublisherReconciler{}
-	require.NoError(t, r.reportPublication(context.Background(), cl, instance, []computev1alpha.InstanceDNSStatus{{NetworkUID: internalDNSTestVPCUID}}))
+	network := networkingv1alpha.NetworkRef{Name: "prod", Namespace: internalDNSTestNamespace}
+	require.NoError(t, r.reportPublication(context.Background(), cl, instance, []computev1alpha.InstanceDNSStatus{{Network: network}}))
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
 	require.Equal(t, metav1.ConditionTrue, instance.Status.Conditions[0].Status)
 	require.Len(t, instance.Status.DNS, 1)
+	require.Equal(t, network, instance.Status.DNS[0].Network)
+}
+
+func TestPublicationStatusMatchesNamespacedNetworkReference(t *testing.T) {
+	network := networkingv1alpha.NetworkRef{Name: "prod", Namespace: internalDNSTestNamespace}
+	transition := metav1.NewTime(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	for _, tc := range []struct {
+		name    string
+		network networkingv1alpha.NetworkRef
+		matches bool
+	}{
+		{name: "same network", network: network, matches: true},
+		{name: "different name", network: networkingv1alpha.NetworkRef{Name: "other", Namespace: network.Namespace}},
+		{name: "same name in another namespace", network: networkingv1alpha.NetworkRef{Name: network.Name, Namespace: "other"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := runtime.NewScheme()
+			s.AddKnownTypeWithName(dnsRegistrationGVK, &unstructured.Unstructured{})
+			cl := fake.NewClientBuilder().WithScheme(s).Build()
+			instance := &computev1alpha.Instance{Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{
+				Network:    tc.network,
+				Conditions: []metav1.Condition{{Type: internalDNSConditionReady, Status: metav1.ConditionFalse, Reason: "PendingPublication", LastTransitionTime: transition}},
+			}}}}
+			r := &InternalDNSPublisherReconciler{}
+			got, err := r.publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{}, internalDNSTestNamespace, instance, instanceDNSAttachment{Network: network, Eligible: true}, internalDNSTestInstanceName, false, nil)
+			require.NoError(t, err)
+			require.Equal(t, network, got.Network)
+			require.Len(t, got.Conditions, 1)
+			require.Equal(t, tc.matches, got.Conditions[0].LastTransitionTime.Equal(&transition))
+		})
+	}
 }

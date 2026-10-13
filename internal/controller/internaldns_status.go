@@ -24,9 +24,9 @@ func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, r
 }
 
 func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, authorized bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
-	result := computev1alpha.InstanceDNSStatus{Network: attachment.Network, NetworkUID: string(attachment.VPCUID)}
+	result := computev1alpha.InstanceDNSStatus{Network: attachment.Network}
 	for _, previous := range instance.Status.DNS {
-		if previous.NetworkUID == result.NetworkUID {
+		if previous.Network.Name == result.Network.Name && previous.Network.Namespace == result.Network.Namespace {
 			result.Conditions = append([]metav1.Condition(nil), previous.Conditions...)
 		}
 	}

@@ -33,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
@@ -440,14 +441,15 @@ func TestInstanceProjector_SpecCopied(t *testing.T) {
 
 func TestInstanceProjectorPreservesProjectDNSStatus(t *testing.T) {
 	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
-	upstream.Status.DNS = []computev1alpha.InstanceDNSStatus{{NetworkUID: "untrusted-edge-status"}}
-	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{NetworkUID: "project-network", Hostnames: []string{"web.datum.internal"}}}}}
+	upstream.Status.DNS = []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "untrusted-edge-network", Namespace: "edge"}}}
+	network := networkingv1alpha.NetworkRef{Name: "project-network", Namespace: projTestProjNS}
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{Network: network, Hostnames: []string{"web.datum.internal"}}}}}
 	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
 	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
 	_, err := r.Reconcile(context.Background(), projectorRequest())
 	require.NoError(t, err)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
-	require.Equal(t, "project-network", projection.Status.DNS[0].NetworkUID)
+	require.Equal(t, network, projection.Status.DNS[0].Network)
 }
 
 func TestInstanceProjectorReplacesDifferentSourceLifetime(t *testing.T) {

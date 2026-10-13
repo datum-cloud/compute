@@ -1352,17 +1352,11 @@ spec:
                       required:
                       - name
                       type: object
-                    networkUID:
-                      description: NetworkUID pins the lifetime that owns these names.
-                      type: string
                   required:
                   - network
-                  - networkUID
                   type: object
                 type: array
-                x-kubernetes-list-map-keys:
-                - networkUID
-                x-kubernetes-list-type: map
+                x-kubernetes-list-type: atomic
               networkInterfaces:
                 description: Network interface information
                 items:
