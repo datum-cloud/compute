@@ -99,7 +99,7 @@ the instance identity name, which can still support diagnostics.
 ### Risks and mitigations
 
 - Cross-VPC publication: pin project, VPC, context, and registration lifetimes;
-  authorize publishers through scoped grants.
+  scope publisher permissions through project RBAC.
 - Stale addresses: publish explicit eligibility changes and retain the last
   reported state when observations are unavailable.
 - Incorrect guest resolution: apply verified settings and reject
@@ -113,7 +113,6 @@ the instance identity name, which can still support diagnostics.
 flowchart LR
   N[Network services] -->|Context and access| P[Consumer project API]
   C[Compute publisher] -->|Registration, addresses, eligibility| P
-  I[Trusted grant issuer] -->|Scoped contribution grant| P
   P -->|DNS intent| D[Shared DNS platform]
   P -->|Workload and network desired state| K[Karmada]
   K --> E[Edge interfaces and workload providers]
@@ -201,12 +200,11 @@ status:
       lastTransitionTime: "2026-10-09T20:00:00Z"
 ```
 
-Network services deliver authorization through a separate, access-restricted
-provider contract bound to the project, interface, and VPC lifetimes. That
-contract carries source references, fencing epochs, and sequences for explicit
-access changes. These fields do not belong in the public interface's spec or
-status. Public DNS status reports observed configuration; it cannot authorize
-provider actions.
+Network services deliver resolver intent through an access-restricted provider
+contract bound to the project, interface, and VPC lifetimes. Providers verify
+the current Galactic network configuration before applying resolver settings.
+Public DNS status reports observed configuration; it cannot authorize provider
+actions. DNS manages publication ordering within its own control plane.
 
 Providers apply current, authorized settings and report `DNSConfigured` only
 after successful application. They reconcile explicit updates and reject stale revisions. Applied settings
@@ -221,10 +219,9 @@ reported by the matching DNS context. The registration pins the immutable Instan
 instance name. A recreated instance can use the same hostname after the previous
 registration is withdrawn.
 
-A trusted grant issuer authorizes the Compute publisher's authenticated subject
-for the registration, record types, and owner name.
-The runtime publisher cannot issue its own `DNSContributionGrant` or authorize
-resolver access. Project RBAC controls resource access; DNS validates references and version fences.
+Project RBAC permits the Compute publisher to manage registrations and
+contributions. Network services manages resolver access separately. DNS
+validates current registration references and orders publication internally.
 
 Consumers read assigned names and publication readiness from `Instance.status.dns`:
 
@@ -261,8 +258,6 @@ spec:
   # Reserve the allocated instance name within this VPC's managed zone.
   name: web-01
   recordTypes: [A, AAAA]
-  # Publish addresses only under a current eligible contribution.
-  publicationPolicy: EligibleContributions
   ttlSeconds: 30
 status:
   # DNS-owned output used to display the assigned name to consumers.
@@ -273,16 +268,14 @@ kind: DNSRecordContribution
 metadata:
   name: web-01-eth0
 spec:
-  # Pin the reserved name and its publication policy generation.
+  # Pin the reserved name and its current generation.
   registrationRef:
     name: instance-web-01
     uid: 66666666-6666-4666-8666-666666666666
     generation: 1
-  # Reference authorization issued separately from the runtime publisher.
-  grantRef:
-    name: web-01-compute
-    uid: 77777777-7777-4777-8777-777777777777
-    generation: 1
+  # Publish addresses and eligibility together in one update.
+  eligible: true
+  reason: NetworkInterfaceProgrammed
   # Include only private host addresses allocated and programmed for this VPC.
   recordSets:
     - recordType: A
@@ -298,19 +291,15 @@ spec:
           aaaa:
             content: fd20::10
 status:
-  # Compute-owned observation of this contribution's current spec.
+  # DNS-owned acknowledgement of the contribution generation.
   observedGeneration: 1
-  # Echo the DNS-issued grant epoch and advance the observation sequence.
-  writerEpoch: 3
-  sequence: 18
-  eligible: true
-  reason: NetworkInterfaceProgrammed
 ```
 
-Compute renews observations from the authoritative project Instance and verified
-interface state. Federation and edge copies retain source lifetime identity;
-their locally assigned UIDs cannot establish publication authority. Status writes
-preserve DNS-owned fields. Observation sequences advance when endpoint state changes.
+Compute observes the authoritative project Instance and verified interface
+state. It updates records and eligibility together using conditional API writes.
+Federation and edge copies retain source lifetime identity; their locally
+assigned UIDs cannot establish publication authority. DNS owns contribution
+status. Unavailable observations retain the last reported contribution.
 
 ### Lifecycle and health
 
@@ -318,8 +307,8 @@ Instance identity eligibility requires a live Instance and allocated, programmed
 private host addresses. Public addresses and delegated prefixes are excluded.
 Each interface contributes only addresses from its own VPC.
 
-Address release, network deprogramming, or instance deletion triggers a
-higher-sequence ineligible observation and cleanup. Project-side owner references support cleanup. Failed API observations and
+Address release, network deprogramming, or instance deletion triggers
+an atomic ineligible update and cleanup. Project-side owner references support cleanup. Failed API observations and
 unknown runtime health retain published state and report unknown readiness.
 Confirmed unhealthy state or deletion withdraws records explicitly. DNS retains
 last reported eligibility during publisher outages; client caches follow the
@@ -347,7 +336,7 @@ Start with opted-in projects and supported single-context guests. Extend the
 shared Kubernetes end-to-end environment with actual Compute publishers and
 providers. Require two isolated VPCs with overlapping names and addresses, UDP
 and TCP queries from guests, outage continuity, address changes, deletion,
-publisher outages, grant revocation, stale replay, and restart coverage.
+publisher outages, publisher RBAC isolation, stale replay, and restart coverage.
 Test the same default domain and hostname with different answers across VPCs,
 name collisions between product publishers, short-name resolution, fully
 qualified queries, and explicit additional-zone search configuration.
@@ -360,7 +349,7 @@ sharing revocation, and unchanged local short-name resolution.
 
 Expose assigned names and DNS publication conditions through `Instance.status.dns`.
 Track publication lag,
-renewal failures, withdrawal delay, and guest configuration failures without
+observation failures, withdrawal delay, and guest configuration failures without
 per-instance metric labels. Set latency and withdrawal targets before release.
 
 ### Dependencies
@@ -372,13 +361,13 @@ observations; installed records and access persist until explicit withdrawal. DN
 ### Scalability
 
 Budget registrations per instance/VPC and contributions per interface. Measure
-project API publication load, controller queues, and grant provisioning at fleet
+project API publication load and controller queues at fleet
 scale. Spread observation polls with jitter and bound concurrent project operations.
 
 ### Troubleshooting
 
-Trace the Instance and VPC lifetimes through context, registration, grant, and
-contribution status. Check network eligibility, observation health, and version fences, then
+Trace the Instance and VPC lifetimes through context, registration, and
+contribution status. Check network eligibility and publication conditions, then
 compare inherited settings with guest configuration and query results.
 
 ## Implementation History
@@ -397,6 +386,6 @@ Automatic publication keeps that lifecycle with Compute.
 
 ## Infrastructure Needed
 
-Provision project-scoped publisher credentials, a separate trusted grant issuer,
-VPC resolver access, shared DNS capacity, and the local Kubernetes validation
+Provision project-scoped publisher credentials, VPC resolver access, shared DNS
+capacity, and the local Kubernetes validation
 environment. This integration uses shared serving infrastructure across VPCs.
