@@ -36,7 +36,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.domain == "" {
-				tc.domain = "datum.internal"
+				tc.domain = internalDNSTestDefaultDomain
 			}
 			s := runtime.NewScheme()
 			s.AddKnownTypeWithName(dnsResolverContextGVK, &unstructured.Unstructured{})

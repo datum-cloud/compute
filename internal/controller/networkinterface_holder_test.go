@@ -170,15 +170,18 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newClaimTestScheme()).WithObjects(instance, iface).
 		WithStatusSubresource(iface, instance).WithInterceptorFuncs(interceptor.Funcs{
 		SubResourcePatch: func(ctx context.Context, cl client.Client, subresource string, object client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			settings := map[string]any{"nameservers": []any{"fd53::53"}, "searches": []any{internalDNSTestDefaultDomain}}
+			original, err := json.Marshal(map[string]any{"status": map[string]any{"dns": settings}})
+			require.NoError(t, err)
 			data, err := patch.Data(object)
 			require.NoError(t, err)
-			merged, err := jsonpatch.MergePatch([]byte(`{"status":{"dns":{"nameservers":["fd53::53"],"searches":["datum.internal"]}}}`), data)
+			merged, err := jsonpatch.MergePatch(original, data)
 			require.NoError(t, err)
 			var result map[string]any
 			require.NoError(t, json.Unmarshal(merged, &result))
 			dns := result["status"].(map[string]any)["dns"].(map[string]any)
 			require.Equal(t, []any{"fd53::53"}, dns["nameservers"])
-			require.Equal(t, []any{"datum.internal"}, dns["searches"])
+			require.Equal(t, []any{internalDNSTestDefaultDomain}, dns["searches"])
 			patched = true
 			return cl.SubResource(subresource).Patch(ctx, object, patch, opts...)
 		},
