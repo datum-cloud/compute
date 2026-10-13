@@ -339,16 +339,17 @@ proposal before implementation.
 
 Use the default-off `InternalDNSPublishing` feature gate for the publisher.
 Provider application of managed resolver settings requires a separate rollout
-control. Disabling publication stops renewals; records expire, and applications
-using their names can lose resolution. Reenabling requires fresh observations.
-Test both controls independently.
+control. Disabling publication stops updates and retains published records.
+To remove published names, explicitly withdraw contributions before disabling
+the publisher. Reenabling requires fresh observations. Test both controls
+independently.
 
 ### Rollout, Upgrade and Rollback Planning
 
 Start with opted-in projects and supported single-context guests. Extend the
 shared Kubernetes end-to-end environment with actual Compute publishers and
 providers. Require two isolated VPCs with overlapping names and addresses, UDP
-and TCP queries from guests, renewal stability, address changes, deletion,
+and TCP queries from guests, outage continuity, address changes, deletion,
 publisher outages, grant revocation, stale replay, and restart coverage.
 Test the same default domain and hostname with different answers across VPCs,
 name collisions between product publishers, short-name resolution, fully
