@@ -122,7 +122,8 @@ flowchart LR
   G -->|VPC-authorized private service path| D
 ```
 
-Compute uses authenticated project clients for publication. It identifies the
+Compute discovers project identities through Milo, including newly created
+projects, and uses authenticated project clients for publication. It identifies the
 VPC's context through trusted project and Network UIDs, matching the
 `DNSResolverContext.spec.consumerID` contract. DNS does not read Compute objects
 to determine addresses or health.
@@ -332,9 +333,9 @@ independently.
 
 ### Rollout, Upgrade and Rollback Planning
 
-Start with opted-in projects and supported single-context guests. Extend the
-shared Kubernetes end-to-end environment with actual Compute publishers and
-providers. Require two isolated VPCs with overlapping names and addresses, UDP
+Enable staging for all projects and supported single-context guests. Extend
+the shared Kubernetes end-to-end environment with actual Compute publishers
+and providers. Require two isolated VPCs with overlapping names and addresses, UDP
 and TCP queries from guests, outage continuity, address changes, deletion,
 publisher outages, publisher RBAC isolation, stale replay, and restart coverage.
 Test the same default domain and hostname with different answers across VPCs,
