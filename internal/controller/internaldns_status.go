@@ -77,7 +77,7 @@ func publicationMatchesContext(ctx context.Context, reader client.Reader, identi
 		return false, err
 	}
 	registeredZone, _, _ := unstructured.NestedMap(registration.Object, internalDNSSpecField, internalDNSZoneRefField)
-	return canonical == allocatedInstanceDNSName(instance)+"."+suffix && stringValue(registeredZone, internalDNSNameField) == stringValue(zone, internalDNSNameField), nil
+	return canonical == allocatedInstanceDNSName(instance)+"."+suffix && referenceName(registeredZone) == referenceName(zone), nil
 }
 
 func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {
