@@ -82,7 +82,7 @@ func TestUnavailableObservationLeavesPublishedStateUntouched(t *testing.T) {
 	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
 	published := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	published.SetUID("contribution")
-	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", "records": []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
 	published.Object[internalDNSStatusField] = map[string]any{"writerEpoch": int64(3), internalDNSSequenceField: int64(9), internalDNSEligibleField: true}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).WithStatusSubresource(published).Build()
 	r := &InternalDNSPublisherReconciler{}
@@ -136,7 +136,7 @@ func TestPublisherWaitsForIssuerAndNeverMutatesGrants(t *testing.T) {
 	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
 	access := InternalDNSProjectAccess{Reader: guard, Writer: guard}
 	identity := InternalDNSProjectIdentity{ProjectUID: "project-a"}
-	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", "records": []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
 	ctx := context.Background()
 	for range 2 {
 		ready, err := r.reconcileAttachment(ctx, access, identity, internalDNSTestNamespace, instance, owner, attachment, "record")

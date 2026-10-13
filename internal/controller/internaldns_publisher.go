@@ -38,6 +38,7 @@ const (
 	internalDNSEligibleField           = "eligible"
 	internalDNSContentField            = "content"
 	internalDNSRecordTypeField         = "recordType"
+	internalDNSRecordsField            = "records"
 	internalDNSInstanceKind            = "Instance"
 	internalDNSRecordTypeAAAA          = "AAAA"
 	internalDNSNameField               = "name"
@@ -259,7 +260,7 @@ func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNa
 			}
 			attachment.RecordSets = append(attachment.RecordSets, map[string]any{
 				internalDNSRecordTypeField: rrtype,
-				"records":                  []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), field: map[string]any{internalDNSContentField: addr.String()}}},
+				internalDNSRecordsField:    []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), field: map[string]any{internalDNSContentField: addr.String()}}},
 			})
 		}
 	}
@@ -318,7 +319,7 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	ownerName := allocatedInstanceDNSName(instance)
 	for i := range attachment.RecordSets {
 		rrset := attachment.RecordSets[i].(map[string]any)
-		records := rrset["records"].([]any)
+		records := rrset[internalDNSRecordsField].([]any)
 		for _, record := range records {
 			record.(map[string]any)[internalDNSNameField] = ownerName
 		}
