@@ -33,14 +33,14 @@ func sessionCreate(code int, response map[string]any) map[string]any {
 	return audit
 }
 
-func TestSessionCreateNamesTheGeneratedSession(t *testing.T) {
+func TestSessionCreateOmitsTheGeneratedName(t *testing.T) {
 	p := loadPolicy(t, sessionPolicy)
 	created := map[string]any{"metadata": map[string]any{"name": "web-0-x7k2p", "generateName": "web-0-"}}
 	audit := sessionCreate(201, created)
 
 	_, summary := summarize(t, p, audit)
 
-	want := "alice@example.com opened shell session web-0-x7k2p in container app of instance web-0"
+	want := "alice@example.com opened a shell session in container app of instance web-0"
 	if summary != want {
 		t.Fatalf("summary = %q, want %q", summary, want)
 	}
