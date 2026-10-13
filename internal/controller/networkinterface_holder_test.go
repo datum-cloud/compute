@@ -162,7 +162,9 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 		Status: metav1.ConditionTrue,
 		Reason: computev1alpha.InstanceAvailableReasonAvailable,
 	})
-	cl := holderTestClient(instance, newHolderTestInterface())
+	iface := newHolderTestInterface()
+	iface.Status.DNS = &networkingv1alpha.NetworkDNSResolverSettings{Nameservers: []string{"fd53::53"}, Searches: []string{"datum.internal"}}
+	cl := holderTestClient(instance, iface)
 
 	r := &InstanceReconciler{NetworkingEnabled: true}
 	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, instance))
@@ -173,6 +175,9 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 	assert.Equal(t, computev1alpha.InstanceAvailableReasonAvailable, condition.Reason)
 	assert.Equal(t, int64(4), condition.ObservedGeneration,
 		"the interface's generation, not the instance's")
+	var current networkingv1alpha.NetworkInterface
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(iface), &current))
+	require.Equal(t, iface.Status.DNS, current.Status.DNS)
 }
 
 // TestReconcileHolderAvailability_LeavesAvailable covers the drain path: an
