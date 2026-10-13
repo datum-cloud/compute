@@ -70,7 +70,7 @@ func TestObservationPersistsUntilExplicitWithdrawal(t *testing.T) {
 		require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(c), c))
 		_, err := r.refreshObservation(context.Background(), cl, c, 3, eligible)
 		require.NoError(t, err)
-		got, _, _ := unstructured.NestedBool(c.Object, internalDNSStatusField, "eligible")
+		got, _, _ := unstructured.NestedBool(c.Object, internalDNSStatusField, internalDNSEligibleField)
 		require.Equal(t, eligible, got)
 		_, found, _ := unstructured.NestedString(c.Object, internalDNSStatusField, "validUntil")
 		require.False(t, found)
@@ -82,8 +82,8 @@ func TestUnavailableObservationLeavesPublishedStateUntouched(t *testing.T) {
 	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
 	published := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	published.SetUID("contribution")
-	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{"recordType": "A", "records": []any{map[string]any{"name": "api", "a": map[string]any{"content": "10.0.0.8"}}}}}}
-	published.Object[internalDNSStatusField] = map[string]any{"writerEpoch": int64(3), "sequence": int64(9), "eligible": true}
+	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", "records": []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	published.Object[internalDNSStatusField] = map[string]any{"writerEpoch": int64(3), internalDNSSequenceField: int64(9), internalDNSEligibleField: true}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).WithStatusSubresource(published).Build()
 	r := &InternalDNSPublisherReconciler{}
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: internalDNSTestInstanceUID}}
@@ -136,7 +136,7 @@ func TestPublisherWaitsForIssuerAndNeverMutatesGrants(t *testing.T) {
 	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
 	access := InternalDNSProjectAccess{Reader: guard, Writer: guard}
 	identity := InternalDNSProjectIdentity{ProjectUID: "project-a"}
-	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{"recordType": "A", "records": []any{map[string]any{"name": "", "ttl": int64(30), "a": map[string]any{"content": "10.0.0.8"}}}}}}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", "records": []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
 	ctx := context.Background()
 	for range 2 {
 		ready, err := r.reconcileAttachment(ctx, access, identity, internalDNSTestNamespace, instance, owner, attachment, "record")
@@ -145,7 +145,7 @@ func TestPublisherWaitsForIssuerAndNeverMutatesGrants(t *testing.T) {
 	}
 	registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, "record")
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(registration), registration))
-	name, _, _ := unstructured.NestedString(registration.Object, internalDNSSpecField, "name")
+	name, _, _ := unstructured.NestedString(registration.Object, internalDNSSpecField, internalDNSNameField)
 	require.Equal(t, allocatedInstanceDNSName(instance), name)
 	grant := newDNSObject(dnsGrantGVK, internalDNSTestNamespace, "issuer-grant")
 	grant.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: objectReference(registration), internalDNSPrincipalField: map[string]any{internalDNSSubjectField: internalDNSTestSubject}, internalDNSNameScopesField: []any{name}, internalDNSRecordTypesField: []any{"A", "AAAA"}}

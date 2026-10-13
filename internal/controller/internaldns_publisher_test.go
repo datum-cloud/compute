@@ -149,8 +149,8 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRecordSetsField: []any{}}
 	contribution.Object[internalDNSStatusField] = map[string]any{
 		internalDNSWriterEpochField: int64(7),
-		"sequence":                  int64(11),
-		"eligible":                  false,
+		internalDNSSequenceField:    int64(11),
+		internalDNSEligibleField:    false,
 		"publishedRevision":         int64(44),
 		internalDNSConditionsField:  []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}},
 	}
@@ -168,7 +168,7 @@ func TestRefreshObservationPreservesPlatformStatusAndIncrementsFence(t *testing.
 	var got unstructured.Unstructured
 	got.SetGroupVersionKind(dnsContributionGVK)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), &got))
-	sequence, _, _ := unstructured.NestedInt64(got.Object, internalDNSStatusField, "sequence")
+	sequence, _, _ := unstructured.NestedInt64(got.Object, internalDNSStatusField, internalDNSSequenceField)
 	published, _, _ := unstructured.NestedInt64(got.Object, internalDNSStatusField, "publishedRevision")
 	conditions, _, _ := unstructured.NestedSlice(got.Object, internalDNSStatusField, internalDNSConditionsField)
 	assert.Equal(t, int64(12), sequence)

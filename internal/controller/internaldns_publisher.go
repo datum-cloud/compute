@@ -34,6 +34,10 @@ import (
 )
 
 const (
+	internalDNSSequenceField           = "sequence"
+	internalDNSEligibleField           = "eligible"
+	internalDNSContentField            = "content"
+	internalDNSRecordTypeField         = "recordType"
 	internalDNSInstanceKind            = "Instance"
 	internalDNSRecordTypeAAAA          = "AAAA"
 	internalDNSNameField               = "name"
@@ -254,8 +258,8 @@ func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNa
 				rrtype, field = internalDNSRecordTypeAAAA, "aaaa"
 			}
 			attachment.RecordSets = append(attachment.RecordSets, map[string]any{
-				"recordType": rrtype,
-				"records":    []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), field: map[string]any{"content": addr.String()}}},
+				internalDNSRecordTypeField: rrtype,
+				"records":                  []any{map[string]any{internalDNSNameField: "", "ttl": int64(30), field: map[string]any{internalDNSContentField: addr.String()}}},
 			})
 		}
 	}
@@ -365,21 +369,21 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 }
 
 func (r *InternalDNSPublisherReconciler) refreshObservation(ctx context.Context, writer client.Client, contribution *unstructured.Unstructured, writerEpoch int64, eligible bool) (bool, error) {
-	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, "eligible")
+	oldEligible, _, _ := unstructured.NestedBool(contribution.Object, internalDNSStatusField, internalDNSEligibleField)
 	observedGeneration, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSObservedGenerationField)
 	if oldEligible == eligible && observedGeneration == contribution.GetGeneration() {
 		return true, nil
 	}
 	base := contribution.DeepCopy()
-	sequence, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, "sequence")
+	sequence, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSStatusField, internalDNSSequenceField)
 	owned := []struct {
 		path  []string
 		value any
 	}{
 		{[]string{internalDNSStatusField, internalDNSObservedGenerationField}, contribution.GetGeneration()},
 		{[]string{internalDNSStatusField, internalDNSWriterEpochField}, writerEpoch},
-		{[]string{internalDNSStatusField, "sequence"}, sequence + 1},
-		{[]string{internalDNSStatusField, "eligible"}, eligible},
+		{[]string{internalDNSStatusField, internalDNSSequenceField}, sequence + 1},
+		{[]string{internalDNSStatusField, internalDNSEligibleField}, eligible},
 		{[]string{internalDNSStatusField, internalDNSReasonField}, map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[eligible]},
 	}
 	for _, field := range owned {
