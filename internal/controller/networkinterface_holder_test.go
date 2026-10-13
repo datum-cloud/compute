@@ -4,15 +4,18 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
+	jsonpatch "github.com/evanphx/json-patch/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -163,8 +166,23 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 		Reason: computev1alpha.InstanceAvailableReasonAvailable,
 	})
 	iface := newHolderTestInterface()
-	iface.Status.DNS = &networkingv1alpha.NetworkDNSResolverSettings{Nameservers: []string{"fd53::53"}, Searches: []string{"datum.internal"}}
-	cl := holderTestClient(instance, iface)
+	patched := false
+	cl := fake.NewClientBuilder().WithScheme(newClaimTestScheme()).WithObjects(instance, iface).
+		WithStatusSubresource(iface, instance).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, cl client.Client, subresource string, object client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			data, err := patch.Data(object)
+			require.NoError(t, err)
+			merged, err := jsonpatch.MergePatch([]byte(`{"status":{"dns":{"nameservers":["fd53::53"],"searches":["datum.internal"]}}}`), data)
+			require.NoError(t, err)
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(merged, &result))
+			dns := result["status"].(map[string]any)["dns"].(map[string]any)
+			require.Equal(t, []any{"fd53::53"}, dns["nameservers"])
+			require.Equal(t, []any{"datum.internal"}, dns["searches"])
+			patched = true
+			return cl.SubResource(subresource).Patch(ctx, object, patch, opts...)
+		},
+	}).Build()
 
 	r := &InstanceReconciler{NetworkingEnabled: true}
 	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, instance))
@@ -175,9 +193,7 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 	assert.Equal(t, computev1alpha.InstanceAvailableReasonAvailable, condition.Reason)
 	assert.Equal(t, int64(4), condition.ObservedGeneration,
 		"the interface's generation, not the instance's")
-	var current networkingv1alpha.NetworkInterface
-	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(iface), &current))
-	require.Equal(t, iface.Status.DNS, current.Status.DNS)
+	require.True(t, patched)
 }
 
 // TestReconcileHolderAvailability_LeavesAvailable covers the drain path: an
