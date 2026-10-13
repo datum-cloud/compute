@@ -80,7 +80,7 @@ func TestReportPublicationPreservesRuntimeStatus(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(instance).WithStatusSubresource(instance).Build()
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
 	r := &InternalDNSPublisherReconciler{}
-	network := networkingv1alpha.NetworkRef{Name: "prod", Namespace: internalDNSTestNamespace}
+	network := networkingv1alpha.NetworkRef{Name: internalDNSTestNetworkName, Namespace: internalDNSTestNamespace}
 	require.NoError(t, r.reportPublication(context.Background(), cl, instance, []computev1alpha.InstanceDNSStatus{{Network: network}}))
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
 	require.Equal(t, metav1.ConditionTrue, instance.Status.Conditions[0].Status)
@@ -89,7 +89,7 @@ func TestReportPublicationPreservesRuntimeStatus(t *testing.T) {
 }
 
 func TestPublicationStatusMatchesNamespacedNetworkReference(t *testing.T) {
-	network := networkingv1alpha.NetworkRef{Name: "prod", Namespace: internalDNSTestNamespace}
+	network := networkingv1alpha.NetworkRef{Name: internalDNSTestNetworkName, Namespace: internalDNSTestNamespace}
 	transition := metav1.NewTime(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
 	for _, tc := range []struct {
 		name    string
@@ -97,8 +97,8 @@ func TestPublicationStatusMatchesNamespacedNetworkReference(t *testing.T) {
 		matches bool
 	}{
 		{name: "same network", network: network, matches: true},
-		{name: "different name", network: networkingv1alpha.NetworkRef{Name: "other", Namespace: network.Namespace}},
-		{name: "same name in another namespace", network: networkingv1alpha.NetworkRef{Name: network.Name, Namespace: "other"}},
+		{name: "different name", network: networkingv1alpha.NetworkRef{Name: "another-network", Namespace: network.Namespace}},
+		{name: "same name in another namespace", network: networkingv1alpha.NetworkRef{Name: network.Name, Namespace: "another-namespace"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := runtime.NewScheme()
