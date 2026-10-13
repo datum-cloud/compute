@@ -223,7 +223,7 @@ async function requestComputeEntitlement(projectId: string): Promise<void> {
   }
 }
 
-export function useRequestComputeAccess(
+export function useEnableCompute(
   projectId: string | undefined
 ): UseMutationResult<void, ApiError, void> {
   const queryClient = useQueryClient();

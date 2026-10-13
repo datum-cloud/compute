@@ -208,9 +208,8 @@ function MetricCell({
   );
 }
 
-/** The "Deploy a workload" / "List & inspect workloads" cards — datumctl handles enabling
- * Compute itself (the same "Would you like to request access?" prompt the banner's button
- * triggers), so these commands work whether or not Compute is enabled yet. */
+/** The "Deploy a workload" / "List & inspect workloads" cards — datumctl enables
+ * Compute on first use, so these commands work whether or not it is enabled yet. */
 function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
   return (
     <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
