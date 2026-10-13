@@ -255,10 +255,9 @@ kind: DNSRegistration
 metadata:
   name: instance-web-01
 spec:
-  # Select the context's DNS-allocated managed zone and pin its lifetime.
+  # Select the context's DNS-allocated managed zone by name.
   dnsZoneRef:
     name: managed-application
-    uid: 55555555-5555-4555-8555-555555555555
   # Reserve the allocated instance name within this VPC's managed zone.
   name: web-01
   recordTypes: [A, AAAA]
