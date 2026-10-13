@@ -31,7 +31,10 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 		}, wantErr: true},
 		{name: "stale programming generation", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
 			i.Generation++
-		}},
+		}, wantErr: true},
+		{name: "unknown interface programming", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
+			i.Status.Conditions[1].Status = metav1.ConditionUnknown
+		}, wantErr: true},
 		{name: "different network", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
 			i.Spec.Network.Name = internalDNSTestForeignValue
 		}},

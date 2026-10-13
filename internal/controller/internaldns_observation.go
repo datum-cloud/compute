@@ -109,11 +109,19 @@ func observeProgrammedInterface(ctx context.Context, reader client.Reader, curre
 	if iface.UID == "" || !iface.DeletionTimestamp.IsZero() || iface.Spec.Network.Name != nic.Network.Name || iface.Spec.InterfaceName != internalDNSInterfaceName(nic) || iface.Spec.ClaimRef == nil {
 		return nil, nil
 	}
+	unknown := false
 	for _, kind := range []string{"Allocated", "Programmed"} {
 		condition := apimeta.FindStatusCondition(iface.Status.Conditions, kind)
-		if condition == nil || condition.Status != metav1.ConditionTrue || condition.ObservedGeneration != iface.Generation {
+		if condition == nil || condition.ObservedGeneration != iface.Generation || condition.Status == metav1.ConditionUnknown {
+			unknown = true
+			continue
+		}
+		if condition.Status == metav1.ConditionFalse {
 			return nil, nil
 		}
+	}
+	if unknown {
+		return nil, fmt.Errorf("interface %q programming health is unknown", iface.Name)
 	}
 	if iface.Spec.ClaimRef.Name != networkInterfaceClaimName(current.Name, internalDNSInterfaceName(nic)) {
 		return nil, fmt.Errorf("interface is held by a different instance slot")
