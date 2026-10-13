@@ -22,18 +22,19 @@ import (
 )
 
 const (
-	internalDNSTestProjectUID           = "project-a"
-	internalDNSTestNamespace            = "dns-test"
-	internalDNSTestDefaultDomain        = "datum.internal"
-	internalDNSTestInstanceName         = "api"
-	internalDNSTestInstanceUID          = "dns-instance-uid"
-	internalDNSTestEdgeUID              = "dns-edge-instance"
-	internalDNSTestForeignValue         = "dns-unauthorized"
-	internalDNSTestSubject              = "system:serviceaccount:dns-test:publisher"
-	internalDNSTestObservationNamespace = "dns-observation-project"
-	internalDNSTestNetworkName          = "dns-application"
-	internalDNSTestVPCUID               = "dns-test-vpc"
-	internalDNSTestSourceAPIUID         = "dns-project-api"
+	internalDNSTestDiscoveredProjectName = "project-b"
+	internalDNSTestProjectUID            = "project-a"
+	internalDNSTestNamespace             = "dns-test"
+	internalDNSTestDefaultDomain         = "datum.internal"
+	internalDNSTestInstanceName          = "api"
+	internalDNSTestInstanceUID           = "dns-instance-uid"
+	internalDNSTestEdgeUID               = "dns-edge-instance"
+	internalDNSTestForeignValue          = "dns-unauthorized"
+	internalDNSTestSubject               = "system:serviceaccount:dns-test:publisher"
+	internalDNSTestObservationNamespace  = "dns-observation-project"
+	internalDNSTestNetworkName           = "dns-application"
+	internalDNSTestVPCUID                = "dns-test-vpc"
+	internalDNSTestSourceAPIUID          = "dns-project-api"
 )
 
 func TestInstanceDNSAttachmentsMapsTenancyAndAddressFamilies(t *testing.T) {
@@ -98,7 +99,7 @@ func TestFindResolverContextRequiresProjectAndVPCUID(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "right", got.GetName())
 
-	got, err = findResolverContext(context.Background(), cl, internalDNSTestNamespace, "project-b", internalDNSTestVPCUID)
+	got, err = findResolverContext(context.Background(), cl, internalDNSTestNamespace, internalDNSTestDiscoveredProjectName, internalDNSTestVPCUID)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -181,10 +182,10 @@ func TestDNSProjectIdentityDiscoversNewProjectsAndReplacementIdentities(t *testi
 	require.NoError(t, resourcemanagerv1alpha1.AddToScheme(scheme))
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	resolve := InternalDNSProjectIdentityResolver(cl)
-	_, err := resolve(context.Background(), "project-b")
+	_, err := resolve(context.Background(), internalDNSTestDiscoveredProjectName)
 	require.Error(t, err)
 
-	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "project-b", UID: "project-b-first"}}
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestDiscoveredProjectName, UID: "project-b-first"}}
 	require.NoError(t, cl.Create(context.Background(), project))
 	identity, err := resolve(context.Background(), project.Name)
 	require.NoError(t, err)
@@ -204,8 +205,8 @@ func TestDNSProjectIdentityRejectsInactiveProjectsAndReadFailures(t *testing.T) 
 	require.NoError(t, resourcemanagerv1alpha1.AddToScheme(scheme))
 	now := metav1.Now()
 	for _, project := range []*resourcemanagerv1alpha1.Project{
-		{ObjectMeta: metav1.ObjectMeta{Name: "project-b"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "project-b", UID: "project-b", DeletionTimestamp: &now, Finalizers: []string{"test.datum.net/cleanup"}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestDiscoveredProjectName}},
+		{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestDiscoveredProjectName, UID: internalDNSTestDiscoveredProjectName, DeletionTimestamp: &now, Finalizers: []string{"test.datum.net/cleanup"}}},
 	} {
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project).Build()
 		_, err := InternalDNSProjectIdentityResolver(cl)(context.Background(), project.Name)
@@ -213,7 +214,7 @@ func TestDNSProjectIdentityRejectsInactiveProjectsAndReadFailures(t *testing.T) 
 	}
 	unavailable := errors.New("project API unavailable")
 	reader := &unavailableDNSProjectReader{err: unavailable}
-	_, err := InternalDNSProjectIdentityResolver(reader)(context.Background(), "project-b")
+	_, err := InternalDNSProjectIdentityResolver(reader)(context.Background(), internalDNSTestDiscoveredProjectName)
 	require.ErrorIs(t, err, unavailable)
 }
 
