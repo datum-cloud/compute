@@ -401,10 +401,10 @@ func allocatedDNSNamespace(resolver *unstructured.Unstructured) (string, map[str
 	suffix, _, _ := unstructured.NestedString(resolver.Object, internalDNSStatusField, "managedNamespace", "suffix")
 	suffix = strings.TrimSuffix(strings.ToLower(suffix), ".")
 	zoneRef, _, _ := unstructured.NestedMap(resolver.Object, internalDNSStatusField, "managedNamespace", internalDNSZoneRefField)
-	if len(validation.IsDNS1123Subdomain(suffix)) > 0 || stringValue(zoneRef, internalDNSNameField) == "" {
+	if len(validation.IsDNS1123Subdomain(suffix)) > 0 || referenceName(zoneRef) == "" {
 		return "", nil, fmt.Errorf("DNS context %q has no valid allocated namespace", resolver.GetName())
 	}
-	return suffix, map[string]any{internalDNSNameField: stringValue(zoneRef, internalDNSNameField)}, nil
+	return suffix, map[string]any{internalDNSNameField: referenceName(zoneRef)}, nil
 }
 
 func unstructuredConditionCurrent(obj *unstructured.Unstructured, conditionType string) bool {
@@ -512,8 +512,8 @@ func objectReference(obj *unstructured.Unstructured) map[string]any {
 	return ref
 }
 
-func stringValue(values map[string]any, key string) string {
-	value, _ := values[key].(string)
+func referenceName(values map[string]any) string {
+	value, _ := values[internalDNSNameField].(string)
 	return value
 }
 
