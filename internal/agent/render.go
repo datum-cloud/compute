@@ -129,8 +129,9 @@ type WorkloadRenderOutput struct {
 // registerRenderTool adds compute_workload_render to s.
 func registerRenderTool(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolWorkloadRender,
-		Title: "Render a workload manifest",
+		Name:        ToolWorkloadRender,
+		Annotations: readOnly(),
+		Title:       "Render a workload manifest",
 		Description: "Turn a short description of a deployment — name, image, where, how many — into a " +
 			"complete Workload manifest, and report what rendering it settled. Nothing is read and nothing " +
 			"is changed, so render as often as it takes to get the manifest right. Read the manifest that " +
