@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { federation } from '@module-federation/vite';
+import { sentryVitePlugin } from '@sentry/vite-plugin';
 import react from '@vitejs/plugin-react';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -105,6 +106,9 @@ export default defineConfig(({ command }) => {
     },
     build: {
       target: 'esnext',
+      // Maps for Sentry (below); no sourceMappingURL comment, so browsers
+      // never request them. The Dockerfile drops them from the image.
+      sourcemap: 'hidden',
     },
     experimental: {
       renderBuiltUrl(_filename, { hostType }) {
@@ -170,6 +174,18 @@ export default defineConfig(({ command }) => {
           '@datum-cloud/datum-ui/skeleton': hostShared(false),
           '@datum-cloud/datum-ui/table': hostShared(false),
         },
+      }),
+      // The plugin runs inside cloud-portal, so its errors reach the portal's
+      // Sentry project. Debug IDs tie frames to these maps without a release,
+      // since the portal's release names its own build, not this plugin's.
+      // No token (local builds, forks) skips the upload.
+      sentryVitePlugin({
+        org: 'sentry',
+        project: 'cloud-portal',
+        authToken: process.env.SENTRY_AUTH_TOKEN,
+        disable: command !== 'build' || !process.env.SENTRY_AUTH_TOKEN,
+        release: { create: false, finalize: false, inject: false },
+        telemetry: false,
       }),
     ],
   };

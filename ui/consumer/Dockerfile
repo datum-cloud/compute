@@ -41,7 +41,11 @@ RUN bun install --frozen-lockfile
 COPY ui/consumer/ .
 COPY --from=console-wasm /out/ /console-wasm/
 ENV CONSOLE_WASM_DIR=/console-wasm
-RUN bun run build
+# Forwarded by publish-docker; the build uploads source maps to Sentry when set.
+# Only this stage sees it: the final image copies dist/ alone.
+ARG SENTRY_AUTH_TOKEN
+# Maps go to Sentry, not the image: serve.ts serves every file in dist/.
+RUN bun run build && find dist -name '*.map' -delete
 
 FROM oven/bun:1-slim
 WORKDIR /app
