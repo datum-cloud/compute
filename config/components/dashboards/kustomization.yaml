@@ -22,3 +22,11 @@ configMapGenerator:
       labels:
         app.kubernetes.io/part-of: compute
         app.kubernetes.io/component: monitoring
+  - name: compute-overview-dashboard
+    files:
+      - overview.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: compute
+        app.kubernetes.io/component: monitoring

@@ -65,6 +65,10 @@ includes:
     taskfile: observability/dashboards/shell-sessions/Taskfile.yaml
     dir: observability/dashboards/shell-sessions
     internal: true
+  overview-dashboard:
+    taskfile: observability/dashboards/overview/Taskfile.yaml
+    dir: observability/dashboards/overview
+    internal: true
 
 # ─── Tasks ──────────────────────────────────────────────────────────────────
 
@@ -92,11 +96,13 @@ tasks:
     desc: "Fetch grafonnet into each dashboard's vendor/ directory"
     cmds:
       - task: shell-sessions-dashboard:install
+      - task: overview-dashboard:install
 
   dashboards:build:
     desc: "Render every dashboard JSON into config/components/dashboards/"
     cmds:
       - task: shell-sessions-dashboard:build
+      - task: overview-dashboard:build
 
   # ════════════════════════════════════════════════════════════════════════
   #  e2e environment lifecycle
