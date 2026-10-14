@@ -113,13 +113,7 @@ const (
 	// alpha: v0.1
 	InstanceConsoleSessions featuregate.Feature = "InstanceConsoleSessions"
 
-	// InternalDNSPublishing enables the instance identity publisher. The
-	// publisher reads DNS contexts and independently issued grants and writes
-	// registrations and leased contributions to project control planes.
-	// It is deliberately off by default: an installation with the gate disabled
-	// neither discovers DNS API types nor needs DNS RBAC.
-	//
-	// alpha: v0.1
+	// InternalDNSPublishing publishes instance records into project DNS contexts.
 	InternalDNSPublishing featuregate.Feature = "InternalDNSPublishing"
 )
 
