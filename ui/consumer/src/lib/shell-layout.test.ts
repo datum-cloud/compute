@@ -28,10 +28,25 @@ describe('shellLayout', () => {
 });
 
 describe('terminalHeight', () => {
-  test('keeps the fixed height on a wide screen', () => {
+  test('keeps the fixed height on a wide screen until the page is measured', () => {
     expect(terminalHeight({ inWindow: false, narrow: false, viewportHeight: 300 })).toBe(
       TERMINAL_HEIGHT
     );
+  });
+
+  test('fills the space the page has on a wide screen', () => {
+    expect(
+      terminalHeight({ inWindow: false, narrow: false, viewportHeight: 1200, pageSpace: 812.6 })
+    ).toBe(812);
+    expect(
+      terminalHeight({ inWindow: false, narrow: false, viewportHeight: 600, pageSpace: 90 })
+    ).toBe(MIN_TERMINAL_HEIGHT);
+  });
+
+  test('keeps the keyboard-aware height on a phone whatever the page measures', () => {
+    expect(
+      terminalHeight({ inWindow: false, narrow: true, viewportHeight: 844, pageSpace: 700 })
+    ).toBe(TERMINAL_HEIGHT);
   });
 
   test('shrinks with the visual viewport when the keyboard opens', () => {
