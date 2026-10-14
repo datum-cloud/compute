@@ -105,8 +105,6 @@ export default defineConfig(({ command }) => {
     },
     build: {
       target: 'esnext',
-      // Keep the plugin readable when inspecting the built bundle.
-      minify: false,
     },
     experimental: {
       renderBuiltUrl(_filename, { hostType }) {
