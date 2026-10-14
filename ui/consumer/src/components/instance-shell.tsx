@@ -181,25 +181,56 @@ function useViewport() {
   return size;
 }
 
+function scrollParent(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if (overflow === 'auto' || overflow === 'scroll') return node;
+  }
+  return null;
+}
+
+// pageSpace is how tall the terminal can be for the shell's bottom edge to
+// meet the bottom of the portal's scroll area when it isn't scrolled, so the
+// whole shell fits on screen. It is measured from the top of the scrolled
+// content, so it holds steady while the page scrolls.
+function pageSpace(root: HTMLElement, region: HTMLElement, scroller: HTMLElement | null): number {
+  const rect = region.getBoundingClientRect();
+  const below = root.getBoundingClientRect().bottom - rect.bottom;
+  if (!scroller) return window.innerHeight - (rect.top + window.scrollY) - below;
+  const origin = scroller.getBoundingClientRect().top + scroller.clientTop;
+  const padding = parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
+  const top = rect.top - origin + scroller.scrollTop;
+  return scroller.clientHeight - padding - top - below;
+}
+
 function useTerminalHeight(
   inWindow: boolean,
   narrow: boolean,
   viewportHeight: number,
-  rootRef: RefObject<HTMLDivElement | null>,
+  rootRef: RefObject<HTMLElement | null>,
   regionRef: RefObject<HTMLDivElement | null>
 ): number {
-  const [edges, setEdges] = useState({ top: 0, below: 0 });
+  const [edges, setEdges] = useState<{ top: number; below: number; pageSpace?: number }>({
+    top: 0,
+    below: 0,
+  });
   useLayoutEffect(() => {
     const root = rootRef.current;
     const region = regionRef.current;
-    if (!inWindow || !root || !region) return;
+    if (!root || !region) return;
+    const scroller = inWindow ? null : scrollParent(root);
     const update = () => {
+      if (!inWindow) {
+        setEdges({ top: 0, below: 0, pageSpace: pageSpace(root, region, scroller) });
+        return;
+      }
       const below = root.getBoundingClientRect().bottom - region.getBoundingClientRect().bottom;
       setEdges({ top: region.getBoundingClientRect().top, below });
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(root);
+    if (!inWindow) observer.observe(scroller ?? document.documentElement);
     const stop = onViewportChange(update);
     return () => {
       observer.disconnect();
@@ -514,6 +545,7 @@ export function InstanceShell(props: InstanceShellProps) {
   const terminalRef = useRef<Terminal | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
   const regionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -544,7 +576,13 @@ export function InstanceShell(props: InstanceShellProps) {
   const showTerminal = active || (ended && reachedShell);
   const viewport = useViewport();
   const layout = shellLayout(viewport.width, viewport.coarse);
-  const height = useTerminalHeight(inWindow, layout.narrow, viewport.height, rootRef, regionRef);
+  const height = useTerminalHeight(
+    inWindow,
+    layout.narrow,
+    viewport.height,
+    inWindow ? rootRef : sectionRef,
+    regionRef
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -724,6 +762,7 @@ export function InstanceShell(props: InstanceShellProps) {
 
   return (
     <section
+      ref={sectionRef}
       aria-label="Shell"
       className="bg-card overflow-hidden rounded-lg border"
       data-testid="compute-plugin-instance-shell">
