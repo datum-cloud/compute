@@ -159,7 +159,8 @@ func main() {
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
 		"A set of key=value pairs that describe feature gates for the compute operator. "+
 			"Example: --feature-gates=NetworkingIntegration=true. "+
-			"Available features: NetworkingIntegration, PodNetworkAttachment, RuntimeClasses, InstanceTypes, InstanceConsoleSessions, "+
+			"Available features: NetworkingIntegration, PodNetworkAttachment, RuntimeClasses, InstanceTypes, "+
+			"InstanceConsoleSessions, "+
 			"InternalDNSPublishing (all default=false).")
 
 	opts := zap.Options{
