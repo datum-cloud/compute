@@ -162,8 +162,8 @@ server you want running:
 - **`portal.nav/project`** — **Compute** under Build (`section: "build"`,
   `order: 10`), with `serviceRef: "compute.datumapis.com"` (canonical Service
   `spec.serviceName`). Every project opens the live `path: ""` mount; one
-  without an Active entitlement for that service lands on the same page and
-  gets the enablement UI there.
+  without an Active entitlement for that service lands on the same page, which
+  enables Compute for it (the service is self-service) before loading.
 
   The soft launch is over, so the `comingSoon` / `comingSoonMode` /
   `roadmapUrl` trio is gone. While `comingSoon` was set, the portal showed a

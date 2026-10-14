@@ -15,6 +15,7 @@ const ENTITLEMENT_KEY = [PLUGIN_ID, 'compute-entitlement', PROJECT_ID];
 const HOST_ACTIVE_ENTITLEMENTS_KEY = ['service-entitlements', 'active', PROJECT_ID];
 const HOST_KEYS = [['http-proxies'], ['network-services'], ['compute-workloads'], ['domains']];
 const POLL_INTERVAL_MS = 10_000;
+const ENABLING_POLL_INTERVAL_MS = 2_000;
 
 const realFetch = globalThis.fetch;
 let fetchCalls: string[] = [];
@@ -82,14 +83,16 @@ describe('workload polling', () => {
 });
 
 describe('compute entitlement', () => {
-  test('the entitlement query polls every 10s while not Active and stops when Active', () => {
+  test('the entitlement query polls fast while activating, slowly otherwise, and stops when Active', () => {
     const client = hostQueryClient();
     const options = computeEntitlementQueryOptions(PROJECT_ID);
     const query = client.getQueryCache().build(client, options);
     const interval = options.refetchInterval;
     if (typeof interval !== 'function') throw new Error('refetchInterval must depend on the phase');
 
-    const phases: ComputeEntitlement['phase'][] = [null, 'PendingApproval', 'Rejected'];
+    query.setData({ phase: 'PendingApproval' });
+    expect(interval(query)).toBe(ENABLING_POLL_INTERVAL_MS);
+    const phases: ComputeEntitlement['phase'][] = [null, 'Rejected'];
     for (const phase of phases) {
       query.setData({ phase });
       expect(interval(query)).toBe(POLL_INTERVAL_MS);
