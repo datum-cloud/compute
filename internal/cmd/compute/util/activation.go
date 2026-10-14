@@ -24,9 +24,8 @@ const ComputeServiceName = "compute.datumapis.com"
 // catalog.
 //
 // The SDK reads the enablement mode and description from the live Service
-// instead of a hand-written copy. Without the mode, the SDK treats compute as
-// self-service. The gate would then submit access requests without asking,
-// including from CI, even though compute requires provider approval.
+// instead of a hand-written copy, so commands follow the published
+// self-service policy and can enable Compute on first use.
 func ResolveComputeService(ctx context.Context) (activation.ServiceInfo, error) {
 	cfg, err := restConfig(func(apiHost string) string { return "https://" + apiHost })
 	if err != nil {

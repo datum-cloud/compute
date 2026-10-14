@@ -206,8 +206,9 @@ about them explicitly rather than defaulting them quietly.
 Two things are outside your reach entirely. You cannot build or push a
 container image: it must already exist in a registry, fully qualified, and be
 built for the runtime Datum runs it on — `datumctl compute build` is the step
-the customer runs. And you cannot enable Compute for a project or grant it
-quota; both are Datum's to give.
+the customer runs. These tools cannot enable Compute or change quota. The
+customer can enable Compute with `datumctl services enable compute.datumapis.com`;
+default quota is provisioned when the service becomes active.
 
 Writing is a sequence, not a call. `compute_workload_render` turns inputs into
 a Workload manifest and touches nothing. The rest is the platform's own change

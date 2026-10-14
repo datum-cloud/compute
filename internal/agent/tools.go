@@ -171,13 +171,21 @@ type ReasonExplainOutput struct {
 
 // ------------------------------------------------------------ registration
 
+// readOnly is the annotation every tool here carries: each one reads, and none
+// changes anything, so a client may run them without asking first.
+func readOnly() *mcp.ToolAnnotations {
+	notDestructive := false
+	return &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &notDestructive, IdempotentHint: true}
+}
+
 // RegisterTools adds every tool compute publishes to s. deps is consulted per
 // call rather than captured once, so no caller can inherit another's identity
 // or project.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolWorkloadsList,
-		Title: "List workloads",
+		Name:        ToolWorkloadsList,
+		Annotations: readOnly(),
+		Title:       "List workloads",
 		Description: "List every Workload in the project with its availability, ready/desired replicas, " +
 			"and — when it is not fully available — the root-cause reason, how long it has held that " +
 			"state (rootCauseFor, e.g. \"5d\"), how long the failing object has existed " +
@@ -187,24 +195,27 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, workloadsList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolWorkloadsGet,
-		Title: "Get workload detail",
+		Name:        ToolWorkloadsGet,
+		Annotations: readOnly(),
+		Title:       "Get workload detail",
 		Description: "Get one Workload by name with its full condition tree: workload conditions, its " +
 			"placements, every WorkloadDeployment, and every Instance with their conditions. Use when " +
 			"you need the raw status rather than a diagnosis. Read-only.",
 	}, workloadsGet(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolInstancesList,
-		Title: "List instances",
+		Name:        ToolInstancesList,
+		Annotations: readOnly(),
+		Title:       "List instances",
 		Description: "List Instances, optionally filtered to one workload, with each instance's conditions " +
 			"(Ready, Available, Programmed, QuotaGranted, ReferencedDataReady). Use to see how a failure " +
 			"is distributed across replicas. Read-only.",
 	}, instancesList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolWorkloadDiagnose,
-		Title: "Diagnose workload",
+		Name:        ToolWorkloadDiagnose,
+		Annotations: readOnly(),
+		Title:       "Diagnose workload",
 		Description: "Diagnose why a Workload is not available. Walks Workload -> WorkloadDeployment -> " +
 			"Instance, follows compute's pointer reasons (QuotaNotGranted, NoAvailablePlacements, " +
 			"ReferencedDataNotReady) down to the condition that names the real cause, and returns that " +
@@ -219,8 +230,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, workloadDiagnose(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolReasonExplain,
-		Title: "Explain a condition reason",
+		Name:        ToolReasonExplain,
+		Annotations: readOnly(),
+		Title:       "Explain a condition reason",
 		Description: "Explain any compute condition reason (e.g. \"QuotaExceeded\", \"ImageUnavailable\", " +
 			"\"LocationMismatch\"): what it means, which condition types carry it, whether it is " +
 			"user-actionable, a platform fault, or transient, how long a transient one should take " +

@@ -41,8 +41,9 @@ type InstanceTypesListOutput struct {
 // registerInstanceTypesTool adds compute_instance_types_list to s.
 func registerInstanceTypesTool(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolInstanceTypesList,
-		Title: "List instance types",
+		Name:        ToolInstanceTypesList,
+		Annotations: readOnly(),
+		Title:       "List instance types",
 		Description: "List the instance types a Workload may ask for, with the vCPU and memory each one " +
 			"provides and which is the default. Only these names are accepted — a Workload naming any " +
 			"other is rejected the moment it is submitted, so never invent a size. Read-only.",

@@ -13,6 +13,7 @@ cd "$REPO_ROOT"
 
 readonly GENERATED_PATHS=(
   config/components/dashboards/shell-sessions.json
+  config/components/dashboards/overview.json
 )
 
 readonly FIX_STEPS=(

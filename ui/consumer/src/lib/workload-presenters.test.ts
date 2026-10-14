@@ -7,6 +7,7 @@ import {
   newestFirst,
   instanceFailureSummary,
   instanceStatusLabel,
+  matchesWorkloadSearch,
   statusLabel,
 } from './workload-presenters';
 import type { Instance, Workload, WorkloadHealth } from '../schema';
@@ -219,5 +220,50 @@ describe('instanceStatusLabel', () => {
     expect(
       instanceStatusLabel(instance('a', [{ type: 'Available', status: 'True' }], 'Available'))
     ).toBe('Available');
+  });
+});
+
+
+describe('matchesWorkloadSearch', () => {
+  const api: Workload = {
+    ...workload('api-gateway', 'Available', '2026-01-01'),
+    image: 'ghcr.io/acme/api:1.4.2',
+    runtimeType: 'sandbox',
+    tags: ['production', 'team-core'],
+    locations: ['us-central1-a', 'eu-west1-b'],
+    networks: ['default', 'payments-vpc'],
+  };
+
+  test('an empty or whitespace query matches everything', () => {
+    expect(matchesWorkloadSearch(api, '')).toBe(true);
+    expect(matchesWorkloadSearch(api, '   ')).toBe(true);
+  });
+
+  test('matches on name, case-insensitively and on a partial', () => {
+    expect(matchesWorkloadSearch(api, 'API-GATE')).toBe(true);
+    expect(matchesWorkloadSearch(api, 'gateway')).toBe(true);
+  });
+
+  test('matches on image, runtime type, tags, locations and networks', () => {
+    expect(matchesWorkloadSearch(api, 'ghcr.io/acme')).toBe(true);
+    expect(matchesWorkloadSearch(api, 'sandbox')).toBe(true);
+    expect(matchesWorkloadSearch(api, 'team-core')).toBe(true);
+    expect(matchesWorkloadSearch(api, 'eu-west1')).toBe(true);
+    // The table's own search covered networks before it moved up to the page.
+    expect(matchesWorkloadSearch(api, 'payments-vpc')).toBe(true);
+  });
+
+  test('matches on the published hostname when one is supplied', () => {
+    expect(matchesWorkloadSearch(api, 'shop.example.com')).toBe(false);
+    expect(matchesWorkloadSearch(api, 'shop.example.com', 'shop.example.com')).toBe(true);
+  });
+
+  test('rejects a query that matches no field', () => {
+    expect(matchesWorkloadSearch(api, 'database')).toBe(false);
+  });
+
+  test('tolerates a workload with no optional fields set', () => {
+    expect(matchesWorkloadSearch(workload('bare', 'Unknown', '2026-01-01'), 'bare')).toBe(true);
+    expect(matchesWorkloadSearch(workload('bare', 'Unknown', '2026-01-01'), 'nope')).toBe(false);
   });
 });

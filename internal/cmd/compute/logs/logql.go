@@ -4,9 +4,9 @@ package logs
 
 import (
 	"regexp"
-	"slices"
-	"strconv"
 	"strings"
+
+	"go.miloapis.com/telemetry/cli/logql"
 )
 
 // Stream labels on compute logs. The collector's OTel attributes
@@ -41,74 +41,6 @@ const (
 	labelForwardedFor  = "x_forwarded_for"
 )
 
-type matcher struct {
-	label string
-	op    string
-	value string
-}
-
-// selector is one LogQL stream selector with an optional line filter. The
-// query API rejects `{a} or {b}`, so every filter must fit in one.
-type selector struct {
-	matchers []matcher
-	search   string
-}
-
-func (s *selector) eq(label, value string) {
-	s.matchers = append(s.matchers, matcher{label, "=", value})
-}
-
-func (s *selector) re(label, pattern string) {
-	s.matchers = append(s.matchers, matcher{label, "=~", pattern})
-}
-
-func (s *selector) oneOf(label string, values []string) {
-	switch len(values) {
-	case 0:
-	case 1:
-		s.eq(label, values[0])
-	default:
-		s.re(label, alternation(values))
-	}
-}
-
-// noneOf excludes values. A stream without the label still matches.
-func (s *selector) noneOf(label string, values []string) {
-	switch len(values) {
-	case 0:
-	case 1:
-		s.matchers = append(s.matchers, matcher{label, "!=", values[0]})
-	default:
-		s.matchers = append(s.matchers, matcher{label, "!~", alternation(values)})
-	}
-}
-
-func (s selector) clone() selector {
-	s.matchers = slices.Clone(s.matchers)
-	return s
-}
-
-// String renders the selector; LogQL string literals use Go quoting.
-func (s selector) String() string {
-	parts := make([]string, len(s.matchers))
-	for i, m := range s.matchers {
-		parts[i] = m.label + m.op + strconv.Quote(m.value)
-	}
-	q := "{" + strings.Join(parts, ", ") + "}"
-	if s.search != "" {
-		q += " |= " + strconv.Quote(s.search)
-	}
-	return q
-}
-
-func alternation(values []string) string {
-	escaped := make([]string, len(values))
-	for i, v := range values {
-		escaped[i] = regexp.QuoteMeta(v)
-	}
-	return strings.Join(escaped, "|")
-}
-
 // locationPattern matches a workload's instances in the given locations by
 // name: <workload>-<placement>-<location>-<ordinal>, location lowercased. No
 // log label carries the location yet; once the collector stamps one
@@ -119,9 +51,9 @@ func locationPattern(workload string, locations []string) string {
 	for i, l := range locations {
 		lower[i] = strings.ToLower(l)
 	}
-	return regexp.QuoteMeta(workload) + "-.+-(" + alternation(lower) + ")-[0-9]+"
+	return regexp.QuoteMeta(workload) + "-.+-(" + logql.Alternation(lower...) + ")-[0-9]+"
 }
 
 func albRoutePattern(proxies []string) string {
-	return "httproute/[^/]+/(" + alternation(proxies) + ")/.*"
+	return "httproute/[^/]+/(" + logql.Alternation(proxies...) + ")/.*"
 }

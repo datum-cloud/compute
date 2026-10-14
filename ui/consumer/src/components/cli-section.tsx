@@ -119,10 +119,7 @@ export function SectionCard({
 
 /**
  * Shared shell for the plugin's full-width banners: icon + title/description
- * on the left, an actions slot on the right. Used by `CliBanner` below and by
- * `ComputeEnablementBanner` (compute-enablement-banner.tsx) so the two share
- * one place to adjust spacing/colors/responsive behavior instead of drifting
- * apart as separately hand-rolled markup.
+ * on the left, an actions slot on the right. Used by `CliBanner` below.
  */
 export function Banner({
   icon,

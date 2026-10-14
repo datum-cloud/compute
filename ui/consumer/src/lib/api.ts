@@ -23,6 +23,7 @@ import { toInstance, toInstanceList, toWorkload, toWorkloadList, INSTANCE_LABELS
 import { anyAlbProvisioning } from './alb-status';
 import type { RawInstance, RawInstanceList, RawWorkload, RawWorkloadList } from '../adapter';
 import type { Instance, Workload } from '../schema';
+import { useEffect } from 'react';
 import {
   mutationOptions,
   queryOptions,
@@ -44,6 +45,8 @@ export const PLUGIN_ID = 'workload.compute.datumapis.com';
 
 /** Live-ish polling interval — the v1 substitute for watch-stream updates. */
 const REFETCH_INTERVAL_MS = 10_000;
+/** While a just-created entitlement activates, which self-service does in moments. */
+const ENABLING_REFETCH_INTERVAL_MS = 2_000;
 /** While a workload or its load balancer is coming up, so the page catches up as soon as it serves. */
 const DEPLOYING_REFETCH_INTERVAL_MS = 3_000;
 
@@ -130,6 +133,10 @@ export function useWorkloads(
 // entitlement is a cluster-scoped resource in the project's own control
 // plane (services.miloapis.com/v1alpha1), fetched/created through the same
 // proxy as everything else above.
+//
+// Compute is self-service, so the catalog activates a new entitlement
+// straight away. `useComputeEnablement` creates it on first visit, the same
+// way `datumctl compute deploy` does on first use, so there is no enable step.
 
 const SERVICE_ENTITLEMENTS_PATH = '/apis/services.miloapis.com/v1alpha1/serviceentitlements';
 
@@ -193,8 +200,12 @@ export function computeEntitlementQueryOptions(projectId: string | undefined) {
       }
       return next;
     },
-    // Wait for approval; an Active entitlement doesn't go back.
-    refetchInterval: (query) => (query.state.data?.phase === 'Active' ? false : REFETCH_INTERVAL_MS),
+    // Wait for activation; an Active entitlement doesn't go back.
+    refetchInterval: (query) => {
+      const phase = query.state.data?.phase;
+      if (phase === 'Active') return false;
+      return phase === 'PendingApproval' ? ENABLING_REFETCH_INTERVAL_MS : REFETCH_INTERVAL_MS;
+    },
     retry: false,
   });
 }
@@ -223,7 +234,7 @@ async function requestComputeEntitlement(projectId: string): Promise<void> {
   }
 }
 
-export function useRequestComputeAccess(
+export function useEnableCompute(
   projectId: string | undefined
 ): UseMutationResult<void, ApiError, void> {
   const queryClient = useQueryClient();
@@ -233,6 +244,50 @@ export function useRequestComputeAccess(
       void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'compute-entitlement', projectId] });
     },
   });
+}
+
+export interface ComputeEnablement {
+  /** The entitlement is Active, so the Compute API is usable. */
+  enabled: boolean;
+  /** Still finding out, or enabling and waiting for it to go Active. */
+  isLoading: boolean;
+  error: ApiError | null;
+  retry: () => void;
+}
+
+/**
+ * Compute's gate for a page: enables Compute for the project if it isn't yet,
+ * and reports loading until the entitlement is Active. A Rejected entitlement
+ * shouldn't happen under self-service, but it surfaces as an error rather
+ * than an endless skeleton.
+ */
+export function useComputeEnablement(projectId: string | undefined): ComputeEnablement {
+  const entitlement = useComputeEntitlement(projectId);
+  const enable = useEnableCompute(projectId);
+  const phase = entitlement.data?.phase;
+  const { mutate, isIdle } = enable;
+
+  // Once per mount: a failed request waits for `retry` rather than looping.
+  useEffect(() => {
+    if (projectId && phase === null && isIdle) mutate();
+  }, [projectId, phase, isIdle, mutate]);
+
+  const rejected =
+    phase === 'Rejected'
+      ? new ApiError(0, 'Compute could not be enabled for this project. Contact support.')
+      : null;
+  const error = entitlement.error ?? enable.error ?? rejected;
+  const enabled = phase === 'Active';
+
+  return {
+    enabled,
+    isLoading: !enabled && !error,
+    error,
+    retry: () => {
+      enable.reset();
+      void entitlement.refetch();
+    },
+  };
 }
 
 // ── Demo workload: "Global Mesh" ────────────────────────────────────────
