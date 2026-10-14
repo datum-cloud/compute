@@ -7,6 +7,15 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - configmaps
   - secrets
   verbs:
@@ -162,6 +171,7 @@ rules:
   - services.miloapis.com
   resources:
   - serviceavailabilities
+  - serviceconfigurations
   - serviceconsumers
   - services
   verbs:

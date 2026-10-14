@@ -36,7 +36,9 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    minify: false,
+    // Minified: the browser parses every byte of a plugin chunk on first load.
+    // Sourcemaps keep stack traces readable without shipping readable code.
+    sourcemap: true,
   },
   plugins: [
     react(),
@@ -51,6 +53,7 @@ export default defineConfig({
       exposes: {
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
+        './InstanceDetail': './src/pages/instance-detail.tsx',
         './FleetWorkloads': './src/pages/fleet-workloads.tsx',
         './ServiceOverview': './src/pages/service-overview.tsx',
       },

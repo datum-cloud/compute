@@ -1,0 +1,336 @@
+# E2E suite for the InstanceTypeProjector: InstanceTypes reach every cell.
+#
+# The management operator's InstanceTypeProjector publishes the instance type
+# catalog to the Karmada federation hub as cluster-scoped copies labelled
+# compute.datumapis.com/instance-type-catalog=true, ensures a single global
+# ClusterPropagationPolicy carries every labelled copy to every cell (empty
+# placement = "any member cluster"), and deletes a hub copy once the catalog no
+# longer declares the type, so cells drop the tier.
+#
+# In production the catalog is read from the compute ServiceConfiguration on the
+# Milo root. This environment runs discovery.mode=single, where the catalog is
+# the InstanceTypes on the one managed cluster (the control-plane cluster).
+#
+# Flow:
+#   1. Seed an Active catalog tier on the control-plane cluster.
+#   2. The projector writes a labelled hub copy carrying the type spec verbatim.
+#   3. It creates the "instance-types" ClusterPropagationPolicy on the hub.
+#   4. Karmada delivers the copy to both cell clusters (pop-dfw and pop-ord).
+#   5. Changing the tier's display name updates the hub copy and both cells.
+#   6. Deleting the hub copy by hand is repaired: the projector recreates it.
+#   7. Deleting the source type removes it from the catalog; the projector
+#      deletes the hub copy, cells drop the tier, and the (deliberately kept)
+#      policy survives for the next catalog entry.
+#
+# Cluster roles in this environment:
+#   - default (KUBECONFIG=control-plane.yaml): management cluster, where catalog
+#     types live and the management operator runs.
+#   - downstream (KUBECONFIG=downstream.yaml == karmada.yaml): the Karmada hub.
+#   - pop-dfw / pop-ord: the cell member clusters.
+#
+# The hub RBAC is the real config/base/downstream-rbac manifest applied to the
+# Karmada API (task e2e:federation:setup): the operator authenticates as
+# system:serviceaccount:compute-system:compute-manager, the exact subject the
+# compute-manager ClusterRole (extended with instancetypes CRUD) binds.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: instancetype-federation
+spec:
+  description: |
+    InstanceTypes seeded on the control-plane are projected to the Karmada hub,
+    propagated to every cell, and garbage-collected from the hub (and the cells)
+    when the type leaves the catalog.
+  template: true
+
+  steps:
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 1. SEED THE CATALOG TIER
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: seed-catalog-tier
+    description: |
+      Create the suite-owned Active InstanceType on the control-plane cluster.
+      The instance type webhook requires new tiers to be created Active; the
+      InstanceTypeReconciler marks it Ready.
+    try:
+    - apply:
+        file: catalog-type.yaml
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 2. HUB COPY + PROPAGATION POLICY ON KARMADA
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: assert-hub-copy
+    description: |
+      The projector upserted a cluster-scoped hub copy on the Karmada hub. It
+      carries the type spec verbatim (a cell must resolve identical resources)
+      and the catalog label the propagation policy selects on.
+    cluster: downstream
+    try:
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+            labels:
+              compute.datumapis.com/instance-type-catalog: "true"
+          spec:
+            resources:
+              cpu: 750m
+              memory: 1536Mi
+            lifecycle:
+              phase: Active
+
+  - name: assert-propagation-policy
+    description: |
+      The projector ensured the single global ClusterPropagationPolicy that
+      selects every catalog copy on the hub and targets every cell. The policy's
+      placement is empty (Karmada treats that as "any member cluster", i.e. all
+      cells), and conflictResolution=Overwrite so a compute-owned catalog copy
+      never stalls on a name collision.
+    cluster: downstream
+    try:
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: ClusterPropagationPolicy
+          metadata:
+            name: instance-types
+          spec:
+            conflictResolution: Overwrite
+            # Chainsaw matches list length exactly, so a single entry here also
+            # asserts the policy selects nothing but catalog InstanceTypes.
+            resourceSelectors:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: InstanceType
+              labelSelector:
+                matchLabels:
+                  compute.datumapis.com/instance-type-catalog: "true"
+            placement: {}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 3. THE TIER REACHES EVERY CELL
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: assert-cell-copy-pop-dfw
+    description: |
+      The empty-placement policy delivers the hub copy to every member cluster.
+      Assert both cells here rather than one: a policy that reached a single
+      cell would silently fail half the platform — the whole point of the
+      catalog being global.
+    cluster: pop-dfw
+    try:
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+          spec:
+            resources:
+              cpu: 750m
+              memory: 1536Mi
+            lifecycle:
+              phase: Active
+
+  - name: assert-cell-copy-pop-ord
+    cluster: pop-ord
+    try:
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+          spec:
+            resources:
+              cpu: 750m
+              memory: 1536Mi
+            lifecycle:
+              phase: Active
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 4. A CATALOG CHANGE REACHES THE HUB AND EVERY CELL
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: update-catalog-tier
+    description: |
+      Change the tier's display name in the catalog (resources are immutable, so
+      the display name is the field a real catalog edit changes). The projector
+      is the hub copy's only writer, so the new spec must replace the old one on
+      the hub and, through the policy, on every cell.
+    try:
+    - patch:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+          spec:
+            displayName: E2E projector tier v2
+
+  - name: assert-hub-copy-updated
+    cluster: downstream
+    try:
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+          spec:
+            displayName: E2E projector tier v2
+            resources:
+              cpu: 750m
+              memory: 1536Mi
+
+  - name: assert-cell-copy-updated-pop-dfw
+    cluster: pop-dfw
+    try:
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+          spec:
+            displayName: E2E projector tier v2
+            resources:
+              cpu: 750m
+              memory: 1536Mi
+
+  - name: assert-cell-copy-updated-pop-ord
+    cluster: pop-ord
+    try:
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+          spec:
+            displayName: E2E projector tier v2
+            resources:
+              cpu: 750m
+              memory: 1536Mi
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 5. DRIFT ON THE HUB IS REPAIRED
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: delete-hub-copy
+    description: |
+      Delete the hub copy out from under the projector while the type is still
+      in the catalog. The projector watches the hub copies, so it must recreate
+      the copy right away instead of waiting for the catalog to change or for a
+      resync hours later.
+    cluster: downstream
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          name: datumcloud-itprojector-e2e
+
+  - name: assert-hub-copy-recreated
+    cluster: downstream
+    try:
+    - assert:
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          metadata:
+            name: datumcloud-itprojector-e2e
+            labels:
+              compute.datumapis.com/instance-type-catalog: "true"
+          spec:
+            displayName: E2E projector tier v2
+            resources:
+              cpu: 750m
+              memory: 1536Mi
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 6. THE TYPE LEAVES THE CATALOG → HUB COPY GC → CELLS DROP IT
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: delete-catalog-tier
+    description: |
+      Delete the source type from the control-plane, which removes it from the
+      catalog.
+    try:
+    - delete:
+        ref:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: InstanceType
+          name: datumcloud-itprojector-e2e
+
+  - name: assert-hub-copy-gone
+    description: |
+      With the type gone from the catalog, the projector deleted the hub copy.
+      Waiting for deletion here is what proves pruning ran end to end — the
+      source deletion alone would leave an orphaned hub copy behind.
+    cluster: downstream
+    try:
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: InstanceType
+        name: datumcloud-itprojector-e2e
+        timeout: 120s
+        for:
+          deletion: {}
+
+  - name: assert-policy-survives
+    description: |
+      The ClusterPropagationPolicy is deliberately kept after the last hub copy
+      goes away: it is inert with nothing to select, and dropping it would open a
+      window where a freshly published tier is not propagated until the policy is
+      re-created. Assert it survives the source deletion.
+    cluster: downstream
+    try:
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: ClusterPropagationPolicy
+          metadata:
+            name: instance-types
+
+  - name: assert-cell-copies-gone
+    description: |
+      With the hub copy gone, Karmada removes the propagated copies from the
+      cells — a deleted tier must not linger for the provider to resolve. Both
+      cells are checked, mirroring the delivery assertions above.
+    cluster: pop-dfw
+    try:
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: InstanceType
+        name: datumcloud-itprojector-e2e
+        timeout: 120s
+        for:
+          deletion: {}
+
+  - name: assert-cell-copy-gone-pop-ord
+    cluster: pop-ord
+    try:
+    - wait:
+        apiVersion: compute.datumapis.com/v1alpha
+        kind: InstanceType
+        name: datumcloud-itprojector-e2e
+        timeout: 120s
+        for:
+          deletion: {}

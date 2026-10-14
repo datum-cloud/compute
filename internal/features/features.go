@@ -42,6 +42,10 @@ const (
 	// alpha: v0.1
 	NetworkingIntegration featuregate.Feature = "NetworkingIntegration"
 
+	// PodNetworkAttachment enables native Pod admission and claim reconciliation
+	// in a cell with Multus, Galactic, NSO, and the Pod webhook installed.
+	PodNetworkAttachment featuregate.Feature = "PodNetworkAttachment"
+
 	// RuntimeClasses controls whether a workload may select the execution tier
 	// its instances run in, through the runtime class field on the instance
 	// template.
@@ -133,6 +137,7 @@ var FeatureGate featuregate.FeatureGate = MutableFeatureGate
 func init() {
 	if err := MutableFeatureGate.Add(map[featuregate.Feature]featuregate.FeatureSpec{
 		NetworkingIntegration:   {Default: false, PreRelease: featuregate.Alpha},
+		PodNetworkAttachment:    {Default: false, PreRelease: featuregate.Alpha},
 		RuntimeClasses:          {Default: false, PreRelease: featuregate.Alpha},
 		InstanceTypes:           {Default: false, PreRelease: featuregate.Alpha},
 		InstanceConsoleSessions: {Default: false, PreRelease: featuregate.Alpha},

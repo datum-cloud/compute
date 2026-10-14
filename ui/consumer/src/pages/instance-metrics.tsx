@@ -14,21 +14,21 @@ import {
   memoryUsageQuery,
   useInstanceMetricIdentity,
 } from '../lib/metrics-queries';
+import {
+  cpuUsageHint,
+  formatCpuUsage,
+  formatMemoryUsage,
+  memoryUsageHint,
+  parseCpuCores,
+  parseMemoryBytes,
+} from '../lib/resource-usage';
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { useMemo } from 'react';
 
 const NOT_CONNECTED = 'Not connected';
 const NETWORK_IO_UNAVAILABLE = 'Not collected yet';
-
-function resourceKpi(
-  loading: boolean,
-  value: Parameters<typeof formatCardValue>[0],
-  format: Parameters<typeof formatCardValue>[1]
-): string {
-  if (loading) return 'Loading…';
-  return formatCardValue(value, format);
-}
 
 function useKpi(query: string | undefined, format: MetricFormat, enabled: boolean) {
   return usePrometheusCard(query, format, { enabled: enabled && !!query });
@@ -39,6 +39,18 @@ export default function InstanceMetrics() {
   const range = useMetricsTimeRange();
   const { identity, isLoading: identityLoading, isDenied: identityDenied } =
     useInstanceMetricIdentity(projectId, instance);
+
+  // Percent needs the instance's size; fall back to cores when it is unknown.
+  const allocatedCores = parseCpuCores(instance.cpu);
+  const allocatedMemory = parseMemoryBytes(instance.memory);
+  const cpuDivisor = useMemo(
+    () => (allocatedCores ? () => allocatedCores : undefined),
+    [allocatedCores]
+  );
+  const memoryDivisor = useMemo(
+    () => (allocatedMemory ? () => allocatedMemory : undefined),
+    [allocatedMemory]
+  );
 
   const cpuQuery = projectId && identity ? cpuUsageQuery(projectId, identity) : undefined;
   const memoryQuery = projectId && identity ? memoryUsageQuery(projectId, identity) : undefined;
@@ -63,12 +75,13 @@ export default function InstanceMetrics() {
           <MetricsKpiRow>
             <MetricsKpiCell
               label="CPU"
-              value={resourceKpi(identityLoading, cpuCard.data, 'number')}
-              hint="cores"
+              value={identityLoading ? 'Loading…' : formatCpuUsage(cpuCard.data?.value, allocatedCores)}
+              hint={cpuUsageHint(cpuCard.data?.value, allocatedCores)}
             />
             <MetricsKpiCell
               label="Memory"
-              value={resourceKpi(identityLoading, memoryCard.data, 'bytes')}
+              value={identityLoading ? 'Loading…' : formatMemoryUsage(memoryCard.data?.value, allocatedMemory)}
+              hint={memoryUsageHint(memoryCard.data?.value, allocatedMemory)}
             />
             {proxyId ? (
               <>
@@ -104,7 +117,9 @@ export default function InstanceMetrics() {
           title="CPU"
           query={cpuQuery}
           timeRange={range.timeRange}
-          format="number"
+          format={allocatedCores ? 'percent' : 'cores'}
+          seriesDivisor={cpuDivisor}
+          rawFormat="cores"
           enabled={chartsEnabled}
           pending={identityLoading}
           denied={identityDenied}
@@ -113,7 +128,9 @@ export default function InstanceMetrics() {
           title="Memory"
           query={memoryQuery}
           timeRange={range.timeRange}
-          format="bytes"
+          format={allocatedMemory ? 'percent' : 'bytes'}
+          seriesDivisor={memoryDivisor}
+          rawFormat="bytes"
           enabled={chartsEnabled}
           pending={identityLoading}
           denied={identityDenied}

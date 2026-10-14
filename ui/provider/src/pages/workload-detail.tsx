@@ -3,8 +3,10 @@
  * `WorkloadDetail` — the staff-portal support view for a single Workload.
  *
  * Built for a staff member fielding "why isn't my workload starting" /
- * "what's wrong with this workload" from a customer: Overview surfaces raw
- * conditions (not just a coarse health enum), Instances is the direct
+ * "what's wrong with this workload" from a customer: Overview leads with
+ * anything that needs attention (non-True conditions, failing or gated
+ * instances), then live metrics and instances in the main column, with the
+ * static spec and endpoint in a side column. Instances is the full
  * per-instance drill-down (image pull failures, crash loops, scheduling
  * gates, quota), Logs merges ALB access logs with instance stdout, Metrics
  * charts CPU/memory/network (and ALB traffic when published), and YAML
@@ -19,13 +21,20 @@
  */
 import type { RawWorkload } from '../adapter';
 import { ConditionsTable } from '../components/conditions-table';
+import { CopyableMono } from '../components/copyable-mono';
 import { DetailList, StatusBadge } from '../components/detail-list';
-import { formatCardValue } from '../components/metric-area-chart';
-import { StatStrip, type Stat } from '../components/stat-strip';
+import { CpuMemorySparks } from '../components/metric-sparkline';
+import { SparklineStatCard } from '../components/sparkline-stat-card';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { WorkloadLogsExplorer } from '../components/workload-logs';
 import { WorkloadMetrics } from '../components/workload-metrics';
-import { usePublishedUrl, useWorkload, useWorkloadInstances, useWorkloadRaw } from '../lib/api';
+import {
+  usePublishedUrl,
+  useWorkload,
+  useWorkloadInstances,
+  useWorkloadRaw,
+  type PublishedUrl,
+} from '../lib/api';
 import {
   formatLocationName,
   formatLocationNames,
@@ -34,70 +43,78 @@ import {
   type LocationIndex,
 } from '../lib/locations';
 import {
+  ALB_INSTANT_WINDOW,
+  albP99Query,
   albRpsQuery,
+  cpuUsageQuery,
   identityValues,
+  memoryUsageQuery,
   useProjectResourceIdentity,
   workloadCpuAvgQuery,
   workloadMemoryAvgQuery,
+  type InstanceIdentityLabel,
 } from '../lib/metrics-queries';
-import { usePrometheusCard } from '../lib/prometheus';
-import { healthToBadgeType, type Instance, type Workload, type WorkloadPlacement } from '../schema';
-import { Card, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
+import { type PrometheusTimeRange } from '../lib/prometheus';
+import { useRollingLastHour } from '../lib/use-rolling-range';
+import {
+  healthToBadgeType,
+  type Condition,
+  type Instance,
+  type InstanceStatusValue,
+  type Workload,
+  type WorkloadPlacement,
+} from '../schema';
+import { Button } from '@datum-cloud/datum-ui/button';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { CodeEditor } from '@datum-cloud/datum-ui/code-editor';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@datum-cloud/datum-ui/table';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@datum-cloud/datum-ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@datum-cloud/datum-ui/tabs';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { dump } from 'js-yaml';
-import { BoxIcon, MapPinIcon, Settings2Icon } from 'lucide-react';
+import {
+  BoxIcon,
+  CheckIcon,
+  GlobeIcon,
+  ListChecksIcon,
+  ServerIcon,
+  TriangleAlertIcon,
+} from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
 
 const TABS = ['Overview', 'Instances', 'Events', 'Logs', 'Metrics', 'YAML'] as const;
 type Tab = (typeof TABS)[number];
 
-function GeneralCard({ workload }: { workload: Workload }) {
-  return (
-    <Card size="sm" sectioned className="h-full w-full overflow-hidden">
-      <CardHeader size="sm" bordered>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <BoxIcon className="text-secondary size-4 stroke-2" />
-          General
-        </CardTitle>
-      </CardHeader>
-      <CardContent padding="none">
-        <DetailList
-          items={[
-            {
-              label: 'Status',
-              content: (
-                <StatusBadge type={healthToBadgeType(workload.health)}>
-                  {workload.health}
-                </StatusBadge>
-              ),
-            },
-            {
-              label: 'Resource Name',
-              content: <span className="font-mono text-sm">{workload.name}</span>,
-            },
-            {
-              label: 'Ready',
-              content: `${workload.readyReplicas}/${workload.desiredReplicas}`,
-            },
-            {
-              label: 'Updated',
-              content: `${workload.updatedReplicas}/${workload.desiredReplicas}`,
-            },
-            {
-              label: 'Created',
-              content: formatDistanceToNowStrict(workload.createdAt, { addSuffix: true }),
-            },
-          ]}
-        />
-      </CardContent>
-    </Card>
-  );
+/** Instances shown inline on Overview before deferring to the Instances tab. */
+const OVERVIEW_INSTANCE_LIMIT = 8;
+
+function instanceBadgeType(
+  status: InstanceStatusValue
+): 'success' | 'warning' | 'danger' | 'muted' {
+  switch (status) {
+    case 'Available':
+      return 'success';
+    case 'Pending':
+      return 'warning';
+    case 'Failed':
+      return 'danger';
+    default:
+      return 'muted';
+  }
+}
+
+/** Relative to the workload detail route (`:workloadName`). */
+function instancePath(instanceName: string): string {
+  return `instances/${encodeURIComponent(instanceName)}`;
 }
 
 function placementLocationLabel(placement: WorkloadPlacement, index: LocationIndex): string {
@@ -108,7 +125,13 @@ function placementLocationLabel(placement: WorkloadPlacement, index: LocationInd
   return 'no locations';
 }
 
-function ConfigurationCard({
+function unhealthyConditions(conditions: Condition[]): Condition[] {
+  return conditions.filter((c) => c.status !== 'True');
+}
+
+// ── Header ───────────────────────────────────────────────────────────────
+
+function WorkloadSummary({
   workload,
   locationLabel,
 }: {
@@ -116,39 +139,466 @@ function ConfigurationCard({
   locationLabel: string;
 }) {
   return (
-    <Card size="sm" sectioned className="h-full w-full overflow-hidden">
+    <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      <StatusBadge type={healthToBadgeType(workload.health)}>{workload.health}</StatusBadge>
+      <span>
+        {workload.readyReplicas}/{workload.desiredReplicas} ready
+      </span>
+      <span aria-hidden>·</span>
+      <span title={workload.locations.join(', ') || undefined}>{locationLabel}</span>
+      <span aria-hidden>·</span>
+      <span>created {formatDistanceToNowStrict(workload.createdAt, { addSuffix: true })}</span>
+    </div>
+  );
+}
+
+// ── Attention ────────────────────────────────────────────────────────────
+
+interface AttentionItem {
+  key: string;
+  scope: string;
+  title: string;
+  detail?: string;
+}
+
+/** A Pending instance younger than this is a normal rollout, not a problem. */
+const PENDING_GRACE_MS = 5 * 60_000;
+
+function attentionItems(
+  workload: Workload,
+  instances: Instance[],
+  now = Date.now()
+): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  for (const c of unhealthyConditions(workload.conditions)) {
+    items.push({
+      key: `workload-${c.type}`,
+      scope: 'Workload',
+      title: `${c.type}: ${c.reason ?? c.status}`,
+      detail: c.message,
+    });
+  }
+  for (const p of workload.placements) {
+    for (const c of unhealthyConditions(p.conditions)) {
+      items.push({
+        key: `placement-${p.name}-${c.type}`,
+        scope: `Placement ${p.name}`,
+        title: `${c.type}: ${c.reason ?? c.status}`,
+        detail: c.message,
+      });
+    }
+  }
+  for (const i of instances) {
+    if (i.schedulingGates.length > 0) {
+      items.push({
+        key: `instance-${i.name}-gated`,
+        scope: `Instance ${i.name}`,
+        title: `Gated: ${i.schedulingGates.join(', ')}`,
+      });
+    } else if (
+      !i.suspended &&
+      (i.status === 'Failed' ||
+        i.status === 'Unknown' ||
+        (i.status === 'Pending' && now - i.createdAt.getTime() > PENDING_GRACE_MS))
+    ) {
+      items.push({
+        key: `instance-${i.name}`,
+        scope: `Instance ${i.name}`,
+        title: `${i.status}${i.statusReason ? `: ${i.statusReason}` : ''}`,
+        detail: i.statusMessage,
+      });
+    }
+  }
+  return items;
+}
+
+function AttentionCard({ items }: { items: AttentionItem[] }) {
+  if (items.length === 0) return null;
+  return (
+    <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="workload-attention">
       <CardHeader size="sm" bordered>
         <CardTitle className="flex items-center gap-2 text-sm">
-          <Settings2Icon className="text-secondary size-4 stroke-2" />
-          Configuration
+          <TriangleAlertIcon className="text-destructive size-4 stroke-2" />
+          Needs attention
+          <span className="text-muted-foreground font-normal">({items.length})</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none">
+        <ul className="divide-border divide-y">
+          {items.map((item) => (
+            <li key={item.key} className="flex flex-col gap-0.5 px-4 py-3">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <span className="text-muted-foreground font-mono text-xs">{item.scope}</span>
+                <span className="text-sm font-medium">{item.title}</span>
+              </div>
+              {item.detail ? (
+                <p className="text-muted-foreground text-sm whitespace-normal">{item.detail}</p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Main column ──────────────────────────────────────────────────────────
+
+function MetricCards({
+  projectName,
+  instanceKeys,
+  identityLabel,
+  identityLoading,
+  identityDenied,
+  proxyId,
+  publishedState,
+  publishedLoading,
+  timeRange,
+  onOpenMetrics,
+}: {
+  projectName?: string;
+  instanceKeys: readonly string[];
+  identityLabel?: InstanceIdentityLabel;
+  identityLoading: boolean;
+  identityDenied: boolean;
+  proxyId?: string;
+  publishedState: PublishedUrl | null | undefined;
+  publishedLoading: boolean;
+  timeRange: PrometheusTimeRange;
+  onOpenMetrics: () => void;
+}) {
+  const scoped = !!projectName && !!identityLabel && instanceKeys.length > 0;
+  const cpuQuery = scoped
+    ? workloadCpuAvgQuery(projectName, identityLabel, instanceKeys)
+    : undefined;
+  const memoryQuery = scoped
+    ? workloadMemoryAvgQuery(projectName, identityLabel, instanceKeys)
+    : undefined;
+  const published = !!projectName && !!proxyId;
+  // `null` means confirmed unpublished; `undefined` after loading means the lookup failed.
+  const notPublished = !publishedLoading && publishedState === null;
+  const lookupFailed = !publishedLoading && publishedState === undefined;
+  const albUnavailable = notPublished || lookupFailed;
+  const albUnavailableLabel = lookupFailed ? 'Unavailable' : 'Not published';
+
+  return (
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4" data-testid="workload-metric-cards">
+      <SparklineStatCard
+        title="Avg CPU (cores)"
+        query={cpuQuery}
+        format="number"
+        timeRange={timeRange}
+        rangeLabel="Last 1h"
+        pending={identityLoading}
+        denied={identityDenied}
+        idle={!identityLoading && !cpuQuery}
+        onSelect={onOpenMetrics}
+      />
+      <SparklineStatCard
+        title="Avg memory"
+        query={memoryQuery}
+        format="bytes"
+        color="var(--color-chart-1)"
+        timeRange={timeRange}
+        rangeLabel="Last 1h"
+        pending={identityLoading}
+        denied={identityDenied}
+        idle={!identityLoading && !memoryQuery}
+        onSelect={onOpenMetrics}
+      />
+      <SparklineStatCard
+        title="Requests/s"
+        query={published ? albRpsQuery(projectName, proxyId) : undefined}
+        headlineQuery={
+          published ? albRpsQuery(projectName, proxyId, ALB_INSTANT_WINDOW) : undefined
+        }
+        format="requestsPerSecond"
+        color="var(--color-chart-2)"
+        timeRange={timeRange}
+        rangeLabel="Last 1h"
+        pending={publishedLoading}
+        unavailable={albUnavailable}
+        unavailableLabel={albUnavailableLabel}
+        onSelect={onOpenMetrics}
+      />
+      <SparklineStatCard
+        title="p99 latency"
+        query={published ? albP99Query(projectName, proxyId) : undefined}
+        headlineQuery={
+          published ? albP99Query(projectName, proxyId, ALB_INSTANT_WINDOW) : undefined
+        }
+        format="milliseconds-auto"
+        color="var(--color-chart-3)"
+        timeRange={timeRange}
+        rangeLabel="Last 1h"
+        pending={publishedLoading}
+        unavailable={albUnavailable}
+        unavailableLabel={albUnavailableLabel}
+        onSelect={onOpenMetrics}
+      />
+    </div>
+  );
+}
+
+function InstancesOverviewCard({
+  instances,
+  projectName,
+  identityLabel,
+  resourceNames,
+  identityLoading,
+  identityDenied,
+  locationIndex,
+  timeRange,
+  onViewAll,
+}: {
+  instances: Instance[];
+  projectName?: string;
+  identityLabel?: InstanceIdentityLabel;
+  resourceNames: readonly string[];
+  identityLoading: boolean;
+  identityDenied: boolean;
+  locationIndex: LocationIndex;
+  timeRange: PrometheusTimeRange;
+  onViewAll: () => void;
+}) {
+  const shown = instances.slice(0, OVERVIEW_INSTANCE_LIMIT);
+
+  return (
+    <Card
+      size="sm"
+      sectioned
+      className="w-full overflow-hidden"
+      data-testid="workload-instances-overview">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <ServerIcon className="text-secondary size-4 stroke-2" />
+          Instances
+          <span className="text-muted-foreground font-normal">({instances.length})</span>
+        </CardTitle>
+        {instances.length > shown.length ? (
+          <CardAction>
+            <Button type="secondary" theme="link" size="link" onClick={onViewAll}>
+              View all {instances.length}
+            </Button>
+          </CardAction>
+        ) : null}
+      </CardHeader>
+      <CardContent padding="none">
+        {instances.length === 0 ? (
+          <p className="text-muted-foreground px-4 py-3 text-sm">No instances yet.</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Instance</TableHead>
+                <TableHead>Location</TableHead>
+                <TableHead>CPU / Memory (1h)</TableHead>
+                <TableHead>Age</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {shown.map((instance) => {
+                const identity =
+                  projectName && identityLabel && resourceNames.includes(instance.name)
+                    ? { label: identityLabel, value: instance.name }
+                    : undefined;
+                return (
+                  <TableRow key={instance.uid || instance.name}>
+                    <TableCell className="whitespace-normal">
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <Link
+                            to={instancePath(instance.name)}
+                            className="text-primary truncate font-mono text-sm hover:underline">
+                            {instance.name}
+                          </Link>
+                          <StatusBadge
+                            type={
+                              instance.suspended ? 'muted' : instanceBadgeType(instance.status)
+                            }>
+                            {instance.suspended ? 'Suspended' : instance.status}
+                          </StatusBadge>
+                        </div>
+                        {instance.status !== 'Available' && instance.statusMessage ? (
+                          <span className="text-muted-foreground text-xs">
+                            {instance.statusMessage}
+                          </span>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground" title={instance.location}>
+                      {formatLocationName(instance.location, locationIndex)}
+                    </TableCell>
+                    <TableCell>
+                      <CpuMemorySparks
+                        cpuQuery={
+                          identity && projectName ? cpuUsageQuery(projectName, identity) : undefined
+                        }
+                        memoryQuery={
+                          identity && projectName
+                            ? memoryUsageQuery(projectName, identity)
+                            : undefined
+                        }
+                        timeRange={timeRange}
+                        compact
+                        pending={identityLoading}
+                        denied={identityDenied}
+                      />
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {formatDistanceToNowStrict(instance.createdAt)}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ConditionsSection({
+  title,
+  subtitle,
+  badge,
+  conditions,
+  showHealthy,
+}: {
+  title: string;
+  subtitle?: string;
+  badge?: React.ReactNode;
+  conditions: Condition[];
+  showHealthy: boolean;
+}) {
+  const unhealthy = unhealthyConditions(conditions);
+  const visible = showHealthy ? conditions : unhealthy;
+  const hiddenCount = conditions.length - visible.length;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="font-mono text-sm font-medium">{title}</span>
+          {subtitle ? <span className="text-muted-foreground text-xs">{subtitle}</span> : null}
+        </div>
+        {badge}
+      </div>
+      {visible.length > 0 ? <ConditionsTable conditions={visible} /> : null}
+      {hiddenCount > 0 ? (
+        <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <CheckIcon className="size-3.5" />
+          {hiddenCount} healthy condition{hiddenCount === 1 ? '' : 's'} hidden
+        </p>
+      ) : null}
+      {conditions.length === 0 ? (
+        <p className="text-muted-foreground text-xs">No conditions reported.</p>
+      ) : null}
+    </div>
+  );
+}
+
+function ConditionsCard({
+  workload,
+  locationIndex,
+}: {
+  workload: Workload;
+  locationIndex: LocationIndex;
+}) {
+  const [showHealthy, setShowHealthy] = useState(false);
+
+  return (
+    <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="workload-conditions">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <ListChecksIcon className="text-secondary size-4 stroke-2" />
+          Conditions
+        </CardTitle>
+        <CardAction>
+          <Button
+            type="secondary"
+            theme="link"
+            size="link"
+            onClick={() => setShowHealthy((v) => !v)}>
+            {showHealthy ? 'Hide healthy' : 'Show all'}
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        <ConditionsSection
+          title="Workload"
+          conditions={workload.conditions}
+          showHealthy={showHealthy}
+        />
+        {workload.placements.map((p) => (
+          <ConditionsSection
+            key={p.name}
+            title={`Placement ${p.name}`}
+            subtitle={placementLocationLabel(p, locationIndex)}
+            badge={
+              <div className="flex items-center gap-3">
+                <span className="text-muted-foreground text-xs">
+                  {p.readyReplicas}/{p.desiredReplicas} ready
+                </span>
+                <StatusBadge type={healthToBadgeType(p.health)}>{p.health}</StatusBadge>
+              </div>
+            }
+            conditions={p.conditions}
+            showHealthy={showHealthy}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Side column ──────────────────────────────────────────────────────────
+
+function DetailsCard({ workload, locationLabel }: { workload: Workload; locationLabel: string }) {
+  const replicas =
+    workload.replicasPerRegion !== undefined
+      ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
+      : `${workload.desiredReplicas} total`;
+
+  return (
+    <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="workload-details">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <BoxIcon className="text-secondary size-4 stroke-2" />
+          Details
         </CardTitle>
       </CardHeader>
       <CardContent padding="none">
         <DetailList
+          labelWidth="7rem"
           items={[
+            { label: 'Name', content: <CopyableMono value={workload.name} /> },
             { label: 'Runtime', content: workload.runtimeType ?? '—' },
             {
               label: 'Image',
-              content: workload.image ? (
-                <span className="block max-w-full truncate font-mono text-xs" title={workload.image}>
-                  {workload.image}
-                </span>
-              ) : (
-                '—'
-              ),
+              content: workload.image ? <CopyableMono value={workload.image} /> : '—',
             },
             { label: 'Resources', content: workload.resources ?? '—' },
+            { label: 'Replicas', content: replicas },
             {
-              label: 'Replicas',
-              content:
-                workload.replicasPerRegion !== undefined
-                  ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
-                  : `${workload.desiredReplicas} total`,
+              label: 'Rollout',
+              content: `${workload.readyReplicas} ready · ${workload.currentReplicas} current · ${workload.updatedReplicas} updated`,
             },
             {
               label: 'Locations',
               content: (
                 <span title={workload.locations.join(', ') || undefined}>{locationLabel}</span>
+              ),
+            },
+            {
+              label: 'Created',
+              content: (
+                <span title={workload.createdAt.toISOString()}>
+                  {formatDistanceToNowStrict(workload.createdAt, {
+                    addSuffix: true,
+                  })}
+                </span>
               ),
             },
           ]}
@@ -158,109 +608,138 @@ function ConfigurationCard({
   );
 }
 
-function PlacementsCard({
-  workload,
-  locationIndex,
+function EndpointCard({
+  published,
+  isLoading,
 }: {
-  workload: Workload;
-  locationIndex: LocationIndex;
+  published: PublishedUrl | null | undefined;
+  isLoading: boolean;
 }) {
-  if (workload.placements.length === 0) return null;
-
   return (
-    <Card size="sm" sectioned className="w-full overflow-hidden">
+    <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="workload-endpoint">
       <CardHeader size="sm" bordered>
         <CardTitle className="flex items-center gap-2 text-sm">
-          <MapPinIcon className="text-secondary size-4 stroke-2" />
-          Placements
+          <GlobeIcon className="text-secondary size-4 stroke-2" />
+          Endpoint
         </CardTitle>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {workload.placements.map((p) => (
-          <div key={p.name} className="border-border rounded-lg border p-3">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-sm font-medium">{p.name}</span>
-                <span
-                  className="text-muted-foreground text-xs"
-                  title={p.locations.join(', ') || p.locationSelector}>
-                  {placementLocationLabel(p, locationIndex)}
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-muted-foreground text-xs">
-                  {p.readyReplicas}/{p.desiredReplicas} ready
-                </span>
-                <StatusBadge type={healthToBadgeType(p.health)}>{p.health}</StatusBadge>
-              </div>
-            </div>
-            {p.conditions.length > 0 && <ConditionsTable conditions={p.conditions} />}
-          </div>
-        ))}
+      <CardContent padding="none">
+        {isLoading ? (
+          <p className="text-muted-foreground px-4 py-3 text-sm">Loading…</p>
+        ) : published === undefined ? (
+          <p className="text-muted-foreground px-4 py-3 text-sm">
+            Couldn't load the published endpoint.
+          </p>
+        ) : published === null ? (
+          <p className="text-muted-foreground px-4 py-3 text-sm">
+            Not published through a load balancer.
+          </p>
+        ) : (
+          <DetailList
+            labelWidth="7rem"
+            items={[
+              {
+                label: 'URL',
+                content: published.hostname ? (
+                  <a
+                    href={`https://${published.hostname}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-primary block truncate text-sm hover:underline"
+                    title={published.hostname}>
+                    {published.hostname}
+                  </a>
+                ) : (
+                  '—'
+                ),
+              },
+              {
+                label: 'Proxy',
+                content: <CopyableMono value={published.proxyName} />,
+              },
+            ]}
+          />
+        )}
       </CardContent>
     </Card>
   );
 }
 
-function ConditionsCard({ workload }: { workload: Workload }) {
-  return (
-    <Card size="sm" sectioned className="w-full overflow-hidden">
-      <CardHeader size="sm" bordered>
-        <CardTitle className="text-sm">Conditions</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ConditionsTable conditions={workload.conditions} />
-      </CardContent>
-    </Card>
-  );
-}
+// ── Overview ─────────────────────────────────────────────────────────────
 
 function OverviewTab({
   workload,
-  requests,
-  avgCpu,
-  avgMemory,
+  instances,
+  projectName,
+  identityLabel,
+  resourceNames,
+  identityLoading,
+  identityDenied,
+  published,
+  publishedLoading,
   locationIndex,
+  locationLabel,
+  onSelectTab,
 }: {
   workload: Workload;
-  requests: string;
-  avgCpu: string;
-  avgMemory: string;
+  instances: Instance[];
+  projectName?: string;
+  identityLabel?: InstanceIdentityLabel;
+  resourceNames: readonly string[];
+  identityLoading: boolean;
+  identityDenied: boolean;
+  published: PublishedUrl | null | undefined;
+  publishedLoading: boolean;
   locationIndex: LocationIndex;
+  locationLabel: string;
+  onSelectTab: (tab: Tab) => void;
 }) {
-  const stats: Stat[] = [
-    { label: 'Ready', value: `${workload.readyReplicas}/${workload.desiredReplicas}` },
-    { label: 'Current', value: `${workload.currentReplicas}/${workload.desiredReplicas}` },
-    { label: 'Updated', value: `${workload.updatedReplicas}/${workload.desiredReplicas}` },
-    { label: 'Locations', value: String(workload.locations.length) },
-    { label: 'Requests', value: requests },
-    { label: 'Avg CPU', value: avgCpu },
-    { label: 'Avg Memory', value: avgMemory },
-  ];
+  const timeRange = useRollingLastHour();
+  const instanceKeys = useMemo(() => identityValues(instances), [instances]);
+  const attention = useMemo(() => attentionItems(workload, instances), [workload, instances]);
 
   return (
     <div className="flex flex-col gap-6">
-      <StatStrip stats={stats} />
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <GeneralCard workload={workload} />
-        <ConfigurationCard
-          workload={workload}
-          locationLabel={formatLocationNames(workload.locations, locationIndex)}
-        />
+      <AttentionCard items={attention} />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="flex min-w-0 flex-col gap-6 lg:col-span-2">
+          <MetricCards
+            projectName={projectName}
+            instanceKeys={instanceKeys}
+            identityLabel={identityLabel}
+            identityLoading={identityLoading}
+            identityDenied={identityDenied}
+            proxyId={published?.proxyName}
+            publishedState={published}
+            publishedLoading={publishedLoading}
+            timeRange={timeRange}
+            onOpenMetrics={() => onSelectTab('Metrics')}
+          />
+          <InstancesOverviewCard
+            instances={instances}
+            projectName={projectName}
+            identityLabel={identityLabel}
+            resourceNames={resourceNames}
+            identityLoading={identityLoading}
+            identityDenied={identityDenied}
+            locationIndex={locationIndex}
+            timeRange={timeRange}
+            onViewAll={() => onSelectTab('Instances')}
+          />
+          <ConditionsCard workload={workload} locationIndex={locationIndex} />
+        </div>
+        <div className="flex min-w-0 flex-col gap-6">
+          <DetailsCard workload={workload} locationLabel={locationLabel} />
+          <EndpointCard published={published} isLoading={publishedLoading} />
+        </div>
       </div>
-      <PlacementsCard workload={workload} locationIndex={locationIndex} />
-      <ConditionsCard workload={workload} />
     </div>
   );
 }
 
-function InstanceRow({
-  instance,
-  locationLabel,
-}: {
-  instance: Instance;
-  locationLabel: string;
-}) {
+// ── Instances tab ────────────────────────────────────────────────────────
+
+function InstanceRow({ instance, locationLabel }: { instance: Instance; locationLabel: string }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -268,12 +747,15 @@ function InstanceRow({
       <TableRow className="cursor-pointer" onClick={() => setExpanded((v) => !v)}>
         <TableCell>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="truncate font-mono text-sm">{instance.name}</span>
+            <Link
+              to={instancePath(instance.name)}
+              onClick={(e) => e.stopPropagation()}
+              className="text-primary truncate font-mono text-sm hover:underline">
+              {instance.name}
+            </Link>
             {instance.suspended && <StatusBadge type="muted">Suspended</StatusBadge>}
             {instance.schedulingGates.length > 0 && (
-              <StatusBadge type="warning">
-                Gated: {instance.schedulingGates.join(', ')}
-              </StatusBadge>
+              <StatusBadge type="warning">Gated: {instance.schedulingGates.join(', ')}</StatusBadge>
             )}
           </div>
         </TableCell>
@@ -360,7 +842,14 @@ function withoutManagedFields(raw: unknown): unknown {
 /** Same `dump` convention as staff-portal's own `edge-yaml-card.tsx`. */
 function YamlTab({ raw }: { raw: RawWorkload | undefined }) {
   const yaml = useMemo(
-    () => (raw ? dump(withoutManagedFields(raw), { indent: 2, lineWidth: -1, noRefs: true }) : ''),
+    () =>
+      raw
+        ? dump(withoutManagedFields(raw), {
+            indent: 2,
+            lineWidth: -1,
+            noRefs: true,
+          })
+        : '',
     [raw]
   );
 
@@ -382,39 +871,35 @@ export default function WorkloadDetail() {
   const instanceNames = useMemo(() => instances.map((instance) => instance.name), [instances]);
   const {
     identityLabel,
+    resourceNames,
     isLoading: identityLoading,
     isDenied: identityDenied,
   } = useProjectResourceIdentity(projectName);
   const metricKeys = useMemo(() => identityValues(instances), [instances]);
-  const chartsEnabled =
-    !identityLoading && !identityDenied && !!identityLabel && !!projectName && metricKeys.length > 0;
-  const cpuQuery =
-    chartsEnabled && identityLabel && projectName
-      ? workloadCpuAvgQuery(projectName, identityLabel, metricKeys)
-      : undefined;
-  const memoryQuery =
-    chartsEnabled && identityLabel && projectName
-      ? workloadMemoryAvgQuery(projectName, identityLabel, metricKeys)
-      : undefined;
   const proxyId = published.data?.proxyName;
-  const rpsQuery = projectName && proxyId ? albRpsQuery(projectName, proxyId) : undefined;
-  const cpu = usePrometheusCard(cpuQuery, 'number', { enabled: chartsEnabled });
-  const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled: chartsEnabled });
-  const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
-  const requestsValue = proxyId
-    ? formatCardValue(rps.data, 'requestsPerSecond')
-    : '—';
-  const avgCpu = identityLoading ? 'Loading…' : formatCardValue(cpu.data, 'number');
-  const avgMemory = identityLoading ? 'Loading…' : formatCardValue(memory.data, 'bytes');
 
   const titleName = workload?.name ?? workloadName ?? 'Workload';
   const locationIndex = useLocationIndex(projectName);
+  const locationLabel = workload ? formatLocationNames(workload.locations, locationIndex) : '';
 
   return (
     <div
       className="flex min-w-0 flex-col gap-6 p-4 sm:p-6"
+      // Size from the host's column, not from content: without inline-size
+      // containment a long instance name or table row widens the whole
+      // host page instead of scrolling inside its own card.
+      style={{ containerType: 'inline-size' }}
       data-testid="provider-plugin-workload-detail">
-      <PageTitle title={titleName} titleClassName="break-all sm:break-normal" />
+      <PageTitle
+        title={titleName}
+        titleClassName="break-all sm:break-normal"
+        description={
+          workload ? (
+            <WorkloadSummary workload={workload} locationLabel={locationLabel} />
+          ) : undefined
+        }
+        descriptionClassName="max-w-none"
+      />
 
       {isLoading && <LoadingSkeleton />}
 
@@ -441,10 +926,17 @@ export default function WorkloadDetail() {
           <TabsContent value="Overview">
             <OverviewTab
               workload={workload}
-              requests={requestsValue}
-              avgCpu={avgCpu}
-              avgMemory={avgMemory}
+              instances={instances}
+              projectName={projectName}
+              identityLabel={identityLabel}
+              resourceNames={resourceNames}
+              identityLoading={identityLoading}
+              identityDenied={identityDenied}
+              published={published.data}
+              publishedLoading={published.isLoading}
               locationIndex={locationIndex}
+              locationLabel={locationLabel}
+              onSelectTab={setTab}
             />
           </TabsContent>
           <TabsContent value="Instances">

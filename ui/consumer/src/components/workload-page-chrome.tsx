@@ -32,7 +32,7 @@ export function workloadDetailTabs(
     { label: 'Deployments' },
     { label: 'Metrics', href: metricsHref },
     { label: 'Logs', href: logsHref },
-    { label: 'Activity' },
+    { label: 'Activity', href: `${overviewHref}/activity` },
   ];
 }
 

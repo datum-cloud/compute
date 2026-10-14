@@ -17,6 +17,7 @@ import { MetricSparkline } from './metric-sparkline';
 import { SortableHeader } from './sortable-header';
 import { HealthDot, WorkloadStatusBadge } from './workload-status-badge';
 import type { LocationIndex } from '../lib/locations';
+import type { Allocation } from '../lib/resource-usage';
 import {
   type InstanceIdentityLabel,
   workloadCpuSumQuery,
@@ -164,17 +165,6 @@ function NetworkCell({ networks, projectId }: { networks: string[]; projectId?: 
   );
 }
 
-/** Free-text search over the row plus fields the table doesn't show (image, runtime, tags). */
-function matchesSearch(workload: Workload, search: string): boolean {
-  const needle = search.trim().toLowerCase();
-  if (!needle) return true;
-  return [workload.name, workload.image, workload.runtimeType, ...workload.tags, ...workload.locations, ...workload.networks]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase()
-    .includes(needle);
-}
-
 /** Same rule as the portal: no pagination bar when everything fits on one page. */
 function ConditionalPagination() {
   const { pageCount } = useDataTablePagination();
@@ -186,6 +176,7 @@ export function WorkloadTable({
   workloads,
   projectId,
   instanceKeysByWorkload,
+  allocationByWorkload,
   identityLabel,
   identityLoading = false,
   identityDenied = false,
@@ -197,6 +188,8 @@ export function WorkloadTable({
   workloads: Workload[];
   projectId?: string;
   instanceKeysByWorkload: Record<string, string[]>;
+  /** Allocated vCPU / memory per workload, so the sparks read as a percentage. */
+  allocationByWorkload: Record<string, Allocation>;
   identityLabel?: InstanceIdentityLabel;
   identityLoading?: boolean;
   identityDenied?: boolean;
@@ -227,7 +220,7 @@ export function WorkloadTable({
         id: 'status',
         accessorFn: (workload) => HEALTH_ORDER[workload.health],
         header: ({ column }) => <SortableHeader column={column} title="Status" />,
-        cell: ({ row }) => <WorkloadStatusBadge workload={row.original} />,
+        cell: ({ row }) => <WorkloadStatusBadge workload={row.original} dot={false} />,
       },
       {
         id: 'cpu',
@@ -239,7 +232,8 @@ export function WorkloadTable({
             <MetricSparkline
               query={projectId && identityLabel && keys.length > 0 ? workloadCpuSumQuery(projectId, identityLabel, keys) : undefined}
               timeRange={timeRange}
-              format="number"
+              format="cores"
+              allocated={allocationByWorkload[row.original.name]?.cores}
               compact
               pending={identityLoading}
               denied={identityDenied}
@@ -259,6 +253,7 @@ export function WorkloadTable({
               query={projectId && identityLabel && keys.length > 0 ? workloadMemorySumQuery(projectId, identityLabel, keys) : undefined}
               timeRange={timeRange}
               format="bytes"
+              allocated={allocationByWorkload[row.original.name]?.memoryBytes}
               color="var(--color-chart-1)"
               compact
               pending={identityLoading}
@@ -281,7 +276,7 @@ export function WorkloadTable({
         cell: ({ row }) => <LocationsCell regions={row.original.placementRegions} locationIndex={locationIndex} />,
       },
     ],
-    [projectId, instanceKeysByWorkload, identityLabel, identityLoading, identityDenied, timeRange, locationIndex, workloadHref]
+    [projectId, instanceKeysByWorkload, allocationByWorkload, identityLabel, identityLoading, identityDenied, timeRange, locationIndex, workloadHref]
   );
 
   const open = useCallback((workload: Workload) => onOpen(workload.name), [onOpen]);
@@ -291,11 +286,7 @@ export function WorkloadTable({
       data={workloads}
       columns={columns}
       getRowId={(workload) => workload.uid || workload.name}
-      searchFn={matchesSearch}
       className="space-y-6">
-      <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <DataTable.Search placeholder="Search" className="w-full sm:max-w-xs" />
-      </div>
       <div className="overflow-hidden rounded-lg border" data-testid="compute-plugin-workload-table">
         <RowsContent onOpen={open} />
       </div>

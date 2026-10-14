@@ -74,9 +74,21 @@ interpreter-test: karmadactl ## Validate Karmada resource interpreter customizat
 	$(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --check
 	KARMADACTL=$(KARMADACTL) test/interpreter/instanceconsolesession.sh
 	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
+	if ! grep -q "replicas: 1" <<<"$$out"; then \
+	  printf '%s\n' "$$out"; \
+	  printf '%s\n' "expected manual WorkloadDeployment replicas to be 1"; \
+	  exit 1; \
+	fi
+	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-observed.yaml --observed-file test/interpreter/workloaddeployment-retain-desired.yaml)"; \
 	if ! grep -q "replicas: 5" <<<"$$out"; then \
 	  printf '%s\n' "$$out"; \
-	  printf '%s\n' "expected retained WorkloadDeployment replicas to be 5"; \
+	  printf '%s\n' "expected manual WorkloadDeployment replicas to scale up to 5"; \
+	  exit 1; \
+	fi
+	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-autoscaled-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
+	if ! grep -q "replicas: 5" <<<"$$out"; then \
+	  printf '%s\n' "$$out"; \
+	  printf '%s\n' "expected autoscaled WorkloadDeployment replicas to remain 5"; \
 	  exit 1; \
 	fi
 	@$(MAKE) --no-print-directory interpreter-test-dependency

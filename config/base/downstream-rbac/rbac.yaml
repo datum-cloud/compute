@@ -16,6 +16,14 @@ rules:
   - apiGroups: ["compute.datumapis.com"]
     resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The InstanceTypeProjector writes the catalog's hub copies here so Karmada can
+  # propagate them to every cell, watches them to repair drift, and deletes the
+  # ones the catalog no longer declares. The status subresource stays untouched:
+  # cells aggregate nothing onto these copies and the projector never reads
+  # status back.
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instancetypes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Compute delivers each shell session as a copy in the hub namespace of its
   # instance's deployment, reads back the status Karmada reflects onto it from
   # the cell, annotates it to revoke the session, and removes it when the

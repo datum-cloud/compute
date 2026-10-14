@@ -33,26 +33,32 @@ const NARROW_CHROME_PX = 180;
 // terminalHeight sizes the terminal to what the user can see. On a small
 // screen that is the visual viewport, which shrinks when the keyboard opens,
 // so the prompt stays above the keyboard. A pop-out window fills the space
-// below its own header.
+// below its own header, and a wider page fills the space it has below the
+// terminal's top edge, once that has been measured.
 export function terminalHeight({
   inWindow,
   narrow,
   viewportHeight,
   top = 0,
   below = 0,
+  pageSpace,
 }: {
   inWindow: boolean;
   narrow: boolean;
   viewportHeight: number;
   top?: number;
   below?: number;
+  pageSpace?: number;
 }): number {
   if (inWindow) {
     return Math.max(MIN_TERMINAL_HEIGHT, Math.floor(viewportHeight - top - below));
   }
-  if (!narrow) return TERMINAL_HEIGHT;
-  return Math.max(
-    MIN_TERMINAL_HEIGHT,
-    Math.min(TERMINAL_HEIGHT, Math.floor(viewportHeight - NARROW_CHROME_PX))
-  );
+  if (narrow) {
+    return Math.max(
+      MIN_TERMINAL_HEIGHT,
+      Math.min(TERMINAL_HEIGHT, Math.floor(viewportHeight - NARROW_CHROME_PX))
+    );
+  }
+  if (pageSpace === undefined) return TERMINAL_HEIGHT;
+  return Math.max(MIN_TERMINAL_HEIGHT, Math.floor(pageSpace));
 }

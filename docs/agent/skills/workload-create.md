@@ -17,8 +17,9 @@ Two things you cannot do, however the request is phrased:
 
 - **You cannot build or push an image.** The image has to exist in a registry
   before any of this starts.
-- **You cannot turn Compute on for a project, and you cannot grant it quota.**
-  Both are Datum's to grant. Say so and name the step the user takes.
+- **You cannot turn Compute on for a project or change its quota with these tools.**
+  The user can enable Compute with `datumctl services enable compute.datumapis.com`.
+  Say so and name the step the user takes.
 
 The project is fixed by the request that reached you. There is no tool argument
 for it, so you cannot create a workload in a project other than the one the
@@ -32,10 +33,10 @@ different answer:
 
 | Check | Tool | If it fails |
 |---|---|---|
-| Compute is offered to the project | `locations_list` with service `compute` | Nothing can be placed. Datum's to enable — the user runs `datumctl services enable compute.datumapis.com`, and approval is a manual step on Datum's side. |
+| Compute is offered to the project | `locations_list` with service `compute` | Nothing can be placed. The user can enable Compute with `datumctl services enable compute.datumapis.com`. |
 | Somewhere to run it | `locations_list` with service `compute` | The location names it returns are the only ones a placement may name. A location missing from the list is one compute is not offered in. An empty list means nothing is available to this project yet; that is Datum's, not something the user can add. |
 | A network | `resources_list` for kind `Network` in `networking.datumapis.com/v1alpha` | `default` by convention. If the one the workload names is missing, add a Network manifest of that name to the same `resources_plan` call — the plan orders it ahead of the Workload. Say so when you show the plan, because it is a second object being created. |
-| Quota | `quota_get` with service `compute.datumapis.com` | Quota is granted by Datum and cannot be self-served. A project with none can still create a workload; its instances then sit at `QuotaGranted=False` with `QuotaNoBudget` and never start. |
+| Quota | `quota_get` with service `compute.datumapis.com` | Default quota is provisioned when Compute is enabled. If none appears, wait for provisioning; an instance created without it sits at `QuotaGranted=False` with `QuotaNoBudget` and cannot start. |
 
 Do the quota arithmetic before you apply, not after. Replicas times the instance
 type's size from `compute_instance_types_list`, against what `quota_get` says is
@@ -361,8 +362,8 @@ could not get a legitimate creation done:
 Not gaps, however awkward the turn:
 
 - **No image.** Building one was never in scope here.
-- **No quota, or Compute not enabled.** Those are grants, and the tools
-  reporting them accurately is the tools working.
+- **No quota, or Compute not enabled.** The user can enable Compute; default quota
+  follows activation. The tools reporting these states accurately is the tools working.
 - **A rejection that was right.** An unsupported instance type or an unattached
   volume is the plan doing its job — that is the answer, and it saved a broken
   workload.

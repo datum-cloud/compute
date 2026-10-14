@@ -19,18 +19,28 @@ export function DetailList({
   className,
   itemClassName,
   labelClassName,
+  labelWidth,
 }: {
   items: DetailListItem[];
   className?: string;
   itemClassName?: string;
   labelClassName?: string;
+  /**
+   * Fixed label column (e.g. `7rem`) instead of the default 50/50 split, for
+   * narrow cards where values would otherwise wrap. Inline style because
+   * this plugin can't ship arbitrary-value Tailwind classes (ui/CLAUDE.md).
+   */
+  labelWidth?: string;
 }) {
+  const itemStyle = labelWidth
+    ? { gridTemplateColumns: `${labelWidth} minmax(0, 1fr)`, columnGap: '1rem' }
+    : undefined;
   return (
     <div className={cn('flex flex-col', className)}>
       {items
         .filter((item) => !item.hidden)
         .map((item, index) => (
-          <CardField key={index} className={cn(itemClassName, item.className)}>
+          <CardField key={index} className={cn(itemClassName, item.className)} style={itemStyle}>
             <CardFieldLabel className={labelClassName}>{item.label}</CardFieldLabel>
             <CardFieldValue className="min-w-0 wrap-break-word">{item.content}</CardFieldValue>
           </CardField>

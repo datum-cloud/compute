@@ -5,18 +5,22 @@ package logs
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+
+	"go.miloapis.com/telemetry/cli/logql"
+	logsapi "go.miloapis.com/telemetry/cli/logs"
 )
 
-func genLine(ts int64, instance, label, id string) entry {
-	return entry{ts: ts, stream: instance + id, labels: map[string]string{labelInstance: instance, label: id}}
+func genLine(ts int64, instance, label, id string) logsapi.Entry {
+	return logsapi.Entry{Time: time.Unix(0, ts), Labels: map[string]string{labelInstance: instance, label: id}}
 }
 
 func TestDiscoverGenerations(t *testing.T) {
-	var base selector
-	base.eq(labelWorkload, testWorkload)
-	q := &fakeQuerier{pages: [][]entry{
+	var base logql.Selector
+	base.Eq(labelWorkload, testWorkload)
+	q := &fakeQuerier{pages: [][]logsapi.Entry{
 		// a's current generation fills most of the page; b is a sandbox pod.
 		{
 			genLine(30, "a", labelVMGeneration, "a2"),
@@ -46,7 +50,7 @@ func TestDiscoverGenerations(t *testing.T) {
 	}
 	gotQueries := make([]string, 0, len(q.queries))
 	for _, r := range q.queries {
-		gotQueries = append(gotQueries, r.query)
+		gotQueries = append(gotQueries, r.Query)
 	}
 	if diff := cmp.Diff(wantQueries, gotQueries); diff != "" {
 		t.Errorf("queries mismatch (-want +got):\n%s", diff)

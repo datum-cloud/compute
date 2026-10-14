@@ -17,6 +17,7 @@ assistant owns the document schema that carries it.
 | `skills/*.md` | Skills. Reviewed, step-by-step triage procedures, loaded on demand. |
 | `embed.go` | Embeds both into the binary, so `cmd/compute-mcp` can serve them with no files to mount beside it. |
 | `../../internal/agent` | The reason catalog and the diagnosis walk that back the tools. |
+| `../../pkg/computeagent` | A re-export of the tools for MCP servers outside this module. datum-mcp mounts them from here, so it runs the same diagnosis on a customer's machine that the assistant runs in-cluster. |
 | `../../config/components/assistant-capability` | Registration. The agent customers talk to, and the content it offers them. |
 
 ## Status

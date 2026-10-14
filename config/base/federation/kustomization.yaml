@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - ../crd/bases/compute.datumapis.com_instanceconsolesessions.yaml
   - ../crd/bases/compute.datumapis.com_instances.yaml
+  - ../crd/bases/compute.datumapis.com_instancetypes.yaml
   - ../crd/bases/compute.datumapis.com_workloaddeployments.yaml
   - ../crd/bases/compute.datumapis.com_workloads.yaml
 

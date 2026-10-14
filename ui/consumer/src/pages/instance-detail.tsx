@@ -23,6 +23,8 @@ import { lazy, Suspense } from 'react';
 import { Outlet, Route, Routes, useLocation, useParams } from 'react-router';
 
 const InstanceShellPage = lazy(() => import('./instance-shell'));
+// activity-ui is sizeable; load it only when the tab is opened.
+const InstanceActivity = lazy(() => import('./instance-activity'));
 
 function InstanceLayoutShell({
   projectHref,
@@ -101,6 +103,7 @@ function InstanceLayoutShell({
             {
               instance,
               workloadName,
+              workloadHref: instancesHref,
               projectId,
               logsHref,
               metricsHref,
@@ -126,7 +129,7 @@ export default function InstanceDetail() {
   const location = useLocation();
 
   const path = location.pathname.replace(/\/$/, '');
-  const overviewHref = path.replace(/\/(logs|metrics|shell)$/, '');
+  const overviewHref = path.replace(/\/(logs|metrics|shell|activity)$/, '');
   const logsHref = `${overviewHref}/logs`;
   const metricsHref = `${overviewHref}/metrics`;
   const shellHref = `${overviewHref}/shell`;
@@ -154,6 +157,14 @@ export default function InstanceDetail() {
         <Route index element={<InstanceOverview />} />
         <Route path="logs" element={<InstanceLogs />} />
         <Route path="metrics" element={<InstanceMetrics />} />
+        <Route
+          path="activity"
+          element={
+            <Suspense fallback={null}>
+              <InstanceActivity />
+            </Suspense>
+          }
+        />
         <Route
           path="shell"
           element={

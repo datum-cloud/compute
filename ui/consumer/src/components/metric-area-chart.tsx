@@ -12,6 +12,7 @@ import {
   type MetricFormat,
   type PrometheusTimeRange,
 } from '../lib/prometheus';
+import { formatBytes, formatCores, formatPercent } from '../lib/resource-usage';
 import { busiestSeries, nextHiddenSeries, type SeriesLegendModifiers } from '../lib/series-view';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { ChartContainer, ChartTooltip, type ChartConfig } from '@datum-cloud/datum-ui/chart';
@@ -19,23 +20,15 @@ import { cn } from '@datum-cloud/datum-ui/utils';
 import { useCallback, useId, useMemo, useState } from 'react';
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts';
 
+/** Portal formats plus `cores`, which only the plugin renders (CPU in cores, not SI). */
+export type ChartFormat = MetricFormat | 'cores';
+
 const SERIES_COLORS = [
   'var(--color-chart-2)',
   'var(--color-chart-1)',
   'var(--color-chart-3)',
   'var(--primary)',
 ] as const;
-
-function formatBytes(value: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let n = value;
-  let i = 0;
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024;
-    i += 1;
-  }
-  return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
-}
 
 /** SI-scale CPU-style numbers so a 0.00008 domain does not label every tick 0.0. */
 function formatCompactNumber(value: number, forTick: boolean): string {
@@ -58,18 +51,17 @@ function formatCompactNumber(value: number, forTick: boolean): string {
   return `${sign}${n.toExponential(1)}`;
 }
 
-function formatAxisValue(value: number, format: MetricFormat): string {
+function formatAxisValue(value: number, format: ChartFormat): string {
   if (!Number.isFinite(value)) return '—';
   switch (format) {
     case 'bytes':
       return formatBytes(value);
     case 'bytesPerSecond':
       return `${formatBytes(value)}/s`;
-    case 'percent': {
-      // Keep one decimal below 10% so a 0.4% error rate does not read as "0%".
-      const pct = value * 100;
-      return `${pct > 0 && pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
-    }
+    case 'percent':
+      return formatPercent(value, false);
+    case 'cores':
+      return formatCores(value, false);
     case 'requestsPerSecond':
       return value >= 10 ? `${value.toFixed(0)}/s` : `${value.toFixed(2)}/s`;
     case 'milliseconds':
@@ -80,7 +72,7 @@ function formatAxisValue(value: number, format: MetricFormat): string {
   }
 }
 
-function formatAxisTick(value: number, format: MetricFormat): string {
+function formatAxisTick(value: number, format: ChartFormat): string {
   if (!Number.isFinite(value)) return '';
   switch (format) {
     case 'bytes':
@@ -88,7 +80,9 @@ function formatAxisTick(value: number, format: MetricFormat): string {
     case 'bytesPerSecond':
       return `${formatBytes(value)}/s`;
     case 'percent':
-      return `${(value * 100).toFixed(0)}%`;
+      return formatPercent(value, true);
+    case 'cores':
+      return formatCores(value, true);
     case 'milliseconds':
     case 'milliseconds-auto':
       return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}`;
@@ -97,8 +91,38 @@ function formatAxisTick(value: number, format: MetricFormat): string {
   }
 }
 
-function axisWidth(format: MetricFormat): number {
-  return format === 'bytes' || format === 'bytesPerSecond' ? 48 : 36;
+function axisWidth(format: ChartFormat): number {
+  switch (format) {
+    case 'bytes':
+    case 'bytesPerSecond':
+      return 48;
+    case 'percent':
+    case 'cores':
+      // Small values keep their decimals ("0.085%", "0.00085").
+      return 56;
+    default:
+      return 36;
+  }
+}
+
+/** Unscaled tooltip value, with a unit where the number alone is ambiguous. */
+function formatRawValue(value: number | string | undefined, format: ChartFormat): string {
+  const n = Number(value);
+  if (value === undefined || !Number.isFinite(n)) return '—';
+  const text = formatAxisValue(n, format);
+  return format === 'cores' ? `${text} ${n === 1 ? 'core' : 'cores'}` : text;
+}
+
+/** Divide each series by its own denominator; a series without one is dropped. */
+function divideSeries(
+  series: ChartSeries[],
+  divisor: (name: string) => number | undefined
+): ChartSeries[] {
+  return series.flatMap((item) => {
+    const by = divisor(item.name);
+    if (!by) return [];
+    return [{ ...item, data: item.data.map((point) => ({ ...point, value: point.value / by })) }];
+  });
 }
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -199,11 +223,13 @@ export function MetricAreaChart({
   fill = false,
   maxSeries,
   seriesLabels,
+  seriesDivisor,
+  rawFormat,
 }: {
   query: string | undefined;
   timeRange: PrometheusTimeRange;
   title: string;
-  format?: MetricFormat;
+  format?: ChartFormat;
   color?: string;
   enabled?: boolean;
   unavailable?: boolean;
@@ -222,14 +248,27 @@ export function MetricAreaChart({
   maxSeries?: number;
   /** Display names keyed by series name (the full name stays in the legend tooltip). */
   seriesLabels?: Record<string, string>;
+  /** Per-series denominator, e.g. allocated cores to turn cores in use into a ratio. */
+  seriesDivisor?: (name: string) => number | undefined;
+  /** Format of the values before `seriesDivisor`; the tooltip shows them beside the ratio. */
+  rawFormat?: ChartFormat;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const { data, isLoading, error } = usePrometheusChart(query, timeRange, {
     enabled: enabled && !unavailable && !denied && !pending && !!query,
   });
-  const chartData = useMemo(() => (data ? transformForRecharts(data) : []), [data]);
-  const allSeries = data?.series ?? [];
-  const series = useMemo(() => busiestSeries(data?.series ?? [], maxSeries), [data, maxSeries]);
+  const scaled = useMemo(
+    () => (data && seriesDivisor ? { ...data, series: divideSeries(data.series, seriesDivisor) } : data),
+    [data, seriesDivisor]
+  );
+  const chartData = useMemo(() => (scaled ? transformForRecharts(scaled) : []), [scaled]);
+  // Unscaled rows by timestamp, so the tooltip can show "0.21% · 0.0021 cores".
+  const rawRows = useMemo(() => {
+    if (!data || !seriesDivisor || !rawFormat) return undefined;
+    return new Map(transformForRecharts(data).map((row) => [Number(row.timestamp), row]));
+  }, [data, seriesDivisor, rawFormat]);
+  const allSeries = scaled?.series ?? [];
+  const series = useMemo(() => busiestSeries(scaled?.series ?? [], maxSeries), [scaled, maxSeries]);
   const omitted = allSeries.length - series.length;
   const [hiddenState, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const seriesNames = useMemo(() => series.map((item) => item.name), [series]);
@@ -367,6 +406,12 @@ export function MetricAreaChart({
                         </span>
                         <span className="font-medium">
                           {formatAxisValue(Number(point.value), format)}
+                          {rawFormat && rawRows ? (
+                            <span className="text-muted-foreground font-normal">
+                              {' · '}
+                              {formatRawValue(rawRows.get(ts)?.[String(point.dataKey)], rawFormat)}
+                            </span>
+                          ) : null}
                         </span>
                       </div>
                       ))}
@@ -448,7 +493,7 @@ export function MetricAreaChart({
   );
 }
 
-export function formatKpiValue(value: number | undefined, format: MetricFormat): string {
+export function formatKpiValue(value: number | undefined, format: ChartFormat): string {
   if (value === undefined || !Number.isFinite(value)) return '—';
   return formatAxisValue(value, format);
 }

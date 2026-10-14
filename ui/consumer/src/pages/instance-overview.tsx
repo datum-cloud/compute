@@ -7,6 +7,14 @@ import { DetailList, StatusBadge } from '../components/detail-list';
 import { RecentInstanceLogs } from '../components/instance-logs';
 import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
 import { useInstanceOutlet } from './instance-outlet-context';
+import {
+  cpuUsageHint,
+  formatCpuUsage,
+  formatMemoryUsage,
+  memoryUsageHint,
+  parseCpuCores,
+  parseMemoryBytes,
+} from '../lib/resource-usage';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import {
   albErrorRateQuery,
@@ -266,20 +274,25 @@ function MetricsCard({
 
   const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
 
+  const allocatedCores = parseCpuCores(instance.cpu);
+  const allocatedMemory = parseMemoryBytes(instance.memory);
   const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
   const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled });
   const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
   const p99 = usePrometheusCard(p99Query, 'milliseconds-auto', { enabled: !!proxyId });
   const errors = usePrometheusCard(errorQuery, 'percent', { enabled: !!proxyId });
 
-  const kpis: Array<{ label: string; value: string }> = [
+  // `title` carries the absolute figure behind a percentage, shown on hover.
+  const kpis: Array<{ label: string; value: string; title?: string }> = [
     {
       label: 'CPU',
-      value: identityLoading ? 'Loading…' : formatCardValue(cpu.data, 'number'),
+      value: identityLoading ? 'Loading…' : formatCpuUsage(cpu.data?.value, allocatedCores),
+      title: allocatedCores ? cpuUsageHint(cpu.data?.value, allocatedCores) : undefined,
     },
     {
       label: 'Memory',
-      value: identityLoading ? 'Loading…' : formatCardValue(memory.data, 'bytes'),
+      value: identityLoading ? 'Loading…' : formatMemoryUsage(memory.data?.value, allocatedMemory),
+      title: allocatedMemory ? memoryUsageHint(memory.data?.value, allocatedMemory) : undefined,
     },
     {
       label: 'Requests',
@@ -320,6 +333,7 @@ function MetricsCard({
             <div key={kpi.label} className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
               <p className="text-muted-foreground text-xs font-medium">{kpi.label}</p>
               <p
+                title={kpi.title}
                 className={cn(
                   'text-2xl font-semibold whitespace-nowrap tabular-nums',
                   (kpi.value === '—' || kpi.value === NOT_CONNECTED || kpi.value === 'Loading…') &&
