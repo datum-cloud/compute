@@ -7,7 +7,6 @@
  * the same sum across instances) as the workload Metrics tab.
  */
 import { CliBanner, SectionCard } from "../components/cli-section";
-import { ComputeEnablementBanner } from "../components/compute-enablement-banner";
 import { formatKpiValue } from "../components/metric-area-chart";
 import { CpuMemorySparks } from "../components/metric-sparkline";
 import { SparklineStatCard } from "../components/sparkline-stat-card";
@@ -18,7 +17,7 @@ import { albStatus, workloadUrlState } from "../lib/alb-status";
 import { WorkloadListCardsSkeleton, WorkloadListTableSkeleton } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
 import {
-  useComputeEntitlement,
+  useComputeEnablement,
   useCreateDemoWorkload,
   useInstances,
   usePublishedUrls,
@@ -208,30 +207,37 @@ function MetricCell({
   );
 }
 
-/** The "Deploy a workload" / "List & inspect workloads" cards — datumctl enables
- * Compute on first use, so these commands work whether or not it is enabled yet. */
+/** The datumctl banner plus the "Deploy a workload" / "List & inspect workloads"
+ * cards. datumctl enables Compute on first use, so these commands work even
+ * when the page couldn't enable it. Render inside a `flex flex-col gap-6`. */
 function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
   return (
-    <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
-      <SectionCard
-        icon={<Icon icon={RocketIcon} size={16} />}
-        title="Deploy a workload"
-        description="Create a workload manifest and deploy it to your project. The dashboard will reflect the new workload within seconds."
-        commands={[
-          "datumctl compute deploy -f workload.yaml",
-          `datumctl compute deploy --project=${projectId ?? ""} -f workload.yaml`,
-        ]}
+    <>
+      <CliBanner
+        title="Deploy workloads with datumctl"
+        description="Workloads are created and managed using the Datum CLI. Install datumctl, write a manifest, and deploy — workloads you create will appear here automatically."
       />
-      <SectionCard
-        icon={<Icon icon={SearchIcon} size={16} />}
-        title="List & inspect workloads"
-        description="Confirm your workload deployed successfully and inspect its current health and placement status."
-        commands={[
-          "datumctl compute workloads",
-          "datumctl compute workloads describe <name>",
-        ]}
-      />
-    </div>
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <SectionCard
+          icon={<Icon icon={RocketIcon} size={16} />}
+          title="Deploy a workload"
+          description="Create a workload manifest and deploy it to your project. The dashboard will reflect the new workload within seconds."
+          commands={[
+            "datumctl compute deploy -f workload.yaml",
+            `datumctl compute deploy --project=${projectId ?? ""} -f workload.yaml`,
+          ]}
+        />
+        <SectionCard
+          icon={<Icon icon={SearchIcon} size={16} />}
+          title="List & inspect workloads"
+          description="Confirm your workload deployed successfully and inspect its current health and placement status."
+          commands={[
+            "datumctl compute workloads",
+            "datumctl compute workloads describe <name>",
+          ]}
+        />
+      </div>
+    </>
   );
 }
 
@@ -636,12 +642,11 @@ export default function WorkloadList() {
   }, [view]);
 
   const {
-    data: entitlement,
-    isLoading: isEntitlementLoading,
-    error: entitlementError,
-    refetch: refetchEntitlement,
-  } = useComputeEntitlement(projectId);
-  const computeEnabled = entitlement?.phase === "Active";
+    enabled: computeEnabled,
+    isLoading: isEnabling,
+    error: enablementError,
+    retry: retryEnablement,
+  } = useComputeEnablement(projectId);
 
   const {
     data: workloads,
@@ -709,7 +714,7 @@ export default function WorkloadList() {
     [sortedWorkloads, search, publishedByWorkload]
   );
 
-  const isLoading = isEntitlementLoading || (computeEnabled && isWorkloadsLoading);
+  const isLoading = isEnabling || (computeEnabled && isWorkloadsLoading);
 
   // Build the child route path from the current URL rather than the portal's
   // internal `paths.config.ts` (unavailable to plugins) — the host mounts this
@@ -779,20 +784,16 @@ export default function WorkloadList() {
       {isLoading &&
         (view === "table" ? <WorkloadListTableSkeleton /> : <WorkloadListCardsSkeleton />)}
 
-      {!isEntitlementLoading && entitlementError && (
-        <ErrorOrRestrictedState
-          error={entitlementError}
-          restrictedMessage="You don't have permission to view this project's Compute access."
-          onRetry={() => void refetchEntitlement()}
-        />
-      )}
-
-      {!isEntitlementLoading && !entitlementError && !computeEnabled && projectId && (
+      {enablementError && (
         <div
           className="flex flex-col gap-6"
           data-testid="compute-plugin-workload-not-enabled"
         >
-          <ComputeEnablementBanner projectId={projectId} phase={entitlement?.phase ?? null} />
+          <ErrorOrRestrictedState
+            error={enablementError}
+            restrictedMessage="You don't have permission to enable Compute for this project."
+            onRetry={retryEnablement}
+          />
           <WorkloadCliSections projectId={projectId} />
         </div>
       )}
@@ -810,10 +811,6 @@ export default function WorkloadList() {
           className="flex flex-col gap-6"
           data-testid="compute-plugin-workload-empty"
         >
-          <CliBanner
-            title="Deploy workloads with datumctl"
-            description="Workloads are created and managed using the Datum CLI. Install datumctl, write a manifest, and deploy — workloads you create will appear here automatically."
-          />
           <WorkloadCliSections projectId={projectId} />
           <div
             className="grid grid-cols-1 gap-4 lg:grid-cols-2"
