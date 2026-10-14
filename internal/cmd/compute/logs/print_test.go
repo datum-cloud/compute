@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+
+	logsapi "go.miloapis.com/telemetry/cli/logs"
 )
 
-func appLine(ts time.Time, gen, text string) entry {
-	return entry{ts: ts.UnixNano(), line: text, labels: map[string]string{
+func appLine(ts time.Time, gen, text string) logsapi.Entry {
+	return logsapi.Entry{Time: ts, Line: text, Labels: map[string]string{
 		labelWorkload:     testWorkload,
 		labelInstance:     testInstance,
 		labelVMGeneration: gen,
@@ -26,13 +28,13 @@ func TestPrinter(t *testing.T) {
 	tests := []struct {
 		name       string
 		setup      func(*printer)
-		entries    []entry
+		entries    []logsapi.Entry
 		want       string
 		wantStatus string
 	}{
 		{
 			name: "text marks generation changes",
-			entries: []entry{
+			entries: []logsapi.Entry{
 				appLine(ts, "g1", "one"),
 				appLine(ts.Add(time.Second), "g2", "two"),
 			},
@@ -43,20 +45,20 @@ func TestPrinter(t *testing.T) {
 		{
 			name:    "text without decorations",
 			setup:   func(p *printer) { p.prefix, p.timestamps = false, false },
-			entries: []entry{appLine(ts, "", "plain")},
+			entries: []logsapi.Entry{appLine(ts, "", "plain")},
 			want:    "plain\n",
 		},
 		{
 			name:    "json omits empty fields",
 			setup:   func(p *printer) { p.json = true },
-			entries: []entry{appLine(ts, "g1", "hi")},
+			entries: []logsapi.Entry{appLine(ts, "g1", "hi")},
 			want: `{"generation":"g1","instance":"api-default-us-central-1-0","line":"hi",` +
 				`"timestamp":"2026-09-30T14:03:22.121000005Z","workload":"api"}` + "\n",
 		},
 		{
 			name:  "access log",
 			setup: func(p *printer) { p.alb = true },
-			entries: []entry{{ts: ts.UnixNano(), labels: map[string]string{
+			entries: []logsapi.Entry{{Time: ts, Labels: map[string]string{
 				labelMethod: "GET", labelResponseCode: "503", labelDuration: "3", labelPath: "/healthz",
 			}}},
 			want: "Sep 30 14:03:22.121  GET    503      3ms  /healthz\n",

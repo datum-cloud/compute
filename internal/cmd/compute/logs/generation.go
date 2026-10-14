@@ -6,9 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 	"time"
+
+	"go.miloapis.com/telemetry/cli/logql"
+	logsapi "go.miloapis.com/telemetry/cli/logs"
 )
 
 const (
@@ -44,26 +47,26 @@ type generations map[string][]generation
 // Scanning backward would stall on a chatty generation filling every page, so
 // each round excludes the generations found and the instances satisfied so
 // far; the newest remaining line then always belongs to a new generation.
-func discoverGenerations(ctx context.Context, q querier, base selector, start, end time.Time, need int) (generations, error) {
+func discoverGenerations(ctx context.Context, q logsapi.Querier, base logql.Selector, start, end time.Time, need int) (generations, error) {
 	gens := generations{}
 	known := map[string][]string{}
 	var satisfied []string
 
 	for range generationRounds {
-		sel := base.clone()
-		sel.noneOf(labelVMGeneration, known[labelVMGeneration])
-		sel.noneOf(labelPodGeneration, known[labelPodGeneration])
-		sel.noneOf(labelInstance, satisfied)
+		sel := base.Clone()
+		sel.NoneOf(labelVMGeneration, known[labelVMGeneration]...).
+			NoneOf(labelPodGeneration, known[labelPodGeneration]...).
+			NoneOf(labelInstance, satisfied...)
 
-		page, err := q.queryRange(ctx, queryRequest{query: sel.String(), start: start, end: end, limit: generationPageLimit, dir: backward})
+		page, err := q.QueryRange(ctx, logsapi.Query{Query: sel.String(), Start: start, End: end, Limit: generationPageLimit, Direction: logsapi.Backward})
 		if err != nil {
 			return nil, fmt.Errorf("finding instance generations: %w", err)
 		}
 
 		found := false
 		for _, e := range page {
-			inst := e.labels[labelInstance]
-			g := generationOf(e.labels)
+			inst := e.Labels[labelInstance]
+			g := generationOf(e.Labels)
 			if inst == "" || g.id == "" || len(gens[inst]) >= need || slices.Contains(gens[inst], g) {
 				continue
 			}
@@ -89,21 +92,11 @@ type generationFilter struct {
 	missing []string // instances with no generation at the requested index
 }
 
-func (f generationFilter) apply(sel *selector) {
-	sel.oneOf(f.label, f.ids)
-}
-
 // pickGeneration selects each instance's newest (index 0) or previous
 // (index 1) generation.
 func pickGeneration(gens generations, index int) (generationFilter, error) {
-	instances := make([]string, 0, len(gens))
-	for inst := range gens {
-		instances = append(instances, inst)
-	}
-	sort.Strings(instances)
-
 	var f generationFilter
-	for _, inst := range instances {
+	for _, inst := range slices.Sorted(maps.Keys(gens)) {
 		if index >= len(gens[inst]) {
 			f.missing = append(f.missing, inst)
 			continue
