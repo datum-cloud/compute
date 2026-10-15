@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,7 +22,6 @@ import (
 	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/locations"
 	"go.datum.net/compute/pkg/instancetype"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
@@ -39,18 +37,6 @@ func newTestComputeAvailability(location string) *servicesv1alpha1.ServiceAvaila
 		},
 		Status: servicesv1alpha1.ServiceAvailabilityStatus{
 			Conditions: []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue}},
-		},
-	}
-}
-
-// newTestLocationBinding builds the projection a project control plane holds
-// today for a location it may place workloads at.
-func newTestLocationBinding(name, cityCode string) *networkingv1alpha.LocationBinding {
-	return &networkingv1alpha.LocationBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: networkingv1alpha.LocationBindingSpec{
-			LocationRef: corev1.LocalObjectReference{Name: name},
-			Topology:    map[string]string{networkingv1alpha.TopologyCityCodeKey: cityCode},
 		},
 	}
 }
@@ -153,7 +139,7 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 			},
 		},
 	}
-	location := newTestLocationBinding(testLocationName, "DFW")
+	location := newLocationsServiceLocation(testLocationName, "DFW")
 
 	s := newNetworkingScheme()
 	require.NoError(t, locationsv1alpha1.AddToScheme(s))
@@ -636,7 +622,7 @@ func TestGetDeploymentsForWorkload_LocationSelector(t *testing.T) {
 				{
 					Name: testDefaultPlacement,
 					LocationSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{networkingv1alpha.TopologyCityCodeKey: "DFW"},
+						MatchLabels: map[string]string{locations.TopologyCityCodeKey: "DFW"},
 					},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 				},
@@ -648,9 +634,9 @@ func TestGetDeploymentsForWorkload_LocationSelector(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(
-			newTestLocationBinding("dfw-b", "DFW"),
-			newTestLocationBinding("dfw-a", "DFW"),
-			newTestLocationBinding(testOtherLocationName, "ORD"),
+			newLocationsServiceLocation("dfw-b", "DFW"),
+			newLocationsServiceLocation("dfw-a", "DFW"),
+			newLocationsServiceLocation(testOtherLocationName, "ORD"),
 			newTestComputeAvailability("dfw-a"),
 			newTestComputeAvailability("dfw-b"),
 			newTestComputeAvailability(testOtherLocationName),
@@ -686,7 +672,7 @@ func TestGetDeploymentsForWorkload_LocationSelectorFollowsLocations(t *testing.T
 				{
 					Name: testDefaultPlacement,
 					LocationSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{networkingv1alpha.TopologyCityCodeKey: "DFW"},
+						MatchLabels: map[string]string{locations.TopologyCityCodeKey: "DFW"},
 					},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
 				},
@@ -711,7 +697,7 @@ func TestGetDeploymentsForWorkload_LocationSelectorFollowsLocations(t *testing.T
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).
 		WithObjects(
-			newTestLocationBinding(testLocationName, "DFW"), newTestLocationBinding(testOtherLocationName, "ORD"),
+			newLocationsServiceLocation(testLocationName, "DFW"), newLocationsServiceLocation(testOtherLocationName, "ORD"),
 			newTestComputeAvailability(testLocationName), newTestComputeAvailability(testOtherLocationName),
 			stale,
 		).
@@ -735,7 +721,7 @@ func TestReconcileWorkloadStatus_PlacementWithNoLocations(t *testing.T) {
 	workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{
 		Name: testPlacementA,
 		LocationSelector: &metav1.LabelSelector{
-			MatchLabels: map[string]string{networkingv1alpha.TopologyCityCodeKey: "LHR"},
+			MatchLabels: map[string]string{locations.TopologyCityCodeKey: "LHR"},
 		},
 	}}
 
@@ -795,7 +781,7 @@ func TestGetDeploymentsForWorkload_RequiresComputeAvailability(t *testing.T) {
 					Name: "selected",
 					LocationSelector: &metav1.LabelSelector{
 						MatchExpressions: []metav1.LabelSelectorRequirement{{
-							Key: networkingv1alpha.TopologyCityCodeKey, Operator: metav1.LabelSelectorOpExists,
+							Key: locations.TopologyCityCodeKey, Operator: metav1.LabelSelectorOpExists,
 						}},
 					},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
@@ -807,8 +793,8 @@ func TestGetDeploymentsForWorkload_RequiresComputeAvailability(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(newNetworkingScheme()).
 		WithObjects(
-			newTestLocationBinding(testLocationName, "DFW"),
-			newTestLocationBinding(testOtherLocationName, "ORD"),
+			newLocationsServiceLocation(testLocationName, "DFW"),
+			newLocationsServiceLocation(testOtherLocationName, "ORD"),
 			// Compute is only available in one of the two locations.
 			newTestComputeAvailability(testLocationName),
 		).

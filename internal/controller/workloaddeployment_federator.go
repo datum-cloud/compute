@@ -260,7 +260,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 		if err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(kd), kd); client.IgnoreNotFound(err) != nil {
 			return finalizer.Result{}, fmt.Errorf("failed to read downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
 		}
-		legacyCity = kd.Labels[networkingv1alpha.TopologyCityCodeKey]
+		legacyCity = kd.Labels[locationsv1alpha1.TopologyCityCodeKey]
 	}
 
 	if err := r.FederationClient.Delete(ctx, kd); client.IgnoreNotFound(err) != nil {
@@ -295,7 +295,7 @@ func (r *WorkloadDeploymentFederator) cleanupLegacyPropagationPolicies(ctx conte
 	var remaining computev1alpha.WorkloadDeploymentList
 	if err := r.FederationClient.List(ctx, &remaining,
 		client.InNamespace(downstreamNS),
-		client.MatchingLabels{networkingv1alpha.TopologyCityCodeKey: city},
+		client.MatchingLabels{locationsv1alpha1.TopologyCityCodeKey: city},
 	); err != nil {
 		return fmt.Errorf("failed to list remaining legacy downstream deployments for city %q: %w", city, err)
 	}
