@@ -330,7 +330,9 @@ workload is one command, and these are theirs to run, not yours to assume:
     datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW --min=1 --port=8080
     datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW --http-port=8080
 
-The last one is the only way to get a public HTTPS URL, per trap 8. Offer them
+The last one is the only way to get a public HTTPS URL, per trap 8. For a gRPC
+server, or anything else that serves HTTP/2, add `--http2`; without it the URL
+reaches the container over HTTP/1.1 and gRPC calls fail. Offer them
 when a step above has no tool behind it — the access request and the URL have
 none at all — and otherwise stay with the tools, which is the path that shows
 the user the manifest before anything is created.

@@ -373,8 +373,8 @@ github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 h1:ilQV1hzziu+LLM3zU
 github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78/go.mod h1:aL8wCCfTfSfmXjznFBSZNN13rSJjlIOI1fUNAtF7rmI=
 go.datum.net/datumctl v0.20.1 h1:Xog0n82HpgrwKr66yFis+WLpXPz7Bd51cM3wrBBR33s=
 go.datum.net/datumctl v0.20.1/go.mod h1:KN/puWjphNMBxrHXxB2BfZHU/C09UppRZE+6grqcO0Y=
-go.datum.net/network-services-operator v0.32.24 h1:VFc4OqRZzBk1Yy+brmhb8/AEkicQosg0SNr0PlSpeD4=
-go.datum.net/network-services-operator v0.32.24/go.mod h1:DpbypH11jaKhJ5F9ER6xc2hhgFFGc3kqLhBHyvOz8vo=
+go.datum.net/network-services-operator v0.32.26 h1:z5SrWqbUvU/XH9QX+ePR/s9NcMQBGwv4AOUqzLdeo8s=
+go.datum.net/network-services-operator v0.32.26/go.mod h1:DpbypH11jaKhJ5F9ER6xc2hhgFFGc3kqLhBHyvOz8vo=
 go.miloapis.com/locations v0.0.1 h1:voJKqBzyLX5x96M3+5y/ga7fgq9/+vypTizd+bBvqUY=
 go.miloapis.com/locations v0.0.1/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
 go.miloapis.com/milo v0.36.2 h1:ZXKX6KIQ9O6KF87IVHfXoQ0xmF9MztiP91fFLWasznQ=
