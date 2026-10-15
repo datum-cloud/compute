@@ -3,6 +3,7 @@
 Status: Proposal
 Audience: Product, platform operators, prospective customers
 Date: 2026-04-08
+Revisited: 2026-10-15
 
 ## What we're building
 
@@ -44,12 +45,14 @@ microVMs with snapshot/restore) makes "instant, isolated, stateful" the
 default rather than the exception.
 
 The product opportunity is to turn agent sandboxes into a **catalog Datum
-ships and curates**, the way cloud providers ship machine images — except
-allocation is measured in milliseconds and idle copies cost almost nothing.
+ships and curates**, the way cloud providers ship machine images. A customer
+can then choose how much ready capacity to reserve for a catalog environment,
+while Datum also offers a managed default for customers who do not need to
+make that decision.
 
 ## What becomes available
 
-Three new resources, layered so that the simple case stays simple and the
+Four new resources, layered so that the simple case stays simple and the
 advanced case stays possible.
 
 ### 1. `Sandbox` — one isolated environment
@@ -62,37 +65,48 @@ This is the lowest-level resource. Most users never touch it directly.
 
 ### 2. `SandboxTemplate` — a reusable, curated environment definition
 
-A **named, versioned blueprint** for a kind of sandbox: which image to run,
-how much CPU/memory, which ports to expose, how long to keep it warm, what
-isolation level to use. Datum ships and maintains a catalog of these out
+A **named, versioned blueprint** for a kind of sandbox: its image or prepared
+starting snapshot, CPU and memory, storage defaults, exposed ports, isolation,
+and network policy. Datum ships and maintains a catalog of these out
 of the box — `python-agent-runtime`, `node-agent-runtime`, `code-interpreter`,
 `headless-browser`, `jupyter-datascience`, and so on. Customers and partners
 can publish their own templates into their own namespaces using the same
 mechanism.
 
 Templates are the product surface. They are what users browse, pick, and
-build against.
+build against. A published version resolves to an immutable starting state,
+so a pool can be replenished without silently changing the environment that
+customers receive.
 
-### 3. `SandboxClaim` — "give me a copy of that template"
+### 3. `SandboxPool` — ready capacity for a template
+
+A pool keeps pre-initialized, unassigned sandboxes ready and replenishes them
+as they are claimed. It references one template version and specifies where
+copies should be ready, how many to reserve, and what to do when the pool is
+empty. A zero-sized pool can still serve claims by starting them on demand.
+
+Pools are separate from templates because ready capacity has an owner, a
+location, and a cost. Two customers can use the same curated template without
+sharing a capacity budget; one customer can maintain separate production and
+development pools. Datum provides a managed default pool for the simple case.
+Customers who need a latency guarantee or cost ceiling can create and manage
+their own pool. Pool status exposes desired and ready capacity, provisioning
+failures, and exhaustion rather than burying these facts on the template.
+
+### 4. `SandboxClaim` — "give me a sandbox for this session"
 
 The user-facing request. A `SandboxClaim` says "I want a fresh sandbox based
-on template X, with these small overrides." The platform produces a per-claim
-`Sandbox` that is a fully independent copy — its own identity, its own
-storage, its own lifecycle.
+on template X, with these small overrides." It can optionally name a pool
+when the caller needs specific reserved capacity or placement. Datum selects
+a managed default pool when only a template is named. The platform produces
+a per-claim `Sandbox` that is a fully independent copy — its own identity,
+its own storage, its own lifecycle.
 
 A claim is typically 5–10 lines and can be created by an agent without any
 documentation. It is the resource an agent platform creates per session,
-per user, or per task.
-
-### Behind the scenes: warm pools
-
-Each `SandboxTemplate` can keep a pool of pre-initialized copies ready to
-go. When a claim arrives, the platform hands out a warm copy and refills
-the pool in the background. The user sees a sub-second allocation; the
-operator sees a tunable knob on the template.
-
-Warm pools are not a separate resource the user or operator has to manage —
-they're a property of the template.
+per user, or per task. Claim status reports whether allocation used a ready
+copy or required a cold start. Overrides that change the prepared environment
+may require a cold start; the API must make that behavior visible.
 
 ## How this fits the existing platform
 
@@ -104,16 +118,15 @@ for production services. Agent sandboxes are a *different* shape of compute:
 |---|---|---|
 | Cardinality | Many replicas across regions | One environment per session |
 | Lifetime | Long-running | Minutes to hours, then gone |
-| Scaling | Horizontal, automatic | None — each sandbox is its own unit |
+| Scaling | Horizontal, automatic | Each sandbox is one unit; pools scale ready inventory |
 | State | Usually external (DB, cache) | Local, persistent across pause |
-| Allocation time | Seconds to minutes | Milliseconds (from warm pool) |
+| Allocation time | Seconds to minutes | Depends on warm availability, startup, or resume |
 | Who creates it | A human, once | An agent, thousands of times |
 
 The two live side-by-side. We are not replacing `Workload`; we are adding
 the right primitive for the use case it was never designed for.
 
-As part of this work, the underlying repository is being renamed from
-`workload-operator` to **`compute`** to reflect that it now owns
+The underlying repository is now **`compute`**, reflecting that it owns
 more than one top-level concept on the Datum compute platform.
 
 ---
@@ -140,10 +153,10 @@ Months of work before her agent runs its first line of code in production.
    matplotlib pre-installed, 2 GB RAM, 10 GB scratch disk, isolated per copy.
 2. In her agent code, when a session starts, she creates a `SandboxClaim`
    referencing that template. Five lines of YAML, or one API call.
-3. Within tens of milliseconds, the claim reports `Ready` with an endpoint
-   her agent can connect to. The environment is fully initialized — the
-   Python interpreter is warm, libraries are loaded, ready for the first
-   command.
+3. Datum allocates a ready copy from its managed default pool when one is
+   available. The claim reports `Ready` with an endpoint her agent can
+   connect to. If the pool is empty or her overrides require a different
+   starting environment, the claim reports that it is starting a new copy.
 4. Her agent uses the sandbox: writing files, executing code, generating
    plots. Everything stays inside that one copy.
 5. When the user's session ends — or after 15 minutes of inactivity —
@@ -152,10 +165,16 @@ Months of work before her agent runs its first line of code in production.
 6. If Maya wants something not in the catalog, she pushes her own image
    and Datum builds a custom template for her in her own namespace. The
    per-claim experience is identical.
+7. As her traffic grows, she creates a dedicated pool for the same template
+   in her preferred location. She chooses its ready capacity and what
+   happens when that capacity is exhausted, then points production claims
+   at the pool. Her development claims continue to use the managed default.
 
-**What Maya never has to think about:** regions, scaling, image building,
-warm pools, cluster sizing, isolation backends, snapshot management,
-garbage collection, or the difference between a "container" and a "VM."
+**What Maya does not have to think about to get started:** regions, scaling,
+image building, warm pools, cluster sizing, isolation backends, snapshot
+management, garbage collection, or the difference between a "container" and
+a "VM." She can take control of placement and ready capacity when her
+application needs it.
 
 ### Journey B — The internal team (operator)
 
@@ -169,25 +188,28 @@ web pages.
 1. Devon writes a Dockerfile for the headless-browser environment:
    Chromium, Playwright, a small HTTP wrapper. Standard stuff.
 2. He creates a `SandboxTemplate` in the Datum catalog namespace pointing
-   at that image. He sets resource sizing, the ports to expose, a default
-   idle timeout of 10 minutes, and a warm pool size of 10.
+   at that image. He sets resource sizing, the ports to expose, the security
+   baseline, and a default idle timeout of 10 minutes.
 3. Datum's build pipeline picks up the new template, builds the image
-   for the appropriate isolation backend, validates it, and starts the
-   warm pool. Devon watches the template's status go from `Building` to
-   `Ready`.
+   for the appropriate isolation backend, validates it, and prepares a
+   versioned starting snapshot where useful. Devon watches the template's
+   status go from `Building` to `Ready`.
 4. Devon runs a few test claims against it, confirms the browser works,
    sets the template to `Published`. It now appears in the customer-facing
    catalog.
-5. A week later, traffic has grown. Devon raises the warm pool from 10
-   to 50 by editing one field on the template. No customer change needed.
+5. Devon creates a managed default `SandboxPool` with 10 ready copies in
+   the initial location. A week later, traffic has grown; he raises that
+   pool to 50 without changing the template or customer claims. A customer
+   with a strict latency target can create a separate pool for the same
+   published template.
 6. A security advisory drops for Chromium. Devon publishes
-   `headless-browser:1.1` as a new template version. New claims get the
-   patched version automatically; existing live sandboxes keep running on
-   the old version until their sessions end. No fleet-wide restart.
-7. Datum's billing and observability surfaces show per-template usage:
-   how many claims, how long they live, how often the warm pool runs dry,
-   how much storage they consume. Devon uses this to right-size the pool
-   and report ROI.
+   `headless-browser:1.1` as a new template version. He moves the default
+   pool to it using a controlled rollout. New copies use the patched version;
+   existing claimed sandboxes keep running until their sessions end. Customer
+   pools stay pinned until their owners choose to move them.
+7. Datum's billing and observability surfaces show per-template and per-pool
+   usage: claim volume, session duration, ready capacity, pool exhaustion,
+   and storage. Devon uses this to right-size the managed pool and report ROI.
 
 **What Devon never has to think about:** writing a controller, managing
 pods, hand-rolling a warm-pool scheduler, building a per-copy storage
@@ -213,8 +235,13 @@ That invisible reliability is the actual product.
 
 - **Time-to-first-sandbox** for a new agent platform: under one hour from
   signup, with no infrastructure code written.
-- **Claim-to-ready latency** against a catalog template: under 50 ms at
-  the 95th percentile.
+- **Allocation latency** from an already ready pool: measure the 95th
+  percentile separately from cold starts and resume. Set a numerical target
+  after measuring the end-to-end path on Datum.
+- **Time to first instruction**: measure when the caller can successfully
+  use the sandbox, not only when a claim has an endpoint or a `Ready` status.
+- **Pool transparency**: report warm allocation rate, exhausted claims,
+  refill time, ready capacity, and idle cost per pool and location.
 - **Idle cost** of a paused sandbox: an order of magnitude lower than
   a comparable always-on container.
 - **Catalog breadth**: Datum ships at least the top 5 agent runtimes
@@ -227,50 +254,67 @@ That invisible reliability is the actual product.
 
 - Which templates ship in the launch catalog, and in what order?
 - What is the pricing shape — per claim, per active sandbox-minute,
-  per warm-pool slot, or some combination?
+  per ready pool slot, or some combination? Who pays for a managed default
+  pool versus a customer-owned pool?
 - Do we expose customer-published templates in v1, or hold them for v2?
 - How do we surface template versioning and deprecation to consumers
   who may have thousands of live claims at any moment?
+- What are the default behaviors when a pool is empty: cold start, wait up
+  to a deadline, or fail fast? Which claim overrides remain eligible for a
+  warm copy?
+- How much pool placement, scaling, and spend control do we expose in v1?
 - Whether the upstream compatibility layer (see below) ships in phase 1
   or follows the MVP.
 
 ## Upstream compatibility
 
-The Kubernetes community is standardizing this shape of compute through the
-[kubernetes-sigs agent-sandbox][upstream] project. We want Datum to be a
-visible, credible participant in that ecosystem — both because it accelerates
-adoption (any tool, SDK, or framework built against the upstream API works
-on Datum on day one) and because it signals that Datum competes on runtime
-quality, not on owning the schema.
+The [kubernetes-sigs agent-sandbox][upstream] SIG Apps project now exposes
+`Sandbox` as a core custom resource, with `SandboxTemplate`, `SandboxWarmPool`,
+and `SandboxClaim` as extensions. Its current `v1beta1` claim references a
+warm pool, which references a template; a pool with zero ready replicas can
+serve cold-start claims. The pool has its own desired and ready replica counts,
+update strategy, and Kubernetes scale interface. [GKE Agent Sandbox][gke]
+offers this model as a managed add-on. These are evolving project APIs, not
+built-in Kubernetes resources.
+
+The broader sandbox market reinforces the separation. [Daytona][daytona]
+builds a repeatable starting snapshot and manages warm pools by snapshot and
+region; [Azure Container Apps dynamic sessions][azure] also make the session
+pool an explicit capacity resource. A prepared environment and the capacity
+reserved for it have different owners, lifecycles, and costs.
+
+Datum's compute and network interfaces are location-aware and do not map
+one-to-one to a native Pod. We want to participate in this ecosystem while
+preserving those capabilities in the native API.
 
 Our approach has three parts:
 
 - **Mirror the vocabulary.** Datum's native API uses the same resource
-  names, field names, status phases, and lifecycle verbs as upstream
-  wherever the semantics line up. A developer who has read the upstream
-  docs already knows most of Datum's API on first contact.
+  names and lifecycle concepts as upstream wherever the semantics line up.
+  In particular, a pool names a template and a claim may name a pool. Datum
+  also allows a claim to name a template alone, resolving a managed default
+  pool so that simple customers do not have to operate one.
 - **Ship a compatibility layer.** A thin, optional component that accepts
-  upstream `agents.x-k8s.io` resources and translates them into Datum-native
-  ones. Customers who want portability between Datum, GKE, and self-hosted
-  clusters can write a single set of manifests and run them anywhere.
+  upstream `agents.x-k8s.io` and `extensions.agents.x-k8s.io` resources and
+  translates supported fields into Datum-native ones. Publish a conformance
+  matrix for supported fields and behavior; do not promise that every upstream
+  manifest or SDK works unchanged before the layer exists and is tested.
 - **Contribute upstream.** Bring the patterns Datum's runtime unlocks
   (snapshot-based warm pools, sub-second allocation, non-Pod-shaped
-  isolation backends) back to the SIG so the standard evolves toward
-  something Datum can eventually adopt natively.
+  isolation backends) back to the SIG. The upstream [roadmap][roadmap]
+  already identifies decoupling its API from its Pod-backed runtime as work
+  in progress, making this a useful area for collaboration.
 
 We are intentionally **not** adopting the upstream schema as Datum's v1
-contract while it remains a pre-1.0 API. Doing so would tie Datum's
-stability promises to upstream's churn and would force the unikernel
-runtime through a Pod-shaped abstraction that doesn't fit it. We will
-revisit that decision when upstream cuts a stable release or introduces a
-runtime abstraction that isn't Linux-Pod-shaped.
+native contract while it remains a pre-1.0 API. Doing so would tie Datum's
+stability promises to upstream's churn and its current Pod-backed fields.
+Revisit that decision as the upstream runtime abstraction and API mature.
 
 **Phase 1 scope.** The compatibility layer is likely to land *after* the
 MVP rather than alongside it. Phase 1 prioritizes shipping the Datum-native
-API, the curated catalog, and the warm-pool fast path — the things that
-make the product worth adopting in the first place. Upstream compatibility
-is an adoption accelerator, not a prerequisite for the headline experience,
-and we'd rather ship the differentiator first and the bridge second.
+API, the curated catalog, customer-controllable pools, and the warm-pool
+fast path. Define the compatibility mapping during phase 1 so native API
+choices do not make the later bridge unnecessarily difficult.
 
 ## What's *not* in scope
 
@@ -281,3 +325,7 @@ and we'd rather ship the differentiator first and the bridge second.
   agent platform or developer tool provides the experience on top.
 
 [upstream]: https://github.com/kubernetes-sigs/agent-sandbox
+[gke]: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/machine-learning/agent-sandbox
+[daytona]: https://www.daytona.io/docs/en/warm-pools/
+[azure]: https://learn.microsoft.com/azure/container-apps/sessions
+[roadmap]: https://github.com/kubernetes-sigs/agent-sandbox/blob/main/roadmap.md
