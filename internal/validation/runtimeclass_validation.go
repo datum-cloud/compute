@@ -59,6 +59,7 @@ func validateRuntimeClassSelection(
 		allErrs = append(allErrs, validateCapabilityAddsWithoutClasses(spec, stored, fieldPath)...)
 		allErrs = append(allErrs, validatePrivilegeWideningWithoutClasses(spec, stored, fieldPath)...)
 		allErrs = append(allErrs, validateSysctlsWithoutClasses(spec, storedSysctls(opts.OldWorkload), fieldPath)...)
+		allErrs = append(allErrs, validateTerminationGracePeriodWithoutClasses(spec, opts.OldWorkload, fieldPath)...)
 		return allErrs
 	}
 
@@ -122,6 +123,26 @@ func validateSysctlsWithoutClasses(
 	}
 	return field.ErrorList{field.Forbidden(fieldPath.Child("runtime", "sandbox", "sysctls"),
 		"runtime classes are not enabled on this control plane, so sandbox sysctls cannot be set")}
+}
+
+// validateTerminationGracePeriodWithoutClasses rejects a new or changed grace
+// period above zero when there is no runtime-class contract to say whether the
+// runtime honors it. A value already stored is retained for the same reason as
+// stored sysctls.
+func validateTerminationGracePeriodWithoutClasses(
+	spec computev1alpha.InstanceSpec,
+	old *computev1alpha.Workload,
+	fieldPath *field.Path,
+) field.ErrorList {
+	grace := spec.Runtime.TerminationGracePeriodSeconds
+	if grace == nil || *grace == 0 {
+		return nil
+	}
+	if old != nil && apiequality.Semantic.DeepEqual(grace, old.Spec.Template.Spec.Runtime.TerminationGracePeriodSeconds) {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(fieldPath.Child("runtime", "terminationGracePeriodSeconds"),
+		"runtime classes are not enabled on this control plane, so a termination grace period cannot be set")}
 }
 
 // validateCapabilityAddsWithoutClasses rejects every capability a container
