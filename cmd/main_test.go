@@ -19,8 +19,41 @@ import (
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
+	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/locations"
 )
+
+func TestInternalDNSObservationSourcesRequireExplicitCredentials(t *testing.T) {
+	_, err := internalDNSObservationSources(config.InternalDNSConfig{})
+	require.Error(t, err)
+	_, err = internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{{Location: "dfw"}},
+	})
+	require.Error(t, err)
+	path := filepath.Join(t.TempDir(), "edge.kubeconfig")
+	require.NoError(t, os.WriteFile(path, []byte(`apiVersion: v1
+kind: Config
+clusters:
+  - name: edge
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: edge
+    context:
+      cluster: edge
+current-context: edge
+`), 0o600))
+	source := config.InternalDNSObservationSource{Location: "dfw", KubeconfigPath: path}
+	sources, err := internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{source},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, sources["dfw"].Reader)
+	_, err = internalDNSObservationSources(config.InternalDNSConfig{
+		ObservationSources: []config.InternalDNSObservationSource{source, source},
+	})
+	require.Error(t, err)
+}
 
 // TestComputeWatchProviderClaims is the #171 guard: quota enforcement (and thus
 // the ResourceClaim watch) is wired only in Milo mode. Single/cluster mode must

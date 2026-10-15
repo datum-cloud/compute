@@ -828,6 +828,12 @@ type InstanceStatus struct {
 	// Network interface information
 	NetworkInterfaces []InstanceNetworkInterfaceStatus `json:"networkInterfaces,omitempty"`
 
+	// DNS reports assigned private names and publication readiness per network.
+	// Resolver access and record eligibility are managed by platform services.
+	// +kubebuilder:validation:Optional
+	// +listType=atomic
+	DNS []InstanceDNSStatus `json:"dns,omitempty"`
+
 	// Controller contains status information about the controller managing the instance.
 	//
 	// +kubebuilder:validation:Optional
@@ -839,6 +845,18 @@ type InstanceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	Suspended bool `json:"suspended,omitempty"`
+}
+
+// InstanceDNSStatus describes private name publication within one network.
+type InstanceDNSStatus struct {
+	// Network identifies the attached network in the owning project.
+	Network networkingv1alpha.NetworkRef `json:"network"`
+	// Hostnames contains the fully qualified names allocated for this Instance.
+	Hostnames []string `json:"hostnames,omitempty"`
+	// Conditions reports DNS readiness independently of runtime readiness.
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type InstanceControllerStatus struct {

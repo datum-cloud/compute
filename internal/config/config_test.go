@@ -28,6 +28,24 @@ func decode(t *testing.T, data string) *WorkloadOperator {
 	return &cfg
 }
 
+func TestInternalDNSConfigDecodeAndDeepCopy(t *testing.T) {
+	cfg := decode(t, `
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: WorkloadOperator
+metricsServer:
+  bindAddress: "0"
+internalDNS:
+  observationSources:
+    - location: dfw
+      kubeconfigPath: /etc/compute/edge.kubeconfig
+`)
+	copy := cfg.DeepCopy()
+	copy.InternalDNS.ObservationSources[0].Location = "changed"
+	if cfg.InternalDNS.ObservationSources[0].Location != "dfw" {
+		t.Fatal("WorkloadOperator DeepCopy aliases observation identities")
+	}
+}
+
 func TestWebhookServer_Absent(t *testing.T) {
 	cfg := decode(t, `
 apiVersion: apiserver.config.datumapis.com/v1alpha1

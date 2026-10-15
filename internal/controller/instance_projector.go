@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,10 +37,9 @@ import (
 // so that it is garbage-collected via cascading deletion when the deployment is
 // removed from the project cluster.
 //
-// The projector never deletes anything. Reclamation belongs to hub ownership:
-// hub Instances are owned by their hub WorkloadDeployment, and write-back is
-// owner-gated, so an object the projector cannot resolve is not something for it
-// to clean up.
+// A changed source Instance UID replaces the projection so project-owned
+// resources cannot survive into another instance lifetime. Deployment deletion
+// reclaims projections through their owner references.
 //
 // The controller is registered on the leader-elected local manager so only the
 // elected replica writes projections, and watches Instances through the
@@ -150,6 +150,18 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		},
 	}
 
+	if err := projectCluster.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(projection), projection); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	oldSource := projection.Labels[computev1alpha.InstanceSourceUIDLabel]
+	newSource := downstreamInstance.Labels[computev1alpha.InstanceSourceUIDLabel]
+	if oldSource != "" && newSource != "" && oldSource != newSource {
+		if err := projectClient.Delete(ctx, projection, client.Preconditions{UID: &projection.UID, ResourceVersion: &projection.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
+	}
+
 	operationResult, err := controllerutil.CreateOrUpdate(ctx, projectClient, projection, func() error {
 		// Propagate upstream tracking labels so consumers can filter by origin.
 		if projection.Labels == nil {
@@ -173,7 +185,10 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	logger.Info("reconciled Instance projection", "operation", operationResult, "namespace", targetNamespace, "cluster", clusterName)
 
 	// Status is a separate subresource.
+	dnsStatus := projection.Status.DNS
 	projection.Status = downstreamInstance.Status
+	// Private name publication belongs to the project-side DNS publisher.
+	projection.Status.DNS = dnsStatus
 	if err := projectClient.Status().Update(ctx, projection); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("failed updating Instance projection status: %w", err)
 	}

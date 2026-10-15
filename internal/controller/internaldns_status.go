@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package controller
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"strings"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, reader client.Reader, namespace string, instance *computev1alpha.Instance, nic computev1alpha.InstanceNetworkInterface) (InternalDNSObservedInterface, error) {
+	if r.ObserveInterface != nil {
+		return r.ObserveInterface(ctx, reader, namespace, instance, nic)
+	}
+	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]])
+}
+
+func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, observed bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
+	result := computev1alpha.InstanceDNSStatus{Network: attachment.Network}
+	for _, previous := range instance.Status.DNS {
+		if previous.Network.Name == result.Network.Name && previous.Network.Namespace == result.Network.Namespace {
+			result.Conditions = append([]metav1.Condition(nil), previous.Conditions...)
+		}
+	}
+	condition := metav1.Condition{Type: internalDNSConditionReady, Status: metav1.ConditionFalse, Reason: "PendingPublication", Message: "Waiting for DNS publication", ObservedGeneration: instance.Generation}
+	registration := newDNSObject(dnsRegistrationGVK, namespace, resourceName)
+	err := reader.Get(ctx, client.ObjectKeyFromObject(registration), registration)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return result, err
+	}
+	if err == nil {
+		canonical, _, _ := unstructured.NestedString(registration.Object, internalDNSStatusField, "canonicalFQDN")
+		canonical = strings.TrimSuffix(strings.ToLower(canonical), ".")
+		matches, err := publicationMatchesContext(ctx, reader, identity, namespace, instance, attachment, registration, canonical)
+		if err != nil {
+			return result, err
+		}
+		if matches {
+			result.Hostnames = []string{canonical}
+		}
+		contribution := newDNSObject(dnsContributionGVK, namespace, resourceName)
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
+			return result, err
+		}
+		if observed && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
+			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
+		}
+	}
+	if attachment.ObservationError != nil {
+		condition.Status = metav1.ConditionUnknown
+		condition.Reason, condition.Message = "NetworkObservationUnavailable", "No current network observation is available"
+	} else if !attachment.Eligible {
+		condition.Reason, condition.Message = "AddressUnavailable", "No currently eligible private host address is available"
+	}
+	if reconcileErr != nil && attachment.ObservationError == nil {
+		condition.Reason, condition.Message = "PublicationFailed", "DNS publication could not be reconciled"
+	}
+	apimeta.SetStatusCondition(&result.Conditions, condition)
+	return result, nil
+}
+
+func publicationMatchesContext(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, registration *unstructured.Unstructured, canonical string) (bool, error) {
+	resolver, err := findResolverContext(ctx, reader, namespace, identity.ProjectUID, attachment.VPCUID)
+	if err != nil || resolver == nil {
+		return false, err
+	}
+	suffix, zone, err := allocatedDNSNamespace(resolver)
+	if err != nil {
+		return false, err
+	}
+	registeredZone, _, _ := unstructured.NestedMap(registration.Object, internalDNSSpecField, internalDNSZoneRefField)
+	return canonical == allocatedInstanceDNSName(instance)+"."+suffix && referenceName(registeredZone) == referenceName(zone), nil
+}
+
+func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {
+	if reflect.DeepEqual(instance.Status.DNS, status) {
+		return nil
+	}
+	base := instance.DeepCopy()
+	instance.Status.DNS = status
+	if err := writer.Status().Patch(ctx, instance, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("report Instance DNS publication: %w", err)
+	}
+	return nil
+}

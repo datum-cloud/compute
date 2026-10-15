@@ -159,7 +159,9 @@ func main() {
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
 		"A set of key=value pairs that describe feature gates for the compute operator. "+
 			"Example: --feature-gates=NetworkingIntegration=true. "+
-			"Available features: NetworkingIntegration (default=false).")
+			"Available features: NetworkingIntegration, PodNetworkAttachment, RuntimeClasses, InstanceTypes, "+
+			"InstanceConsoleSessions, "+
+			"InternalDNSPublishing (all default=false).")
 
 	opts := zap.Options{
 		Development: true,
@@ -181,6 +183,7 @@ func main() {
 		"RuntimeClasses", features.FeatureGate.Enabled(features.RuntimeClasses),
 		"InstanceTypes", features.FeatureGate.Enabled(features.InstanceTypes),
 		"InstanceConsoleSessions", features.FeatureGate.Enabled(features.InstanceConsoleSessions),
+		"InternalDNSPublishing", features.FeatureGate.Enabled(features.InternalDNSPublishing),
 	)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
@@ -458,6 +461,39 @@ func main() {
 		)
 		if err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Instance")
+			os.Exit(1)
+		}
+	}
+
+	// DNS publication is its own asynchronous management-plane controller. It is
+	// not registered at all while its default-off feature gate is disabled.
+	if features.FeatureGate.Enabled(features.InternalDNSPublishing) {
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo || !enableManagementControllers {
+			setupLog.Error(nil,
+				"InternalDNSPublishing requires Milo discovery mode and management controllers")
+			os.Exit(1)
+		}
+		identityConfig, identityErr := serverConfig.Discovery.DiscoveryRestConfig()
+		if identityErr != nil {
+			setupLog.Error(identityErr, "unable to load internal DNS project discovery credentials")
+			os.Exit(1)
+		}
+		identityClient, identityErr := client.New(identityConfig, client.Options{Scheme: scheme})
+		if identityErr != nil {
+			setupLog.Error(identityErr, "unable to create internal DNS project discovery client")
+			os.Exit(1)
+		}
+		observers, observationErr := internalDNSObservationSources(serverConfig.InternalDNS)
+		if observationErr != nil {
+			setupLog.Error(observationErr, "invalid internal DNS network observation configuration")
+			os.Exit(1)
+		}
+		dnsPublisher := &controller.InternalDNSPublisherReconciler{
+			ResolveProjectIdentity: controller.InternalDNSProjectIdentityResolver(identityClient),
+			ObservationSources:     observers,
+		}
+		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSPublisher")
 			os.Exit(1)
 		}
 	}
@@ -1028,4 +1064,32 @@ func instanceTypeCatalogSource(
 // owning project's quota API) run in any mode.
 func computeWatchProviderClaims(mode multiclusterproviders.Provider) bool {
 	return mode == multiclusterproviders.ProviderMilo
+}
+
+func internalDNSObservationSources(
+	cfg config.InternalDNSConfig,
+) (map[string]controller.InternalDNSObservationSource, error) {
+	sources := make(map[string]controller.InternalDNSObservationSource, len(cfg.ObservationSources))
+	for i, source := range cfg.ObservationSources {
+		if source.Location == "" || source.KubeconfigPath == "" {
+			return nil, fmt.Errorf("internalDNS.observationSources[%d] requires location and kubeconfigPath", i)
+		}
+		if _, exists := sources[source.Location]; exists {
+			return nil, fmt.Errorf("duplicate internal DNS observation location %q", source.Location)
+		}
+		cfg, err := clientcmd.BuildConfigFromFlags("", source.KubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("load network observation credentials for %q: %w", source.Location, err)
+		}
+		cfg.Timeout = 5 * time.Second
+		reader, err := client.New(cfg, client.Options{Scheme: scheme})
+		if err != nil {
+			return nil, fmt.Errorf("create network observation client for %q: %w", source.Location, err)
+		}
+		sources[source.Location] = controller.InternalDNSObservationSource{Reader: reader}
+	}
+	if len(sources) == 0 {
+		return nil, errors.New("internalDNS.observationSources must contain at least one authenticated edge API")
+	}
+	return sources, nil
 }
