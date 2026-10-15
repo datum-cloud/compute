@@ -116,6 +116,7 @@ spec:
                       - containerCapabilities
                       - sandboxSysctls
                       - exec
+                      - gracefulTermination
                       type: string
                     maxItems: 32
                     type: array

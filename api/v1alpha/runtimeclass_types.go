@@ -30,7 +30,7 @@ type RuntimeClassControllerName string
 // decline. Enumerating the features keeps a class from declaring one that no
 // provider can interpret.
 //
-// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;sandboxSysctls;exec
+// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;sandboxSysctls;exec;gracefulTermination
 type RuntimeClassFeature string
 
 const (
@@ -83,6 +83,11 @@ const (
 	// instance's container through an InstanceConsoleSession, such as an
 	// interactive shell.
 	RuntimeClassFeatureExec RuntimeClassFeature = "exec"
+
+	// RuntimeClassFeatureGracefulTermination is the ability to signal an
+	// instance's processes when it stops and wait up to the instance's
+	// termination grace period for them to exit.
+	RuntimeClassFeatureGracefulTermination RuntimeClassFeature = "gracefulTermination"
 )
 
 // runtimeClassFeatureDescriptions maps each feature to its customer-facing
@@ -100,6 +105,7 @@ var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureContainerCapabilities:   "container capability requests",
 	RuntimeClassFeatureSandboxSysctls:          "sandbox sysctls",
 	RuntimeClassFeatureExec:                    "shell sessions into running instances",
+	RuntimeClassFeatureGracefulTermination:     "termination grace periods",
 }
 
 // Description returns the customer-facing phrase for the feature. It falls back

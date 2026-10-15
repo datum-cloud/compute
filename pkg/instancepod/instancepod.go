@@ -199,6 +199,8 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 		Volumes:          volumes,
 		ImagePullSecrets: imagePullSecrets,
 		SecurityContext:  podSecurityContext,
+		// Unset leaves the Kubernetes default in place.
+		TerminationGracePeriodSeconds: instance.Spec.Runtime.TerminationGracePeriodSeconds,
 		// An instance runs customer code and must not reach the Kubernetes API
 		// of the cluster hosting it. Without a projected token it cannot
 		// authenticate to the apiserver. Without service links, the addresses

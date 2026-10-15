@@ -309,6 +309,33 @@ func TestValidateStoredSandboxSysctlsAfterGateOff(t *testing.T) {
 	}
 }
 
+func TestValidateTerminationGracePeriodAfterGateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.RuntimeClasses, false)
+	root := field.NewPath("spec", "template", "spec")
+	gracePath := root.Child("runtime", "terminationGracePeriodSeconds")
+	stored := MakeSandboxWorkload("stored-grace", func(workload *computev1alpha.Workload) {
+		workload.Spec.Template.Spec.Runtime.TerminationGracePeriodSeconds = ptr.To[int64](60)
+	})
+
+	unchanged := stored.DeepCopy()
+	cmpErrs(t, nil, validateRuntimeClassSelection(unchanged.Spec.Template.Spec, root,
+		WorkloadValidationOptions{OldWorkload: stored}))
+
+	changed := stored.DeepCopy()
+	changed.Spec.Template.Spec.Runtime.TerminationGracePeriodSeconds = ptr.To[int64](90)
+	cmpErrs(t, field.ErrorList{field.Forbidden(gracePath, "")}, validateRuntimeClassSelection(
+		changed.Spec.Template.Spec, root, WorkloadValidationOptions{OldWorkload: stored}))
+
+	immediate := stored.DeepCopy()
+	immediate.Spec.Template.Spec.Runtime.TerminationGracePeriodSeconds = ptr.To[int64](0)
+	cmpErrs(t, nil, validateRuntimeClassSelection(immediate.Spec.Template.Spec, root,
+		WorkloadValidationOptions{OldWorkload: stored}))
+
+	created := stored.DeepCopy()
+	cmpErrs(t, field.ErrorList{field.Forbidden(gracePath, "")}, validateRuntimeClassSelection(
+		created.Spec.Template.Spec, root, WorkloadValidationOptions{}))
+}
+
 // TestValidateRuntimeClassSelection verifies that validation accepts a class
 // because the catalog publishes it, not because the name is compiled in.
 func TestValidateRuntimeClassSelection(t *testing.T) {

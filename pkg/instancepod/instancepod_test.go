@@ -506,6 +506,31 @@ func TestBuildPodSpecWithoutSysctlsLeavesPodSecurityContextUnset(t *testing.T) {
 	}
 }
 
+func TestBuildPodSpecTerminationGracePeriod(t *testing.T) {
+	graceful := Options{Capabilities: runtimeclass.Capabilities{
+		Class:    testClassBasalt,
+		Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureGracefulTermination},
+	}}
+
+	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+	instance.Spec.Runtime.TerminationGracePeriodSeconds = ptr.To[int64](90)
+	spec, err := BuildPodSpec(instance, graceful)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	if err := diff(ptr.To[int64](90), spec.TerminationGracePeriodSeconds); err != nil {
+		t.Error(err)
+	}
+
+	spec, err = BuildPodSpec(newInstance(computev1alpha.SandboxContainer{Name: testContainerName}), graceful)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	if spec.TerminationGracePeriodSeconds != nil {
+		t.Errorf("TerminationGracePeriodSeconds = %d, want unset", *spec.TerminationGracePeriodSeconds)
+	}
+}
+
 // TestBuildPodSpecSecurityContext covers how a container's capability request
 // reaches the Pod.
 func TestBuildPodSpecSecurityContext(t *testing.T) {
