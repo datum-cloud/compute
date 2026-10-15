@@ -2,7 +2,7 @@ apiVersion: compute.datumapis.com/v1alpha
 kind: WorkloadDeployment
 metadata:
   labels:
-    app.kubernetes.io/name: workload-operator
+    app.kubernetes.io/name: compute
     app.kubernetes.io/managed-by: kustomize
   name: workloaddeployment-sample
 spec:

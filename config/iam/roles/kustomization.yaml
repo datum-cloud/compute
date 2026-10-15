@@ -1,8 +1,0 @@
-# This kustomization program is used to create all of the Milo IAM roles that
-# are available to users.
-#
-# Each role should have a corresponding configuration file in this directory.
-
-resources:
-  - compute-admin.yaml
-  - compute-viewer.yaml

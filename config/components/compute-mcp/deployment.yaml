@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/instance: compute-mcp
+    app.kubernetes.io/name: compute-mcp
+  name: compute-mcp
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: mcp-server
+      app.kubernetes.io/instance: compute-mcp
+      app.kubernetes.io/name: compute-mcp
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: mcp-server
+        app.kubernetes.io/instance: compute-mcp
+        app.kubernetes.io/name: compute-mcp
+    spec:
+      # Deliberately unbound — see service_account.yaml. The server reads as
+      # the caller, so this account holds no permission of its own.
+      #
+      # This template carries no control plane configuration: which control
+      # plane the server reads is deployment topology, so the deployer patches
+      # in a kubeconfig volume and KUBECONFIG. Without one the binary refuses to
+      # start rather than falling back to the local cluster's API server; see
+      # checkControlPlaneEndpoint in cmd/compute-mcp.
+      serviceAccountName: compute-mcp
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: compute-mcp
+          # The manager's image. It carries both binaries — they are released
+          # together and share the condition vocabulary internal/agent's
+          # catalog classifies — so `command` picks this one, exactly as the
+          # manager's own Deployment names /manager.
+          image: ghcr.io/datum-cloud/compute:latest
+          imagePullPolicy: Always
+          command:
+            - /compute-mcp
+          args:
+            - --addr=:8080
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      # No writable volume: the binary is static, the docs it serves are
+      # compiled in, and nothing here writes to disk.
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30

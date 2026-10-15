@@ -1,0 +1,18 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: compute-prometheus-adapter-serving-cert
+  namespace: compute-system
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+spec:
+  dnsNames:
+    - compute-prometheus-adapter.compute-system.svc
+    - compute-prometheus-adapter.compute-system.svc.cluster.local
+  issuerRef:
+    # Placeholder. Infra overlays must patch this issuer.
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: placeholder-issuer
+  secretName: compute-prometheus-adapter-serving-cert

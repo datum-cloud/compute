@@ -1,0 +1,106 @@
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: workloaddeployment
+spec:
+  target:
+    apiVersion: compute.datumapis.com/v1alpha
+    kind: WorkloadDeployment
+  customizations:
+    retention:
+      luaScript: |
+        function Retain(desiredObj, observedObj)
+          -- An HPA updates replicas in the cell. For deployments without an HPA,
+          -- the project deployment owns replicas and changes must propagate.
+          if desiredObj.spec == nil or desiredObj.spec.scaleSettings == nil then
+            return desiredObj
+          end
+          local scaleSettings = desiredObj.spec.scaleSettings
+          if scaleSettings.maxReplicas == nil or scaleSettings.metrics == nil or #scaleSettings.metrics == 0 then
+            return desiredObj
+          end
+          if observedObj.spec == nil or observedObj.spec.replicas == nil then
+            return desiredObj
+          end
+          desiredObj.spec.replicas = observedObj.spec.replicas
+          return desiredObj
+        end
+    statusReflection:
+      luaScript: |
+        function ReflectStatus(observedObj)
+          if observedObj.status == nil then
+            return nil
+          end
+          return observedObj.status
+        end
+    statusAggregation:
+      luaScript: |
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if statusItems[1].status ~= nil then
+            desiredObj.status = statusItems[1].status
+          end
+          return desiredObj
+        end
+    # Names the companion ConfigMaps and Secrets a deployment needs, so the
+    # engine delivers each one to the union of every referencing deployment's
+    # placements. Policy claiming is exclusive, so a companion named as a
+    # selector on two locations' policies reaches only one of them; declaring it
+    # as a dependency removes the claim entirely.
+    #
+    # The expected-referenced-data annotation is the contract: the resolver is
+    # its only writer, a validating webhook rejects every other writer, and the
+    # cell's scheduling gate reads the same value. Consumers never re-derive
+    # companion names.
+    #
+    # Karmada runs this with open libraries skipped: string.gmatch, string.find,
+    # string.sub and the table library are available, string.gsub and a JSON
+    # module are not. Hence the hand-rolled token scan over the JSON array.
+    dependencyInterpretation:
+      luaScript: |
+        function GetDependencies(desiredObj)
+          local dependencies = {}
+          if desiredObj.metadata == nil or desiredObj.metadata.annotations == nil then
+            return dependencies
+          end
+
+          local expected = desiredObj.metadata.annotations["compute.datumapis.com/expected-referenced-data"]
+          if expected == nil or expected == "" then
+            return dependencies
+          end
+
+          -- Only the two kinds the resolver materialises are accepted. A kind
+          -- outside this set cannot be propagated even if it reaches the
+          -- annotation, which keeps a stray write from shipping arbitrary
+          -- objects to cells.
+          local allowedKinds = { ConfigMap = true, Secret = true }
+          local seen = {}
+          local count = 0
+
+          -- The annotation holds a JSON array of "Kind/name" tokens. Companion
+          -- names are DNS subdomains and kinds are literals, so no token can
+          -- contain a quote and matching quoted runs is sufficient.
+          for token in string.gmatch(expected, '"([^"]+)"') do
+            local separator = string.find(token, "/", 1, true)
+            if separator ~= nil and separator > 1 and separator < #token then
+              local kind = string.sub(token, 1, separator - 1)
+              local name = string.sub(token, separator + 1)
+              if allowedKinds[kind] and not seen[token] then
+                seen[token] = true
+                count = count + 1
+                dependencies[count] = {
+                  apiVersion = "v1",
+                  kind = kind,
+                  name = name,
+                  -- Pinned to the deployment's own namespace so the annotation
+                  -- can never reach data in another project's namespace.
+                  namespace = desiredObj.metadata.namespace,
+                }
+              end
+            end
+          end
+
+          return dependencies
+        end

@@ -1,0 +1,44 @@
+{
+  "name": "@datum-cloud/compute-portal-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Compute service Portal Plugin: workload/instance operational dashboard with workload delete, a Module Federation remote reading data exclusively through the portal's Milo control-plane proxy. Workload creation stays in datumctl (CLI-first).",
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite preview",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@datum-cloud/activity-ui": "0.7.0",
+    "@datum-cloud/datum-ui": "^3.4.1",
+    "@tanstack/react-query": "5.101.4",
+    "@tanstack/react-table": "^9.1.2",
+    "@tanstack/react-virtual": "^3",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "lucide-react": "^1.21.0",
+    "motion": "^13",
+    "nuqs": "^2.10.0",
+    "react": "19.3.0",
+    "react-day-picker": "^10",
+    "react-dom": "19.3.0",
+    "react-router": "8.3.1",
+    "recharts": "^3.10.1",
+    "sonner": "^2.0.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@module-federation/vite": "^1.16.16",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.5"
+  }
+}

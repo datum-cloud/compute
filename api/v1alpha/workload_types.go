@@ -1,6 +1,7 @@
 package v1alpha
 
 import (
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	k8scorev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,14 +59,26 @@ type WorkloadStatus struct {
 	// The number of instances that currently exist
 	Replicas int32 `json:"replicas"`
 
-	// The number of instances which have the latest workload settings applied.
+	// The number of instances which have the latest workload settings applied
+	// and are programmed (a subset of UpdatedReplicas that are ready to serve).
 	CurrentReplicas int32 `json:"currentReplicas"`
+
+	// The number of instances updated to the latest template revision (their
+	// observed template hash matches the desired template), regardless of
+	// readiness. Lags Replicas during a rolling update or restart, then catches
+	// back up — making an in-progress roll observable.
+	UpdatedReplicas int32 `json:"updatedReplicas"`
 
 	// The desired number of instances
 	DesiredReplicas int32 `json:"desiredReplicas"`
 
 	// The number of instances which are ready.
 	ReadyReplicas int32 `json:"readyReplicas"`
+
+	// The most recent generation observed by the workload controller.
+	//
+	// +kubebuilder:validation:Optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// The current status of placemetns in a workload.
 	Placements []WorkloadPlacementStatus `json:"placements,omitempty"`
@@ -89,6 +102,7 @@ type WorkloadGatewayStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // Workload is the Schema for the workloads API
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -98,7 +112,7 @@ type WorkloadGatewayStatus struct {
 // +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.status.replicas`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Desired",type=string,JSONPath=`.status.desiredReplicas`
-// +kubebuilder:printcolumn:name="Up-to-date",type=string,JSONPath=`.status.currentReplicas`
+// +kubebuilder:printcolumn:name="Up-to-date",type=string,JSONPath=`.status.updatedReplicas`
 type Workload struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -117,15 +131,41 @@ type WorkloadList struct {
 	Items           []Workload `json:"items"`
 }
 
+// +kubebuilder:validation:XValidation:message="exactly one of locations, locationSelector, or cityCodes must be set",rule="(has(self.locations) ? 1 : 0) + (has(self.locationSelector) ? 1 : 0) + (has(self.cityCodes) ? 1 : 0) == 1"
 type WorkloadPlacement struct {
 	// The name of the placement
 	//
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// A list of city codes that define where the instances should be deployed.
+	// The locations where the instances should be deployed, by name. Use this
+	// to pin a placement to specific locations. Exactly one of locations or
+	// locationSelector must be set.
 	//
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	Locations []locationsv1alpha1.LocationReference `json:"locations,omitempty"`
+
+	// A selector over the topology of the locations available to the project,
+	// such as topology.datum.net/city-code or topology.datum.net/region. Every
+	// Ready location whose topology matches receives a deployment, and the set
+	// is re-evaluated as locations are added, removed, or change readiness. An
+	// empty selector is rejected rather than treated as matching every
+	// location. Exactly one of locations or locationSelector must be set.
+	//
+	// +kubebuilder:validation:Optional
+	LocationSelector *metav1.LabelSelector `json:"locationSelector,omitempty"`
+
+	// The city codes this placement was written against before placement
+	// moved to locations. This field is deprecated and kept only so workloads
+	// stored before that change keep running: admission and the workload
+	// controller rewrite it into a locationSelector on
+	// topology.datum.net/city-code, which places at every location in those
+	// cities, and clear it. New workloads set locations or locationSelector
+	// instead.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
 	CityCodes []string `json:"cityCodes,omitempty"`
 
 	// Scale settings such as minimum and maximum replica counts.
@@ -138,6 +178,10 @@ type WorkloadPlacementStatus struct {
 	// The name of the placement
 	Name string `json:"name"`
 
+	// The locations the placement currently resolves to: the Ready locations
+	// it names, or every Ready location its selector matches.
+	Locations []locationsv1alpha1.LocationReference `json:"locations,omitempty"`
+
 	// Represents the observations of a placement's current state.
 	// Known condition types are: "Available", "Progressing"
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -145,8 +189,13 @@ type WorkloadPlacementStatus struct {
 	// The number of instances that currently exist
 	Replicas int32 `json:"replicas"`
 
-	// The number of instances which have the latest workload settings applied.
+	// The number of instances which have the latest workload settings applied
+	// and are programmed (a subset of UpdatedReplicas that are ready to serve).
 	CurrentReplicas int32 `json:"currentReplicas"`
+
+	// The number of instances updated to the latest template revision, regardless
+	// of readiness. Lags Replicas during a rolling update or restart.
+	UpdatedReplicas int32 `json:"updatedReplicas"`
 
 	// The desired number of instances
 	DesiredReplicas int32 `json:"desiredReplicas"`

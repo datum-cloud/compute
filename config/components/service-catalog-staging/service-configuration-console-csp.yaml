@@ -1,0 +1,10 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute
+spec:
+  userInterface:
+    consumer:
+      contentSecurityPolicy:
+      - "script-src 'wasm-unsafe-eval'"
+      - "connect-src https://iroh-relay.us-central-1.datum-staging.net wss://iroh-relay.us-central-1.datum-staging.net https://iroh-relay.us-east-1.datum-staging.net wss://iroh-relay.us-east-1.datum-staging.net"

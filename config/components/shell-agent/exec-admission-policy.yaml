@@ -1,0 +1,42 @@
+# The agent's ClusterRole grants pods/exec in every namespace, because tenant
+# namespaces are created per project. This policy narrows what the apiserver
+# lets the agent exec into to tenant namespaces, so a compromised agent cannot
+# exec into system workloads, including this component's own.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: compute-shell-agent-exec
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CONNECT
+        resources:
+          - pods/exec
+          - pods/attach
+          - pods/portforward
+  matchConditions:
+    - name: shell-agent
+      expression: request.userInfo.username == 'system:serviceaccount:compute-shell-system:exec-agent'
+  validations:
+    - expression: request.resource.resource == 'pods' && request.subResource == 'exec'
+      message: The shell agent may only exec into pods.
+      reason: Forbidden
+    - expression: request.namespace.startsWith('ns-')
+      messageExpression: >-
+        'the shell agent may only exec into tenant namespaces, not ' + request.namespace
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: compute-shell-agent-exec
+spec:
+  policyName: compute-shell-agent-exec
+  validationActions:
+    - Deny

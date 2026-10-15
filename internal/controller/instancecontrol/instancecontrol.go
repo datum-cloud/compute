@@ -7,7 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"go.datum.net/workload-operator/api/v1alpha"
+	"go.datum.net/compute/api/v1alpha"
 )
 
 type Strategy interface {
@@ -19,6 +19,7 @@ type Strategy interface {
 		ctx context.Context,
 		scheme *runtime.Scheme,
 		deployment *v1alpha.WorkloadDeployment,
+		desiredReplicas int32,
 		currentInstances []v1alpha.Instance,
 	) ([]Action, error)
 }
@@ -26,10 +27,11 @@ type Strategy interface {
 type ActionType string
 
 const (
-	ActionTypeCreate ActionType = "Create"
-	ActionTypeUpdate ActionType = "Update"
-	ActionTypeDelete ActionType = "Delete"
-	ActionTypeWait   ActionType = "Wait"
+	ActionTypeCreate      ActionType = "Create"
+	ActionTypeUpdate      ActionType = "Update"
+	ActionTypeDelete      ActionType = "Delete"
+	ActionTypeWait        ActionType = "Wait"
+	ActionTypePatchLabels ActionType = "PatchLabels"
 )
 
 type Action struct {
@@ -102,5 +104,24 @@ func NewWaitAction(object client.Object) Action {
 		Object:     object,
 		actionType: ActionTypeWait,
 		fn:         func(ctx context.Context, c client.Client) error { return nil },
+	}
+}
+
+// NewPatchLabelsAction returns an action that applies a metadata-only labels
+// patch to the given object. It uses a MergeFrom patch so only the labels
+// field is sent to the API server — the spec, template, and template-hash are
+// never touched. This is intentionally separate from ActionTypeUpdate so that
+// label backfill never participates in the ordered rolling-update flow.
+func NewPatchLabelsAction(updated client.Object, base client.Object) Action {
+	patch := client.MergeFrom(base)
+	return Action{
+		Object:     updated,
+		actionType: ActionTypePatchLabels,
+		fn: func(ctx context.Context, c client.Client) error {
+			if err := c.Patch(ctx, updated, patch); err != nil {
+				return fmt.Errorf("failed to patch labels on %T %s: %w", updated, updated.GetName(), err)
+			}
+			return nil
+		},
 	}
 }

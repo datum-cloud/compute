@@ -1,0 +1,26 @@
+# Scenario A: a Workload naming a catalog tier that is Active. The Workload
+# webhook resolves it against the live InstanceType catalog and admits it; the
+# type is then stamped through WLD render and reaches the downstream Instance.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: instance-types-wl-valid
+spec:
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud-d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: docker.io/library/nginx:latest
+      networkInterfaces:
+      - network:
+          name: default
+  placements:
+  - name: default
+    locations:
+    - name: dfw
+    scaleSettings:
+      minReplicas: 1

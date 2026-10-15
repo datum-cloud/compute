@@ -1,0 +1,16 @@
+applied: true
+clusterName: cell-hostile
+health: Unknown
+status:
+  connection:
+    endpointID: deadbeef
+    relayURLs:
+      - https://evil.example.test
+    target: evil.example.test:443
+  connectBefore: "2026-09-29T18:01:10Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: SessionReady
+      message: Connect before the connection deadline.
+      lastTransitionTime: "2026-09-29T18:00:09Z"

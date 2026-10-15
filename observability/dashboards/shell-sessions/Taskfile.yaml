@@ -1,0 +1,38 @@
+version: "3"
+
+# Renders the Instance shell sessions dashboard. The JSON lands in the
+# dashboards kustomize component so the OCI bundle ships it; CI fails when the
+# committed JSON drifts from this source.
+
+vars:
+  OUT: ../../../config/components/dashboards/shell-sessions.json
+
+tasks:
+  install:
+    desc: Install jsonnet dependencies for the shell-sessions dashboard
+    dir: .
+    silent: true
+    cmds:
+      - jb install
+
+  build:
+    desc: Render the shell-sessions dashboard JSON from jsonnet
+    dir: .
+    silent: true
+    cmds:
+      - mkdir -p "$(dirname {{.OUT}})"
+      - jsonnet -J vendor config.jsonnet > {{.OUT}}
+      # jsonnet omits the trailing newline; add one so the file stays
+      # POSIX-clean and diffs do not flag the last line.
+      - |
+        if [ -n "$(tail -c 1 "{{.OUT}}")" ]; then
+          echo "" >> "{{.OUT}}"
+        fi
+      - echo "Rendered {{.OUT}}"
+
+  clean:
+    desc: Remove the rendered dashboard JSON
+    dir: .
+    silent: true
+    cmds:
+      - rm -f {{.OUT}}

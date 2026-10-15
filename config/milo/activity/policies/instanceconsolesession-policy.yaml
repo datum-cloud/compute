@@ -1,0 +1,38 @@
+# ActivityPolicy for InstanceConsoleSession resources (compute.datumapis.com).
+# Product noun is "shell session".
+#
+# Creation comes from the project audit log, so its actor is the requester.
+# Start and end come from events compute's session controller records, so
+# their actor is the controller; the requester, instance, container and the
+# cell that served the session come from the event's annotations. The cell
+# is in every summary so support can go from one activity entry to that
+# cell's logs. Deletion is not recorded here: every session ends with a
+# SessionEnded event, including one revoked by deleting it.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: compute.datumapis.com-instanceconsolesession
+spec:
+  resource:
+    apiGroup: compute.datumapis.com
+    kind: InstanceConsoleSession
+
+  # Sessions are created with generateName, so the generated name means
+  # nothing to the reader: the container and instance identify the session.
+  auditRules:
+    - name: create
+      match: "audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} opened a shell session in container {{ audit.requestObject.spec.containerName }} of instance {{ audit.requestObject.spec.instanceRef.name }}"
+
+  eventRules:
+    - name: session-started
+      match: "event.reason == 'SessionStarted'"
+      summary: "{{ event.metadata.annotations['compute.datumapis.com/requester'] }} connected to a shell session in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }}"
+
+    - name: session-ended-exit-code
+      match: "event.reason == 'SessionEnded' && 'compute.datumapis.com/exit-code' in event.metadata.annotations"
+      summary: "Shell session of {{ event.metadata.annotations['compute.datumapis.com/requester'] }} in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }} ended: {{ event.metadata.annotations['compute.datumapis.com/reason'] }}, exit code {{ event.metadata.annotations['compute.datumapis.com/exit-code'] }}"
+
+    - name: session-ended
+      match: "event.reason == 'SessionEnded'"
+      summary: "Shell session of {{ event.metadata.annotations['compute.datumapis.com/requester'] }} in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }} ended: {{ event.metadata.annotations['compute.datumapis.com/reason'] }}"

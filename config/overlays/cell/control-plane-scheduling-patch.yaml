@@ -1,0 +1,17 @@
+# compute-manager is a cell control-plane component, so keep it on the cluster's
+# control-plane nodes and off the worker/compute nodes (which run tenant
+# workloads). Requires both the node selector and a toleration for the standard
+# control-plane taint.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-manager
+spec:
+  template:
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule

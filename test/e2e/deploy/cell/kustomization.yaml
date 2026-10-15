@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ─────────────────────────────────────────────────────────────────────────────
+# e2e cell deploy layer.
+#
+# References the REAL production cell overlay verbatim and applies only the
+# deviations required to run inside a local Kind environment (image source,
+# quota-credential neutralisation) plus the cell hub credential that infra
+# supplies in production.
+#
+# The production cell overlay ships FEDERATION_KUBECONFIG empty on purpose — it
+# is the *infra* layer that patches it in per-cell (apps/compute-system/edge/
+# manager-patch.yaml mounts a hub client-cert kubeconfig), NOT the overlay. So
+# leaving it empty is NOT production-exact: it disables the cell's Instance
+# write-back to the Karmada hub, and cell-created Instances then never reach the
+# hub or the management InstanceProjector. federation_patch.yaml restores that
+# credential the way infra does, so the full cell→hub→projector path is exercised.
+# ─────────────────────────────────────────────────────────────────────────────
+
+resources:
+  - ../../../../config/overlays/cell
+
+# Use the locally built image side-loaded into the Kind node (task e2e:image:load)
+# instead of pulling ghcr.io/datum-cloud/compute:latest from a registry.
+images:
+  - name: ghcr.io/datum-cloud/compute
+    newName: compute
+    newTag: e2e-dev
+
+patches:
+  # DEVIATION 1 (required): drop discovery.quotaKubeconfigPath.
+  # See config_patch.yaml for the full rationale.
+  - path: config_patch.yaml
+
+  # DEVIATION 2 (required): force IfNotPresent pulls of the side-loaded image.
+  - path: deployment_patch.yaml
+
+  # Cell hub credential, mirroring infra's per-cell federation patch so the
+  # Instance write-back path is exercised. See federation_patch.yaml.
+  - path: federation_patch.yaml

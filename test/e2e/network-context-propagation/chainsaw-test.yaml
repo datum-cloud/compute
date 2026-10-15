@@ -1,0 +1,244 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-context-propagation
+spec:
+  description: |
+    A network's presence reaches the cell a workload runs in.
+
+    A NetworkContext written on the Karmada hub, in a project's downstream
+    namespace, arrives on the POP cell serving that location carrying the fields
+    the cell needs to act on it.
+
+    Why this suite exists
+    ─────────────────────
+    infra keeps a hand-maintained fork of NSO's propagation policy rather than
+    consuming NSO's copy. When NSO added the NetworkContext selector to its own
+    policy, the change was inert: nothing read that path, so nothing noticed.
+    This is the regression guard for exactly that class of silent failure — a
+    policy that looks right, a CRD that exists, and an object that reaches
+    nowhere. Every part is individually plausible, the whole delivers nothing,
+    and there is no error and no event to say so.
+
+    The environment applies NSO's real config/federation/clusterpropagationpolicy.yaml
+    from the Go module cache rather than a compute-authored stand-in, so the
+    selectors under test are the ones production runs.
+
+    What is deliberately NOT asserted
+    ─────────────────────────────────
+    No NSO controller-manager runs here. Nothing reconciles a NetworkBinding into
+    a NetworkContext, and nothing serves a NetworkInterfaceClaim. The context is
+    therefore written directly on the hub, and the suite stops at delivery.
+    Whether a cell can then satisfy a claim from it belongs to NSO's own e2e,
+    which runs against a real IPAM.
+
+    Prerequisites: `task e2e:env:up`. The compute operators are not involved —
+    this is Karmada propagation end to end.
+
+  template: true
+
+  steps:
+  - name: setup-hub-namespace
+    description: |
+      Create the hub namespace the context lives in, carrying the identity labels
+      compute's federator stamps on the ns-<uid> namespaces it creates. NSO's
+      policy selects namespaces on upstream-namespace, so this one object is also
+      what causes the namespace to exist on the cell — a context cannot land in a
+      namespace that was never carried.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - script:
+        env:
+        - name: HUB_NS
+          value: ($hubNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: ${HUB_NS}
+            labels:
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+              meta.datumapis.com/upstream-namespace: ${HUB_NS}
+          EOF
+    cleanup:
+    - script:
+        env:
+        - name: HUB_NS
+          value: ($hubNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            delete namespace "$HUB_NS" --ignore-not-found --wait=false
+    - script:
+        env:
+        - name: HUB_NS
+          value: ($hubNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/pop-dfw.yaml \
+            delete namespace "$HUB_NS" --ignore-not-found --wait=false
+
+  - name: create-network-context-on-hub
+    description: |
+      Write the NetworkContext on the hub, then give it a status no controller
+      would produce. The distinctive status is what the later step uses to prove
+      status does not cross: a copy whose status merely looks unremarkable proves
+      nothing, because the CRD defaults conditions on whichever cluster stores it.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - script:
+        env:
+        - name: HUB_NS
+          value: ($hubNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml apply -f - <<EOF
+          apiVersion: networking.datumapis.com/v1alpha
+          kind: NetworkContext
+          metadata:
+            name: test-network-presence
+            namespace: ${HUB_NS}
+            labels:
+              # NSO's policy selects NetworkContexts on this label alone. An
+              # unlabelled context is stored on the hub and goes nowhere.
+              meta.datumapis.com/upstream-cluster-name: cluster-single
+          spec:
+            network:
+              name: test-network
+            location:
+              name: dfw
+            # The two fields a cell's claim reconciler reads off the context.
+            ipFamilies:
+            - IPv4
+            mtu: 1500
+          EOF
+    - script:
+        env:
+        - name: HUB_NS
+          value: ($hubNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            -n "$HUB_NS" patch networkcontext test-network-presence \
+            --subresource=status --type=merge -p '{"status":{"conditions":[{"type":"Programmed","status":"True","reason":"HubOnlyStatusMarker","message":"set on the hub, must not cross to a cell","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
+
+  - name: assert-context-reaches-pop-dfw
+    description: |
+      The context arrives on the cell with spec.ipFamilies and spec.mtu verbatim.
+
+      These two are asserted by value rather than by mere existence because they
+      are what a cell's claim reconciler actually reads: a copy that arrives
+      without them is, to everything downstream, indistinguishable from one that
+      never arrived at all.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - assert:
+        # Karmada must carry the namespace first and the context into it second,
+        # so this waits on two propagations rather than one.
+        timeout: 120s
+        resource:
+          apiVersion: networking.datumapis.com/v1alpha
+          kind: NetworkContext
+          metadata:
+            namespace: ($hubNS)
+            name: test-network-presence
+          spec:
+            network:
+              name: test-network
+            location:
+              name: dfw
+            ipFamilies:
+            - IPv4
+            mtu: 1500
+
+  - name: assert-hub-status-did-not-cross
+    description: |
+      The hub's status did not come with it.
+
+      Karmada strips status, ownerReferences, finalizers and uid when it carries
+      an object to a member cluster. Asserting that is what keeps the previous
+      step honest: it is the standing proof that nothing can be handed to a cell
+      through status, and therefore that ipFamilies and mtu have to live in spec.
+      Were someone to move them, the delivery assertion alone would keep passing
+      while the cell silently received nothing.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: networking.datumapis.com/v1alpha
+          kind: NetworkContext
+          metadata:
+            namespace: ($hubNS)
+            name: test-network-presence
+          # The cell's own apiserver defaults conditions when it stores the copy,
+          # so the copy has a status; the marker set on the hub is what must be
+          # absent from it.
+          (status.conditions[?reason == 'HubOnlyStatusMarker'] | length(@)): 0
+
+  - name: delete-context-on-hub
+    description: Remove the hub context — the network is no longer present in this location.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - script:
+        env:
+        - name: HUB_NS
+          value: ($hubNS)
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/downstream.yaml \
+            -n "$HUB_NS" delete networkcontext test-network-presence
+
+  - name: assert-context-removed-from-pop-dfw
+    description: |
+      The cell copy goes with it. Withdrawal matters as much as delivery: a cell
+      left holding a context for a network no longer present there would keep
+      serving addresses on a network the project has stopped using.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: hubNS
+          value: ($stdout)
+    - wait:
+        apiVersion: networking.datumapis.com/v1alpha
+        kind: NetworkContext
+        namespace: ($hubNS)
+        name: test-network-presence
+        timeout: 60s
+        for:
+          deletion: {}

@@ -1,0 +1,32 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: compute.datumapis.com-workloaddeployment
+spec:
+  serviceRef:
+    name: "compute.datumapis.com"
+  kind: WorkloadDeployment
+  plural: workloaddeployments
+  singular: workloaddeployment
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - delete
+    - watch
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
+    - name: scale
+      permissions:
+        - get
+        - update
+        - patch
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

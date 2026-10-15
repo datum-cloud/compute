@@ -1,0 +1,38 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: compute.datumapis.com-viewer
+  annotations:
+    kubernetes.io/display-name: Compute Viewer
+    kubernetes.io/description: "View access to all compute resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - compute.datumapis.com/workloads.list
+    - compute.datumapis.com/workloads.get
+    - compute.datumapis.com/workloads.watch
+    - compute.datumapis.com/workloaddeployments.list
+    - compute.datumapis.com/workloaddeployments.get
+    - compute.datumapis.com/workloaddeployments.watch
+    - compute.datumapis.com/instances.list
+    - compute.datumapis.com/instances.get
+    - compute.datumapis.com/instances.watch
+    # Customers select an execution tier from the published catalog, so read
+    # access to the catalog is part of viewing compute.
+    - compute.datumapis.com/runtimeclasses.list
+    - compute.datumapis.com/runtimeclasses.get
+    - compute.datumapis.com/runtimeclasses.watch
+    - compute.datumapis.com/instancetypes.list
+    - compute.datumapis.com/instancetypes.get
+    - compute.datumapis.com/instancetypes.watch
+    # Viewers can see who has a shell session open, but opening one runs
+    # commands inside an instance, so creating a session needs Compute Admin.
+    - compute.datumapis.com/instanceconsolesessions.list
+    - compute.datumapis.com/instanceconsolesessions.get
+    - compute.datumapis.com/instanceconsolesessions.watch
+    # Sessions are enabled per project by quota, so the CLI and portal read the
+    # project's allowance to say whether shells are available before a create
+    # is refused.
+    - quota.miloapis.com/allowancebuckets.list
+    - quota.miloapis.com/allowancebuckets.get
+    - quota.miloapis.com/allowancebuckets.watch

@@ -1,0 +1,415 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package validation
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/pkg/runtimeclass"
+)
+
+// startRuntimeClassEnvtest boots an API server with the compute custom
+// resource definitions installed and returns a client for it. The API server,
+// not Go code, enforces several RuntimeClass schema rules: immutability, the
+// controller name shape, and the feature vocabulary. Testing them needs a real
+// server.
+func startRuntimeClassEnvtest(t *testing.T) client.Client {
+	t.Helper()
+
+	env := &envtest.Environment{
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "base", "crd", "bases")},
+		ErrorIfCRDPathMissing: true,
+	}
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		assets := filepath.Join("..", "..", "bin", "k8s",
+			fmt.Sprintf("1.31.0-%s-%s", runtime.GOOS, runtime.GOARCH))
+		if _, err := os.Stat(assets); err != nil {
+			t.Skip("envtest assets unavailable; run via `make test`")
+		}
+		env.BinaryAssetsDirectory = assets
+	}
+
+	cfg, err := env.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = env.Stop() })
+
+	scheme := k8sruntime.NewScheme()
+	require.NoError(t, computev1alpha.AddToScheme(scheme))
+
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	require.NoError(t, err)
+	return c
+}
+
+// registeredCatalog is the catalog a control plane holds once every provider
+// has registered the classes it serves. This repository defines the class type
+// and ships no class, so a test that needs a populated catalog builds one from
+// invented names. A test written against the names a provider registers could
+// not tell a catalog lookup from a compiled-in one.
+func registeredCatalog() []computev1alpha.RuntimeClass {
+	azurite := makeRuntimeClass(testClassAzurite, withDefault)
+	azurite.Spec.ControllerName = "compute.datumapis.com/azurite-provider"
+	azurite.Spec.Isolation.Boundary = "azurite-sandbox"
+
+	basalt := makeRuntimeClass(testClassBasalt)
+	basalt.Spec.ControllerName = "compute.datumapis.com/basalt-provider"
+	basalt.Spec.Isolation.Boundary = "virtual-machine"
+
+	return []computev1alpha.RuntimeClass{azurite, basalt}
+}
+
+// TestRuntimeClassCRD covers the schema rules the API server enforces on a
+// catalog entry, and how a catalog reads once providers have registered into
+// it.
+func TestRuntimeClassCRD(t *testing.T) {
+	ctx := context.Background()
+	c := startRuntimeClassEnvtest(t)
+
+	t.Run("a class a provider registers is accepted", func(t *testing.T) {
+		for _, entry := range registeredCatalog() {
+			class := entry
+			require.NoError(t, c.Create(ctx, &class), class.Name)
+			t.Cleanup(func() { _ = c.Delete(ctx, &class) })
+
+			// A class is cluster-scoped so that every project reads the same
+			// catalog.
+			require.Empty(t, class.Namespace)
+
+			// No controller has reported on a freshly registered class, which
+			// differs from a controller rejecting it.
+			require.Len(t, class.Status.Conditions, 1)
+			require.Equal(t, computev1alpha.RuntimeClassConditionAvailable, class.Status.Conditions[0].Type)
+			require.Equal(t, metav1.ConditionUnknown, class.Status.Conditions[0].Status)
+			require.Equal(t, computev1alpha.RuntimeClassReasonPending, class.Status.Conditions[0].Reason)
+		}
+
+		// A workload that names no class runs in the class the catalog marks
+		// as the default, so a catalog serving instances needs exactly one
+		// such class. The property holds over whatever set of classes
+		// providers register, not over anything this repository ships.
+		var catalog computev1alpha.RuntimeClassList
+		require.NoError(t, c.List(ctx, &catalog))
+		resolved := runtimeclass.Catalog(catalog.Items).Default()
+		require.NotNil(t, resolved, "a catalog with one class marked default must resolve it")
+		require.Equal(t, testClassAzurite, resolved.Name)
+	})
+
+	// Two providers can each register a class marked as the default, because
+	// the API server validates one object at a time and no controller
+	// reconciles the catalog as a whole. An ambiguous catalog states no
+	// default, so an instance naming no class is refused at admission instead
+	// of landing in a tier picked arbitrarily. Refusing the second default at
+	// registration time is not implemented.
+	t.Run("a second class registering itself as default is not refused", func(t *testing.T) {
+		for _, name := range []string{testClassAzurite, testClassBasalt} {
+			class := makeRuntimeClass(name, withDefault)
+			require.NoError(t, c.Create(ctx, &class), name)
+			t.Cleanup(func() { _ = c.Delete(ctx, &class) })
+		}
+
+		var catalog computev1alpha.RuntimeClassList
+		require.NoError(t, c.List(ctx, &catalog))
+		require.Nil(t, runtimeclass.Catalog(catalog.Items).Default(),
+			"a catalog with several classes marked default states no default")
+	})
+
+	t.Run("the implementing controller cannot be changed", func(t *testing.T) {
+		class := newCatalogEntry("immutable-controller")
+		require.NoError(t, c.Create(ctx, class))
+
+		class.Spec.ControllerName = "compute.datumapis.com/other-provider"
+		require.ErrorContains(t, c.Update(ctx, class), "controllerName is immutable")
+	})
+
+	t.Run("the controller name must be domain prefixed", func(t *testing.T) {
+		class := newCatalogEntry("bare-controller")
+		class.Spec.ControllerName = "unikraft-provider"
+		require.Error(t, c.Create(ctx, class))
+	})
+
+	t.Run("a class cannot declare a capability the platform has no name for", func(t *testing.T) {
+		class := newCatalogEntry("invented-feature")
+		class.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{"telepathy"}
+		require.Error(t, c.Create(ctx, class))
+	})
+
+	t.Run("a class can offer shell sessions", func(t *testing.T) {
+		class := newCatalogEntry("offers-exec")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureExec)
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	t.Run("a sandbox class can publish exact sysctl names and values", func(t *testing.T) {
+		class := newCatalogEntry("offers-sysctls")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+			Name:          testIPv4ForwardingSysctl,
+			AllowedValues: []computev1alpha.SysctlValue{"0", "1"},
+		}}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	t.Run("a class cannot publish sysctls without the feature", func(t *testing.T) {
+		class := newCatalogEntry("sysctls-without-feature")
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+			Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"1"},
+		}}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"supportedSysctls requires the sandboxSysctls feature")
+	})
+
+	t.Run("the sysctl feature requires a non-empty declaration", func(t *testing.T) {
+		class := newCatalogEntry("sysctl-feature-without-list")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		require.ErrorContains(t, c.Create(ctx, class),
+			"the sandboxSysctls feature requires a non-empty supportedSysctls")
+	})
+
+	t.Run("the sysctl feature requires a sandbox runtime", func(t *testing.T) {
+		class := newCatalogEntry("sysctls-without-sandbox")
+		class.Spec.Capabilities.Features = []computev1alpha.RuntimeClassFeature{
+			computev1alpha.RuntimeClassFeatureVirtualMachineRuntime,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls,
+		}
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+			Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"1"},
+		}}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"the sandboxSysctls feature requires the sandboxRuntime feature")
+	})
+
+	for i, invalid := range []string{
+		"net..ipv4.forwarding",
+		"net.ipv4.forwarding.",
+		"net.ipv4.*",
+		"net/ipv4/ip_forward",
+	} {
+		t.Run("a class cannot publish malformed sysctl "+strings.NewReplacer(".", "-", "/", "-").Replace(invalid), func(t *testing.T) {
+			class := newCatalogEntry(fmt.Sprintf("invalid-sysctl-%d", i))
+			class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+				computev1alpha.RuntimeClassFeatureSandboxSysctls)
+			class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+				Name: invalid, AllowedValues: []computev1alpha.SysctlValue{"1"},
+			}}
+			require.ErrorContains(t, c.Create(ctx, class), "should match")
+		})
+	}
+
+	t.Run("a class cannot publish a sysctl twice", func(t *testing.T) {
+		class := newCatalogEntry("duplicate-sysctl")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureSandboxSysctls)
+		class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{
+			{Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0"}},
+			{Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"1"}},
+		}
+		require.Error(t, c.Create(ctx, class))
+	})
+
+	for name, values := range map[string][]computev1alpha.SysctlValue{
+		"empty allowed value":     {""},
+		"duplicate allowed value": {"1", "1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			class := newCatalogEntry(strings.ReplaceAll(name, " ", "-"))
+			class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+				computev1alpha.RuntimeClassFeatureSandboxSysctls)
+			class.Spec.Capabilities.SupportedSysctls = []computev1alpha.RuntimeClassSysctl{{
+				Name: testIPv4ForwardingSysctl, AllowedValues: values,
+			}}
+			require.Error(t, c.Create(ctx, class))
+		})
+	}
+
+	t.Run("a class serving capability requests publishes what it grants", func(t *testing.T) {
+		class := newCatalogEntry("grants-capabilities")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown, testCapNetBindService}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	t.Run("a class cannot publish grantable capabilities without the feature", func(t *testing.T) {
+		class := newCatalogEntry("grants-without-feature")
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"grantableCapabilities requires the containerCapabilities feature")
+	})
+
+	t.Run("a class declaring the feature must publish what it grants", func(t *testing.T) {
+		class := newCatalogEntry("feature-without-grants")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		require.ErrorContains(t, c.Create(ctx, class),
+			"the containerCapabilities feature requires a non-empty grantableCapabilities")
+	})
+
+	t.Run("a class isolated by its own guest kernel can grant any Linux capability", func(t *testing.T) {
+		class := newCatalogEntry("grants-admin")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{
+			"NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE", "CHECKPOINT_RESTORE",
+		}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	// A grant is drawn from the closed set of Linux capability names, so a
+	// class cannot publish every capability or a name no kernel defines.
+	notACapability := "grantableCapabilities must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted"
+	for invalid, wantMessage := range map[computev1alpha.Capability]string{
+		computev1alpha.CapabilityAll: notACapability,
+		testCapPrefixedChown:         notACapability,
+		"TELEPATHY":                  notACapability,
+		"net_raw":                    "should match",
+	} {
+		t.Run("a class cannot grant "+string(invalid), func(t *testing.T) {
+			class := newCatalogEntry("grants-" + strings.ToLower(strings.ReplaceAll(string(invalid), "_", "-")))
+			class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+				computev1alpha.RuntimeClassFeatureContainerCapabilities)
+			class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{invalid}
+			require.ErrorContains(t, c.Create(ctx, class), wantMessage)
+		})
+	}
+
+	t.Run("a class publishes a default drawn from what it grants", func(t *testing.T) {
+		class := newCatalogEntry("defaults-within-grants")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown, testCapNetBindService}
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+				Add: []computev1alpha.Capability{testCapNetBindService},
+			},
+			AllowPrivilegeEscalation: &escalationAllowed,
+			SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+				Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+			},
+		}
+		require.NoError(t, c.Create(ctx, class))
+		t.Cleanup(func() { _ = c.Delete(ctx, class) })
+	})
+
+	// A customer reads the default before choosing the class and reads it back
+	// on their own workload. A default naming something the class does not
+	// publish as grantable would be a capability the customer can receive but
+	// cannot ask for, so the catalog cannot express one.
+	t.Run("a class cannot grant by default what it does not publish as grantable", func(t *testing.T) {
+		class := newCatalogEntry("defaults-outside-grants")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureContainerCapabilities)
+		class.Spec.Capabilities.GrantableCapabilities = []computev1alpha.Capability{testCapChown}
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+				Add: []computev1alpha.Capability{testCapNetBindService},
+			},
+		}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"defaultSecurityContext.capabilities.add must only name capabilities listed in capabilities.grantableCapabilities")
+	})
+
+	t.Run("a class publishing no grantable capabilities can grant none by default", func(t *testing.T) {
+		class := newCatalogEntry("defaults-without-grants")
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			Capabilities: &computev1alpha.RuntimeClassDefaultCapabilities{
+				Add: []computev1alpha.Capability{testCapChown},
+			},
+		}
+		require.ErrorContains(t, c.Create(ctx, class),
+			"defaultSecurityContext.capabilities.add must only name capabilities listed in capabilities.grantableCapabilities")
+	})
+
+	// A profile loaded from a file on the host would name a path on a machine
+	// the customer cannot see, so the schema offers no way to state one.
+	t.Run("a class cannot publish a seccomp profile the platform has no name for", func(t *testing.T) {
+		class := newCatalogEntry("invented-seccomp")
+		class.Spec.DefaultSecurityContext = &computev1alpha.RuntimeClassSecurityContext{
+			SeccompProfile: &computev1alpha.SandboxSeccompProfile{Type: "Localhost"},
+		}
+		require.ErrorContains(t, c.Create(ctx, class), "Unsupported value: \"Localhost\"")
+	})
+
+	t.Run("a class must state its isolation boundary", func(t *testing.T) {
+		class := newCatalogEntry("no-boundary")
+		class.Spec.Isolation.Boundary = ""
+		require.Error(t, c.Create(ctx, class))
+	})
+
+	t.Run("a workload can request well-formed sandbox sysctls", func(t *testing.T) {
+		workload := MakeSandboxWorkload("valid-sandbox-sysctls", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{
+				{Name: testIPv4ForwardingSysctl, Value: "1"},
+				{Name: "net.ipv6.conf.all.forwarding", Value: "1"},
+			}
+		})
+		require.NoError(t, c.Create(ctx, workload))
+		t.Cleanup(func() { _ = c.Delete(ctx, workload) })
+	})
+
+	t.Run("a workload cannot request a malformed sysctl name", func(t *testing.T) {
+		workload := MakeSandboxWorkload("malformed-sandbox-sysctl", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
+				Name: "net..ipv4.forwarding", Value: "1",
+			}}
+		})
+		require.ErrorContains(t, c.Create(ctx, workload), "should match")
+	})
+
+	t.Run("a workload cannot request one sysctl twice", func(t *testing.T) {
+		workload := MakeSandboxWorkload("duplicate-sandbox-sysctl", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{
+				{Name: testIPv4ForwardingSysctl, Value: "0"},
+				{Name: testIPv4ForwardingSysctl, Value: "1"},
+			}
+		})
+		require.Error(t, c.Create(ctx, workload))
+	})
+
+	t.Run("a workload cannot request an empty sysctl value", func(t *testing.T) {
+		workload := MakeSandboxWorkload("empty-sandbox-sysctl", func(workload *computev1alpha.Workload) {
+			workload.Spec.Template.Spec.Runtime.Sandbox.Sysctls = []computev1alpha.SandboxSysctl{{
+				Name: testIPv4ForwardingSysctl, Value: "",
+			}}
+		})
+		require.Error(t, c.Create(ctx, workload))
+	})
+}
+
+func newCatalogEntry(name string) *computev1alpha.RuntimeClass {
+	return &computev1alpha.RuntimeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: computev1alpha.RuntimeClassSpec{
+			ControllerName: "compute.datumapis.com/test-provider",
+			Isolation:      computev1alpha.RuntimeClassIsolation{Boundary: "test"},
+			Capabilities: computev1alpha.RuntimeClassCapabilities{
+				Features: []computev1alpha.RuntimeClassFeature{
+					computev1alpha.RuntimeClassFeatureSandboxRuntime,
+				},
+			},
+		},
+	}
+}
+
+// escalationAllowed is addressable so a catalog entry can publish a default
+// that allows privilege escalation.
+var escalationAllowed = true

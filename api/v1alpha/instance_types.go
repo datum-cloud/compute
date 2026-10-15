@@ -5,6 +5,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // InstanceSpec defines the desired state of Instance
@@ -16,8 +17,17 @@ type InstanceSpec struct {
 
 	// Network interface configuration.
 	//
+	// Keyed by interface name so an interface keeps its identity, and therefore
+	// its addresses, across updates to the rest of the list.
+	//
+	// Limited to a single interface until the data plane can attach more than
+	// one to an instance.
+	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=1
+	// +listType=map
+	// +listMapKey=name
 	NetworkInterfaces []InstanceNetworkInterface `json:"networkInterfaces,omitempty"`
 
 	// Volumes that must be available to attach to an instance's containers or
@@ -31,7 +41,7 @@ type InstanceSpec struct {
 	// The location which the instance has been scheduled to
 	//
 	// +kubebuilder:validation:Optional
-	Location *networkingv1alpha.LocationReference `json:"location,omitempty"`
+	Location *locationsv1alpha1.LocationReference `json:"location,omitempty"`
 
 	// Controller contains settings driven by the controller managing the instance.
 	//
@@ -78,6 +88,37 @@ type InstanceRuntimeSpec struct {
 
 	// A virtual machine is a classical VM environment, booting a full OS provided by the user via an image.
 	VirtualMachine *VirtualMachineRuntime `json:"virtualMachine,omitempty"`
+
+	// The execution tier the instance runs in. The value names a RuntimeClass
+	// in the platform catalog, which Datum publishes and customers do not
+	// define. Publishing a new tier adds a class instead of changing this API.
+	//
+	// The class is independent of the runtime shape above. Either a sandbox or
+	// a virtual machine can run in any class the platform offers.
+	//
+	// An empty value selects the class the catalog marks as default. Admission
+	// records that choice on the workload and never resolves it again, so an
+	// existing workload keeps the tier, cost, and startup characteristics it
+	// was created with.
+	//
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Optional
+	Class string `json:"class,omitempty"`
+
+	// How long, in seconds, the instance's processes have to exit after being
+	// asked to stop. When an instance is deleted, replaced, or suspended, each
+	// container's main process receives SIGTERM, and any process still running
+	// when the period ends is killed. Zero kills the processes immediately.
+	//
+	// The instance keeps its resources and addresses until it has stopped, so
+	// a longer period delays their release. A value above zero requires a
+	// runtime class that offers graceful termination. When unset, the runtime
+	// class's own default applies.
+	//
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=300
+	// +kubebuilder:validation:Optional
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
 type SandboxRuntime struct {
@@ -94,6 +135,38 @@ type SandboxRuntime struct {
 	//
 	// +kubebuilder:validation:Optional
 	ImagePullSecrets []LocalSecretReference `json:"imagePullSecrets,omitempty"`
+
+	// Linux kernel parameters to set for every container in the sandbox.
+	//
+	// Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+	// value must be published by the selected runtime class; prefixes and
+	// wildcards are never accepted. This keeps host-level kernel configuration
+	// outside the workload API while allowing an isolated runtime to expose a
+	// deliberately small set of guest-kernel options.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	Sysctls []SandboxSysctl `json:"sysctls,omitempty"`
+}
+
+// SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+// selected runtime class decides which exact name/value pairs it supports.
+type SandboxSysctl struct {
+	// The exact dotted sysctl name, for example net.ipv4.ip_forward.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$`
+	Name string `json:"name"`
+
+	// The value to write before the sandbox's containers start. The selected
+	// runtime class must publish this exact value for this name.
+	//
+	// +kubebuilder:validation:Required
+	Value SysctlValue `json:"value"`
 }
 
 type SandboxContainer struct {
@@ -102,10 +175,31 @@ type SandboxContainer struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// The fully qualified container image name.
+	// The container image to run. Must include a registry, e.g.
+	// "ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".
 	//
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
+
+	// Entrypoint array to run in the container image, overriding the image's
+	// ENTRYPOINT. Each element is a separate token, not a shell command — to run a
+	// shell command use: ["sh", "-c", "my command"].
+	//
+	// If not provided, the container image's own ENTRYPOINT is used.
+	//
+	// +kubebuilder:validation:Optional
+	Command []string `json:"command,omitempty"`
+
+	// Arguments to the entrypoint, overriding the image's CMD. Combined with
+	// Command: when Command is also set the resulting invocation is
+	// append(Command, Args...).  When only Args is set it overrides CMD while
+	// preserving the image's ENTRYPOINT.
+	//
+	// If neither Command nor Args is set, the image's own ENTRYPOINT and CMD
+	// are used unchanged.
+	//
+	// +kubebuilder:validation:Optional
+	Args []string `json:"args,omitempty"`
 
 	// List of environment variables to set in the container.
 	//
@@ -117,6 +211,16 @@ type SandboxContainer struct {
 	// TODO(jreese) can't use corev1.EnvVar due to EnvVarSource being k8s specific,
 	// so replicate the structure here too.
 	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// List of sources to populate environment variables in the container.
+	// The keys defined within a source must be a C_IDENTIFIER. All invalid
+	// keys will be reported as an event when the container is starting. When a
+	// key exists in multiple sources, the value associated with the last source
+	// will take precedence. Values defined by an Env with a duplicate key will
+	// take precedence.
+	//
+	// +kubebuilder:validation:Optional
+	EnvFrom []EnvFromSource `json:"envFrom,omitempty"`
 
 	// The resource requirements for the container, such as CPU, memory, and GPUs.
 	//
@@ -134,6 +238,160 @@ type SandboxContainer struct {
 	// +listType=map
 	// +listMapKey=name
 	Ports []NamedPort `json:"ports,omitempty"`
+
+	// Security options for the container.
+	//
+	// +kubebuilder:validation:Optional
+	SecurityContext *SandboxSecurityContext `json:"securityContext,omitempty"`
+}
+
+// SandboxSecurityContext holds the security options a sandbox container can
+// request. It mirrors the shape of the Kubernetes container security context so
+// existing manifests carry over, and exposes only the options the platform can
+// honor in every runtime class that serves them.
+type SandboxSecurityContext struct {
+	// The Linux capabilities to grant to or remove from the container.
+	//
+	// +kubebuilder:validation:Optional
+	Capabilities *SandboxCapabilities `json:"capabilities,omitempty"`
+
+	// Whether a process in the container can gain more privileges than its
+	// parent. Setuid binaries and file capabilities rely on it, so an image that
+	// escalates at startup, such as one running ping or a privilege-dropping
+	// entrypoint, needs it true.
+	//
+	// Left unset, the selected runtime class's published default is written here
+	// at admission, so the stored container states the value it runs with.
+	//
+	// +kubebuilder:validation:Optional
+	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
+
+	// The seccomp profile confining the container's system calls.
+	//
+	// Left unset, the selected runtime class's published default is written here
+	// at admission, so the stored container states the profile it runs with.
+	//
+	// +kubebuilder:validation:Optional
+	SeccompProfile *SandboxSeccompProfile `json:"seccompProfile,omitempty"`
+}
+
+// SandboxSeccompProfile selects the seccomp profile a container runs under. It
+// mirrors the shape of the Kubernetes seccomp profile so existing manifests
+// carry over.
+type SandboxSeccompProfile struct {
+	// The kind of seccomp profile to apply.
+	//
+	// +kubebuilder:validation:Required
+	Type SeccompProfileType `json:"type"`
+}
+
+// SeccompProfileType is the kind of seccomp profile a container runs under.
+//
+// A profile loaded from a file on the host is deliberately absent. Naming one
+// would point at a path on a machine the customer cannot see, and the value
+// would have to reach a runtime unchecked. The values here are a closed set the
+// platform resolves itself.
+//
+// +kubebuilder:validation:Enum=RuntimeDefault;Unconfined
+type SeccompProfileType string
+
+const (
+	// SeccompProfileTypeRuntimeDefault applies the profile the container runtime
+	// ships, which blocks the system calls a workload has no ordinary use for.
+	SeccompProfileTypeRuntimeDefault SeccompProfileType = "RuntimeDefault"
+
+	// SeccompProfileTypeUnconfined applies no seccomp filtering. A class whose
+	// isolation boundary is a guest kernel can offer it, because the boundary
+	// does not depend on system call filtering.
+	SeccompProfileTypeUnconfined SeccompProfileType = "Unconfined"
+)
+
+// SandboxCapabilities adjusts the Linux capabilities a container runs with.
+//
+// The platform removes every capability from a sandbox container unless the
+// container requests it back. Many stock images need a few capabilities to start,
+// for example to bind a port below 1024 or to change file ownership, so a
+// container lists them in add. Each added capability must be one the selected
+// runtime class grants, and the class publishes that set.
+type SandboxCapabilities struct {
+	// The capabilities to grant to the container. Each must be one that the
+	// selected runtime class grants. ALL is not allowed, so a container states
+	// exactly what it needs.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:Optional
+	Add []Capability `json:"add,omitempty"`
+
+	// The capabilities to remove from the container. The platform already removes
+	// every capability, so drop is accepted for compatibility with Kubernetes
+	// manifests, for example drop: [ALL]. Naming a capability here also removes
+	// it when the runtime class would otherwise grant it by default.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:Optional
+	Drop []Capability `json:"drop,omitempty"`
+}
+
+// Capability is a Linux capability name without the CAP_ prefix, for example
+// CHOWN or NET_BIND_SERVICE.
+//
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=64
+// +kubebuilder:validation:Pattern=`^[A-Z_]+$`
+type Capability string
+
+// CapabilityAll names every Linux capability. A container may drop it and may
+// not add it.
+const CapabilityAll Capability = "ALL"
+
+// EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+// used as environment variables in a container.
+type EnvFromSource struct {
+	// An optional identifier to prepend to each key in the referenced
+	// ConfigMap or Secret. Must be a valid C_IDENTIFIER.
+	//
+	// +kubebuilder:validation:Optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// The ConfigMap to select from.
+	//
+	// +kubebuilder:validation:Optional
+	ConfigMapRef *ConfigMapEnvSource `json:"configMapRef,omitempty"`
+
+	// The Secret to select from.
+	//
+	// +kubebuilder:validation:Optional
+	SecretRef *SecretEnvSource `json:"secretRef,omitempty"`
+}
+
+// ConfigMapEnvSource selects a ConfigMap to populate the environment variables
+// of a container.
+type ConfigMapEnvSource struct {
+	// Name of the ConfigMap in the same namespace as the Workload.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Specify whether the ConfigMap must be defined.
+	//
+	// +kubebuilder:validation:Optional
+	Optional *bool `json:"optional,omitempty"`
+}
+
+// SecretEnvSource selects a Secret to populate the environment variables
+// of a container.
+type SecretEnvSource struct {
+	// Name of the Secret in the same namespace as the Workload.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Specify whether the Secret must be defined.
+	//
+	// +kubebuilder:validation:Optional
+	Optional *bool `json:"optional,omitempty"`
 }
 
 type ContainerResourceRequirements struct {
@@ -202,14 +460,18 @@ type VolumeAttachment struct {
 type InstanceRuntimeResources struct {
 	// Full or partial URL of the instance type resource to use for this instance.
 	//
-	// For example: `datumcloud/d1-standard-2`
+	// For example: `datumcloud-d1-standard-2`
 	//
 	// May be combined with `resources` to allow for custom instance types for
 	// instance families that support customization. Instance types which support
 	// customization will appear in the form `<project>/<instanceFamily>-custom`.
 	//
-	// +kubebuilder:validation:Required
-	InstanceType string `json:"instanceType"`
+	// When omitted, the instance runs on the platform's default instance type,
+	// `datumcloud-d1-standard-2`, for compatibility with workloads written
+	// before instance types could be chosen.
+	//
+	// +kubebuilder:validation:Optional
+	InstanceType string `json:"instanceType,omitempty"`
 
 	// Describes adjustments to the resources defined by the instance type.
 	//
@@ -217,11 +479,83 @@ type InstanceRuntimeResources struct {
 	Requests corev1.ResourceList `json:"requests,omitempty"`
 }
 
+// InstanceNetworkInterface describes one interface an instance needs. The
+// fields beyond `network` and `networkPolicy` are copied verbatim onto the
+// NetworkInterfaceClaim created for each instance slot, so they carry the same
+// meaning, defaults, and immutability the claim API defines.
+//
+// The location an interface is claimed in is implicit: the claim is created in
+// the control plane serving the instance, which is already location scoped.
+//
+// +kubebuilder:validation:XValidation:message="addresses is immutable and cannot be set, changed, or cleared after creation",rule="has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses)"
 type InstanceNetworkInterface struct {
 	// The network to attach the network interface to.
 	//
 	// +kubebuilder:validation:Required
 	Network networkingv1alpha.NetworkRef `json:"network"`
+
+	// The name of the interface, such as eth0 or eth1. It is both the device
+	// name the guest operating system sees and the suffix of the interface
+	// claim's name, which is what keeps an interface's addresses with the
+	// instance slot across replacement.
+	//
+	// Immutable, because the guest is configured against it and the claim is
+	// named after it.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=15
+	// +kubebuilder:default="eth0"
+	// +kubebuilder:validation:XValidation:message="name is immutable and cannot be changed after creation",rule="self == oldSelf"
+	Name string `json:"name,omitempty"`
+
+	// The address families the interface must carry, in priority order. List
+	// [IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+	// interface's primary address, which is the one reported as the instance's
+	// network IP.
+	//
+	// Every family listed must be satisfiable or the interface is never
+	// published, so asking for a family the network does not carry fails rather
+	// than yielding a partially addressed interface.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:default={IPv6}
+	// +kubebuilder:validation:XValidation:message="Each address family may be requested at most once",rule="self.all(f, self.exists_one(g, g == f))"
+	// +kubebuilder:validation:XValidation:message="ipFamilies is immutable and cannot be changed after creation",rule="self == oldSelf"
+	IPFamilies []networkingv1alpha.IPFamily `json:"ipFamilies,omitempty"`
+
+	// Requests for addresses beyond the ones the interface holds inside its
+	// network, such as a public IPv4 address in front of a private one. Each is
+	// reported in the interface's `externalAddresses` status.
+	//
+	// Omit this field for ordinary private addressing, which is the common case.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:XValidation:message="Each address class may be requested at most once",rule="self.all(a, self.exists_one(b, b.class == a.class))"
+	Addresses []InstanceNetworkInterfaceAddressRequest `json:"addresses,omitempty"`
+
+	// What becomes of the interface, and its addresses, when the instance slot
+	// it serves goes away.
+	//
+	// Delete returns the addresses to IPAM, so an instance recreated later comes
+	// back on different addresses. Retain keeps them reserved, and billable, so a
+	// later instance filling the same slot returns to the same addresses. Choose
+	// Retain when an address is published in DNS, allowed through a firewall, or
+	// otherwise depended on from outside.
+	//
+	// Both policies keep the addresses for as long as the slot exists, including
+	// across instance replacement. They differ only on scale-down and deletion.
+	//
+	// Immutable. An address keeps the policy it was allocated under.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="Delete"
+	// +kubebuilder:validation:XValidation:message="reclaimPolicy is immutable and cannot be changed after creation",rule="self == oldSelf"
+	ReclaimPolicy networkingv1alpha.NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
 
 	// Interface specific network policy.
 	//
@@ -234,16 +568,143 @@ type InstanceNetworkInterface struct {
 	NetworkPolicy *InstanceNetworkInterfaceNetworkPolicy `json:"networkPolicy,omitempty"`
 }
 
+// InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+// the interface holds inside its network.
+type InstanceNetworkInterfaceAddressRequest struct {
+	// The IPAM class to allocate from, such as public-ipv4.
+	//
+	// A class names a kind of address, and the platform decides which pool and
+	// prefix length serve it. A class never names a pool, a prefix length, or a
+	// CIDR, so a class cannot be used to ask for a particular address.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Class string `json:"class"`
+}
+
 type InstanceNetworkInterfaceStatus struct {
+	// The name of the interface this entry reports on, matching the name in the
+	// instance's spec.
+	//
+	// +kubebuilder:validation:Optional
+	Name string `json:"name,omitempty"`
+
+	// The NetworkInterface bound to this entry, in the instance's namespace. An
+	// infrastructure provider follows it to configure the NIC, so it never has to
+	// derive the name of the claim that produced it.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkInterfaceRef *networkingv1alpha.LocalNetworkInterfaceRef `json:"networkInterfaceRef,omitempty"`
+
+	// The addresses the interface holds inside its network, each with its prefix
+	// length and, once the location has a subnet, its gateway.
+	//
+	// +kubebuilder:validation:Optional
+	Addresses []InstanceNetworkInterfaceAddress `json:"addresses,omitempty"`
+
+	// The addresses the interface is reachable at from outside its network, one
+	// per class requested in the spec. Each is a bare address with no prefix
+	// length.
+	//
+	// +kubebuilder:validation:Optional
+	ExternalAddresses []InstanceNetworkInterfaceExternalAddress `json:"externalAddresses,omitempty"`
+
+	// The observations of this interface's current state. Known condition types
+	// are "Allocated" and "Programmed".
+	//
+	// +kubebuilder:validation:Optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Single address projections of the fields above, kept for clients that read
+	// one address per interface.
+	//
+	// +kubebuilder:validation:Optional
 	Assignments InstanceNetworkInterfaceAssignmentsStatus `json:"assignments,omitempty"`
 }
 
+// InstanceNetworkInterfaceAddress is an address the interface holds inside its
+// network. These are configured on the NIC itself, and always carry a prefix
+// length.
+type InstanceNetworkInterfaceAddress struct {
+	// The address family of this entry.
+	//
+	// +kubebuilder:validation:Required
+	Family networkingv1alpha.IPFamily `json:"family"`
+
+	// The address the interface holds, in CIDR notation, such as 10.128.0.2/32
+	// or 2001:db8:a001::1/128.
+	//
+	// For IPv6 this may be a block delegated to the interface rather than a
+	// single address, such as 2001:db8:a001::/96. The interface owns the whole
+	// block and assigns within it.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+
+	// The next hop the interface routes through for this family, such as
+	// 10.128.0.1. It is empty until the subnet backing the network in this
+	// location exists.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=45
+	Gateway string `json:"gateway,omitempty"`
+
+	// Marks the address projected into `assignments.networkIP`.
+	//
+	// Exactly one address is primary for the interface as a whole, not one per
+	// family. It is the address of the first family listed in `ipFamilies`.
+	//
+	// +kubebuilder:validation:Optional
+	Primary bool `json:"primary,omitempty"`
+
+	// The IPAM class this address was allocated from, such as private-ipv6. It
+	// is empty for addresses requested by family rather than by class.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=63
+	Class string `json:"class,omitempty"`
+}
+
+// InstanceNetworkInterfaceExternalAddress is an address reachable from outside
+// the network, mapped onto an address the interface holds inside it. A public
+// IPv4 address in front of a private address is the usual case.
+//
+// Unlike an interface address, it is a bare address with no prefix length,
+// because nothing configures it on the NIC.
+type InstanceNetworkInterfaceExternalAddress struct {
+	// The address family of this entry.
+	//
+	// +kubebuilder:validation:Required
+	Family networkingv1alpha.IPFamily `json:"family"`
+
+	// The externally reachable address, such as 203.0.113.10. It carries no
+	// prefix length.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+
+	// The IPAM class this address was allocated from, such as public-ipv4. It
+	// matches a class requested in the interface's `addresses`.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Class string `json:"class"`
+}
+
 type InstanceNetworkInterfaceAssignmentsStatus struct {
-	// The IP address assigned as the primary IP from the attached network.
+	// The IP address assigned as the primary IP from the attached network. It is
+	// a projection of the primary entry in the interface's `addresses`.
 	NetworkIP *string `json:"networkIP,omitempty"`
 
 	// The external IP address used for the interface. A one to one NAT will be
-	// performed for this address with the interface's network IP.
+	// performed for this address with the interface's network IP. It is a
+	// projection of the first entry in the interface's `externalAddresses`.
 	ExternalIP *string `json:"externalIP,omitempty"`
 }
 
@@ -371,6 +832,13 @@ type InstanceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	Controller *InstanceControllerStatus `json:"controller,omitempty"`
+
+	// Suspended, when true, indicates that the instance's process should be stopped
+	// without releasing its placement, disk attachments, or quota allocation.
+	// The provider controller stops the running container/VM.
+	//
+	// +kubebuilder:validation:Optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 type InstanceControllerStatus struct {
@@ -384,31 +852,160 @@ const (
 	// InstanceReady indicates that the instance is ready
 	InstanceReady = "Ready"
 
-	// InstanceRunning indicates that the instance is running
-	InstanceRunning = "Running"
+	// InstanceAvailable indicates that the instance is available. It is True
+	// when the instance is serving and does not assert that a process is
+	// actively running at this instant.
+	InstanceAvailable = "Available"
 
 	// InstanceProgrammed indicates that the instance has been programmed
 	InstanceProgrammed = "Programmed"
+
+	// InstanceQuotaGranted indicates whether quota has been allocated for the instance
+	InstanceQuotaGranted = "QuotaGranted"
+
+	// ReferencedDataReady indicates whether all ConfigMaps and Secrets referenced
+	// by the workload template have been resolved and delivered to the cell.
+	// This condition is set on both WorkloadDeployment (resolver view) and
+	// Instance (cell view).
+	ReferencedDataReady = "ReferencedDataReady"
+)
+
+// Condition types reported per network interface in
+// InstanceNetworkInterfaceStatus.Conditions. They mirror the conditions the
+// networking API reports on an interface claim, so a client reads the
+// instance's interface rather than following the reference.
+const (
+	// InstanceNetworkInterfaceAllocated indicates that every requested address
+	// family, and every requested class, holds an address.
+	InstanceNetworkInterfaceAllocated = "Allocated"
+
+	// InstanceNetworkInterfaceProgrammed indicates that the data plane carries
+	// the interface's addresses. Traffic flows only once this is true.
+	InstanceNetworkInterfaceProgrammed = "Programmed"
+)
+
+const (
+	// ReferencedDataReasonResolving indicates the resolver is in the process of
+	// reading source ConfigMaps/Secrets from the project control plane.
+	ReferencedDataReasonResolving = "Resolving"
+
+	// ReferencedDataReasonAwaitingPropagation indicates the expected companions
+	// have not yet all arrived on the cell.
+	ReferencedDataReasonAwaitingPropagation = "AwaitingPropagation"
+
+	// ReferencedDataReasonSourceNotFound indicates one or more referenced
+	// ConfigMaps or Secrets could not be found in the project namespace.
+	ReferencedDataReasonSourceNotFound = "SourceNotFound"
+
+	// ReferencedDataReasonSourceUnauthorized indicates the management identity
+	// does not have permission to read one or more referenced objects.
+	ReferencedDataReasonSourceUnauthorized = "SourceUnauthorized"
+
+	// ReferencedDataReasonSourceTooLarge indicates one or more referenced objects
+	// exceed the allowed size limit.
+	ReferencedDataReasonSourceTooLarge = "SourceTooLarge"
+
+	// ReferencedDataReasonSourceNameTooLong indicates a referenced object's name
+	// leaves no room for the suffix the federation engine appends when it names
+	// the object's binding, so the data could never reach a cell. Renaming the
+	// source is the only fix, which is why this is reported rather than worked
+	// around by shortening the delivered copy.
+	ReferencedDataReasonSourceNameTooLong = "SourceNameTooLong"
+
+	// ReferencedDataReasonReady indicates all referenced data has been resolved
+	// and is present on the cell.
+	ReferencedDataReasonReady = "Ready"
+)
+
+const (
+	InstanceQuotaGrantedReasonPendingEvaluation = "PendingEvaluation"
+	InstanceQuotaGrantedReasonQuotaAvailable    = "QuotaAvailable"
+	InstanceQuotaGrantedReasonQuotaExceeded     = "QuotaExceeded"
+	InstanceQuotaGrantedReasonValidationFailed  = "ValidationFailed"
+	InstanceProgrammedReasonPendingQuota        = "PendingQuota"
+
+	// InstanceQuotaGrantedReasonQuotaDisabled indicates quota enforcement is
+	// intentionally disabled: no credential path was configured.
+	InstanceQuotaGrantedReasonQuotaDisabled = "QuotaDisabled"
+
+	// InstanceQuotaGrantedReasonBackendUnavailable indicates quota enforcement
+	// is configured but the Milo quota backend is unreachable (network error,
+	// TLS failure, 401/503).
+	InstanceQuotaGrantedReasonBackendUnavailable = "QuotaBackendUnavailable"
+
+	// InstanceQuotaGrantedReasonProjectNotFound indicates the Milo project
+	// referenced by this instance does not exist (404 on the project control plane).
+	InstanceQuotaGrantedReasonProjectNotFound = "QuotaProjectNotFound"
+
+	// InstanceQuotaGrantedReasonNamespaceNotFound indicates the claim namespace
+	// does not exist on the Milo project control plane (FM-5).
+	InstanceQuotaGrantedReasonNamespaceNotFound = "QuotaNamespaceNotFound"
+
+	// InstanceQuotaGrantedReasonMisconfigured indicates the ResourceClaim was
+	// rejected by the Milo admission plugin (403/422): ResourceRegistration absent
+	// or claimingRules mismatch.
+	InstanceQuotaGrantedReasonMisconfigured = "QuotaMisconfigured"
+
+	// InstanceQuotaGrantedReasonProjectIDUnresolvable indicates the namespace
+	// label required to derive the Milo project ID is missing or unreadable.
+	InstanceQuotaGrantedReasonProjectIDUnresolvable = "QuotaProjectIDUnresolvable"
+
+	// InstanceQuotaGrantedReasonNoBudget indicates the ResourceClaim exists and
+	// is pending because no AllowanceBucket has been configured for the project.
+	// This is distinct from PendingEvaluation (claim not yet created or first eval
+	// in progress) and from QuotaExceeded (explicitly denied).
+	InstanceQuotaGrantedReasonNoBudget = "QuotaNoBudget"
 )
 
 const (
 	// InstanceReadyReasonSchedulingGatesPresent indicates that the instance is not ready because scheduling gates are present.
 	InstanceReadyReasonSchedulingGatesPresent = "SchedulingGatesPresent"
 
-	// InstanceReadyReasonRunning indicates that the instance is running
-	InstanceReadyReasonRunning = "Running"
+	// InstanceReadyReasonAvailable indicates that the instance is available
+	InstanceReadyReasonAvailable = "Available"
 
-	// InstanceRunningReasonStopped indicates that the instance is stopped
-	InstanceRunningReasonStopped = "Stopped"
+	// InstanceReadyReasonImageUnavailable indicates the provider could not pull
+	// the instance image (bad name, missing credentials, registry unreachable).
+	// This matches the reason written by translateWaitingReason in the unikraft
+	// provider when the container enters an image-pull waiting state.
+	InstanceReadyReasonImageUnavailable = "ImageUnavailable"
 
-	// InstanceRunningReasonStarting indicates that the instance is starting
-	InstanceRunningReasonStarting = "Starting"
+	// InstanceReadyReasonInstanceCrashing indicates the instance process started
+	// but is repeatedly exiting and being restarted (CrashLoopBackOff in the
+	// underlying runtime). This is user-actionable: the application itself is
+	// failing, not the platform.
+	InstanceReadyReasonInstanceCrashing = "InstanceCrashing"
 
-	// InstanceRunningReasonStopping indicates that the instance is stopping
-	InstanceRunningReasonStopping = "Stopping"
+	// InstanceReadyReasonConfigurationError indicates the runtime rejected the
+	// instance configuration before the process could start (e.g. invalid env
+	// variable injection, missing device). User must correct the workload spec.
+	InstanceReadyReasonConfigurationError = "ConfigurationError"
 
-	// InstanceRunningReasonRunning indicates that the instance is running
-	InstanceRunningReasonRunning = "Running"
+	// InstanceReadyReasonProvisioning indicates the instance runtime is still
+	// setting up the execution environment (container being created, image being
+	// unpacked). This is a transient, non-actionable state.
+	InstanceReadyReasonProvisioning = "Provisioning"
+
+	// InstanceAvailableReasonStopped indicates that the instance is stopped
+	InstanceAvailableReasonStopped = "Stopped"
+
+	// InstanceAvailableReasonStarting indicates that the instance is starting
+	InstanceAvailableReasonStarting = "Starting"
+
+	// InstanceAvailableReasonStopping indicates that the instance is stopping
+	InstanceAvailableReasonStopping = "Stopping"
+
+	// InstanceAvailableReasonAvailable indicates that the instance is available
+	InstanceAvailableReasonAvailable = "Available"
+
+	// InstanceReadyReasonSuspended indicates the instance is intentionally
+	// stopped due to project suspension. Its placement, disk, and quota
+	// allocation are retained; the process will restart from disk on reinstatement.
+	InstanceReadyReasonSuspended = "Suspended"
+
+	// InstanceAvailableReasonSuspended indicates the instance is suspended
+	// and is not currently serving traffic.
+	InstanceAvailableReasonSuspended = "Suspended"
 
 	// InstanceProgrammedReasonPendingProgramming indicates that the instance has not been programmed
 	InstanceProgrammedReasonPendingProgramming = "PendingProgramming"
@@ -418,6 +1015,85 @@ const (
 
 	// InstanceProgrammedReasonProgrammed indicates that the instance has been programmed
 	InstanceProgrammedReasonProgrammed = "Programmed"
+
+	// InstanceProgrammedReasonImageUnavailable indicates the instance image could
+	// not be pulled. Set by the infrastructure provider.
+	// User action required: fix the image reference in the workload spec.
+	InstanceProgrammedReasonImageUnavailable = "ImageUnavailable"
+
+	// InstanceProgrammedReasonInstanceCrashing indicates the instance keeps
+	// crashing on startup. Set by the infrastructure provider.
+	// User action required: fix the workload (check logs for crash details).
+	InstanceProgrammedReasonInstanceCrashing = "InstanceCrashing"
+
+	// InstanceProgrammedReasonConfigurationError indicates the instance failed to
+	// start due to a bad configuration. Set by the infrastructure provider.
+	// User action required: fix the workload configuration.
+	InstanceProgrammedReasonConfigurationError = "ConfigurationError"
+)
+
+// Reason constants for the top-level readiness conditions (Instance.Ready,
+// WorkloadDeployment.Available, Workload.Available). These are the stable,
+// machine-readable values that clients consume; they appear alongside human-readable
+// messages so a single condition read is sufficient to diagnose a blocking cause.
+const (
+	// WorkloadReasonNetworkNotFound is set on Workload.Available when one or more
+	// networks referenced by network interfaces do not exist.
+	WorkloadReasonNetworkNotFound = "NetworkNotFound"
+
+	// WorkloadDeploymentReasonNoMatchingLocation is set on WorkloadDeployment.Available
+	// while the cell has not been told which location it serves, so the deployment
+	// cannot be given one. The value is kept for compatibility with clients that
+	// already match on it.
+	WorkloadDeploymentReasonNoMatchingLocation = "NoMatchingLocation"
+
+	// WorkloadDeploymentReasonAmbiguousServingLocation is set on
+	// WorkloadDeployment.Available when more than one location has been delivered
+	// to the cell. The cell will not guess which one it serves, so the deployment
+	// waits until the platform resolves the conflict.
+	WorkloadDeploymentReasonAmbiguousServingLocation = "AmbiguousServingLocation"
+
+	// WorkloadDeploymentReasonLocationMismatch is set on
+	// WorkloadDeployment.Available when the deployment asks for one location and
+	// the cell serves another. It means the deployment was placed on the wrong cell,
+	// which is a platform fault rather than anything the user can correct.
+	WorkloadDeploymentReasonLocationMismatch = "LocationMismatch"
+
+	// WorkloadDeploymentReasonNetworkProvisioning is set on WorkloadDeployment.Available
+	// while the network binding or subnet is still being provisioned.
+	// Replaces the previously-emitted inline literal "ProvisioningNetwork".
+	WorkloadDeploymentReasonNetworkProvisioning = "NetworkProvisioning"
+
+	// WorkloadDeploymentReasonInstancesProvisioning is set on WorkloadDeployment.Available
+	// while instances exist but none are ready yet.
+	// Replaces the previously-emitted inline literal "ProvisioningInstances".
+	WorkloadDeploymentReasonInstancesProvisioning = "InstancesProvisioning"
+
+	// WorkloadDeploymentReasonStableInstanceFound is set on WorkloadDeployment.Available
+	// when at least one ready instance is present.
+	WorkloadDeploymentReasonStableInstanceFound = "StableInstanceFound"
+
+	// WorkloadDeploymentReasonReferencedDataNotReady is set on WorkloadDeployment.Available
+	// and Workload.Available when the worst-blocking sub-condition is a ReferencedData
+	// failure. The message carries the ReferencedDataReady sub-condition's message verbatim.
+	WorkloadDeploymentReasonReferencedDataNotReady = "ReferencedDataNotReady"
+
+	// WorkloadDeploymentReasonQuotaNotGranted is set on WorkloadDeployment.Available and
+	// Workload.Available when quota is blocking one or more instances.
+	WorkloadDeploymentReasonQuotaNotGranted = "QuotaNotGranted"
+
+	// WorkloadReasonNoAvailablePlacements is set on Workload.Available when all
+	// placements report no available deployments. Used as the last-resort default.
+	WorkloadReasonNoAvailablePlacements = "NoAvailablePlacements"
+
+	// WorkloadReasonNoAvailableDeployments is set on a placement's Available
+	// condition when no deployment in that placement is available.
+	WorkloadReasonNoAvailableDeployments = "NoAvailableDeployments"
+
+	// WorkloadReasonNoMatchingLocations is set on a placement's Available
+	// condition when none of the locations it names is Ready, or its selector
+	// matches no Ready location, so the placement has nowhere to run.
+	WorkloadReasonNoMatchingLocations = "NoMatchingLocations"
 )
 
 type InstanceTemplateSpec struct {
@@ -433,6 +1109,8 @@ type InstanceTemplateSpec struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
+// +kubebuilder:selectablefield:JSONPath=`.spec.runtime.class`
 
 // Instance is the Schema for the instances API
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -441,6 +1119,7 @@ type InstanceTemplateSpec struct {
 // +kubebuilder:printcolumn:name="Network IP",type=string,JSONPath=`.status.networkInterfaces[0].assignments.networkIP`
 // +kubebuilder:printcolumn:name="External IP",type=string,JSONPath=`.status.networkInterfaces[0].assignments.externalIP`
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
+// +kubebuilder:printcolumn:name="Quota",type=string,JSONPath=`.status.conditions[?(@.type=="QuotaGranted")].reason`,priority=1
 type Instance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -450,7 +1129,7 @@ type Instance struct {
 
 	// Status defines the current state of an Instance.
 	//
-	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Running",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Available",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"QuotaGranted",status:"Unknown",reason:"PendingEvaluation",message:"Waiting for quota evaluation",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
 	Status InstanceStatus `json:"status,omitempty"`
 }
 

@@ -5,8 +5,8 @@
 domain: datumapis.com
 layout:
 - go.kubebuilder.io/v4
-projectName: workload-operator
-repo: go.datum.net/workload-operator
+projectName: compute
+repo: go.datum.net/compute
 resources:
 - api:
     crdVersion: v1
@@ -15,7 +15,7 @@ resources:
   domain: datumapis.com
   group: compute
   kind: Workload
-  path: go.datum.net/workload-operator/api/v1alpha
+  path: go.datum.net/compute/api/v1alpha
   version: v1alpha
   webhooks:
     defaulting: true
@@ -28,7 +28,7 @@ resources:
   domain: datumapis.com
   group: compute
   kind: WorkloadDeployment
-  path: go.datum.net/workload-operator/api/v1alpha
+  path: go.datum.net/compute/api/v1alpha
   version: v1alpha
 - api:
     crdVersion: v1
@@ -37,7 +37,7 @@ resources:
   domain: datumapis.com
   group: compute
   kind: Instance
-  path: go.datum.net/workload-operator/api/v1alpha
+  path: go.datum.net/compute/api/v1alpha
   version: v1alpha
   # webhooks:
   #   defaulting: true

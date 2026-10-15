@@ -1,0 +1,36 @@
+# DEVIATION (required for Kind): overrides the operator config the production
+# cell overlay ships (config/overlays/cell/disable_webhook_patch.yaml) to drop
+# discovery.quotaKubeconfigPath.
+#
+# The production cell config points quotaKubeconfigPath at
+# /etc/quota-credentials/kubeconfig, delivered by config/components/quota-credentials
+# from the compute-edge-milo-client-cert Secret + compute-quota-kubeconfig
+# ConfigMap. Those are cluster-environment secrets that do not exist in Kind, and
+# the projected volume sources are optional — so the file is simply absent. The
+# operator treats a configured-but-missing quota kubeconfig as fatal (os.Exit),
+# which would crash-loop the cell pod. Dropping the path takes the documented
+# opt-out branch instead: quota enforcement is disabled and the operator boots.
+#
+# Impact: the cell InstanceReconciler skips ResourceClaim creation/quota checks.
+# The federation delivery path under test (WorkloadDeployment → Instance) is
+# unaffected; edge quota enforcement is covered separately.
+#
+# featureFlags.enableReferencedDataGate is turned on because the cell
+# WorkloadDeploymentReconciler is the sole consumer of this flag: it stamps the
+# "ReferencedData" scheduling gate onto Instances whose template references a
+# ConfigMap or Secret, and the cell InstanceReconciler clears the gate once the
+# companions land on the cell. The referenced-data-mounts and
+# referenced-data-delete-cascade suites assert that stamp-then-clear behaviour,
+# so without the flag those suites would observe an Instance that is never gated.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compute-config
+data:
+  config.yaml: |
+    apiVersion: apiserver.config.datumapis.com/v1alpha1
+    kind: WorkloadOperator
+    metricsServer:
+      bindAddress: "0"
+    featureFlags:
+      enableReferencedDataGate: true

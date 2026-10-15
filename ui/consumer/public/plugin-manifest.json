@@ -1,0 +1,111 @@
+{
+  "name": "workload.compute.datumapis.com",
+  "version": "0.1.0",
+  "sdk": {
+    "name": "@datum-cloud/portal-plugin-sdk",
+    "range": "^1.0.0"
+  },
+  "remoteEntry": "remoteEntry.js",
+  "exposedModules": {
+    "WorkloadList": "./src/pages/workload-list.tsx",
+    "WorkloadDetail": "./src/pages/workload-detail.tsx",
+    "InstanceDetail": "./src/pages/instance-detail.tsx",
+    "InstanceShellWindow": "./src/pages/instance-shell-window.tsx",
+    "WorkloadsHomeColumn": "./src/cards/workloads-home-column.tsx"
+  },
+  "extensions": [
+    {
+      "type": "portal.nav/project",
+      "properties": {
+        "id": "compute",
+        "title": "Compute",
+        "icon": "server",
+        "path": "/",
+        "order": 10,
+        "section": "build",
+        "serviceRef": "compute.datumapis.com",
+        "children": [
+          {
+            "title": "Workloads",
+            "path": "/"
+          }
+        ]
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": "",
+        "component": {
+          "$codeRef": "WorkloadList"
+        }
+      },
+      "requirements": {
+        "permissions": [
+          {
+            "group": "compute.datumapis.com",
+            "resource": "workloads",
+            "verb": "list"
+          }
+        ]
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": ":workloadName/*",
+        "component": {
+          "$codeRef": "WorkloadDetail"
+        }
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": ":workloadName/instances/:instanceName/shell/window",
+        "component": {
+          "$codeRef": "InstanceShellWindow"
+        },
+        "layout": "bare"
+      },
+      "requirements": {
+        "permissions": [
+          {
+            "group": "compute.datumapis.com",
+            "resource": "instances",
+            "verb": "get"
+          }
+        ]
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": ":workloadName/instances/:instanceName/*",
+        "component": {
+          "$codeRef": "InstanceDetail"
+        }
+      },
+      "requirements": {
+        "permissions": [
+          {
+            "group": "compute.datumapis.com",
+            "resource": "instances",
+            "verb": "get"
+          }
+        ]
+      }
+    },
+    {
+      "type": "portal.column/project-home",
+      "properties": {
+        "title": "Workloads",
+        "path": "/",
+        "component": {
+          "$codeRef": "WorkloadsHomeColumn"
+        },
+        "order": 10
+      }
+    }
+  ]
+}

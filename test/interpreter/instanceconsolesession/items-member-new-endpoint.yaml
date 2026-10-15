@@ -1,0 +1,16 @@
+applied: true
+clusterName: cell-with-instance
+health: Unknown
+status:
+  connection:
+    endpointID: cafe0000
+    relayURLs:
+      - https://relay.example.test
+    target: exec-agent-0.exec-agent.compute-shell-system.svc.cluster.local:7777
+  connectBefore: "2026-09-29T18:01:10Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Connected
+      message: Connect before the connection deadline.
+      lastTransitionTime: "2026-09-29T18:00:10Z"

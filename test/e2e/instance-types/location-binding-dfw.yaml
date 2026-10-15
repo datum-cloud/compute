@@ -1,0 +1,13 @@
+# A cluster-scoped LocationBinding naming the location this suite places
+# workloads at. Workload admission validates placement locations against the
+# live registry and the Workload controller refuses to render WorkloadDeployments
+# when no location is registered, so every scenario in this suite needs at
+# least one placeable location. The e2e control plane has the networking
+# CRDs installed but an empty registry, so the suite seeds its own.
+apiVersion: networking.datumapis.com/v1alpha
+kind: LocationBinding
+metadata:
+  name: dfw
+spec:
+  locationRef:
+    name: dfw

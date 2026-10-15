@@ -1,0 +1,283 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: suspension
+spec:
+  description: |
+    Verifies that a suspend/resume request reaches a real cell and its
+    Instance, and that the resulting Status.Suspended is visible back on the
+    control-plane WorkloadDeployment.
+
+    ComputeSuspend/ComputeResume (compute/internal/controller/suspend_hooks.go)
+    are not exercised here — they live one layer up, in the service-catalog
+    consumer-provider, and are not part of this e2e environment. This test
+    starts from what they do: patch compute.datumapis.com/suspended onto the
+    control-plane WorkloadDeployment. From there it verifies the actual fix
+    under test — the annotation-based propagation path — end to end:
+
+    1. Create WorkloadDeployment on control-plane; wait for it to federate to
+       Karmada, propagate to pop-dfw, and produce an Instance there.
+    2. Patch compute.datumapis.com/suspended=true onto the control-plane WD.
+    3. WorkloadDeploymentFederator copies the annotation to the Karmada copy
+       (upsertDownstreamDeployment) — annotations are one of the few things
+       Karmada propagates hub→cell, unlike Status, which is never propagated
+       in that direction.
+    4. Karmada propagates the annotation to the pop-dfw copy.
+    5. pop-dfw's WorkloadDeploymentReconciler derives Status.Suspended=true
+       from the annotation on its local copy, before reconcileInstanceGates
+       propagates it to the owned Instance.
+    6. Status.Suspended rides the existing generic status-aggregation path
+       back up: pop-dfw → Karmada → control-plane, with no additional code
+       needed for that direction (WorkloadDeploymentFederator.
+       syncStatusFromDownstream already mirrors the whole status struct).
+    7. Removing the annotation (resume) reverses every step above.
+
+    Prerequisites: the management + both cell operators are deployed
+    in-cluster (task e2e:up).
+
+  template: true
+
+  steps:
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SETUP: get a real, federated Instance on pop-dfw to suspend/resume
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: create-workload-deployment
+    description: Create the WorkloadDeployment on the control-plane cluster.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: assert-instance-on-pop-dfw
+    description: Wait for the full federation chain to produce an Instance on pop-dfw.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: cellNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($cellNS)
+            name: test-suspend-wd-0
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SCENARIO 1: SUSPEND
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: s1-suspend
+    description: Patch compute.datumapis.com/suspended=true onto the control-plane WD.
+    try:
+    - apply:
+        file: workload-deployment-suspended.yaml
+
+  - name: s1-assert-annotation-on-downstream
+    description: Assert the federator copied the annotation to the Karmada copy.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-suspend-wd
+            annotations:
+              compute.datumapis.com/suspended: "true"
+
+  - name: s1-assert-suspended-on-pop-dfw
+    description: |
+      Assert Karmada propagated the annotation to pop-dfw, and the cell
+      reconciler derived Status.Suspended on both the WorkloadDeployment and
+      the Instance it owns.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: cellNS
+          value: ($stdout)
+    - assert:
+        timeout: 90s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($cellNS)
+            name: test-suspend-wd
+            annotations:
+              compute.datumapis.com/suspended: "true"
+          status:
+            suspended: true
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($cellNS)
+            name: test-suspend-wd-0
+          status:
+            suspended: true
+
+  - name: s1-assert-suspended-status-on-downstream
+    description: |
+      Assert Karmada's ResourceInterpreterCustomization for WorkloadDeployment
+      (config/components/federation/workloaddeployment-interpreter.yaml)
+      aggregated the cell's whole Status object — including Suspended — onto
+      the Karmada resource template. This isolates Karmada's own aggregation
+      from WorkloadDeploymentFederator's separate job of then pulling it from
+      here into the control-plane WD (checked in the next step).
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-suspend-wd
+          status:
+            suspended: true
+
+  - name: s1-assert-suspended-synced-to-control-plane
+    description: |
+      Assert WorkloadDeploymentFederator.syncStatusFromDownstream then pulls
+      that aggregated status from the Karmada copy into the control-plane WD,
+      with no annotation involved in this direction.
+    try:
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-suspend-wd
+          status:
+            suspended: true
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SCENARIO 2: RESUME
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - name: s2-resume
+    description: |
+      Remove compute.datumapis.com/suspended from the control-plane WD.
+      Re-applying workload-deployment.yaml (the manifest without the
+      annotation) does NOT reliably remove it: CRDs don't support strategic
+      merge patch, and a plain merge patch of an omitted key is a no-op, not a
+      deletion — this mirrors kubectl's own `annotate key-` semantics, which
+      exists precisely because omission from a new manifest isn't deletion.
+      Removing it explicitly here matches what ComputeResume actually does in
+      production (suspend_hooks.go: delete(wd.Annotations, ...)).
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            annotate workloaddeployment test-suspend-wd \
+            --namespace "$NAMESPACE" \
+            compute.datumapis.com/suspended-
+
+  - name: s2-assert-resumed-on-pop-dfw
+    description: Assert the cell reconciler cleared Status.Suspended on both objects.
+    cluster: pop-dfw
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: cellNS
+          value: ($stdout)
+    - assert:
+        timeout: 90s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($cellNS)
+            name: test-suspend-wd
+          # Suspended is `json:"suspended,omitempty"`, so a resumed (false)
+          # object may omit the key entirely rather than store it literally as
+          # false. This expression normalizes both "absent" and "present and
+          # false" to false, so it doesn't spuriously fail on an omitted key.
+          (status.suspended != null && status.suspended): false
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($cellNS)
+            name: test-suspend-wd-0
+          (status.suspended != null && status.suspended): false
+
+  - name: s2-assert-resumed-status-on-downstream
+    description: |
+      Assert Karmada's aggregation reflects the cleared Status.Suspended onto
+      the Karmada resource template, isolated from the federator's separate
+      pull into the control-plane WD (checked in the next step).
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-suspend-wd
+          (status.suspended != null && status.suspended): false
+
+  - name: s2-assert-resumed-synced-to-control-plane
+    description: Assert Status.Suspended=false rides back up to the control-plane WD.
+    try:
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-suspend-wd
+          (status.suspended != null && status.suspended): false

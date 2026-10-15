@@ -1,0 +1,180 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instanceconsolesessions
+  verbs:
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instanceconsolesessions/finalizers
+  - instances/finalizers
+  - instancetypes/finalizers
+  - workloaddeployments/finalizers
+  - workloads/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instanceconsolesessions/status
+  - instances/status
+  - instancetypes/status
+  - workloaddeployments/status
+  - workloads/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instances
+  - instancetypes
+  - workloaddeployments
+  - workloads
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - runtimeclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - locations.miloapis.com
+  resources:
+  - locations
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - locationbindings
+  - networkinterfaces
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkinterfaceclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkinterfaces/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networks
+  verbs:
+  - get
+  - list
+  - use
+  - watch
+- apiGroups:
+  - quota.miloapis.com
+  resources:
+  - resourceclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceavailabilities
+  - serviceconfigurations
+  - serviceconsumers
+  - services
+  verbs:
+  - get
+  - list
+  - watch

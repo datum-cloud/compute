@@ -1,0 +1,69 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-manager
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # The referenced-data controller reads the source ConfigMaps/Secrets a Workload
+  # references and materializes companion copies in the same hub namespace, which
+  # Karmada then propagates to the cell. It owns the companions' full lifecycle,
+  # including ref-count deletion, so it needs create/update/patch/delete here.
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["workloaddeployments", "workloaddeployments/status", "instances", "instances/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The InstanceTypeProjector writes the catalog's hub copies here so Karmada can
+  # propagate them to every cell, watches them to repair drift, and deletes the
+  # ones the catalog no longer declares. The status subresource stays untouched:
+  # cells aggregate nothing onto these copies and the projector never reads
+  # status back.
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instancetypes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Compute delivers each shell session as a copy in the hub namespace of its
+  # instance's deployment, reads back the status Karmada reflects onto it from
+  # the cell, annotates it to revoke the session, and removes it when the
+  # session goes. It never writes a copy's status, which aggregation owns.
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instanceconsolesessions"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  # Compute asks for a network's presence in a location by writing a
+  # NetworkBinding on the hub. NSO turns every binding for the same network and
+  # location into one shared NetworkContext and propagates it to the cells
+  # serving that location, where the claim path can use it. Compute owns the
+  # bindings it creates, including releasing them, but only reads the contexts
+  # NSO derives from them.
+  - apiGroups: ["networking.datumapis.com"]
+    resources: ["networkbindings", "networkbindings/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.datumapis.com"]
+    resources: ["networkcontexts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy.karmada.io"]
+    resources: ["propagationpolicies", "clusterpropagationpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cluster.karmada.io"]
+    resources: ["clusters"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["work.karmada.io"]
+    resources: ["resourcebindings", "clusterresourcebindings"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["config.karmada.io"]
+    resources: ["resourceinterpreterwebhookconfigurations", "resourceinterpretercustomizations"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: compute-manager
+subjects:
+  - kind: User
+    name: system:serviceaccount:compute-system:compute-manager

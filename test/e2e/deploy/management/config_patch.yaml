@@ -1,0 +1,39 @@
+# DEVIATION (required for Kind): overrides the operator config the production
+# management-plane overlay ships (config/overlays/management-plane/discovery_mode_patch.yaml).
+#
+# - discovery.mode: milo → single. Milo discovery enumerates Projects from a Milo
+#   control plane to build per-project clients; the Kind environment has no Milo.
+#   Single-cluster discovery runs the management controllers against the local
+#   control-plane cluster while still federating WorkloadDeployments to Karmada
+#   through FEDERATION_KUBECONFIG (unchanged from the overlay). This matches how
+#   the retired host-run harness drove the management operator.
+#
+# - webhookServer: {} enables the admission webhook server with its defaults
+#   (port 9443, cert dir /tmp/k8s-webhook-server/serving-certs). The production
+#   overlay serves it with a cert delivered by the cert-manager CSI driver,
+#   which is not installed in Kind; webhook-cert.yaml + deployment_patch.yaml
+#   substitute a cert from a plain cert-manager install instead, mounted at the
+#   same default path so no TLS config override is needed here.
+#
+# - featureFlags.enableReferencedDataGate mirrors the flag set on the cell so the
+#   two operators share one feature-flag surface, matching the retired host-run
+#   harness which passed the same --server-config flag to both. Its only consumer
+#   is the cell WorkloadDeploymentReconciler, which this management overlay does
+#   not run (it enables management controllers only), so the flag is inert here;
+#   the cell config_patch carries the copy that actually gates Instances. Kept
+#   explicit so the flag does not silently diverge between the two operators.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compute-config
+data:
+  config.yaml: |
+    apiVersion: apiserver.config.datumapis.com/v1alpha1
+    kind: WorkloadOperator
+    metricsServer:
+      bindAddress: "0"
+    discovery:
+      mode: single
+    webhookServer: {}
+    featureFlags:
+      enableReferencedDataGate: true

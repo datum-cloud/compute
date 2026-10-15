@@ -1,0 +1,13 @@
+# The canonical baseline tier: the hardcoded fallback the platform uses when a
+# workload omits instanceType. Publishing it as an Active InstanceType makes the
+# catalog the single source of truth the Workload webhook validates against.
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceType
+metadata:
+  name: datumcloud-d1-standard-2
+spec:
+  resources:
+    cpu: 1000m
+    memory: 2048Mi
+  lifecycle:
+    phase: Active

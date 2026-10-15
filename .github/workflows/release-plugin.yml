@@ -1,0 +1,81 @@
+name: Release Plugin
+
+# Publishing a release builds the datumctl-compute plugin archives, attaches
+# them to that release, and opens the PR that points the datumctl plugin
+# catalog at the new version. Both steps used to be run by hand after every
+# tag.
+#
+# The two jobs live in one workflow because the catalog update reads the
+# checksums.txt that goreleaser uploads, and `needs:` cannot reach across
+# workflow files. Ordering here is the whole point: no guard is needed against
+# a release that has no plugin assets, because this workflow is what puts them
+# there.
+#
+# goreleaser is configured with `mode: append`, so it adds its archives to the
+# release the tagger already wrote rather than replacing the notes.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release-plugin:
+    name: Build and attach the plugin archives
+    runs-on: ubuntu-latest
+    permissions:
+      # goreleaser uploads the archives and checksums.txt onto the release.
+      contents: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+        with:
+          # goreleaser derives the version from the tag, so check out the tag
+          # itself rather than whatever the default ref resolves to, and keep
+          # the history it reads the changelog from.
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --config .goreleaser-plugin.yaml --clean
+        env:
+          # The release lives in this repository, so the built-in token is the
+          # right credential. The catalog is a different repository, which is
+          # why the job below has to mint its own.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-plugin-index:
+    name: Open the catalog PR
+    needs: [release-plugin]
+    runs-on: ubuntu-latest
+    permissions:
+      # Only to read this release's checksums.txt; the catalog PR is pushed
+      # with the app token below.
+      contents: read
+    steps:
+      # The App token has to be minted in the SAME job that uses it: a masked
+      # value handed between jobs arrives empty. That constraint is also why
+      # the step below is a composite action rather than a reusable workflow.
+      - name: Mint a catalog token from the release bot app
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+          repositories: datumctl-plugins
+
+      - name: Update the compute plugin manifest
+        uses: datum-cloud/actions/update-plugin-index@v1.21.0
+        with:
+          index-repo: datum-cloud/datumctl-plugins
+          plugin-name: compute
+          version: ${{ github.event.release.tag_name }}
+          token: ${{ steps.app-token.outputs.token }}

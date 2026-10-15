@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -19,8 +20,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/pkg/runtimeclass"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	computev1alpha "go.datum.net/workload-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+)
+
+const (
+	testCPUResource        = "cpu"
+	testVolName            = "vol"
+	testDuplicateMountPath = "duplicate-mount-path"
+	testDefaultNamespace   = "default"
+	testCityCodeDFW        = "DFW"
+	testImageNoRegistry    = "nginx:latest"
+	testImageQualified     = "ghcr.io/acme/api:1.4.2"
 )
 
 func TestValidateWorkloads(t *testing.T) {
@@ -33,32 +46,126 @@ func TestValidateWorkloads(t *testing.T) {
 		"basic fields create": {
 			workload: &computev1alpha.Workload{},
 			expectedErrors: field.ErrorList{
-				field.NotSupported(field.NewPath("spec.template.spec.runtime.resources"), "", []string{}),
 				field.Required(field.NewPath("spec.template.spec.runtime"), ""),
 				field.Required(field.NewPath("spec.template.spec.networkInterfaces"), ""),
 				field.Required(field.NewPath("spec.placements"), ""),
 			},
 		},
-		"missing cityCode": {
+		"location selector by city code": {
 			workload: MakeSandboxWorkload(
 				"test",
 				func(w *computev1alpha.Workload) {
-					w.Spec.Placements[0].CityCodes = []string{}
+					w.Spec.Placements[0].Locations = nil
+					w.Spec.Placements[0].LocationSelector = &metav1.LabelSelector{
+						MatchLabels: map[string]string{locationsv1alpha1.TopologyCityCodeKey: testCityCodeDFW},
+					}
+				},
+			),
+			expectedErrors: field.ErrorList{},
+		},
+		"location selector by expression": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Placements[0].Locations = nil
+					w.Spec.Placements[0].LocationSelector = &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{{
+							Key:      locationsv1alpha1.TopologyCityCodeKey,
+							Operator: metav1.LabelSelectorOpIn,
+							Values:   []string{testCityCodeDFW, "ORD"},
+						}},
+					}
+				},
+			),
+			expectedErrors: field.ErrorList{},
+		},
+		"location selector matching no ready location": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Placements[0].Locations = nil
+					w.Spec.Placements[0].LocationSelector = &metav1.LabelSelector{
+						MatchLabels: map[string]string{locationsv1alpha1.TopologyCityCodeKey: "LHR"},
+					}
 				},
 			),
 			expectedErrors: field.ErrorList{
-				field.Required(field.NewPath("spec.placements[0].cityCodes"), ""),
+				field.Invalid(field.NewPath("spec.placements[0].locationSelector"), "", ""),
 			},
 		},
-		"invalid cityCode": {
+		"empty location selector": {
 			workload: MakeSandboxWorkload(
 				"test",
 				func(w *computev1alpha.Workload) {
-					w.Spec.Placements[0].CityCodes = []string{"TEST"}
+					w.Spec.Placements[0].Locations = nil
+					w.Spec.Placements[0].LocationSelector = &metav1.LabelSelector{}
 				},
 			),
 			expectedErrors: field.ErrorList{
-				field.NotSupported(field.NewPath("spec.placements[0].cityCodes[0]"), "TEST", []string{}),
+				field.Required(field.NewPath("spec.placements[0].locationSelector"), ""),
+			},
+		},
+		"malformed location selector": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Placements[0].Locations = nil
+					w.Spec.Placements[0].LocationSelector = &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{{
+							Key:      locationsv1alpha1.TopologyCityCodeKey,
+							Operator: metav1.LabelSelectorOpIn,
+						}},
+					}
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec.placements[0].locationSelector.matchExpressions[0].values"), ""),
+			},
+		},
+		"city codes are deprecated": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Placements[0].CityCodes = []string{testCityCodeDFW}
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Forbidden(field.NewPath("spec.placements[0].cityCodes"), ""),
+			},
+		},
+		"location selector together with locations": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Placements[0].LocationSelector = &metav1.LabelSelector{
+						MatchLabels: map[string]string{locationsv1alpha1.TopologyCityCodeKey: testCityCodeDFW},
+					}
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Forbidden(field.NewPath("spec.placements[0].locationSelector"), ""),
+			},
+		},
+		"missing location": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Placements[0].Locations = []locationsv1alpha1.LocationReference{}
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec.placements[0].locations"), ""),
+			},
+		},
+		"invalid location": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Placements[0].Locations = []locationsv1alpha1.LocationReference{{Name: "TEST"}}
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.NotSupported(field.NewPath("spec.placements[0].locations[0].name"), "TEST", []string{}),
 			},
 		},
 		"missing placement name": {
@@ -157,7 +264,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									Value:              resource.NewQuantity(50, resource.DecimalSI),
 									AverageValue:       resource.NewQuantity(50, resource.DecimalSI),
@@ -181,7 +288,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									Value: resource.NewQuantity(-1, resource.DecimalSI),
 								},
@@ -202,7 +309,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									AverageValue: resource.NewQuantity(-1, resource.DecimalSI),
 								},
@@ -223,7 +330,7 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Placements[0].ScaleSettings.Metrics = []computev1alpha.MetricSpec{
 						{
 							Resource: &computev1alpha.ResourceMetricSource{
-								Name: "cpu",
+								Name: testCPUResource,
 								Target: computev1alpha.MetricTarget{
 									AverageUtilization: proto.Int32(0),
 								},
@@ -336,16 +443,16 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments = append(
 						w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments,
 						computev1alpha.VolumeAttachment{
-							Name: "vol",
+							Name: testVolName,
 						},
 					)
 					w.Spec.Template.Spec.Volumes = append(w.Spec.Template.Spec.Volumes, computev1alpha.InstanceVolume{
-						Name: "vol",
+						Name: testVolName,
 						VolumeSource: computev1alpha.VolumeSource{
 							Disk: &computev1alpha.DiskTemplateVolumeSource{
 								Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 									Spec: computev1alpha.DiskSpec{
-										Type: "pd-standard",
+										Type: diskTypePDStandard,
 										Resources: &computev1alpha.DiskResourceRequirements{
 											Requests: k8scorev1.ResourceList{
 												k8scorev1.ResourceStorage: resource.MustParse("1Gi"),
@@ -369,16 +476,16 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments = append(
 						w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments,
 						computev1alpha.VolumeAttachment{
-							Name: "vol",
+							Name: testVolName,
 						},
 					)
 					w.Spec.Template.Spec.Volumes = append(w.Spec.Template.Spec.Volumes, computev1alpha.InstanceVolume{
-						Name: "vol",
+						Name: testVolName,
 						VolumeSource: computev1alpha.VolumeSource{
 							Disk: &computev1alpha.DiskTemplateVolumeSource{
 								Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 									Spec: computev1alpha.DiskSpec{
-										Type: "pd-standard",
+										Type: diskTypePDStandard,
 										Resources: &computev1alpha.DiskResourceRequirements{
 											Requests: k8scorev1.ResourceList{
 												k8scorev1.ResourceStorage: resource.MustParse("1Pi"),
@@ -402,16 +509,16 @@ func TestValidateWorkloads(t *testing.T) {
 					w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments = append(
 						w.Spec.Template.Spec.Runtime.VirtualMachine.VolumeAttachments,
 						computev1alpha.VolumeAttachment{
-							Name: "vol",
+							Name: testVolName,
 						},
 					)
 					w.Spec.Template.Spec.Volumes = append(w.Spec.Template.Spec.Volumes, computev1alpha.InstanceVolume{
-						Name: "vol",
+						Name: testVolName,
 						VolumeSource: computev1alpha.VolumeSource{
 							Disk: &computev1alpha.DiskTemplateVolumeSource{
 								Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 									Spec: computev1alpha.DiskSpec{
-										Type: "pd-standard",
+										Type: diskTypePDStandard,
 										Resources: &computev1alpha.DiskResourceRequirements{
 											Requests: k8scorev1.ResourceList{
 												k8scorev1.ResourceStorage: resource.MustParse("10.5Gi"),
@@ -436,7 +543,7 @@ func TestValidateWorkloads(t *testing.T) {
 						Disk: &computev1alpha.DiskTemplateVolumeSource{
 							Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 								Spec: computev1alpha.DiskSpec{
-									Type: "pd-standard",
+									Type: diskTypePDStandard,
 									Resources: &computev1alpha.DiskResourceRequirements{
 										Requests: k8scorev1.ResourceList{
 											k8scorev1.ResourceStorage: resource.MustParse("10Gi"),
@@ -473,7 +580,7 @@ func TestValidateWorkloads(t *testing.T) {
 						Disk: &computev1alpha.DiskTemplateVolumeSource{
 							Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 								Spec: computev1alpha.DiskSpec{
-									Type: "pd-standard",
+									Type: diskTypePDStandard,
 									Resources: &computev1alpha.DiskResourceRequirements{
 										Requests: k8scorev1.ResourceList{
 											k8scorev1.ResourceStorage: resource.MustParse("10Gi"),
@@ -490,11 +597,11 @@ func TestValidateWorkloads(t *testing.T) {
 					}
 					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].VolumeAttachments = []computev1alpha.VolumeAttachment{
 						{
-							Name:      "duplicate-mount-path",
+							Name:      testDuplicateMountPath,
 							MountPath: proto.String("/mount1"),
 						},
 						{
-							Name:      "duplicate-mount-path",
+							Name:      testDuplicateMountPath,
 							MountPath: proto.String("/mount1"),
 						},
 						{
@@ -503,7 +610,7 @@ func TestValidateWorkloads(t *testing.T) {
 					}
 					w.Spec.Template.Spec.Volumes = []computev1alpha.InstanceVolume{
 						{
-							Name:         "duplicate-mount-path",
+							Name:         testDuplicateMountPath,
 							VolumeSource: volumeSource,
 						},
 					}
@@ -535,12 +642,63 @@ func TestValidateWorkloads(t *testing.T) {
 				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].ports[1].name"), "", ""),
 			},
 		},
+		"bare image name has no registry": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageNoRegistry
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+			},
+		},
+		"namespaced image name has no registry": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "myname/myapp:v1"
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+			},
+		},
+		"qualified image name with no tag is valid": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "ghcr.io/acme/api"
+				},
+			),
+			expectedErrors: field.ErrorList{},
+		},
+		"localhost image name is valid": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "localhost:5000/foo:bar"
+				},
+			),
+			expectedErrors: field.ErrorList{},
+		},
+		"invalid image reference syntax": {
+			workload: MakeSandboxWorkload(
+				"test",
+				func(w *computev1alpha.Workload) {
+					w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "ghcr.io/acme/UPPERCASE_REPO:v1"
+				},
+			),
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+			},
+		},
 		"network use denied": {
 			workload: MakeSandboxWorkload("test"),
 			interceptorFuncs: &interceptor.Funcs{
 				Create: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 					if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
-						if sar.Spec.ResourceAttributes.Name == "default" &&
+						if sar.Spec.ResourceAttributes.Name == testDefaultNamespace &&
 							sar.Spec.ResourceAttributes.Group == networkingv1alpha.GroupVersion.Group &&
 							sar.Spec.ResourceAttributes.Version == networkingv1alpha.GroupVersion.Version &&
 							sar.Spec.ResourceAttributes.Resource == "networks" {
@@ -559,8 +717,8 @@ func TestValidateWorkloads(t *testing.T) {
 	initObjs := []client.Object{
 		&networkingv1alpha.Network{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: "default",
-				Name:      "default",
+				Namespace: testDefaultNamespace,
+				Name:      testDefaultNamespace,
 			},
 		},
 	}
@@ -576,7 +734,7 @@ func TestValidateWorkloads(t *testing.T) {
 			Create: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
 					// The fake client only allow a resource to be created without a name
-					sar.GenerateName = "sar-"
+					sar.GenerateName = sarGenerateName
 				}
 				return client.Create(ctx, obj, opts...)
 			},
@@ -605,8 +763,13 @@ func TestValidateWorkloads(t *testing.T) {
 			},
 		)
 
-		if len(scenario.opts.ValidCityCodes) == 0 {
-			scenario.opts.ValidCityCodes = []string{"DFW"}
+		if len(scenario.opts.ValidLocations) == 0 {
+			scenario.opts.ValidLocations = []string{testCityCodeDFW}
+		}
+		if scenario.opts.LocationTopologies == nil {
+			scenario.opts.LocationTopologies = map[string]map[string]string{
+				testCityCodeDFW: {locationsv1alpha1.TopologyCityCodeKey: testCityCodeDFW},
+			}
 		}
 
 		t.Run(name, func(t *testing.T) {
@@ -639,14 +802,15 @@ func MakeSandboxWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload 
 					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{
 						{
 							Network: networkingv1alpha.NetworkRef{
-								Name: "default",
+								Name: testDefaultNamespace,
 							},
 						},
 					},
 					Runtime: computev1alpha.InstanceRuntimeSpec{
-						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/d1-standard-2",
-						},
+						// InstanceType is left empty: with the feature gate off
+						// (the test default) a workload passes validation without
+						// naming one, and the platform runs it on the hardcoded
+						// fallback type.
 						Sandbox: &computev1alpha.SandboxRuntime{
 							Containers: []computev1alpha.SandboxContainer{
 								{
@@ -661,7 +825,7 @@ func MakeSandboxWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload 
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      "placement1",
-					CityCodes: []string{"DFW"},
+					Locations: []locationsv1alpha1.LocationReference{{Name: testCityCodeDFW}},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 1,
 					},
@@ -696,14 +860,13 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{
 						{
 							Network: networkingv1alpha.NetworkRef{
-								Name: "default",
+								Name: testDefaultNamespace,
 							},
 						},
 					},
 					Runtime: computev1alpha.InstanceRuntimeSpec{
-						Resources: computev1alpha.InstanceRuntimeResources{
-							InstanceType: "datumcloud/d1-standard-2",
-						},
+						// See MakeSandboxWorkload: instanceType stays empty so the
+						// workload passes validation under the default (gate off).
 						VirtualMachine: &computev1alpha.VirtualMachineRuntime{
 							VolumeAttachments: []computev1alpha.VolumeAttachment{
 								{
@@ -719,10 +882,10 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 								Disk: &computev1alpha.DiskTemplateVolumeSource{
 									Template: &computev1alpha.DiskTemplateVolumeSourceTemplate{
 										Spec: computev1alpha.DiskSpec{
-											Type: "pd-standard",
+											Type: diskTypePDStandard,
 											Populator: &computev1alpha.DiskPopulator{
 												Image: &computev1alpha.ImageDiskPopulator{
-													Name: "datumcloud/ubuntu-2204-lts",
+													Name: defaultImageName,
 												},
 											},
 										},
@@ -736,7 +899,7 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      "placement1",
-					CityCodes: []string{"DFW"},
+					Locations: []locationsv1alpha1.LocationReference{{Name: testCityCodeDFW}},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 1,
 					},
@@ -750,4 +913,249 @@ func MakeVMWorkload(name string, tweaks ...Tweak) *computev1alpha.Workload {
 	}
 
 	return workload
+}
+
+// TestValidateWorkloadSpecUpdate_RuntimeClassImmutable verifies that a workload
+// cannot move between execution tiers in place. The only permitted transition
+// fills in an absent class with the class the catalog marks as default, which
+// is what the mutating webhook stamps. The default comes from the catalog, not
+// from a name this package knows.
+func TestValidateWorkloadSpecUpdate_RuntimeClassImmutable(t *testing.T) {
+	classPath := field.NewPath("spec", "template", "spec", "runtime", "class")
+
+	withClass := func(class string) computev1alpha.WorkloadSpec {
+		return MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+			w.Spec.Template.Spec.Runtime.Class = class
+		}).Spec
+	}
+
+	// undefaultedCatalog publishes tiers but marks none of them as default, so
+	// no class can be filled in on an existing workload.
+	undefaultedCatalog := runtimeclass.Catalog{
+		makeRuntimeClass(testClassAzurite),
+		makeRuntimeClass(testClassBasalt),
+	}
+
+	cases := map[string]struct {
+		oldClass       string
+		class          string
+		catalog        runtimeclass.Catalog
+		expectedErrors field.ErrorList
+	}{
+		"unchanged default": {
+			oldClass: testClassAzurite,
+			class:    testClassAzurite,
+			catalog:  defaultCatalog(),
+		},
+		"unchanged non-default": {
+			oldClass: testClassBasalt,
+			class:    testClassBasalt,
+			catalog:  defaultCatalog(),
+		},
+		"still unset": {catalog: defaultCatalog()},
+		"unset gets defaulted": {
+			class:   testClassAzurite,
+			catalog: defaultCatalog(),
+		},
+		"unset jumps straight to a non-default tier": {
+			class:   testClassBasalt,
+			catalog: defaultCatalog(),
+			expectedErrors: field.ErrorList{
+				field.Forbidden(classPath, ""),
+			},
+		},
+		"unset filled in where the catalog marks no default": {
+			class:   testClassAzurite,
+			catalog: undefaultedCatalog,
+			expectedErrors: field.ErrorList{
+				field.Forbidden(classPath, ""),
+			},
+		},
+		"unset filled in with no catalog read at all": {
+			class: testClassAzurite,
+			expectedErrors: field.ErrorList{
+				field.Forbidden(classPath, ""),
+			},
+		},
+		"changed tier": {
+			oldClass: testClassAzurite,
+			class:    testClassBasalt,
+			catalog:  defaultCatalog(),
+			expectedErrors: field.ErrorList{
+				field.Invalid(classPath, "", ""),
+			},
+		},
+		"cleared": {
+			oldClass: testClassBasalt,
+			catalog:  defaultCatalog(),
+			expectedErrors: field.ErrorList{
+				field.Invalid(classPath, "", ""),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			errs := validateWorkloadSpecUpdate(
+				withClass(tc.class), withClass(tc.oldClass), field.NewPath("spec"),
+				WorkloadValidationOptions{RuntimeClasses: tc.catalog},
+			)
+
+			delta := cmp.Diff(
+				tc.expectedErrors, errs,
+				cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"),
+				cmpopts.EquateEmpty(),
+			)
+			if delta != "" {
+				t.Errorf("errors mismatch (-want +got):\n%s", delta)
+			}
+		})
+	}
+}
+
+// TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault verifies that the
+// rejection message names the class that may be filled in, read from the
+// catalog.
+func TestValidateWorkloadSpecUpdate_RuntimeClassNamesTheDefault(t *testing.T) {
+	spec := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Runtime.Class = testClassBasalt
+	}).Spec
+	oldSpec := MakeSandboxWorkload("test").Spec
+
+	errs := validateWorkloadSpecUpdate(spec, oldSpec, field.NewPath("spec"),
+		WorkloadValidationOptions{RuntimeClasses: defaultCatalog()})
+	if len(errs) != 1 {
+		t.Fatalf("expected the tier change to be refused once, got: %v", errs)
+	}
+	if got := errs[0].Error(); !strings.Contains(got, `"`+testClassAzurite+`"`) {
+		t.Errorf("refusal should name the class the workload already runs in, got: %s", got)
+	}
+}
+
+// sandboxWorkload builds a minimal workload with the given sandbox containers,
+// enough for validateWorkloadImages, which only reads spec.template.spec.runtime.sandbox.
+func sandboxWorkload(containers ...computev1alpha.SandboxContainer) *computev1alpha.Workload {
+	w := &computev1alpha.Workload{}
+	w.Spec.Template.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{Containers: containers}
+	return w
+}
+
+func TestValidateWorkloadImages(t *testing.T) {
+	containersPath := field.NewPath("spec", "template", "spec", "runtime", "sandbox", "containers")
+
+	cases := map[string]struct {
+		workload       *computev1alpha.Workload
+		oldWorkload    *computev1alpha.Workload
+		expectedErrors field.ErrorList
+	}{
+		"create: image with no registry is rejected": {
+			workload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(0).Child("image"), "", ""),
+			},
+		},
+		"create: empty image is left to validateContainerCommon": {
+			workload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1"}),
+		},
+		"update: new container with empty image is left to validateContainerCommon": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1"}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c2", Image: testImageQualified}),
+		},
+		"update: unchanged bad image is not re-validated": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+		},
+		"update: rewriting to a different, still-bad image is rejected": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: "other:latest"}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(0).Child("image"), "", ""),
+			},
+		},
+		"update: fixing the image is fine": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageQualified}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+		},
+		"update: a container added alongside an unchanged one is still validated": {
+			workload: sandboxWorkload(
+				computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry},
+				computev1alpha.SandboxContainer{Name: "c2", Image: testImageNoRegistry},
+			),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(1).Child("image"), "", ""),
+			},
+		},
+		"update: renaming a container makes it a new entry, so its image is validated": {
+			workload:    sandboxWorkload(computev1alpha.SandboxContainer{Name: "c2", Image: testImageNoRegistry}),
+			oldWorkload: sandboxWorkload(computev1alpha.SandboxContainer{Name: "c1", Image: testImageNoRegistry}),
+			expectedErrors: field.ErrorList{
+				field.Invalid(containersPath.Index(0).Child("image"), "", ""),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cmpErrs(t, tc.expectedErrors, validateWorkloadImages(tc.workload, tc.oldWorkload))
+		})
+	}
+}
+
+// TestValidateWorkloadUpdate_UnchangedImage exercises validateWorkloadImages
+// through the real entry point, ValidateWorkloadUpdate, mirroring
+// workload_controller.go's finalizer-only Update: the same spec, unqualified
+// image included, written back verbatim.
+func TestValidateWorkloadUpdate_UnchangedImage(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+					sar.GenerateName = sarGenerateName
+					sar.Status.Allowed = true
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		WithObjects(&networkingv1alpha.Network{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testDefaultNamespace, Name: testDefaultNamespace},
+		}).
+		Build()
+
+	oldWorkload := MakeSandboxWorkload("test", func(w *computev1alpha.Workload) {
+		w.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageNoRegistry
+	})
+	opts := WorkloadValidationOptions{
+		Client:         fakeClient,
+		Context:        context.Background(),
+		ValidLocations: []string{testCityCodeDFW},
+	}
+
+	t.Run("finalizer-style update leaving the image untouched is not rejected", func(t *testing.T) {
+		newWorkload := oldWorkload.DeepCopy()
+		o := opts
+		o.Workload = newWorkload
+		errs := ValidateWorkloadUpdate(newWorkload, oldWorkload, o)
+		if len(errs) != 0 {
+			t.Errorf("expected no errors, got: %v", errs)
+		}
+	})
+
+	t.Run("rewriting the image to a still-unqualified value is rejected", func(t *testing.T) {
+		newWorkload := oldWorkload.DeepCopy()
+		newWorkload.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "other:latest"
+		o := opts
+		o.Workload = newWorkload
+		errs := ValidateWorkloadUpdate(newWorkload, oldWorkload, o)
+		wantErrs := field.ErrorList{
+			field.Invalid(field.NewPath("spec.template.spec.runtime.sandbox.containers[0].image"), "", ""),
+		}
+		cmpErrs(t, wantErrs, errs)
+	})
 }

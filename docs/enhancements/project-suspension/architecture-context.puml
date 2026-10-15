@@ -1,0 +1,21 @@
+@startuml architecture-context
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+!include https://raw.githubusercontent.com/datum-cloud/enhancements/main/enhancements/datum-theme.puml
+
+Person(operator, "Operator", "Steps in when there's abuse, non-payment, or a compliance issue")
+Person(consumer, "Customer", "Builds and manages their own workloads")
+
+System(projectcp, "Project", "Knows whether the project is active or suspended")
+
+System(platformapi, "Platform API", "Where customers manage their workloads; holds off on changes while the project is suspended")
+
+System(compute, "Compute", "Runs the customer's workloads across many physical locations")
+
+Rel_D(operator, projectcp, "Suspends or reinstates the project")
+Rel_D(consumer, platformapi, "Manages workloads\n(on hold while suspended)")
+Rel_R(projectcp, platformapi, "Suspension status\n(blocks or allows management)")
+Rel_U(compute, projectcp, "Pulls suspension status, and reports back once paused or resumed")
+
+SHOW_LEGEND()
+@enduml

@@ -1,0 +1,30 @@
+# Give the cell operator a Karmada hub credential, mirroring how real cell
+# deployments are wired: infra's apps/compute-system/edge/manager-patch.yaml sets
+# FEDERATION_KUBECONFIG and mounts a client-cert kubeconfig pointed at the hub.
+# With it, the cell InstanceReconciler writes each Instance back to the Karmada
+# hub, where the management InstanceProjector consumes it — the sole path by
+# which cell-created Instances become visible upstream (Karmada never propagates
+# Instances, only WorkloadDeployments/ConfigMaps/Secrets, so status aggregation
+# cannot surface them). The mount path matches infra's; the kubeconfig content
+# (a Karmada-native SA token reaching the kind hub over the control-plane node's
+# docker-bridge IP + NodePort) is minted by task e2e:federation:setup.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          env:
+            - name: FEDERATION_KUBECONFIG
+              value: /etc/kubernetes/upstream/auth/kubeconfig
+          volumeMounts:
+            - name: upstream-kubeconfig
+              mountPath: /etc/kubernetes/upstream/auth
+              readOnly: true
+      volumes:
+        - name: upstream-kubeconfig
+          configMap:
+            name: compute-cell-federation-kubeconfig

@@ -5,8 +5,8 @@ import (
 	"hash"
 	"hash/fnv"
 
-	"k8s.io/apimachinery/pkg/util/dump"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/utils/dump"
 )
 
 // ComputeHash returns a hash value calculated from pod template and

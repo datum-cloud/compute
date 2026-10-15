@@ -53,14 +53,16 @@ Instance is the Schema for the instances API
         <td><b><a href="#instancespec">spec</a></b></td>
         <td>object</td>
         <td>
-          InstanceSpec defines the desired state of Instance<br/>
+          Spec defines the desired state of an Instance.<br/>
         </td>
         <td>false</td>
       </tr><tr>
         <td><b><a href="#instancestatus">status</a></b></td>
         <td>object</td>
         <td>
-          InstanceStatus defines the observed state of Instance<br/>
+          Status defines the current state of an Instance.<br/>
+          <br/>
+            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Available] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Ready] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for quota evaluation reason:PendingEvaluation status:Unknown type:QuotaGranted]]]<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -72,7 +74,7 @@ Instance is the Schema for the instances API
 
 
 
-InstanceSpec defines the desired state of Instance
+Spec defines the desired state of an Instance.
 
 <table>
     <thead>
@@ -87,7 +89,13 @@ InstanceSpec defines the desired state of Instance
         <td><b><a href="#instancespecnetworkinterfacesindex">networkInterfaces</a></b></td>
         <td>[]object</td>
         <td>
-          Network interface configuration.<br/>
+          Network interface configuration.
+
+Keyed by interface name so an interface keeps its identity, and therefore
+its addresses, across updates to the rest of the list.
+
+Limited to a single interface until the data plane can attach more than
+one to an instance.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -98,10 +106,25 @@ InstanceSpec defines the desired state of Instance
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#instancespeccontroller">controller</a></b></td>
+        <td>object</td>
+        <td>
+          Controller contains settings driven by the controller managing the instance.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespeclocation">location</a></b></td>
+        <td>object</td>
+        <td>
+          The location which the instance has been scheduled to<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancespecvolumesindex">volumes</a></b></td>
         <td>[]object</td>
         <td>
-          <br/>
+          Volumes that must be available to attach to an instance's containers or
+Virtual Machine.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -113,7 +136,13 @@ InstanceSpec defines the desired state of Instance
 
 
 
+InstanceNetworkInterface describes one interface an instance needs. The
+fields beyond `network` and `networkPolicy` are copied verbatim onto the
+NetworkInterfaceClaim created for each instance slot, so they carry the same
+meaning, defaults, and immutability the claim API defines.
 
+The location an interface is claimed in is implicit: the claim is created in
+the control plane serving the instance, which is already location scoped.
 
 <table>
     <thead>
@@ -132,6 +161,53 @@ InstanceSpec defines the desired state of Instance
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#instancespecnetworkinterfacesindexaddressesindex">addresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          Requests for addresses beyond the ones the interface holds inside its
+network, such as a public IPv4 address in front of a private one. Each is
+reported in the interface's `externalAddresses` status.
+
+Omit this field for ordinary private addressing, which is the common case.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(a, self.exists_one(b, b.class == a.class)): Each address class may be requested at most once</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>ipFamilies</b></td>
+        <td>[]enum</td>
+        <td>
+          The address families the interface must carry, in priority order. List
+[IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+interface's primary address, which is the one reported as the instance's
+network IP.
+
+Every family listed must be satisfiable or the interface is never
+published, so asking for a family the network does not carry fails rather
+than yielding a partially addressed interface.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be requested at most once</li><li>self == oldSelf: ipFamilies is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
+            <i>Default</i>: [IPv6]<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the interface, such as eth0 or eth1. It is both the device
+name the guest operating system sees and the suffix of the interface
+claim's name, which is what keeps an interface's addresses with the
+instance slot across replacement.
+
+Immutable, because the guest is configured against it and the claim is
+named after it.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: name is immutable and cannot be changed after creation</li>
+            <i>Default</i>: eth0<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancespecnetworkinterfacesindexnetworkpolicy">networkPolicy</a></b></td>
         <td>object</td>
         <td>
@@ -141,6 +217,29 @@ If provided, this will result in a platform managed network policy being
 created that targets the specfiic instance interface. This network policy
 will be of the lowest priority, and can effectively be prohibited from
 influencing network connectivity.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reclaimPolicy</b></td>
+        <td>enum</td>
+        <td>
+          What becomes of the interface, and its addresses, when the instance slot
+it serves goes away.
+
+Delete returns the addresses to IPAM, so an instance recreated later comes
+back on different addresses. Retain keeps them reserved, and billable, so a
+later instance filling the same slot returns to the same addresses. Choose
+Retain when an address is published in DNS, allowed through a firewall, or
+otherwise depended on from outside.
+
+Both policies keep the addresses for as long as the slot exists, including
+across instance replacement. They differ only on scale-down and deletion.
+
+Immutable. An address keeps the policy it was allocated under.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: reclaimPolicy is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: Delete, Retain<br/>
+            <i>Default</i>: Delete<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -179,6 +278,38 @@ The network to attach the network interface to.
 Defaults to the namespace for the type the reference is embedded in.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.networkInterfaces[index].addresses[index]
+<sup><sup>[↩ Parent](#instancespecnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+the interface holds inside its network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class to allocate from, such as public-ipv4.
+
+A class names a kind of address, and the platform decides which pool and
+prefix length serve it. A class never names a pool, a prefix length, or a
+CIDR, so a class cannot be used to ask for a particular address.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -406,10 +537,46 @@ A virtual machine runtime will be provided all requested resources.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The execution tier the instance runs in. The value names a RuntimeClass
+in the platform catalog, which Datum publishes and customers do not
+define. Publishing a new tier adds a class instead of changing this API.
+
+The class is independent of the runtime shape above. Either a sandbox or
+a virtual machine can run in any class the platform offers.
+
+An empty value selects the class the catalog marks as default. Admission
+records that choice on the workload and never resolves it again, so an
+existing workload keeps the tier, cost, and startup characteristics it
+was created with.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancespecruntimesandbox">sandbox</a></b></td>
         <td>object</td>
         <td>
           A sandbox is a managed isolated environment capable of running containers.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>terminationGracePeriodSeconds</b></td>
+        <td>integer</td>
+        <td>
+          How long, in seconds, the instance's processes have to exit after being
+asked to stop. When an instance is deleted, replaced, or suspended, each
+container's main process receives SIGTERM, and any process still running
+when the period ends is killed. Zero kills the processes immediately.
+
+The instance keeps its resources and addresses until it has stopped, so
+a longer period delays their release. A value above zero requires a
+runtime class that offers graceful termination. When unset, the runtime
+class's own default applies.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 300<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -453,13 +620,17 @@ A virtual machine runtime will be provided all requested resources.
         <td>
           Full or partial URL of the instance type resource to use for this instance.
 
-For example: `datumcloud/d1-standard-2`
+For example: `datumcloud-d1-standard-2`
 
 May be combined with `resources` to allow for custom instance types for
 instance families that support customization. Instance types which support
-customization will appear in the form `<project>/<instanceFamily>-custom`.<br/>
+customization will appear in the form `<project>/<instanceFamily>-custom`.
+
+When omitted, the instance runs on the platform's default instance type,
+`datumcloud-d1-standard-2`, for compatibility with workloads written
+before instance types could be chosen.<br/>
         </td>
-        <td>true</td>
+        <td>false</td>
       </tr><tr>
         <td><b>requests</b></td>
         <td>map[string]int or string</td>
@@ -502,6 +673,19 @@ A sandbox is a managed isolated environment capable of running containers.
 used by the instance.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxsysctlsindex">sysctls</a></b></td>
+        <td>[]object</td>
+        <td>
+          Linux kernel parameters to set for every container in the sandbox.
+
+Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+value must be published by the selected runtime class; prefixes and
+wildcards are never accepted. This keeps host-level kernel configuration
+outside the workload API while allowing an isolated runtime to expose a
+deliberately small set of guest-kernel options.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -526,7 +710,8 @@ used by the instance.<br/>
         <td><b>image</b></td>
         <td>string</td>
         <td>
-          The fully qualified container image name.<br/>
+          The container image to run. Must include a registry, e.g.
+"ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -537,12 +722,48 @@ used by the instance.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>args</b></td>
+        <td>[]string</td>
+        <td>
+          Arguments to the entrypoint, overriding the image's CMD. Combined with
+Command: when Command is also set the resulting invocation is
+append(Command, Args...).  When only Args is set it overrides CMD while
+preserving the image's ENTRYPOINT.
+
+If neither Command nor Args is set, the image's own ENTRYPOINT and CMD
+are used unchanged.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>command</b></td>
+        <td>[]string</td>
+        <td>
+          Entrypoint array to run in the container image, overriding the image's
+ENTRYPOINT. Each element is a separate token, not a shell command — to run a
+shell command use: ["sh", "-c", "my command"].
+
+If not provided, the container image's own ENTRYPOINT is used.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancespecruntimesandboxcontainersindexenvindex">env</a></b></td>
         <td>[]object</td>
         <td>
           List of environment variables to set in the container.
 
 so replicate the structure here too.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexenvfromindex">envFrom</a></b></td>
+        <td>[]object</td>
+        <td>
+          List of sources to populate environment variables in the container.
+The keys defined within a source must be a C_IDENTIFIER. All invalid
+keys will be reported as an event when the container is starting. When a
+key exists in multiple sources, the value associated with the last source
+will take precedence. Values defined by an Env with a duplicate key will
+take precedence.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -557,6 +778,13 @@ so replicate the structure here too.<br/>
         <td>object</td>
         <td>
           The resource requirements for the container, such as CPU, memory, and GPUs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexsecuritycontext">securityContext</a></b></td>
+        <td>object</td>
+        <td>
+          Security options for the container.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -590,7 +818,8 @@ EnvVar represents an environment variable present in a Container.
         <td><b>name</b></td>
         <td>string</td>
         <td>
-          Name of the environment variable. Must be a C_IDENTIFIER.<br/>
+          Name of the environment variable.
+May consist of any printable ASCII characters except '='.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -648,6 +877,14 @@ Source for the environment variable's value. Cannot be used if value is not empt
         <td>
           Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
 spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexenvindexvaluefromfilekeyref">fileKeyRef</a></b></td>
+        <td>object</td>
+        <td>
+          FileKeyRef selects a key of the env file.
+Requires the EnvFiles feature gate to be enabled.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -751,6 +988,66 @@ spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podI
 </table>
 
 
+### Instance.spec.runtime.sandbox.containers[index].env[index].valueFrom.fileKeyRef
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindexenvindexvaluefrom)</sup></sup>
+
+
+
+FileKeyRef selects a key of the env file.
+Requires the EnvFiles feature gate to be enabled.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>key</b></td>
+        <td>string</td>
+        <td>
+          The key within the env file. An invalid key will prevent the pod from starting.
+The keys defined within a source may consist of any printable ASCII characters except '='.
+During Alpha stage of the EnvFiles feature gate, the key size is limited to 128 characters.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>path</b></td>
+        <td>string</td>
+        <td>
+          The path within the volume from which to select the file.
+Must be relative and may not contain the '..' path or start with '..'.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>volumeName</b></td>
+        <td>string</td>
+        <td>
+          The name of the volume mount containing the env file.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>optional</b></td>
+        <td>boolean</td>
+        <td>
+          Specify whether the file or its key must be defined. If the file or key
+does not exist, then the env var is not published.
+If optional is set to true and the specified key does not exist,
+the environment variable will not be set in the Pod's containers.
+
+If optional is set to false and the specified key does not exist,
+an error will be returned during Pod creation.<br/>
+          <br/>
+            <i>Default</i>: false<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
 ### Instance.spec.runtime.sandbox.containers[index].env[index].valueFrom.resourceFieldRef
 <sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindexenvindexvaluefrom)</sup></sup>
 
@@ -840,6 +1137,117 @@ More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/nam
 </table>
 
 
+### Instance.spec.runtime.sandbox.containers[index].envFrom[index]
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindex)</sup></sup>
+
+
+
+EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
+used as environment variables in a container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexenvfromindexconfigmapref">configMapRef</a></b></td>
+        <td>object</td>
+        <td>
+          The ConfigMap to select from.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>prefix</b></td>
+        <td>string</td>
+        <td>
+          An optional identifier to prepend to each key in the referenced
+ConfigMap or Secret. Must be a valid C_IDENTIFIER.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexenvfromindexsecretref">secretRef</a></b></td>
+        <td>object</td>
+        <td>
+          The Secret to select from.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.runtime.sandbox.containers[index].envFrom[index].configMapRef
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindexenvfromindex)</sup></sup>
+
+
+
+The ConfigMap to select from.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the ConfigMap in the same namespace as the Workload.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>optional</b></td>
+        <td>boolean</td>
+        <td>
+          Specify whether the ConfigMap must be defined.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.runtime.sandbox.containers[index].envFrom[index].secretRef
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindexenvfromindex)</sup></sup>
+
+
+
+The Secret to select from.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the Secret in the same namespace as the Workload.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>optional</b></td>
+        <td>boolean</td>
+        <td>
+          Specify whether the Secret must be defined.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
 ### Instance.spec.runtime.sandbox.containers[index].ports[index]
 <sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindex)</sup></sup>
 
@@ -920,6 +1328,127 @@ The resource requirements for the container, such as CPU, memory, and GPUs.
 </table>
 
 
+### Instance.spec.runtime.sandbox.containers[index].securityContext
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindex)</sup></sup>
+
+
+
+Security options for the container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowPrivilegeEscalation</b></td>
+        <td>boolean</td>
+        <td>
+          Whether a process in the container can gain more privileges than its
+parent. Setuid binaries and file capabilities rely on it, so an image that
+escalates at startup, such as one running ping or a privilege-dropping
+entrypoint, needs it true.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the value it runs with.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexsecuritycontextcapabilities">capabilities</a></b></td>
+        <td>object</td>
+        <td>
+          The Linux capabilities to grant to or remove from the container.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancespecruntimesandboxcontainersindexsecuritycontextseccompprofile">seccompProfile</a></b></td>
+        <td>object</td>
+        <td>
+          The seccomp profile confining the container's system calls.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the profile it runs with.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.runtime.sandbox.containers[index].securityContext.capabilities
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindexsecuritycontext)</sup></sup>
+
+
+
+The Linux capabilities to grant to or remove from the container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>add</b></td>
+        <td>[]string</td>
+        <td>
+          The capabilities to grant to the container. Each must be one that the
+selected runtime class grants. ALL is not allowed, so a container states
+exactly what it needs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>drop</b></td>
+        <td>[]string</td>
+        <td>
+          The capabilities to remove from the container. The platform already removes
+every capability, so drop is accepted for compatibility with Kubernetes
+manifests, for example drop: [ALL]. Naming a capability here also removes
+it when the runtime class would otherwise grant it by default.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.runtime.sandbox.containers[index].securityContext.seccompProfile
+<sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindexsecuritycontext)</sup></sup>
+
+
+
+The seccomp profile confining the container's system calls.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the profile it runs with.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          The kind of seccomp profile to apply.<br/>
+          <br/>
+            <i>Enum</i>: RuntimeDefault, Unconfined<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
 ### Instance.spec.runtime.sandbox.containers[index].volumeAttachments[index]
 <sup><sup>[↩ Parent](#instancespecruntimesandboxcontainersindex)</sup></sup>
 
@@ -982,6 +1511,42 @@ reference.
         <td>string</td>
         <td>
           The name of the secret<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.runtime.sandbox.sysctls[index]
+<sup><sup>[↩ Parent](#instancespecruntimesandbox)</sup></sup>
+
+
+
+SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+selected runtime class decides which exact name/value pairs it supports.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The exact dotted sysctl name, for example net.ipv4.ip_forward.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>value</b></td>
+        <td>string</td>
+        <td>
+          The value to write before the sandbox's containers start. The selected
+runtime class must publish this exact value for this name.<br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -1104,6 +1669,95 @@ to be annotated on the boot image, such as cloud-init.<br/>
 If not specified, this field defaults to TCP.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.controller
+<sup><sup>[↩ Parent](#instancespec)</sup></sup>
+
+
+
+Controller contains settings driven by the controller managing the instance.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>templateHash</b></td>
+        <td>string</td>
+        <td>
+          TemplateHash is the hash of the instance template applied for this instance.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#instancespeccontrollerschedulinggatesindex">schedulingGates</a></b></td>
+        <td>[]object</td>
+        <td>
+          SchedulingGates is a list of gates that must be satisfied before the
+instance can be scheduled.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.controller.schedulingGates[index]
+<sup><sup>[↩ Parent](#instancespeccontroller)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the gate.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.spec.location
+<sup><sup>[↩ Parent](#instancespec)</sup></sup>
+
+
+
+The location which the instance has been scheduled to
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of a datum location<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -1690,7 +2344,7 @@ mode, like fsGroup, and the result can be other mode bits set.<br/>
 
 
 
-InstanceStatus defines the observed state of Instance
+Status defines the current state of an Instance.
 
 <table>
     <thead>
@@ -1710,10 +2364,26 @@ Known condition types are: "Available", "Progressing"<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#instancestatuscontroller">controller</a></b></td>
+        <td>object</td>
+        <td>
+          Controller contains status information about the controller managing the instance.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancestatusnetworkinterfacesindex">networkInterfaces</a></b></td>
         <td>[]object</td>
         <td>
           Network interface information<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>suspended</b></td>
+        <td>boolean</td>
+        <td>
+          Suspended, when true, indicates that the instance's process should be stopped
+without releasing its placement, disk attachments, or quota allocation.
+The provider controller stops the running container/VM.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -1797,6 +2467,33 @@ with respect to the current state of the instance.<br/>
 </table>
 
 
+### Instance.status.controller
+<sup><sup>[↩ Parent](#instancestatus)</sup></sup>
+
+
+
+Controller contains status information about the controller managing the instance.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>observedTemplateHash</b></td>
+        <td>string</td>
+        <td>
+          ObservedTemplateHash is the hash of the instance template applied for this instance.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
 ### Instance.status.networkInterfaces[index]
 <sup><sup>[↩ Parent](#instancestatus)</sup></sup>
 
@@ -1814,10 +2511,123 @@ with respect to the current state of the instance.<br/>
         </tr>
     </thead>
     <tbody><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexaddressesindex">addresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          The addresses the interface holds inside its network, each with its prefix
+length and, once the location has a subnet, its gateway.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#instancestatusnetworkinterfacesindexassignments">assignments</a></b></td>
         <td>object</td>
         <td>
+          Single address projections of the fields above, kept for clients that read
+one address per interface.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexconditionsindex">conditions</a></b></td>
+        <td>[]object</td>
+        <td>
+          The observations of this interface's current state. Known condition types
+are "Allocated" and "Programmed".<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexexternaladdressesindex">externalAddresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          The addresses the interface is reachable at from outside its network, one
+per class requested in the spec. Each is a bare address with no prefix
+length.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the interface this entry reports on, matching the name in the
+instance's spec.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#instancestatusnetworkinterfacesindexnetworkinterfaceref">networkInterfaceRef</a></b></td>
+        <td>object</td>
+        <td>
+          The NetworkInterface bound to this entry, in the instance's namespace. An
+infrastructure provider follows it to configure the NIC, so it never has to
+derive the name of the claim that produced it.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].addresses[index]
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceAddress is an address the interface holds inside its
+network. These are configured on the NIC itself, and always carry a prefix
+length.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>address</b></td>
+        <td>string</td>
+        <td>
+          The address the interface holds, in CIDR notation, such as 10.128.0.2/32
+or 2001:db8:a001::1/128.
+
+For IPv6 this may be a block delegated to the interface rather than a
+single address, such as 2001:db8:a001::/96. The interface owns the whole
+block and assigns within it.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          The address family of this entry.<br/>
           <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class this address was allocated from, such as private-ipv6. It
+is empty for addresses requested by family rather than by class.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>gateway</b></td>
+        <td>string</td>
+        <td>
+          The next hop the interface routes through for this family, such as
+10.128.0.1. It is empty until the subnet backing the network in this
+location exists.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>primary</b></td>
+        <td>boolean</td>
+        <td>
+          Marks the address projected into `assignments.networkIP`.
+
+Exactly one address is primary for the interface as a whole, not one per
+family. It is the address of the first family listed in `ipFamilies`.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -1829,7 +2639,8 @@ with respect to the current state of the instance.<br/>
 
 
 
-
+Single address projections of the fields above, kept for clients that read
+one address per interface.
 
 <table>
     <thead>
@@ -1845,15 +2656,173 @@ with respect to the current state of the instance.<br/>
         <td>string</td>
         <td>
           The external IP address used for the interface. A one to one NAT will be
-performed for this address with the interface's network IP.<br/>
+performed for this address with the interface's network IP. It is a
+projection of the first entry in the interface's `externalAddresses`.<br/>
         </td>
         <td>false</td>
       </tr><tr>
         <td><b>networkIP</b></td>
         <td>string</td>
         <td>
-          The IP address assigned as the primary IP from the attached network.<br/>
+          The IP address assigned as the primary IP from the attached network. It is
+a projection of the primary entry in the interface's `addresses`.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].conditions[index]
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+Condition contains details for one aspect of the current state of this API Resource.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>lastTransitionTime</b></td>
+        <td>string</td>
+        <td>
+          lastTransitionTime is the last time the condition transitioned from one status to another.
+This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.<br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>message</b></td>
+        <td>string</td>
+        <td>
+          message is a human readable message indicating details about the transition.
+This may be an empty string.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>reason</b></td>
+        <td>string</td>
+        <td>
+          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+Producers of specific condition types may define expected values and meanings for this field,
+and whether the values are considered a guaranteed API.
+The value should be a CamelCase string.
+This field may not be empty.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>status</b></td>
+        <td>enum</td>
+        <td>
+          status of the condition, one of True, False, Unknown.<br/>
+          <br/>
+            <i>Enum</i>: True, False, Unknown<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>type</b></td>
+        <td>string</td>
+        <td>
+          type of condition in CamelCase or in foo.example.com/CamelCase.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>observedGeneration</b></td>
+        <td>integer</td>
+        <td>
+          observedGeneration represents the .metadata.generation that the condition was set based upon.
+For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+with respect to the current state of the instance.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].externalAddresses[index]
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceExternalAddress is an address reachable from outside
+the network, mapped onto an address the interface holds inside it. A public
+IPv4 address in front of a private address is the usual case.
+
+Unlike an interface address, it is a bare address with no prefix length,
+because nothing configures it on the NIC.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>address</b></td>
+        <td>string</td>
+        <td>
+          The externally reachable address, such as 203.0.113.10. It carries no
+prefix length.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class this address was allocated from, such as public-ipv4. It
+matches a class requested in the interface's `addresses`.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          The address family of this entry.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Instance.status.networkInterfaces[index].networkInterfaceRef
+<sup><sup>[↩ Parent](#instancestatusnetworkinterfacesindex)</sup></sup>
+
+
+
+The NetworkInterface bound to this entry, in the instance's namespace. An
+infrastructure provider follows it to configure the NIC, so it never has to
+derive the name of the claim that produced it.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          name is the network interface name.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>

@@ -1,0 +1,43 @@
+# ActivityPolicy for Instance resources (compute.datumapis.com).
+# Product noun is "instance". Display text is the resource name.
+#
+# Event rules only: users never write instances. Compute's lifecycle events
+# name the project's Workload as their related object, which every rule
+# requires so other events about instances stay out of the timeline.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: compute.datumapis.com-instance
+spec:
+  resource:
+    apiGroup: compute.datumapis.com
+    kind: Instance
+
+  eventRules:
+    - name: started
+      match: "event.reason == 'Available' && has(event.related) && event.related.kind == 'Workload'"
+      summary: "Instance {{ event.regarding.name }} of workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }} started running"
+
+    - name: stopped
+      match: "event.reason == 'Stopping' && has(event.related) && event.related.kind == 'Workload'"
+      summary: "Instance {{ event.regarding.name }} of workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }} stopped"
+
+    - name: image-unavailable
+      match: "event.reason == 'ImageUnavailable' && has(event.related) && event.related.kind == 'Workload'"
+      summary: "Instance {{ event.regarding.name }} of workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }} could not get its image{{ has(event.note) ? ': ' + event.note : '' }}"
+
+    - name: configuration-error
+      match: "event.reason == 'ConfigurationError' && has(event.related) && event.related.kind == 'Workload'"
+      summary: "Instance {{ event.regarding.name }} of workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }} could not start because of its configuration{{ has(event.note) ? ': ' + event.note : '' }}"
+
+    - name: crashing
+      match: "event.reason == 'InstanceCrashing' && has(event.related) && event.related.kind == 'Workload'"
+      summary: "Instance {{ event.regarding.name }} of workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }} keeps crashing{{ has(event.note) ? ': ' + event.note : '' }}"
+
+    - name: failed
+      match: "event.reason == 'Failed' && has(event.related) && event.related.kind == 'Workload'"
+      summary: "Instance {{ event.regarding.name }} of workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }} failed{{ has(event.note) ? ': ' + event.note : '' }}"
+
+    - name: terminating
+      match: "event.reason == 'Terminating' && has(event.related) && event.related.kind == 'Workload'"
+      summary: "Instance {{ event.regarding.name }} of workload {{ link(event.related.name, {'apiGroup': 'compute.datumapis.com', 'kind': 'Workload', 'name': event.related.name, 'namespace': event.related.namespace, 'uid': event.related.uid}) }}{{ source.region != '' ? ' in ' + source.region : '' }} is shutting down{{ has(event.note) ? ': ' + event.note : '' }}"

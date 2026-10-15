@@ -1,0 +1,27 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: compute.datumapis.com-instance
+spec:
+  serviceRef:
+    name: "compute.datumapis.com"
+  kind: Instance
+  plural: instances
+  singular: instance
+  permissions:
+    - list
+    - get
+    - create
+    - patch
+    - update
+    - delete
+    - watch
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

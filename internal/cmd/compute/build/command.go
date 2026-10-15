@@ -1,0 +1,223 @@
+package build
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+)
+
+type Options struct {
+	Analyze            bool
+	BuildArgs          []string
+	BuildTarget        string
+	BuildkitHost       string
+	ContextDir         string
+	Dockerfile         string
+	DockerfileExplicit bool
+	Fix                bool
+	Kraftfile          string
+	LastBuildLog       string
+	Output             string
+	Push               bool
+	QuietBuild         bool
+	Ref                string
+	TmpDir             string
+	Verbose            bool
+
+	sourceDateEpoch *time.Time
+}
+
+func Command() *cobra.Command {
+	opts := &Options{}
+
+	cmd := &cobra.Command{
+		Use:     "build [OPTIONS] [CONTEXT]",
+		Short:   "Build and publish Compute OCI images",
+		Aliases: []string{"b"},
+		Args:    cobra.MaximumNArgs(1),
+		Long: `Build a Dockerfile into an image that can run on Datum Compute.
+
+Start with the same Dockerfile and build context you use for a normal container.
+By default, the command performs a local debug build so you can check whether the
+project packages successfully before deciding where to write or publish it.
+
+Use --output to write an OCI archive, write an OCI layout directory, or publish
+to a registry reference. Registry-looking outputs ask for confirmation before
+pushing; pass --push to skip that confirmation in CI.
+
+For most projects, the default workflow is just a Dockerfile and a build context:
+
+	  datumctl compute build .
+
+By default, build uses Dockerfile.datum from the build context when present,
+falling back to Dockerfile. Use -f when your Dockerfile lives somewhere else,
+and --build-arg to pass values used by Dockerfile ARG instructions.
+
+For multi-stage Dockerfiles, build packages the final stage by default. Use
+--target when you want to package a specific stage, such as production.
+
+The optional --analyze flag checks the built entrypoint before packaging. It can
+catch common issues early, such as a binary built for the wrong architecture or
+shared libraries that were not copied into the final image.
+
+The optional --fix flag applies safe exact-line fixes to the selected Dockerfile,
+then rebuilds from that file.
+
+Building the same files twice gives the same image digest. If your Dockerfile's
+steps write files stamped with the current time, set SOURCE_DATE_EPOCH (seconds
+since 1970, for example from git log -1 --format=%ct) so those builds match too.
+
+Builds run on BuildKit. By default, build uses the BuildKit built into your
+container engine (Docker Desktop, OrbStack, Colima, Docker Engine, ...), honoring
+DOCKER_HOST and DOCKER_CONTEXT the same way the docker CLI does. Use
+--buildkit-host (or BUILDKIT_HOST) to build with a different BuildKit, such as a
+buildx builder (docker-container://NAME) or a remote one (tcp://HOST:PORT).
+
+Advanced users can pass a Kraftfile with --kraftfile to delegate the entire
+build to the unikraft CLI instead, which must be installed separately. A
+Kraftfile is only used when passed this way. Most projects do not need one.`,
+		Example: `
+# Check that the current Dockerfile builds for Compute
+datumctl compute build .
+
+# Publish to a registry
+datumctl compute build --push --output ghcr.io/acme/api:latest .
+
+# Write an OCI archive
+datumctl compute build --output ./compute-image.tar .
+
+# Write an OCI layout directory
+datumctl compute build --output ./compute-image .
+
+# Use a Dockerfile in another location
+datumctl compute build -f ./deploy/Dockerfile .
+
+# Pass Docker build arguments
+datumctl compute build --build-arg VERSION=1.2.3 .
+
+# Package a specific Dockerfile stage
+datumctl compute build --target production .
+
+# Check the built app before packaging it
+datumctl compute build --analyze .
+
+# Build with a specific BuildKit
+datumctl compute build --buildkit-host docker-container://buildx_buildkit_default .
+
+# Advanced: delegate to unikraft build using an existing Kraftfile
+datumctl compute build --kraftfile ./Kraftfile .
+`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				opts.ContextDir = args[0]
+			}
+			opts.DockerfileExplicit = cmd.Flags().Changed("file")
+			_, err := Run(cmd.Context(), opts)
+			return err
+		},
+	}
+
+	cmd.Flags().BoolVar(&opts.Analyze, "analyze", false, "Analyze the Dockerfile output for Compute compatibility before packaging")
+	cmd.Flags().StringArrayVar(&opts.BuildArgs, "build-arg", nil, "Set build-time variables (KEY=VALUE or KEY to inherit from env)")
+	cmd.Flags().StringVar(&opts.BuildTarget, "target", "", "Dockerfile stage to build")
+	cmd.Flags().StringVar(&opts.BuildkitHost, "buildkit-host", "", "BuildKit address to build with (default: $BUILDKIT_HOST, then your container engine's BuildKit)")
+	cmd.Flags().StringVarP(&opts.Dockerfile, "file", "f", "Dockerfile", "Path to Dockerfile")
+	cmd.Flags().BoolVar(&opts.Fix, "fix", false, "Apply safe exact-line fixes to the selected Dockerfile and rebuild (implies --analyze)")
+	cmd.Flags().StringVar(&opts.Kraftfile, "kraftfile", "", "Advanced: delegate the build to the unikraft CLI using this Kraftfile")
+	cmd.Flags().StringVarP(&opts.Output, "output", "o", "", "Output destination: registry ref, .tar OCI archive, or local OCI layout directory")
+	cmd.Flags().BoolVar(&opts.Push, "push", false, "Push registry output without confirmation")
+	cmd.Flags().BoolVarP(&opts.Verbose, "verbose", "v", false, "Show detailed analysis progress instead of a spinner")
+
+	cmd.AddCommand(inspectCommand())
+
+	return cmd
+}
+
+func printBuildConfig(opts *Options) {
+	row := func(label, value string) {
+		fmt.Fprintf(os.Stderr, "  %-11s %s\n", label+":", value)
+	}
+
+	if opts.Output != "" {
+		fmt.Fprintf(os.Stderr, "Build %s\n", opts.Ref)
+	} else {
+		fmt.Fprintln(os.Stderr, "Build preview")
+	}
+
+	row("Context", displayPath(opts.ContextDir))
+	dockerfileLabel := displayPath(opts.Dockerfile)
+	if !opts.DockerfileExplicit && filepath.Base(opts.Dockerfile) == datumDockerfileName {
+		dockerfileLabel += " (override)"
+	}
+	row("Dockerfile", dockerfileLabel)
+	if opts.BuildTarget != "" {
+		row("Target", opts.BuildTarget)
+	}
+	if opts.Output == "" {
+		row("Output", "preview only")
+	} else {
+		row("Output", opts.Output)
+	}
+	fmt.Fprintln(os.Stderr)
+}
+
+const (
+	sourceDateEpochEnv  = "SOURCE_DATE_EPOCH"
+	datumDockerfileName = "Dockerfile.datum"
+)
+
+func parseSourceDateEpoch() (*time.Time, error) {
+	value := os.Getenv(sourceDateEpochEnv)
+	if value == "" {
+		return nil, nil
+	}
+	secs, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || secs < 0 {
+		return nil, &userError{message: paragraphs(
+			fmt.Sprintf("SOURCE_DATE_EPOCH is set to %q, which isn't a valid timestamp.", value),
+			"Set it to a time in seconds since 1970, like 1700000000, or unset it.",
+		)}
+	}
+	t := time.Unix(secs, 0).UTC()
+	return &t, nil
+}
+
+func displayPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return abs
+	}
+	rel, err := filepath.Rel(cwd, abs)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return abs
+	}
+	return rel
+}
+
+func resolveDockerfilePath(contextDir, dockerfile string, explicit bool) (string, error) {
+	if explicit {
+		if filepath.IsAbs(dockerfile) {
+			return dockerfile, nil
+		}
+		return filepath.Join(contextDir, dockerfile), nil
+	}
+	datumDockerfile := filepath.Join(contextDir, datumDockerfileName)
+	if _, err := os.Stat(datumDockerfile); err == nil {
+		return datumDockerfile, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("checking Dockerfile.datum: %w", err)
+	}
+	if filepath.IsAbs(dockerfile) {
+		return dockerfile, nil
+	}
+	return filepath.Join(contextDir, dockerfile), nil
+}

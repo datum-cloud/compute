@@ -1,0 +1,125 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: federation-ownership
+spec:
+  description: |
+    The structural invariants that make an orphaned federation-plane object
+    impossible, asserted on the ordinary federation path.
+
+    Nothing here observes a cleanup process. The claim under test is that the
+    federation plane is self-reclaiming by construction, and that claim rests on
+    two facts that must be true the moment a workload federates normally:
+
+    1. Every hub write-back Instance carries a controller owner reference to the
+       hub WorkloadDeployment of the same name in the same hub namespace. Because
+       both objects live in the same cluster, the hub apiserver's own garbage
+       collector reclaims the copy when the deployment goes away — no controller
+       on any plane has to be alive for that to happen. This replaces a
+       cross-plane cascade, every link of which was a way to strand an object
+       (datum-cloud/compute#218).
+
+    2. The project WorkloadDeployment records the hub namespace it federated
+       into, as an annotation, at federation time. Finalization has to remove the
+       hub copy before the project object may go away, and it can only do that if
+       it knows where the copy is. Reading the annotation off the object being
+       finalized makes that self-contained; resolving it live made it depend on a
+       separate project-namespace object whose lifetime the federator does not
+       control, and whose disappearance would fail finalization forever.
+
+    Read together: (1) says the hub cleans itself up from the top of the tree,
+    and (2) says the top of the tree can always be reached.
+
+  template: true
+
+  steps:
+  - name: create-workload-deployment
+    description: Federate a WorkloadDeployment through the ordinary path.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: assert-federation-namespace-recorded
+    description: |
+      The recorded hub namespace must match the namespace the federator actually
+      wrote to. A wrong or absent value is a finalizer that cannot find what it
+      must delete.
+    try:
+    - script:
+        content: |
+          kubectl get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($namespace)
+            name: test-fed-own-wd
+            annotations:
+              compute.datumapis.com/federation-namespace: ($downstreamNS)
+            # Other controllers add finalizers to the same object, so this asserts
+            # presence rather than the exact list. The federator's finalizer is
+            # what makes the hub copy's removal a precondition of the project
+            # object going away.
+            (contains(finalizers, 'compute.datumapis.com/federator')): true
+
+  - name: assert-hub-deployment-exists
+    description: The owner of every hub copy for this workload.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 120s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-fed-own-wd
+
+  - name: assert-writeback-is-owned-by-the-hub-deployment
+    description: |
+      The write-back copy must be owned by the hub WorkloadDeployment, as an
+      ordinary in-cluster controller reference. Every field is asserted
+      explicitly: a reference that named the wrong group, or that was not marked
+      controller/blockOwnerDeletion, would not be honoured by the hub garbage
+      collector and the reclamation guarantee would silently not exist.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        # Tail of the whole chain: federate → Karmada propagate → cell reconcile
+        # → cell write-back. On a constrained CI runner that sequence needs well
+        # more than the 120s default.
+        timeout: 300s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: Instance
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-fed-own-wd-0
+            (ownerReferences[?kind == 'WorkloadDeployment'] | [0]):
+              apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              name: test-fed-own-wd
+              controller: true
+              blockOwnerDeletion: true

@@ -1,0 +1,37 @@
+# Mounts the quota credential for compute-manager at /etc/quota-credentials:
+# the Milo client certificate (ca.crt/tls.crt/tls.key) and a static kubeconfig
+# that references those cert files by path, combined into one directory via a
+# projected volume. The cluster environment supplies both sources
+# (compute-edge-milo-client-cert Secret + compute-quota-kubeconfig ConfigMap);
+# they are optional so compute-manager still starts where quota is not wired.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target:
+      kind: Deployment
+      name: compute-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: compute-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                volumeMounts:
+                  - name: quota-credentials
+                    mountPath: /etc/quota-credentials
+                    readOnly: true
+            volumes:
+              - name: quota-credentials
+                projected:
+                  sources:
+                    - secret:
+                        name: compute-edge-milo-client-cert
+                        optional: true
+                    - configMap:
+                        name: compute-quota-kubeconfig
+                        optional: true

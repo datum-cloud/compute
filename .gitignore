@@ -14,8 +14,8 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Dependency directories
+vendor/
 
 # Go workspace file
 go.work
@@ -25,3 +25,24 @@ go.work.sum
 .env
 
 bin/
+
+# Local e2e environment artefacts (Kind kubeconfigs, etc.)
+tmp/
+
+# UI consumer/provider plugins (own package.json/build per plugin)
+ui/**/node_modules/
+ui/**/dist/
+
+# GoReleaser build output
+dist/
+
+# Local datumctl plugin build binary
+/datumctl-compute
+
+sample-compute-build/
+
+# Module Federation diagnostics / typegen cache
+ui/**/.mf/
+
+# jsonnet-bundler vendored libraries for dashboards (fetched by `task dashboards:install`)
+observability/**/vendor/

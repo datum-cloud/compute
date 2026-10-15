@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-prometheus-adapter
+  namespace: compute-system
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: compute-prometheus-adapter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: compute-prometheus-adapter
+        app.kubernetes.io/part-of: compute
+    spec:
+      serviceAccountName: compute-prometheus-adapter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: adapter
+          image: registry.k8s.io/prometheus-adapter/prometheus-adapter:v0.12.0
+          args:
+            - --secure-port=8443
+            - --tls-cert-file=/certs/tls.crt
+            - --tls-private-key-file=/certs/tls.key
+            - --prometheus-url=$(PROMETHEUS_URL)
+            - --config=/etc/adapter/config.yaml
+            - --metrics-relist-interval=1m
+            - --metrics-max-age=2m
+          env:
+            - name: PROMETHEUS_URL
+              value: http://prometheus-operated.monitoring.svc:9090
+          ports:
+            - containerPort: 8443
+              name: https
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/adapter
+              readOnly: true
+            - name: serving-cert
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: compute-prometheus-adapter-config
+        - name: serving-cert
+          secret:
+            secretName: compute-prometheus-adapter-serving-cert

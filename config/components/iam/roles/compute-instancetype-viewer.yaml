@@ -1,0 +1,13 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: compute.datumapis.com-instancetype-viewer
+  annotations:
+    kubernetes.io/display-name: Instance Type Viewer
+    kubernetes.io/description: "View access to the instance type catalog"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - compute.datumapis.com/instancetypes.list
+    - compute.datumapis.com/instancetypes.get
+    - compute.datumapis.com/instancetypes.watch

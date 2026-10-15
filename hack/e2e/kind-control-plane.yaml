@@ -1,0 +1,41 @@
+# Kind cluster configuration for the compute-control-plane management cluster.
+#
+# extraPortMappings exposes port 32443 on the macOS host so that the Karmada
+# API server NodePort service (nodePort: 32443) is accessible at
+# https://localhost:32443 without any additional port-forwarding.
+#
+# This matches KARMADA_API_NODEPORT in Taskfile.yaml.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# Tune the control plane for a busy host that also runs the full Karmada control
+# plane in this same cluster. kind renders its kubeadm config as v1beta3, so
+# extraArgs are maps here (not the v1beta4 list form).
+#   - etcd unsafe-no-fsync: these are throwaway e2e clusters, and fsync
+#     contention between co-located etcds is what drives API server write
+#     latency into multi-second spikes.
+#   - scheduler/controllerManager leader-elect=false: single-instance static
+#     pods have nothing to elect, and a lease renewal that times out during a
+#     latency spike crash-loops them (which then re-lists everything and makes
+#     the spike worse).
+kubeadmConfigPatches:
+  - |
+    apiVersion: kubeadm.k8s.io/v1beta3
+    kind: ClusterConfiguration
+    etcd:
+      local:
+        extraArgs:
+          unsafe-no-fsync: "true"
+    controllerManager:
+      extraArgs:
+        leader-elect: "false"
+    scheduler:
+      extraArgs:
+        leader-elect: "false"
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 32443   # Karmada API server NodePort
+        hostPort: 32443
+        protocol: TCP
+        listenAddress: "127.0.0.1"

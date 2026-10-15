@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-manager
+  labels:
+    control-plane: compute
+    app.kubernetes.io/name: compute
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  selector:
+    matchLabels:
+      control-plane: compute
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: compute
+        app.kubernetes.io/name: compute
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: manager
+        command:
+        - /manager
+        args:
+          - --leader-elect=$(LEADER_ELECT)
+          - --health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
+          - --server-config=$(SERVER_CONFIG)
+          - --federation-kubeconfig=$(FEDERATION_KUBECONFIG)
+          - --enable-management-controllers=$(ENABLE_MANAGEMENT_CONTROLLERS)
+          - --enable-cell-controllers=$(ENABLE_CELL_CONTROLLERS)
+          - --feature-gates=$(FEATURE_GATES)
+          - --instance-type-deprecation-grace-period=$(INSTANCE_TYPE_DEPRECATION_GRACE_PERIOD)
+          - --instance-type-default=$(INSTANCE_TYPE_DEFAULT)
+        env:
+          - name: LEADER_ELECT
+            value: "true"
+          - name: HEALTH_PROBE_BIND_ADDRESS
+            value: ":8081"
+          - name: SERVER_CONFIG
+            value: /config/config.yaml
+          - name: FEDERATION_KUBECONFIG
+            value: ""
+          - name: ENABLE_MANAGEMENT_CONTROLLERS
+            value: "false"
+          - name: ENABLE_CELL_CONTROLLERS
+            value: "false"
+          - name: FEATURE_GATES
+            value: ""
+          - name: INSTANCE_TYPE_DEPRECATION_GRACE_PERIOD
+            value: "1440h"
+          - name: INSTANCE_TYPE_DEFAULT
+            value: "datumcloud-d1-standard-2"
+          # The WorkloadDeployment webhook only accepts the expected-referenced-data
+          # annotation from the resolver, and identifies it by the username the
+          # manager authenticates as. Read from the downward API so the identity
+          # follows the namespace and service account the overlay installs into
+          # instead of being restated per environment.
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: SERVICE_ACCOUNT_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.serviceAccountName
+        image: ghcr.io/datum-cloud/compute:latest
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      serviceAccountName: compute-manager
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: compute-config

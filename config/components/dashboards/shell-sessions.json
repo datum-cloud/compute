@@ -1,0 +1,1015 @@
+{
+   "description": "Instance shell sessions from the project view (created, open, ended, time to first prompt) and the cell view (agent reachability, load, claims, cleanup).",
+   "editable": true,
+   "panels": [
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "gridPos": {
+            "h": 3,
+            "w": 24,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "options": {
+            "content": "**Tracing one session:** a project's `SessionStarted` / `SessionEnded` activity events carry the session UID and the instance name; the Instance's status names the cell that runs it. Search that cell's agent logs by UID with `kubectl logs -n compute-shell-system deploy/exec-agent | grep <session UID>`, or paste the UID into the *session UID* box above to filter the controller logs below.\n",
+            "mode": "markdown"
+         },
+         "pluginVersion": "v11.4.0",
+         "title": "",
+         "type": "text"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 3
+         },
+         "id": 2,
+         "title": "Project and location",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Sessions in any non-terminal phase across the selected projects and locations.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "blue",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 4
+         },
+         "id": 3,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(compute_shell_sessions_open{project=~\"$project\", location=~\"$location\"}) or vector(0)",
+               "legendFormat": "open"
+            }
+         ],
+         "title": "Sessions open",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Sessions created in the last 24 hours.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "blue",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 4
+         },
+         "id": 4,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(increase(compute_shell_sessions_created_total{project=~\"$project\", location=~\"$location\"}[24h])) or vector(0)",
+               "legendFormat": "created"
+            }
+         ],
+         "title": "Created (24h)",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Time from session creation to a client connected, 95th percentile over the last hour. The alert threshold is 5s.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 3
+                     },
+                     {
+                        "color": "red",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 4
+         },
+         "id": 5,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(compute_shell_session_connect_seconds_bucket{location=~\"$location\"}[1h])))",
+               "legendFormat": "p95"
+            }
+         ],
+         "title": "p95 time to first prompt (1h)",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Share of sessions in the last 24 hours that the platform ended before they could be used (Unavailable|AgentLost|AgentShutdown), out of all sessions that ended.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 0.01
+                     },
+                     {
+                        "color": "red",
+                        "value": 0.050000000000000003
+                     }
+                  ]
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 4
+         },
+         "id": 6,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(\n  sum(increase(compute_shell_sessions_ended_total{location=~\"$location\", reason=~\"Unavailable|AgentLost|AgentShutdown\"}[24h])) or vector(0)\n)\n/\nclamp_min(sum(increase(compute_shell_sessions_ended_total{location=~\"$location\"}[24h])), 1)\n",
+               "legendFormat": "failure ratio"
+            }
+         ],
+         "title": "Platform failure ratio (24h)",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Rate of session creation per location.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "reqps"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 8
+         },
+         "id": 7,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (location) (rate(compute_shell_sessions_created_total{project=~\"$project\", location=~\"$location\"}[5m]))",
+               "legendFormat": "{{location}}"
+            }
+         ],
+         "title": "Sessions created by location",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Open sessions by lifecycle phase. Sessions piling up in pending point at cells not claiming; piling up in ready means clients are not connecting within their window.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 8
+         },
+         "id": 8,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (phase) (compute_shell_sessions_open{project=~\"$project\", location=~\"$location\"})",
+               "legendFormat": "{{phase}}"
+            }
+         ],
+         "title": "Sessions open by phase",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Rate of session ends per terminal reason. Completed, Expired, Disconnected and Revoked are normal; Unavailable and AgentLost mean the platform failed the session.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "reqps"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": "(Unavailable|AgentLost|AgentShutdown)"
+                  },
+                  "properties": [
+                     {
+                        "id": "color",
+                        "value": {
+                           "fixedColor": "red",
+                           "mode": "fixed"
+                        }
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 16
+         },
+         "id": 9,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (reason) (rate(compute_shell_sessions_ended_total{location=~\"$location\"}[5m]))",
+               "legendFormat": "{{reason}}"
+            }
+         ],
+         "title": "Sessions ended by reason",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Session creation to client connected, by percentile across the selected locations.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "s"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 16
+         },
+         "id": 10,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.50, sum by (le) (rate(compute_shell_session_connect_seconds_bucket{location=~\"$location\"}[5m])))",
+               "legendFormat": "p50"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(compute_shell_session_connect_seconds_bucket{location=~\"$location\"}[5m])))",
+               "legendFormat": "p95"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.99, sum by (le) (rate(compute_shell_session_connect_seconds_bucket{location=~\"$location\"}[5m])))",
+               "legendFormat": "p99"
+            }
+         ],
+         "title": "Time to first prompt",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "How long sessions lasted once connected, by percentile across the selected locations.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "s"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 16
+         },
+         "id": 11,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.50, sum by (le) (rate(compute_shell_session_duration_seconds_bucket{location=~\"$location\"}[5m])))",
+               "legendFormat": "p50"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(compute_shell_session_duration_seconds_bucket{location=~\"$location\"}[5m])))",
+               "legendFormat": "p95"
+            }
+         ],
+         "title": "Session duration",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 24
+         },
+         "id": 12,
+         "title": "Cell and agent",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Whether each shell agent can reach its cell tunnel endpoint. An agent that cannot reach the endpoint cannot serve sessions; a cell with no reachable agent fails every session bound to it with Unavailable.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "0": {
+                           "color": "red",
+                           "index": 0,
+                           "text": "unreachable"
+                        },
+                        "1": {
+                           "color": "green",
+                           "index": 1,
+                           "text": "reachable"
+                        }
+                     },
+                     "type": "value"
+                  }
+               ],
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 1
+                     }
+                  ]
+               }
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 25
+         },
+         "id": 13,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "mergeValues": true,
+            "rowHeight": 0.80000000000000004,
+            "showValue": "never"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "max by (cell, agent) (compute_shell_agent_endpoint_reachable{cell=~\"$cell\"})",
+               "legendFormat": "{{cell}} / {{agent}}"
+            }
+         ],
+         "title": "Agent endpoint reachable",
+         "type": "state-timeline"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Sessions each agent is currently serving. Agents run in pairs per cell, so a lopsided pair usually means one agent restarted or lost its endpoint.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 32
+         },
+         "id": 14,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (cell, agent) (compute_shell_agent_sessions_open{cell=~\"$cell\"})",
+               "legendFormat": "{{cell}} / {{agent}}"
+            }
+         ],
+         "title": "Sessions open per agent",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Rate at which agents try to claim sessions, by outcome. A cell claiming nothing while sessions are created for its location is not seeing them.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "reqps"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 32
+         },
+         "id": 15,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (cell, outcome) (rate(compute_shell_agent_claims_total{cell=~\"$cell\"}[5m]))",
+               "legendFormat": "{{cell}} / {{outcome}}"
+            }
+         ],
+         "title": "Session claims by outcome",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Sessions whose cell did not confirm the command stopped within the cleanup timeout. Each one may have left a running process behind in an Instance.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byType",
+                     "options": "number"
+                  },
+                  "properties": [
+                     {
+                        "id": "color",
+                        "value": {
+                           "fixedColor": "orange",
+                           "mode": "fixed"
+                        }
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 32
+         },
+         "id": 16,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (cell) (increase(compute_shell_agent_cleanup_unconfirmed_total{cell=~\"$cell\"}[1h]))",
+               "legendFormat": "{{cell}}"
+            }
+         ],
+         "title": "Cleanup unconfirmed",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 40
+         },
+         "id": 17,
+         "title": "Logs",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "loki",
+            "uid": "service-logs"
+         },
+         "description": "Management-plane session controller logs from the platform Loki, filtered by the session UID box. Cell agent logs are not shipped to this Loki; read them on the cell as described at the top.",
+         "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 41
+         },
+         "id": 18,
+         "options": {
+            "enableLogDetails": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "loki",
+                  "uid": "service-logs"
+               },
+               "expr": "{namespace=\"compute-system\"} |= \"$session_uid\" |~ \"(?i)consolesession|shell\""
+            }
+         ],
+         "title": "Session controller logs",
+         "type": "logs"
+      }
+   ],
+   "refresh": "1m",
+   "schemaVersion": 39,
+   "tags": [
+      "compute",
+      "shell-sessions"
+   ],
+   "templating": {
+      "list": [
+         {
+            "current": {
+               "selected": false,
+               "text": "Service Metrics",
+               "value": "SERVICE_METRICS"
+            },
+            "hide": 0,
+            "label": "Data Source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         },
+         {
+            "allValue": ".*",
+            "current": {
+               "selected": false,
+               "text": [
+                  "All"
+               ],
+               "value": [
+                  "$__all"
+               ]
+            },
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "description": "Only the session counters carry a project label; the cell and agent panels ignore this filter.",
+            "includeAll": true,
+            "label": "project",
+            "multi": true,
+            "name": "project",
+            "query": "label_values(compute_shell_sessions_created_total, project)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "current": {
+               "selected": false,
+               "text": [
+                  "All"
+               ],
+               "value": [
+                  "$__all"
+               ]
+            },
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "description": "Location the session was bound to. Narrows every session panel.",
+            "includeAll": true,
+            "label": "location",
+            "multi": true,
+            "name": "location",
+            "query": "label_values(compute_shell_sessions_created_total, location)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "current": {
+               "selected": false,
+               "text": [
+                  "All"
+               ],
+               "value": [
+                  "$__all"
+               ]
+            },
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "description": "Cell whose shell agents to show. Narrows the cell and agent panels only.",
+            "includeAll": true,
+            "label": "cell",
+            "multi": true,
+            "name": "cell",
+            "query": "label_values(compute_shell_agent_endpoint_reachable, cell)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         },
+         {
+            "current": {
+               "selected": false,
+               "text": "",
+               "value": ""
+            },
+            "description": "Paste a session UID from a project activity event to filter the log panel to that session.",
+            "label": "session UID",
+            "name": "session_uid",
+            "options": [
+               {
+                  "selected": true,
+                  "text": "",
+                  "value": ""
+               }
+            ],
+            "query": "",
+            "type": "textbox"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-6h",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "Compute / Instance Shell Sessions",
+   "uid": "compute-shell-sessions"
+}

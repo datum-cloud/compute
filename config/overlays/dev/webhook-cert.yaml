@@ -1,0 +1,18 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: compute-serving-cert
+spec:
+  dnsNames:
+    - host.docker.internal
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+  secretName: compute-webhook-cert

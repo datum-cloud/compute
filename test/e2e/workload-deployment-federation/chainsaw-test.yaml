@@ -1,0 +1,90 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workload-deployment-federation
+spec:
+  description: |
+    Verifies that the WorkloadDeploymentFederator replicates a WorkloadDeployment
+    from the project namespace (control-plane cluster) to the Karmada API server
+    with the correct location label and PropagationPolicy.
+
+    The federator follows the ns-<namespace-uid> convention for Karmada namespaces,
+    matching the MappedNamespaceResourceStrategy used by NSO. The test derives
+    the expected Karmada namespace dynamically from the Chainsaw test namespace UID.
+
+    Verified:
+    - WorkloadDeployment exists in Karmada at ns-<project-ns-uid>
+    - Karmada copy carries label topology.datum.net/location: dfw
+    - PropagationPolicy location-dfw exists in the Karmada namespace,
+      selecting WDs by location and routing them to matching POP-cell clusters.
+
+  template: true
+
+  steps:
+  - name: derive-ns-and-create-wd
+    description: Derive Karmada namespace and create the WorkloadDeployment.
+    try:
+    - apply:
+        file: workload-deployment.yaml
+
+  - name: assert-wd-in-downstream
+    description: Assert WorkloadDeployment federated to Karmada with location label.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-federation-wd
+            labels:
+              topology.datum.net/location: dfw
+
+  - name: assert-propagation-policy-in-downstream
+    description: Assert PropagationPolicy created for location-dfw.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: policy.karmada.io/v1alpha1
+          kind: PropagationPolicy
+          metadata:
+            namespace: ($downstreamNS)
+            name: location-dfw
+          spec:
+            # The federator emits one resource selector and asks the engine to
+            # carry the deployment's dependencies. Companions are not named
+            # here: a policy claim is exclusive, so a companion shared across
+            # locations would reach only one of them. Chainsaw matches list
+            # length exactly, which also asserts their absence.
+            propagateDeps: true
+            resourceSelectors:
+            - apiVersion: compute.datumapis.com/v1alpha
+              kind: WorkloadDeployment
+              labelSelector:
+                matchLabels:
+                  topology.datum.net/location: dfw
+            placement:
+              clusterAffinity:
+                labelSelector:
+                  matchLabels:
+                    topology.datum.net/location: dfw

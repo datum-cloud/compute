@@ -1,0 +1,10 @@
+# Cilium policies for the shell agent and its tunnel endpoints. Include beside
+# config/components/shell-agent on cells that run Cilium. Unlike the portable
+# policies they police traffic to the node's own apiserver, kubelet and etcd,
+# so the endpoint, which holds no credential, cannot reach them at all. The
+# agent never leaves the cell: it talks only to the cell apiserver.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - policy.yaml

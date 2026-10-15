@@ -1,0 +1,27 @@
+# permissions for end users to edit workloaddeployments.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: compute
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-workloaddeployment-editor-role
+rules:
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - workloaddeployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - workloaddeployments/status
+  verbs:
+  - get

@@ -1,0 +1,30 @@
+# The spec is immutable, so customer write access is limited to create and delete:
+# a different request is a new session, and deleting a session revokes it.
+# Controllers manage finalizers and mirror the status the cell reports.
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: compute.datumapis.com-instanceconsolesession
+spec:
+  serviceRef:
+    name: "compute.datumapis.com"
+  kind: InstanceConsoleSession
+  plural: instanceconsolesessions
+  singular: instanceconsolesession
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - delete
+    - update
+    - patch
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

@@ -1,0 +1,23 @@
+# permissions for end users to view workloaddeployments.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: compute
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-workloaddeployment-viewer-role
+rules:
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - workloaddeployments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - workloaddeployments/status
+  verbs:
+  - get

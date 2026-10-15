@@ -1,0 +1,13 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  name: test-wd
+  namespace: ns-1c1f3c2a-1111-2222-3333-444455556666
+  annotations:
+    compute.datumapis.com/expected-referenced-data: '["ConfigMap/","/name-only","noslash","Secret/good"]'
+spec:
+  workloadRef: {name: test}
+  placementName: default
+  locationRef: {name: dfw}
+  template: {}
+  scaleSettings: {minReplicas: 1}

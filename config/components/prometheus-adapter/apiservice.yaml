@@ -1,0 +1,18 @@
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.metrics.k8s.io
+  labels:
+    app.kubernetes.io/name: compute-prometheus-adapter
+    app.kubernetes.io/part-of: compute
+  annotations:
+    cert-manager.io/inject-ca-from: compute-system/compute-prometheus-adapter-serving-cert
+spec:
+  group: metrics.k8s.io
+  groupPriorityMinimum: 100
+  service:
+    name: compute-prometheus-adapter
+    namespace: compute-system
+    port: 443
+  version: v1beta1
+  versionPriority: 100

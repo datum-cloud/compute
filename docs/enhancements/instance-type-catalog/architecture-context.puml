@@ -1,0 +1,29 @@
+@startuml architecture-context
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+!include https://raw.githubusercontent.com/datum-cloud/enhancements/main/enhancements/datum-theme.puml
+
+Person(operator, "Platform Operator", "Defines standard instance tiers via GitOps")
+Person(customer, "Customer / Developer", "Chooses a named instance type for workloads")
+
+System(catalog, "Authoritative Catalog\n(InstanceType CRD)", "Defines precise vCPU, memory, and hardware dimensions for named tiers")
+
+System(compute, "Compute Management Plane", "Validates workload sizing against named tiers and claims exact quota from Milo")
+
+System_Ext(milo, "Milo Project Quota", "Grants and tracks vCPU, memory, and instance allowances in the project ledger")
+
+System(provider, "Runtime Providers\n(Unikraft / MicroVM)", "Provisions pods/VMs with guaranteed CPU and memory matching the catalog definition")
+
+System_Ext(infra, "Infrastructure Providers\n(GCP, AWS, Bare Metal)", "Maps authoritative catalog dimensions to host machine types and node pools")
+
+Rel_D(operator, catalog, "Publishes & manages instance types")
+Rel_D(customer, compute, "Deploys workloads with named instance types")
+Rel_R(compute, catalog, "Looks up dimensions and validates sizing rules")
+Rel_R(compute, milo, "Claims exact vCPU & memory")
+Rel_D(compute, provider, "Dispatches instances with resolved resource envelope")
+Rel_D(provider, infra, "Runs microVMs on host nodes sized to match")
+Rel_L(provider, catalog, "References authoritative sizing to eliminate drift")
+Rel_U(infra, catalog, "References catalog dimensions instead of inferring size from machine-type name")
+
+SHOW_LEGEND()
+@enduml
