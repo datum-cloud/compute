@@ -301,7 +301,7 @@ func TestEnsureNetworkBinding_LeavesForeignBindingAlone(t *testing.T) {
 		},
 		Spec: networkingv1alpha.NetworkBindingSpec{
 			Network:  networkingv1alpha.NetworkRef{Name: "someone-elses-network"},
-			Location: networkingv1alpha.LocationReference{Name: testLocationName},
+			Location: locationsv1alpha1.LocationReference{Name: testLocationName},
 		},
 	}
 	karmadaClient := newKarmadaFakeClient(hubWD, foreign)

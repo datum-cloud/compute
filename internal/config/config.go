@@ -44,17 +44,16 @@ type WorkloadOperator struct {
 	// ReferencedData configures the ReferencedDataController.
 	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
 
-	// LocationSource names the API group locations are read from. Use
-	// "NetworkServices" for networking.datumapis.com LocationBindings and
-	// ServingLocations, or "Locations" for the dedicated locations.miloapis.com
-	// service. It governs reads only; nothing about what compute writes changes
-	// with it. Defaults to "NetworkServices".
+	// LocationSource names the API group locations are read from. "Locations",
+	// the locations.miloapis.com service, is the only value accepted.
+	// "NetworkServices" is refused: network-services-operator no longer serves
+	// the ServingLocations it read. Defaults to "Locations".
 	LocationSource locations.Source `json:"locationSource,omitempty"`
 }
 
 func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {
 	if obj.LocationSource == "" {
-		obj.LocationSource = locations.SourceNetworkServices
+		obj.LocationSource = locations.SourceLocations
 	}
 }
 

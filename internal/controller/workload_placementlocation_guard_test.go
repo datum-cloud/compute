@@ -62,10 +62,9 @@ func TestWorkloadSetupWithManager_PlacementLocationKindAbsent(t *testing.T) {
 		return placementLocationClusterFilter(source)(multicluster.ClusterName("single"), newCluster(t))
 	}
 
-	t.Run("neither kind served", func(t *testing.T) {
+	t.Run("kind not served", func(t *testing.T) {
 		assert.False(t, serves(t, ""),
 			"the default source must not watch a kind this control plane does not serve")
-		assert.False(t, serves(t, locations.SourceNetworkServices))
 		assert.False(t, serves(t, locations.SourceLocations))
 	})
 
@@ -114,18 +113,8 @@ func TestWorkloadSetupWithManager_PlacementLocationKindAbsent(t *testing.T) {
 	installCRD(t, moduleCRD(t, "go.miloapis.com/locations",
 		"config/base/crd/bases", "locations.miloapis.com_locations.yaml"))
 
-	t.Run("only the locations service kind served", func(t *testing.T) {
-		assert.True(t, serves(t, locations.SourceLocations),
-			"the selected source's kind is served, so the watch must engage")
-		assert.False(t, serves(t, ""),
-			"installing the locations service must not satisfy the default source")
-	})
-
-	installCRD(t, moduleCRD(t, "go.datum.net/network-services-operator",
-		"config/crd/bases", "networking.datumapis.com_locationbindings.yaml"))
-
-	t.Run("both kinds served", func(t *testing.T) {
-		for _, source := range []locations.Source{"", locations.SourceNetworkServices, locations.SourceLocations} {
+	t.Run("kind served", func(t *testing.T) {
+		for _, source := range []locations.Source{"", locations.SourceLocations} {
 			assert.Truef(t, serves(t, source),
 				"the watch must engage for source %q once its kind is served", source)
 		}

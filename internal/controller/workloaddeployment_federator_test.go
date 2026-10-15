@@ -21,7 +21,6 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
@@ -788,7 +787,7 @@ func TestWorkloadDeploymentFederator_FinalizesLegacyDeployment(t *testing.T) {
 		},
 		{
 			name:          "another legacy deployment routed by the city keeps them",
-			siblingLabels: map[string]string{networkingv1alpha.TopologyCityCodeKey: legacyCity},
+			siblingLabels: map[string]string{locationsv1alpha1.TopologyCityCodeKey: legacyCity},
 			wantCityPPs:   true,
 		},
 	}
@@ -804,7 +803,7 @@ func TestWorkloadDeploymentFederator_FinalizesLegacyDeployment(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testWDName,
 					Namespace: testKarmadaNSStr,
-					Labels:    map[string]string{networkingv1alpha.TopologyCityCodeKey: legacyCity},
+					Labels:    map[string]string{locationsv1alpha1.TopologyCityCodeKey: legacyCity},
 				},
 			}
 			policy := func(name string) *karmadapolicyv1alpha1.PropagationPolicy {
