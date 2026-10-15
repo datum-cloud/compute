@@ -104,6 +104,21 @@ type InstanceRuntimeSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Optional
 	Class string `json:"class,omitempty"`
+
+	// How long, in seconds, the instance's processes have to exit after being
+	// asked to stop. When an instance is deleted, replaced, or suspended, each
+	// container's main process receives SIGTERM, and any process still running
+	// when the period ends is killed. Zero kills the processes immediately.
+	//
+	// The instance keeps its resources and addresses until it has stopped, so
+	// a longer period delays their release. A value above zero requires a
+	// runtime class that offers graceful termination. When unset, the runtime
+	// class's own default applies.
+	//
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=300
+	// +kubebuilder:validation:Optional
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
 type SandboxRuntime struct {
