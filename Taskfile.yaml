@@ -632,6 +632,7 @@ tasks:
     cmds:
       - task: _e2e:crds:compute
       - task: _e2e:crds:nso
+      - task: _e2e:crds:locations
       - task: _e2e:crds:quota
       # Depends on _e2e:crds:nso having registered the kinds it selects.
       - task: _e2e:federation:nso-policy
@@ -703,6 +704,28 @@ tasks:
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
           -f "${NSO_FEDERATION_PATH}/clusterpropagationpolicy.yaml" \
           --server-side --validate=false
+
+  _e2e:crds:locations:
+    internal: true
+    desc: "Apply locations service CRDs to all clusters and the Karmada API server"
+    cmds:
+      # Compute reads placement locations (Location) and a cell's own location
+      # (ServingLocation) from locations.miloapis.com. A cell refuses to start
+      # when the ServingLocation kind is not served, and the workload webhook
+      # finds no placement locations without the Location kind.
+      - |
+        go mod download go.miloapis.com/locations
+        LOCATIONS_VERSION=$(go list -m -f '{{`{{.Version}}`}}' go.miloapis.com/locations)
+        LOCATIONS_CRD_PATH="$(go env GOMODCACHE)/go.miloapis.com/locations@${LOCATIONS_VERSION}/config/base/crd"
+        echo "Locations CRDs from: ${LOCATIONS_CRD_PATH}"
+        for KC in \
+          {{.KUBECONFIG_DIR}}/control-plane.yaml \
+          {{.KUBECONFIG_DIR}}/karmada.yaml \
+          {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+          {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
+          echo "Installing locations CRDs → $(basename $KC .yaml)..."
+          kubectl --kubeconfig="$KC" apply -k "${LOCATIONS_CRD_PATH}" --server-side --validate=false
+        done
 
   _e2e:crds:quota:
     internal: true
