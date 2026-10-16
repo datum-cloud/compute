@@ -73,7 +73,7 @@ func publishedProxy(workload, canonical string) *networkingv1alpha.HTTPProxy {
 }
 
 func publishedService(workload string, port int32, locations ...networkingv1alpha.NetworkServiceLocationStatus) *networkingv1alpha.NetworkService {
-	s := BuildNetworkService(workloadNamed(workload), testPortName, port)
+	s := BuildNetworkService(workloadNamed(workload), testPortName, port, false)
 	var members, healthy int32
 	for _, l := range locations {
 		members += l.Members

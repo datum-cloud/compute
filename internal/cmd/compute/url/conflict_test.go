@@ -36,11 +36,11 @@ func conflictOnce(kind string, calls *int) interceptor.Funcs {
 func TestDeclareRetriesAServiceUpdateThatConflicts(t *testing.T) {
 	var calls int
 	c := interceptor.NewClient(newFakeClient(t,
-		BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080),
+		BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080, false),
 		BuildHTTPProxy(workloadNamed(testWorkloadName), testPortName, nil),
 	), conflictOnce(kindService, &calls))
 
-	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 9090, nil); err != nil {
+	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 9090, false, nil); err != nil {
 		t.Fatalf("Declare returned error: %v", err)
 	}
 	if calls != 2 {
@@ -59,11 +59,11 @@ func TestDeclareRetriesAServiceUpdateThatConflicts(t *testing.T) {
 func TestDeclareRetriesAProxyUpdateThatConflicts(t *testing.T) {
 	var calls int
 	c := interceptor.NewClient(newFakeClient(t,
-		BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080),
+		BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080, false),
 		BuildHTTPProxy(workloadNamed(testWorkloadName), testPortName, nil),
 	), conflictOnce(kindProxy, &calls))
 
-	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 8080,
+	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 8080, false,
 		[]string{"api.example.com"}); err != nil {
 		t.Fatalf("Declare returned error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestDeclareLeavesAnUnchangedServiceAlone(t *testing.T) {
 	// The API defaults traffic distribution, which a deploy never sets. That
 	// default must not read as a change, or every deploy rewrites the service
 	// and risks colliding with the controller.
-	svc := BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080)
+	svc := BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080, false)
 	svc.Spec.TrafficDistribution.Strategy = networkingv1alpha.NetworkServiceTrafficDistributionStrategyNearest
 
 	rec := &recorder{}
@@ -85,7 +85,7 @@ func TestDeclareLeavesAnUnchangedServiceAlone(t *testing.T) {
 		BuildHTTPProxy(workloadNamed(testWorkloadName), testPortName, nil),
 	), rec.funcs())
 
-	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 8080, nil); err != nil {
+	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil); err != nil {
 		t.Fatalf("Declare returned error: %v", err)
 	}
 	if len(rec.updates) != 0 {
@@ -94,11 +94,11 @@ func TestDeclareLeavesAnUnchangedServiceAlone(t *testing.T) {
 }
 
 func TestDeclareKeepsTheTrafficDistributionWhenThePortChanges(t *testing.T) {
-	svc := BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080)
+	svc := BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080, false)
 	svc.Spec.TrafficDistribution.Strategy = networkingv1alpha.NetworkServiceTrafficDistributionStrategyNearest
 	c := newFakeClient(t, svc, BuildHTTPProxy(workloadNamed(testWorkloadName), testPortName, nil))
 
-	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 9090, nil); err != nil {
+	if err := Declare(context.Background(), c, workloadNamed(testWorkloadName), testPortName, 9090, false, nil); err != nil {
 		t.Fatalf("Declare returned error: %v", err)
 	}
 
