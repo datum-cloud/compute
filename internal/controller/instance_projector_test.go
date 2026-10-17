@@ -99,6 +99,16 @@ func projTestProjectNS() *corev1.Namespace {
 	}
 }
 
+func projTestHubNamespace() *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: projTestKarmadaNS,
+		Labels: map[string]string{
+			downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
+			downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
+		},
+	}}
+}
+
 // projTestWorkloadDeployment builds the project WorkloadDeployment that owns
 // projected Instances.
 func projTestWorkloadDeployment() *computev1alpha.WorkloadDeployment {
@@ -404,6 +414,187 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInstanceProjector_RemovesProjectionOnScaleDown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		source            *computev1alpha.Instance
+		hubNamespace      bool
+		projectionExists  bool
+		projectionMatches bool
+		wantDeleted       bool
+		wantErr           bool
+	}{
+		{
+			name:              "write-back already gone",
+			hubNamespace:      true,
+			projectionExists:  true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name: "write-back deleting",
+			source: func() *computev1alpha.Instance {
+				instance := projTestKarmadaInstance(nil)
+				now := metav1.Now()
+				instance.DeletionTimestamp = &now
+				instance.Finalizers = []string{instanceProjectionFinalizer, "test-finalizer"}
+				return instance
+			}(),
+			projectionExists:  true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name:              "already removed",
+			hubNamespace:      true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name:              "different route is preserved",
+			hubNamespace:      true,
+			projectionExists:  true,
+			projectionMatches: false,
+			wantErr:           true,
+		},
+		{
+			name:              "hub namespace removed during project teardown",
+			projectionExists:  true,
+			projectionMatches: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var hubObjects []client.Object
+			if tt.source != nil {
+				hubObjects = append(hubObjects, tt.source)
+			}
+			if tt.hubNamespace {
+				hubObjects = append(hubObjects, projTestHubNamespace())
+			}
+			var projectObjects []client.Object
+			projectObjects = append(projectObjects, projTestProjectNS(), projTestWorkloadDeployment())
+			if tt.projectionExists {
+				projection := projTestKarmadaInstance(nil)
+				projection.Namespace = projTestProjNS
+				if !tt.projectionMatches {
+					projection.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = "another-namespace"
+				}
+				projectObjects = append(projectObjects, projection)
+			}
+
+			projectClient := fake.NewClientBuilder().
+				WithScheme(newProjectScheme()).
+				WithObjects(projectObjects...).
+				Build()
+			r := newTestProjector(newKarmadaFakeClient(hubObjects...), projectClient)
+			_, err := r.Reconcile(context.Background(), projectorRequest())
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			var projection computev1alpha.Instance
+			err = projectClient.Get(context.Background(), types.NamespacedName{
+				Name: projTestInstanceName, Namespace: projTestProjNS,
+			}, &projection)
+			if tt.wantDeleted || !tt.projectionExists {
+				assert.True(t, apierrors.IsNotFound(err), "projection should be absent")
+			} else {
+				require.NoError(t, err, "unrelated projection should remain")
+			}
+			if tt.source != nil {
+				var writeBack computev1alpha.Instance
+				require.NoError(t, r.FederationClient.Get(context.Background(), projectorRequest().NamespacedName, &writeBack))
+				assert.NotContains(t, writeBack.Finalizers, instanceProjectionFinalizer,
+					"project projection must be deleted before releasing the write-back")
+			}
+			var owner computev1alpha.WorkloadDeployment
+			require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{
+				Name: projTestWDName, Namespace: projTestProjNS,
+			}, &owner), "scale-down must preserve the WorkloadDeployment")
+		})
+	}
+}
+
+func TestInstanceProjectionDeletedBeforeCellInstanceFinalizes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	writeBack := projTestKarmadaInstance(nil)
+	writeBack.Finalizers = []string{instanceProjectionFinalizer}
+	hubClient := newKarmadaFakeClient(projTestHubNamespace(), writeBack)
+	projection := writeBack.DeepCopy()
+	projection.Namespace = projTestProjNS
+	projection.Finalizers = nil
+	projectClient := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithObjects(projTestProjectNS(), projTestWorkloadDeployment(), projection).
+		Build()
+	projector := newTestProjector(hubClient, projectClient)
+	cellReconciler := &InstanceReconciler{FederationClient: hubClient}
+
+	_, err := cellReconciler.Finalize(ctx, writeBack)
+	require.ErrorContains(t, err, "waiting for downstream write-back")
+	var terminating computev1alpha.Instance
+	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &terminating))
+	require.NotNil(t, terminating.DeletionTimestamp)
+	var stillProjected computev1alpha.Instance
+	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{
+		Name: projTestInstanceName, Namespace: projTestProjNS,
+	}, &stillProjected), "cell finalization must wait while the project Instance remains")
+
+	_, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	var removed computev1alpha.Instance
+	require.True(t, apierrors.IsNotFound(projectClient.Get(ctx, types.NamespacedName{
+		Name: projTestInstanceName, Namespace: projTestProjNS,
+	}, &removed)))
+	_, err = cellReconciler.Finalize(ctx, writeBack)
+	require.NoError(t, err, "cell finalization can finish after the projection and write-back are gone")
+}
+
+func TestInstanceProjectorWaitsForProjectDeletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	writeBack := projTestKarmadaInstance(nil)
+	writeBack.Finalizers = []string{instanceProjectionFinalizer}
+	now := metav1.Now()
+	writeBack.DeletionTimestamp = &now
+	hubClient := newKarmadaFakeClient(writeBack)
+	projection := writeBack.DeepCopy()
+	projection.Namespace = projTestProjNS
+	projection.DeletionTimestamp = nil
+	projection.Finalizers = []string{"project-cleanup"}
+	projectClient := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithObjects(projTestProjectNS(), projTestWorkloadDeployment(), projection).
+		Build()
+	projector := newTestProjector(hubClient, projectClient)
+
+	_, err := projector.Reconcile(ctx, projectorRequest())
+	require.ErrorContains(t, err, "waiting for instance projection")
+	var pending computev1alpha.Instance
+	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{
+		Name: projTestInstanceName, Namespace: projTestProjNS,
+	}, &pending))
+	require.NotNil(t, pending.DeletionTimestamp)
+	var retained computev1alpha.Instance
+	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &retained))
+	assert.Contains(t, retained.Finalizers, instanceProjectionFinalizer)
+
+	pending.Finalizers = nil
+	require.NoError(t, projectClient.Update(ctx, &pending))
+	_, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	require.True(t, apierrors.IsNotFound(hubClient.Get(ctx, projectorRequest().NamespacedName, &retained)),
+		"write-back should disappear only after the project Instance does")
 }
 
 // TestInstanceProjector_SpecCopied verifies that the Instance spec is correctly
