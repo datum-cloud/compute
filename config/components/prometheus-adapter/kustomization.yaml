@@ -5,7 +5,18 @@ resources:
   - service_account.yaml
   - rbac.yaml
   - serving-cert.yaml
-  - config.yaml
   - deployment.yaml
   - service.yaml
   - apiservice.yaml
+
+# Adapter reads queries once at startup. Hashing the ConfigMap updates the
+# Deployment volume reference and rolls the adapter whenever queries change.
+configMapGenerator:
+  - name: compute-prometheus-adapter-config
+    namespace: compute-system
+    files:
+      - config.yaml
+    options:
+      labels:
+        app.kubernetes.io/name: compute-prometheus-adapter
+        app.kubernetes.io/part-of: compute
