@@ -270,7 +270,7 @@ func TestPublishWithoutHTTPPortSaysSo(t *testing.T) {
 
 	// A nil client is deliberate: with no port there is nothing to publish, so
 	// nothing may be read or written.
-	if err := publish(context.Background(), &out, nil, workload(), 0, &options{}, nil); err != nil {
+	if err := publish(context.Background(), &out, nil, workload(), httpPlan{}, &options{}, nil); err != nil {
 		t.Fatalf("publish without a port must not fail: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func TestPublishPrintsTheURLLast(t *testing.T) {
 	c := newFakeClient(t, liveProxy(w), url.BuildNetworkService(w, "http", 8080, false))
 
 	var out bytes.Buffer
-	if err := publish(context.Background(), &out, c, w, 8080, &options{}, nil); err != nil {
+	if err := publish(context.Background(), &out, c, w, httpPlan{port: 8080, publish: true}, &options{}, nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestPublishFailureStillReportsTheRollout(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := publish(context.Background(), &out, c, workload(), 8080,
+	err := publish(context.Background(), &out, c, workload(), httpPlan{port: 8080, publish: true},
 		&options{image: testImage}, declareErr)
 
 	if err == nil {
@@ -403,7 +403,7 @@ func TestPublishAfterTheRolloutOnlyWaits(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	if err := publish(context.Background(), &out, c, w, 8080, &options{}, nil); err != nil {
+	if err := publish(context.Background(), &out, c, w, httpPlan{port: 8080, publish: true}, &options{}, nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if !strings.Contains(out.String(), "https://"+testCanonical) {
@@ -419,7 +419,7 @@ func TestPublishDetachedIsNotAnError(t *testing.T) {
 	cancel()
 
 	var out bytes.Buffer
-	if err := publish(ctx, &out, newFakeClient(t), workload(), 8080, &options{}, nil); err != nil {
+	if err := publish(ctx, &out, newFakeClient(t), workload(), httpPlan{port: 8080, publish: true}, &options{}, nil); err != nil {
 		t.Fatalf("detaching is never an error: %v", err)
 	}
 	if strings.Contains(out.String(), "https://") {

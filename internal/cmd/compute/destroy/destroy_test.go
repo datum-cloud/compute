@@ -322,3 +322,28 @@ func TestHostnameURLs(t *testing.T) {
 		})
 	}
 }
+
+// TestDestroyLeavesSomeoneElsesLoadBalancer: a load balancer that only shares
+// the workload's name was set up some other way, and may serve other things
+// too. destroy leaves it, and says so, rather than reporting it gone.
+func TestDestroyLeavesSomeoneElsesLoadBalancer(t *testing.T) {
+	proxy := publishedProxy()
+	proxy.Labels = nil
+	proxy.OwnerReferences = nil
+	c := newFakeClient(t, testWorkloadObject(), proxy, publishedService())
+
+	var out, errOut bytes.Buffer
+	if err := destroyWorkload(context.Background(), &out, &errOut, c, testProject, testWorkload, true); err != nil {
+		t.Fatalf("destroyWorkload: %v", err)
+	}
+
+	if !exists(t, c, &networkingv1alpha.HTTPProxy{}) {
+		t.Error("destroy deleted a load balancer datumctl did not create")
+	}
+	if exists(t, c, &networkingv1alpha.NetworkService{}) {
+		t.Error("the backends datumctl created survived destroy")
+	}
+	if want := `Left load balancer "api" in place: datumctl did not create it.`; !strings.Contains(out.String(), want) {
+		t.Errorf("output missing %q:\n%s", want, out.String())
+	}
+}
