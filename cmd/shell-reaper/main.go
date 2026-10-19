@@ -47,12 +47,12 @@ func install(destination string) error {
 	if err != nil {
 		return err
 	}
-	defer self.Close()
+	defer func() { _ = self.Close() }()
 	out, err := os.CreateTemp(filepath.Dir(destination), ".shell-reaper-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(out.Name())
+	defer func() { _ = os.Remove(out.Name()) }()
 	if _, err := out.ReadFrom(self); err != nil {
 		_ = out.Close()
 		return err
@@ -97,7 +97,7 @@ func run(marker string, args []string) error {
 			_ = os.Remove(marker)
 			return err
 		}
-		defer null.Close()
+		defer func() { _ = null.Close() }()
 		cmd.Stdin = null
 	}
 	if err := cmd.Start(); err != nil {
@@ -115,26 +115,14 @@ func run(marker string, args []string) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
-		for {
-			var status syscall.WaitStatus
-			pid, waitErr := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
-			if pid <= 0 {
-				if waitErr != nil && waitErr != syscall.ECHILD {
-					return fmt.Errorf("wait for descendants: %w", waitErr)
-				}
-				break
-			}
-			if pid == primary {
-				primaryExited = true
-				if status.Exited() {
-					code = status.ExitStatus()
-				} else if status.Signaled() {
-					code = 128 + int(status.Signal())
-				}
-				_ = os.WriteFile(exitFile, []byte(fmt.Sprintf("%d\n", code)), 0600)
-				stopping = true
-				graceDeadline = time.Now().Add(time.Duration(graceSeconds) * time.Second)
-			}
+		exited, exitCode, err := reapChildren(primary)
+		if err != nil {
+			return err
+		}
+		if exited {
+			primaryExited, code, stopping = true, exitCode, true
+			_ = os.WriteFile(exitFile, []byte(fmt.Sprintf("%d\n", code)), 0600)
+			graceDeadline = time.Now().Add(time.Duration(graceSeconds) * time.Second)
 		}
 		alive, err := descendants(os.Getpid())
 		if err != nil {
@@ -169,6 +157,28 @@ func run(marker string, args []string) error {
 				graceDeadline = time.Now().Add(time.Duration(graceSeconds) * time.Second)
 			}
 		case <-ticker.C:
+		}
+	}
+}
+
+func reapChildren(primary int) (bool, int, error) {
+	for {
+		var status syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
+		if pid <= 0 {
+			if err != nil && err != syscall.ECHILD {
+				return false, 0, fmt.Errorf("wait for descendants: %w", err)
+			}
+			return false, 0, nil
+		}
+		if pid == primary {
+			if status.Exited() {
+				return true, status.ExitStatus(), nil
+			}
+			if status.Signaled() {
+				return true, 128 + int(status.Signal()), nil
+			}
+			return true, 0, nil
 		}
 	}
 }

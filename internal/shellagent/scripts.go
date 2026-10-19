@@ -11,6 +11,7 @@ const (
 	markerPrefix = ".datum-exec-"
 	exitPrefix   = ".datum-exit-"
 	reaperPath   = "/run/datum-shell/shell-reaper"
+	nullStdin    = "null"
 )
 
 // The probe exits 4 when the requested executable is missing and 3 when the
@@ -158,7 +159,7 @@ func probeCommand(executable string) []string {
 func wrappedCommand(dir, sessionUID string, command []string, stdin, tty bool) []string {
 	mode := "-"
 	if !stdin && !tty {
-		mode = "null"
+		mode = nullStdin
 	}
 	return append([]string{reaperPath, "run", markerPath(dir, sessionUID),
 		exitPath(dir, sessionUID), "5", mode}, command...)

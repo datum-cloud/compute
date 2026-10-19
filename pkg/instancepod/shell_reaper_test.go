@@ -26,7 +26,7 @@ func TestExecCapablePodsReceiveReadOnlyShellHelper(t *testing.T) {
 		t.Fatal("helper must use the pinned image and remain non-root")
 	}
 	mounts := pod.Spec.Containers[0].VolumeMounts
-	if len(mounts) != 1 || mounts[0].MountPath != "/run/datum-shell" || !mounts[0].ReadOnly {
+	if len(mounts) != 1 || mounts[0].MountPath != shellHelperPath || !mounts[0].ReadOnly {
 		t.Fatalf("helper mount = %#v", mounts)
 	}
 }

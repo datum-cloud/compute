@@ -56,7 +56,7 @@ func TestStopWaitsForCleanup(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer cmd.Process.Kill()
+	defer func() { _ = cmd.Process.Kill() }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker); err == nil {
@@ -81,7 +81,7 @@ func testReaper(args ...string) *exec.Cmd {
 	return cmd
 }
 
-func TestReaperProcess(t *testing.T) {
+func TestReaperProcess(_ *testing.T) {
 	if os.Getenv("SHELL_REAPER_TEST") != "1" {
 		return
 	}

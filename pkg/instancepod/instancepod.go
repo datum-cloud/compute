@@ -38,6 +38,11 @@ import (
 // instance with an unrecognized instance type still boots with usable memory.
 const FallbackMemoryMiB int64 = 1024
 
+const (
+	shellHelperPath = "/run/datum-shell"
+	shellHelperName = "datum-shell-helper"
+)
+
 // ErrNotSandbox reports an instance this package cannot translate. Only a
 // sandbox of containers maps onto a Pod. The provider realizes a virtual
 // machine instance itself.
@@ -180,11 +185,11 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 		mounts := buildVolumeMounts(container)
 		if withReaper {
 			for _, mount := range mounts {
-				if mount.MountPath == "/run/datum-shell" || strings.HasPrefix(mount.MountPath, "/run/datum-shell/") {
+				if mount.MountPath == shellHelperPath || strings.HasPrefix(mount.MountPath, shellHelperPath+"/") {
 					return corev1.PodSpec{}, fmt.Errorf("container %q mounts the reserved shell helper path", container.Name)
 				}
 			}
-			mounts = append(mounts, corev1.VolumeMount{Name: "datum-shell-helper", MountPath: "/run/datum-shell", ReadOnly: true})
+			mounts = append(mounts, corev1.VolumeMount{Name: shellHelperName, MountPath: shellHelperPath, ReadOnly: true})
 		}
 		containers = append(containers, corev1.Container{
 			Name:            container.Name,
@@ -213,19 +218,31 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 	var initContainers []corev1.Container
 	if withReaper {
 		for _, volume := range volumes {
-			if volume.Name == "datum-shell-helper" {
+			if volume.Name == shellHelperName {
 				return corev1.PodSpec{}, fmt.Errorf("volume name %q is reserved for the shell helper", volume.Name)
 			}
 		}
-		volumes = append(volumes, corev1.Volume{Name: "datum-shell-helper", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		volumes = append(volumes, corev1.Volume{
+			Name:         shellHelperName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
 		initContainers = []corev1.Container{{
 			Name: "datum-shell-install", Image: opts.ShellReaperImage,
-			Command:      []string{"/shell-reaper", "install", "/run/datum-shell/shell-reaper"},
-			VolumeMounts: []corev1.VolumeMount{{Name: "datum-shell-helper", MountPath: "/run/datum-shell"}},
-			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true),
-				Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
-			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
-				Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi")}},
+			Command:      []string{"/shell-reaper", "install", shellHelperPath + "/shell-reaper"},
+			VolumeMounts: []corev1.VolumeMount{{Name: shellHelperName, MountPath: shellHelperPath}},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				ReadOnlyRootFilesystem:   ptr.To(true),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+			},
 		}}
 	}
 	return corev1.PodSpec{

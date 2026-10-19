@@ -301,7 +301,7 @@ func TestExitWatchReportsTheCommandWhileABackgroundJobHoldsItsOutput(t *testing.
 func legacyWrappedCommand(dir, uid string, command []string, stdin, tty bool) []string {
 	mode := "-"
 	if !stdin && !tty {
-		mode = "null"
+		mode = nullStdin
 	}
 	return append([]string{"sh", "-c", wrapperScript, "sh", wrapperScript,
 		markerPath(dir, uid), exitPath(dir, uid), mode, "0"}, command...)

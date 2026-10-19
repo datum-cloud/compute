@@ -70,7 +70,7 @@ func TestWrappedCommandArguments(t *testing.T) {
 		{name: "stdin", stdin: true, mode: "-"},
 		{name: "terminal", tty: true, mode: "-"},
 		{name: "stdin and terminal", stdin: true, tty: true, mode: "-"},
-		{name: "neither", mode: "null"},
+		{name: "neither", mode: nullStdin},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
