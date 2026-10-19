@@ -84,6 +84,7 @@ func TestArguments(t *testing.T) {
 }
 
 func TestTTLFlag(t *testing.T) {
+	const ttlRangeError = "--ttl must be between 1m and 1h"
 	tests := []struct {
 		name     string
 		flag     string
@@ -95,9 +96,9 @@ func TestTTLFlag(t *testing.T) {
 		{name: "minimum", flag: "1m", want: time.Minute},
 		{name: "maximum", flag: "1h", want: time.Hour},
 		{name: "fractional duration", flag: "1m30s", want: 90 * time.Second},
-		{name: "too short", flag: "59s", wantCode: 2, wantErr: "--ttl must be between 1m and 1h"},
-		{name: "too long", flag: "1h1s", wantCode: 2, wantErr: "--ttl must be between 1m and 1h"},
-		{name: "zero", flag: "0", wantCode: 2, wantErr: "--ttl must be between 1m and 1h"},
+		{name: "too short", flag: "59s", wantCode: 2, wantErr: ttlRangeError},
+		{name: "too long", flag: "1h1s", wantCode: 2, wantErr: ttlRangeError},
+		{name: "zero", flag: "0", wantCode: 2, wantErr: ttlRangeError},
 		{name: "invalid duration", flag: "forever", wantCode: 2, wantErr: "invalid duration"},
 	}
 	for _, tt := range tests {
