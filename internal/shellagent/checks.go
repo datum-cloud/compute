@@ -181,6 +181,9 @@ func (a *Agent) probe(ctx context.Context, pod *corev1.Pod, container, executabl
 	case code == probeExitNoWritableDir:
 		return "", reject(computev1alpha.InstanceConsoleSessionReasonNoShell,
 			"The container has no writable temporary directory, which the platform needs to manage the command."), nil
+	case code == probeExitNoReaper:
+		return "", reject(computev1alpha.InstanceConsoleSessionReasonUnavailable,
+			"The instance needs to restart to enable safe shell session cleanup."), nil
 	case code != 0:
 		return "", reject(computev1alpha.InstanceConsoleSessionReasonNoShell,
 			"The container's shell (sh) failed to run."), nil

@@ -29,6 +29,7 @@ RUN go mod download
 COPY cmd/main.go cmd/main.go
 COPY cmd/compute-mcp/ cmd/compute-mcp/
 COPY cmd/shell-agent/ cmd/shell-agent/
+COPY cmd/shell-reaper/ cmd/shell-reaper/
 COPY cmd/shell-endpoint-probe/ cmd/shell-endpoint-probe/
 COPY api/ api/
 COPY internal/ internal/
@@ -73,6 +74,11 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     -ldflags "-s -w" \
     -o shell-agent ./cmd/shell-agent
 
+RUN --mount=type=cache,target=/go/pkg/mod/ \
+  --mount=type=cache,target="/root/.cache/go-build" \
+  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w" -o shell-reaper ./cmd/shell-reaper
+
 # shell-endpoint-probe runs beside each tunnel endpoint and dials it the way a
 # session's client does, with the same client package, so the endpoint is
 # ready only while clients can reach it.
@@ -96,6 +102,7 @@ WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/compute-mcp .
 COPY --from=builder /workspace/shell-agent .
+COPY --from=builder /workspace/shell-reaper .
 COPY --from=builder /workspace/shell-endpoint-probe .
 USER 65532:65532
 

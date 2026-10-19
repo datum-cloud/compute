@@ -182,6 +182,7 @@ func TestChecksBeforeClaim(t *testing.T) {
 	}{
 		{"no shell", func(h *harness) { h.exec.probeExit = 127 }, computev1alpha.InstanceConsoleSessionReasonNoShell},
 		{"no writable directory", func(h *harness) { h.exec.probeExit = probeExitNoWritableDir }, computev1alpha.InstanceConsoleSessionReasonNoShell},
+		{"no session reaper", func(h *harness) { h.exec.probeExit = probeExitNoReaper }, computev1alpha.InstanceConsoleSessionReasonUnavailable},
 		{"missing executable", func(h *harness) { h.exec.probeExit = probeExitCommandMissing }, computev1alpha.InstanceConsoleSessionReasonCommandUnavailable},
 		{"replaced instance", func(h *harness) {
 			patchInstance(h, func(i *computev1alpha.Instance) {

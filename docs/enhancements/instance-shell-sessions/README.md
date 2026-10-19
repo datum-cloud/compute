@@ -279,7 +279,7 @@ Deleting an active session revokes it. The controller sets the terminal
 reason right away so the client learns the outcome without waiting on the
 cell, then annotates the hub copy to ask the cell to revoke the session.
 `endedAt` is a separate, honest signal: it is set only once the agent
-confirms the process group has stopped, not when the terminal reason first
+confirms the session supervisor has stopped and reaped its descendants, not when the terminal reason first
 appears. A finalizer waits up to five minutes for that confirmation before
 the controller deletes the hub copy; Karmada deletes the propagated cell copy
 as soon as the hub copy is gone, without waiting for the agent to finish
@@ -296,6 +296,20 @@ session ended before it connected reads them from the session's final state.
 Audit records outlive the resource.
 
 ### Runtime and routing
+
+For Kata instances, the provider supplies a static `shell-reaper` executable
+through a read-only mount in each application container. An init container
+copies that binary from the same versioned compute image as the cell agent.
+The exec agent refuses a session if the helper is absent; older Pods require
+replacement before they can start new shell sessions. The helper is a child
+subreaper for the command and waits for adopted descendants after a normal
+exit, disconnect, revoke, or expiry. If the helper disappears before it can
+confirm cleanup, the agent keeps the slot and reports cleanup unconfirmed.
+Preexisting zombies adopted by the old container PID 1 cannot be reaped by
+the helper and require a container restart. Rollout requires a Kata provider
+release that sets `instancepod.Options.ShellReaperImage` to an immutable compute
+image digest and replacement of old instance Pods; deploying this agent alone
+does not complete the migration.
 
 - **Runtime capability.** Runtime classes advertise the `exec` feature, and
   sessions for classes without it are refused. The agent also checks that the

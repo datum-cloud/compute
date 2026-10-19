@@ -219,7 +219,7 @@ func TestWrapperRecordsItsSession(t *testing.T) {
 	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, ".datum-exec-uid")
-	args := wrappedCommand(dir, "uid", []string{"sh", "-c", `cat; read -r l < /proc/$$/stat; set -- ${l##*)}; echo "$4"`}, false, false)
+	args := legacyWrappedCommand(dir, "uid", []string{"sh", "-c", `cat; read -r l < /proc/$$/stat; set -- ${l##*)}; echo "$4"`}, false, false)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdin = strings.NewReader("must not be read\n")
 	out, err := cmd.Output()
@@ -249,7 +249,7 @@ func TestWrapperRecordsItsSession(t *testing.T) {
 // script then stops the job.
 func TestExitWatchReportsTheCommandWhileABackgroundJobHoldsItsOutput(t *testing.T) {
 	dir := t.TempDir()
-	args := wrappedCommand(dir, "uid", []string{"sh", "-c", "sleep 30 & exit 3"}, true, false)
+	args := legacyWrappedCommand(dir, "uid", []string{"sh", "-c", "sleep 30 & exit 3"}, true, false)
 	wrapper := exec.Command(args[0], args[1:]...)
 	wrapper.Stdout = &strings.Builder{}
 	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -294,6 +294,17 @@ func TestExitWatchReportsTheCommandWhileABackgroundJobHoldsItsOutput(t *testing.
 			}
 		}
 	}
+}
+
+// Kept for compatibility tests: the cleanup script still supports sessions
+// created before Pods carried the native supervisor.
+func legacyWrappedCommand(dir, uid string, command []string, stdin, tty bool) []string {
+	mode := "-"
+	if !stdin && !tty {
+		mode = "null"
+	}
+	return append([]string{"sh", "-c", wrapperScript, "sh", wrapperScript,
+		markerPath(dir, uid), exitPath(dir, uid), mode, "0"}, command...)
 }
 
 func TestExitWatchGivesUpOnceTheSessionIsStopped(t *testing.T) {
