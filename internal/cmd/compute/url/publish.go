@@ -79,12 +79,13 @@ func Publish(
 	w *computev1alpha.Workload,
 	portName string,
 	port int32,
+	http2 bool,
 	hostnames []string,
 ) (*Info, error) {
 	// A write interrupted by Ctrl-C is a detach like any other. Reporting the
 	// cancelled context as a failure would exit 1 on a keystroke the user was
 	// told is safe.
-	if err := Declare(ctx, c, w, portName, port, hostnames); err != nil {
+	if err := Declare(ctx, c, w, portName, port, http2, hostnames); err != nil {
 		if ctx.Err() != nil {
 			detached(out, w.Name)
 			return nil, nil
@@ -114,9 +115,10 @@ func Declare(
 	w *computev1alpha.Workload,
 	portName string,
 	port int32,
+	http2 bool,
 	hostnames []string,
 ) error {
-	if err := applyService(ctx, c, BuildNetworkService(w, portName, port)); err != nil {
+	if err := applyService(ctx, c, BuildNetworkService(w, portName, port, http2)); err != nil {
 		return err
 	}
 	return applyProxy(ctx, c, BuildHTTPProxy(w, portName, hostnames))

@@ -94,7 +94,7 @@ func dnsLabel(s string) bool {
 
 func TestResourceNameIsSharedByBothObjects(t *testing.T) {
 	w := testWorkload()
-	svc := BuildNetworkService(w, testPortName, 8080)
+	svc := BuildNetworkService(w, testPortName, 8080, false)
 	proxy := BuildHTTPProxy(w, testPortName, nil)
 
 	if svc.Name != ResourceName(w.Name) || proxy.Name != ResourceName(w.Name) {
@@ -108,7 +108,7 @@ func TestResourceNameIsSharedByBothObjects(t *testing.T) {
 
 func TestBuildNetworkService(t *testing.T) {
 	w := testWorkload()
-	svc := BuildNetworkService(w, testPortName, 8080)
+	svc := BuildNetworkService(w, testPortName, 8080, false)
 
 	if svc.Namespace != util.ResourceNamespace {
 		t.Errorf("namespace = %q, want %q", svc.Namespace, util.ResourceNamespace)
@@ -223,5 +223,16 @@ func assertOwnerRef(t *testing.T, refs []metav1.OwnerReference, w *computev1alph
 	}
 	if ref.BlockOwnerDeletion == nil || *ref.BlockOwnerDeletion {
 		t.Errorf("owner blockOwnerDeletion = %v, want false", ref.BlockOwnerDeletion)
+	}
+}
+
+func TestBuildNetworkServiceHTTP2(t *testing.T) {
+	if got := BuildNetworkService(testWorkload(), "http", 8080, false).Spec.Ports[0].AppProtocol; got != nil {
+		t.Errorf("appProtocol = %q without http2, want unset so the edge speaks HTTP/1.1", *got)
+	}
+
+	got := BuildNetworkService(testWorkload(), "http", 8080, true).Spec.Ports[0].AppProtocol
+	if got == nil || *got != networkingv1alpha.NetworkServiceAppProtocolH2C {
+		t.Errorf("appProtocol = %v with http2, want %q", got, networkingv1alpha.NetworkServiceAppProtocolH2C)
 	}
 }
