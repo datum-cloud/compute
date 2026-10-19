@@ -74,6 +74,34 @@ func testWorkloadDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *c
 	return wd
 }
 
+func TestUpsertDownstreamDeploymentReplicaTarget(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		replicas *int32
+		want     int32
+	}{
+		{name: "defaults unset target to minimum", want: 3},
+		{name: "preserves explicit target", replicas: new(int32(5)), want: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			deployment := testWorkloadDeployment()
+			deployment.Spec.ScaleSettings.MinReplicas = 3
+			deployment.Spec.Replicas = tc.replicas
+			karmadaClient := newKarmadaFakeClient()
+			r := &WorkloadDeploymentFederator{}
+
+			got, err := r.upsertDownstreamDeployment(context.Background(), karmadaClient, deployment, testKarmadaNSStr, "")
+			require.NoError(t, err)
+			require.NotNil(t, got.Spec.Replicas)
+			assert.Equal(t, tc.want, *got.Spec.Replicas)
+			assert.Equal(t, tc.replicas, deployment.Spec.Replicas, "project deployment must stay unchanged")
+		})
+	}
+}
+
 // withFinalizer adds the federator finalizer to the WorkloadDeployment.
 func withFinalizer(wd *computev1alpha.WorkloadDeployment) {
 	wd.Finalizers = append(wd.Finalizers, federatorFinalizer)
