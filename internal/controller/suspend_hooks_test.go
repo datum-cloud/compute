@@ -157,7 +157,7 @@ func TestSuspendResumeSetsWorkloadDeploymentAnnotation(t *testing.T) {
 	if err := consumerClient.Get(ctx, key, &got); err != nil {
 		t.Fatalf("get after resume: %v", err)
 	}
-	if _, ok := got.Annotations[computev1alpha.SuspendedAnnotation]; ok {
-		t.Fatalf("SuspendedAnnotation still present after resume: %q", got.Annotations[computev1alpha.SuspendedAnnotation])
+	if got.Annotations[computev1alpha.SuspendedAnnotation] != "false" {
+		t.Fatalf("SuspendedAnnotation = %q after resume, want false", got.Annotations[computev1alpha.SuspendedAnnotation])
 	}
 }

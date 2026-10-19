@@ -193,21 +193,40 @@ spec:
 
   - name: s2-resume
     description: |
-      Remove compute.datumapis.com/suspended from the control-plane WD.
-      Re-applying workload-deployment.yaml (the manifest without the
-      annotation) does NOT reliably remove it: CRDs don't support strategic
-      merge patch, and a plain merge patch of an omitted key is a no-op, not a
-      deletion — this mirrors kubectl's own `annotate key-` semantics, which
-      exists precisely because omission from a new manifest isn't deletion.
-      Removing it explicitly here matches what ComputeResume actually does in
-      production (suspend_hooks.go: delete(wd.Annotations, ...)).
+      Set compute.datumapis.com/suspended=false on the control-plane WD.
+      ComputeResume sends an explicit false value so Karmada propagates a
+      metadata value change to the cell instead of relying on annotation
+      deletion to clear a prior true value.
     try:
     - script:
         content: |
           kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
             annotate workloaddeployment test-suspend-wd \
             --namespace "$NAMESPACE" \
-            compute.datumapis.com/suspended-
+            compute.datumapis.com/suspended=false --overwrite
+
+  - name: s2-assert-resume-on-downstream
+    description: Assert the explicit resume value reached the Karmada copy.
+    cluster: downstream
+    try:
+    - script:
+        content: |
+          kubectl --kubeconfig=../../../tmp/e2e/kubeconfigs/control-plane.yaml \
+            get namespace "$NAMESPACE" \
+            -o template='{{printf "ns-%s" .metadata.uid}}'
+        outputs:
+        - name: downstreamNS
+          value: ($stdout)
+    - assert:
+        timeout: 30s
+        resource:
+          apiVersion: compute.datumapis.com/v1alpha
+          kind: WorkloadDeployment
+          metadata:
+            namespace: ($downstreamNS)
+            name: test-suspend-wd
+            annotations:
+              compute.datumapis.com/suspended: "false"
 
   - name: s2-assert-resumed-on-pop-dfw
     description: Assert the cell reconciler cleared Status.Suspended on both objects.
@@ -229,6 +248,8 @@ spec:
           metadata:
             namespace: ($cellNS)
             name: test-suspend-wd
+            annotations:
+              compute.datumapis.com/suspended: "false"
           # Suspended is `json:"suspended,omitempty"`, so a resumed (false)
           # object may omit the key entirely rather than store it literally as
           # false. This expression normalizes both "absent" and "present and

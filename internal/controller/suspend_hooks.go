@@ -34,6 +34,9 @@ const (
 	// suspendedAnnotationTrue is the SuspendedAnnotation value that requests
 	// suspension. Any other value, or absence of the annotation, means resumed.
 	suspendedAnnotationTrue = "true"
+	// Keep the resume request explicit across Karmada's hub-to-cell metadata
+	// propagation. Removing an annotation may leave the old value on a cell.
+	suspendedAnnotationFalse = "false"
 )
 
 // ComputeSuspend implements consumer.Suspend. It requests that every
@@ -113,7 +116,7 @@ func (cs *ComputeSuspend) SuspendConsumer(
 	return nil
 }
 
-// ComputeResume implements consumer.Resume. It clears the suspend request on
+// ComputeResume implements consumer.Resume. It sets the suspend request to false on
 // every WorkloadDeployment owned by the reinstated consumer project, scoped
 // by the services.miloapis.com/service-name label. It is idempotent:
 // deployments not currently carrying the request are skipped.
@@ -159,7 +162,7 @@ func (cr *ComputeResume) ResumeConsumer(
 				continue // already active — idempotent
 			}
 			base := wd.DeepCopy()
-			delete(wd.Annotations, computev1alpha.SuspendedAnnotation)
+			wd.Annotations[computev1alpha.SuspendedAnnotation] = suspendedAnnotationFalse
 			if err := consumerClient.Patch(ctx, wd, client.MergeFrom(base)); err != nil {
 				if cr.recorder != nil {
 					cr.recorder.Eventf(wd, nil, corev1.EventTypeWarning,

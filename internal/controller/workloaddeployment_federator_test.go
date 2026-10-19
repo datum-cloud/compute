@@ -649,6 +649,33 @@ func TestWorkloadDeploymentFederator_AnnotationPropagation(t *testing.T) {
 		"federator must delete the downstream annotation once the project WD no longer carries it")
 }
 
+func TestWorkloadDeploymentFederator_SuspensionValuePropagation(t *testing.T) {
+	t.Parallel()
+	wd := testWorkloadDeployment(withFinalizer, func(w *computev1alpha.WorkloadDeployment) {
+		w.Annotations = map[string]string{computev1alpha.SuspendedAnnotation: suspendedAnnotationTrue}
+	})
+	projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+	karmadaClient := newKarmadaFakeClient()
+	r := newTestFederator(projectClient, karmadaClient)
+	ctx := context.Background()
+	key := types.NamespacedName{Name: testWDName, Namespace: testKarmadaNSStr}
+
+	_, err := r.Reconcile(ctx, reconcileRequest())
+	require.NoError(t, err)
+	var downstream computev1alpha.WorkloadDeployment
+	require.NoError(t, karmadaClient.Get(ctx, key, &downstream))
+	assert.Equal(t, suspendedAnnotationTrue, downstream.Annotations[computev1alpha.SuspendedAnnotation])
+
+	var project computev1alpha.WorkloadDeployment
+	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{Name: testWDName, Namespace: testProjNS}, &project))
+	project.Annotations[computev1alpha.SuspendedAnnotation] = suspendedAnnotationFalse
+	require.NoError(t, projectClient.Update(ctx, &project))
+	_, err = r.Reconcile(ctx, reconcileRequest())
+	require.NoError(t, err)
+	require.NoError(t, karmadaClient.Get(ctx, key, &downstream))
+	assert.Equal(t, suspendedAnnotationFalse, downstream.Annotations[computev1alpha.SuspendedAnnotation])
+}
+
 // TestWorkloadDeploymentFederator_NotFound verifies that a missing
 // WorkloadDeployment is handled gracefully (no error, no action).
 func TestWorkloadDeploymentFederator_NotFound(t *testing.T) {
