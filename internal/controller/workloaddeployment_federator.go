@@ -404,6 +404,12 @@ func (r *WorkloadDeploymentFederator) upsertDownstreamDeployment(
 			delete(kd.Labels, computev1alpha.RuntimeClassLabel)
 		}
 		kd.Spec = deployment.Spec
+		// The cell initializes an unset replica target to minReplicas. Send that
+		// same target through Karmada so it does not repeatedly undo the cell's
+		// initialization and trigger a spec/status update loop.
+		if kd.Spec.Replicas == nil {
+			kd.Spec.Replicas = new(kd.Spec.ScaleSettings.MinReplicas)
+		}
 		// Propagate controller-managed annotations from the project WD to the
 		// downstream WD. The cell reads the expected-referenced-data annotation
 		// to gate-clear instances; without this copy it would never arrive.
