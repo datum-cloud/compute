@@ -34,6 +34,7 @@ type options struct {
 	command   []string
 	stdin     bool
 	tty       bool
+	ttl       time.Duration
 }
 
 func Command() *cobra.Command {
@@ -69,6 +70,9 @@ errors exit 2.`,
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("ttl") && (opts.ttl < time.Minute || opts.ttl > time.Hour) {
+				return &util.ExitError{Code: 2, Err: errors.New("--ttl must be between 1m and 1h")}
+			}
 			return run(cmd, opts)
 		},
 		ValidArgsFunction: util.CompleteInstanceNames,
@@ -80,6 +84,7 @@ errors exit 2.`,
 	cmd.Flags().StringVarP(&opts.container, "container", "c", "", "Container to run the command in; required when the instance runs several")
 	cmd.Flags().BoolVarP(&opts.stdin, "stdin", "i", false, "Pass standard input to the command")
 	cmd.Flags().BoolVarP(&opts.tty, "tty", "t", false, "Run the command in a terminal")
+	cmd.Flags().DurationVar(&opts.ttl, "ttl", 0, "Maximum time the command may run (1m to 1h; default 15m)")
 
 	return cmd
 }
