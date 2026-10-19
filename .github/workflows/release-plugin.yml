@@ -56,6 +56,11 @@ jobs:
     name: Open the catalog PR
     needs: [release-plugin]
     runs-on: ubuntu-latest
+    # Every release of a plugin updates the same open catalog PR, so two
+    # releases close together must not write its branch at once.
+    concurrency:
+      group: plugin-index-datum-cloud-datumctl-plugins-compute-main
+      cancel-in-progress: false
     permissions:
       # Only to read this release's checksums.txt; the catalog PR is pushed
       # with the app token below.
@@ -73,7 +78,7 @@ jobs:
           repositories: datumctl-plugins
 
       - name: Update the compute plugin manifest
-        uses: datum-cloud/actions/update-plugin-index@v1.21.0
+        uses: datum-cloud/actions/update-plugin-index@v1.22.0
         with:
           index-repo: datum-cloud/datumctl-plugins
           plugin-name: compute
