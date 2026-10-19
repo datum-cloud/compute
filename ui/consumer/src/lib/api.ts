@@ -297,7 +297,9 @@ export function useComputeEnablement(projectId: string | undefined): ComputeEnab
 // six-region mesh (DEMO_MODE=simulate), reachable over a public HTTPProxy URL
 // so it shows up with live "Requests" metrics like any other published
 // workload. No credentials Secret is needed: the unikernel image pulls
-// anonymously. Names below are per-deploy
+// anonymously. When the project already has exactly one Network (the one the
+// home page asks a new project to create), the demo joins it and skips the
+// Network below. Names below are per-deploy
 // (`datum-demo-<suffix>` / `datum-demo-net-<suffix>`) rather than fixed, and
 // every object carries `app.kubernetes.io/managed-by: compute-portal-demo` —
 // see `randomDemoSuffix`/`DEMO_LABELS` below. Verified on staging 2026-09-17:
@@ -462,14 +464,30 @@ async function applyDemoResource(projectId: string, path: string, body: unknown)
   }
 }
 
-/** Deploys the Global Mesh demo under a fresh, randomly-suffixed name: Network, then
- * Workload, then the NetworkService/HTTPProxy that publish it. Returns the Workload's name. */
+/** The project's network when it has exactly one, which the demo joins instead of making its
+ * own. A project the user set up from the home page has one; with none, several, or no read
+ * access the demo keeps creating a network of its own. */
+async function existingDemoNetwork(projectId: string): Promise<string | undefined> {
+  const networks = await listOrUnavailable<{ metadata?: { name?: string } }>(
+    projectId,
+    NETWORKS_PATH
+  ).catch(() => null);
+  if (networks?.length !== 1) return undefined;
+  return networks[0].metadata?.name || undefined;
+}
+
+/** Deploys the Global Mesh demo under a fresh, randomly-suffixed name: the Network (unless
+ * the project already has one), then the Workload, then the NetworkService/HTTPProxy that
+ * publish it. Returns the Workload's name. */
 async function createDemoWorkload(projectId: string): Promise<string> {
   const suffix = randomDemoSuffix();
-  const networkName = `datum-demo-net-${suffix}`;
   const workloadName = `datum-demo-${suffix}`;
 
-  await applyDemoResource(projectId, NETWORKS_PATH, demoNetworkPayload(networkName));
+  let networkName = await existingDemoNetwork(projectId);
+  if (!networkName) {
+    networkName = `datum-demo-net-${suffix}`;
+    await applyDemoResource(projectId, NETWORKS_PATH, demoNetworkPayload(networkName));
+  }
   await applyDemoResource(projectId, WORKLOADS_PATH, demoWorkloadPayload(workloadName, networkName));
   await applyDemoResource(
     projectId,
