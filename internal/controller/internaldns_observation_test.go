@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,7 +78,7 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 			network := &networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestNetworkName, Namespace: internalDNSTestObservationNamespace, UID: networkUID}}
 			project := fake.NewClientBuilder().WithScheme(scheme).WithObjects(network, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestObservationNamespace, UID: "project-namespace"}}).Build()
 			claim := &networkingv1alpha.NetworkInterfaceClaim{ObjectMeta: metav1.ObjectMeta{Name: networkInterfaceClaimName(internalDNSTestInstanceName, defaultInterfaceName), Namespace: edgeInstance.Namespace, UID: "claim-uid"}, Spec: networkingv1alpha.NetworkInterfaceClaimSpec{Network: networkingv1alpha.LocalNetworkRef{Name: internalDNSTestNetworkName}}, Status: networkingv1alpha.NetworkInterfaceClaimStatus{NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: iface.Name}}}
-			networkContext := &networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: edgeInstance.Namespace, UID: "network-context", Labels: map[string]string{networkingv1alpha.NetworkUIDLabel: "network-uid"}}, Spec: networkingv1alpha.NetworkContextSpec{Network: networkingv1alpha.LocalNetworkRef{Name: internalDNSTestNetworkName}, Location: networkingv1alpha.LocationReference{Name: "dfw"}}}
+			networkContext := &networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: edgeInstance.Namespace, UID: "network-context", Labels: map[string]string{networkingv1alpha.NetworkUIDLabel: "network-uid"}}, Spec: networkingv1alpha.NetworkContextSpec{Network: networkingv1alpha.LocalNetworkRef{Name: internalDNSTestNetworkName}, Location: locationsv1alpha1.LocationReference{Name: "dfw"}}}
 			source := fake.NewClientBuilder().WithScheme(scheme).WithObjects(edgeInstance, iface, claim, networkContext, pod, node).Build()
 			got, err := ObserveInternalDNSInterface(context.Background(), project, internalDNSTestObservationNamespace, instance, instance.Spec.NetworkInterfaces[0], InternalDNSObservationSource{Reader: source})
 			if tc.wantErr {
