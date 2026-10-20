@@ -2,11 +2,7 @@
 
 // Package locations reads the two location facts compute depends on: which
 // cities a project may place workloads in, and which location a cell serves.
-//
-// Both are served today by network-services-operator and are moving to the
-// locations service. Which one is read is selected per deployment by Source,
-// so a control plane that has not been migrated keeps reading the types it
-// already has.
+// Both are read from the locations service.
 package locations
 
 import (
@@ -24,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
@@ -47,25 +42,27 @@ const (
 type Source string
 
 const (
-	// SourceNetworkServices reads networking.datumapis.com LocationBindings and
-	// ServingLocations. This is what every deployment reads today.
-	SourceNetworkServices Source = "NetworkServices"
-
 	// SourceLocations reads locations.miloapis.com Locations and
 	// ServingLocations, served by the locations service.
 	SourceLocations Source = "Locations"
+
+	// sourceNetworkServices read networking.datumapis.com LocationBindings and
+	// ServingLocations. network-services-operator no longer serves
+	// ServingLocations, so it is refused by name rather than as unknown.
+	sourceNetworkServices Source = "NetworkServices"
 )
 
-// Resolve reports which source to read. An unset source reads network
-// services, matching the config default.
+// Resolve reports which source to read. An unset source reads the locations
+// service, matching the config default.
 func (s Source) Resolve() (Source, error) {
 	switch s {
-	case "", SourceNetworkServices:
-		return SourceNetworkServices, nil
-	case SourceLocations:
+	case "", SourceLocations:
 		return SourceLocations, nil
+	case sourceNetworkServices:
+		return "", fmt.Errorf("location source %q is no longer supported: network-services-operator "+
+			"no longer serves ServingLocations; set locationSource to %q", s, SourceLocations)
 	default:
-		return "", fmt.Errorf("unknown location source %q, want %q or %q", s, SourceNetworkServices, SourceLocations)
+		return "", fmt.Errorf("unknown location source %q, want %q", s, SourceLocations)
 	}
 }
 
@@ -74,10 +71,8 @@ type PlacementLocation struct {
 	Name     string
 	Topology map[string]string
 
-	// Ready reports whether the location itself is serving. A Location read
-	// from the locations service is Ready when its Ready condition is true. A
-	// LocationBinding carries no readiness contract that compute reads, so
-	// every binding is Ready.
+	// Ready reports whether the location itself is serving: its Ready
+	// condition is true.
 	Ready bool
 
 	// ServiceAvailable reports whether compute is deployed and validated at
@@ -115,26 +110,8 @@ func (l ServingLocation) CityCode() string {
 // ListPlacementLocations returns the locations a project may place workloads
 // at, read from the project's control plane.
 func ListPlacementLocations(ctx context.Context, c client.Client, source Source) ([]PlacementLocation, error) {
-	resolved, err := source.Resolve()
-	if err != nil {
+	if _, err := source.Resolve(); err != nil {
 		return nil, err
-	}
-
-	if resolved == SourceNetworkServices {
-		var bindings networkingv1alpha.LocationBindingList
-		if err := c.List(ctx, &bindings); err != nil {
-			return nil, fmt.Errorf("failed to list location bindings: %w", err)
-		}
-
-		found := make([]PlacementLocation, 0, len(bindings.Items))
-		for _, binding := range bindings.Items {
-			found = append(found, PlacementLocation{
-				Name:     binding.Name,
-				Topology: binding.Spec.Topology,
-				Ready:    true,
-			})
-		}
-		return markServiceAvailability(ctx, c, found)
 	}
 
 	var list locationsv1alpha1.LocationList
@@ -213,25 +190,8 @@ func ServesServiceAvailabilityKind(mapper apimeta.RESTMapper) (bool, error) {
 
 // ListServingLocations returns the locations delivered to a cell.
 func ListServingLocations(ctx context.Context, c client.Client, source Source) ([]ServingLocation, error) {
-	resolved, err := source.Resolve()
-	if err != nil {
+	if _, err := source.Resolve(); err != nil {
 		return nil, err
-	}
-
-	if resolved == SourceNetworkServices {
-		var list networkingv1alpha.ServingLocationList
-		if err := c.List(ctx, &list); err != nil {
-			return nil, fmt.Errorf("failed to list serving locations: %w", err)
-		}
-
-		found := make([]ServingLocation, 0, len(list.Items))
-		for _, servingLocation := range list.Items {
-			found = append(found, ServingLocation{
-				Name:     servingLocation.Name,
-				Topology: servingLocation.Spec.Topology,
-			})
-		}
-		return found, nil
 	}
 
 	var list locationsv1alpha1.ServingLocationList
@@ -281,13 +241,8 @@ func Select(found []PlacementLocation, selector *metav1.LabelSelector) ([]Placem
 // PlacementLocationObject returns the object a controller watches to learn
 // that the locations a project may place workloads at have changed.
 func PlacementLocationObject(source Source) (client.Object, error) {
-	resolved, err := source.Resolve()
-	if err != nil {
+	if _, err := source.Resolve(); err != nil {
 		return nil, err
-	}
-
-	if resolved == SourceNetworkServices {
-		return &networkingv1alpha.LocationBinding{}, nil
 	}
 	return &locationsv1alpha1.Location{}, nil
 }
@@ -295,13 +250,8 @@ func PlacementLocationObject(source Source) (client.Object, error) {
 // PlacementLocationGVK returns the kind a controller watches to learn that the
 // locations a project may place workloads at have changed.
 func PlacementLocationGVK(source Source) (schema.GroupVersionKind, error) {
-	resolved, err := source.Resolve()
-	if err != nil {
+	if _, err := source.Resolve(); err != nil {
 		return schema.GroupVersionKind{}, err
-	}
-
-	if resolved == SourceNetworkServices {
-		return networkingv1alpha.GroupVersion.WithKind("LocationBinding"), nil
 	}
 	return locationsv1alpha1.GroupVersion.WithKind("Location"), nil
 }
@@ -339,26 +289,16 @@ func servesKind(mapper apimeta.RESTMapper, gvk schema.GroupVersionKind) (bool, e
 // ServingLocationObject returns the object a controller watches to learn that
 // a cell has been told where it sits.
 func ServingLocationObject(source Source) (client.Object, error) {
-	resolved, err := source.Resolve()
-	if err != nil {
+	if _, err := source.Resolve(); err != nil {
 		return nil, err
-	}
-
-	if resolved == SourceNetworkServices {
-		return &networkingv1alpha.ServingLocation{}, nil
 	}
 	return &locationsv1alpha1.ServingLocation{}, nil
 }
 
 // ServingLocationGVK returns the kind a controller watches for the source.
 func ServingLocationGVK(source Source) (schema.GroupVersionKind, error) {
-	resolved, err := source.Resolve()
-	if err != nil {
+	if _, err := source.Resolve(); err != nil {
 		return schema.GroupVersionKind{}, err
-	}
-
-	if resolved == SourceNetworkServices {
-		return networkingv1alpha.GroupVersion.WithKind("ServingLocation"), nil
 	}
 	return locationsv1alpha1.GroupVersion.WithKind("ServingLocation"), nil
 }
@@ -370,9 +310,6 @@ func ServingLocationGVK(source Source) (schema.GroupVersionKind, error) {
 // degrades to no locations, but a watch cannot, and registering one wedges the
 // manager during cache sync. Refusing to start says which CRD is missing, where
 // a wedged manager says nothing.
-//
-// This gates only the selected source. A deployment reading network services
-// must not be made to depend on the locations service being installed.
 func EnsureServingLocationKind(mapper apimeta.RESTMapper, source Source) error {
 	gvk, err := ServingLocationGVK(source)
 	if err != nil {
@@ -381,11 +318,9 @@ func EnsureServingLocationKind(mapper apimeta.RESTMapper, source Source) error {
 
 	if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
 		if kindNotInstalled(err) {
-			resolved, _ := source.Resolve()
 			return fmt.Errorf(
-				"locationSource %q watches %s, which this control plane does not serve: "+
-					"install the %s CustomResourceDefinition, or set locationSource to %q",
-				resolved, gvk, crdName(gvk), otherSource(resolved))
+				"compute watches %s, which this control plane does not serve: install the %s CustomResourceDefinition",
+				gvk, crdName(gvk))
 		}
 		return fmt.Errorf("failed to determine whether %s is served: %w", gvk, err)
 	}
@@ -395,13 +330,6 @@ func EnsureServingLocationKind(mapper apimeta.RESTMapper, source Source) error {
 
 func crdName(gvk schema.GroupVersionKind) string {
 	return fmt.Sprintf("%ss.%s", strings.ToLower(gvk.Kind), gvk.Group)
-}
-
-func otherSource(source Source) Source {
-	if source == SourceLocations {
-		return SourceNetworkServices
-	}
-	return SourceLocations
 }
 
 // PlaceableNames returns the names of the given locations a placement may run

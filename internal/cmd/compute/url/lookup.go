@@ -98,10 +98,12 @@ type Info struct {
 	Hostnames []Hostname `json:"hostnames,omitempty"`
 
 	// PortName and Port are the port the backends answer on. Protocol is the
-	// transport, always TCP today.
+	// transport, always TCP today. HTTP2 reports whether the edge reaches the
+	// port over HTTP/2.
 	PortName string `json:"portName,omitempty"`
 	Port     int32  `json:"port,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
+	HTTP2    bool   `json:"http2,omitempty"`
 
 	// Backends totals the serving instances; Locations breaks that down by
 	// city, which is what makes a multi-city deployment legible.
@@ -307,6 +309,7 @@ func newInfo(workloadName string, proxy *networkingv1alpha.HTTPProxy, service *n
 			if info.Protocol == "" {
 				info.Protocol = string(networkingv1alpha.NetworkServiceProtocolTCP)
 			}
+			info.HTTP2 = p.AppProtocol != nil && *p.AppProtocol == networkingv1alpha.NetworkServiceAppProtocolH2C
 		}
 		info.Backends = Backends{
 			Cities:  service.Status.Summary.Locations,

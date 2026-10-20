@@ -71,7 +71,11 @@ func renderBackendLine(out io.Writer, info *Info) {
 	if protocol == "" {
 		protocol = strings.ToLower(string(networkingv1alpha.NetworkServiceProtocolTCP))
 	}
-	fmt.Fprintf(out, "%-*s port %d/%s\n", labelWidth, "Backend", info.Port, protocol)
+	line := fmt.Sprintf("port %d/%s", info.Port, protocol)
+	if info.HTTP2 {
+		line += ", HTTP/2"
+	}
+	fmt.Fprintf(out, "%-*s %s\n", labelWidth, "Backend", line)
 }
 
 // renderLocations prints the per-location breakdown, indented under the label

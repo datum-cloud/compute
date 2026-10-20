@@ -21,7 +21,6 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
@@ -73,6 +72,34 @@ func testWorkloadDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *c
 		opt(wd)
 	}
 	return wd
+}
+
+func TestUpsertDownstreamDeploymentReplicaTarget(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		replicas *int32
+		want     int32
+	}{
+		{name: "defaults unset target to minimum", want: 3},
+		{name: "preserves explicit target", replicas: new(int32(5)), want: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			deployment := testWorkloadDeployment()
+			deployment.Spec.ScaleSettings.MinReplicas = 3
+			deployment.Spec.Replicas = tc.replicas
+			karmadaClient := newKarmadaFakeClient()
+			r := &WorkloadDeploymentFederator{}
+
+			got, err := r.upsertDownstreamDeployment(context.Background(), karmadaClient, deployment, testKarmadaNSStr, "")
+			require.NoError(t, err)
+			require.NotNil(t, got.Spec.Replicas)
+			assert.Equal(t, tc.want, *got.Spec.Replicas)
+			assert.Equal(t, tc.replicas, deployment.Spec.Replicas, "project deployment must stay unchanged")
+		})
+	}
 }
 
 // withFinalizer adds the federator finalizer to the WorkloadDeployment.
@@ -788,7 +815,7 @@ func TestWorkloadDeploymentFederator_FinalizesLegacyDeployment(t *testing.T) {
 		},
 		{
 			name:          "another legacy deployment routed by the city keeps them",
-			siblingLabels: map[string]string{networkingv1alpha.TopologyCityCodeKey: legacyCity},
+			siblingLabels: map[string]string{locationsv1alpha1.TopologyCityCodeKey: legacyCity},
 			wantCityPPs:   true,
 		},
 	}
@@ -804,7 +831,7 @@ func TestWorkloadDeploymentFederator_FinalizesLegacyDeployment(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testWDName,
 					Namespace: testKarmadaNSStr,
-					Labels:    map[string]string{networkingv1alpha.TopologyCityCodeKey: legacyCity},
+					Labels:    map[string]string{locationsv1alpha1.TopologyCityCodeKey: legacyCity},
 				},
 			}
 			policy := func(name string) *karmadapolicyv1alpha1.PropagationPolicy {

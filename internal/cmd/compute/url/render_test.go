@@ -189,3 +189,15 @@ func TestRenderDetailNilWritesNothing(t *testing.T) {
 		t.Errorf("output = %q, want nothing — the caller words the no-URL case", out.String())
 	}
 }
+
+func TestRenderDetailNamesHTTP2(t *testing.T) {
+	service := publishedService(testWorkloadName, 9090, location("DFW", 1, 1, true))
+	service.Spec.Ports[0].AppProtocol = ptr(networkingv1alpha.NetworkServiceAppProtocolH2C)
+	info := newInfo(testWorkloadName, publishedProxy(testWorkloadName, testCanonical), service)
+
+	var out bytes.Buffer
+	RenderDetail(&out, info)
+	if !strings.Contains(out.String(), "Backend      port 9090/tcp, HTTP/2") {
+		t.Errorf("the Backend line must say the edge speaks HTTP/2:\n%s", out.String())
+	}
+}

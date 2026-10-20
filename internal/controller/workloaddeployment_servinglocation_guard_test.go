@@ -96,44 +96,28 @@ func TestSetupWithManager_ServingLocationKindGuard(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	networkServicesCRD := moduleCRD(t, "go.datum.net/network-services-operator",
-		"config/crd/bases", "networking.datumapis.com_servinglocations.yaml")
 	locationsCRD := moduleCRD(t, "go.miloapis.com/locations",
 		"config/base/crd/bases", "locations.miloapis.com_servinglocations.yaml")
 
-	t.Run("neither kind served", func(t *testing.T) {
-		err := setupWithSource(t, "")
-		require.Error(t, err, "the default source must refuse to watch a kind the cell does not serve")
-		assert.Contains(t, err.Error(), "servinglocations.networking.datumapis.com",
-			"the error must name the CRD to install")
-		assert.Contains(t, err.Error(), "NetworkServices",
-			"the error must name the locationSource that requires it")
-		assert.Contains(t, err.Error(), "ServingLocation")
+	t.Run("kind not served", func(t *testing.T) {
+		for _, source := range []locations.Source{"", locations.SourceLocations} {
+			err := setupWithSource(t, source)
+			require.Errorf(t, err, "source %q must refuse to watch a kind the cell does not serve", source)
+			assert.Contains(t, err.Error(), "servinglocations.locations.miloapis.com",
+				"the error must name the CRD to install")
+			assert.Contains(t, err.Error(), "ServingLocation")
+		}
 
-		err = setupWithSource(t, locations.SourceLocations)
+		err := setupWithSource(t, "NetworkServices")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "servinglocations.locations.miloapis.com")
-		assert.Contains(t, err.Error(), "Locations")
+		assert.Contains(t, err.Error(), "no longer supported",
+			"the removed source must be refused by name, not as unknown")
 	})
 
-	// Install only the locations service kind. The Locations source must now be
-	// permitted and the default must still refuse: each source gates on the one
-	// kind it watches.
 	installCRD(t, locationsCRD)
 
-	t.Run("only the locations service kind served", func(t *testing.T) {
-		require.NoError(t, ensureWithSource(t, locations.SourceLocations),
-			"the selected source's kind is served, so the guard must permit it")
-
-		err := setupWithSource(t, "")
-		require.Error(t, err, "installing the locations service must not satisfy the default source")
-		assert.Contains(t, err.Error(), "servinglocations.networking.datumapis.com")
-	})
-
-	installCRD(t, networkServicesCRD)
-
-	t.Run("both kinds served", func(t *testing.T) {
-		for _, source := range []locations.Source{"", locations.SourceNetworkServices, locations.SourceLocations} {
+	t.Run("kind served", func(t *testing.T) {
+		for _, source := range []locations.Source{"", locations.SourceLocations} {
 			require.NoErrorf(t, ensureWithSource(t, source),
 				"the guard must permit source %q once its kind is served", source)
 		}

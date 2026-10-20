@@ -15,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/yaml"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
@@ -54,7 +53,7 @@ metricsServer:
 
 	cfg, err := loadServerConfig(write(t, header))
 	require.NoError(t, err)
-	assert.Equal(t, locations.SourceNetworkServices, cfg.LocationSource)
+	assert.Equal(t, locations.SourceLocations, cfg.LocationSource)
 
 	cfg, err = loadServerConfig(write(t, header+"locationSource: Locations\n"))
 	require.NoError(t, err)
@@ -62,6 +61,9 @@ metricsServer:
 
 	_, err = loadServerConfig(write(t, header+"locationSource: Nonsense\n"))
 	require.Error(t, err)
+
+	_, err = loadServerConfig(write(t, header+"locationSource: NetworkServices\n"))
+	require.Error(t, err, "network-services-operator no longer serves ServingLocations")
 }
 
 // TestSchemeResolvesLocationKinds is the runtime half of the typed locations
@@ -72,8 +74,6 @@ func TestSchemeResolvesLocationKinds(t *testing.T) {
 	for _, object := range []client.Object{
 		&locationsv1alpha1.Location{},
 		&locationsv1alpha1.ServingLocation{},
-		&networkingv1alpha.LocationBinding{},
-		&networkingv1alpha.ServingLocation{},
 	} {
 		gvk, err := apiutil.GVKForObject(object, scheme)
 		require.NoErrorf(t, err, "%T must be registered on the manager scheme", object)
@@ -82,10 +82,10 @@ func TestSchemeResolvesLocationKinds(t *testing.T) {
 }
 
 // TestServingLocationObjectIsRegistered pins the watch the deployment
-// reconciler installs: whichever source is selected, the object it watches has
-// to be resolvable on the manager scheme.
+// reconciler installs: the object it watches has to be resolvable on the
+// manager scheme.
 func TestServingLocationObjectIsRegistered(t *testing.T) {
-	for _, source := range []locations.Source{"", locations.SourceNetworkServices, locations.SourceLocations} {
+	for _, source := range []locations.Source{"", locations.SourceLocations} {
 		object, err := locations.ServingLocationObject(source)
 		require.NoError(t, err)
 
@@ -105,10 +105,6 @@ func TestServingLocationObjectIsRegistered(t *testing.T) {
 // reconciler and the deployment federator all stall, so nothing is federated,
 // no finalizer is written, and the pod stays Ready while reconciling nothing
 // until cluster engagement times out and it restarts into the same state.
-//
-// Both sources are covered: the manager is deployed with one ClusterRole and
-// locationSource is config, so whichever source a deployment selects has to be
-// permitted by the role that ships.
 func TestControllerRoleGrantsPlacementLocationWatches(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "config", "components", "controller_rbac", "role.yaml"))
 	require.NoError(t, err)
@@ -133,11 +129,9 @@ func TestControllerRoleGrantsPlacementLocationWatches(t *testing.T) {
 		return false
 	}
 
-	// The kinds every source watches or lists, named as the API server names
-	// them in an RBAC rule.
+	// The kinds compute watches or lists, named as the API server names them
+	// in an RBAC rule.
 	for _, resource := range []struct{ group, name string }{
-		{"networking.datumapis.com", "locationbindings"},
-		{"networking.datumapis.com", "servinglocations"},
 		{"locations.miloapis.com", "locations"},
 		{"locations.miloapis.com", "servinglocations"},
 		{"services.miloapis.com", "serviceavailabilities"},
