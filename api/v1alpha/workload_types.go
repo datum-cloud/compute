@@ -90,6 +90,13 @@ type WorkloadStatus struct {
 const (
 	// WorkloadAvailable indicates that at least one instance has come online.
 	WorkloadAvailable = "Available"
+
+	// AutoscalingReady indicates whether enabled autoscalers can evaluate and
+	// apply scaling decisions. It is independent of instance availability.
+	AutoscalingReady = "AutoscalingReady"
+
+	// AutoscalingLimited indicates that a configured limit constrains a scaling decision.
+	AutoscalingLimited = "AutoscalingLimited"
 )
 
 type WorkloadGatewayStatus struct {
