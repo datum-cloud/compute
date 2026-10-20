@@ -21,6 +21,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -51,7 +52,7 @@ func (r *WorkloadDeploymentFederator) ensureNetworkBinding(
 	if !ok {
 		return nil, nil
 	}
-	location := networkingv1alpha.LocationReference{Name: hubDeployment.Spec.LocationRef.Name}
+	location := locationsv1alpha1.LocationReference{Name: hubDeployment.Spec.LocationRef.Name}
 
 	key := client.ObjectKey{Namespace: hubDeployment.Namespace, Name: hubDeployment.Name}
 	var existing networkingv1alpha.NetworkBinding
@@ -113,7 +114,7 @@ func (r *WorkloadDeploymentFederator) createNetworkBinding(
 	ctx context.Context,
 	hubDeployment *computev1alpha.WorkloadDeployment,
 	network networkingv1alpha.NetworkRef,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) (*networkingv1alpha.NetworkBinding, error) {
 	binding := &networkingv1alpha.NetworkBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -168,7 +169,7 @@ func (r *WorkloadDeploymentFederator) reconcileNetworkBindingLabels(
 	ctx context.Context,
 	binding *networkingv1alpha.NetworkBinding,
 	network networkingv1alpha.NetworkRef,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) error {
 	desired := networkBindingLabels(network, location)
 
@@ -202,7 +203,7 @@ func (r *WorkloadDeploymentFederator) reconcileNetworkBindingLabels(
 // the only metadata on the binding compute owns.
 func networkBindingLabels(
 	network networkingv1alpha.NetworkRef,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) map[string]string {
 	return map[string]string{
 		networkingv1alpha.NetworkLabel:  network.Name,

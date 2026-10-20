@@ -49,6 +49,7 @@ var fullCapabilities = Capabilities{
 		FeatureImagePullSecrets,
 		FeatureContainerCapabilities,
 		FeatureSandboxSysctls,
+		FeatureGracefulTermination,
 	},
 	GrantableCapabilities: []Capability{testCapNetBindService, testCapChown},
 	SupportedSysctls: []Sysctl{{
@@ -113,6 +114,53 @@ func TestValidateSandboxSysctls(t *testing.T) {
 			),
 			capabilities: fullCapabilities,
 			want:         field.ErrorList{field.Duplicate(sysctlsPath.Index(1).Child("name"), testIPv4ForwardingSysctl)},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ValidateInstanceSpec(test.spec, test.capabilities, field.NewPath("spec"))
+			if delta := cmp.Diff(test.want, got, cmpopts.EquateEmpty()); delta != "" {
+				t.Errorf("unexpected rejections (-want +got):\n%s", delta)
+			}
+		})
+	}
+}
+
+func TestValidateTerminationGracePeriod(t *testing.T) {
+	request := func(grace *int64) computev1alpha.InstanceSpec {
+		spec := sandboxSpec(computev1alpha.SandboxContainer{Name: testContainerName})
+		spec.Runtime.TerminationGracePeriodSeconds = grace
+		return spec
+	}
+
+	tests := []struct {
+		name         string
+		spec         computev1alpha.InstanceSpec
+		capabilities Capabilities
+		want         field.ErrorList
+	}{
+		{
+			name:         "a class with graceful termination accepts a grace period",
+			spec:         request(ptr.To[int64](60)),
+			capabilities: fullCapabilities,
+		},
+		{
+			name:         "a class without graceful termination rejects a grace period",
+			spec:         request(ptr.To[int64](60)),
+			capabilities: minimalCapabilities,
+			want: field.ErrorList{field.Forbidden(field.NewPath("spec", "runtime", "terminationGracePeriodSeconds"),
+				`termination grace periods are not supported by the "azurite" runtime class`)},
+		},
+		{
+			name:         "an immediate stop is accepted by any class",
+			spec:         request(ptr.To[int64](0)),
+			capabilities: minimalCapabilities,
+		},
+		{
+			name:         "an unset grace period is accepted by any class",
+			spec:         request(nil),
+			capabilities: minimalCapabilities,
 		},
 	}
 

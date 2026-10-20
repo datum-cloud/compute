@@ -11,9 +11,9 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.12.1
-	go.datum.net/network-services-operator v0.27.0
+	go.datum.net/network-services-operator v0.32.26
 	go.miloapis.com/locations v0.0.1
-	go.miloapis.com/milo v0.32.1
+	go.miloapis.com/milo v0.36.2
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af

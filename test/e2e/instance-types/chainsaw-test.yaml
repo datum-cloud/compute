@@ -15,10 +15,10 @@
 #      a new Workload with the migration message naming replacementInstanceType.
 #
 # The suite seeds its own InstanceType objects (none are pre-seeded in e2e).
-# It also seeds the two networking objects Workload lifecycle needs and the e2e
-# environment ships empty: a cluster-scoped LocationBinding named "dfw" (the
-# placement location every scenario uses -- without it the webhook rejects
-# every placement) and a namespaced Network named "default" (the interface every
+# It also seeds the two objects Workload lifecycle needs and the e2e environment
+# ships empty: a cluster-scoped, Ready Location named "dfw" (the placement
+# location every scenario uses -- without it the webhook rejects every
+# placement) and a namespaced Network named "default" (the interface every
 # workload attaches -- without it the Workload controller sets Available=False
 # and never renders WorkloadDeployments).
 # Quota is disabled in the e2e cell (no ResourceClaim is ever created), so the
@@ -50,7 +50,11 @@ spec:
     description: Create the two Active InstanceType tiers the suite validates against.
     try:
     - apply:
-        file: location-binding-dfw.yaml
+        file: location-dfw.yaml
+    - script:
+        content: |
+          kubectl patch location dfw --subresource=status --type=merge -p \
+            '{"status":{"conditions":[{"type":"Ready","status":"True","reason":"Seeded","message":"Seeded by the e2e suite","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
     - apply:
         file: network-default.yaml
     # d2 is applied before d1 on purpose: cleanup runs in reverse order, and d1

@@ -63,7 +63,7 @@ func TestPublishCreatesBackendsBeforeTheProxy(t *testing.T) {
 	defer cancel()
 
 	var out bytes.Buffer
-	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, nil)
+	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil)
 	if err != nil {
 		t.Fatalf("detaching is not an error, got: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestPublishReturnsWhenTheURLIsLive(t *testing.T) {
 	defer cancel()
 
 	var out bytes.Buffer
-	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, nil)
+	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil)
 	if err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestPublishUpdatesAChangedPort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := Publish(ctx, &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 9090, nil); err != nil {
+	if _, err := Publish(ctx, &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 9090, false, nil); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 
@@ -169,7 +169,7 @@ func TestPublishUpdatesAChangedPort(t *testing.T) {
 func TestPublishAdoptsAnExistingUnlabelledObject(t *testing.T) {
 	// An object written before the labels existed must be brought in line, or
 	// lookups would never find it again.
-	svc := BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080)
+	svc := BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080, false)
 	svc.Labels = nil
 	svc.OwnerReferences = nil
 	proxy := BuildHTTPProxy(workloadNamed(testWorkloadName), testPortName, nil)
@@ -180,7 +180,7 @@ func TestPublishAdoptsAnExistingUnlabelledObject(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	if _, err := Publish(ctx, &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 8080, nil); err != nil {
+	if _, err := Publish(ctx, &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 

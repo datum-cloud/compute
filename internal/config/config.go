@@ -49,11 +49,8 @@ type WorkloadOperator struct {
 	// enabled.
 	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
 
-	// LocationSource names the API group locations are read from. Use
-	// "NetworkServices" for networking.datumapis.com LocationBindings and
-	// ServingLocations, or "Locations" for the dedicated locations.miloapis.com
-	// service. It governs reads only; nothing about what compute writes changes
-	// with it. Defaults to "NetworkServices".
+	// LocationSource selects the locations.miloapis.com service.
+	// Defaults to "Locations".
 	LocationSource locations.Source `json:"locationSource,omitempty"`
 }
 
@@ -72,7 +69,7 @@ type InternalDNSObservationSource struct {
 
 func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {
 	if obj.LocationSource == "" {
-		obj.LocationSource = locations.SourceNetworkServices
+		obj.LocationSource = locations.SourceLocations
 	}
 }
 

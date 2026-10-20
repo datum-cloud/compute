@@ -42,6 +42,7 @@ const (
 	FeatureContainerCapabilities   = computev1alpha.RuntimeClassFeatureContainerCapabilities
 	FeatureSandboxSysctls          = computev1alpha.RuntimeClassFeatureSandboxSysctls
 	FeatureExec                    = computev1alpha.RuntimeClassFeatureExec
+	FeatureGracefulTermination     = computev1alpha.RuntimeClassFeatureGracefulTermination
 )
 
 // Capability is a Linux capability name without the CAP_ prefix. It aliases the

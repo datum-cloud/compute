@@ -143,17 +143,17 @@ users:
 	}
 }
 
-// TestLocationSource_DefaultsToNetworkServices is the safety property behind
-// the flag: a config that does not set it reads what it reads today.
-func TestLocationSource_DefaultsToNetworkServices(t *testing.T) {
+// TestLocationSource_DefaultsToLocations: a config that does not set the
+// source reads the locations service, the only source left.
+func TestLocationSource_DefaultsToLocations(t *testing.T) {
 	cfg := decode(t, `
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: WorkloadOperator
 metricsServer:
   bindAddress: "0"
 `)
-	if cfg.LocationSource != locations.SourceNetworkServices {
-		t.Errorf("LocationSource = %q, want %q", cfg.LocationSource, locations.SourceNetworkServices)
+	if cfg.LocationSource != locations.SourceLocations {
+		t.Errorf("LocationSource = %q, want %q", cfg.LocationSource, locations.SourceLocations)
 	}
 }
 

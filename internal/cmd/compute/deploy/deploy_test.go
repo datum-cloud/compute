@@ -32,6 +32,7 @@ const (
 
 	imageFlag    = "--image=" + testImage
 	httpPortFlag = "--http-port=8080"
+	http2Flag    = "--http2"
 	noHTTPFlag   = "--no-http"
 
 	// testInstanceType is the instance type the control plane records on a
@@ -90,6 +91,28 @@ func TestValidateFlags(t *testing.T) {
 			name:    "no-http with a manifest",
 			args:    []string{"-f", testManifestFile, noHTTPFlag},
 			wantErr: "--no-http cannot be combined with -f",
+		},
+		{
+			name: "http2 with http-port",
+			args: []string{testWorkload, imageFlag, httpPortFlag, http2Flag},
+		},
+		{
+			name: "http2 alone leaves the port to the workload",
+			args: []string{testWorkload, imageFlag, http2Flag},
+		},
+		{
+			name: "http2 off with no-http",
+			args: []string{testWorkload, imageFlag, "--http2=false", noHTTPFlag},
+		},
+		{
+			name:    "http2 and no-http conflict",
+			args:    []string{testWorkload, imageFlag, http2Flag, noHTTPFlag},
+			wantErr: "--http2 and --no-http cannot be combined",
+		},
+		{
+			name:    "http2 with a manifest",
+			args:    []string{"-f", testManifestFile, http2Flag},
+			wantErr: "--http2 cannot be combined with -f",
 		},
 		{
 			name:    "http-port below range",
@@ -269,7 +292,7 @@ func TestPublishWithoutHTTPPortSaysSo(t *testing.T) {
 // deliverable, on its own line, at the end.
 func TestPublishPrintsTheURLLast(t *testing.T) {
 	w := workload()
-	c := newFakeClient(t, liveProxy(w), url.BuildNetworkService(w, "http", 8080))
+	c := newFakeClient(t, liveProxy(w), url.BuildNetworkService(w, "http", 8080, false))
 
 	var out bytes.Buffer
 	if err := publish(context.Background(), &out, c, w, 8080, &options{}, nil); err != nil {
@@ -300,7 +323,7 @@ func TestPublishFailureStillReportsTheRollout(t *testing.T) {
 		},
 	})
 
-	declareErr := declareURL(context.Background(), c, workload(), "http", 8080)
+	declareErr := declareURL(context.Background(), c, workload(), "http", 8080, false)
 	if declareErr == nil {
 		t.Fatal("declaring a URL against a control plane that refuses writes must fail")
 	}
@@ -334,7 +357,7 @@ func TestPublishFailureStillReportsTheRollout(t *testing.T) {
 func TestDeclareURLWritesTheObjectsBeforeTheRollout(t *testing.T) {
 	c := newFakeClient(t)
 
-	if err := declareURL(context.Background(), c, workload(), "http", 8080); err != nil {
+	if err := declareURL(context.Background(), c, workload(), "http", 8080, false); err != nil {
 		t.Fatalf("declareURL: %v", err)
 	}
 
@@ -351,7 +374,7 @@ func TestDeclareURLWritesTheObjectsBeforeTheRollout(t *testing.T) {
 // it — least of all a proxy publishing a workload the user kept internal.
 func TestDeclareURLWritesNothingWithoutAPort(t *testing.T) {
 	// A nil client is the assertion: any write at all would panic.
-	if err := declareURL(context.Background(), nil, workload(), "", 0); err != nil {
+	if err := declareURL(context.Background(), nil, workload(), "", 0, false); err != nil {
 		t.Fatalf("declaring nothing must not fail: %v", err)
 	}
 }
@@ -367,7 +390,7 @@ func TestPublishAfterTheRolloutOnlyWaits(t *testing.T) {
 
 	// The declared backends are deliberately out of date, so an apply running
 	// at this point would have to update them and be caught doing it.
-	declared := newFakeClient(t, liveProxy(w), url.BuildNetworkService(w, "http", 9090))
+	declared := newFakeClient(t, liveProxy(w), url.BuildNetworkService(w, "http", 9090, false))
 	c := interceptor.NewClient(declared, interceptor.Funcs{
 		Create: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.CreateOption) error {
 			t.Errorf("publishing wrote %T after the rollout — the URL objects belong alongside the workload", obj)
@@ -416,9 +439,9 @@ func TestPublishKeepsCustomHostnames(t *testing.T) {
 	w := workload()
 	existing := liveProxy(w)
 	existing.Spec.Hostnames = []gatewayv1.Hostname{"api.example.com"}
-	c := newFakeClient(t, existing, url.BuildNetworkService(w, "http", 8080))
+	c := newFakeClient(t, existing, url.BuildNetworkService(w, "http", 8080, false))
 
-	if err := declareURL(context.Background(), c, w, "http", 8080); err != nil {
+	if err := declareURL(context.Background(), c, w, "http", 8080, false); err != nil {
 		t.Fatalf("declareURL: %v", err)
 	}
 
