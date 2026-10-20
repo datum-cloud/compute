@@ -41,7 +41,7 @@ func TestDeclareKeepsConfigurationSetElsewhere(t *testing.T) {
 	c := newFakeClient(t)
 	ctx := context.Background()
 
-	if err := Declare(ctx, c, w, "http", 8080, nil); err != nil {
+	if err := Declare(ctx, c, w, "http", 8080, false, nil); err != nil {
 		t.Fatalf("first declare: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestDeclareKeepsConfigurationSetElsewhere(t *testing.T) {
 	}
 
 	// Redeploy with the workload now answering on a differently named port.
-	if err := Declare(ctx, c, w, "web", 9090, nil); err != nil {
+	if err := Declare(ctx, c, w, "web", 9090, false, nil); err != nil {
 		t.Fatalf("redeclare: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestDeclareRestoresTheWorkloadBackend(t *testing.T) {
 	c := newFakeClient(t)
 	ctx := context.Background()
 
-	if err := Declare(ctx, c, w, "http", 8080, nil); err != nil {
+	if err := Declare(ctx, c, w, "http", 8080, false, nil); err != nil {
 		t.Fatalf("first declare: %v", err)
 	}
 	proxy := readProxy(t, c)
@@ -123,7 +123,7 @@ func TestDeclareRestoresTheWorkloadBackend(t *testing.T) {
 		t.Fatalf("removing the workload backend: %v", err)
 	}
 
-	if err := Declare(ctx, c, w, "http", 8080, nil); err != nil {
+	if err := Declare(ctx, c, w, "http", 8080, false, nil); err != nil {
 		t.Fatalf("redeclare: %v", err)
 	}
 

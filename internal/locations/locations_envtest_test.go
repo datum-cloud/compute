@@ -106,11 +106,6 @@ func TestLocationsSource_AgainstAPIServer(t *testing.T) {
 		serving, err := ListServingLocations(ctx, c, SourceLocations)
 		require.NoError(t, err)
 		assert.Empty(t, serving)
-
-		// The default source has no such degrade: its kinds are expected
-		// everywhere it runs, so their absence stays an error.
-		_, err = ListPlacementLocations(ctx, c, SourceNetworkServices)
-		require.Error(t, err)
 	})
 
 	_, err = envtest.InstallCRDs(cfg, envtest.CRDInstallOptions{

@@ -45,7 +45,7 @@ func TestDeclareIsIdempotent(t *testing.T) {
 	w := workloadNamed(testWorkloadName)
 	c := countingClient(t, &counts)
 
-	if err := Declare(context.Background(), c, w, "http", 8080, nil); err != nil {
+	if err := Declare(context.Background(), c, w, "http", 8080, false, nil); err != nil {
 		t.Fatalf("first declare: %v", err)
 	}
 	if counts.creates != 2 {
@@ -56,7 +56,7 @@ func TestDeclareIsIdempotent(t *testing.T) {
 	}
 
 	counts = writeCounts{}
-	if err := Declare(context.Background(), c, w, "http", 8080, nil); err != nil {
+	if err := Declare(context.Background(), c, w, "http", 8080, false, nil); err != nil {
 		t.Fatalf("second declare: %v", err)
 	}
 	if counts.creates != 0 {
@@ -75,12 +75,12 @@ func TestDeclareUpdatesAChangedPort(t *testing.T) {
 	w := workloadNamed(testWorkloadName)
 	c := countingClient(t, &counts)
 
-	if err := Declare(context.Background(), c, w, "http", 8080, nil); err != nil {
+	if err := Declare(context.Background(), c, w, "http", 8080, false, nil); err != nil {
 		t.Fatalf("first declare: %v", err)
 	}
 
 	counts = writeCounts{}
-	if err := Declare(context.Background(), c, w, "http", 9090, nil); err != nil {
+	if err := Declare(context.Background(), c, w, "http", 9090, false, nil); err != nil {
 		t.Fatalf("redeclare on a new port: %v", err)
 	}
 	if counts.creates != 0 {
@@ -110,7 +110,7 @@ func TestDeclareKeepsTheCanonicalHostnameAcrossRedeploys(t *testing.T) {
 	w := workloadNamed(testWorkloadName)
 	c := newFakeClient(t)
 
-	if err := Declare(context.Background(), c, w, "http", 8080, nil); err != nil {
+	if err := Declare(context.Background(), c, w, "http", 8080, false, nil); err != nil {
 		t.Fatalf("first declare: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestDeclareKeepsTheCanonicalHostnameAcrossRedeploys(t *testing.T) {
 		t.Fatalf("seeding the canonical hostname: %v", err)
 	}
 
-	if err := Declare(context.Background(), c, w, "http", 9090, nil); err != nil {
+	if err := Declare(context.Background(), c, w, "http", 9090, false, nil); err != nil {
 		t.Fatalf("redeclare: %v", err)
 	}
 
@@ -144,4 +144,25 @@ func infoCanonical(i *Info) string {
 		return ""
 	}
 	return i.CanonicalHostname
+}
+
+// TestDeclareSwitchesHTTP2BothWays: the HTTP version is part of the declared
+// port, so turning it on and back off both reach the backends.
+func TestDeclareSwitchesHTTP2BothWays(t *testing.T) {
+	var counts writeCounts
+	w := workloadNamed(testWorkloadName)
+	c := countingClient(t, &counts)
+
+	for _, http2 := range []bool{false, true, false} {
+		if err := Declare(context.Background(), c, w, "http", 8080, http2, nil); err != nil {
+			t.Fatalf("declare http2=%v: %v", http2, err)
+		}
+		info, err := ForWorkload(context.Background(), c, testWorkloadName)
+		if err != nil {
+			t.Fatalf("reading back: %v", err)
+		}
+		if info.HTTP2 != http2 {
+			t.Errorf("after declaring http2=%v the URL reports http2=%v", http2, info.HTTP2)
+		}
+	}
 }

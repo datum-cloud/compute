@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,7 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
@@ -35,7 +33,6 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 
 	s := runtime.NewScheme()
-	require.NoError(t, networkingv1alpha.AddToScheme(s))
 	require.NoError(t, locationsv1alpha1.AddToScheme(s))
 	require.NoError(t, servicesv1alpha1.AddToScheme(s))
 	return s
@@ -66,16 +63,6 @@ func newComputeAvailability(location string) *servicesv1alpha1.ServiceAvailabili
 	return newAvailability(ComputeServiceName, location, true)
 }
 
-func newBinding(name, cityCode string) *networkingv1alpha.LocationBinding {
-	return &networkingv1alpha.LocationBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: networkingv1alpha.LocationBindingSpec{
-			LocationRef: corev1.LocalObjectReference{Name: name},
-			Topology:    map[string]string{TopologyCityCodeKey: cityCode},
-		},
-	}
-}
-
 func newLocation(name, cityCode string) *locationsv1alpha1.Location {
 	return &locationsv1alpha1.Location{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -93,17 +80,6 @@ func newReadyLocation(name, cityCode string) *locationsv1alpha1.Location {
 	return location
 }
 
-// TestTopologyKeysAgreeAcrossSources guards the migration's central assumption:
-// a city code means the same thing whichever source served it. If the two
-// groups ever disagree, switching sources would silently repoint every
-// placement.
-func TestTopologyKeysAgreeAcrossSources(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, networkingv1alpha.TopologyCityCodeKey, TopologyCityCodeKey)
-	assert.Equal(t, networkingv1alpha.ServingLocationTopologyLabel, ServingLocationTopologyLabel)
-}
-
 func TestSourceResolve(t *testing.T) {
 	t.Parallel()
 
@@ -112,9 +88,9 @@ func TestSourceResolve(t *testing.T) {
 		want   Source
 		wantOK bool
 	}{
-		{source: "", want: SourceNetworkServices, wantOK: true},
-		{source: SourceNetworkServices, want: SourceNetworkServices, wantOK: true},
+		{source: "", want: SourceLocations, wantOK: true},
 		{source: SourceLocations, want: SourceLocations, wantOK: true},
+		{source: "NetworkServices"},
 		{source: "Nonsense"},
 	} {
 		resolved, err := tc.source.Resolve()
@@ -127,28 +103,6 @@ func TestSourceResolve(t *testing.T) {
 	}
 }
 
-func TestListPlacementLocations_NetworkServices(t *testing.T) {
-	t.Parallel()
-
-	cl := fake.NewClientBuilder().
-		WithScheme(testScheme(t)).
-		WithObjects(
-			newBinding("dfw", testCityCode),
-			newBinding(testLocationORD, testOtherCityCode),
-			// A binding with no city code contributes no placement city.
-			&networkingv1alpha.LocationBinding{ObjectMeta: metav1.ObjectMeta{Name: "nowhere"}},
-			// The locations service must not be read when network services is
-			// selected.
-			newLocation("lhr", "LHR"),
-		).
-		Build()
-
-	found, err := ListPlacementLocations(context.Background(), cl, SourceNetworkServices)
-	require.NoError(t, err)
-	require.Len(t, found, 3)
-	assert.ElementsMatch(t, []string{testCityCode, testOtherCityCode}, CityCodes(found).UnsortedList())
-}
-
 func TestListPlacementLocations_Locations(t *testing.T) {
 	t.Parallel()
 
@@ -157,15 +111,14 @@ func TestListPlacementLocations_Locations(t *testing.T) {
 		WithObjects(
 			newLocation("dfw", testCityCode),
 			newLocation(testLocationORD, testOtherCityCode),
-			// The network services source must not be read when the locations
-			// service is selected.
-			newBinding("lhr", "LHR"),
+			// A location with no city code contributes no placement city.
+			&locationsv1alpha1.Location{ObjectMeta: metav1.ObjectMeta{Name: "nowhere"}},
 		).
 		Build()
 
 	found, err := ListPlacementLocations(context.Background(), cl, SourceLocations)
 	require.NoError(t, err)
-	require.Len(t, found, 2)
+	require.Len(t, found, 3)
 	assert.ElementsMatch(t, []string{testCityCode, testOtherCityCode}, CityCodes(found).UnsortedList())
 }
 
@@ -178,11 +131,9 @@ func TestListPlacementLocations_UnknownSource(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestKindNotInstalled_ScopedToLocationsSource pins the degrade to the source
-// that needs it. A no-match reads as no locations for the locations service,
-// which may not be installed yet, and still fails for network services, whose
-// kinds every control plane already serves.
-func TestKindNotInstalled_ScopedToLocationsSource(t *testing.T) {
+// TestKindNotInstalled_ReadsAsEmpty pins the degrade: a control plane that
+// does not serve the locations service's kinds reads as having no locations.
+func TestKindNotInstalled_ReadsAsEmpty(t *testing.T) {
 	t.Parallel()
 
 	noMatch := func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
@@ -204,12 +155,6 @@ func TestKindNotInstalled_ScopedToLocationsSource(t *testing.T) {
 	serving, err := ListServingLocations(ctx, cl, SourceLocations)
 	require.NoError(t, err)
 	assert.Empty(t, serving)
-
-	_, err = ListPlacementLocations(ctx, cl, SourceNetworkServices)
-	require.Error(t, err)
-
-	_, err = ListServingLocations(ctx, cl, SourceNetworkServices)
-	require.Error(t, err)
 }
 
 // TestListLocations_SchemeMissingStillFails separates a control plane that does
@@ -219,7 +164,7 @@ func TestListLocations_SchemeMissingStillFails(t *testing.T) {
 	t.Parallel()
 
 	bare := runtime.NewScheme()
-	require.NoError(t, networkingv1alpha.AddToScheme(bare))
+	require.NoError(t, servicesv1alpha1.AddToScheme(bare))
 
 	cl := fake.NewClientBuilder().WithScheme(bare).Build()
 
@@ -233,12 +178,6 @@ func TestListServingLocations(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
 		WithObjects(
-			&networkingv1alpha.ServingLocation{
-				ObjectMeta: metav1.ObjectMeta{Name: "nso-dfw"},
-				Spec: networkingv1alpha.ServingLocationSpec{
-					Topology: map[string]string{TopologyCityCodeKey: testCityCode},
-				},
-			},
 			&locationsv1alpha1.ServingLocation{
 				ObjectMeta: metav1.ObjectMeta{Name: "locations-ord"},
 				Spec: locationsv1alpha1.ServingLocationSpec{
@@ -250,38 +189,31 @@ func TestListServingLocations(t *testing.T) {
 
 	ctx := context.Background()
 
-	fromNetworkServices, err := ListServingLocations(ctx, cl, SourceNetworkServices)
-	require.NoError(t, err)
-	require.Len(t, fromNetworkServices, 1)
-	assert.Equal(t, "nso-dfw", fromNetworkServices[0].Name)
-	assert.Equal(t, testCityCode, fromNetworkServices[0].CityCode())
-
 	fromLocations, err := ListServingLocations(ctx, cl, SourceLocations)
 	require.NoError(t, err)
 	require.Len(t, fromLocations, 1)
 	assert.Equal(t, "locations-ord", fromLocations[0].Name)
 	assert.Equal(t, testOtherCityCode, fromLocations[0].CityCode())
 
-	// An unset source reads what every deployment reads today.
+	// An unset source reads the locations service.
 	fromDefault, err := ListServingLocations(ctx, cl, "")
 	require.NoError(t, err)
-	assert.Equal(t, fromNetworkServices, fromDefault)
+	assert.Equal(t, fromLocations, fromDefault)
+
+	_, err = ListServingLocations(ctx, cl, "NetworkServices")
+	require.Error(t, err, "the removed source is refused, not read as something else")
 }
 
 func TestServingLocationObject(t *testing.T) {
 	t.Parallel()
 
-	for _, source := range []Source{"", SourceNetworkServices} {
+	for _, source := range []Source{"", SourceLocations} {
 		object, err := ServingLocationObject(source)
 		require.NoError(t, err)
-		assert.IsType(t, &networkingv1alpha.ServingLocation{}, object)
+		assert.IsType(t, &locationsv1alpha1.ServingLocation{}, object)
 	}
 
-	object, err := ServingLocationObject(SourceLocations)
-	require.NoError(t, err)
-	assert.IsType(t, &locationsv1alpha1.ServingLocation{}, object)
-
-	_, err = ServingLocationObject("Nonsense")
+	_, err := ServingLocationObject("Nonsense")
 	require.Error(t, err)
 }
 
@@ -296,19 +228,14 @@ func TestEnsureServingLocationKind_UnknownSource(t *testing.T) {
 func TestServingLocationGVK(t *testing.T) {
 	t.Parallel()
 
-	for _, source := range []Source{"", SourceNetworkServices} {
+	for _, source := range []Source{"", SourceLocations} {
 		gvk, err := ServingLocationGVK(source)
 		require.NoError(t, err)
-		assert.Equal(t, networkingv1alpha.GroupVersion.WithKind("ServingLocation"), gvk)
-		assert.Equal(t, "servinglocations.networking.datumapis.com", crdName(gvk))
+		assert.Equal(t, locationsv1alpha1.GroupVersion.WithKind("ServingLocation"), gvk)
+		assert.Equal(t, "servinglocations.locations.miloapis.com", crdName(gvk))
 	}
 
-	gvk, err := ServingLocationGVK(SourceLocations)
-	require.NoError(t, err)
-	assert.Equal(t, locationsv1alpha1.GroupVersion.WithKind("ServingLocation"), gvk)
-	assert.Equal(t, "servinglocations.locations.miloapis.com", crdName(gvk))
-
-	_, err = ServingLocationGVK("Nonsense")
+	_, err := ServingLocationGVK("Nonsense")
 	require.Error(t, err)
 }
 
@@ -399,71 +326,45 @@ func TestSelect(t *testing.T) {
 func TestPlacementLocationObject(t *testing.T) {
 	t.Parallel()
 
-	obj, err := PlacementLocationObject("")
-	require.NoError(t, err)
-	assert.IsType(t, &networkingv1alpha.LocationBinding{}, obj)
+	for _, source := range []Source{"", SourceLocations} {
+		obj, err := PlacementLocationObject(source)
+		require.NoError(t, err)
+		assert.IsType(t, &locationsv1alpha1.Location{}, obj)
+	}
 
-	obj, err = PlacementLocationObject(SourceLocations)
-	require.NoError(t, err)
-	assert.IsType(t, &locationsv1alpha1.Location{}, obj)
-
-	_, err = PlacementLocationObject("Nonsense")
+	_, err := PlacementLocationObject("Nonsense")
 	require.Error(t, err)
 }
 
-// TestListPlacementLocations_ServiceAvailability covers the availability gate
-// under both sources: a location is placeable only when a record for compute
-// names it and reports Available. A record for another service, or one that
-// is not Available, leaves the location Ready but not placeable.
+// TestListPlacementLocations_ServiceAvailability covers the availability gate:
+// a location is placeable only when a record for compute names it and reports
+// Available. A record for another service, or one that is not Available,
+// leaves the location Ready but not placeable.
 func TestListPlacementLocations_ServiceAvailability(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range []struct {
-		name    string
-		source  Source
-		objects []client.Object
-	}{
-		{
-			name:   "network services",
-			source: SourceNetworkServices,
-			objects: []client.Object{
-				newBinding(testLocationDFWA, testCityCode),
-				newBinding(testLocationORD, testOtherCityCode),
-				newBinding("lhr", "LHR"),
-			},
-		},
-		{
-			name:   "locations service",
-			source: SourceLocations,
-			objects: []client.Object{
-				newReadyLocation(testLocationDFWA, testCityCode),
-				newReadyLocation(testLocationORD, testOtherCityCode),
-				newReadyLocation("lhr", "LHR"),
-			},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	cl := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(
+			newReadyLocation(testLocationDFWA, testCityCode),
+			newReadyLocation(testLocationORD, testOtherCityCode),
+			newReadyLocation("lhr", "LHR"),
+			newComputeAvailability(testLocationDFWA),
+			newAvailability(ComputeServiceName, testLocationORD, false),
+			newAvailability("networking-datumapis-com", "lhr", true),
+		).
+		Build()
 
-			objects := append(tt.objects,
-				newComputeAvailability(testLocationDFWA),
-				newAvailability(ComputeServiceName, testLocationORD, false),
-				newAvailability("networking-datumapis-com", "lhr", true),
-			)
-			cl := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objects...).Build()
+	found, err := ListPlacementLocations(context.Background(), cl, SourceLocations)
+	require.NoError(t, err)
+	require.Len(t, found, 3, "availability narrows what is placeable, not what is listed")
 
-			found, err := ListPlacementLocations(context.Background(), cl, tt.source)
-			require.NoError(t, err)
-			require.Len(t, found, 3, "availability narrows what is placeable, not what is listed")
-
-			byName := map[string]PlacementLocation{}
-			for _, location := range found {
-				byName[location.Name] = location
-			}
-			assert.True(t, byName[testLocationDFWA].Placeable(), "an Available compute record makes the location placeable")
-			assert.False(t, byName[testLocationORD].Placeable(), "a compute record that is not Available does not")
-			assert.False(t, byName["lhr"].Placeable(), "another service's availability says nothing about compute")
-			assert.Equal(t, []string{testLocationDFWA}, sets.List(PlaceableNames(found)))
-		})
+	byName := map[string]PlacementLocation{}
+	for _, location := range found {
+		byName[location.Name] = location
 	}
+	assert.True(t, byName[testLocationDFWA].Placeable(), "an Available compute record makes the location placeable")
+	assert.False(t, byName[testLocationORD].Placeable(), "a compute record that is not Available does not")
+	assert.False(t, byName["lhr"].Placeable(), "another service's availability says nothing about compute")
+	assert.Equal(t, []string{testLocationDFWA}, sets.List(PlaceableNames(found)))
 }

@@ -63,6 +63,9 @@ var errPortRenamed = errors.New(
 	"--port has been replaced by --http-port, which publishes the workload on a public HTTPS URL. " +
 		"Use --http-port 8080 to publish, or --no-http to keep it internal")
 
+var errHTTP2NeedsPort = errors.New(
+	"--http2 needs an HTTP service — add --http-port with the port your container serves on")
+
 type options struct {
 	image            string
 	build            string
@@ -77,6 +80,7 @@ type options struct {
 	cpuPercent       int32
 	memoryPercent    int32
 	httpPort         int32
+	http2            bool
 	noHTTP           bool
 	port             int32
 	file             string
@@ -126,6 +130,10 @@ publishes the workload on a Datum-managed HTTPS URL, printed as the last line
 of a successful deploy. Omitting --http-port on an existing workload leaves its
 HTTP service as it is; --no-http removes it and stops serving.
 
+Use --http2 when the container serves HTTP/2, such as gRPC. Every request then
+reaches it as HTTP/2, even if the client used HTTP/1.1. Later deploys keep it on
+until --http2=false.
+
 Use --runtime-class to choose the tier the workload's Instances run in, such as
 general-purpose or unikernel. A new workload without --runtime-class runs in
 the platform default. A workload keeps its runtime class for its whole life:
@@ -154,6 +162,9 @@ routine image bump changes nothing else. Remove one explicitly with a trailing
 		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
   datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1,eu-west-1 --min=2 --http-port=8080
+
+  # Serve gRPC
+  datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --location=us-east-1 --http-port=9090 --http2
 
   # Deploy an internal workload (no URL)
   datumctl compute deploy worker --image=ghcr.io/acme/worker:2.0 --location=us-east-1
@@ -219,6 +230,7 @@ routine image bump changes nothing else. Remove one explicitly with a trailing
 	cmd.Flags().StringSliceVar(&opts.cities, "city", nil, "Deploy to every location in these cities (e.g. DFW,IAD); shorthand for a --location-selector on topology.datum.net/city-code")
 	util.AddScaleFlags(cmd, &opts.min, &opts.max, &opts.cpuPercent, &opts.memoryPercent, 1)
 	cmd.Flags().Int32Var(&opts.httpPort, "http-port", 0, "Port the container serves HTTP on; publishes the workload on a Datum-managed HTTPS URL")
+	cmd.Flags().BoolVar(&opts.http2, "http2", false, "Container serves HTTP/2 on --http-port, e.g. gRPC; stays on until --http2=false")
 	cmd.Flags().BoolVar(&opts.noHTTP, "no-http", false, "Remove the workload's HTTP service, and with it its URL")
 	cmd.Flags().StringArrayVar(&opts.env, "env", nil, "Set an environment variable as KEY=VALUE, or remove one as KEY-; repeatable. Variables not named here are kept")
 	cmd.Flags().StringArrayVar(&opts.envFromConfigMap, "env-from-configmap", nil, "Import every key of a ConfigMap as NAME, or NAME:PREFIX_ to prefix the variable names; NAME- removes the import; repeatable")
@@ -256,6 +268,10 @@ func validateFlags(cmd *cobra.Command, opts *options) error {
 		return fmt.Errorf("--http-port and --no-http cannot be combined — pass --http-port to publish the workload, or --no-http to stop serving it")
 	}
 
+	if opts.http2 && opts.noHTTP {
+		return fmt.Errorf("--http2 and --no-http cannot be combined — --no-http removes the HTTP service --http2 applies to")
+	}
+
 	if opts.file != "" {
 		switch {
 		case httpPortSet:
@@ -265,6 +281,8 @@ func validateFlags(cmd *cobra.Command, opts *options) error {
 			return fmt.Errorf("--http-port cannot be combined with -f: a manifest declares its own ports, and declaring an HTTP service in a manifest is not supported yet")
 		case opts.noHTTP:
 			return fmt.Errorf("--no-http cannot be combined with -f: remove the URL with 'datumctl compute destroy', or deploy with flags")
+		case cmd.Flags().Changed("http2"):
+			return fmt.Errorf("--http2 cannot be combined with -f: declaring an HTTP service in a manifest is not supported yet")
 		case opts.runtimeClass != "":
 			return fmt.Errorf("--runtime-class cannot be combined with -f: set spec.template.spec.runtime.class in the manifest instead")
 		case opts.network != "":
@@ -488,18 +506,9 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		}
 	}
 
-	// Resolve the HTTP service this deploy declares:
-	//
-	//	--http-port N  declares (or changes) it
-	//	--no-http      removes it, and the URL with it
-	//	neither        keeps what the workload already declares
-	//
-	// Carrying the existing port forward matters: without it, a routine image
-	// bump would drop the port from the spec and take a live URL down without
-	// anyone saying so. --no-http is the only way to stop serving.
-	httpPort := opts.httpPort
-	if httpPort == 0 && !opts.noHTTP {
-		httpPort = declaredHTTPPort(&workload)
+	httpPort, http2, err := resolveHTTPService(ctx, cmd, c, &workload, opts, creating)
+	if err != nil {
+		return err
 	}
 
 	inputs, err := resolveSpecInputs(&workload, creating, opts)
@@ -591,7 +600,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 		fmt.Fprintln(out, line)
 	}
 
-	removedURL := planHTTPService(ctx, out, c, workloadName, httpPort, opts, creating)
+	removedURL := planHTTPService(ctx, out, c, workloadName, httpPort, http2, opts, creating)
 
 	// Prompt unless --yes or non-interactive.
 	if !opts.yes && term.IsTerminal(int(os.Stdin.Fd())) {
@@ -633,7 +642,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	// A failure is carried to publish rather than returned here. The workload
 	// is applied and rolling out, and a user is owed that table before being
 	// told the URL did not go up.
-	publishErr := declareURL(ctx, c, &workload, portName, httpPort)
+	publishErr := declareURL(ctx, c, &workload, portName, httpPort, http2)
 
 	// Save workload.yaml.
 	if err := saveWorkloadYAML(workloadName, &workload); err != nil {
@@ -659,12 +668,16 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 // The HTTP service is part of the plan, not a surprise after the fact: what
 // gets published — or what stops answering — is stated before the prompt that
 // creates it.
-func planHTTPService(ctx context.Context, out io.Writer, c client.Client, workloadName string, httpPort int32, opts *options, creating bool) string {
+func planHTTPService(ctx context.Context, out io.Writer, c client.Client, workloadName string, httpPort int32, http2 bool, opts *options, creating bool) string {
 	if httpPort > 0 {
-		fmt.Fprintln(out, planLine("HTTP service", fmt.Sprintf("port %d → Datum-managed URL", httpPort)))
+		value, note := fmt.Sprintf("port %d → Datum-managed URL", httpPort), "Datum terminates TLS; serve plain HTTP on this port."
+		if http2 {
+			value, note = fmt.Sprintf("port %d, HTTP/2 → Datum-managed URL", httpPort), "Datum terminates TLS; serve plain HTTP/2 on this port."
+		}
+		fmt.Fprintln(out, planLine("HTTP service", value))
 		// Said here, once, because a container that terminates TLS itself
 		// answers nothing and the only symptom is a URL that does not work.
-		fmt.Fprintln(out, planNote("Datum terminates TLS; serve plain HTTP on this port."))
+		fmt.Fprintln(out, planNote(note))
 		return ""
 	}
 	if !opts.noHTTP || creating {
@@ -712,7 +725,7 @@ func removeHTTPService(ctx context.Context, out io.Writer, c client.Client, work
 // It prints nothing. Nothing has happened yet that a user needs to read, and
 // the rollout table comes next; publishing reports itself once the rollout is
 // over and there is progress to show.
-func declareURL(ctx context.Context, c client.Client, w *computev1alpha.Workload, portName string, port int32) error {
+func declareURL(ctx context.Context, c client.Client, w *computev1alpha.Workload, portName string, port int32, http2 bool) error {
 	if port <= 0 {
 		return nil
 	}
@@ -721,7 +734,7 @@ func declareURL(ctx context.Context, c client.Client, w *computev1alpha.Workload
 	if err != nil {
 		return err
 	}
-	return url.Declare(ctx, c, w, portName, port, hostnames)
+	return url.Declare(ctx, c, w, portName, port, http2, hostnames)
 }
 
 // notReachable states the dead end this whole feature exists to close: a
@@ -806,6 +819,53 @@ func existingHostnames(ctx context.Context, c client.Client, workloadName string
 		return nil, nil
 	}
 	return info.CustomHostnames, nil
+}
+
+// resolveHTTPService decides the HTTP service this deploy declares, and
+// whether the edge reaches it over HTTP/2:
+//
+//	--http-port N  declares (or changes) it
+//	--no-http      removes it, and the URL with it
+//	neither        keeps what the workload already declares
+//
+// Carrying the existing port forward matters: without it, a routine image
+// bump would drop the port from the spec and take a live URL down without
+// anyone saying so. --no-http is the only way to stop serving.
+func resolveHTTPService(ctx context.Context, cmd *cobra.Command, c client.Client, workload *computev1alpha.Workload, opts *options, creating bool) (int32, bool, error) {
+	httpPort := opts.httpPort
+	if httpPort == 0 && !opts.noHTTP {
+		httpPort = declaredHTTPPort(workload)
+	}
+
+	http2, err := resolveHTTP2(ctx, c, workload.Name, httpPort, cmd.Flags().Changed("http2"), opts.http2, creating)
+	if err != nil {
+		return 0, false, err
+	}
+	return httpPort, http2, nil
+}
+
+// resolveHTTP2 reads the current setting back from the URL when --http2 is not
+// passed, since the workload spec has no field for it. A failed read is an
+// error rather than a quiet switch to HTTP/1.1.
+func resolveHTTP2(ctx context.Context, c client.Client, workloadName string, httpPort int32, set, http2, creating bool) (bool, error) {
+	if httpPort == 0 {
+		if set && http2 {
+			return false, errHTTP2NeedsPort
+		}
+		return false, nil
+	}
+	if set {
+		return http2, nil
+	}
+	if creating {
+		return false, nil
+	}
+
+	info, err := url.ForWorkload(ctx, c, workloadName)
+	if err != nil {
+		return false, fmt.Errorf("reading the HTTP service of %q: %w", workloadName, err)
+	}
+	return info != nil && info.HTTP2, nil
 }
 
 // planLine renders one line of the plan summary printed before the Apply
