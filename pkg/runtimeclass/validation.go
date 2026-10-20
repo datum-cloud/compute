@@ -35,6 +35,13 @@ func ValidateInstanceSpec(
 
 	runtimePath := fldPath.Child("runtime")
 
+	// Zero asks for an immediate stop, which every class delivers.
+	if grace := spec.Runtime.TerminationGracePeriodSeconds; grace != nil && *grace > 0 &&
+		!capabilities.Supports(FeatureGracefulTermination) {
+		allErrs = append(allErrs, unsupported(runtimePath.Child("terminationGracePeriodSeconds"),
+			capabilities, FeatureGracefulTermination))
+	}
+
 	if spec.Runtime.Sandbox != nil {
 		allErrs = append(allErrs, validateSandbox(spec.Runtime.Sandbox, capabilities, runtimePath.Child("sandbox"))...)
 	}

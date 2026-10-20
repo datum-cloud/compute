@@ -100,8 +100,10 @@ func objectMeta(w *computev1alpha.Workload) metav1.ObjectMeta {
 // TrafficDistribution is deliberately left unset: the default serves each
 // request from the location nearest the edge that received it, which is what
 // is wanted without saying so.
-func BuildNetworkService(w *computev1alpha.Workload, portName string, port int32) *networkingv1alpha.NetworkService {
-	return &networkingv1alpha.NetworkService{
+//
+// http2 makes the edge reach the port over HTTP/2, which gRPC needs.
+func BuildNetworkService(w *computev1alpha.Workload, portName string, port int32, http2 bool) *networkingv1alpha.NetworkService {
+	svc := &networkingv1alpha.NetworkService{
 		ObjectMeta: objectMeta(w),
 		Spec: networkingv1alpha.NetworkServiceSpec{
 			NetworkInterfaces: networkingv1alpha.NetworkServiceInterfaceSelector{
@@ -118,6 +120,10 @@ func BuildNetworkService(w *computev1alpha.Workload, portName string, port int32
 			}},
 		},
 	}
+	if http2 {
+		svc.Spec.Ports[0].AppProtocol = ptr(networkingv1alpha.NetworkServiceAppProtocolH2C)
+	}
+	return svc
 }
 
 // BuildHTTPProxy returns the HTTPProxy that puts the workload on the internet.

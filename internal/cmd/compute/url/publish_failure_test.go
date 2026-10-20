@@ -164,7 +164,7 @@ func TestPublishFailsOnTheProxyAfterWritingTheBackends(t *testing.T) {
 	defer cancel()
 
 	var out bytes.Buffer
-	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, nil)
+	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil)
 	if err == nil {
 		t.Fatal("a proxy that could not be created must fail the publish")
 	}
@@ -203,7 +203,7 @@ func TestPublishDoesNotCreateAProxyWithoutBackends(t *testing.T) {
 		},
 	})
 
-	if _, err := Publish(context.Background(), &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 8080, nil); !errors.Is(err, boom) {
+	if _, err := Publish(context.Background(), &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil); !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want the create failure", err)
 	}
 	if len(rec.creates) != 1 || rec.creates[0] != kindService {
@@ -234,7 +234,7 @@ func TestPublishReportsAReadFailureRatherThanOverwriting(t *testing.T) {
 		},
 	})
 
-	if _, err := Publish(context.Background(), &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 8080, nil); !errors.Is(err, boom) {
+	if _, err := Publish(context.Background(), &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil); !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want the read failure", err)
 	}
 	if len(rec.creates) != 0 || len(rec.updates) != 0 {
@@ -268,7 +268,7 @@ func TestPublishStopsWhenTheURLCanNeverBeRead(t *testing.T) {
 	done := make(chan result, 1)
 	go func() {
 		var out bytes.Buffer
-		info, err := Publish(context.Background(), &out, c, workloadNamed(testWorkloadName), testPortName, 8080, nil)
+		info, err := Publish(context.Background(), &out, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil)
 		done <- result{info, err, out.String()}
 	}()
 
@@ -311,7 +311,7 @@ func TestPublishRidesOutATransientReadFailure(t *testing.T) {
 	defer cancel()
 
 	var out bytes.Buffer
-	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, nil)
+	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil)
 	if err != nil {
 		t.Fatalf("one failed read must not fail a publish, got: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestPublishDetachesWhenInterruptedMidWrite(t *testing.T) {
 			})
 
 			var out bytes.Buffer
-			info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, nil)
+			info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil)
 			if err != nil {
 				t.Fatalf("detaching is not an error, got: %v", err)
 			}

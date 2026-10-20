@@ -69,6 +69,7 @@ func TestFeatureDescriptions(t *testing.T) {
 		FeatureContainerCapabilities,
 		FeatureSandboxSysctls,
 		FeatureExec,
+		FeatureGracefulTermination,
 	}
 
 	for _, feature := range features {

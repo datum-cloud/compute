@@ -862,6 +862,25 @@ was created with.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>terminationGracePeriodSeconds</b></td>
+        <td>integer</td>
+        <td>
+          How long, in seconds, the instance's processes have to exit after being
+asked to stop. When an instance is deleted, replaced, or suspended, each
+container's main process receives SIGTERM, and any process still running
+when the period ends is killed. Zero kills the processes immediately.
+
+The instance keeps its resources and addresses until it has stopped, so
+a longer period delays their release. A value above zero requires a
+runtime class that offers graceful termination. When unset, the runtime
+class's own default applies.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 300<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloaddeploymentspectemplatespecruntimevirtualmachine">virtualMachine</a></b></td>
         <td>object</td>
         <td>

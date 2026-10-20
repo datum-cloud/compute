@@ -10,4 +10,5 @@ spec:
   includedPermissions:
     - compute.datumapis.com/instancetypes.list
     - compute.datumapis.com/instancetypes.get
+    - compute.datumapis.com/instancetypes/status.get
     - compute.datumapis.com/instancetypes.watch
