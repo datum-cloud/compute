@@ -19,38 +19,14 @@ spec:
   # overhead is measured on Datum hardware. That measurement sets this field,
   # and the class is not placeable until then.
   charges:
-    - name: compute.datumapis.com/instance/cpu-seconds
-      chargeType: Usage
-      currency: USD
-      displayName: Compute vCPU
-      usage:
-        metricRef: compute.datumapis.com/instance/cpu-seconds
-        pricingUnit: vcpu-second
-        rates:
-          - match:
-              dimension: runtime_class
-              value: general-purpose
-            flat: "0.000014"
-          - flat: "0.000014"
-    - name: compute.datumapis.com/instance/memory-seconds
-      chargeType: Usage
-      currency: USD
-      displayName: Compute Memory
-      usage:
-        metricRef: compute.datumapis.com/instance/memory-seconds
-        pricingUnit: gib-second
-        rates:
-          - match:
-              dimension: runtime_class
-              value: general-purpose
-            flat: "0.0000045"
-          - flat: "0.0000045"
-    # The two charges above bill wrong: vCPU is priced on cpu-seconds, which
-    # carries no usage, and memory's per-GiB-second rate is applied per
-    # byte-second. These two keep the same rates and units but price the
-    # meters that carry usage, converting it into the pricing unit first.
-    # Published charges can't be edited, so the two above stay until every
-    # account is on the Offer that uses these, and are removed then.
+    # These replace the instance/cpu-seconds and instance/memory-seconds
+    # charges, which billed wrong: vCPU was priced on cpu-seconds, which
+    # carries no usage, and memory's per-GiB-second rate was applied per
+    # byte-second. Same rates and units, on the meters that carry usage,
+    # converted into the pricing unit first. Published charges can't be
+    # edited, so the fix is new charges; Offers keep their own copy of a
+    # price, so the Offer that used the old ones still bills until its
+    # accounts move.
     - name: compute.datumapis.com/instance/milli-cpu-seconds
       chargeType: Usage
       currency: USD
