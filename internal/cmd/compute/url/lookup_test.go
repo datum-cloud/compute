@@ -407,6 +407,7 @@ func TestObjectsIsTheEscapeHatchToTheRealState(t *testing.T) {
 	objs := info.Objects()
 	if objs == nil {
 		t.Fatal("Objects() = nil, want the real objects behind the URL")
+		return
 	}
 	if objs.HTTPProxy != info.Proxy || objs.NetworkService != info.Service {
 		t.Error("Objects() must hand back the objects themselves, not a summary of them")
