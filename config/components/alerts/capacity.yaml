@@ -1,0 +1,151 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  labels:
+    alert-group: compute
+    app.kubernetes.io/name: compute
+    app.kubernetes.io/component: capacity
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-capacity-recording
+spec:
+  groups:
+    - name: compute-capacity.recording
+      rules:
+        # The kubelet series stops while a host is down, so it is carried for a
+        # day. Hosts whose Node object is gone drop out.
+        - record: host:compute_host:info
+          expr: |
+            max by (cluster, region, node) (
+              (
+                last_over_time(kubelet_node_name{compute_datumapis_com_runtime!=""}[1d])
+                or
+                label_replace(kube_node_info{node=~"kraftlet-.+"}, "node", "$1", "node", "kraftlet-(.+)")
+              )
+              and on (cluster, node) kube_node_info
+            )
+
+        # kube-state-metrics keeps request series for finished pods.
+        - record: pod:compute_host_pod:info
+          expr: |
+            (
+              label_replace(
+                label_replace(max by (cluster, region, namespace, pod, node) (kube_pod_info{node=~"kraftlet-.+"}), "node", "$1", "node", "kraftlet-(.+)"),
+                "owner", "unikernel", "", ""
+              )
+              or
+              label_replace(
+                max by (cluster, region, namespace, pod, node) (kube_pod_info{node!~"kraftlet-.+"})
+                and on (cluster, namespace, pod)
+                max by (cluster, namespace, pod) (kube_pod_runtimeclass_name_info{runtimeclass_name=~"kata-clh|kata-qemu|katars"}),
+                "owner", "general-purpose", "", ""
+              )
+              or
+              label_replace(
+                max by (cluster, region, namespace, pod, node) (kube_pod_info{node!~"kraftlet-.+"})
+                unless on (cluster, namespace, pod)
+                max by (cluster, namespace, pod) (kube_pod_runtimeclass_name_info{runtimeclass_name=~"kata-clh|kata-qemu|katars"}),
+                "owner", "system", "", ""
+              )
+            )
+            and on (cluster, node) host:compute_host:info
+            and on (cluster, namespace, pod) (max by (cluster, namespace, pod) (kube_pod_status_phase{phase=~"Pending|Running"}) == 1)
+
+        # Unikraft pods have no requests; they reserve their limits on the
+        # kraftlet virtual node.
+        - record: host:compute_committed:sum
+          expr: |
+            sum by (cluster, region, node, owner, resource) (
+              (
+                label_replace(sum by (cluster, namespace, pod, resource) (kube_pod_container_resource_requests{resource=~"cpu|memory"}), "part", "requests", "", "")
+                * on (cluster, namespace, pod) group_left (region, node, owner) pod:compute_host_pod:info{owner!="unikernel"}
+              )
+              or
+              (
+                label_replace(sum by (cluster, namespace, pod, resource) (kube_pod_container_resource_limits{resource=~"cpu|memory"}), "part", "limits", "", "")
+                * on (cluster, namespace, pod) group_left (region, node, owner) pod:compute_host_pod:info{owner="unikernel"}
+              )
+              or
+              (
+                label_replace(
+                  label_replace(kube_pod_overhead_cpu_cores, "resource", "cpu", "", "")
+                  or
+                  label_replace(kube_pod_overhead_memory_bytes, "resource", "memory", "", ""),
+                  "part", "overhead", "", ""
+                )
+                * on (cluster, namespace, pod) group_left (region, node, owner) pod:compute_host_pod:info{owner="general-purpose"}
+              )
+            )
+
+        # Kata pods count at their limits rather than their requests.
+        - record: host:compute_promised:sum
+          expr: |
+            sum by (cluster, region, node, owner, resource) (
+              (
+                label_replace(sum by (cluster, namespace, pod, resource) (kube_pod_container_resource_requests{resource=~"cpu|memory"}), "part", "requests", "", "")
+                * on (cluster, namespace, pod) group_left (region, node, owner) pod:compute_host_pod:info{owner="system"}
+              )
+              or
+              (
+                label_replace(sum by (cluster, namespace, pod, resource) (kube_pod_container_resource_limits{resource=~"cpu|memory"}), "part", "limits", "", "")
+                * on (cluster, namespace, pod) group_left (region, node, owner) pod:compute_host_pod:info{owner=~"general-purpose|unikernel"}
+              )
+              or
+              (
+                label_replace(
+                  label_replace(kube_pod_overhead_cpu_cores, "resource", "cpu", "", "")
+                  or
+                  label_replace(kube_pod_overhead_memory_bytes, "resource", "memory", "", ""),
+                  "part", "overhead", "", ""
+                )
+                * on (cluster, namespace, pod) group_left (region, node, owner) pod:compute_host_pod:info{owner="general-purpose"}
+              )
+            )
+
+        # Real CPUs and memory, not allocatable: the host and its kraftlet
+        # virtual node each report their own.
+        - record: host:compute_capacity:sum
+          expr: |
+            label_replace(
+              count by (cluster, region, node) (node_cpu_seconds_total{mode="idle"} and on (cluster, node) host:compute_host:info),
+              "resource", "cpu", "", ""
+            )
+            or
+            label_replace(
+              max by (cluster, region, node) (node_memory_MemTotal_bytes and on (cluster, node) host:compute_host:info),
+              "resource", "memory", "", ""
+            )
+
+        # Only hosts still reporting their size, so a down host does not leave
+        # its pods in the numerator.
+        - record: cell:compute_committed:ratio
+          expr: |
+            sum by (cluster, region, resource) (host:compute_committed:sum and on (cluster, node, resource) host:compute_capacity:sum)
+            / on (cluster, region, resource)
+            sum by (cluster, region, resource) (host:compute_capacity:sum)
+
+        - record: cell:compute_promised:ratio
+          expr: |
+            sum by (cluster, region, resource) (host:compute_promised:sum and on (cluster, node, resource) host:compute_capacity:sum)
+            / on (cluster, region, resource)
+            sum by (cluster, region, resource) (host:compute_capacity:sum)
+
+        # Cordoned hosts are out of service on purpose.
+        - record: cell:compute_hosts:count
+          expr: |
+            count by (cluster, region) (
+              host:compute_host:info
+              unless on (cluster, node) (kube_node_spec_unschedulable == 1)
+            )
+
+        # Ready when the Node and, if it has one, its kraftlet virtual node are
+        # both Ready.
+        - record: cell:compute_hosts_ready:count
+          expr: |
+            count by (cluster, region) (
+              host:compute_host:info
+              unless on (cluster, node) (kube_node_spec_unschedulable == 1)
+              and on (cluster, node) (kube_node_status_condition{condition="Ready", status="true"} == 1)
+              unless on (cluster, node) label_replace(kube_node_status_condition{condition="Ready", status="true", node=~"kraftlet-.+"} == 0, "node", "$1", "node", "kraftlet-(.+)")
+            )
+            or
+            cell:compute_hosts:count * 0
