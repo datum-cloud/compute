@@ -91,7 +91,7 @@ func TestSessionActivityNamesVerifiedAssistantOrigin(t *testing.T) {
 				annotations["compute.datumapis.com/exit-code"] = tc.exitCode
 			}
 			event := map[string]any{
-				"reason": tc.reason,
+				"reason":   tc.reason,
 				"metadata": map[string]any{"annotations": annotations},
 			}
 			_, summary := summarizeEvent(t, p, event)
