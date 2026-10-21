@@ -19,6 +19,11 @@ import (
 	"go.datum.net/compute/internal/assistantorigin"
 )
 
+const (
+	testExecProject = "project-a"
+	testExecCommand = "cat"
+)
+
 type testNonceStore struct {
 	mu   sync.Mutex
 	used map[string]bool
@@ -66,8 +71,8 @@ func TestPlanApprovalRunRejectsUnauthorizedAndCleansUp(t *testing.T) {
 				Project: project, BearerToken: bearer, ExecKey: key, ExecNonces: nonces}, nil
 		}
 	}
-	_, planned, err := execPlanHandler(makeDeps("project-a", "user-token"))(context.Background(), nil,
-		ExecPlanInput{Instance: testExecInstance, Container: testExecContainer, Command: []string{"cat", "/etc/os-release"}, TTL: "2m"})
+	_, planned, err := execPlanHandler(makeDeps(testExecProject, "user-token"))(context.Background(), nil,
+		ExecPlanInput{Instance: testExecInstance, Container: testExecContainer, Command: []string{testExecCommand, "/etc/os-release"}, TTL: "2m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,12 +80,12 @@ func TestPlanApprovalRunRejectsUnauthorizedAndCleansUp(t *testing.T) {
 		planned.ApprovalText != "Approve exec "+planned.PlanToken {
 		t.Fatalf("bad plan: %+v", planned)
 	}
-	approval := approvalForTest(key, "project-a", sha256Of("user-token"), planned.PlanToken)
+	approval := approvalForTest(key, testExecProject, sha256Of("user-token"), planned.PlanToken)
 	for _, tc := range []struct{ project, bearer, approval, token string }{
-		{"project-a", "user-token", "", planned.PlanToken},
+		{testExecProject, "user-token", "", planned.PlanToken},
 		{"project-b", "user-token", approval, planned.PlanToken},
-		{"project-a", "other-token", approval, planned.PlanToken},
-		{"project-a", "user-token", approval, planned.PlanToken + "changed"},
+		{testExecProject, "other-token", approval, planned.PlanToken},
+		{testExecProject, "user-token", approval, planned.PlanToken + "changed"},
 	} {
 		_, _, err := execRunHandler(makeDeps(tc.project, tc.bearer))(context.Background(), nil,
 			ExecRunInput{PlanToken: tc.token, Approval: tc.approval})
@@ -92,12 +97,12 @@ func TestPlanApprovalRunRejectsUnauthorizedAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed.Command = []string{"cat", "/etc/shadow"}
+	changed.Command = []string{testExecCommand, "/etc/shadow"}
 	changedToken, err := signExecPlan(key, changed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = execRunHandler(makeDeps("project-a", "user-token"))(context.Background(), nil,
+	_, _, err = execRunHandler(makeDeps(testExecProject, "user-token"))(context.Background(), nil,
 		ExecRunInput{PlanToken: changedToken, Approval: approval})
 	if err == nil {
 		t.Fatal("approval applied to changed command")
@@ -107,8 +112,8 @@ func TestPlanApprovalRunRejectsUnauthorizedAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiredApproval := approvalForTest(key, "project-a", sha256Of("user-token"), expiredToken)
-	_, _, err = execRunHandler(makeDeps("project-a", "user-token"))(context.Background(), nil,
+	expiredApproval := approvalForTest(key, testExecProject, sha256Of("user-token"), expiredToken)
+	_, _, err = execRunHandler(makeDeps(testExecProject, "user-token"))(context.Background(), nil,
 		ExecRunInput{PlanToken: expiredToken, Approval: expiredApproval})
 	if err == nil {
 		t.Fatal("expired plan ran")
@@ -116,7 +121,7 @@ func TestPlanApprovalRunRejectsUnauthorizedAndCleansUp(t *testing.T) {
 	if backend.creates != 0 {
 		t.Fatal("unauthorized run created a session")
 	}
-	_, out, err := execRunHandler(makeDeps("project-a", "user-token"))(context.Background(), nil,
+	_, out, err := execRunHandler(makeDeps(testExecProject, "user-token"))(context.Background(), nil,
 		ExecRunInput{PlanToken: planned.PlanToken, Approval: approval})
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +133,7 @@ func TestPlanApprovalRunRejectsUnauthorizedAndCleansUp(t *testing.T) {
 	if !assistantorigin.Verify(key, backend.session, "alice@example.com", proof, time.Now()) {
 		t.Fatal("created session lacked a valid origin proof")
 	}
-	_, _, err = execRunHandler(makeDeps("project-a", "user-token"))(context.Background(), nil,
+	_, _, err = execRunHandler(makeDeps(testExecProject, "user-token"))(context.Background(), nil,
 		ExecRunInput{PlanToken: planned.PlanToken, Approval: approval})
 	if err == nil || backend.creates != 1 {
 		t.Fatalf("replay reached API: %v, creates=%d", err, backend.creates)
@@ -147,9 +152,9 @@ func (s *testNonceStore) Consume(_ context.Context, nonce string) (bool, error) 
 
 func TestExecPlanAndApprovalBindRequesterProjectTargetArgvAndTTL(t *testing.T) {
 	key := []byte(strings.Repeat("k", 32))
-	plan := execPlan{Project: "project-a", RequesterHash: tokenHash("user-token"),
+	plan := execPlan{Project: testExecProject, RequesterHash: tokenHash("user-token"),
 		Instance: "api-1", InstanceUID: types.UID("uid-1"), Container: "app",
-		Command: []string{"cat", "/etc/os-release"}, TTLSeconds: 120,
+		Command: []string{testExecCommand, "/etc/os-release"}, TTLSeconds: 120,
 		ExpiresAt: time.Now().Add(time.Minute).Unix(), Nonce: "1234567890abcdef"}
 	token, err := signExecPlan(key, plan)
 	if err != nil {
@@ -171,18 +176,18 @@ func TestExecPlanAndApprovalBindRequesterProjectTargetArgvAndTTL(t *testing.T) {
 	}
 
 	requesterHash := sha256Of("user-token")
-	approval := approvalForTest(key, "project-a", requesterHash, token)
-	if !validExecApproval(key, "project-a", "user-token", token, approval) {
+	approval := approvalForTest(key, testExecProject, requesterHash, token)
+	if !validExecApproval(key, testExecProject, "user-token", token, approval) {
 		t.Fatal("refused valid approval")
 	}
 	for _, tc := range []struct{ project, bearer, token string }{
-		{"project-b", "user-token", token}, {"project-a", "other-user", token}, {"project-a", "user-token", token + "changed"},
+		{"project-b", "user-token", token}, {testExecProject, "other-user", token}, {testExecProject, "user-token", token + "changed"},
 	} {
 		if validExecApproval(key, tc.project, tc.bearer, tc.token, approval) {
 			t.Fatalf("accepted wrong binding: %+v", tc)
 		}
 	}
-	if validExecApproval(key, "project-a", "user-token", token, base64.RawURLEncoding.EncodeToString([]byte("forged"))) {
+	if validExecApproval(key, testExecProject, "user-token", token, base64.RawURLEncoding.EncodeToString([]byte("forged"))) {
 		t.Fatal("accepted forged approval")
 	}
 }
