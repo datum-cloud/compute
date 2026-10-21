@@ -158,7 +158,7 @@ Error: --port has been replaced by --http-port, which publishes the workload on 
 HTTPS URL. Use --http-port 8080 to publish, or --no-http to keep it internal
 ```
 
-Redeploys are idempotent: an unchanged redeploy writes nothing, omitting `--http-port` inherits the port the workload already declares, and the managed hostname is never reissued — anything already pointing at that URL keeps working.
+Redeploys are idempotent: an unchanged redeploy writes nothing, omitting `--http-port` inherits the port the workload already declares, and the managed hostname is never reissued — anything already pointing at that URL keeps working. Omitting `--http-port` and `--http2` never publishes a URL that was not already there, though: a workload that declares a port but was not published by `deploy` — typically one served through a load balancer set up in the portal — keeps its port and stays as it is (#485). `deploy` only updates, and `--no-http` and `destroy` only remove, the load balancer objects it created itself; one that merely shares the workload's name is left alone and named in the output. A publish that would have to take such an object over is refused while planning, before the workload is applied.
 
 ---
 

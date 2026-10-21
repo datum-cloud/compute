@@ -166,32 +166,6 @@ func TestPublishUpdatesAChangedPort(t *testing.T) {
 	}
 }
 
-func TestPublishAdoptsAnExistingUnlabelledObject(t *testing.T) {
-	// An object written before the labels existed must be brought in line, or
-	// lookups would never find it again.
-	svc := BuildNetworkService(workloadNamed(testWorkloadName), testPortName, 8080, false)
-	svc.Labels = nil
-	svc.OwnerReferences = nil
-	proxy := BuildHTTPProxy(workloadNamed(testWorkloadName), testPortName, nil)
-	proxy.Labels = nil
-	proxy.OwnerReferences = nil
-
-	c := newFakeClient(t, svc, proxy)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	if _, err := Publish(ctx, &bytes.Buffer{}, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil); err != nil {
-		t.Fatalf("Publish returned error: %v", err)
-	}
-
-	var got networkingv1alpha.NetworkService
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: util.ResourceNamespace, Name: testWorkloadName}, &got); err != nil {
-		t.Fatalf("getting service: %v", err)
-	}
-	assertPublishedLabels(t, got.Labels, workloadNamed(testWorkloadName))
-	assertOwnerRef(t, got.OwnerReferences, workloadNamed(testWorkloadName))
-}
-
 func TestUnpublishRemovesTheProxyFirst(t *testing.T) {
 	rec := &recorder{}
 	c := interceptor.NewClient(newFakeClient(t,
@@ -201,7 +175,7 @@ func TestUnpublishRemovesTheProxyFirst(t *testing.T) {
 		publishedService("web", 3000, location("DFW", 1, 1, true)),
 	), rec.funcs())
 
-	if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
+	if _, err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
 		t.Fatalf("Unpublish returned error: %v", err)
 	}
 
@@ -236,7 +210,7 @@ func TestUnpublishIsANoOpWhenNothingIsPublished(t *testing.T) {
 		},
 	})
 
-	if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
+	if _, err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
 		t.Fatalf("unpublishing something that was never published is not an error, got: %v", err)
 	}
 }

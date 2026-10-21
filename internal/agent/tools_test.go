@@ -72,6 +72,20 @@ func (f *fakeReader) ListInstances(
 	return f.instances[workload], f.err
 }
 
+func (f *fakeReader) GetInstance(_ context.Context, _, name string) (*computev1alpha.Instance, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	for _, instances := range f.instances {
+		for i := range instances {
+			if instances[i].Name == name {
+				return &instances[i], nil
+			}
+		}
+	}
+	return nil, errors.New("instance not found")
+}
+
 // fixtureReader builds a small fleet spanning the states that matter: one
 // healthy workload, one blocked on quota (partially serving), and one blocked
 // by a platform-side placement fault.
@@ -378,7 +392,7 @@ func TestReaderErrorsPropagate(t *testing.T) {
 }
 
 // TestRegisterToolsPublishesExactlyTheDocumentedSet inspects what a registered
-// server actually advertises: seven named tools, none of them mutating, so
+// server actually advertises only the documented tools, none of them mutating, so
 // anything extra over the wire is a bug. A tool's promise that it changes
 // nothing is what tells the model it can run it without asking first, so every
 // description must make it. It also catches a schema that fails to infer, since
@@ -423,6 +437,7 @@ func TestRegisterToolsPublishesExactlyTheDocumentedSet(t *testing.T) {
 		// What a new workload may ask for, and its manifest.
 		ToolInstanceTypesList,
 		ToolWorkloadRender,
+		ToolExecSuggest,
 	}
 	if len(got) != len(want) {
 		t.Errorf("published %d tools %v, want exactly %d", len(got), keysOf(got), len(want))

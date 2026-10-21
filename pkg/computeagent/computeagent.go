@@ -6,7 +6,7 @@
 // compute-mcp.
 //
 // Everything here is a thin re-export of internal/agent. The diagnosis walk,
-// the reason catalog and the rendering stay internal and singular, so a second
+// command suggestions, the reason catalog and the rendering stay internal and singular, so a second
 // server mounting these tools describes a workload exactly the way the
 // assistant and the compute plugin do. Do not add logic here; add it to
 // internal/agent and re-export it.
@@ -37,6 +37,7 @@ const (
 	ToolReasonExplain     = agent.ToolReasonExplain
 	ToolInstanceTypesList = agent.ToolInstanceTypesList
 	ToolWorkloadRender    = agent.ToolWorkloadRender
+	ToolExecSuggest       = agent.ToolExecSuggest
 )
 
 // Namespace is the namespace every compute object lives in within a project
