@@ -51,6 +51,7 @@ func TestRegisterToolsExposesEveryNamedTool(t *testing.T) {
 		computeagent.ToolWorkloadRender,
 		computeagent.ToolWorkloadsGet,
 		computeagent.ToolWorkloadsList,
+		computeagent.ToolExecSuggest,
 	}
 	sort.Strings(want)
 	assert.Equal(t, want, got)

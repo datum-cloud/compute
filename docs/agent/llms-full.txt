@@ -236,6 +236,8 @@ there, and this section deliberately does not restate them.
   compute_instance_types_list the instance types a workload may ask for
   compute_workload_render     inputs to a full Workload manifest; writes
                               nothing, reads nothing
+  compute_exec_suggest       checks an Instance and formats an exact datumctl
+                              command the person can run; does not run it
 
 The platform's base tools fill in the rest of a create. Call locations_list
 with service "compute" for the locations this project may place a workload in —
@@ -247,7 +249,7 @@ and resources_apply make the change.
 
 Skills (load on demand) carry the procedures: workload-not-available,
 quota-triage, instance-not-ready, referenced-data-triage, placement-triage,
-stalled-transient, workload-create. This document is orientation; it
+stalled-transient, workload-create, instance-command-check. This document is orientation; it
 deliberately does not restate what a skill covers, so reach for the skill
 rather than answering a triage or creation question from what is in the prompt.
 
