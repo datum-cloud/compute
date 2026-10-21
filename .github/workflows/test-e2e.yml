@@ -12,6 +12,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # Cancel a superseded run on the same ref. The e2e job is expensive (three Kind
 # clusters + a Karmada control plane), so we don't want stale pushes burning a
