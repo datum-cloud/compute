@@ -181,6 +181,7 @@ func TestPortFlagStaysRegistered(t *testing.T) {
 	port := cmd.Flags().Lookup("port")
 	if port == nil {
 		t.Fatal("--port must stay registered for one release so it can error")
+		return
 	}
 	if !port.Hidden {
 		t.Error("--port must not be advertised in help")
