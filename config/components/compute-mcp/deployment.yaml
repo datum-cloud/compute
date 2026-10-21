@@ -25,8 +25,9 @@ spec:
         app.kubernetes.io/instance: compute-mcp
         app.kubernetes.io/name: compute-mcp
     spec:
-      # Deliberately unbound — see service_account.yaml. The server reads as
-      # the caller, so this account holds no permission of its own.
+      # Project control-plane reads and writes still use the caller's token.
+      # This account can only create/list/delete local Leases for the shared
+      # one-time exec approval ledger.
       #
       # This template carries no control plane configuration: which control
       # plane the server reads is deployment topology, so the deployer patches
@@ -52,6 +53,19 @@ spec:
             - /compute-mcp
           args:
             - --addr=:8080
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Rollout remains safe before the shared secret is provisioned:
+            # compute-mcp omits its exec tools when this key is absent.
+            - name: COMPUTE_ASSISTANT_EXEC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: compute-assistant-exec-key
+                  key: key
+                  optional: true
           ports:
             - containerPort: 8080
               name: http

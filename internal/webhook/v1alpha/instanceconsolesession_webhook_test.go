@@ -4,7 +4,9 @@ package webhook
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/assistantorigin"
 	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/pkg/runtimeclass"
 )
@@ -32,6 +35,29 @@ func newSessionWebhook(objs ...client.Object) *instanceConsoleSessionWebhook {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	return &instanceConsoleSessionWebhook{reader: fixedReader(c)}
+}
+
+func TestAssistantOriginRequiresSignedImmutableProof(t *testing.T) {
+	key := []byte(strings.Repeat("k", 32))
+	w := newSessionWebhook()
+	w.assistantKey = key
+	s := sessionWebhookSession()
+	s.Name = "assistant-exec-" + strings.Repeat("a", 32)
+	proof, err := assistantorigin.Sign(key, s, "alice@example.com", strings.Repeat("a", 32), time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	s.Annotations = map[string]string{computev1alpha.InstanceConsoleSessionAssistantProofAnnotation: proof}
+	require.NoError(t, w.validateAssistantProof(s, "alice@example.com"))
+	require.Error(t, w.validateAssistantProof(s, "bob@example.com"))
+	changed := s.DeepCopy()
+	changed.Spec.Command = []string{"rm", "-rf", "/"}
+	require.Error(t, w.validateAssistantProof(changed, "alice@example.com"))
+	changed = s.DeepCopy()
+	changed.Name = "another-session"
+	require.Error(t, w.validateAssistantProof(changed, "alice@example.com"))
+	changed = s.DeepCopy()
+	delete(changed.Annotations, computev1alpha.InstanceConsoleSessionAssistantProofAnnotation)
+	_, err = w.ValidateUpdate(context.Background(), s, changed)
+	require.Error(t, err, "removing origin proof after admission must fail")
 }
 
 func sessionWebhookContext(username string) context.Context {

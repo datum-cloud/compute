@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/assistantorigin"
 )
 
 const (
@@ -240,6 +241,18 @@ func (r *InstanceConsoleSessionReconciler) recordSessionEvent(
 		computev1alpha.InstanceConsoleSessionLocationAnnotation:  placement.location,
 		sessionEventInstanceAnnotation:                           session.Spec.InstanceRef.Name,
 		sessionEventContainerAnnotation:                          session.Spec.ContainerName,
+	}
+	// Never trust a client-supplied provenance label. Only the signed proof,
+	// checked against the admission-stamped requester and immutable command
+	// spec, may make the activity say this came through the assistant.
+	if session.Status.StartedAt != nil {
+		if key, err := assistantorigin.KeyFromEnv(); err == nil &&
+			assistantorigin.VerifyStored(key, session,
+				session.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation],
+				session.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation]) {
+			annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"] = "patch"
+			note += " Requested through the Datum assistant."
+		}
 	}
 	for k, v := range extraAnnotations {
 		annotations[k] = v

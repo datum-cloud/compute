@@ -4,8 +4,10 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/assistantorigin"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -225,6 +228,8 @@ func (e *sessionTestEnv) setMemberReports(t *testing.T, reports bool) {
 	require.NoError(t, e.hub.Create(ctx, binding))
 }
 
+const testAssistantRequester = "alice@example.com"
+
 func testSession() *computev1alpha.InstanceConsoleSession {
 	return &computev1alpha.InstanceConsoleSession{
 		ObjectMeta: metav1.ObjectMeta{
@@ -233,7 +238,7 @@ func testSession() *computev1alpha.InstanceConsoleSession {
 			UID:               testSessionUID,
 			CreationTimestamp: metav1.NewTime(testSessionCreated),
 			Annotations: map[string]string{
-				computev1alpha.InstanceConsoleSessionRequesterAnnotation: "alice@example.com",
+				computev1alpha.InstanceConsoleSessionRequesterAnnotation: testAssistantRequester,
 			},
 		},
 		Spec: computev1alpha.InstanceConsoleSessionSpec{
@@ -430,7 +435,7 @@ func TestInstanceConsoleSessionStatusCopy(t *testing.T) {
 	assert.Equal(t, testSessionInstance, started.Related.Name)
 	assert.Equal(t, testInstanceUID, started.Related.UID)
 	assert.Equal(t, map[string]string{
-		computev1alpha.InstanceConsoleSessionRequesterAnnotation: "alice@example.com",
+		computev1alpha.InstanceConsoleSessionRequesterAnnotation: testAssistantRequester,
 		computev1alpha.InstanceConsoleSessionCellAnnotation:      testMemberCluster,
 		computev1alpha.InstanceConsoleSessionLocationAnnotation:  testFederatorLocation,
 		sessionEventInstanceAnnotation:                           testSessionInstance,
@@ -838,7 +843,7 @@ func TestInstanceConsoleSessionEndedOnCellIsReleasedAtOnce(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonCompleted, ended.Annotations[sessionEventReasonAnnotation])
 	assert.Equal(t, "3", ended.Annotations[sessionEventExitCodeAnnotation])
-	assert.Equal(t, "alice@example.com", ended.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation])
+	assert.Equal(t, testAssistantRequester, ended.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation])
 
 	session, ok := env.projectSession(t)
 	require.True(t, ok)
@@ -1239,6 +1244,30 @@ func TestInstanceConsoleSessionRecordsEachEventOnce(t *testing.T) {
 	assert.Contains(t, events, EventReasonSessionEnded)
 	_, ok := env.projectSession(t)
 	assert.False(t, ok)
+}
+
+func TestAssistantOriginActivityRequiresAStartedSignedSession(t *testing.T) {
+	key := []byte(strings.Repeat("k", 32))
+	t.Setenv(assistantorigin.KeyEnv, base64.RawStdEncoding.EncodeToString(key))
+	session := testSession()
+	session.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation] = testAssistantRequester
+	proof, err := assistantorigin.Sign(key, session, testAssistantRequester, strings.Repeat("a", 32), time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	session.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation] = proof
+	env := newSessionTestEnv(t, nil, nil)
+	require.NoError(t, env.reconciler.recordSessionEvent(context.Background(), env.project, session,
+		corev1.EventTypeNormal, EventReasonSessionEnded, "ended", nil))
+	event := env.events(t)[EventReasonSessionEnded]
+	assert.Empty(t, event.Annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"],
+		"a copied proof on a session that never connected cannot claim an assistant run")
+
+	now := metav1.Now()
+	session.Status.StartedAt = &now
+	require.NoError(t, env.reconciler.recordSessionEvent(context.Background(), env.project, session,
+		corev1.EventTypeNormal, EventReasonSessionStarted, "started", nil))
+	event = env.events(t)[EventReasonSessionStarted]
+	assert.Equal(t, "patch", event.Annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"])
+	assert.Contains(t, event.Note, "through the Datum assistant")
 }
 
 func TestInstanceConsoleSessionStaleReconcileDoesNotRecordAgain(t *testing.T) {
