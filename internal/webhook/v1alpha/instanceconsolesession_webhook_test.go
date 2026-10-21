@@ -60,6 +60,26 @@ func TestAssistantOriginRequiresSignedImmutableProof(t *testing.T) {
 	require.Error(t, err, "removing origin proof after admission must fail")
 }
 
+func TestAssistantOriginProofPassesSessionAdmissionOnlyWhenValid(t *testing.T) {
+	key := []byte(strings.Repeat("k", 32))
+	w := newAdmittingSessionWebhook(t)
+	w.assistantKey = key
+	s := sessionWebhookSession()
+	s.Name = "assistant-exec-" + strings.Repeat("a", 32)
+	proof, err := assistantorigin.Sign(key, s, "alice@example.com", strings.Repeat("a", 32), time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	s.Annotations = map[string]string{computev1alpha.InstanceConsoleSessionAssistantProofAnnotation: proof}
+	ctx := sessionWebhookContext("alice@example.com")
+	require.NoError(t, w.Default(ctx, s))
+	_, err = w.ValidateCreate(ctx, s)
+	require.NoError(t, err)
+
+	tampered := s.DeepCopy()
+	tampered.Spec.Command = []string{"another-command"}
+	_, err = w.ValidateCreate(ctx, tampered)
+	require.ErrorContains(t, err, "assistant exec origin proof is invalid")
+}
+
 func sessionWebhookContext(username string) context.Context {
 	return admission.NewContextWithRequest(context.Background(), admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
