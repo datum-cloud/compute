@@ -4,8 +4,10 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/assistantorigin"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -1239,6 +1242,30 @@ func TestInstanceConsoleSessionRecordsEachEventOnce(t *testing.T) {
 	assert.Contains(t, events, EventReasonSessionEnded)
 	_, ok := env.projectSession(t)
 	assert.False(t, ok)
+}
+
+func TestAssistantOriginActivityRequiresAStartedSignedSession(t *testing.T) {
+	key := []byte(strings.Repeat("k", 32))
+	t.Setenv(assistantorigin.KeyEnv, base64.RawStdEncoding.EncodeToString(key))
+	session := testSession()
+	session.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation] = "alice@example.com"
+	proof, err := assistantorigin.Sign(key, session, "alice@example.com", strings.Repeat("a", 32), time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	session.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation] = proof
+	env := newSessionTestEnv(t, nil, nil)
+	require.NoError(t, env.reconciler.recordSessionEvent(context.Background(), env.project, session,
+		corev1.EventTypeNormal, EventReasonSessionEnded, "ended", nil))
+	event := env.events(t)[EventReasonSessionEnded]
+	assert.Empty(t, event.Annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"],
+		"a copied proof on a session that never connected cannot claim an assistant run")
+
+	now := metav1.Now()
+	session.Status.StartedAt = &now
+	require.NoError(t, env.reconciler.recordSessionEvent(context.Background(), env.project, session,
+		corev1.EventTypeNormal, EventReasonSessionStarted, "started", nil))
+	event = env.events(t)[EventReasonSessionStarted]
+	assert.Equal(t, "patch", event.Annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"])
+	assert.Contains(t, event.Note, "through the Datum assistant")
 }
 
 func TestInstanceConsoleSessionStaleReconcileDoesNotRecordAgain(t *testing.T) {

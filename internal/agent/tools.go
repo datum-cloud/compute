@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
@@ -36,6 +37,13 @@ const (
 type ToolDeps struct {
 	Reader    Reader
 	Namespace string
+	// ExecClient uses the same caller bearer token as Reader. The control
+	// plane enforces RBAC and project session quota on session creation.
+	ExecClient  client.Client
+	Project     string
+	BearerToken string
+	ExecKey     []byte
+	ExecNonces  ExecNonceStore
 }
 
 // DepsFor resolves the dependencies for a tool call. A function rather than a
