@@ -49,6 +49,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set file watcher limits
+        run: sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+
       # go-task drives the entire harness (task e2e:env:up / e2e:deploy /
       # e2e:test). The action publishes major refs as branches (v1/v2/v3); the
       # version input pins the go-task binary itself. repo-token avoids GitHub
