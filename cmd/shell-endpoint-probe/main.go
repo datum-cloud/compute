@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "golang.org/x/crypto/x509roots/fallback"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
