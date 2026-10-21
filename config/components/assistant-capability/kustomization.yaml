@@ -9,3 +9,4 @@ kind: Component
 resources:
   - service-agent.yaml
   - service-agent-configuration.yaml
+  - service-agent-configuration-v2.yaml

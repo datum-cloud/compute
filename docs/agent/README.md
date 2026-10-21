@@ -30,6 +30,7 @@ over Streamable HTTP:
 |---|---|
 | Diagnosis, read-only | `compute_workloads_list`, `compute_workloads_get`, `compute_instances_list`, `compute_workload_diagnose`, `compute_reason_explain` |
 | Creation, writes nothing | `compute_instance_types_list` (the sizes a workload may ask for), `compute_workload_render` (inputs to a Workload manifest, pure) |
+| Instance command guidance, read-only | `compute_exec_suggest` (checks the target and formats an exact CLI command for the person to run) |
 
 Every tool is prefixed `compute_`, so the assistant can compose tools from
 several services in one conversation without names colliding; the capability
@@ -52,7 +53,7 @@ exists, and only for customers entitled to compute. Two objects in
 | Object | Role |
 |---|---|
 | `ServiceAgent` | The agent a customer's assistant talks to. Published means customers can get it. |
-| `ServiceAgentConfiguration` | What it offers: the knowledge URL, the approved tool list, and the seven guides. |
+| `ServiceAgentConfiguration` | What it offers: the knowledge URL, the approved tool list, and guides. |
 
 Adding a guide under `skills/` and registering it are one change in one
 repository. It used to be neither — the same content lived as raw JSON in the
@@ -135,6 +136,7 @@ orientation and classification; the procedures live here and nowhere else.
 | `placement-triage` | `NoMatchingLocation`, `AmbiguousServingLocation`, `LocationMismatch` (Datum's), and `RuntimeClassNotServed` (the customer's) |
 | `stalled-transient` | A transient reason that has outlived its expected window |
 | `workload-create` | Deploying something new: prerequisites, the choices that are final at create, and render → plan → show → confirm → apply |
+| `instance-command-check` | Suggesting a specific command for a person to run inside one Instance; never executing it for them |
 
 A skill never grants privileges. It can only direct the model toward tools that
 are independently on the enforced allow-list, which is why these go through the

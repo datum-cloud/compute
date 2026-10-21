@@ -24,6 +24,8 @@ type Reader interface {
 	ListDeployments(ctx context.Context, namespace, workload string) ([]computev1alpha.WorkloadDeployment, error)
 	// ListInstances returns the Instances belonging to a Workload.
 	ListInstances(ctx context.Context, namespace, workload string) ([]computev1alpha.Instance, error)
+	// GetInstance reads the exact target before suggesting a command for it.
+	GetInstance(ctx context.Context, namespace, name string) (*computev1alpha.Instance, error)
 }
 
 // ClientReader implements Reader against a controller-runtime client.
@@ -89,4 +91,12 @@ func (r *ClientReader) ListInstances(
 		return nil, fmt.Errorf("listing instances for workload %s/%s: %w", namespace, workload, err)
 	}
 	return list.Items, nil
+}
+
+func (r *ClientReader) GetInstance(ctx context.Context, namespace, name string) (*computev1alpha.Instance, error) {
+	var instance computev1alpha.Instance
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &instance); err != nil {
+		return nil, fmt.Errorf("getting instance %s/%s: %w", namespace, name, err)
+	}
+	return &instance, nil
 }
