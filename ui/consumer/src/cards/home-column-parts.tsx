@@ -12,7 +12,8 @@ import type { ReactNode } from 'react';
 /** One row: a 40px line with an icon or dot, the label and a short status. */
 export const COLUMN_ROW_CLASS = 'flex h-10 items-center gap-2 rounded-md px-2';
 
-const SKELETON_LABEL_WIDTHS = ['w-3/5', 'w-2/5', 'w-1/2'];
+// One row, matching the host: columns size to their content, so loading only ever grows them.
+const SKELETON_LABEL_WIDTHS = ['w-3/5'];
 
 export function ColumnSkeleton({ label }: { label: string }) {
   return (
@@ -31,34 +32,31 @@ export function ColumnSkeleton({ label }: { label: string }) {
   );
 }
 
-/** A centred icon tile, title, one line of text and an optional button. */
+/**
+ * One row in place of the list: an optional small icon, a line of text and an
+ * optional button, the same height and alignment as a real row so an empty
+ * column lines up with the host's columns beside it.
+ */
 export function ColumnEmpty({
   icon,
-  title,
   children,
   action,
   testId,
 }: {
   icon?: ReactNode;
-  title?: string;
   children: ReactNode;
   action?: ReactNode;
   testId?: string;
 }) {
   return (
     <div
-      className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"
+      className="flex min-h-10 items-center justify-between gap-3 rounded-md px-2"
       data-testid={testId}
     >
-      {icon && (
-        <div className="bg-muted border-border text-icon-secondary flex size-9 items-center justify-center rounded-lg border">
-          {icon}
-        </div>
-      )}
-      <div className="flex flex-col gap-1">
-        {title && <p className="text-sm font-medium">{title}</p>}
-        <p className="text-muted-foreground text-xs text-balance">{children}</p>
-      </div>
+      <p className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">
+        {icon && <span className="text-icon-secondary shrink-0">{icon}</span>}
+        <span>{children}</span>
+      </p>
       {action}
     </div>
   );
