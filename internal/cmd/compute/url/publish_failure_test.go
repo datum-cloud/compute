@@ -56,7 +56,7 @@ func TestUnpublishStopsWhenTheURLCannotBeRemoved(t *testing.T) {
 		publishedService(testWorkloadName, 8080, location("DFW", 1, 1, true)),
 	), failDeleteOf(kindProxy, boom))
 
-	err := Unpublish(context.Background(), c, testWorkloadName)
+	_, err := Unpublish(context.Background(), c, testWorkloadName)
 	if err == nil {
 		t.Fatal("a URL that could not be removed must be reported")
 	}
@@ -87,7 +87,7 @@ func TestUnpublishReportsAFailureToRemoveTheBackends(t *testing.T) {
 		publishedService(testWorkloadName, 8080, location("DFW", 1, 1, true)),
 	), failDeleteOf(kindService, boom))
 
-	err := Unpublish(context.Background(), c, testWorkloadName)
+	_, err := Unpublish(context.Background(), c, testWorkloadName)
 	if err == nil {
 		t.Fatal("backends that could not be removed must be reported")
 	}
@@ -133,12 +133,12 @@ func TestUnpublishRetryFinishesAPartialDelete(t *testing.T) {
 		},
 	})
 
-	if err := Unpublish(context.Background(), c, testWorkloadName); err == nil {
+	if _, err := Unpublish(context.Background(), c, testWorkloadName); err == nil {
 		t.Fatal("expected the first attempt to fail on the backends")
 	}
 
 	fail = false
-	if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
+	if _, err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
 		t.Fatalf("the retry must finish the job, got: %v", err)
 	}
 	if objectExists(t, c, &networkingv1alpha.NetworkService{}) {
@@ -385,7 +385,7 @@ func TestUnpublishNeverDeletesACollection(t *testing.T) {
 	t.Run("nothing published", func(t *testing.T) {
 		c := interceptor.NewClient(newFakeClient(t), noCollectionDeletes(t))
 
-		if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
+		if _, err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
 			t.Fatalf("a workload with no URL has nothing to delete, got: %v", err)
 		}
 	})
@@ -396,7 +396,7 @@ func TestUnpublishNeverDeletesACollection(t *testing.T) {
 			publishedService(testWorkloadName, 8080, location("DFW", 1, 1, true)),
 		), noCollectionDeletes(t))
 
-		if err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
+		if _, err := Unpublish(context.Background(), c, testWorkloadName); err != nil {
 			t.Fatalf("Unpublish: %v", err)
 		}
 		if objectExists(t, c, &networkingv1alpha.HTTPProxy{}) {

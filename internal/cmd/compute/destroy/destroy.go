@@ -118,10 +118,12 @@ func destroyWorkload(ctx context.Context, out, errOut io.Writer, c client.Client
 	// stop the URLs answering and it did not, and a script reading exit 0 would
 	// carry on believing otherwise. The message still says the workload is
 	// gone, because it is.
-	if err := url.Unpublish(ctx, c, workloadName); err != nil {
+	kept, err := url.Unpublish(ctx, c, workloadName)
+	if err != nil {
 		reportLeftoverURLs(errOut, workloadName, info)
 		return err
 	}
+	reportKept(out, kept)
 
 	return nil
 }
@@ -180,7 +182,8 @@ func destroyLeftoverURLs(ctx context.Context, out, errOut io.Writer, c client.Cl
 	}
 
 	// Nothing else is being deleted here, so a failure is the command failing.
-	if err := url.Unpublish(ctx, c, workloadName); err != nil {
+	kept, err := url.Unpublish(ctx, c, workloadName)
+	if err != nil {
 		return err
 	}
 
@@ -189,6 +192,7 @@ func destroyLeftoverURLs(ctx context.Context, out, errOut io.Writer, c client.Cl
 	} else {
 		fmt.Fprintf(out, "Leftover URL backends for %s deleted.\n", workloadName)
 	}
+	reportKept(out, kept)
 	return nil
 }
 
@@ -275,6 +279,15 @@ func hostnameURLs(info *url.Info) []string {
 //
 // The cause is not repeated here: the caller returns it, and it is printed as
 // the command's error immediately after this block.
+// reportKept names what destroy left in place because datumctl did not create
+// it. Saying nothing would let "deleted" stand for a load balancer that is
+// still there, and may still be answering.
+func reportKept(out io.Writer, kept []url.Foreign) {
+	for _, f := range kept {
+		fmt.Fprintf(out, "Left %s in place: datumctl did not create it.\n", f)
+	}
+}
+
 func reportLeftoverURLs(errOut io.Writer, workloadName string, info *url.Info) {
 	fmt.Fprintf(errOut, "\nThe workload was deleted, but its URLs were not.\n")
 	for _, u := range hostnameURLs(info) {
