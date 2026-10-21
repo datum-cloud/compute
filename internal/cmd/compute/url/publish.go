@@ -109,6 +109,10 @@ func Publish(
 // as a spurious failure.
 //
 // hostnames are custom hostnames; pass nil for the managed URL alone.
+//
+// Nothing is written if either object exists without being datumctl's: the
+// backends would otherwise be created, and left behind, for a proxy that is
+// then refused.
 func Declare(
 	ctx context.Context,
 	c client.Client,
@@ -118,6 +122,9 @@ func Declare(
 	http2 bool,
 	hostnames []string,
 ) error {
+	if err := CheckOwnership(ctx, c, w.Name); err != nil {
+		return err
+	}
 	if err := applyService(ctx, c, BuildNetworkService(w, portName, port, http2)); err != nil {
 		return err
 	}
@@ -312,6 +319,9 @@ func applyService(ctx context.Context, c client.Client, desired *networkingv1alp
 		if err != nil {
 			return fmt.Errorf("reading published backends for %q: %w", desired.Name, err)
 		}
+		if !createdByDatumctl(&existing, desired) {
+			return &notCreatedError{foreign: []Foreign{{Kind: kindBackends, Name: existing.Name}}}
+		}
 
 		merged := mergeServiceSpec(existing.Spec, desired.Spec)
 		if reflect.DeepEqual(existing.Spec, merged) && metaCurrent(&existing, desired) {
@@ -358,6 +368,9 @@ func applyProxy(ctx context.Context, c client.Client, desired *networkingv1alpha
 		}
 		if err != nil {
 			return fmt.Errorf("reading published URL for %q: %w", desired.Name, err)
+		}
+		if !createdByDatumctl(&existing, desired) {
+			return &notCreatedError{foreign: []Foreign{{Kind: kindLoadBalancer, Name: existing.Name}}}
 		}
 
 		merged := mergeProxySpec(existing.Spec, desired.Spec)
@@ -485,31 +498,50 @@ func adoptMeta(existing, desired client.Object) {
 //
 // Objects that are not there are not an error — unpublishing something that
 // was never published is a no-op, which is what `destroy` needs.
-func Unpublish(ctx context.Context, c client.Client, workloadName string) error {
+//
+// Only objects datumctl created for this workload are deleted. One that merely
+// shares the workload's name was set up some other way, and may be the very
+// load balancer the workload is served through; it is left alone and returned,
+// so the caller can say it is still there rather than report it removed.
+func Unpublish(ctx context.Context, c client.Client, workloadName string) ([]Foreign, error) {
 	key := client.ObjectKey{Namespace: util.ResourceNamespace, Name: ResourceName(workloadName)}
 
-	if err := deleteIfFound(ctx, c, key, &networkingv1alpha.HTTPProxy{}); err != nil {
-		return fmt.Errorf("removing URL for %q: %w", workloadName, err)
+	var kept []Foreign
+	skipped, err := deleteIfFound(ctx, c, key, workloadName, &networkingv1alpha.HTTPProxy{})
+	if err != nil {
+		return nil, fmt.Errorf("removing URL for %q: %w", workloadName, err)
 	}
-	if err := deleteIfFound(ctx, c, key, &networkingv1alpha.NetworkService{}); err != nil {
-		return fmt.Errorf("removing URL backends for %q: %w", workloadName, err)
+	if skipped {
+		kept = append(kept, Foreign{Kind: kindLoadBalancer, Name: key.Name})
+	}
+	skipped, err = deleteIfFound(ctx, c, key, workloadName, &networkingv1alpha.NetworkService{})
+	if err != nil {
+		return kept, fmt.Errorf("removing URL backends for %q: %w", workloadName, err)
+	}
+	if skipped {
+		kept = append(kept, Foreign{Kind: kindBackends, Name: key.Name})
 	}
 
-	return nil
+	return kept, nil
 }
 
-// deleteIfFound deletes an object only once a read has found it, so nothing is
-// asked of the server for a workload that published no URL. An object that
-// disappears between the read and the delete is already what was wanted.
-func deleteIfFound(ctx context.Context, c client.Client, key client.ObjectKey, obj client.Object) error {
+// deleteIfFound deletes an object only once a read has found it, and found it
+// to be the workload's own, so nothing is asked of the server for a workload
+// that published no URL. An object that disappears between the read and the
+// delete is already what was wanted. skipped reports an object that is there
+// but is not the workload's, and so was left alone.
+func deleteIfFound(ctx context.Context, c client.Client, key client.ObjectKey, workloadName string, obj client.Object) (skipped bool, err error) {
 	if err := c.Get(ctx, key, obj); err != nil {
 		if notPublished(err) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
+	}
+	if !isWorkloadsOwn(obj, workloadName) {
+		return true, nil
 	}
 	if err := c.Delete(ctx, obj); err != nil && !notPublished(err) {
-		return err
+		return false, err
 	}
-	return nil
+	return false, nil
 }

@@ -14,7 +14,8 @@ import (
 
 // The tools compute publishes to an assistant. These five diagnose what a
 // project has deployed; render.go and instancetypes.go add the two that help
-// write a new workload. None of them changes anything.
+// write a new workload, and exec_suggest.go formats a command for a person to
+// run. None of them changes anything.
 //
 // There is deliberately no mutating tool — no delete, no scale, no restart,
 // and no create. Creating a workload goes through the assistant's own plan and
@@ -243,6 +244,7 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 
 	registerInstanceTypesTool(s, deps)
 	registerRenderTool(s, deps)
+	registerExecSuggestTool(s, deps)
 }
 
 // ---------------------------------------------------------------- handlers

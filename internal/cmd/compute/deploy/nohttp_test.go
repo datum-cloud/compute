@@ -110,7 +110,7 @@ func TestPlanHTTPServiceStatesTheConsequence(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			got := planHTTPService(context.Background(), &out, tc.client(t), testWorkload, tc.httpPort, false, tc.opts, tc.creating)
+			got := planHTTPService(context.Background(), &out, tc.client(t), testWorkload, httpPlan{port: tc.httpPort, publish: tc.httpPort > 0}, tc.opts, tc.creating)
 
 			if tc.wantLine != "" && !strings.Contains(out.String(), tc.wantLine) {
 				t.Errorf("plan missing %q:\n%s", tc.wantLine, out.String())
@@ -135,7 +135,7 @@ func TestPlanHTTPServiceSurvivesAnUnreadableControlPlane(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	got := planHTTPService(context.Background(), &out, c, testWorkload, 0, false, &options{noHTTP: true}, false)
+	got := planHTTPService(context.Background(), &out, c, testWorkload, httpPlan{}, &options{noHTTP: true}, false)
 
 	if got != "" {
 		t.Errorf("removed URL = %q, want none: nothing was read", got)
@@ -348,7 +348,7 @@ func TestPublishReportsACarryForwardFailure(t *testing.T) {
 	declareErr := declareURL(context.Background(), c, workload(), "http", 8080, false)
 
 	var out bytes.Buffer
-	err := publish(context.Background(), &out, c, workload(), 8080, &options{image: testImage}, declareErr)
+	err := publish(context.Background(), &out, c, workload(), httpPlan{port: 8080, publish: true}, &options{image: testImage}, declareErr)
 	if err == nil {
 		t.Fatal("a URL that was never declared must not be reported as published")
 	}
@@ -366,7 +366,7 @@ func TestPublishReportsACarryForwardFailure(t *testing.T) {
 // asked, and reads as though the removal were a mistake.
 func TestPublishSaysNothingMoreAfterNoHTTP(t *testing.T) {
 	var out bytes.Buffer
-	if err := publish(context.Background(), &out, nil, workload(), 0, &options{noHTTP: true}, nil); err != nil {
+	if err := publish(context.Background(), &out, nil, workload(), httpPlan{}, &options{noHTTP: true}, nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if out.Len() != 0 {
@@ -413,7 +413,7 @@ func TestManifestDeployReportsTheDeadEnd(t *testing.T) {
 // said before the Apply prompt rather than left to be discovered.
 func TestPlanWarnsThatTheEdgeSpeaksPlaintext(t *testing.T) {
 	var out bytes.Buffer
-	planHTTPService(context.Background(), &out, newFakeClient(t), testWorkload, 8080, false, &options{httpPort: 8080}, true)
+	planHTTPService(context.Background(), &out, newFakeClient(t), testWorkload, httpPlan{port: 8080, publish: true}, &options{httpPort: 8080}, true)
 
 	got := out.String()
 	if !strings.Contains(got, "Datum terminates TLS; serve plain HTTP on this port.") {
@@ -427,7 +427,7 @@ func TestPlanWarnsThatTheEdgeSpeaksPlaintext(t *testing.T) {
 
 	// And it is not said to a workload that publishes nothing.
 	var internal bytes.Buffer
-	planHTTPService(context.Background(), &internal, newFakeClient(t), testWorkload, 0, false, &options{}, false)
+	planHTTPService(context.Background(), &internal, newFakeClient(t), testWorkload, httpPlan{}, &options{}, false)
 	if strings.Contains(internal.String(), "TLS") {
 		t.Errorf("nothing is being published, so TLS is not the user's problem:\n%s", internal.String())
 	}
