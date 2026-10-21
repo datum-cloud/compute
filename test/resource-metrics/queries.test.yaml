@@ -1,0 +1,1236 @@
+rule_files:
+- rules.yaml
+evaluation_interval: 30s
+tests:
+- name: complete containers including genuine zero
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_container{namespace="a",pod="app",container="app"}
+      value: 0.1
+    - labels: test_cpu_container{namespace="a",pod="app",container="sidecar"}
+      value: 0.1
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_container{namespace="a",pod="app",container="app"}
+      value: 10
+    - labels: test_memory_container{namespace="a",pod="app",container="sidecar"}
+      value: 10
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_node{node="worker"}
+      value: 0.2
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_node{node="worker"}
+      value: 20
+- name: real zero CPU remains zero
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: '0x12'
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_container{namespace="a",pod="app",container="app"}
+      value: 0
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_container{namespace="a",pod="app",container="app"}
+      value: 10
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_node{node="worker"}
+      value: 0
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_node{node="worker"}
+      value: 10
+- name: one sidecar missing datum_compute_instance_cpu_usage_seconds_total
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: recorder stopped for datum_compute_instance_cpu_usage_seconds_total
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x2 _x10
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: one sidecar missing datum_compute_instance_memory_working_set_bytes
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: recorder stopped for datum_compute_instance_memory_working_set_bytes
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x2 _x10
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: one sidecar missing datum_compute_instance_cpu_source_timestamp_seconds
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: recorder stopped for datum_compute_instance_cpu_source_timestamp_seconds
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x2 _x10
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: one sidecar missing datum_compute_instance_memory_source_timestamp_seconds
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: recorder stopped for datum_compute_instance_memory_source_timestamp_seconds
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x2 _x10
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: fresh recorder with stale datum_compute_instance_cpu_source_timestamp_seconds
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: '0x12'
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: fresh recorder with stale datum_compute_instance_memory_source_timestamp_seconds
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: stale Kubernetes identity kube_pod_container_info
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x2 _x10
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x2 _x10
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: stale Kubernetes identity kube_pod_info
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x2 _x10
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: stale Kubernetes identity kube_pod_created
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x2 _x10
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: unknown expected container identity
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: replaced Pod UID does not match old series
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="replacement"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="replacement"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="replacement"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="replacement"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: old source from before same-name replacement
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 120x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 120x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: 150x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: one namespace gap cannot affect another Pod with same name
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="b",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="b",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="b",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="b",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="b",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="b",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="b",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="b",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_container{namespace="b",pod="app",container="app"}
+      value: 0.1
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_container{namespace="b",pod="app",container="app"}
+      value: 10
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_node{node="worker"}
+      value: 0.1
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_node{node="worker"}
+      value: 10
+- name: invalid datum_compute_instance_memory_working_set_bytes NaN
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: invalid datum_compute_instance_memory_working_set_bytes -1
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: -1x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: invalid datum_compute_instance_memory_working_set_bytes +Inf
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: invalid datum_compute_instance_cpu_usage_seconds_total NaN
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: invalid datum_compute_instance_cpu_usage_seconds_total +Inf
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf +Inf
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: existing Unikraft path requires no Kata source gauges
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="unikernel"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="unikernel"}
+    values: 10x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_container{namespace="a",pod="app",container="app"}
+      value: 0.1
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_container{namespace="a",pod="app",container="app"}
+      value: 10
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_node{node="worker"}
+      value: 0.1
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_node{node="worker"}
+      value: 10
+- name: declared sidecar with no reported container status remains expected
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: future cpu source timestamp
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: '0x12'
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 1000x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: future memory source timestamp
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: '0x12'
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 1000x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: duplicate kube-state-metrics replicas do not duplicate expected containers
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{instance="replica",resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{instance="replica",resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{instance="replica",resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{instance="replica",resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_container{namespace="a",pod="app",container="app"}
+      value: 0.1
+    - labels: test_cpu_container{namespace="a",pod="app",container="sidecar"}
+      value: 0.1
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_container{namespace="a",pod="app",container="app"}
+      value: 10
+    - labels: test_memory_container{namespace="a",pod="app",container="sidecar"}
+      value: 10
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_node{node="worker"}
+      value: 0.2
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_node{node="worker"}
+      value: 20
+- name: missing cpu request on declared sidecar
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: missing memory request on declared sidecar
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="sidecar",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: duplicate app samples cannot hide missing sidecar
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="sidecar",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{instance="duplicate",namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+3x12
+  - series: datum_compute_instance_memory_working_set_bytes{instance="duplicate",namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{instance="duplicate",namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{instance="duplicate",namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples: []
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples: []
+- name: unexpected old container is excluded from returned usage
+  interval: 30s
+  input_series:
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: '0x12'
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="app",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: kube_pod_container_resource_requests{resource="cpu",unit="core",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: kube_pod_info{namespace="a",pod="app",node="worker",uid="current"}
+    values: 1x12
+  - series: kube_pod_created{namespace="a",pod="app",node="worker",uid="current"}
+    values: '0x12'
+  - series: kube_pod_container_resource_requests{resource="memory",unit="byte",namespace="a",pod="app",node="worker",container="app",uid="current"}
+    values: 1x12
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="a",pod="app",node="worker",container="retired",uid="current",runtime_class="general-purpose"}
+    values: '0x12'
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="a",pod="app",node="worker",container="retired",uid="current",runtime_class="general-purpose"}
+    values: 10x12
+  - series: datum_compute_instance_cpu_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="retired",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  - series: datum_compute_instance_memory_source_timestamp_seconds{namespace="a",pod="app",node="worker",container="retired",uid="current",runtime_class="general-purpose"}
+    values: 0+30x12
+  promql_expr_test:
+  - expr: test_cpu_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_container{namespace="a",pod="app",container="app"}
+      value: 0
+  - expr: test_memory_container
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_container{namespace="a",pod="app",container="app"}
+      value: 10
+  - expr: test_cpu_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_cpu_node{node="worker"}
+      value: 0
+  - expr: test_memory_node
+    eval_time: 3m
+    exp_samples:
+    - labels: test_memory_node{node="worker"}
+      value: 10
