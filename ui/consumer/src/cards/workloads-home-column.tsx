@@ -24,12 +24,10 @@ import { deployStatus, homeColumnWorkloads, statusLabel } from '../lib/workload-
 import { LinkButton } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import { RocketIcon, ServerIcon, TriangleAlertIcon } from 'lucide-react';
+import { RocketIcon, TriangleAlertIcon } from 'lucide-react';
 import { Link, useParams } from 'react-router';
 
 const HOME_COLUMN_LIMIT = 5;
-
-const ServerTile = <Icon icon={ServerIcon} size={18} aria-hidden />;
 
 export default function WorkloadsHomeColumn() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -45,7 +43,7 @@ export default function WorkloadsHomeColumn() {
 
   if (enablement.error) {
     return (
-      <ColumnEmpty icon={<Icon icon={TriangleAlertIcon} size={18} aria-hidden />}>
+      <ColumnEmpty icon={<Icon icon={TriangleAlertIcon} size={14} aria-hidden />}>
         {enablement.error.status === 403
           ? "You don't have permission to enable Compute for this project."
           : "Compute isn't available right now."}
@@ -55,7 +53,7 @@ export default function WorkloadsHomeColumn() {
 
   if (error) {
     return (
-      <ColumnEmpty icon={<Icon icon={TriangleAlertIcon} size={18} aria-hidden />}>
+      <ColumnEmpty icon={<Icon icon={TriangleAlertIcon} size={14} aria-hidden />}>
         {error.status === 403
           ? "You don't have access to workloads in this project."
           : "Workloads aren't available right now."}
@@ -69,15 +67,13 @@ export default function WorkloadsHomeColumn() {
   if (all.length === 0) {
     return (
       <ColumnEmpty
-        icon={ServerTile}
-        title="Deploy your first workload"
         action={
           root && (
             <LinkButton
               as={Link}
               href={root}
-              type="primary"
-              theme="solid"
+              type="secondary"
+              theme="outline"
               size="xs"
               icon={<Icon icon={RocketIcon} size={14} aria-hidden />}
             >
@@ -86,8 +82,7 @@ export default function WorkloadsHomeColumn() {
           )
         }
       >
-        Run <code className="font-mono">datumctl compute deploy</code>, or launch a demo workload
-        in one click.
+        No workloads yet
       </ColumnEmpty>
     );
   }

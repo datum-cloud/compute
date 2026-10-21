@@ -138,6 +138,35 @@ describe('host caches after writes', () => {
     expect(readers.map((read) => read())).toEqual(HOST_KEYS.map(() => true));
   });
 
+  test('demo create joins the project network when there is exactly one', async () => {
+    stubFetch((url, init) =>
+      (init?.method ?? 'GET') === 'GET' && url.includes('/networks?')
+        ? json({ items: [{ metadata: { name: 'default' } }] })
+        : json({}, 201)
+    );
+
+    await new MutationObserver(hostQueryClient(), createDemoWorkloadMutationOptions(PROJECT_ID)).mutate();
+
+    const networkPosts = fetchCalls.filter((call) => call.startsWith('POST') && call.endsWith('/networks'));
+    expect(networkPosts).toEqual([]);
+  });
+
+  test('demo create makes its own network when the project has none or several', async () => {
+    for (const items of [[], [{ metadata: { name: 'a' } }, { metadata: { name: 'b' } }]]) {
+      fetchCalls = [];
+      stubFetch((url, init) =>
+        (init?.method ?? 'GET') === 'GET' && url.includes('/networks?')
+          ? json({ items })
+          : json({}, 201)
+      );
+
+      await new MutationObserver(hostQueryClient(), createDemoWorkloadMutationOptions(PROJECT_ID)).mutate();
+
+      const networkPosts = fetchCalls.filter((call) => call.startsWith('POST') && call.endsWith('/networks'));
+      expect(networkPosts).toHaveLength(1);
+    }
+  });
+
   test('delete invalidates domains', async () => {
     stubFetch(() => new Response(null, { status: 200 }));
     const client = hostQueryClient();
