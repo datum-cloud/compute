@@ -9,10 +9,15 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
+const (
+	testExecInstance  = "api-0"
+	testExecContainer = "app"
+)
+
 func suggestFixture() *fakeReader {
-	inst := instance("api-0")
+	inst := instance(testExecInstance)
 	inst.Spec.Runtime.Sandbox = &computev1alpha.SandboxRuntime{Containers: []computev1alpha.SandboxContainer{
-		{Name: "app"}, {Name: "sidecar"},
+		{Name: testExecContainer}, {Name: "sidecar"},
 	}}
 	return &fakeReader{instances: map[string][]computev1alpha.Instance{"api": {inst}}}
 }
@@ -20,7 +25,7 @@ func suggestFixture() *fakeReader {
 func TestExecSuggestFormatsExactCommandWithoutRunningIt(t *testing.T) {
 	r := suggestFixture()
 	_, out, err := execSuggest(fixtureDeps(r))(context.Background(), nil, ExecSuggestInput{
-		Instance: "api-0", Container: "app",
+		Instance: testExecInstance, Container: testExecContainer,
 		Command: []string{"sh", "-c", "printf '%s' \"$HOME\""}, TTL: "5m",
 	})
 	if err != nil {
@@ -42,12 +47,12 @@ func TestExecSuggestRefusesAmbiguousOrMissingTarget(t *testing.T) {
 		in   ExecSuggestInput
 		want string
 	}{
-		{"multiple containers", ExecSuggestInput{Instance: "api-0", Command: []string{"ps"}}, "several containers"},
-		{"wrong container", ExecSuggestInput{Instance: "api-0", Container: "other", Command: []string{"ps"}}, "no container"},
-		{"wrong instance", ExecSuggestInput{Instance: "other", Container: "app", Command: []string{"ps"}}, "instance not found"},
-		{"empty command", ExecSuggestInput{Instance: "api-0", Container: "app"}, "command must contain"},
-		{"line break", ExecSuggestInput{Instance: "api-0", Container: "app", Command: []string{"sh", "bad\nline"}}, "line break"},
-		{"too short TTL", ExecSuggestInput{Instance: "api-0", Container: "app", Command: []string{"ps"}, TTL: "1s"}, "ttl must"},
+		{"multiple containers", ExecSuggestInput{Instance: testExecInstance, Command: []string{"ps"}}, "several containers"},
+		{"wrong container", ExecSuggestInput{Instance: testExecInstance, Container: "other", Command: []string{"ps"}}, "no container"},
+		{"wrong instance", ExecSuggestInput{Instance: "other", Container: testExecContainer, Command: []string{"ps"}}, "instance not found"},
+		{"empty command", ExecSuggestInput{Instance: testExecInstance, Container: testExecContainer}, "command must contain"},
+		{"line break", ExecSuggestInput{Instance: testExecInstance, Container: testExecContainer, Command: []string{"sh", "bad\nline"}}, "line break"},
+		{"too short TTL", ExecSuggestInput{Instance: testExecInstance, Container: testExecContainer, Command: []string{"ps"}, TTL: "1s"}, "ttl must"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := execSuggest(fixtureDeps(r))(context.Background(), nil, tc.in)
@@ -61,7 +66,7 @@ func TestExecSuggestRefusesAmbiguousOrMissingTarget(t *testing.T) {
 func TestExecSuggestUsesCallerScopedReader(t *testing.T) {
 	denied := func(context.Context) (ToolDeps, error) { return ToolDeps{}, errors.New("caller not authorized") }
 	_, _, err := execSuggest(denied)(context.Background(), nil, ExecSuggestInput{
-		Instance: "api-0", Command: []string{"ps"},
+		Instance: testExecInstance, Command: []string{"ps"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "caller not authorized") {
 		t.Fatalf("error = %v, want caller denial", err)
@@ -74,12 +79,12 @@ func TestExecSuggestInfersSingleContainer(t *testing.T) {
 	inst.Spec.Runtime.Sandbox.Containers = inst.Spec.Runtime.Sandbox.Containers[:1]
 	r.instances["api"] = []computev1alpha.Instance{inst}
 	_, out, err := execSuggest(fixtureDeps(r))(context.Background(), nil, ExecSuggestInput{
-		Instance: "api-0", Command: []string{"ps", "aux"},
+		Instance: testExecInstance, Command: []string{"ps", "aux"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Container != "app" || out.Command != "datumctl compute exec api-0 -c app -- ps aux" {
+	if out.Container != testExecContainer || out.Command != "datumctl compute exec api-0 -c app -- ps aux" {
 		t.Fatalf("output = %+v", out)
 	}
 }

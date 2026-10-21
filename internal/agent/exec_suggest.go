@@ -68,16 +68,16 @@ func execSuggest(deps DepsFor) mcp.ToolHandlerFor[ExecSuggestInput, ExecSuggestO
 			return nil, out, err
 		}
 		if instance.Spec.Runtime.Sandbox == nil {
-			return nil, out, fmt.Errorf("Instance %q has no container to run a command in", in.Instance)
+			return nil, out, fmt.Errorf("instance %q has no container to run a command in", in.Instance)
 		}
 		containers := instance.Spec.Runtime.Sandbox.Containers
 		if len(containers) == 0 {
-			return nil, out, fmt.Errorf("Instance %q has no container to run a command in", in.Instance)
+			return nil, out, fmt.Errorf("instance %q has no container to run a command in", in.Instance)
 		}
 		container := in.Container
 		if container == "" {
 			if len(containers) != 1 {
-				return nil, out, fmt.Errorf("Instance %q has several containers; name one", in.Instance)
+				return nil, out, fmt.Errorf("instance %q has several containers; name one", in.Instance)
 			}
 			container = containers[0].Name
 		} else {
@@ -89,7 +89,7 @@ func execSuggest(deps DepsFor) mcp.ToolHandlerFor[ExecSuggestInput, ExecSuggestO
 				}
 			}
 			if !found {
-				return nil, out, fmt.Errorf("Instance %q has no container %q", in.Instance, container)
+				return nil, out, fmt.Errorf("instance %q has no container %q", in.Instance, container)
 			}
 		}
 
@@ -130,8 +130,8 @@ func validateExecArgs(args []string) error {
 
 func quoteShellArg(arg string) string {
 	if arg != "" && strings.IndexFunc(arg, func(r rune) bool {
-		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || strings.ContainsRune("_@%+=:,./-", r))
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') &&
+			(r < '0' || r > '9') && !strings.ContainsRune("_@%+=:,./-", r)
 	}) == -1 {
 		return arg
 	}
