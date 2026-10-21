@@ -21,11 +21,27 @@ mount root so URLs read `…/services/workloads/<workloadName>`, not
   table, with health, ready count, placements, activity sparkline, age.
 - **Workload detail** (`:workloadName/*`) — Overview tab: health strip, live
   metric tiles, topology (load balancer → workload → instances), live traffic,
-  instances, locations and recent logs panels. Metrics is nested at
-  `…/metrics`.
+  the first eight instances (unhealthy first), locations and recent logs
+  panels. Instances is nested at `…/instances`: a searchable, sortable table of
+  every instance, one line each: name, status with its reason (suspended and
+  gated instances show as such), location, IPs and age; placement,
+  deployment and gate names are search terms, and a row opens the instance. Facet filters (status incl. Suspended/Gated,
+  location, placement, a "Problems only" chip) live in the `status`,
+  `location`, `placement` and `problems` search params so a filtered view is
+  shareable. Metrics is nested at
+  `…/metrics`, Logs at `…/logs`.
+
+  | Tab | Path | Body |
+  |---|---|---|
+  | Overview | `:workloadName` | `pages/workload-detail.tsx` (`WorkloadOverview`) |
+  | Instances | `:workloadName/instances` | `pages/workload-instances.tsx` |
+  | Metrics | `:workloadName/metrics` | `pages/workload-metrics.tsx` |
+  | Logs | `:workloadName/logs` | `pages/workload-logs.tsx` |
+  | Activity | — | placeholder |
 - **Instance detail** (`:workloadName/instances/:instanceName/*`) —
   Overview, Metrics, and Logs. Overview shows live CPU/memory KPIs (and ALB
-  request/p99/error KPIs when the workload is published on a URL). The Logs
+  request/p99/error KPIs when the workload is published on a URL) and a
+  Conditions card with the instance's status conditions. The Logs
   tab always queries instance stdout; ALB access logs are merged in when an
   HTTPProxy exists. Manage/Activity remain placeholders.
 - **Instance shell** (`…/instances/:instanceName/shell`) — an interactive
@@ -152,6 +168,31 @@ server you want running:
   that 404 through the proxy. Use this only for the standalone preview at
   `http://localhost:7778/` (direct, no proxy).
 
+### Standalone harness: fixtures or a real control plane
+
+`bun run dev` serves the pages with a dev-only Tailwind build and answers the
+plugin's data calls from `dev/fixtures/` (production-shaped JSON) through a
+mock of the portal proxy, so every page renders styled and populated without
+cloud-portal. Open `http://localhost:7778/?path=/project/demo-project/services/workloads`
+to jump straight to a page.
+
+To drive the same pages with a real project instead, run
+`datumctl api proxy` (it prints a `http://127.0.0.1:<port>` URL authenticated
+as your active session) and start the harness with
+`HARNESS_UPSTREAM=http://127.0.0.1:<port> bun run dev`. Every `/api/proxy/…`
+call is then forwarded to that proxy; use the real project name in the path
+(`?path=/project/<project>/services/workloads`). The host-only endpoints
+(`/api/plugins`, `/api/prometheus`) stay mocked, so metrics show "no data".
+
+`dev/screenshot.mjs` captures a full-page PNG of one harness page with
+Playwright resolved from `NODE_PATH` (cloud-portal's `node_modules` already
+has it and the browsers):
+
+```bash
+NODE_PATH=../../../cloud-portal/node_modules \
+  node dev/screenshot.mjs /project/demo-project/services/workloads/global-mesh/instances /tmp/instances.png
+```
+
 ## How it fits the contract
 
 `public/plugin-manifest.json` declares:
@@ -170,7 +211,9 @@ server you want running:
   `:workloadName/instances/:instanceName/*` (`InstanceDetail`
   layout). The instance layout owns breadcrumbs / title / tabs and nests
   Overview (index), Metrics (`…/metrics`), and Logs (`…/logs`) through
-  `<Outlet />`. The workload splat does the same for Overview and Metrics.
+  `<Outlet />`. The workload splat does the same for Overview, Instances,
+  Metrics and Logs; its breadcrumb from an instance page lands on the
+  Instances tab.
   Instance pages gate on `{compute.datumapis.com, instances, get}`.
   Overview embeds a last-30-minutes `Logs.Table` and live metric KPIs. The
   Logs tab mounts the full explorer against ALB access logs when the workload
@@ -204,12 +247,16 @@ ui/consumer/
     lib/o11y-logs.ts        Loki query_range + ALB LogQL
     lib/metrics-queries.ts  PromQL builders + instance identity discovery
     lib/format.ts           formatUptime / splitSlashValue (ported as-is)
+    lib/instance-presenters.ts  instance sort order, status badge, search matcher
     schema.ts                Zod schemas for Workload / Instance
     adapter.ts                raw K8s JSON → schema mappers
     components/cli-section.tsx   CommandBlock / SectionCard / CliBanner
     components/states.tsx    Loading / Error / Restricted state components
+    components/instance-table.tsx    shared instance DataTable
+    components/conditions-table.tsx  condition rows on the instance Overview
     pages/workload-list.tsx
     pages/workload-detail.tsx
+    pages/workload-instances.tsx
     pages/instance-detail.tsx
     pages/instance-overview.tsx
     pages/instance-logs.tsx

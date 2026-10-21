@@ -1,0 +1,215 @@
+{
+  "apiVersion": "networking.datumapis.com/v1alpha",
+  "kind": "HTTPProxyList",
+  "metadata": {
+    "resourceVersion": "701205617"
+  },
+  "items": [
+    {
+      "apiVersion": "networking.datumapis.com/v1alpha",
+      "kind": "HTTPProxy",
+      "metadata": {
+        "annotations": {
+          "networking.datumapis.com/display-name": "global-mesh"
+        },
+        "creationTimestamp": "2026-09-22T20:25:33Z",
+        "finalizers": [
+          "networking.datumapis.com/httpproxy-cleanup",
+          "gateway.networking.datumapis.com/gateway-resource-replicator"
+        ],
+        "generation": 1,
+        "name": "global-mesh",
+        "namespace": "default",
+        "resourceVersion": "701205480",
+        "uid": "00000009-0080-4000-a000-000000000000"
+      },
+      "spec": {
+        "hostnames": [
+          "mesh.demo.example"
+        ],
+        "rules": [
+          {
+            "filters": [
+              {
+                "requestRedirect": {
+                  "scheme": "https",
+                  "statusCode": 301
+                },
+                "type": "RequestRedirect"
+              }
+            ],
+            "matches": [
+              {
+                "headers": [
+                  {
+                    "name": "x-forwarded-proto",
+                    "type": "Exact",
+                    "value": "http"
+                  }
+                ],
+                "path": {
+                  "type": "PathPrefix",
+                  "value": "/"
+                }
+              }
+            ],
+            "name": "force-https"
+          },
+          {
+            "backends": [
+              {
+                "networkService": {
+                  "name": "global-mesh",
+                  "port": "http"
+                },
+                "weight": 1
+              }
+            ],
+            "matches": [
+              {
+                "path": {
+                  "type": "PathPrefix",
+                  "value": "/"
+                }
+              }
+            ],
+            "name": "mesh"
+          }
+        ]
+      },
+      "status": {
+        "addresses": [
+          {
+            "type": "Hostname",
+            "value": "quiet-meadow-4x7kd.datumproxy.net"
+          },
+          {
+            "type": "Hostname",
+            "value": "v4.quiet-meadow-4x7kd.datumproxy.net"
+          },
+          {
+            "type": "Hostname",
+            "value": "v6.quiet-meadow-4x7kd.datumproxy.net"
+          }
+        ],
+        "canonicalHostname": "quiet-meadow-4x7kd.datumproxy.net",
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-29T20:02:05Z",
+            "message": "The HTTPProxy has been scheduled",
+            "observedGeneration": 1,
+            "reason": "Accepted",
+            "status": "True",
+            "type": "Accepted"
+          },
+          {
+            "lastTransitionTime": "2026-09-29T20:02:05Z",
+            "message": "The HTTPProxy has been programmed",
+            "observedGeneration": 1,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T20:25:39Z",
+            "message": "All hostnames have been accepted and programmed",
+            "observedGeneration": 1,
+            "reason": "HostnamesVerified",
+            "status": "True",
+            "type": "HostnamesVerified"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T20:27:18Z",
+            "message": "All certificates are ready",
+            "observedGeneration": 1,
+            "reason": "AllCertificatesReady",
+            "status": "True",
+            "type": "CertificatesReady"
+          }
+        ],
+        "hostnameStatuses": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-22T20:25:39Z",
+                "message": "Hostname successfully claimed",
+                "observedGeneration": 1,
+                "reason": "Claimed",
+                "status": "True",
+                "type": "Available"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T20:26:07Z",
+                "message": "DNS record is programmed",
+                "observedGeneration": 1,
+                "reason": "RecordCreated",
+                "status": "True",
+                "type": "DNSRecordProgrammed"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T20:27:18Z",
+                "message": "Certificate is ready",
+                "observedGeneration": 1,
+                "reason": "CertificateIssued",
+                "status": "True",
+                "type": "CertificateReady"
+              }
+            ],
+            "hostname": "mesh.demo.example"
+          },
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-22T20:25:39Z",
+                "message": "Hostname successfully claimed",
+                "observedGeneration": 1,
+                "reason": "Claimed",
+                "status": "True",
+                "type": "Available"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T20:25:39Z",
+                "message": "Using shared wildcard TLS certificate",
+                "observedGeneration": 1,
+                "reason": "CertificateIssued",
+                "status": "True",
+                "type": "CertificateReady"
+              }
+            ],
+            "hostname": "quiet-meadow-4x7kd.datumproxy.net"
+          },
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-22T20:26:07Z",
+                "message": "DNS record is programmed",
+                "observedGeneration": 1,
+                "reason": "RecordCreated",
+                "status": "True",
+                "type": "DNSRecordProgrammed"
+              }
+            ],
+            "hostname": "v4.quiet-meadow-4x7kd.datumproxy.net"
+          },
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-22T20:26:07Z",
+                "message": "DNS record is programmed",
+                "observedGeneration": 1,
+                "reason": "RecordCreated",
+                "status": "True",
+                "type": "DNSRecordProgrammed"
+              }
+            ],
+            "hostname": "v6.quiet-meadow-4x7kd.datumproxy.net"
+          }
+        ],
+        "hostnames": [
+          "mesh.demo.example",
+          "quiet-meadow-4x7kd.datumproxy.net"
+        ]
+      }
+    }
+  ]
+}

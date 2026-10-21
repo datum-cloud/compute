@@ -1,0 +1,739 @@
+{
+  "apiVersion": "v1",
+  "items": [
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:06Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "ae-north-1"
+        },
+        "name": "ae-north-1",
+        "resourceVersion": "701202329",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "25.2048",
+          "longitude": "55.2708"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Dubai",
+          "topology.datum.net/city-code": "DXB",
+          "topology.datum.net/country": "United Arab Emirates",
+          "topology.datum.net/country-code": "AE",
+          "topology.datum.net/region": "ae-north-1",
+          "topology.datum.net/timezone": "Asia/Dubai"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:36Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:08:59Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "au-east-1"
+        },
+        "name": "au-east-1",
+        "resourceVersion": "701202466",
+        "uid": "00000000-0080-4000-a080-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "-33.8688",
+          "longitude": "151.2093"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Sydney",
+          "topology.datum.net/city-code": "SYD",
+          "topology.datum.net/country": "Australia",
+          "topology.datum.net/country-code": "AU",
+          "topology.datum.net/province": "New South Wales",
+          "topology.datum.net/province-code": "AU-NSW",
+          "topology.datum.net/region": "au-east-1",
+          "topology.datum.net/timezone": "Australia/Sydney"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:06Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "br-east-1"
+        },
+        "name": "br-east-1",
+        "resourceVersion": "701202603",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "-23.5505",
+          "longitude": "-46.6333"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "São Paulo",
+          "topology.datum.net/city-code": "GRU",
+          "topology.datum.net/country": "Brazil",
+          "topology.datum.net/country-code": "BR",
+          "topology.datum.net/province": "São Paulo",
+          "topology.datum.net/province-code": "BR-SP",
+          "topology.datum.net/region": "br-east-1",
+          "topology.datum.net/timezone": "America/Sao_Paulo"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:04Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "ca-east-1"
+        },
+        "name": "ca-east-1",
+        "resourceVersion": "701202740",
+        "uid": "00000000-0000-4000-a000-000000000080"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "43.6532",
+          "longitude": "-79.3832"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Toronto",
+          "topology.datum.net/city-code": "TOR",
+          "topology.datum.net/country": "Canada",
+          "topology.datum.net/country-code": "CA",
+          "topology.datum.net/province": "Ontario",
+          "topology.datum.net/province-code": "CA-ON",
+          "topology.datum.net/region": "ca-east-1",
+          "topology.datum.net/timezone": "America/Toronto"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:04Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "cl-central-1"
+        },
+        "name": "cl-central-1",
+        "resourceVersion": "701202877",
+        "uid": "00000000-0000-4000-a900-000000080000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "-33.4489",
+          "longitude": "-70.6693"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Santiago",
+          "topology.datum.net/city-code": "SCL",
+          "topology.datum.net/country": "Chile",
+          "topology.datum.net/country-code": "CL",
+          "topology.datum.net/region": "cl-central-1",
+          "topology.datum.net/timezone": "America/Santiago"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:08:59Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "de-central-1"
+        },
+        "name": "de-central-1",
+        "resourceVersion": "701203014",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "50.1109",
+          "longitude": "8.6821"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Frankfurt",
+          "topology.datum.net/city-code": "FRA",
+          "topology.datum.net/country": "Germany",
+          "topology.datum.net/country-code": "DE",
+          "topology.datum.net/province": "Hesse",
+          "topology.datum.net/province-code": "DE-HE",
+          "topology.datum.net/region": "de-central-1",
+          "topology.datum.net/timezone": "Europe/Berlin"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:00Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "gb-south-1"
+        },
+        "name": "gb-south-1",
+        "resourceVersion": "701203151",
+        "uid": "00000800-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "51.5072",
+          "longitude": "-0.1276"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "London",
+          "topology.datum.net/city-code": "LHR",
+          "topology.datum.net/country": "United Kingdom",
+          "topology.datum.net/country-code": "GB",
+          "topology.datum.net/province": "England",
+          "topology.datum.net/province-code": "GB-ENG",
+          "topology.datum.net/region": "gb-south-1",
+          "topology.datum.net/timezone": "Europe/London"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:00Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "in-west-1"
+        },
+        "name": "in-west-1",
+        "resourceVersion": "701203288",
+        "uid": "00000000-0000-4000-a000-000900000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "19.0760",
+          "longitude": "72.8777"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Mumbai",
+          "topology.datum.net/city-code": "BOM",
+          "topology.datum.net/country": "India",
+          "topology.datum.net/country-code": "IN",
+          "topology.datum.net/province": "Maharashtra",
+          "topology.datum.net/province-code": "IN-MH",
+          "topology.datum.net/region": "in-west-1",
+          "topology.datum.net/timezone": "Asia/Kolkata"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:08:59Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "jp-east-1"
+        },
+        "name": "jp-east-1",
+        "resourceVersion": "701203425",
+        "uid": "00000000-0000-4090-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "35.6762",
+          "longitude": "139.6503"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Tokyo",
+          "topology.datum.net/city-code": "TYO",
+          "topology.datum.net/country": "Japan",
+          "topology.datum.net/country-code": "JP",
+          "topology.datum.net/province": "Tokyo",
+          "topology.datum.net/province-code": "JP-13",
+          "topology.datum.net/region": "jp-east-1",
+          "topology.datum.net/timezone": "Asia/Tokyo"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:01Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "nl-west-1"
+        },
+        "name": "nl-west-1",
+        "resourceVersion": "701203562",
+        "uid": "00000000-0000-4008-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "52.3676",
+          "longitude": "4.9041"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Amsterdam",
+          "topology.datum.net/city-code": "AMS",
+          "topology.datum.net/country": "Netherlands",
+          "topology.datum.net/country-code": "NL",
+          "topology.datum.net/province": "North Holland",
+          "topology.datum.net/province-code": "NL-NH",
+          "topology.datum.net/region": "nl-west-1",
+          "topology.datum.net/timezone": "Europe/Amsterdam"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:01Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "sg-central-1"
+        },
+        "name": "sg-central-1",
+        "resourceVersion": "701203699",
+        "uid": "00000000-0000-4000-a000-090000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "1.3521",
+          "longitude": "103.8198"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Singapore",
+          "topology.datum.net/city-code": "SIN",
+          "topology.datum.net/country": "Singapore",
+          "topology.datum.net/country-code": "SG",
+          "topology.datum.net/region": "sg-central-1",
+          "topology.datum.net/timezone": "Asia/Singapore"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:08:59Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "us-central-1"
+        },
+        "name": "us-central-1",
+        "resourceVersion": "701203836",
+        "uid": "00000000-0900-4000-a000-000000080000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "32.7767",
+          "longitude": "-96.7970"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Dallas",
+          "topology.datum.net/city-code": "DFW",
+          "topology.datum.net/country": "United States",
+          "topology.datum.net/country-code": "US",
+          "topology.datum.net/province": "Texas",
+          "topology.datum.net/province-code": "US-TX",
+          "topology.datum.net/region": "us-central-1",
+          "topology.datum.net/timezone": "America/Chicago"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-01T22:46:44Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:03Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "us-east-1"
+        },
+        "name": "us-east-1",
+        "resourceVersion": "701203973",
+        "uid": "00000000-0080-4000-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "39.0438",
+          "longitude": "-77.4874"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Ashburn",
+          "topology.datum.net/city-code": "IAD",
+          "topology.datum.net/country": "United States",
+          "topology.datum.net/country-code": "US",
+          "topology.datum.net/province": "Virginia",
+          "topology.datum.net/province-code": "US-VA",
+          "topology.datum.net/region": "us-east-1",
+          "topology.datum.net/timezone": "America/New_York"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-01T22:46:44Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:02Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "us-east-2"
+        },
+        "name": "us-east-2",
+        "resourceVersion": "701204110",
+        "uid": "00000000-0000-4800-a080-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "40.7128",
+          "longitude": "-74.0060"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "New York",
+          "topology.datum.net/city-code": "LGA",
+          "topology.datum.net/country": "United States",
+          "topology.datum.net/country-code": "US",
+          "topology.datum.net/province": "New York",
+          "topology.datum.net/province-code": "US-NY",
+          "topology.datum.net/region": "us-east-2",
+          "topology.datum.net/timezone": "America/New_York"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:37Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:03Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "us-west-1"
+        },
+        "name": "us-west-1",
+        "resourceVersion": "701204247",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "37.3382",
+          "longitude": "-121.8863"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "San Jose",
+          "topology.datum.net/city-code": "SJC",
+          "topology.datum.net/country": "United States",
+          "topology.datum.net/country-code": "US",
+          "topology.datum.net/province": "California",
+          "topology.datum.net/province-code": "US-CA",
+          "topology.datum.net/region": "us-west-1",
+          "topology.datum.net/timezone": "America/Los_Angeles"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-01T22:46:44Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "locations.miloapis.com/v1alpha1",
+      "kind": "Location",
+      "metadata": {
+        "creationTimestamp": "2026-09-02T03:09:05Z",
+        "generation": 1,
+        "labels": {
+          "app.kubernetes.io/managed-by": "services.miloapis.com",
+          "networking.datumapis.com/class": "datum-managed",
+          "networking.datumapis.com/location": "za-central-1"
+        },
+        "name": "za-central-1",
+        "resourceVersion": "701204384",
+        "uid": "00800000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "coordinates": {
+          "latitude": "-26.2041",
+          "longitude": "28.0473"
+        },
+        "locationClassRef": {
+          "name": "datum-managed"
+        },
+        "topology": {
+          "topology.datum.net/city": "Johannesburg",
+          "topology.datum.net/city-code": "JNB",
+          "topology.datum.net/country": "South Africa",
+          "topology.datum.net/country-code": "ZA",
+          "topology.datum.net/province": "Gauteng",
+          "topology.datum.net/province-code": "ZA-GP",
+          "topology.datum.net/region": "za-central-1",
+          "topology.datum.net/timezone": "Africa/Johannesburg"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-02T02:55:38Z",
+            "message": "Backed by LocationClass \"datum-managed\"",
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
+      }
+    }
+  ],
+  "kind": "List",
+  "metadata": {
+    "resourceVersion": "701204521"
+  }
+}

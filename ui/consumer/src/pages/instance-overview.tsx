@@ -3,6 +3,7 @@
  * layout shell via `<Outlet />` — chrome stays mounted across tab changes.
  */
 import { CommandBlock } from '../components/cli-section';
+import { ConditionsTable } from '../components/conditions-table';
 import { DetailList, StatusBadge } from '../components/detail-list';
 import { RecentInstanceLogs } from '../components/instance-logs';
 import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
@@ -36,6 +37,7 @@ import {
   CheckIcon,
   CopyIcon,
   GlobeIcon,
+  ListChecksIcon,
   SquareLibraryIcon,
   SquareTerminalIcon,
 } from 'lucide-react';
@@ -393,6 +395,19 @@ export default function InstanceOverview() {
           upstreamIPs={instance.internalIPs}
         />
       </div>
+
+      <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="compute-plugin-instance-conditions">
+        <CardHeader size="sm" bordered>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Icon icon={ListChecksIcon} size={16} className="text-secondary" />
+            Conditions
+          </CardTitle>
+          <CardDescription>Why the instance is, or is not, Available</CardDescription>
+        </CardHeader>
+        <CardContent padding="none">
+          <ConditionsTable conditions={instance.conditions} />
+        </CardContent>
+      </Card>
 
       <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="compute-plugin-instance-cli">
         <CardHeader size="sm" bordered>

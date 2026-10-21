@@ -1,6 +1,6 @@
 /**
- * Workload tab bodies share this context from the layout shell so Overview
- * and Metrics do not re-fetch or remount breadcrumbs / title / tabs.
+ * Workload tab bodies share this context from the layout shell so Overview,
+ * Instances and Metrics do not re-fetch or remount breadcrumbs / title / tabs.
  */
 import type { InstanceIdentityLabel } from '../lib/metrics-queries';
 import type { PublishedUrl } from '../lib/api';
@@ -22,6 +22,7 @@ export type WorkloadOutletContext = {
   metricKeys: string[];
   instanceNames: string[];
   overviewHref: string;
+  instancesHref: string;
   metricsHref: string;
 };
 

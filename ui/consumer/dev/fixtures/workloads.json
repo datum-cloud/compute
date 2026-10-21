@@ -1,0 +1,315 @@
+{
+  "apiVersion": "compute.datumapis.com/v1alpha",
+  "kind": "WorkloadList",
+  "metadata": {
+    "resourceVersion": "701200411"
+  },
+  "items": [
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Workload",
+      "metadata": {
+        "annotations": {
+          "compute.datumapis.com/restartedAt": "2026-09-30T11:00:00Z"
+        },
+        "creationTimestamp": "2026-09-22T15:00:00Z",
+        "finalizers": [
+          "compute.datumapis.com/workload-controller"
+        ],
+        "generation": 11,
+        "labels": {
+          "app.kubernetes.io/name": "global-mesh",
+          "app.kubernetes.io/part-of": "demo"
+        },
+        "name": "global-mesh",
+        "namespace": "default",
+        "resourceVersion": "701200137",
+        "uid": "40000000-0000-4000-a080-000000000000"
+      },
+      "spec": {
+        "placements": [
+          {
+            "locationSelector": {
+              "matchExpressions": [
+                {
+                  "key": "topology.datum.net/city-code",
+                  "operator": "In",
+                  "values": [
+                    "DFW",
+                    "IAD"
+                  ]
+                }
+              ]
+            },
+            "name": "north-america",
+            "scaleSettings": {
+              "instanceManagementPolicy": "OrderedReady",
+              "minReplicas": 3
+            }
+          },
+          {
+            "locationSelector": {
+              "matchLabels": {
+                "topology.datum.net/city-code": "AMS"
+              }
+            },
+            "name": "europe",
+            "scaleSettings": {
+              "instanceManagementPolicy": "OrderedReady",
+              "minReplicas": 4
+            }
+          }
+        ],
+        "template": {
+          "metadata": {},
+          "spec": {
+            "networkInterfaces": [
+              {
+                "ipFamilies": [
+                  "IPv6"
+                ],
+                "name": "eth0",
+                "network": {
+                  "name": "global-mesh"
+                },
+                "reclaimPolicy": "Delete"
+              }
+            ],
+            "runtime": {
+              "class": "general-purpose",
+              "resources": {
+                "instanceType": "datumcloud-d1-standard-2"
+              },
+              "sandbox": {
+                "containers": [
+                  {
+                    "env": [
+                      {
+                        "name": "DEMO_MODE",
+                        "value": "simulate"
+                      }
+                    ],
+                    "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                    "name": "mesh",
+                    "ports": [
+                      {
+                        "name": "http",
+                        "port": 8080,
+                        "protocol": "TCP"
+                      }
+                    ],
+                    "securityContext": {
+                      "allowPrivilegeEscalation": false,
+                      "capabilities": {
+                        "drop": [
+                          "ALL"
+                        ]
+                      },
+                      "seccompProfile": {
+                        "type": "RuntimeDefault"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-22T15:06:00Z",
+            "message": "At least one available placement was found",
+            "observedGeneration": 11,
+            "reason": "AvailablePlacementFound",
+            "status": "True",
+            "type": "Available"
+          }
+        ],
+        "currentReplicas": 10,
+        "deployments": 3,
+        "desiredReplicas": 10,
+        "observedGeneration": 11,
+        "placements": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-30T11:12:00Z",
+                "message": "At least one available deployment was found",
+                "reason": "AvailableDeploymentFound",
+                "status": "True",
+                "type": "Available"
+              }
+            ],
+            "currentReplicas": 6,
+            "desiredReplicas": 6,
+            "locations": [
+              {
+                "name": "us-central-1"
+              },
+              {
+                "name": "us-east-1"
+              }
+            ],
+            "name": "north-america",
+            "readyReplicas": 4,
+            "replicas": 6,
+            "updatedReplicas": 6
+          },
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-25T17:00:00Z",
+                "message": "At least one available deployment was found",
+                "reason": "AvailableDeploymentFound",
+                "status": "True",
+                "type": "Available"
+              }
+            ],
+            "currentReplicas": 4,
+            "desiredReplicas": 4,
+            "locations": [
+              {
+                "name": "nl-west-1"
+              }
+            ],
+            "name": "europe",
+            "readyReplicas": 3,
+            "replicas": 4,
+            "updatedReplicas": 4
+          }
+        ],
+        "readyReplicas": 7,
+        "replicas": 10,
+        "updatedReplicas": 10
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Workload",
+      "metadata": {
+        "creationTimestamp": "2026-09-29T13:00:00Z",
+        "finalizers": [
+          "compute.datumapis.com/workload-controller"
+        ],
+        "generation": 2,
+        "labels": {
+          "app.kubernetes.io/name": "edge-cache"
+        },
+        "name": "edge-cache",
+        "namespace": "default",
+        "resourceVersion": "701200274",
+        "uid": "80000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "placements": [
+          {
+            "locationSelector": {
+              "matchLabels": {
+                "topology.datum.net/city-code": "SJC"
+              }
+            },
+            "name": "west",
+            "scaleSettings": {
+              "instanceManagementPolicy": "OrderedReady",
+              "minReplicas": 2
+            }
+          }
+        ],
+        "template": {
+          "metadata": {},
+          "spec": {
+            "networkInterfaces": [
+              {
+                "ipFamilies": [
+                  "IPv6"
+                ],
+                "name": "eth0",
+                "network": {
+                  "name": "default"
+                },
+                "reclaimPolicy": "Delete"
+              }
+            ],
+            "runtime": {
+              "class": "unikernel",
+              "resources": {
+                "instanceType": "datumcloud-d1-standard-2"
+              },
+              "sandbox": {
+                "containers": [
+                  {
+                    "image": "ghcr.io/datum-labs/edge-cache:1.9.0",
+                    "name": "cache",
+                    "ports": [
+                      {
+                        "name": "http",
+                        "port": 8080,
+                        "protocol": "TCP"
+                      }
+                    ],
+                    "securityContext": {
+                      "allowPrivilegeEscalation": false,
+                      "capabilities": {
+                        "drop": [
+                          "ALL"
+                        ]
+                      },
+                      "seccompProfile": {
+                        "type": "RuntimeDefault"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-29T13:06:00Z",
+            "message": "At least one available placement was found",
+            "observedGeneration": 2,
+            "reason": "AvailablePlacementFound",
+            "status": "True",
+            "type": "Available"
+          }
+        ],
+        "currentReplicas": 2,
+        "deployments": 1,
+        "desiredReplicas": 2,
+        "observedGeneration": 2,
+        "placements": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-29T13:06:00Z",
+                "message": "At least one available deployment was found",
+                "reason": "AvailableDeploymentFound",
+                "status": "True",
+                "type": "Available"
+              }
+            ],
+            "currentReplicas": 2,
+            "desiredReplicas": 2,
+            "locations": [
+              {
+                "name": "us-west-1"
+              }
+            ],
+            "name": "west",
+            "readyReplicas": 2,
+            "replicas": 2,
+            "updatedReplicas": 2
+          }
+        ],
+        "readyReplicas": 2,
+        "replicas": 2,
+        "updatedReplicas": 2
+      }
+    }
+  ]
+}

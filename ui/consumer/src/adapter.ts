@@ -65,6 +65,8 @@ export const INSTANCE_LABELS = {
   workloadUid: 'compute.datumapis.com/workload-uid',
   location: 'compute.datumapis.com/location',
   placementName: 'compute.datumapis.com/placement-name',
+  workloadDeploymentName: 'compute.datumapis.com/workload-deployment-name',
+  instanceIndex: 'compute.datumapis.com/instance-index',
 } as const;
 
 interface RawWorkloadPlacement {
@@ -338,13 +340,19 @@ export function toWorkloadList(items: RawWorkload[]): Workload[] {
 
 export interface RawInstance {
   metadata?: RawObjectMeta;
-  spec?: { runtime?: RawRuntime };
+  spec?: {
+    runtime?: RawRuntime;
+    // `SchedulingGate` is a struct keyed by name (listMapKey=name), not a bare
+    // string list.
+    controller?: { schedulingGates?: { name?: string }[] };
+  };
   status?: {
     conditions?: RawCondition[];
     networkInterfaces?: {
       assignments?: { networkIP?: string; externalIP?: string };
       addresses?: { address?: string }[];
     }[];
+    suspended?: boolean;
   };
 }
 
@@ -366,6 +374,15 @@ function deriveInstanceStatus(conditions: RawCondition[]): InstanceStatusValue {
   const text = `${available.reason ?? ''} ${available.message ?? ''}`;
   if (/fail|error/i.test(text)) return 'Failed';
   return 'Pending';
+}
+
+/**
+ * The instance-index label is a decimal ordinal; anything else (missing,
+ * malformed) is treated as absent so sorting falls through to the name.
+ */
+function parseInstanceIndex(value?: string): number | undefined {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  return Number(value);
 }
 
 /**
@@ -449,6 +466,7 @@ export function toInstance(raw: RawInstance): Instance {
   const assignments = raw.status?.networkInterfaces?.[0]?.assignments;
   const container = raw.spec?.runtime?.sandbox?.containers?.[0];
   const conditions = raw.status?.conditions ?? [];
+  const available = conditions.find((c) => c.type === 'Available');
   const { cpu, memory } = resolveInstanceResources(raw.spec?.runtime);
   const internalIPs = collectInstanceInternalIPs(raw);
 
@@ -461,6 +479,8 @@ export function toInstance(raw: RawInstance): Instance {
       : new Date(),
     workloadName: labels[INSTANCE_LABELS.workloadName],
     workloadUid: labels[INSTANCE_LABELS.workloadUid],
+    workloadDeploymentName: labels[INSTANCE_LABELS.workloadDeploymentName],
+    instanceIndex: parseInstanceIndex(labels[INSTANCE_LABELS.instanceIndex]),
     location: labels[INSTANCE_LABELS.location],
     placement: labels[INSTANCE_LABELS.placementName],
     instanceType: raw.spec?.runtime?.resources?.instanceType,
@@ -473,6 +493,12 @@ export function toInstance(raw: RawInstance): Instance {
     ),
     runtimeClass: raw.spec?.runtime?.class || undefined,
     status: deriveInstanceStatus(conditions),
+    statusReason: available?.reason,
+    statusMessage: available?.message,
+    schedulingGates: (raw.spec?.controller?.schedulingGates ?? []).flatMap((gate) =>
+      gate.name ? [gate.name] : []
+    ),
+    suspended: raw.status?.suspended ?? false,
     externalIP: assignments?.externalIP,
     internalIP: assignments?.networkIP,
     internalIPs,

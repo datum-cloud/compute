@@ -1,0 +1,51 @@
+{
+  "apiVersion": "quota.miloapis.com/v1alpha1",
+  "kind": "AllowanceBucketList",
+  "metadata": {
+    "resourceVersion": "701206165"
+  },
+  "items": [
+    {
+      "apiVersion": "quota.miloapis.com/v1alpha1",
+      "kind": "AllowanceBucket",
+      "metadata": {
+        "name": "project-demo-project-compute-instanceconsolesessions",
+        "namespace": "milo-system",
+        "labels": {
+          "quota.miloapis.com/consumer-kind": "Project",
+          "quota.miloapis.com/consumer-name": "demo-project"
+        },
+        "resourceVersion": "701206302",
+        "uid": "00000000-0000-4000-a800-008000000080"
+      },
+      "spec": {
+        "resourceType": "compute.datumapis.com/instanceconsolesessions"
+      },
+      "status": {
+        "limit": 5,
+        "allocated": 0
+      }
+    },
+    {
+      "apiVersion": "quota.miloapis.com/v1alpha1",
+      "kind": "AllowanceBucket",
+      "metadata": {
+        "name": "project-demo-project-compute-instances",
+        "namespace": "milo-system",
+        "labels": {
+          "quota.miloapis.com/consumer-kind": "Project",
+          "quota.miloapis.com/consumer-name": "demo-project"
+        },
+        "resourceVersion": "701206439",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "resourceType": "compute.datumapis.com/instances"
+      },
+      "status": {
+        "limit": 10,
+        "allocated": 10
+      }
+    }
+  ]
+}

@@ -130,8 +130,11 @@ export default function InstanceDetail() {
   const logsHref = `${overviewHref}/logs`;
   const metricsHref = `${overviewHref}/metrics`;
   const shellHref = `${overviewHref}/shell`;
-  const instancesHref = overviewHref.replace(/\/instances\/[^/]+$/, '');
-  const workloadsHref = instancesHref.replace(/\/[^/]+$/, '');
+  const workloadHref = overviewHref.replace(/\/instances\/[^/]+$/, '');
+  // The workload crumb lands on the Instances tab, where this instance's row
+  // is, rather than the Overview.
+  const instancesHref = `${workloadHref}/instances`;
+  const workloadsHref = workloadHref.replace(/\/[^/]+$/, '');
   const projectHref = projectId ? `/project/${projectId}` : '/';
   const titleName = instanceName ?? 'Instance';
 

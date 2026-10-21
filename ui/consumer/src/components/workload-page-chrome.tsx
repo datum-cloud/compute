@@ -19,12 +19,15 @@ import { Link } from 'react-router';
 
 export function workloadDetailTabs(
   overviewHref: string,
+  instancesHref: string,
   metricsHref: string,
   logsHref: string
 ): PluginTab[] {
+  // Deployments have no tab of their own: each is a column and search term on
+  // the Instances table.
   return [
     { label: 'Overview', href: overviewHref },
-    { label: 'Deployments' },
+    { label: 'Instances', href: instancesHref },
     { label: 'Metrics', href: metricsHref },
     { label: 'Logs', href: logsHref },
     { label: 'Activity' },
@@ -35,6 +38,7 @@ export function WorkloadPageChrome({
   projectHref,
   workloadsHref,
   overviewHref,
+  instancesHref,
   metricsHref,
   logsHref,
   titleName,
@@ -44,6 +48,7 @@ export function WorkloadPageChrome({
   projectHref: string;
   workloadsHref: string;
   overviewHref: string;
+  instancesHref: string;
   metricsHref: string;
   logsHref: string;
   titleName: string;
@@ -96,7 +101,7 @@ export function WorkloadPageChrome({
       />
 
       <PluginTabs
-        tabs={workloadDetailTabs(overviewHref, metricsHref, logsHref)}
+        tabs={workloadDetailTabs(overviewHref, instancesHref, metricsHref, logsHref)}
         testId="compute-plugin-workload-tabs"
       />
 

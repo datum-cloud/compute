@@ -1,17 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="theme-alpha bg-background overflow-x-hidden overscroll-none">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Compute Portal Plugin — standalone preview</title>
   </head>
-  <body>
+  <body class="!bg-background h-auto w-full">
     <!--
-      Standalone dev harness. Humans can open http://localhost:7778/ to preview
-      the plugin's pages in isolation. The PORTAL never loads this page — it
-      only fetches /plugin-manifest.json and /remoteEntry.js. This harness
-      exists purely so the components can be eyeballed without the full
-      portal (data calls 404 without the proxy — expected).
+      Standalone dev harness. Humans (and dev/screenshot.mjs) open
+      http://localhost:7778/?path=/project/demo-project/services/workloads/... to
+      preview the plugin's pages in isolation. The PORTAL never loads this page —
+      it only fetches /plugin-manifest.json and /remoteEntry.js. The dev server
+      answers the plugin's data calls from dev/fixtures/ (see dev/mock-proxy.ts),
+      and the <html>/<body> classes match cloud-portal's app/root.tsx so the
+      theme tokens resolve the same way.
     -->
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

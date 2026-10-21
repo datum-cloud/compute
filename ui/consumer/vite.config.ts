@@ -1,5 +1,7 @@
 /// <reference types="node" />
+import { mockProxy } from './dev/mock-proxy';
 import { federation } from '@module-federation/vite';
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -62,6 +64,26 @@ function consoleWasm(): Plugin {
   };
 }
 
+const HARNESS_CSS_STUB = '\0compute-harness-css-stub';
+
+// `vite build` also bundles index.html -> src/main.tsx, which imports the
+// harness stylesheet. Production styling belongs to the host, so in build mode
+// the import resolves to an empty JS module instead of compiling Tailwind and
+// emitting a CSS/font asset next to the federated chunks.
+function harnessCssStub(): Plugin {
+  return {
+    name: 'compute-harness-css-stub',
+    apply: 'build',
+    enforce: 'pre',
+    resolveId(source) {
+      return source.endsWith('dev/harness.css') ? HARNESS_CSS_STUB : undefined;
+    },
+    load(id) {
+      return id === HARNESS_CSS_STUB ? 'export {};' : undefined;
+    },
+  };
+}
+
 // Compute Portal Plugin — a Module Federation remote loaded by the cloud-portal
 // host at runtime. Structural template: examples/sample-plugin/ in the
 // cloud-portal repo (see its README.md and
@@ -79,7 +101,9 @@ function consoleWasm(): Plugin {
 // browser never contacts this origin directly. MF's automatic publicPath makes
 // federated chunks resolve relative to remoteEntry.js, which is what lets them
 // load correctly through that same-origin proxy prefix.
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Lets the harness banner say whether data is fixtures or a datumctl proxy.
+  define: { __HARNESS_UPSTREAM__: JSON.stringify(process.env.HARNESS_UPSTREAM ?? '') },
   server: {
     port: 7778,
     strictPort: true,
@@ -108,6 +132,9 @@ export default defineConfig({
   },
   plugins: [
     react(),
+    // Standalone harness only: the host compiles Tailwind for production, so
+    // the federated build must not emit its own utility CSS or fixture routes.
+    ...(command === 'serve' ? [tailwindcss(), mockProxy()] : [harnessCssStub()]),
     consoleWasm(),
     federation({
       // MUST equal the manifest `name` — the host keys the remote by this id.
@@ -159,4 +186,4 @@ export default defineConfig({
       },
     }),
   ],
-});
+}));

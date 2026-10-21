@@ -1,0 +1,14 @@
+/*
+ * Standalone-harness stylesheet. Mirrors cloud-portal's app/styles/root.css so
+ * the preview renders plugin pages with the host's Tailwind utilities, datum-ui
+ * theme tokens and fonts. Only src/main.tsx imports this; the federated build
+ * never compiles Tailwind (see the `command === 'serve'` guard in
+ * vite.config.ts), because in production the host's stylesheet is in charge.
+ */
+@import 'tailwindcss';
+@import '@datum-cloud/datum-ui/styles';
+@import '@datum-cloud/datum-ui/styles/canela';
+
+/* Plugin JSX plus datum-ui's compiled components, so both sets of classes are generated. */
+@source '../src/**/*.{ts,tsx}';
+@source '../node_modules/@datum-cloud/datum-ui/dist/**/*.mjs';

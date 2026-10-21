@@ -1,0 +1,2049 @@
+{
+  "apiVersion": "compute.datumapis.com/v1alpha",
+  "kind": "InstanceList",
+  "metadata": {
+    "resourceVersion": "701202192"
+  },
+  "items": [
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-22T15:06:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "0",
+          "compute.datumapis.com/location": "us-central-1",
+          "compute.datumapis.com/placement-name": "north-america",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-north-america-us-central-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000090000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-north-america-us-central-1-0",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-north-america-us-central-1",
+            "uid": "00000008-0000-4000-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701200548",
+        "uid": "90000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "us-central-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-22T15:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T15:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T15:06:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:1:0:1::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:1::1",
+                "primary": true
+              }
+            ],
+            "externalAddresses": [
+              {
+                "address": "2602:fa94:7:1::10",
+                "class": "public",
+                "family": "IPv6"
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:1:0:1::/96",
+              "externalIP": "2602:fa94:7:1::10"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-22T15:06:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T15:06:00Z",
+                "message": "VPCAttachment global-mesh-north-america-us-central-1-0-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T15:12:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-north-america-us-central-1-0-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-22T15:06:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "1",
+          "compute.datumapis.com/location": "us-central-1",
+          "compute.datumapis.com/placement-name": "north-america",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-north-america-us-central-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000090000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-north-america-us-central-1-1",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-north-america-us-central-1",
+            "uid": "00000000-0000-4000-a000-000000008000"
+          }
+        ],
+        "resourceVersion": "701200685",
+        "uid": "00000000-0000-4000-a000-080000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "us-central-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-22T15:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T15:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T15:06:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:1:0:2::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:1::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:1:0:2::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-22T15:06:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T15:06:00Z",
+                "message": "VPCAttachment global-mesh-north-america-us-central-1-1-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T15:12:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-north-america-us-central-1-1-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-10-01T17:24:00Z",
+        "generation": 3,
+        "labels": {
+          "compute.datumapis.com/instance-index": "2",
+          "compute.datumapis.com/location": "us-central-1",
+          "compute.datumapis.com/placement-name": "north-america",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-north-america-us-central-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000090000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-north-america-us-central-1-2",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-north-america-us-central-1",
+            "uid": "00000008-0000-4000-a000-000080000000"
+          }
+        ],
+        "resourceVersion": "701200822",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "us-central-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-10-01T17:24:00Z",
+            "message": "Waiting for quota to be granted before scheduling",
+            "observedGeneration": 3,
+            "reason": "PendingQuota",
+            "status": "False",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T17:24:00Z",
+            "message": "Instance is waiting for quota: compute.datumapis.com/instances limit of 10 reached for project demo-project",
+            "observedGeneration": 3,
+            "reason": "PendingQuota",
+            "status": "False",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T17:24:00Z",
+            "message": "",
+            "reason": "PendingQuota",
+            "status": "Unknown",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T17:24:00Z",
+            "message": "Request for compute.datumapis.com/instances denied: limit of 10 reached (10 in use)",
+            "observedGeneration": 3,
+            "reason": "QuotaExceeded",
+            "status": "False",
+            "type": "QuotaGranted"
+          }
+        ],
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:1:0:3::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:1::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:1:0:3::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-10-01T17:24:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-10-01T17:24:00Z",
+                "message": "VPCAttachment global-mesh-north-america-us-central-1-2-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "1970-01-01T00:00:00Z",
+                "message": "Waiting for controller",
+                "reason": "Pending",
+                "status": "Unknown",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-north-america-us-central-1-2-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-22T15:12:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "0",
+          "compute.datumapis.com/location": "us-east-1",
+          "compute.datumapis.com/placement-name": "north-america",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-north-america-us-east-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a900-000000000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-north-america-us-east-1-0",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-north-america-us-east-1",
+            "uid": "00000000-0000-4000-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701200959",
+        "uid": "00000000-0000-4000-a000-000000090000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "us-east-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-22T15:18:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T15:18:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T15:12:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:2:0:1::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:2::1",
+                "primary": true
+              }
+            ],
+            "externalAddresses": [
+              {
+                "address": "2602:fa94:7:2::10",
+                "class": "public",
+                "family": "IPv6"
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:2:0:1::/96",
+              "externalIP": "2602:fa94:7:2::10"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-22T15:12:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T15:12:00Z",
+                "message": "VPCAttachment global-mesh-north-america-us-east-1-0-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-22T15:18:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-north-america-us-east-1-0-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-10-01T15:00:00Z",
+        "generation": 3,
+        "labels": {
+          "compute.datumapis.com/instance-index": "1",
+          "compute.datumapis.com/location": "us-east-1",
+          "compute.datumapis.com/placement-name": "north-america",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-north-america-us-east-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a900-000000000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-north-america-us-east-1-1",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-north-america-us-east-1",
+            "uid": "00000008-0000-4000-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701201096",
+        "uid": "00000000-0000-4000-a000-000009000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "us-east-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-10-01T15:06:00Z",
+            "message": "Instance has been programmed",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T15:30:00Z",
+            "message": "Failed to pull image \"ghcr.io/datum-labs/compute-network-demo:v0.4.2-rc1\": manifest unknown: rpc error: code = NotFound desc = failed to pull and unpack image",
+            "observedGeneration": 3,
+            "reason": "ContainerStartFailed",
+            "status": "False",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T15:36:00Z",
+            "message": "Back-off pulling image \"ghcr.io/datum-labs/compute-network-demo:v0.4.2-rc1\"",
+            "reason": "ImagePullBackOff",
+            "status": "False",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T15:00:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:2:0:2::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:2::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:2:0:2::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-10-01T15:00:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-10-01T15:00:00Z",
+                "message": "VPCAttachment global-mesh-north-america-us-east-1-1-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-10-01T15:06:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-north-america-us-east-1-1-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-30T11:12:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "2",
+          "compute.datumapis.com/location": "us-east-1",
+          "compute.datumapis.com/placement-name": "north-america",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-north-america-us-east-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a900-000000000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-north-america-us-east-1-2",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-north-america-us-east-1",
+            "uid": "80800000-0000-4000-a000-000808000000"
+          }
+        ],
+        "resourceVersion": "701201233",
+        "uid": "00000000-0000-4000-a080-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "us-east-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-30T11:18:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-30T11:18:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-30T11:12:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:2:0:3::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:2::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:2:0:3::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-30T11:12:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-30T11:12:00Z",
+                "message": "VPCAttachment global-mesh-north-america-us-east-1-2-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-30T11:18:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-north-america-us-east-1-2-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-25T17:00:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "0",
+          "compute.datumapis.com/location": "nl-west-1",
+          "compute.datumapis.com/placement-name": "europe",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-europe-nl-west-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000000000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-europe-nl-west-1-0",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-europe-nl-west-1",
+            "uid": "00000000-0000-4080-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701201370",
+        "uid": "00008000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "nl-west-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-25T17:06:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-25T17:06:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-25T17:00:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:4:0:1::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:4::1",
+                "primary": true
+              }
+            ],
+            "externalAddresses": [
+              {
+                "address": "2602:fa94:7:4::10",
+                "class": "public",
+                "family": "IPv6"
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:4:0:1::/96",
+              "externalIP": "2602:fa94:7:4::10"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-25T17:00:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-25T17:00:00Z",
+                "message": "VPCAttachment global-mesh-europe-nl-west-1-0-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-25T17:06:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-europe-nl-west-1-0-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-10-01T16:48:00Z",
+        "generation": 3,
+        "labels": {
+          "compute.datumapis.com/instance-index": "1",
+          "compute.datumapis.com/location": "nl-west-1",
+          "compute.datumapis.com/placement-name": "europe",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-europe-nl-west-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000000000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-europe-nl-west-1-1",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-europe-nl-west-1",
+            "uid": "00000900-0000-4000-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701201507",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9",
+          "schedulingGates": [
+            {
+              "name": "compute.datumapis.com/location-capacity"
+            }
+          ]
+        },
+        "location": {
+          "name": "nl-west-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-10-01T16:48:00Z",
+            "message": "Instance has 1 scheduling gate(s) pending: compute.datumapis.com/location-capacity",
+            "observedGeneration": 3,
+            "reason": "SchedulingGatesPresent",
+            "status": "False",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T16:48:00Z",
+            "message": "Instance is not yet scheduled: scheduling gates are present",
+            "observedGeneration": 3,
+            "reason": "SchedulingGatesPresent",
+            "status": "False",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T16:48:00Z",
+            "message": "Instance is not ready because scheduling gates are present",
+            "reason": "SchedulingGatesPresent",
+            "status": "False",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T16:48:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:4:0:2::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:4::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:4:0:2::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-10-01T16:48:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-10-01T16:48:00Z",
+                "message": "VPCAttachment global-mesh-europe-nl-west-1-1-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "1970-01-01T00:00:00Z",
+                "message": "Waiting for controller",
+                "reason": "Pending",
+                "status": "Unknown",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-europe-nl-west-1-1-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-25T17:00:00Z",
+        "generation": 3,
+        "labels": {
+          "compute.datumapis.com/instance-index": "2",
+          "compute.datumapis.com/location": "nl-west-1",
+          "compute.datumapis.com/placement-name": "europe",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-europe-nl-west-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000000000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-europe-nl-west-1-2",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-europe-nl-west-1",
+            "uid": "00000000-8000-4000-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701201644",
+        "uid": "00000000-0000-4900-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "nl-west-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-25T17:06:00Z",
+            "message": "Instance has been programmed",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T13:00:00Z",
+            "message": "Instance is suspended; its process is stopped while placement, disks and quota are retained",
+            "observedGeneration": 3,
+            "reason": "Suspended",
+            "status": "False",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T13:00:00Z",
+            "message": "Instance is suspended",
+            "reason": "Suspended",
+            "status": "False",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-25T17:00:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:4:0:3::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:4::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:4:0:3::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-25T17:00:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-25T17:00:00Z",
+                "message": "VPCAttachment global-mesh-europe-nl-west-1-2-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-25T17:06:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-europe-nl-west-1-2-eth0"
+            }
+          }
+        ],
+        "suspended": true
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-10-01T00:00:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "3",
+          "compute.datumapis.com/location": "nl-west-1",
+          "compute.datumapis.com/placement-name": "europe",
+          "compute.datumapis.com/workload-deployment-name": "global-mesh-europe-nl-west-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000000000000",
+          "compute.datumapis.com/workload-name": "global-mesh",
+          "compute.datumapis.com/workload-uid": "40000000-0000-4000-a080-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "global-mesh-europe-nl-west-1-3",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "global-mesh-europe-nl-west-1",
+            "uid": "00000000-0000-4000-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701201781",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "7b76d4d6d9"
+        },
+        "location": {
+          "name": "nl-west-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "global-mesh"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "general-purpose",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "DEMO_MODE",
+                    "value": "simulate"
+                  }
+                ],
+                "image": "ghcr.io/datum-labs/compute-network-demo:v0.4.2",
+                "name": "mesh",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-10-01T00:06:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T00:06:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-10-01T00:00:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "7b76d4d6d9"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:7:4:0:4::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:7:4::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:7:4:0:4::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-10-01T00:00:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-10-01T00:00:00Z",
+                "message": "VPCAttachment global-mesh-europe-nl-west-1-3-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-10-01T00:06:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "global-mesh-europe-nl-west-1-3-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-29T13:06:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "0",
+          "compute.datumapis.com/location": "us-west-1",
+          "compute.datumapis.com/placement-name": "west",
+          "compute.datumapis.com/workload-deployment-name": "edge-cache-west-us-west-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000000000000",
+          "compute.datumapis.com/workload-name": "edge-cache",
+          "compute.datumapis.com/workload-uid": "80000000-0000-4000-a000-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "edge-cache-west-us-west-1-0",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "edge-cache-west-us-west-1",
+            "uid": "08000000-0000-4000-a000-000000000900"
+          }
+        ],
+        "resourceVersion": "701201918",
+        "uid": "00800000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "5c9f1a2b8e"
+        },
+        "location": {
+          "name": "us-west-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "default"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "unikernel",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "image": "ghcr.io/datum-labs/edge-cache:1.9.0",
+                "name": "cache",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-29T13:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-29T13:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-29T13:06:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "5c9f1a2b8e"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:a:3:0:1::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:a:3::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:a:3:0:1::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-29T13:06:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-29T13:06:00Z",
+                "message": "VPCAttachment edge-cache-west-us-west-1-0-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-29T13:12:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "edge-cache-west-us-west-1-0-eth0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "compute.datumapis.com/v1alpha",
+      "kind": "Instance",
+      "metadata": {
+        "creationTimestamp": "2026-09-29T13:06:00Z",
+        "generation": 7,
+        "labels": {
+          "compute.datumapis.com/instance-index": "1",
+          "compute.datumapis.com/location": "us-west-1",
+          "compute.datumapis.com/placement-name": "west",
+          "compute.datumapis.com/workload-deployment-name": "edge-cache-west-us-west-1",
+          "compute.datumapis.com/workload-deployment-uid": "00000000-0000-4000-a000-000000000000",
+          "compute.datumapis.com/workload-name": "edge-cache",
+          "compute.datumapis.com/workload-uid": "80000000-0000-4000-a000-000000000000",
+          "meta.datumapis.com/upstream-cluster-name": "cluster-demo-project",
+          "meta.datumapis.com/upstream-namespace": "default"
+        },
+        "name": "edge-cache-west-us-west-1-1",
+        "namespace": "default",
+        "ownerReferences": [
+          {
+            "apiVersion": "compute.datumapis.com/v1alpha",
+            "kind": "WorkloadDeployment",
+            "name": "edge-cache-west-us-west-1",
+            "uid": "00000000-0000-4000-a000-000000000000"
+          }
+        ],
+        "resourceVersion": "701202055",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "controller": {
+          "templateHash": "5c9f1a2b8e"
+        },
+        "location": {
+          "name": "us-west-1"
+        },
+        "networkInterfaces": [
+          {
+            "ipFamilies": [
+              "IPv6"
+            ],
+            "name": "eth0",
+            "network": {
+              "name": "default"
+            },
+            "reclaimPolicy": "Delete"
+          }
+        ],
+        "runtime": {
+          "class": "unikernel",
+          "resources": {
+            "instanceType": "datumcloud-d1-standard-2"
+          },
+          "sandbox": {
+            "containers": [
+              {
+                "image": "ghcr.io/datum-labs/edge-cache:1.9.0",
+                "name": "cache",
+                "ports": [
+                  {
+                    "name": "http",
+                    "port": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "seccompProfile": {
+                    "type": "RuntimeDefault"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-29T13:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Programmed",
+            "status": "True",
+            "type": "Programmed"
+          },
+          {
+            "lastTransitionTime": "2026-09-29T13:12:00Z",
+            "message": "Instance is available",
+            "observedGeneration": 3,
+            "reason": "Available",
+            "status": "True",
+            "type": "Available"
+          },
+          {
+            "lastTransitionTime": "1970-01-01T00:00:00Z",
+            "message": "Instance is ready",
+            "reason": "Available",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-29T13:06:00Z",
+            "message": "All 3 resource requests have been granted",
+            "observedGeneration": 3,
+            "reason": "QuotaAvailable",
+            "status": "True",
+            "type": "QuotaGranted"
+          }
+        ],
+        "controller": {
+          "observedTemplateHash": "5c9f1a2b8e"
+        },
+        "networkInterfaces": [
+          {
+            "addresses": [
+              {
+                "address": "fd20:0:a:3:0:2::/96",
+                "family": "IPv6",
+                "gateway": "fd20:0:a:3::1",
+                "primary": true
+              }
+            ],
+            "assignments": {
+              "networkIP": "fd20:0:a:3:0:2::/96"
+            },
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-09-29T13:06:00Z",
+                "message": "Every requested address is held",
+                "reason": "Allocated",
+                "status": "True",
+                "type": "Allocated"
+              },
+              {
+                "lastTransitionTime": "2026-09-29T13:06:00Z",
+                "message": "VPCAttachment edge-cache-west-us-west-1-1-eth0 and its attachment definition exist",
+                "reason": "AttachmentReady",
+                "status": "True",
+                "type": "Prepared"
+              },
+              {
+                "lastTransitionTime": "2026-09-29T13:12:00Z",
+                "message": "Interface is programmed on the host",
+                "reason": "Programmed",
+                "status": "True",
+                "type": "Programmed"
+              }
+            ],
+            "name": "eth0",
+            "networkInterfaceRef": {
+              "name": "edge-cache-west-us-west-1-1-eth0"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

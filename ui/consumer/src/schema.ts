@@ -113,6 +113,10 @@ export const instanceResourceSchema = z.object({
   createdAt: z.coerce.date(),
   workloadName: z.string().optional(),
   workloadUid: z.string().optional(),
+  /** WorkloadDeployment that owns the instance (one per placement × location). */
+  workloadDeploymentName: z.string().optional(),
+  /** Ordinal within its deployment, parsed from the instance-index label. */
+  instanceIndex: z.number().int().optional(),
   location: z.string().optional(),
   placement: z.string().optional(),
   instanceType: z.string().optional(),
@@ -127,6 +131,13 @@ export const instanceResourceSchema = z.object({
   /** RuntimeClass the instance names; unset selects the catalog default. */
   runtimeClass: z.string().optional(),
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
+  /** Reason / message of the Available condition — the "why" behind `status`. */
+  statusReason: z.string().optional(),
+  statusMessage: z.string().optional(),
+  /** Gate names that must clear before the scheduler places the instance. */
+  schedulingGates: z.array(z.string()).default([]),
+  /** The controller has intentionally stopped the instance's process. */
+  suspended: z.boolean().default(false),
   externalIP: z.string().optional(),
   internalIP: z.string().optional(),
   /** Host-route in-network IPs Envoy may dial (`upstream_host`), v4 and v6. */

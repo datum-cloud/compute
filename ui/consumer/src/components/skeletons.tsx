@@ -218,6 +218,41 @@ export function WorkloadOverviewSkeleton() {
   );
 }
 
+const INSTANCE_TABLE_COLUMNS = [
+  'Instance',
+  'Status',
+  'Location',
+  'Internal IP',
+  'External IP',
+  'Type',
+  'Age',
+] as const;
+
+export function WorkloadInstancesSkeleton() {
+  return (
+    <div className="flex flex-col gap-6" aria-busy="true" data-testid="compute-plugin-loading-workload-instances">
+      <Bone className="h-9 w-full sm:max-w-xs" />
+      <div className="overflow-hidden rounded-lg border">
+        <div className="bg-muted/40 flex gap-4 border-b px-4 py-3">
+          {INSTANCE_TABLE_COLUMNS.map((column, index) => (
+            <span key={index} className="text-muted-foreground min-w-0 flex-1 truncate text-xs font-medium">
+              {column}
+            </span>
+          ))}
+        </div>
+        {Array.from({ length: 5 }).map((_, row) => (
+          // Single-line rows, like the live table.
+          <div key={row} className="flex items-center gap-4 border-b px-4 py-2 last:border-b-0">
+            {INSTANCE_TABLE_COLUMNS.map((_, index) => (
+              <Bone key={index} className="h-4 min-w-0 flex-1" />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function WorkloadMetricsSkeleton() {
   return <MetricsSkeleton testId="compute-plugin-loading-workload-metrics" />;
 }

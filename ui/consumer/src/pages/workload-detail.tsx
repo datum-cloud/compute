@@ -1,7 +1,7 @@
 /**
  * `portal.page/project` extension at `:workloadName/*`, exposed as
- * `WorkloadDetail`. Overview is the index; Metrics lives at `metrics`,
- * Logs at `logs`.
+ * `WorkloadDetail`. Overview is the index; Instances lives at `instances`,
+ * Metrics at `metrics`, Logs at `logs`.
  *
  * Layout: health strip, topology, full-width logs, then live traffic and
  * instances. General/Configuration stay below.
@@ -25,6 +25,7 @@ import {
 } from "../components/overview-range";
 import {
   InstanceLogsSkeleton,
+  WorkloadInstancesSkeleton,
   WorkloadMetricsSkeleton,
   WorkloadOverviewSkeleton,
 } from "../components/skeletons";
@@ -37,6 +38,7 @@ import {
   type PublishedUrl,
 } from "../lib/api";
 import { splitSlashValue } from "../lib/format";
+import { sortInstances } from "../lib/instance-presenters";
 import {
   formatLocationName,
   formatLocationNames,
@@ -51,6 +53,7 @@ import {
 } from "../lib/metrics-queries";
 import type { WorkloadOutletContext } from "./workload-outlet-context";
 import { useWorkloadOutlet } from "./workload-outlet-context";
+import WorkloadInstances from "./workload-instances";
 import WorkloadLogs from "./workload-logs";
 import WorkloadMetrics from "./workload-metrics";
 import {
@@ -64,6 +67,7 @@ import {
   Card,
   CardAction,
   CardContent,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@datum-cloud/datum-ui/card";
@@ -95,6 +99,8 @@ import {
 } from "react-router";
 
 const COMING_SOON = "Coming soon";
+// The Overview panel is a 27rem-high preview; the Instances tab has the full list.
+const OVERVIEW_INSTANCE_LIMIT = 8;
 // Inline rather than `h-[27rem]`: the host only compiles that class because its
 // own ALB overview happens to use it today.
 const PANEL_STYLE = { height: "27rem" } as const;
@@ -389,12 +395,19 @@ function LiveTrafficCard({
 function InstancesPanel({
   instances,
   locationIndex,
+  instancesHref,
   onOpen,
 }: {
   instances: Instance[];
   locationIndex: LocationIndex;
+  instancesHref: string;
   onOpen: (name: string) => void;
 }) {
+  const shown = useMemo(
+    () => sortInstances(instances).slice(0, OVERVIEW_INSTANCE_LIMIT),
+    [instances],
+  );
+
   return (
     <Card size="sm" sectioned className="flex h-full flex-col overflow-hidden">
       <CardHeader size="sm" bordered>
@@ -415,7 +428,7 @@ function InstancesPanel({
           </p>
         ) : (
           <ul className="divide-border divide-y">
-            {instances.map((instance) => (
+            {shown.map((instance) => (
               <li key={instance.uid || instance.name}>
                 <button
                   type="button"
@@ -461,6 +474,20 @@ function InstancesPanel({
           </ul>
         )}
       </CardContent>
+      {instances.length > 0 ? (
+        <CardFooter bordered className="justify-end">
+          <Link
+            to={instancesHref}
+            className="text-primary inline-flex items-center gap-1.5 text-xs hover:underline"
+            data-e2e="workload-view-all-instances"
+          >
+            {instances.length > shown.length
+              ? `View all ${instances.length} instances`
+              : "View instances"}
+            <Icon icon={ArrowRightIcon} size={12} />
+          </Link>
+        </CardFooter>
+      ) : null}
     </Card>
   );
 }
@@ -469,6 +496,7 @@ function WorkloadLayoutShell({
   projectHref,
   workloadsHref,
   overviewHref,
+  instancesHref,
   metricsHref,
   logsHref,
   titleName,
@@ -476,6 +504,7 @@ function WorkloadLayoutShell({
   projectHref: string;
   workloadsHref: string;
   overviewHref: string;
+  instancesHref: string;
   metricsHref: string;
   logsHref: string;
   titleName: string;
@@ -521,6 +550,7 @@ function WorkloadLayoutShell({
       projectHref={projectHref}
       workloadsHref={workloadsHref}
       overviewHref={overviewHref}
+      instancesHref={instancesHref}
       metricsHref={metricsHref}
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
@@ -539,6 +569,8 @@ function WorkloadLayoutShell({
           <InstanceLogsSkeleton />
         ) : pathname === metricsHref || pathname.startsWith(`${metricsHref}/`) ? (
           <WorkloadMetricsSkeleton />
+        ) : pathname === instancesHref ? (
+          <WorkloadInstancesSkeleton />
         ) : (
           <WorkloadOverviewSkeleton />
         ))}
@@ -568,6 +600,7 @@ function WorkloadLayoutShell({
               metricKeys,
               instanceNames,
               overviewHref,
+              instancesHref,
               metricsHref,
             } satisfies WorkloadOutletContext
           }
@@ -588,6 +621,7 @@ function WorkloadOverview() {
     locationIndex,
     instanceNames,
     overviewHref,
+    instancesHref,
   } = useWorkloadOutlet();
   const navigate = useNavigate();
   const [rangeValue, setRangeValue] = useState<OverviewRangeValue>(
@@ -675,6 +709,7 @@ function WorkloadOverview() {
           <InstancesPanel
             instances={instances}
             locationIndex={locationIndex}
+            instancesHref={instancesHref}
             onOpen={(name) => navigate(instanceHref(name))}
           />
         </div>
@@ -706,7 +741,10 @@ export default function WorkloadDetail() {
   const location = useLocation();
 
   const path = location.pathname.replace(/\/$/, "");
-  const overviewHref = path.replace(/\/(logs|metrics)$/, "");
+  // `instances/<name>` is the instance-detail page, mounted separately; only a
+  // bare trailing `instances` is this layout's tab.
+  const overviewHref = path.replace(/\/(instances|logs|metrics)$/, "");
+  const instancesHref = `${overviewHref}/instances`;
   const logsHref = `${overviewHref}/logs`;
   const metricsHref = `${overviewHref}/metrics`;
   const workloadsHref = overviewHref.replace(/\/[^/]+$/, "");
@@ -721,6 +759,7 @@ export default function WorkloadDetail() {
             projectHref={projectHref}
             workloadsHref={workloadsHref}
             overviewHref={overviewHref}
+            instancesHref={instancesHref}
             metricsHref={metricsHref}
             logsHref={logsHref}
             titleName={titleName}
@@ -728,6 +767,7 @@ export default function WorkloadDetail() {
         }
       >
         <Route index element={<WorkloadOverview />} />
+        <Route path="instances" element={<WorkloadInstances />} />
         <Route path="metrics" element={<WorkloadMetrics />} />
         <Route path="logs" element={<WorkloadLogs />} />
       </Route>

@@ -1,0 +1,119 @@
+{
+  "apiVersion": "networking.datumapis.com/v1alpha",
+  "kind": "NetworkList",
+  "metadata": {
+    "resourceVersion": "701205069"
+  },
+  "items": [
+    {
+      "apiVersion": "networking.datumapis.com/v1alpha",
+      "kind": "Network",
+      "metadata": {
+        "creationTimestamp": "2026-09-22T20:23:56Z",
+        "finalizers": [
+          "networking.datumapis.com/network-controller",
+          "networking.datumapis.com/network-prefix-release",
+          "gateway.networking.datumapis.com/gateway-resource-replicator"
+        ],
+        "generation": 1,
+        "name": "global-mesh",
+        "namespace": "default",
+        "resourceVersion": "701204795",
+        "uid": "00000000-0080-4000-a000-000000000000"
+      },
+      "spec": {
+        "ipFamilies": [
+          "IPv6"
+        ],
+        "ipam": {
+          "mode": "Auto"
+        },
+        "mtu": 1440
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-22T20:23:57Z",
+            "message": "The network is addressed from fd20:0:7::/48",
+            "observedGeneration": 1,
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-22T20:23:57Z",
+            "message": "The network is addressed from fd20:0:7::/48",
+            "observedGeneration": 1,
+            "reason": "Allocated",
+            "status": "True",
+            "type": "IPAMAllocated"
+          }
+        ],
+        "ipam": {
+          "ipv6Prefix": "fd20:0:7::/48",
+          "ipv6PrefixRef": {
+            "claimName": "network-00000000-0080-4000-a000-000000000000",
+            "namespace": "default",
+            "poolName": "datum-vpc-ipv6-demo-project-global-mesh-a0899282",
+            "project": "demo-project"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "networking.datumapis.com/v1alpha",
+      "kind": "Network",
+      "metadata": {
+        "creationTimestamp": "2026-09-24T15:07:54Z",
+        "finalizers": [
+          "networking.datumapis.com/network-controller",
+          "networking.datumapis.com/network-prefix-release",
+          "gateway.networking.datumapis.com/gateway-resource-replicator"
+        ],
+        "generation": 1,
+        "name": "default",
+        "namespace": "default",
+        "resourceVersion": "701204932",
+        "uid": "00000000-0000-4000-a000-000008000000"
+      },
+      "spec": {
+        "ipFamilies": [
+          "IPv6"
+        ],
+        "ipam": {
+          "mode": "Auto"
+        },
+        "mtu": 1440
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-24T15:07:56Z",
+            "message": "The network is addressed from fd20:0:1d::/48",
+            "observedGeneration": 1,
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-09-24T15:07:56Z",
+            "message": "The network is addressed from fd20:0:1d::/48",
+            "observedGeneration": 1,
+            "reason": "Allocated",
+            "status": "True",
+            "type": "IPAMAllocated"
+          }
+        ],
+        "ipam": {
+          "ipv6Prefix": "fd20:0:1d::/48",
+          "ipv6PrefixRef": {
+            "claimName": "network-00000000-0000-4000-a000-000008000000",
+            "namespace": "default",
+            "poolName": "datum-vpc-ipv6-datum-cloud-default-114c1c77",
+            "project": "demo-project"
+          }
+        }
+      }
+    }
+  ]
+}

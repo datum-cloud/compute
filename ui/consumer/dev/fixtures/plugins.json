@@ -1,0 +1,11 @@
+[
+  {
+    "slug": "workloads",
+    "displayName": "Compute",
+    "devMode": true,
+    "manifest": {
+      "name": "workload.compute.datumapis.com",
+      "remoteEntry": "remoteEntry.js"
+    }
+  }
+]

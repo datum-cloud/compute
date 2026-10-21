@@ -1,0 +1,85 @@
+{
+  "apiVersion": "networking.datumapis.com/v1alpha",
+  "kind": "NetworkServiceList",
+  "metadata": {
+    "resourceVersion": "701205343"
+  },
+  "items": [
+    {
+      "apiVersion": "networking.datumapis.com/v1alpha",
+      "kind": "NetworkService",
+      "metadata": {
+        "creationTimestamp": "2026-09-22T20:25:33Z",
+        "generation": 1,
+        "name": "global-mesh",
+        "namespace": "default",
+        "resourceVersion": "701205206",
+        "uid": "00000000-0000-4000-a000-000000000000"
+      },
+      "spec": {
+        "networkInterfaces": {
+          "selector": {
+            "matchLabels": {
+              "compute.datumapis.com/workload-name": "global-mesh"
+            }
+          }
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "protocol": "TCP"
+          }
+        ],
+        "trafficDistribution": {
+          "strategy": "Nearest"
+        }
+      },
+      "status": {
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-09-23T03:36:56Z",
+            "message": "7 interfaces matched across 3 locations",
+            "observedGeneration": 1,
+            "reason": "Resolved",
+            "status": "True",
+            "type": "MembersResolved"
+          },
+          {
+            "lastTransitionTime": "2026-09-23T16:35:44Z",
+            "message": "7 interfaces matched across 3 locations",
+            "observedGeneration": 1,
+            "reason": "Ready",
+            "status": "True",
+            "type": "Ready"
+          }
+        ],
+        "locations": [
+          {
+            "healthy": 2,
+            "members": 3,
+            "name": "us-central-1",
+            "serving": true
+          },
+          {
+            "healthy": 2,
+            "members": 3,
+            "name": "us-east-1",
+            "serving": true
+          },
+          {
+            "healthy": 3,
+            "members": 4,
+            "name": "nl-west-1",
+            "serving": true
+          }
+        ],
+        "summary": {
+          "healthy": 7,
+          "locations": 3,
+          "members": 10
+        }
+      }
+    }
+  ]
+}
