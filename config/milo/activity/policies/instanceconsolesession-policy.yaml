@@ -8,6 +8,9 @@
 # is in every summary so support can go from one activity entry to that
 # cell's logs. Deletion is not recorded here: every session ends with a
 # SessionEnded event, including one revoked by deleting it.
+# Only the controller's verified assistant-origin annotation on start/end
+# events may identify an assistant request; the audit create entry sees a
+# client-supplied proof and must not make that claim.
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -27,12 +30,12 @@ spec:
   eventRules:
     - name: session-started
       match: "event.reason == 'SessionStarted'"
-      summary: "{{ event.metadata.annotations['compute.datumapis.com/requester'] }} connected to a shell session in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }}"
+      summary: "{{ event.metadata.annotations['compute.datumapis.com/requester'] }} connected to a shell session in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }}{{ 'compute.datumapis.com/assistant-origin' in event.metadata.annotations && event.metadata.annotations['compute.datumapis.com/assistant-origin'] == 'patch' ? ' through the Datum assistant' : '' }}"
 
     - name: session-ended-exit-code
       match: "event.reason == 'SessionEnded' && 'compute.datumapis.com/exit-code' in event.metadata.annotations"
-      summary: "Shell session of {{ event.metadata.annotations['compute.datumapis.com/requester'] }} in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }} ended: {{ event.metadata.annotations['compute.datumapis.com/reason'] }}, exit code {{ event.metadata.annotations['compute.datumapis.com/exit-code'] }}"
+      summary: "Shell session of {{ event.metadata.annotations['compute.datumapis.com/requester'] }} in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }} ended: {{ event.metadata.annotations['compute.datumapis.com/reason'] }}, exit code {{ event.metadata.annotations['compute.datumapis.com/exit-code'] }}{{ 'compute.datumapis.com/assistant-origin' in event.metadata.annotations && event.metadata.annotations['compute.datumapis.com/assistant-origin'] == 'patch' ? ' (via Datum assistant)' : '' }}"
 
     - name: session-ended
       match: "event.reason == 'SessionEnded'"
-      summary: "Shell session of {{ event.metadata.annotations['compute.datumapis.com/requester'] }} in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }} ended: {{ event.metadata.annotations['compute.datumapis.com/reason'] }}"
+      summary: "Shell session of {{ event.metadata.annotations['compute.datumapis.com/requester'] }} in container {{ event.metadata.annotations['compute.datumapis.com/container'] }} of instance {{ event.metadata.annotations['compute.datumapis.com/instance'] }} on cell {{ event.metadata.annotations['compute.datumapis.com/cell'] }} ended: {{ event.metadata.annotations['compute.datumapis.com/reason'] }}{{ 'compute.datumapis.com/assistant-origin' in event.metadata.annotations && event.metadata.annotations['compute.datumapis.com/assistant-origin'] == 'patch' ? ' (via Datum assistant)' : '' }}"
