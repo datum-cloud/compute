@@ -83,6 +83,84 @@ func TestArguments(t *testing.T) {
 	}
 }
 
+func TestTTLFlag(t *testing.T) {
+	const ttlRangeError = "--ttl must be between 1m and 1h"
+	tests := []struct {
+		name     string
+		flag     string
+		want     time.Duration
+		wantCode int
+		wantErr  string
+	}{
+		{name: "omitted leaves API default", want: 0},
+		{name: "minimum", flag: "1m", want: time.Minute},
+		{name: "maximum", flag: "1h", want: time.Hour},
+		{name: "fractional duration", flag: "1m30s", want: 90 * time.Second},
+		{name: "too short", flag: "59s", wantCode: 2, wantErr: ttlRangeError},
+		{name: "too long", flag: "1h1s", wantCode: 2, wantErr: ttlRangeError},
+		{name: "zero", flag: "0", wantCode: 2, wantErr: ttlRangeError},
+		{name: "invalid duration", flag: "forever", wantCode: 2, wantErr: "invalid duration"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			cmd := newCommand(func(_ *cobra.Command, opts *options) error {
+				called = true
+				if opts.ttl != tt.want {
+					t.Errorf("ttl = %s, want %s", opts.ttl, tt.want)
+				}
+				return nil
+			})
+			args := []string{instanceName}
+			if tt.flag != "" {
+				args = append(args, "--ttl", tt.flag)
+			}
+			cmd.SetArgs(append(args, "--", "sh"))
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			if got := exitCode(t, err); got != tt.wantCode {
+				t.Fatalf("exit = %d (%v), want %d", got, err, tt.wantCode)
+			}
+			if called != (tt.wantCode == 0) {
+				t.Errorf("run called = %v, want %v", called, tt.wantCode == 0)
+			}
+			if tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCreateSessionTTL(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		ttl  time.Duration
+	}{
+		{name: "omitted"},
+		{name: "explicit", ttl: 30 * time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := instanceWith(web)
+			inst.Namespace = util.ResourceNamespace
+			inst.UID = "instance-uid"
+			c := newFakeClient(t, inst)
+			s, err := createSession(context.Background(), c, &options{
+				instance: instanceName, command: []string{"sh"}, ttl: tt.ttl,
+			}, false, strings.Repeat("a", 64))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.ttl == 0 && s.Spec.TTL != nil {
+				t.Errorf("ttl = %v, want omitted", s.Spec.TTL)
+			}
+			if tt.ttl != 0 && (s.Spec.TTL == nil || s.Spec.TTL.Duration != tt.ttl) {
+				t.Errorf("ttl = %v, want %s", s.Spec.TTL, tt.ttl)
+			}
+		})
+	}
+}
+
 func instanceWith(containers ...string) *computev1alpha.Instance {
 	inst := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: instanceName}}
 	if len(containers) > 0 {
