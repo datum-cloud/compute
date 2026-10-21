@@ -71,6 +71,12 @@ spec:
         The execution tier the instance runs in. Isolation, image
         compatibility, startup latency, and price differ per class.
   metrics:
+  # instance/cpu-seconds (replaced by milli-cpu-seconds), cpu-allocated,
+  # memory-allocated and uptime-seconds carry no usage and no price, and
+  # nothing emits them. They are Retired rather than removed: invoices, usage
+  # queries and exports join on the meter name, so the meters and their
+  # history stay, and any event for them is quarantined.
+  #
   # Every instance meter declares the runtime_class dimension. A producer may
   # only attach a key declared here, and a rate may only match on a declared
   # dimension. Without the declaration, per-class rates cannot be expressed and
@@ -82,6 +88,7 @@ spec:
     unit: s
     dimensions:
     - runtime_class
+    phase: Retired
   - name: compute.datumapis.com/instance/milli-cpu-seconds
     displayName: Compute Instance Milli-CPU Seconds
     description: Milli-CPU seconds consumed by a running instance.
@@ -103,6 +110,7 @@ spec:
     unit: '{cpu}'
     dimensions:
     - runtime_class
+    phase: Retired
   - name: compute.datumapis.com/instance/memory-allocated
     displayName: Compute Instance Memory Allocated
     description: Bytes of memory allocated to an instance.
@@ -110,6 +118,7 @@ spec:
     unit: By
     dimensions:
     - runtime_class
+    phase: Retired
   - name: compute.datumapis.com/instance/uptime-seconds
     displayName: Compute Instance Uptime
     description: Seconds the instance has been in a running state.
@@ -117,6 +126,7 @@ spec:
     unit: s
     dimensions:
     - runtime_class
+    phase: Retired
   - name: compute.datumapis.com/workloads
     displayName: Compute Workloads
     description: Number of compute workloads.

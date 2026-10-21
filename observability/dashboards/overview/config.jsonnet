@@ -205,59 +205,16 @@ local restartsWithReason = |||
 // Compute hosts
 // ---------------------------------------------------------------------------
 
-// Compute hosts carry the compute.datumapis.com/runtime node label that both
-// providers select on. kube-state-metrics does not export it, but the kubelet
-// scrape copies node labels onto its series. A host is also known by the
-// kraftlet-<host> virtual node it registers for Unikraft, which
-// kube-state-metrics keeps reporting while the host is down. Kata instances
-// run on the host itself.
-local hosts = |||
-  max by (cluster, node) (
-    last_over_time(kubelet_node_name{compute_datumapis_com_runtime!="", region=~"$region"}[%(memory)s])
-    or
-    label_replace(kube_node_info{node=~"kraftlet-.*", region=~"$region"}, "node", "$1", "node", "kraftlet-(.*)")
-  )
-||| % { memory: hostLookback };
+local hosts = 'max by (cluster, node) (host:compute_host:info{region=~"$region"})';
 
-// Counted per distinct CPU: carrying series over hostLookback keeps the old
-// series of a restarted node_exporter alongside the new ones.
-local hostCpu = 'count by (cluster, region, node) (count by (cluster, region, node, cpu) (last_over_time(node_cpu_seconds_total{mode="idle"}[%s]) and on (cluster, node) %s))' % [hostLookback, hosts];
-local hostMemoryTotal = 'max by (cluster, region, node) (last_over_time(node_memory_MemTotal_bytes[%s]) and on (cluster, node) %s)' % [hostLookback, hosts];
+// Carried over hostLookback so a host that stopped reporting keeps its place.
+local hostCapacity(resource) = 'max by (cluster, region, node) (last_over_time(host:compute_capacity:sum{resource="%s", region=~"$region"}[%s]))' % [resource, hostLookback];
+local hostCpu = hostCapacity('cpu');
+local hostMemoryTotal = hostCapacity('memory');
 local hostCpuUsed(window) = 'sum by (cluster, region, node) (rate(node_cpu_seconds_total{mode!="idle"}[%s]) and on (cluster, node) %s)' % [window, hosts];
 local hostMemoryUsed = 'max by (cluster, region, node) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) and on (cluster, node) %s)' % hosts;
 
-local kataPods = 'max by (cluster, namespace, pod) (kube_pod_runtimeclass_name_info{runtimeclass_name=~"%s"})' % kataRuntimeClasses;
-local podNode = 'max by (cluster, namespace, pod, node) (kube_pod_info)';
-
-// Committed capacity per host and owner, for resource "cpu" (cores) or
-// "memory" (bytes). Kata pods reserve their requests plus the VM overhead
-// declared on the RuntimeClass; Unikraft pods have no requests and reserve
-// their limits on the virtual node; system pods are everything else on the
-// host. The two runtimes are scheduled separately, so nothing stops them
-// committing more than the host has between them.
-local committedBy(resource) =
-  local overhead = if resource == 'cpu' then 'kube_pod_overhead_cpu_cores' else 'kube_pod_overhead_memory_bytes';
-  local requestsOnHosts = '(last_over_time(kube_pod_container_resource_requests{resource="%s", region=~"$region"}[1m]) and on (cluster, node) %s)' % [resource, hosts];
-  |||
-    label_replace(
-      sum by (cluster, region, node) (
-        label_replace(%(requests)s * on (cluster, namespace, pod) group_left () %(kata)s, "part", "requests", "", "")
-        or
-        label_replace(last_over_time(%(overhead)s{region=~"$region"}[1m]) * on (cluster, namespace, pod) group_left (node) %(podNode)s and on (cluster, node) %(hosts)s, "part", "overhead", "", "")
-      ),
-      "owner", "general-purpose", "", ""
-    )
-    or
-    label_replace(
-      sum by (cluster, region, node) (label_replace(last_over_time(kube_pod_container_resource_limits{resource="%(resource)s", node=~"kraftlet-.*", region=~"$region"}[1m]), "node", "$1", "node", "kraftlet-(.*)")),
-      "owner", "unikernel", "", ""
-    )
-    or
-    label_replace(
-      sum by (cluster, region, node) ((%(requests)s) unless on (cluster, namespace, pod) %(kata)s),
-      "owner", "system", "", ""
-    )
-  ||| % { requests: requestsOnHosts, kata: kataPods, overhead: overhead, podNode: podNode, hosts: hosts, resource: resource };
+local committedBy(resource) = 'host:compute_committed:sum{resource="%s", region=~"$region"}' % resource;
 
 local committed(resource) = 'sum by (cluster, region, node) (%s)' % committedBy(resource);
 

@@ -58,6 +58,9 @@ func createSession(ctx context.Context, c client.Client, opts *options, tty bool
 			ClientPublicKey: publicKey,
 		},
 	}
+	if opts.ttl != 0 {
+		session.Spec.TTL = &metav1.Duration{Duration: opts.ttl}
+	}
 	if err := c.Create(ctx, session); err != nil {
 		return nil, createError(ctx, c, err)
 	}
