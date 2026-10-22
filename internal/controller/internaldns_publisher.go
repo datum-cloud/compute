@@ -198,10 +198,13 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	if err := r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, desired); err != nil {
 		return ctrl.Result{}, err
 	}
-	if pending {
-		return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSPendingWait)}, publicationErr
+	if publicationErr != nil {
+		return ctrl.Result{}, publicationErr
 	}
-	return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSObservationInterval)}, publicationErr
+	if pending {
+		return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSPendingWait)}, nil
+	}
+	return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSObservationInterval)}, nil
 }
 
 type instanceDNSAttachment struct {
@@ -293,6 +296,9 @@ func hostAddress(raw string) (netip.Addr, bool) {
 
 func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context, access InternalDNSProjectAccess, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, owner metav1.OwnerReference, attachment instanceDNSAttachment, resourceName string) (bool, error) {
 	if attachment.ObservationError != nil {
+		if errors.Is(attachment.ObservationError, errDNSObservationSourceNotConfigured) {
+			return false, nil
+		}
 		return false, attachment.ObservationError
 	}
 	managed, err := findResolverContext(ctx, access.Reader, namespace, identity.ProjectUID, attachment.VPCUID)
