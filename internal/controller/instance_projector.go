@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,7 +64,26 @@ const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/finalizers,verbs=update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/status,verbs=get;update;patch
 
+// projectClusterEngageWait is how long the projector waits before retrying an
+// Instance whose project cluster the multicluster provider has not engaged yet.
+const projectClusterEngageWait = 15 * time.Second
+
 func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	result, err := r.reconcile(ctx, req)
+	// After a manager restart the provider engages project clusters over the
+	// first minute or two. The projector only watches hub Instances, so no
+	// event fires when the cluster engages; retry on a timer instead of
+	// reporting a reconcile error, matching the federator's not-engaged
+	// handling.
+	if errors.Is(err, multicluster.ErrClusterNotFound) {
+		log.FromContext(ctx).V(1).Info("project cluster not engaged for instance projection; retrying",
+			"instance", req.NamespacedName, "error", err)
+		return ctrl.Result{RequeueAfter: projectClusterEngageWait}, nil
+	}
+	return result, err
+}
+
+func (r *InstanceProjector) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("instance", req.NamespacedName)
 
 	var downstreamInstance computev1alpha.Instance

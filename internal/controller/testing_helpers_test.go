@@ -105,7 +105,7 @@ func (m *fakeMCManager) GetCluster(_ context.Context, name multicluster.ClusterN
 	if c, ok := m.clusters[string(name)]; ok {
 		return c, nil
 	}
-	return nil, fmt.Errorf("cluster %q not found in fake manager", name)
+	return nil, fmt.Errorf("cluster %q not found in fake manager: %w", name, multicluster.ErrClusterNotFound)
 }
 
 // newFakeMCManager returns a fakeMCManager with a single named cluster.
