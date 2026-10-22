@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,7 +64,26 @@ const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/finalizers,verbs=update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=instances/status,verbs=get;update;patch
 
+// projectClusterEngageWait is how long the projector waits before retrying an
+// Instance whose project cluster the multicluster provider has not engaged yet.
+const projectClusterEngageWait = 15 * time.Second
+
 func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	err := r.reconcile(ctx, req)
+	// After a manager restart the provider engages project clusters over the
+	// first minute or two. The projector only watches hub Instances, so no
+	// event fires when the cluster engages; retry on a timer instead of
+	// reporting a reconcile error, matching the federator's not-engaged
+	// handling.
+	if errors.Is(err, multicluster.ErrClusterNotFound) {
+		log.FromContext(ctx).V(1).Info("project cluster not engaged for instance projection; retrying",
+			"instance", req.NamespacedName, "error", err)
+		return ctrl.Result{RequeueAfter: projectClusterEngageWait}, nil
+	}
+	return ctrl.Result{}, err
+}
+
+func (r *InstanceProjector) reconcile(ctx context.Context, req ctrl.Request) error {
 	logger := log.FromContext(ctx).WithValues("instance", req.NamespacedName)
 
 	var downstreamInstance computev1alpha.Instance
@@ -75,28 +96,28 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				if apierrors.IsNotFound(err) {
 					// Project teardown also removes the hub namespace; the project
 					// deployment's owner reference handles its projections.
-					return ctrl.Result{}, nil
+					return nil
 				}
-				return ctrl.Result{}, fmt.Errorf("failed getting federation namespace %q for deleted instance: %w", req.Namespace, err)
+				return fmt.Errorf("failed getting federation namespace %q for deleted instance: %w", req.Namespace, err)
 			}
-			return ctrl.Result{}, r.deleteProjection(ctx, req.NamespacedName, namespace.Labels)
+			return r.deleteProjection(ctx, req.NamespacedName, namespace.Labels)
 		}
-		return ctrl.Result{}, fmt.Errorf("failed getting upstream instance: %w", err)
+		return fmt.Errorf("failed getting upstream instance: %w", err)
 	}
 
 	// Keep the write-back until its project projection has been deleted.
 	if !downstreamInstance.DeletionTimestamp.IsZero() {
 		if err := r.deleteProjection(ctx, req.NamespacedName, downstreamInstance.Labels); err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
 		if controllerutil.ContainsFinalizer(&downstreamInstance, instanceProjectionFinalizer) {
 			base := downstreamInstance.DeepCopy()
 			controllerutil.RemoveFinalizer(&downstreamInstance, instanceProjectionFinalizer)
 			if err := r.FederationClient.Patch(ctx, &downstreamInstance, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("failed removing projection finalizer from write-back instance %s: %w", req.NamespacedName, err)
+				return fmt.Errorf("failed removing projection finalizer from write-back instance %s: %w", req.NamespacedName, err)
 			}
 		}
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	// Federation-plane Instances exist exclusively as write-back copies, and the
@@ -106,7 +127,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// visibility rather than silently dropping the projection.
 	encodedClusterName := downstreamInstance.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
 	if encodedClusterName == "" {
-		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s is missing the %s label; cannot resolve the project cluster",
+		return fmt.Errorf("downstream instance %s/%s is missing the %s label; cannot resolve the project cluster",
 			downstreamInstance.Namespace, downstreamInstance.Name,
 			downstreamclient.UpstreamOwnerClusterNameLabel)
 	}
@@ -116,7 +137,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// clusters by bare project name.
 	clusterName := projectClusterNameFromLabel(encodedClusterName)
 	if clusterName == "" {
-		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s carries an undecodable %s label (%q)",
+		return fmt.Errorf("downstream instance %s/%s carries an undecodable %s label (%q)",
 			downstreamInstance.Namespace, downstreamInstance.Name,
 			downstreamclient.UpstreamOwnerClusterNameLabel, encodedClusterName)
 	}
@@ -125,7 +146,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// cluster label without a namespace label is the same invariant violation.
 	targetNamespace := downstreamInstance.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 	if targetNamespace == "" {
-		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s carries %s but is missing the %s label; cannot resolve the project namespace",
+		return fmt.Errorf("downstream instance %s/%s carries %s but is missing the %s label; cannot resolve the project namespace",
 			downstreamInstance.Namespace, downstreamInstance.Name,
 			downstreamclient.UpstreamOwnerClusterNameLabel, downstreamclient.UpstreamOwnerNamespaceLabel)
 	}
@@ -137,13 +158,13 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// stamped by the edge stateful control strategy.
 	wdName := downstreamInstance.Labels[computev1alpha.WorkloadDeploymentNameLabel]
 	if wdName == "" {
-		return ctrl.Result{}, fmt.Errorf("downstream instance %s/%s is missing the %s label; cannot resolve its WorkloadDeployment",
+		return fmt.Errorf("downstream instance %s/%s is missing the %s label; cannot resolve its WorkloadDeployment",
 			downstreamInstance.Namespace, downstreamInstance.Name, computev1alpha.WorkloadDeploymentNameLabel)
 	}
 
 	projectCluster, err := r.MCManager.GetCluster(ctx, multicluster.ClusterName(clusterName))
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed getting project cluster %q: %w", clusterName, err)
+		return fmt.Errorf("failed getting project cluster %q: %w", clusterName, err)
 	}
 	projectClient := projectCluster.GetClient()
 
@@ -158,10 +179,10 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			// retries with backoff. A hub Instance cannot outlive its project
 			// deployment, so this is a creation-ordering race that the retry
 			// resolves.
-			return ctrl.Result{}, fmt.Errorf("workload deployment %q not found in project cluster %q for instance %s/%s",
+			return fmt.Errorf("workload deployment %q not found in project cluster %q for instance %s/%s",
 				wdName, clusterName, downstreamInstance.Namespace, downstreamInstance.Name)
 		}
-		return ctrl.Result{}, fmt.Errorf("failed getting WorkloadDeployment %s/%s in project cluster %s: %w",
+		return fmt.Errorf("failed getting WorkloadDeployment %s/%s in project cluster %s: %w",
 			targetNamespace, wdName, clusterName, err)
 	}
 	// Adopt older write-backs that predate the finalizer before projecting them.
@@ -170,7 +191,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		base := downstreamInstance.DeepCopy()
 		controllerutil.AddFinalizer(&downstreamInstance, instanceProjectionFinalizer)
 		if err := r.FederationClient.Patch(ctx, &downstreamInstance, client.MergeFrom(base)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed adding projection finalizer to write-back instance %s: %w", req.NamespacedName, err)
+			return fmt.Errorf("failed adding projection finalizer to write-back instance %s: %w", req.NamespacedName, err)
 		}
 	}
 
@@ -183,7 +204,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if r.InternalDNSEnabled {
 		if err := reconcileDNSProjectionLifetime(ctx, projectCluster.GetAPIReader(), projectClient, projection, &downstreamInstance); err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
 	}
 
@@ -204,7 +225,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return controllerutil.SetOwnerReference(&ownerWD, projection, projectCluster.GetScheme())
 	})
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed upserting Instance projection in %s/%s: %w", clusterName, targetNamespace, err)
+		return fmt.Errorf("failed upserting Instance projection in %s/%s: %w", clusterName, targetNamespace, err)
 	}
 
 	logger.Info("reconciled Instance projection", "operation", operationResult, "namespace", targetNamespace, "cluster", clusterName)
@@ -217,10 +238,10 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		projection.Status.DNS = dnsStatus
 	}
 	if err := projectClient.Status().Update(ctx, projection); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed updating Instance projection status: %w", err)
+		return fmt.Errorf("failed updating Instance projection status: %w", err)
 	}
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // deleteProjection only removes the projected copy for the source route. The

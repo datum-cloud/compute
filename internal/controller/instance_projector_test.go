@@ -598,6 +598,37 @@ func TestInstanceProjectorWaitsForProjectDeletion(t *testing.T) {
 		"write-back should disappear only after the project Instance does")
 }
 
+// TestInstanceProjectorRequeuesUnengagedProjectCluster verifies that an
+// Instance whose project cluster is not engaged yet is retried on a timer
+// rather than reported as a reconcile error.
+func TestInstanceProjectorRequeuesUnengagedProjectCluster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	hubClient := newKarmadaFakeClient(projTestKarmadaInstance(nil))
+	projector := &InstanceProjector{
+		FederationClient: hubClient,
+		MCManager:        &fakeMCManager{clusters: map[string]cluster.Cluster{}},
+	}
+
+	result, err := projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+
+	writeBack := projTestKarmadaInstance(nil)
+	writeBack.Finalizers = []string{instanceProjectionFinalizer}
+	now := metav1.Now()
+	writeBack.DeletionTimestamp = &now
+	hubClient = newKarmadaFakeClient(writeBack)
+	projector.FederationClient = hubClient
+	result, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+	var retained computev1alpha.Instance
+	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &retained))
+	assert.Contains(t, retained.Finalizers, instanceProjectionFinalizer,
+		"the write-back must keep its finalizer until the projection can be removed")
+}
+
 // TestInstanceProjector_SpecCopied verifies that the Instance spec is correctly
 // propagated from the Karmada instance to the projection.
 func TestInstanceProjector_SpecCopied(t *testing.T) {
