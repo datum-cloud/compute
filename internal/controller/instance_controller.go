@@ -179,6 +179,8 @@ type InstanceProjectNamespaceFunc func(
 
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
+	// InternalDNSEnabled enables publication identity and status isolation.
+	InternalDNSEnabled bool
 	mgr                clusterGetter
 	scheme             *runtime.Scheme
 	quotaClientManager *quotametrics.ProjectQuotaClientManager
@@ -1320,6 +1322,10 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 			},
 		},
 		Spec: instance.Spec,
+	}
+
+	if r.InternalDNSEnabled {
+		writeBack.Labels[computev1alpha.InstanceSourceUIDLabel] = string(instance.UID)
 	}
 
 	// The hub's garbage collector reclaims every copy when the deployment is

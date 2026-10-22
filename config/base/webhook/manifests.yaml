@@ -65,6 +65,7 @@ webhooks:
     - v1alpha
     operations:
     - CREATE
+    - UPDATE
     resources:
     - instanceconsolesessions
   sideEffects: None

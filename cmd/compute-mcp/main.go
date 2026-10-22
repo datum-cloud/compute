@@ -162,6 +162,25 @@ func sameEndpoint(a, b string) bool {
 }
 
 func run(addr string, baseConfig *rest.Config) error {
+	exec, err := newExecRuntime()
+	if err != nil {
+		return err
+	}
+	if exec != nil {
+		// Lease creation is atomic across replicas; pruning old claims only
+		// affects plans that expired at least a day ago.
+		go func() {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if err := exec.nonces.Prune(ctx); err != nil {
+					setupLog.Error(err, "pruning exec approval nonces")
+				}
+				cancel()
+			}
+		}()
+	}
 	handler := mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
 			// A server per request, bound to that caller's identity and
@@ -170,7 +189,11 @@ func run(addr string, baseConfig *rest.Config) error {
 				Name:    serverName,
 				Version: serverVersion,
 			}, nil)
-			agent.RegisterTools(s, depsFromRequest(r, baseConfig))
+			deps := depsFromRequestWithExec(r, baseConfig, exec)
+			agent.RegisterTools(s, deps)
+			if exec != nil {
+				agent.RegisterExecTools(s, deps)
+			}
 			return s
 		},
 		// Stateless: no session state is needed for read-only tools, and it
@@ -212,6 +235,10 @@ func run(addr string, baseConfig *rest.Config) error {
 // credentials fails as a tool error the model can report, rather than as a nil
 // client panic deep in a handler.
 func depsFromRequest(r *http.Request, baseConfig *rest.Config) agent.DepsFor {
+	return depsFromRequestWithExec(r, baseConfig, nil)
+}
+
+func depsFromRequestWithExec(r *http.Request, baseConfig *rest.Config, exec *execRuntime) agent.DepsFor {
 	token := bearerToken(r)
 	project := strings.TrimSpace(r.Header.Get(projectHeader))
 
@@ -231,7 +258,11 @@ func depsFromRequest(r *http.Request, baseConfig *rest.Config) agent.DepsFor {
 		if err != nil {
 			return agent.ToolDeps{}, err
 		}
-		return agent.ToolDeps{Reader: agent.NewClientReader(c), Namespace: resourceNamespace}, nil
+		d := agent.ToolDeps{Reader: agent.NewClientReader(c), Namespace: resourceNamespace}
+		if exec != nil {
+			d.ExecClient, d.Project, d.BearerToken, d.ExecKey, d.ExecNonces = c, project, token, exec.key, exec.nonces
+		}
+		return d, nil
 	}
 }
 

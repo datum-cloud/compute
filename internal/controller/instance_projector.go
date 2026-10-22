@@ -38,6 +38,7 @@ import (
 // so that it is garbage-collected when the deployment is removed. The projector
 // finalizes write-back Instances by removing their project projections before
 // the write-backs disappear, including during scale-down.
+// A changed source Instance UID replaces the projection.
 //
 // The controller is registered on the leader-elected local manager so only the
 // elected replica writes projections, and watches Instances through the
@@ -50,6 +51,9 @@ type InstanceProjector struct {
 
 	// MCManager provides access to project cluster clients via GetCluster.
 	MCManager mcmanager.Manager
+
+	// InternalDNSEnabled isolates publication lifetime handling.
+	InternalDNSEnabled bool
 }
 
 const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
@@ -177,6 +181,12 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		},
 	}
 
+	if r.InternalDNSEnabled {
+		if err := reconcileDNSProjectionLifetime(ctx, projectCluster.GetAPIReader(), projectClient, projection, &downstreamInstance); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	operationResult, err := controllerutil.CreateOrUpdate(ctx, projectClient, projection, func() error {
 		// Propagate upstream tracking labels so consumers can filter by origin.
 		if projection.Labels == nil {
@@ -200,7 +210,12 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	logger.Info("reconciled Instance projection", "operation", operationResult, "namespace", targetNamespace, "cluster", clusterName)
 
 	// Status is a separate subresource.
+	dnsStatus := projection.Status.DNS
 	projection.Status = downstreamInstance.Status
+	// Private name publication belongs to the project-side DNS publisher.
+	if r.InternalDNSEnabled {
+		projection.Status.DNS = dnsStatus
+	}
 	if err := projectClient.Status().Update(ctx, projection); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("failed updating Instance projection status: %w", err)
 	}
@@ -258,4 +273,22 @@ func (r *InstanceProjector) SetupWithManager(mgr manager.Manager, federationClus
 			&handler.TypedEnqueueRequestForObject[*computev1alpha.Instance]{},
 		)).
 		Complete(r)
+}
+
+// reconcileDNSProjectionLifetime waits for the previous publication owner to be removed.
+func reconcileDNSProjectionLifetime(ctx context.Context, reader client.Reader, writer client.Client, projection, source *computev1alpha.Instance) error {
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(projection), projection); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	oldSource, newSource := projection.Labels[computev1alpha.InstanceSourceUIDLabel], source.Labels[computev1alpha.InstanceSourceUIDLabel]
+	if oldSource == "" || newSource == "" || oldSource == newSource {
+		return nil
+	}
+	if projection.DeletionTimestamp.IsZero() {
+		if err := writer.Delete(ctx, projection, client.Preconditions{UID: &projection.UID, ResourceVersion: &projection.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	// Returning an error uses the controller's exponential retry backoff.
+	return fmt.Errorf("waiting for DNS projection lifetime replacement")
 }

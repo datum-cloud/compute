@@ -58,6 +58,14 @@ spec:
             value: "1440h"
           - name: INSTANCE_TYPE_DEFAULT
             value: "datumcloud-d1-standard-2"
+          # Shared verifier for signed assistant exec provenance. Optional
+          # until the assistant execution path is enabled in an environment.
+          - name: COMPUTE_ASSISTANT_EXEC_KEY
+            valueFrom:
+              secretKeyRef:
+                name: compute-assistant-exec-key
+                key: key
+                optional: true
           # The WorkloadDeployment webhook only accepts the expected-referenced-data
           # annotation from the resolver, and identifies it by the username the
           # manager authenticates as. Read from the downward API so the identity

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -16,6 +17,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/assistantorigin"
 	"go.datum.net/compute/internal/features"
 	"go.datum.net/compute/internal/validation"
 	"go.datum.net/compute/pkg/runtimeclass"
@@ -26,7 +28,11 @@ import (
 // so that a disabled environment refuses sessions with a reason instead of
 // storing ones nothing will serve.
 func SetupInstanceConsoleSessionWebhookWithManager(mgr mcmanager.Manager) error {
-	hook := &instanceConsoleSessionWebhook{reader: projectReader(mgr)}
+	key, err := assistantorigin.KeyFromEnv()
+	if err != nil {
+		return err
+	}
+	hook := &instanceConsoleSessionWebhook{reader: projectReader(mgr), assistantKey: key}
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &computev1alpha.InstanceConsoleSession{}).
 		WithDefaulter(hook).
 		WithValidator(hook).
@@ -34,12 +40,13 @@ func SetupInstanceConsoleSessionWebhookWithManager(mgr mcmanager.Manager) error 
 }
 
 // +kubebuilder:webhook:path=/mutate-compute-datumapis-com-v1alpha-instanceconsolesession,mutating=true,failurePolicy=fail,sideEffects=None,groups=compute.datumapis.com,resources=instanceconsolesessions,verbs=create,versions=v1alpha,name=minstanceconsolesession.kb.io,admissionReviewVersions=v1
-// +kubebuilder:webhook:path=/validate-compute-datumapis-com-v1alpha-instanceconsolesession,mutating=false,failurePolicy=fail,sideEffects=None,groups=compute.datumapis.com,resources=instanceconsolesessions,verbs=create,versions=v1alpha,name=vinstanceconsolesession.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-compute-datumapis-com-v1alpha-instanceconsolesession,mutating=false,failurePolicy=fail,sideEffects=None,groups=compute.datumapis.com,resources=instanceconsolesessions,verbs=create;update,versions=v1alpha,name=vinstanceconsolesession.kb.io,admissionReviewVersions=v1
 
 type instanceConsoleSessionWebhook struct {
 	// reader returns a reader for the project control plane the request is
 	// admitted into.
-	reader func(context.Context) (client.Reader, error)
+	reader       func(context.Context) (client.Reader, error)
+	assistantKey []byte
 }
 
 var (
@@ -63,6 +70,9 @@ func (w *instanceConsoleSessionWebhook) Default(ctx context.Context, session *co
 	if err := w.validateCreate(ctx, session); err != nil {
 		return err
 	}
+	if err := w.validateAssistantProof(session, req.UserInfo.Username); err != nil {
+		return err
+	}
 	controllerutil.AddFinalizer(session, computev1alpha.InstanceConsoleSessionFinalizer)
 	if session.Annotations == nil {
 		session.Annotations = map[string]string{}
@@ -74,7 +84,25 @@ func (w *instanceConsoleSessionWebhook) Default(ctx context.Context, session *co
 // ValidateCreate implements admission.Validator. It repeats Default's checks
 // against the session as every mutating webhook left it.
 func (w *instanceConsoleSessionWebhook) ValidateCreate(ctx context.Context, session *computev1alpha.InstanceConsoleSession) (admission.Warnings, error) {
-	return nil, w.validateCreate(ctx, session)
+	if err := w.validateCreate(ctx, session); err != nil {
+		return nil, err
+	}
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return nil, w.validateAssistantProof(session, req.UserInfo.Username)
+}
+
+func (w *instanceConsoleSessionWebhook) validateAssistantProof(session *computev1alpha.InstanceConsoleSession, requester string) error {
+	proof := session.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation]
+	if proof == "" {
+		return nil
+	}
+	if !assistantorigin.Verify(w.assistantKey, session, requester, proof, time.Now()) {
+		return fmt.Errorf("assistant exec origin proof is invalid or expired")
+	}
+	return nil
 }
 
 func (w *instanceConsoleSessionWebhook) validateCreate(ctx context.Context, session *computev1alpha.InstanceConsoleSession) error {
@@ -109,9 +137,13 @@ func refusal(session *computev1alpha.InstanceConsoleSession, errs field.ErrorLis
 	return err
 }
 
-// ValidateUpdate implements admission.Validator. The webhook is not registered
-// for updates; the spec is immutable in the schema.
-func (w *instanceConsoleSessionWebhook) ValidateUpdate(context.Context, *computev1alpha.InstanceConsoleSession, *computev1alpha.InstanceConsoleSession) (admission.Warnings, error) {
+// ValidateUpdate keeps the assistant origin proof immutable. Session spec is
+// already immutable in the schema; status uses a separate subresource.
+
+func (w *instanceConsoleSessionWebhook) ValidateUpdate(_ context.Context, old, current *computev1alpha.InstanceConsoleSession) (admission.Warnings, error) {
+	if old.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation] != current.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation] {
+		return nil, fmt.Errorf("assistant exec origin proof cannot be changed after creation")
+	}
 	return nil, nil
 }
 

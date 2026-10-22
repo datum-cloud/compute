@@ -44,11 +44,27 @@ type WorkloadOperator struct {
 	// ReferencedData configures the ReferencedDataController.
 	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
 
-	// LocationSource names the API group locations are read from. "Locations",
-	// the locations.miloapis.com service, is the only value accepted.
-	// "NetworkServices" is refused: network-services-operator no longer serves
-	// the ServingLocations it read. Defaults to "Locations".
+	// InternalDNS configures project identities for the optional instance DNS
+	// publisher. It is ignored unless the InternalDNSPublishing feature gate is
+	// enabled.
+	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
+
+	// LocationSource selects the locations.miloapis.com service.
+	// Defaults to "Locations". "NetworkServices" is not supported.
 	LocationSource locations.Source `json:"locationSource,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSConfig struct {
+	// ObservationSources selects authenticated edge APIs for live interface and
+	// node observations. Credentials must have read-only observation permissions.
+	ObservationSources []InternalDNSObservationSource `json:"observationSources,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSObservationSource struct {
+	Location       string `json:"location"`
+	KubeconfigPath string `json:"kubeconfigPath"`
 }
 
 func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {

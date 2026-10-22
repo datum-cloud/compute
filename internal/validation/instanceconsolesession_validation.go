@@ -104,13 +104,14 @@ func validateSessionRuntimeClass(instance *computev1alpha.Instance, catalog runt
 
 // validateSessionMetadata refuses labels and annotations in compute's own
 // namespaces, which compute's controllers and cell agents read and write.
-// Admission sets the requester annotation itself, overwriting any value the
-// client sent.
+// Admission overwrites the requester annotation and separately verifies the
+// signed assistant proof, so those two keys are the only exceptions.
 func validateSessionMetadata(session *computev1alpha.InstanceConsoleSession) field.ErrorList {
 	metaPath := field.NewPath("metadata")
 	allErrs := field.ErrorList{}
 	for _, key := range slices.Sorted(maps.Keys(session.Annotations)) {
-		if key != computev1alpha.InstanceConsoleSessionRequesterAnnotation && reservedKey(key) {
+		if key != computev1alpha.InstanceConsoleSessionRequesterAnnotation &&
+			key != computev1alpha.InstanceConsoleSessionAssistantProofAnnotation && reservedKey(key) {
 			allErrs = append(allErrs, field.Forbidden(metaPath.Child("annotations").Key(key),
 				"annotations in the "+computev1alpha.AnnotationNamespace+" namespace are set by the platform"))
 		}
