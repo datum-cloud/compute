@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontroller "sigs.k8s.io/multicluster-runtime/pkg/controller"
@@ -55,8 +56,7 @@ const (
 	internalDNSVPCUID                  = "internal-dns.compute.datumapis.com/vpc-uid"
 	internalDNSManagedBy               = "internal-dns.compute.datumapis.com/managed-by"
 	internalDNSManager                 = "compute-instance-publisher"
-	internalDNSObservationInterval     = 30 * time.Second
-	internalDNSPendingWait             = 10 * time.Second
+	internalDNSResyncInterval          = 10 * time.Minute
 	internalDNSAPITimeout              = 10 * time.Second
 	defaultDNSConcurrency              = 4
 	internalDNSConditionsField         = "conditions"
@@ -177,7 +177,6 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	desired := make(map[string]struct{}, len(attachments))
 	publicationStatus := make([]computev1alpha.InstanceDNSStatus, 0, len(attachments))
 	var publicationErr error
-	pending := false
 	for _, attachment := range attachments {
 		resourceName := internalDNSResourceName(projectInstance.UID, attachment.VPCUID)
 		desired[resourceName] = struct{}{}
@@ -190,9 +189,6 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		if err != nil {
 			publicationErr = errors.Join(publicationErr, err)
 		}
-		// A location without observation will not become ready by polling
-		// sooner, so it waits for the regular observation interval.
-		pending = pending || (!ready && !errors.Is(attachment.ObservationError, errNetworkObservationUnconfigured))
 	}
 	if err := r.reportPublication(ctx, access.Writer, &projectInstance, publicationStatus); err != nil {
 		return ctrl.Result{}, err
@@ -200,10 +196,10 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	if err := r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, desired); err != nil {
 		return ctrl.Result{}, err
 	}
-	if pending {
-		return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSPendingWait)}, publicationErr
-	}
-	return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSObservationInterval)}, publicationErr
+	// Every input arrives as an event: the Instance, the DNS objects it owns,
+	// and the resolver contexts in its namespace. The resync only bounds how
+	// long a missed event can leave publication stale.
+	return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSResyncInterval)}, publicationErr
 }
 
 type instanceDNSAttachment struct {
@@ -580,11 +576,18 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("internal-dns-instance-publisher").
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Owns(newDNSObject(dnsRegistrationGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
+		Owns(newDNSObject(dnsContributionGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
+		Watches(newDNSObject(dnsResolverContextGVK, "", ""), func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
+			})
+		}, mcbuilder.WithEngageWithLocalCluster(false)).
 		WithOptions(mccontroller.Options{MaxConcurrentReconciles: concurrency}).
 		Complete(r)
 }
 
-// internalDNSPollInterval spreads observation traffic across polling cycles.
+// internalDNSPollInterval spreads resyncs so they do not arrive together.
 func internalDNSPollInterval(base time.Duration) time.Duration {
 	return base + time.Duration(rand.Int64N(int64(base/2)))
 }

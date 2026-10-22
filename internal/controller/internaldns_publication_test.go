@@ -115,7 +115,7 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 }
 
 func TestDNSPollingSpreadsReconciliation(t *testing.T) {
-	for _, base := range []time.Duration{internalDNSPendingWait, internalDNSObservationInterval} {
+	for _, base := range []time.Duration{internalDNSResyncInterval} {
 		intervals := map[time.Duration]bool{}
 		for range 100 {
 			got := internalDNSPollInterval(base)

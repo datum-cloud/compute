@@ -5,10 +5,10 @@ metadata:
 rules:
   - apiGroups: ["dns.networking.miloapis.com"]
     resources: ["dnsresolvercontexts"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["dns.networking.miloapis.com"]
     resources: ["dnsregistrations", "dnsrecordcontributions"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["dns.networking.miloapis.com"]
     resources: ["dnsrecordcontributions/status"]
     verbs: ["get", "update", "patch"]

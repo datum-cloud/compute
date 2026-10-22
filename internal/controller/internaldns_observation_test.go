@@ -9,110 +9,96 @@ import (
 	"github.com/stretchr/testify/require"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestObserveInternalDNSInterface(t *testing.T) {
 	const delegatedPrefix = "fd20:0:f::5:0:0/96"
 	const delegatedAddress = "fd20:0:f::5:0:0"
+	setCondition := func(conditions *[]metav1.Condition, conditionType string, status metav1.ConditionStatus) {
+		apimeta.SetStatusCondition(conditions, metav1.Condition{Type: conditionType, Status: status, Reason: "Test"})
+	}
 	for _, tc := range []struct {
 		name          string
-		mutate        func(*computev1alpha.Instance, *networkingv1alpha.NetworkInterface, *corev1.Pod, *corev1.Node)
+		mutate        func(*computev1alpha.Instance)
 		eligible      bool
 		wantErr       bool
-		networkUID    types.UID
 		wantAddresses []networkingv1alpha.NetworkInterfaceAddress
 	}{
-		{name: "live network with unready application", eligible: true},
-		{name: "kata runtime reports the delegated address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
-			p.Status.PodIP = delegatedAddress
-			p.Status.PodIPs = []corev1.PodIP{{IP: delegatedAddress}}
+		{name: "ready instance with a programmed interface", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: "10.20.0.10/32"}}},
+		{name: "delegated IPv6 block publishes its host address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(i *computev1alpha.Instance) {
+			i.Status.NetworkInterfaces[0].Addresses = []computev1alpha.InstanceNetworkInterfaceAddress{{Address: delegatedPrefix}}
 		}},
-		{name: "unikraft runtime reports no address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
-			p.Spec.NodeName = "kraftlet-worker"
+		{name: "duplicate allocations", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(i *computev1alpha.Instance) {
+			i.Status.NetworkInterfaces[0].Addresses = []computev1alpha.InstanceNetworkInterfaceAddress{{Address: delegatedPrefix}, {Address: delegatedAddress + "/128"}}
 		}},
-		{name: "runtime address ignored", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
-			p.Status.PodIP = "fd20:0:f::5:0:1234"
-			p.Status.PodIPs = []corev1.PodIP{{IP: "fd20:0:f::5:0:1234"}, {IP: "fd21::1234"}}
+		{name: "delegated IPv4 block", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(i *computev1alpha.Instance) {
+			i.Status.NetworkInterfaces[0].Addresses = []computev1alpha.InstanceNetworkInterfaceAddress{{Address: "10.20.0.0/24"}}
 		}},
-		{name: "duplicate allocations", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}, {Address: delegatedAddress + "/128"}}
+		{name: "runtime condition not yet reported", eligible: true, mutate: func(i *computev1alpha.Instance) {
+			apimeta.RemoveStatusCondition(&i.Status.Conditions, computev1alpha.InstanceRuntimeReady)
 		}},
-		{name: "delegated IPv4 block", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "10.20.0.0/24"}}
+		{name: "instance not ready", mutate: func(i *computev1alpha.Instance) {
+			setCondition(&i.Status.Conditions, computev1alpha.InstanceReady, metav1.ConditionFalse)
 		}},
-		{name: "interface not programmed", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
-			i.Status.Conditions[1].Status = metav1.ConditionFalse
+		{name: "instance readiness unknown", mutate: func(i *computev1alpha.Instance) {
+			setCondition(&i.Status.Conditions, computev1alpha.InstanceReady, metav1.ConditionUnknown)
 		}},
-		{name: "interface not allocated", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
-			i.Status.Conditions[0].Status = metav1.ConditionFalse
+		{name: "runtime crashing", mutate: func(i *computev1alpha.Instance) {
+			setCondition(&i.Status.Conditions, computev1alpha.InstanceRuntimeReady, metav1.ConditionFalse)
 		}},
-		{name: "replaced network lifetime", networkUID: "replacement-network", wantErr: true},
-		{name: "different instance lifetime", mutate: func(i *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.UID = "replacement"
-		}, wantErr: true},
-		{name: "stale programming generation", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Generation++
-		}, wantErr: true},
-		{name: "unknown interface programming", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Status.Conditions[1].Status = metav1.ConditionUnknown
-		}, wantErr: true},
-		{name: "different network", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Network.Name = internalDNSTestForeignValue
+		{name: "runtime not observed", mutate: func(i *computev1alpha.Instance) {
+			setCondition(&i.Status.Conditions, computev1alpha.InstanceRuntimeReady, metav1.ConditionUnknown)
 		}},
-		{name: "different claim", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Spec.ClaimRef.Name = internalDNSTestForeignValue
-		}, wantErr: true},
-		{name: "runtime exited", mutate: func(_ *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
-			p.Status.Phase = corev1.PodFailed
+		{name: "interface not programmed", mutate: func(i *computev1alpha.Instance) {
+			setCondition(&i.Status.NetworkInterfaces[0].Conditions, computev1alpha.InstanceNetworkInterfaceProgrammed, metav1.ConditionFalse)
 		}},
-		{name: "different runtime slot", mutate: func(_ *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
-			p.Labels[computev1alpha.InstanceIndexLabel] = "different-slot"
+		{name: "interface programming unknown", mutate: func(i *computev1alpha.Instance) {
+			setCondition(&i.Status.NetworkInterfaces[0].Conditions, computev1alpha.InstanceNetworkInterfaceProgrammed, metav1.ConditionUnknown)
 		}},
-		{name: "node unavailable", mutate: func(_ *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, _ *corev1.Pod, n *corev1.Node) {
-			n.Status.Conditions[0].Status = corev1.ConditionFalse
+		{name: "interface not allocated", mutate: func(i *computev1alpha.Instance) {
+			setCondition(&i.Status.NetworkInterfaces[0].Conditions, computev1alpha.InstanceNetworkInterfaceAllocated, metav1.ConditionFalse)
 		}},
-		{name: "unknown node health", mutate: func(_ *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, _ *corev1.Pod, n *corev1.Node) {
-			n.Status.Conditions[0].Status = corev1.ConditionUnknown
-		}, wantErr: true},
+		{name: "interface not bound", mutate: func(i *computev1alpha.Instance) {
+			i.Status.NetworkInterfaces[0].NetworkInterfaceRef = nil
+		}},
+		{name: "interface not reported", mutate: func(i *computev1alpha.Instance) {
+			i.Status.NetworkInterfaces = nil
+		}},
+		{name: "terminating instance", mutate: func(i *computev1alpha.Instance) {
+			now := metav1.Now()
+			i.DeletionTimestamp = &now
+		}},
+		{name: "network in another namespace", wantErr: true, mutate: func(i *computev1alpha.Instance) {
+			i.Spec.NetworkInterfaces[0].Network.Namespace = internalDNSTestForeignValue
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			scheme := runtime.NewScheme()
-			for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, computev1alpha.AddToScheme, networkingv1alpha.AddToScheme} {
-				require.NoError(t, add(scheme))
+			instance := &computev1alpha.Instance{
+				ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestObservationNamespace, UID: "project-instance", Labels: map[string]string{computev1alpha.LocationLabel: "dfw"}},
+				Spec:       computev1alpha.InstanceSpec{NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{Network: networkingv1alpha.NetworkRef{Name: internalDNSTestNetworkName}}}},
+				Status: computev1alpha.InstanceStatus{
+					Conditions: []metav1.Condition{
+						{Type: computev1alpha.InstanceReady, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceReadyReasonAvailable},
+						{Type: computev1alpha.InstanceRuntimeReady, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceRuntimeReadyReasonReady},
+					},
+					NetworkInterfaces: []computev1alpha.InstanceNetworkInterfaceStatus{{
+						Name:                defaultInterfaceName,
+						NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: "interface"},
+						Addresses:           []computev1alpha.InstanceNetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: "10.20.0.10/32", Gateway: "10.20.0.1", Primary: true}},
+						Conditions: []metav1.Condition{
+							{Type: computev1alpha.InstanceNetworkInterfaceAllocated, Status: metav1.ConditionTrue, Reason: "Allocated"},
+							{Type: computev1alpha.InstanceNetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: "Programmed"},
+						},
+					}},
+				},
 			}
-			instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestObservationNamespace, UID: "project-instance", Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID, computev1alpha.LocationLabel: "dfw"}}, Spec: computev1alpha.InstanceSpec{NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{Network: networkingv1alpha.NetworkRef{Name: internalDNSTestNetworkName}}}}}
-			edgeInstance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: "ns-project-namespace", UID: internalDNSTestEdgeUID}, Status: computev1alpha.InstanceStatus{NetworkInterfaces: []computev1alpha.InstanceNetworkInterfaceStatus{{Name: defaultInterfaceName, NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: "interface"}}}}}
-			iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Name: "interface", Namespace: edgeInstance.Namespace, UID: "interface-uid", Generation: 2}, Spec: networkingv1alpha.NetworkInterfaceSpec{Network: networkingv1alpha.LocalNetworkRef{Name: internalDNSTestNetworkName}, InterfaceName: defaultInterfaceName, ClaimRef: &networkingv1alpha.NetworkInterfaceClaimRef{Name: networkInterfaceClaimName(internalDNSTestInstanceName, defaultInterfaceName)}, Addresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: "10.20.0.10/32"}}}, Status: networkingv1alpha.NetworkInterfaceStatus{Conditions: []metav1.Condition{{Type: "Allocated", Status: metav1.ConditionTrue, ObservedGeneration: 2}, {Type: "Programmed", Status: metav1.ConditionTrue, ObservedGeneration: 2}}}}
-			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: edgeInstance.Namespace, OwnerReferences: []metav1.OwnerReference{{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: edgeInstance.Name, UID: edgeInstance.UID, Controller: ptrBool(true)}}}, Spec: corev1.PodSpec{NodeName: "worker"}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}}}
-			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker", UID: "node-uid"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
-			edgeInstance.Labels = map[string]string{computev1alpha.WorkloadDeploymentUIDLabel: "dns-deployment", computev1alpha.InstanceIndexLabel: "0"}
-			pod.Labels = map[string]string{computev1alpha.WorkloadDeploymentUIDLabel: "dns-deployment", computev1alpha.InstanceIndexLabel: "0"}
 			if tc.mutate != nil {
-				tc.mutate(edgeInstance, iface, pod, node)
+				tc.mutate(instance)
 			}
-			node.Name = pod.Spec.NodeName
-			iface.Status.NetworkContextRef = &networkingv1alpha.LocalNetworkContextRef{Name: "context"}
-			networkUID := types.UID("network-uid")
-			if tc.networkUID != "" {
-				networkUID = tc.networkUID
-			}
-			network := &networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestNetworkName, Namespace: internalDNSTestObservationNamespace, UID: networkUID}}
-			project := fake.NewClientBuilder().WithScheme(scheme).WithObjects(network, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestObservationNamespace, UID: "project-namespace"}}).Build()
-			claim := &networkingv1alpha.NetworkInterfaceClaim{ObjectMeta: metav1.ObjectMeta{Name: networkInterfaceClaimName(internalDNSTestInstanceName, defaultInterfaceName), Namespace: edgeInstance.Namespace, UID: "claim-uid"}, Spec: networkingv1alpha.NetworkInterfaceClaimSpec{Network: networkingv1alpha.LocalNetworkRef{Name: internalDNSTestNetworkName}}, Status: networkingv1alpha.NetworkInterfaceClaimStatus{NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: iface.Name}}}
-			networkContext := &networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: edgeInstance.Namespace, UID: "network-context", Labels: map[string]string{networkingv1alpha.NetworkUIDLabel: "network-uid"}}, Spec: networkingv1alpha.NetworkContextSpec{Network: networkingv1alpha.LocalNetworkRef{Name: internalDNSTestNetworkName}, Location: locationsv1alpha1.LocationReference{Name: "dfw"}}}
-			source := fake.NewClientBuilder().WithScheme(scheme).WithObjects(edgeInstance, iface, claim, networkContext, pod, node).Build()
-			got, err := ObserveInternalDNSInterface(context.Background(), project, internalDNSTestObservationNamespace, instance, instance.Spec.NetworkInterfaces[0], InternalDNSObservationSource{Reader: source})
+			got, err := ObserveInternalDNSInterface(context.Background(), nil, internalDNSTestObservationNamespace, instance, instance.Spec.NetworkInterfaces[0], InternalDNSObservationSource{Reader: fake.NewClientBuilder().Build()})
 			if tc.wantErr {
 				require.Error(t, err)
 			} else {
@@ -120,11 +106,10 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 			}
 			require.Equal(t, tc.eligible, got.Eligible)
 			if tc.eligible {
-				if tc.wantAddresses != nil {
-					require.ElementsMatch(t, tc.wantAddresses, got.Addresses)
-				} else {
-					require.Equal(t, iface.Spec.Addresses, got.Addresses)
+				if tc.wantAddresses == nil {
+					tc.wantAddresses = []networkingv1alpha.NetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: "10.20.0.10/32"}}
 				}
+				require.ElementsMatch(t, tc.wantAddresses, got.Addresses)
 			} else {
 				require.Empty(t, got.Addresses)
 			}
