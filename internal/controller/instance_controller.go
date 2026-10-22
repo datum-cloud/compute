@@ -2069,11 +2069,7 @@ func (r *InstanceReconciler) reconcileNetworkInterfaceStatus(
 			continue
 		}
 
-		status := instanceNetworkInterfaceStatus(interfaceName, &claim)
-		if err := overlayInterfaceProgrammed(ctx, clusterClient, instance.Namespace, &status); err != nil {
-			return false, err
-		}
-		interfaces = append(interfaces, status)
+		interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, &claim))
 	}
 
 	if apiequality.Semantic.DeepEqual(instance.Status.NetworkInterfaces, interfaces) {
@@ -2205,18 +2201,6 @@ func (r *InstanceReconciler) SetupWithManager(
 	if r.NetworkingEnabled {
 		b = b.Owns(&networkingv1alpha.NetworkInterfaceClaim{}, mcbuilder.WithEngageWithLocalCluster(false))
 
-		// The data plane reports withdrawing an interface on the interface, not
-		// the claim, and nothing else tells the instance.
-		b = b.Watches(
-			&networkingv1alpha.NetworkInterface{},
-			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-					return mapNetworkInterfaceToInstance(ctx, cl.GetClient(), clusterName, obj.(*networkingv1alpha.NetworkInterface))
-				})
-			},
-			mcbuilder.WithEngageWithLocalCluster(false),
-			mcbuilder.WithPredicates(networkInterfaceProgrammedChanged()),
-		)
 	}
 
 	// The direct ResourceClaim watch resolves the quota.miloapis.com CRD only on
