@@ -16,11 +16,18 @@ import (
 	"sigs.k8s.io/yaml"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/locations"
 )
+
+func TestInternalDNSProjectLookupScheme(t *testing.T) {
+	gvk, err := apiutil.GVKForObject(&resourcemanagerv1alpha1.Project{}, scheme)
+	require.NoError(t, err)
+	assert.Equal(t, resourcemanagerv1alpha1.GroupVersion.WithKind("Project"), gvk)
+}
 
 func TestInternalDNSObservationSourcesRequireExplicitCredentials(t *testing.T) {
 	_, err := internalDNSObservationSources(config.InternalDNSConfig{})

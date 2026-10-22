@@ -97,6 +97,7 @@ func init() {
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(resourcemanagerv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaworkv1alpha2.Install(scheme))
