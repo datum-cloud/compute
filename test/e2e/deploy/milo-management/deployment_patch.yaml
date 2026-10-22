@@ -1,0 +1,19 @@
+# Swap the e2e emptyDir webhook-server-tls volume (test/e2e/deploy/management
+# has no cert to serve, since webhookServer was disabled there) for our
+# generated self-signed cert Secret so the webhook server actually serves TLS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          imagePullPolicy: IfNotPresent
+      volumes:
+        - name: webhook-server-tls
+          csi: null
+          emptyDir: null
+          secret:
+            secretName: e2e-webhook-cert
