@@ -133,6 +133,12 @@ var catalog = []ReasonInfo{
 		Explanation:    "This instance is up and serving.",
 	},
 	{
+		Reason:         computev1alpha.InstanceRuntimeReadyReasonReady,
+		ConditionTypes: []string{computev1alpha.InstanceRuntimeReady},
+		Actionability:  ActionabilityTransient,
+		Explanation:    "The container this instance runs is up and ready.",
+	},
+	{
 		Reason:         computev1alpha.WorkloadDeploymentReasonStableInstanceFound,
 		ConditionTypes: []string{computev1alpha.WorkloadDeploymentAvailable},
 		Actionability:  ActionabilityTransient,
@@ -276,7 +282,7 @@ var catalog = []ReasonInfo{
 	},
 	{
 		Reason:         computev1alpha.InstanceReadyReasonInstanceCrashing,
-		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceProgrammed},
+		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceProgrammed, computev1alpha.InstanceRuntimeReady},
 		Actionability:  ActionabilityUser,
 		Explanation: "Your container starts, exits, and is restarted, over and over, so it never stays " +
 			"up long enough to serve. Datum delivered and started it correctly — it is the program " +
@@ -297,8 +303,35 @@ var catalog = []ReasonInfo{
 		Skill:       SkillInstanceNotReady,
 	},
 	{
+		Reason:         computev1alpha.InstanceRuntimeReadyReasonNotObserved,
+		ConditionTypes: []string{computev1alpha.InstanceRuntimeReady},
+		Actionability:  ActionabilityTransient,
+		Explanation: "Datum has not seen the container this instance runs yet. That is normal until " +
+			"the instance is placed and started.",
+		Remediation:      "Nothing to do here while the instance is starting.",
+		Skill:            SkillStalledTransient,
+		ExpectedDuration: windowInstanceProvisioning,
+	},
+	{
+		Reason:         computev1alpha.InstanceRuntimeReadyReasonNotReady,
+		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceRuntimeReady},
+		Actionability:  ActionabilityPlatform,
+		Explanation: "Your container is running but is not ready to serve, usually because the machine " +
+			"it runs on stopped reporting in.",
+		Remediation: "Nothing to change in the workload. If it lasts, the machine needs attention " +
+			"from Datum; the instance comes back on its own once it does.",
+	},
+	{
+		Reason:         computev1alpha.InstanceRuntimeReadyReasonExited,
+		ConditionTypes: []string{computev1alpha.InstanceReady, computev1alpha.InstanceRuntimeReady},
+		Actionability:  ActionabilityUser,
+		Explanation:    "Your container stopped and will not be restarted.",
+		Remediation: "Read the instance logs and the exit code. A program that is meant to keep " +
+			"serving should not exit on its own.",
+	},
+	{
 		Reason:           computev1alpha.InstanceReadyReasonProvisioning,
-		ConditionTypes:   []string{computev1alpha.InstanceReady},
+		ConditionTypes:   []string{computev1alpha.InstanceReady, computev1alpha.InstanceRuntimeReady},
 		Actionability:    ActionabilityTransient,
 		Explanation:      "Datum is setting up the place your container runs — creating it and unpacking your image.",
 		Remediation:      "Nothing to do here — this is normal, and a large image can take a while.",

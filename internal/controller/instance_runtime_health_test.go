@@ -51,7 +51,7 @@ func TestRuntimeReadyCondition(t *testing.T) {
 		},
 		{
 			name:    "running and ready",
-			pod:     runningPod(corev1.ContainerStatus{Name: "app", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}),
+			pod:     runningPod(corev1.ContainerStatus{Name: testContainerName, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}),
 			status:  metav1.ConditionTrue,
 			reason:  computev1alpha.InstanceRuntimeReadyReasonReady,
 			message: msgRuntimeReady,
@@ -68,7 +68,7 @@ func TestRuntimeReadyCondition(t *testing.T) {
 		{
 			name: "crash loop back-off",
 			pod: runningPod(corev1.ContainerStatus{
-				Name:                 "app",
+				Name:                 testContainerName,
 				RestartCount:         4,
 				State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
 				LastTerminationState: corev1.ContainerState{Terminated: crashed},
@@ -80,7 +80,7 @@ func TestRuntimeReadyCondition(t *testing.T) {
 		{
 			name: "container exited",
 			pod: runningPod(corev1.ContainerStatus{
-				Name:  "app",
+				Name:  testContainerName,
 				State: corev1.ContainerState{Terminated: crashed},
 			}),
 			status:  metav1.ConditionFalse,
@@ -90,7 +90,7 @@ func TestRuntimeReadyCondition(t *testing.T) {
 		{
 			name: "restarted inside the crash window",
 			pod: runningPod(corev1.ContainerStatus{
-				Name:                 "app",
+				Name:                 testContainerName,
 				RestartCount:         1,
 				State:                corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
 				LastTerminationState: corev1.ContainerState{Terminated: crashed},
@@ -103,7 +103,7 @@ func TestRuntimeReadyCondition(t *testing.T) {
 		{
 			name: "restarted outside the crash window",
 			pod: runningPod(corev1.ContainerStatus{
-				Name:         "app",
+				Name:         testContainerName,
 				RestartCount: 1,
 				State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
 				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
@@ -171,7 +171,7 @@ func TestFindRuntimePod(t *testing.T) {
 			CreationTimestamp: metav1.NewTime(created),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: computev1alpha.GroupVersion.String(),
-				Kind:       "Instance",
+				Kind:       internalDNSInstanceKind,
 				Name:       instance.Name,
 				UID:        instance.UID,
 				Controller: &controller,
