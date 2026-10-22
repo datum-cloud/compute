@@ -66,6 +66,8 @@ func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, nam
 	if err := verifyObservedNetwork(ctx, source.Reader, iface, &network, instance.Labels[computev1alpha.LocationLabel]); err != nil {
 		return result, err
 	}
+	// The runtime Pod and its node gate eligibility on health only. Addresses
+	// come from the interface allocation.
 	pod, err := observeRuntimePod(ctx, source.Reader, &current)
 	if err != nil || pod == nil {
 		return result, err
@@ -74,7 +76,7 @@ func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, nam
 	if err != nil || !healthy {
 		return result, err
 	}
-	result.Addresses = observedHostAddresses(iface.Spec.Addresses, pod)
+	result.Addresses = interfaceHostAddresses(iface.Spec.Addresses)
 	result.Eligible = true
 	return result, nil
 }
@@ -163,33 +165,30 @@ func observeRuntimePod(ctx context.Context, reader client.Reader, current *compu
 	return observed, nil
 }
 
-func observedHostAddresses(allocations []networkingv1alpha.NetworkInterfaceAddress, pod *corev1.Pod) []networkingv1alpha.NetworkInterfaceAddress {
+// interfaceHostAddresses returns the guest host address for each allocation.
+// Galactic assigns a delegated IPv6 block to the guest by the address it is
+// written with, so fd20::5:0:0/96 is configured as fd20::5:0:0. Runtimes do
+// not reliably report Pod IPs (Kraftlet never does), so the allocation is the
+// only source that covers every runtime.
+func interfaceHostAddresses(allocations []networkingv1alpha.NetworkInterfaceAddress) []networkingv1alpha.NetworkInterfaceAddress {
 	var addresses []networkingv1alpha.NetworkInterfaceAddress
-	podIPs := append([]corev1.PodIP(nil), pod.Status.PodIPs...)
-	podIPs = append(podIPs, corev1.PodIP{IP: pod.Status.PodIP})
 	seen := map[netip.Addr]bool{}
 	for _, allocation := range allocations {
-		if address, ok := hostAddress(allocation.Address); ok {
-			if !seen[address] {
-				addresses = append(addresses, allocation)
-				seen[address] = true
-			}
-			continue
-		}
-		prefix, err := netip.ParsePrefix(allocation.Address)
-		if err != nil {
-			continue
-		}
-		for _, podIP := range podIPs {
-			address, err := netip.ParseAddr(podIP.IP)
-			if err != nil || !prefix.Contains(address) || seen[address] {
+		observed := allocation
+		address, ok := hostAddress(allocation.Address)
+		if !ok {
+			prefix, err := netip.ParsePrefix(allocation.Address)
+			if err != nil || !prefix.Addr().Is6() || prefix.Addr().Is4In6() {
 				continue
 			}
-			observed := allocation
+			address = prefix.Addr()
 			observed.Address = address.String()
-			addresses = append(addresses, observed)
-			seen[address] = true
 		}
+		if seen[address] {
+			continue
+		}
+		addresses = append(addresses, observed)
+		seen[address] = true
 	}
 	return addresses
 }

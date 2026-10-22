@@ -18,8 +18,8 @@ import (
 )
 
 func TestObserveInternalDNSInterface(t *testing.T) {
-	const delegatedPrefix = "fd20::/96"
-	const runtimeAddress = "fd20::1234"
+	const delegatedPrefix = "fd20:0:f::5:0:0/96"
+	const delegatedAddress = "fd20:0:f::5:0:0"
 	for _, tc := range []struct {
 		name          string
 		mutate        func(*computev1alpha.Instance, *networkingv1alpha.NetworkInterface, *corev1.Pod, *corev1.Node)
@@ -29,17 +29,33 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 		wantAddresses []networkingv1alpha.NetworkInterfaceAddress
 	}{
 		{name: "live network with unready application", eligible: true},
-		{name: "runtime address inside delegated prefix", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: runtimeAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
+		{name: "kata runtime reports the delegated address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
 			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
-			p.Status.PodIP = runtimeAddress
-			p.Status.PodIPs = []corev1.PodIP{{IP: runtimeAddress}, {IP: "fd21::1234"}}
+			p.Status.PodIP = delegatedAddress
+			p.Status.PodIPs = []corev1.PodIP{{IP: delegatedAddress}}
 		}},
-		{name: "no runtime address in delegated prefix", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
+		{name: "unikraft runtime reports no address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
 			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
-			p.Status.PodIP = "fd21::1234"
+			p.Spec.NodeName = "kraftlet-worker"
 		}},
-		{name: "unreported runtime address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
+		{name: "runtime address ignored", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
 			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
+			p.Status.PodIP = "fd20:0:f::5:0:1234"
+			p.Status.PodIPs = []corev1.PodIP{{IP: "fd20:0:f::5:0:1234"}, {IP: "fd21::1234"}}
+		}},
+		{name: "duplicate allocations", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}, {Address: delegatedAddress + "/128"}}
+		}},
+		{name: "delegated IPv4 block", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "10.20.0.0/24"}}
+		}},
+		{name: "interface not programmed", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
+			i.Status.Conditions[1].Status = metav1.ConditionFalse
+		}},
+		{name: "interface not allocated", mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
+			i.Status.Conditions[0].Status = metav1.ConditionFalse
 		}},
 		{name: "replaced network lifetime", networkUID: "replacement-network", wantErr: true},
 		{name: "different instance lifetime", mutate: func(i *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
@@ -85,6 +101,7 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(edgeInstance, iface, pod, node)
 			}
+			node.Name = pod.Spec.NodeName
 			iface.Status.NetworkContextRef = &networkingv1alpha.LocalNetworkContextRef{Name: "context"}
 			networkUID := types.UID("network-uid")
 			if tc.networkUID != "" {
@@ -108,6 +125,8 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 				} else {
 					require.Equal(t, iface.Spec.Addresses, got.Addresses)
 				}
+			} else {
+				require.Empty(t, got.Addresses)
 			}
 		})
 	}
