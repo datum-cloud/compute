@@ -19,13 +19,26 @@ import (
 
 func TestObserveInternalDNSInterface(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		mutate     func(*computev1alpha.Instance, *networkingv1alpha.NetworkInterface, *corev1.Pod, *corev1.Node)
-		eligible   bool
-		wantErr    bool
-		networkUID types.UID
+		name          string
+		mutate        func(*computev1alpha.Instance, *networkingv1alpha.NetworkInterface, *corev1.Pod, *corev1.Node)
+		eligible      bool
+		wantErr       bool
+		networkUID    types.UID
+		wantAddresses []networkingv1alpha.NetworkInterfaceAddress
 	}{
 		{name: "live network with unready application", eligible: true},
+		{name: "runtime address inside delegated prefix", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::1234"}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::/96"}}
+			p.Status.PodIP = "fd20::1234"
+			p.Status.PodIPs = []corev1.PodIP{{IP: "fd20::1234"}, {IP: "fd21::1234"}}
+		}},
+		{name: "no runtime address in delegated prefix", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::/96"}}
+			p.Status.PodIP = "fd21::1234"
+		}},
+		{name: "unreported runtime address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::/96"}}
+		}},
 		{name: "replaced network lifetime", networkUID: "replacement-network", wantErr: true},
 		{name: "different instance lifetime", mutate: func(i *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
 			i.UID = "replacement"
@@ -88,7 +101,11 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 			}
 			require.Equal(t, tc.eligible, got.Eligible)
 			if tc.eligible {
-				require.Equal(t, iface.Spec.Addresses, got.Addresses)
+				if tc.wantAddresses != nil {
+					require.ElementsMatch(t, tc.wantAddresses, got.Addresses)
+				} else {
+					require.Equal(t, iface.Spec.Addresses, got.Addresses)
+				}
 			}
 		})
 	}

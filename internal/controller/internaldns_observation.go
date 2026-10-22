@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -65,15 +66,15 @@ func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, nam
 	if err := verifyObservedNetwork(ctx, source.Reader, iface, &network, instance.Labels[computev1alpha.LocationLabel]); err != nil {
 		return result, err
 	}
-	nodeName, err := observeRuntimeNode(ctx, source.Reader, &current)
-	if err != nil || nodeName == "" {
+	pod, err := observeRuntimePod(ctx, source.Reader, &current)
+	if err != nil || pod == nil {
 		return result, err
 	}
-	healthy, err := observeNodeHealth(ctx, source.Reader, nodeName)
+	healthy, err := observeNodeHealth(ctx, source.Reader, pod.Spec.NodeName)
 	if err != nil || !healthy {
 		return result, err
 	}
-	result.Addresses = append([]networkingv1alpha.NetworkInterfaceAddress(nil), iface.Spec.Addresses...)
+	result.Addresses = observedHostAddresses(iface.Spec.Addresses, pod)
 	result.Eligible = true
 	return result, nil
 }
@@ -136,7 +137,7 @@ func observeProgrammedInterface(ctx context.Context, reader client.Reader, curre
 	return &iface, nil
 }
 
-func observeRuntimeNode(ctx context.Context, reader client.Reader, current *computev1alpha.Instance) (string, error) {
+func observeRuntimePod(ctx context.Context, reader client.Reader, current *computev1alpha.Instance) (*corev1.Pod, error) {
 	var pods corev1.PodList
 	options := []client.ListOption{client.InNamespace(current.Namespace)}
 	deployment, index := current.Labels[computev1alpha.WorkloadDeploymentUIDLabel], current.Labels[computev1alpha.InstanceIndexLabel]
@@ -147,19 +148,50 @@ func observeRuntimeNode(ctx context.Context, reader client.Reader, current *comp
 		})
 	}
 	if err := reader.List(ctx, &pods, options...); err != nil {
-		return "", err
+		return nil, err
 	}
-	var nodeName string
+	var observed *corev1.Pod
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if metav1.IsControlledBy(pod, current) && pod.DeletionTimestamp.IsZero() && pod.Status.Phase == corev1.PodRunning && pod.Spec.NodeName != "" {
-			if nodeName != "" {
-				return "", fmt.Errorf("multiple running runtime Pods own this Instance")
+			if observed != nil {
+				return nil, fmt.Errorf("multiple running runtime Pods own this Instance")
 			}
-			nodeName = pod.Spec.NodeName
+			observed = pod
 		}
 	}
-	return nodeName, nil
+	return observed, nil
+}
+
+func observedHostAddresses(allocations []networkingv1alpha.NetworkInterfaceAddress, pod *corev1.Pod) []networkingv1alpha.NetworkInterfaceAddress {
+	var addresses []networkingv1alpha.NetworkInterfaceAddress
+	podIPs := append([]corev1.PodIP(nil), pod.Status.PodIPs...)
+	podIPs = append(podIPs, corev1.PodIP{IP: pod.Status.PodIP})
+	seen := map[netip.Addr]bool{}
+	for _, allocation := range allocations {
+		if address, ok := hostAddress(allocation.Address); ok {
+			if !seen[address] {
+				addresses = append(addresses, allocation)
+				seen[address] = true
+			}
+			continue
+		}
+		prefix, err := netip.ParsePrefix(allocation.Address)
+		if err != nil {
+			continue
+		}
+		for _, podIP := range podIPs {
+			address, err := netip.ParseAddr(podIP.IP)
+			if err != nil || !prefix.Contains(address) || seen[address] {
+				continue
+			}
+			observed := allocation
+			observed.Address = address.String()
+			addresses = append(addresses, observed)
+			seen[address] = true
+		}
+	}
+	return addresses
 }
 
 func observeNodeHealth(ctx context.Context, reader client.Reader, nodeName string) (bool, error) {
