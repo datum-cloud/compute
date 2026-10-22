@@ -1372,3 +1372,46 @@ func endProjectSession(t *testing.T, env *sessionTestEnv) *computev1alpha.Instan
 	require.NotContains(t, env.events(t), EventReasonSessionEnded)
 	return session
 }
+
+// A write to the session while its event is being recorded, such as its
+// requester deleting it, must not leave the event unmarked when the cache has
+// not caught up, or the next reconcile records it a second time.
+func TestInstanceConsoleSessionConcurrentWriteDoesNotRecordAgain(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	startedAt := metav1.NewTime(env.now)
+	session.Status.StartedAt = &startedAt
+	require.NoError(t, env.project.Status().Update(context.Background(), session))
+
+	var cached *computev1alpha.InstanceConsoleSession
+	lagging := interceptor.NewClient(env.project.(client.WithWatch), interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if err := c.Create(ctx, obj, opts...); err != nil {
+				return err
+			}
+			var current computev1alpha.InstanceConsoleSession
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(session), &current))
+			cached = current.DeepCopy()
+			metav1.SetMetaDataAnnotation(&current.ObjectMeta, "example.com/concurrent", "write")
+			return c.Update(ctx, &current)
+		},
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if s, ok := obj.(*computev1alpha.InstanceConsoleSession); ok && cached != nil {
+				cached.DeepCopyInto(s)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	require.NoError(t, env.reconciler.recordLifecycleEvents(context.Background(), lagging, session, ""))
+	require.Contains(t, env.events(t), EventReasonSessionStarted)
+
+	session, ok = env.projectSession(t)
+	require.True(t, ok)
+	require.NoError(t, env.reconciler.recordLifecycleEvents(context.Background(), env.project, session, ""))
+	env.events(t)
+	entry := sessionRecordedEvent(session, EventReasonSessionStarted)
+	require.NotNil(t, entry)
+	assert.True(t, entry.Recorded)
+}
