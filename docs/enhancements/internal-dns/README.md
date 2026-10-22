@@ -101,7 +101,10 @@ the instance identity name, which can still support diagnostics.
 - Cross-VPC publication: pin project, VPC, context, and registration lifetimes;
   scope publisher permissions through project RBAC.
 - Stale addresses: publish explicit eligibility changes and retain the last
-  reported state when observations are unavailable.
+  reported state when observations are unavailable. Retention has no maximum
+  age; see [Lifecycle and health](#lifecycle-and-health).
+- Name collisions: the oldest registration keeps a contested name and others
+  report `NameConflict`; see [Name uniqueness](#name-uniqueness).
 - Incorrect guest resolution: apply verified settings and reject
   unsupported combinations of managed contexts across interfaces.
 
@@ -140,89 +143,62 @@ for these contracts.
 
 ### Names and search domains
 
-Use `<instance-name>.datum.internal` for instance identity in every
-VPC and `datum.internal` as the default search domain. The authorized DNS context
-scopes resolution to the attached network. Resource namespaces remain API
-ownership boundaries; namespace, VPC, and project labels are unnecessary in the
-default hostname. Reserve unique names across product publishers within each
-context.
+Use `<instance-name>.datum.internal` for instance identity in every VPC and `datum.internal` as the default search domain. The authorized DNS context scopes resolution to the attached network. Namespace, VPC, and project labels are not part of the default hostname.
 
-Two VPCs can resolve `web-01.datum.internal` to different addresses.
-The authorized DNS context selects the zone before lookup and cache access;
-matching domain names do not share records or grant access across VPCs. An
-instance attached to several VPCs uses the same label in each context,
-with only that VPC's addresses in its answers.
+Compute derives the label from the Instance name: it lowercases the name, replaces every character outside `[a-z0-9-]` with `-`, and trims leading and trailing hyphens. A label longer than 63 characters is cut to 46 characters and suffixed with a hash of the full Instance name. DNS supplies the canonical name in registration status; consumers read it from `Instance.status.dns` and do not construct it.
 
-For peered networks, support optional qualified aliases such as
-`web-01.application.production.datum.internal`, using
-`<instance-name>.<network-name>.<network-namespace>.datum.internal`. Explicit DNS
-sharing makes the peer's qualified zone available in the local context. Keep
-the local `datum.internal` zone and search domain; do not import a peer's default
-zone or automatically add peer search domains. Cross-project peers require a
-unique project qualifier or an explicitly chosen unique domain. Peer naming and
-sharing authorization require review alongside the peering design.
+Two VPCs can resolve `web-01.datum.internal` to different addresses. The authorized DNS context selects the zone before lookup and cache access; matching domain names do not share records or grant access across VPCs.
 
-Network services supply the managed domain and approved additional search
-domains. Compute providers apply and report the effective ordered list.
-Associating a private zone does not automatically add it to the search list.
-Bound list size and qualify resolver search order across runtimes. The default
-domain and naming contract require joint DNS and network services API review.
+#### Name uniqueness
+
+Each VPC's managed zone is one flat namespace shared by every publisher: Compute instances, Connect exports, other products, and the customer's own static records. Instance names are unique only within a Kubernetes namespace, so Compute cannot guarantee that a label is free. Labels collide when two Instance names normalize to the same label (`web.01` and `web-01`), or when another publisher already holds the name.
+
+DNS resolves every collision with one rule, defined in the [DNS architecture](https://github.com/datum-cloud/dns-operator/pull/229) under "Publication and service discovery": static records claim first, then the oldest registration by creation time, with the UID breaking ties. Compute does not add a suffix and does not retry under another name. For the losing Instance:
+
+- Its `DNSRegistration` reports `Accepted=False` with reason `NameConflict` and publishes nothing.
+- `Instance.status.dns` for that network lists no hostname and reports `Ready=False` with reason `NameConflict`.
+- The Instance itself runs normally; only its name is missing.
+
+When the holder's registration is deleted, the next oldest waiting registration takes the name on the next compilation. A recreated Instance gets a new registration with a new creation time, so it does not reclaim its previous name ahead of a registration that was already waiting. There is no hold on a name across instance replacement.
+
+Today Compute publishes only for a Network in the Instance's own namespace; an interface on a Network in another namespace reports `Ready=Unknown` with reason `NetworkObservationUnavailable` and gets no name. Supporting cross-namespace attachments would make Instance-to-Instance collisions common and needs its own naming decision first.
+
+> [!NOTE]
+> Open question: whether a replacement Instance should keep its predecessor's name, for example through a short hold on the claim, and whether Compute should fall back to a suffixed label on `NameConflict`. Neither is designed; the current behavior is first-come by registration age.
+
+#### Instances on several VPCs
+
+Compute publishes one registration per Instance and attached VPC, each with that VPC's addresses only, so other guests on either VPC can resolve the Instance under the same label. The guest itself supports one managed DNS context in the initial release. A guest whose interfaces span two managed VPCs gets no managed resolver: the provider reports `DNSConfigured=False` with reason `UnsupportedMultipleContexts` instead of merging resolver settings, as the [VPC DNS integration](https://github.com/datum-cloud/network-services-operator/pull/589) defines. A guest with several interfaces on the same VPC receives that VPC's settings once.
+
+#### Deferred: peered networks
+
+Names for peered networks, such as qualified aliases or sharing a peer's zone, belong in the DNS and network services designs and are out of scope here. Compute publishes only into the managed zone of each VPC it attaches to.
+
+Network services supply the managed domain and approved additional search domains. Compute providers apply and report the effective ordered list. Associating a private zone does not automatically add it to the search list.
 
 ### Resolver configuration
 
-`NetworkInterface` is a public API. Its proposed read-only DNS status exposes
-resolver addresses, search domains, and configuration readiness. Customers
-select the network; they do not supply DNS authorization or renewal values.
-This selected-field example includes proposed controller-written status:
+Network services owns resolver settings and delivers them as read-only `NetworkInterface.status.dns`; the [VPC DNS integration](https://github.com/datum-cloud/network-services-operator/pull/589) defines that contract and the `DNSConfigured` condition. Customers select the network; they do not supply resolver settings or authorization.
 
-```yaml
-apiVersion: networking.datumapis.com/v1alpha
-kind: NetworkInterface
-metadata:
-  name: web-01-eth0
-  namespace: production
-spec:
-  network:
-    name: application
-  interfaceName: eth0
-status:
-  # Report effective settings without exposing internal authorization state.
-  dns:
-    # Galactic exposes this well-known address inside the authorized VPC.
-    nameservers: ["fd53::53"]
-    # Resolve short names within the attached VPC's DNS context.
-    searches:
-      - datum.internal
-  conditions:
-    # The provider reports success after applying authorized settings to the guest.
-    - type: DNSConfigured
-      status: "True"
-      reason: ResolverConfigured
-      lastTransitionTime: "2026-10-09T20:00:00Z"
-```
+Compute providers apply the settings from the current interface status through the runtime's native resolver configuration and report `DNSConfigured` on the interface:
 
-Network services deliver resolver intent through an access-restricted provider
-contract bound to the project, interface, and VPC lifetimes. Providers verify
-the current Galactic network configuration before applying resolver settings.
-Public DNS status reports observed configuration; it cannot authorize provider
-actions. DNS manages publication ordering within its own control plane.
+- `True` with reason `Applied` after the settings are in effect in the guest.
+- `False` with reason `UnsupportedMultipleContexts` when the guest's interfaces span more than one managed DNS context.
 
-Providers apply current, authorized settings and report `DNSConfigured` only
-after successful application. They reconcile explicit updates and reject stale revisions. Applied settings
-persist during control plane outages. Resolver failure must not send private names to a public
-resolver. The internal delivery schema and runtime-specific guest configuration
-mechanism require joint review with network services before implementation.
+Providers reconcile updates and ignore stale revisions. Applied settings persist during control-plane outages. A resolver failure must not send private names to a public resolver. The runtime-specific guest configuration mechanism requires joint review with network services before implementation; no Compute provider reports `DNSConfigured` yet.
 
 ### Record publication
 
-Compute creates one registration per instance and VPC, using the managed zone
-reported by the matching DNS context. The registration pins the immutable Instance lifetime; the hostname uses the
-instance name. A recreated instance can use the same hostname after the previous
-registration is withdrawn.
+Compute publishes through the DNS-owned `DNSRegistration` and `DNSRecordContribution` resources. Their schema and validation are defined by the [dns-operator API types](https://github.com/datum-cloud/dns-operator/blob/fix/internal-dns-name-references/api/v1alpha1/internaldns_project_types.go) ([dns-operator#244](https://github.com/datum-cloud/dns-operator/pull/244)); this document describes only what Compute writes.
 
-Project RBAC permits the Compute publisher to manage registrations and
-contributions. Network services manages resolver access separately. DNS
-validates current registration references and orders publication internally.
+For each Instance and attached VPC, Compute finds the ready `DNSResolverContext` whose `consumerID` is `<project UID>/<Network UID>` and creates, in the project namespace:
+
+- one `DNSRegistration` in the context's managed zone, with the label from [Names and search domains](#names-and-search-domains), record types `A` and `AAAA`, and a 30 second TTL;
+- one `DNSRecordContribution` that pins the registration's name, UID, and generation and carries the addresses and eligibility together.
+
+Both are named from a hash of the Instance UID and VPC UID and are owned by the project-side Instance, so deletion and replacement clean them up through garbage collection even without a final reconcile. Compute refuses to publish from an edge copy whose UID does not match the project Instance.
+
+Project RBAC permits the Compute publisher to manage registrations and contributions. Network services manages resolver access separately. DNS validates current registration references, resolves name conflicts, and orders publication internally.
 
 Consumers read assigned names and publication readiness from `Instance.status.dns`:
 
@@ -232,9 +208,9 @@ status:
     - network:
         name: application
         namespace: production
-      # Display names allocated by DNS within this network.
+      # Names allocated by DNS within this network.
       hostnames: [web-01.datum.internal]
-      # Report publication independently of runtime readiness.
+      # Publication is reported independently of runtime readiness.
       conditions:
         - type: Ready
           status: "True"
@@ -244,81 +220,20 @@ status:
           lastTransitionTime: "2026-10-09T20:00:00Z"
 ```
 
-These examples use the proposed DNS API. UIDs, generations, and times are
-illustrative. Controllers write the resources; `status` shows controller output.
-
-```yaml
-apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSRegistration
-metadata:
-  name: instance-web-01
-spec:
-  # Select the context's DNS-allocated managed zone by name.
-  dnsZoneRef:
-    name: managed-application
-  # Reserve the allocated instance name within this VPC's managed zone.
-  name: web-01
-  recordTypes: [A, AAAA]
-  ttlSeconds: 30
-status:
-  # DNS-owned output used to display the assigned name to consumers.
-  canonicalFQDN: web-01.datum.internal
----
-apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSRecordContribution
-metadata:
-  name: web-01-eth0
-spec:
-  # Pin the reserved name and its current generation.
-  registrationRef:
-    name: instance-web-01
-    uid: 66666666-6666-4666-8666-666666666666
-    generation: 1
-  # Publish addresses and eligibility together in one update.
-  eligible: true
-  reason: NetworkInterfaceProgrammed
-  # Include only private host addresses allocated and programmed for this VPC.
-  recordSets:
-    - recordType: A
-      records:
-        - name: web-01
-          ttl: 30
-          a:
-            content: 10.20.0.10
-    - recordType: AAAA
-      records:
-        - name: web-01
-          ttl: 30
-          aaaa:
-            content: fd20::10
-status:
-  # DNS-owned acknowledgement of the contribution generation.
-  observedGeneration: 1
-```
-
-Compute observes the authoritative project Instance and verified interface
-state. It updates records and eligibility together using conditional API writes.
-Federation and edge copies retain source lifetime identity; their locally
-assigned UIDs cannot establish publication authority. DNS owns contribution
-status. Unavailable observations retain the last reported contribution.
+The `Ready` condition reports `Published`, `PendingPublication`, `NameConflict`, `AddressUnavailable`, `PublicationFailed`, or, with status `Unknown`, `NetworkObservationUnavailable`.
 
 ### Lifecycle and health
 
-Instance identity eligibility requires a live Instance and allocated, programmed
-private host addresses. Public addresses and delegated prefixes are excluded.
-Each interface contributes only addresses from its own VPC.
+Addresses come from the Instance's `NetworkInterface` allocations, not from the runtime Pod, because not every runtime reports Pod IPs ([compute#518](https://github.com/datum-cloud/compute/pull/518)). Each allocated host address is published as-is; for a delegated IPv6 block, Compute publishes the block's first address, which Galactic configures as the guest address. Each interface contributes only addresses from its own VPC.
 
-Address release, network deprogramming, or instance deletion triggers
-an atomic ineligible update and cleanup. Project-side owner references support cleanup. Failed API observations and
-unknown runtime health retain published state and report unknown readiness.
-Confirmed unhealthy state or deletion withdraws records explicitly. DNS retains
-last reported eligibility during publisher outages; client caches follow the
-advertised TTL.
+An interface is eligible only when it is allocated and programmed for the Instance's current lifetime and location, its runtime Pod exists, and the Pod's node is healthy. The Pod and node gate eligibility; they do not supply addresses.
 
-Workload service discovery needs a separate registration and explicit application
-eligibility policy. It must withdraw unhealthy endpoints and accept recovery
-only from a fresh observation. That capability requires a separate Compute API
-proposal before implementation.
+Address release, network deprogramming, or Instance deletion triggers an ineligible update and cleanup. Failed API observations and unknown runtime health retain published state and report unknown readiness. Confirmed unhealthy state or deletion withdraws records explicitly. Client caches follow the advertised TTL.
+
+> [!IMPORTANT]
+> Accepted risk: published records have no maximum age. If Compute cannot observe an Instance, for example during a Compute or project API outage, DNS keeps serving its last reported addresses until Compute reports again or the records are withdrawn. This matches the dns-operator decision to keep applied configuration through control-plane outages rather than expire it ([dns-operator#229](https://github.com/datum-cloud/dns-operator/pull/229), "Publication and service discovery"). A stale answer is preferred over losing every name during an outage.
+
+Workload service discovery needs a separate registration and explicit application eligibility policy. It must withdraw unhealthy endpoints and accept recovery only from a fresh observation. That capability requires a separate Compute API proposal before implementation.
 
 ## Production Readiness Review Questionnaire
 
@@ -343,8 +258,6 @@ name collisions between product publishers, short-name resolution, fully
 qualified queries, and explicit additional-zone search configuration.
 Qualify guest configuration per runtime and mixed controller versions before
 enabling production. These are release criteria, not validation claims.
-Before enabling peer DNS sharing, test qualified aliases, zone collisions,
-sharing revocation, and unchanged local short-name resolution.
 
 ### Monitoring Requirements
 
