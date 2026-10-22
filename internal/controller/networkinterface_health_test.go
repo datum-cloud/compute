@@ -28,7 +28,7 @@ func healthTestClaim(programmed metav1.ConditionStatus) *networkingv1alpha.Netwo
 			Namespace: claimTestNamespace,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: computev1alpha.GroupVersion.String(),
-				Kind:       "Instance",
+				Kind:       internalDNSInstanceKind,
 				Name:       healthTestInstance,
 				UID:        types.UID(testUIDString),
 				Controller: &controller,
@@ -38,7 +38,7 @@ func healthTestClaim(programmed metav1.ConditionStatus) *networkingv1alpha.Netwo
 			NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: holderTestInterface},
 			Conditions: []metav1.Condition{
 				{Type: networkingv1alpha.NetworkInterfaceClaimAllocated, Status: metav1.ConditionTrue, Reason: "Allocated"},
-				{Type: networkingv1alpha.NetworkInterfaceClaimProgrammed, Status: programmed, Reason: "Programmed"},
+				{Type: networkingv1alpha.NetworkInterfaceClaimProgrammed, Status: programmed, Reason: wdTestReasonProgrammed},
 			},
 		},
 	}
@@ -90,12 +90,12 @@ func TestReconcileNetworkInterfaceStatus_InterfaceProgrammedWins(t *testing.T) {
 			name:       "an interface without the condition keeps the claim's copy",
 			iface:      healthTestInterface(nil),
 			wantStatus: metav1.ConditionTrue,
-			wantReason: "Programmed",
+			wantReason: wdTestReasonProgrammed,
 		},
 		{
 			name:       "a missing interface keeps the claim's copy",
 			wantStatus: metav1.ConditionTrue,
-			wantReason: "Programmed",
+			wantReason: wdTestReasonProgrammed,
 		},
 	}
 
@@ -176,7 +176,7 @@ func TestReconcileInstanceReadyCondition_UnprogrammedInterface(t *testing.T) {
 		},
 		{
 			name:       "a programmed interface keeps Ready",
-			programmed: metav1.Condition{Type: networkingv1alpha.NetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: "Programmed"},
+			programmed: metav1.Condition{Type: networkingv1alpha.NetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: wdTestReasonProgrammed},
 			status:     metav1.ConditionTrue,
 			reason:     computev1alpha.InstanceReadyReasonAvailable,
 			message:    msgInstanceReady,
@@ -206,23 +206,23 @@ func TestMapNetworkInterfaceToInstance(t *testing.T) {
 
 	cl := holderTestClient(healthTestClaim(metav1.ConditionTrue))
 
-	requests := mapNetworkInterfaceToInstance(context.Background(), cl, "single", healthTestInterface(nil))
+	requests := mapNetworkInterfaceToInstance(context.Background(), cl, smTestCluster, healthTestInterface(nil))
 	require.Len(t, requests, 1)
 	assert.Equal(t, types.NamespacedName{Namespace: claimTestNamespace, Name: healthTestInstance}, requests[0].NamespacedName)
-	assert.Equal(t, "single", string(requests[0].ClusterName))
+	assert.Equal(t, smTestCluster, string(requests[0].ClusterName))
 
 	unclaimed := newHolderTestInterface()
-	assert.Empty(t, mapNetworkInterfaceToInstance(context.Background(), cl, "single", unclaimed))
+	assert.Empty(t, mapNetworkInterfaceToInstance(context.Background(), cl, smTestCluster, unclaimed))
 
 	orphaned := healthTestInterface(nil)
 	orphaned.Spec.ClaimRef.Name = "missing"
-	assert.Empty(t, mapNetworkInterfaceToInstance(context.Background(), cl, "single", orphaned))
+	assert.Empty(t, mapNetworkInterfaceToInstance(context.Background(), cl, smTestCluster, orphaned))
 }
 
 func TestNetworkInterfaceProgrammedChanged(t *testing.T) {
 	t.Parallel()
 
-	programmed := metav1.Condition{Type: networkingv1alpha.NetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: "Programmed"}
+	programmed := metav1.Condition{Type: networkingv1alpha.NetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: wdTestReasonProgrammed}
 	holder := metav1.Condition{Type: networkInterfaceHolderAvailable, Status: metav1.ConditionTrue, Reason: "Available"}
 
 	withConditions := func(conditions ...metav1.Condition) *networkingv1alpha.NetworkInterface {

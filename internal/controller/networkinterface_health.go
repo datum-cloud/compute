@@ -97,7 +97,7 @@ func mapNetworkInterfaceToInstance(
 	}
 
 	owner := metav1.GetControllerOf(&claim)
-	if owner == nil || owner.Kind != "Instance" || owner.APIVersion != computev1alpha.GroupVersion.String() {
+	if owner == nil || owner.Kind != internalDNSInstanceKind || owner.APIVersion != computev1alpha.GroupVersion.String() {
 		return nil
 	}
 	return []mcreconcile.Request{{
