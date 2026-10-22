@@ -90,7 +90,7 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 						Addresses:           []computev1alpha.InstanceNetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: "10.20.0.10/32", Gateway: "10.20.0.1", Primary: true}},
 						Conditions: []metav1.Condition{
 							{Type: computev1alpha.InstanceNetworkInterfaceAllocated, Status: metav1.ConditionTrue, Reason: "Allocated"},
-							{Type: computev1alpha.InstanceNetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: "Programmed"},
+							{Type: computev1alpha.InstanceNetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: wdTestReasonProgrammed},
 						},
 					}},
 				},
