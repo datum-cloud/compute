@@ -18,6 +18,8 @@ import (
 )
 
 func TestObserveInternalDNSInterface(t *testing.T) {
+	const delegatedPrefix = "fd20::/96"
+	const runtimeAddress = "fd20::1234"
 	for _, tc := range []struct {
 		name          string
 		mutate        func(*computev1alpha.Instance, *networkingv1alpha.NetworkInterface, *corev1.Pod, *corev1.Node)
@@ -27,17 +29,17 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 		wantAddresses []networkingv1alpha.NetworkInterfaceAddress
 	}{
 		{name: "live network with unready application", eligible: true},
-		{name: "runtime address inside delegated prefix", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::1234"}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::/96"}}
-			p.Status.PodIP = "fd20::1234"
-			p.Status.PodIPs = []corev1.PodIP{{IP: "fd20::1234"}, {IP: "fd21::1234"}}
+		{name: "runtime address inside delegated prefix", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: runtimeAddress}}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
+			p.Status.PodIP = runtimeAddress
+			p.Status.PodIPs = []corev1.PodIP{{IP: runtimeAddress}, {IP: "fd21::1234"}}
 		}},
 		{name: "no runtime address in delegated prefix", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, p *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::/96"}}
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
 			p.Status.PodIP = "fd21::1234"
 		}},
 		{name: "unreported runtime address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{}, mutate: func(_ *computev1alpha.Instance, i *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
-			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: "fd20::/96"}}
+			i.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedPrefix}}
 		}},
 		{name: "replaced network lifetime", networkUID: "replacement-network", wantErr: true},
 		{name: "different instance lifetime", mutate: func(i *computev1alpha.Instance, _ *networkingv1alpha.NetworkInterface, _ *corev1.Pod, _ *corev1.Node) {
