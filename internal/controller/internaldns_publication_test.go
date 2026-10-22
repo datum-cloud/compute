@@ -46,7 +46,7 @@ func TestUnconfiguredObservationIsNotAPublicationFailure(t *testing.T) {
 	published.Object[internalDNSSpecField] = map[string]any{internalDNSEligibleField: true}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).Build()
 	r := &InternalDNSPublisherReconciler{}
-	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: internalDNSTestInstanceUID}}
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, UID: internalDNSTestInstanceUID}}
 	attachment := instanceDNSAttachment{ObservationError: fmt.Errorf("%w for location %q", errNetworkObservationUnconfigured, "us-east-1")}
 	ready, err := r.reconcileAttachment(context.Background(), InternalDNSProjectAccess{Reader: cl, Writer: cl}, InternalDNSProjectIdentity{}, internalDNSTestNamespace, instance, metav1.OwnerReference{}, attachment, "record")
 	require.NoError(t, err)
