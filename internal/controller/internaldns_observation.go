@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 
@@ -23,6 +24,10 @@ type InternalDNSObservedInterface struct {
 
 type InternalDNSObserveFunc func(context.Context, client.Reader, string, *computev1alpha.Instance, computev1alpha.InstanceNetworkInterface) (InternalDNSObservedInterface, error)
 
+// errNetworkObservationUnconfigured marks a location that internal DNS does
+// not serve. It is reported in status rather than retried as a failure.
+var errNetworkObservationUnconfigured = errors.New("no authenticated network observation source is configured")
+
 // InternalDNSObservationSource supplies an authenticated edge API reader.
 type InternalDNSObservationSource struct {
 	Reader client.Reader
@@ -35,7 +40,7 @@ func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, nam
 		return result, fmt.Errorf("interface observations require a network in the Instance namespace")
 	}
 	if source.Reader == nil {
-		return result, fmt.Errorf("no authenticated network observation source is configured for location %q", instance.Labels[computev1alpha.LocationLabel])
+		return result, fmt.Errorf("%w for location %q", errNetworkObservationUnconfigured, instance.Labels[computev1alpha.LocationLabel])
 	}
 	var projectNS corev1.Namespace
 	if err := project.Get(ctx, client.ObjectKey{Name: namespace}, &projectNS); err != nil {

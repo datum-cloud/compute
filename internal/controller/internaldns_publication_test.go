@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -32,6 +33,24 @@ func TestUnavailableObservationLeavesPublishedStateUntouched(t *testing.T) {
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: internalDNSTestInstanceUID}}
 	_, err := r.reconcileAttachment(context.Background(), InternalDNSProjectAccess{Reader: cl, Writer: cl}, InternalDNSProjectIdentity{}, internalDNSTestNamespace, instance, metav1.OwnerReference{}, instanceDNSAttachment{ObservationError: context.DeadlineExceeded}, "record")
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+	current := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(published), current))
+	require.Equal(t, published.Object, current.Object)
+}
+
+func TestUnconfiguredObservationIsNotAPublicationFailure(t *testing.T) {
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
+	published := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
+	published.SetUID("contribution")
+	published.Object[internalDNSSpecField] = map[string]any{internalDNSEligibleField: true}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).Build()
+	r := &InternalDNSPublisherReconciler{}
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: internalDNSTestInstanceUID}}
+	attachment := instanceDNSAttachment{ObservationError: fmt.Errorf("%w for location %q", errNetworkObservationUnconfigured, "us-east-1")}
+	ready, err := r.reconcileAttachment(context.Background(), InternalDNSProjectAccess{Reader: cl, Writer: cl}, InternalDNSProjectIdentity{}, internalDNSTestNamespace, instance, metav1.OwnerReference{}, attachment, "record")
+	require.NoError(t, err)
+	require.False(t, ready)
 	current := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(published), current))
 	require.Equal(t, published.Object, current.Object)

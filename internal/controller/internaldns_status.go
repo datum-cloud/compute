@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -61,7 +62,9 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
 		}
 	}
-	if attachment.ObservationError != nil {
+	if errors.Is(attachment.ObservationError, errNetworkObservationUnconfigured) {
+		condition.Reason, condition.Message = "NetworkObservationUnconfigured", "Private DNS is not available in this location"
+	} else if attachment.ObservationError != nil {
 		condition.Status = metav1.ConditionUnknown
 		condition.Reason, condition.Message = "NetworkObservationUnavailable", "No current network observation is available"
 	} else if !attachment.Eligible {

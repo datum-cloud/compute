@@ -134,5 +134,5 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 
 func TestObserveInternalDNSInterfaceRejectsMissingSource(t *testing.T) {
 	_, err := ObserveInternalDNSInterface(context.Background(), nil, internalDNSTestObservationNamespace, &computev1alpha.Instance{}, computev1alpha.InstanceNetworkInterface{}, InternalDNSObservationSource{})
-	require.Error(t, err)
+	require.ErrorIs(t, err, errNetworkObservationUnconfigured)
 }
