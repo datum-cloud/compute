@@ -37,7 +37,7 @@ func healthTestClaim(programmed metav1.ConditionStatus) *networkingv1alpha.Netwo
 		Status: networkingv1alpha.NetworkInterfaceClaimStatus{
 			NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: holderTestInterface},
 			Conditions: []metav1.Condition{
-				{Type: networkingv1alpha.NetworkInterfaceClaimAllocated, Status: metav1.ConditionTrue, Reason: "Allocated"},
+				{Type: networkingv1alpha.NetworkInterfaceClaimAllocated, Status: metav1.ConditionTrue, Reason: networkingv1alpha.NetworkInterfaceClaimAllocated},
 				{Type: networkingv1alpha.NetworkInterfaceClaimProgrammed, Status: programmed, Reason: wdTestReasonProgrammed},
 			},
 		},
