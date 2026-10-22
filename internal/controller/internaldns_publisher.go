@@ -190,7 +190,9 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		if err != nil {
 			publicationErr = errors.Join(publicationErr, err)
 		}
-		pending = pending || !ready
+		// A location without observation will not become ready by polling
+		// sooner, so it waits for the regular observation interval.
+		pending = pending || (!ready && !errors.Is(attachment.ObservationError, errNetworkObservationUnconfigured))
 	}
 	if err := r.reportPublication(ctx, access.Writer, &projectInstance, publicationStatus); err != nil {
 		return ctrl.Result{}, err
@@ -292,6 +294,9 @@ func hostAddress(raw string) (netip.Addr, bool) {
 }
 
 func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context, access InternalDNSProjectAccess, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, owner metav1.OwnerReference, attachment instanceDNSAttachment, resourceName string) (bool, error) {
+	if errors.Is(attachment.ObservationError, errNetworkObservationUnconfigured) {
+		return false, nil
+	}
 	if attachment.ObservationError != nil {
 		return false, attachment.ObservationError
 	}

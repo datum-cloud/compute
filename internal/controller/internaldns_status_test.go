@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -81,6 +82,19 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPublicationStatusReportsUnconfiguredLocation(t *testing.T) {
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(dnsRegistrationGVK, &unstructured.Unstructured{})
+	cl := fake.NewClientBuilder().WithScheme(s).Build()
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, UID: internalDNSTestInstanceUID, Generation: 1}}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, ObservationError: fmt.Errorf("%w for location %q", errNetworkObservationUnconfigured, "us-east-1")}
+	got, err := (&InternalDNSPublisherReconciler{}).publicationStatus(context.Background(), cl, InternalDNSProjectIdentity{ProjectUID: internalDNSTestProjectUID}, internalDNSTestNamespace, instance, attachment, internalDNSTestInstanceName, false, nil)
+	require.NoError(t, err)
+	require.Len(t, got.Conditions, 1)
+	require.Equal(t, metav1.ConditionFalse, got.Conditions[0].Status)
+	require.Equal(t, "NetworkObservationUnconfigured", got.Conditions[0].Reason)
 }
 
 func TestReportPublicationPreservesRuntimeStatus(t *testing.T) {
