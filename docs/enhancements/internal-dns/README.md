@@ -170,9 +170,9 @@ Today Compute publishes only for a Network in the Instance's own namespace; an i
 
 Compute publishes one registration per Instance and attached VPC, each with that VPC's addresses only, so other guests on either VPC can resolve the Instance under the same label. The guest itself supports one managed DNS context in the initial release. A guest whose interfaces span two managed VPCs gets no managed resolver: the provider reports `DNSConfigured=False` with reason `UnsupportedMultipleContexts` instead of merging resolver settings, as the [VPC DNS integration](https://github.com/datum-cloud/network-services-operator/pull/589) defines. A guest with several interfaces on the same VPC receives that VPC's settings once.
 
-#### Deferred: peered networks
+#### Future work: peered networks
 
-Names for peered networks, such as qualified aliases or sharing a peer's zone, belong in the DNS and network services designs and are out of scope here. Compute publishes only into the managed zone of each VPC it attaches to.
+Peered (cross-VPC) names are not part of this design. Network peering does not automatically share zones or extend DNS access, matching the [DNS architecture](https://github.com/datum-cloud/dns-operator/pull/229). Qualified aliases or sharing a peer's zone would belong in the DNS and network services designs. Compute publishes only into the managed zone of each VPC it attaches to.
 
 Network services supply the managed domain and approved additional search domains. Compute providers apply and report the effective ordered list. Associating a private zone does not automatically add it to the search list.
 
