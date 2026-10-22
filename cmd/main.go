@@ -448,8 +448,9 @@ func main() {
 		}
 
 		instanceReconciler := &controller.InstanceReconciler{
-			FederationClient:  federationClient,
-			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+			InternalDNSEnabled: features.FeatureGate.Enabled(features.InternalDNSPublishing),
+			FederationClient:   federationClient,
+			NetworkingEnabled:  features.FeatureGate.Enabled(features.NetworkingIntegration),
 		}
 		err = instanceReconciler.SetupWithManager(
 			mgr,
@@ -468,8 +469,8 @@ func main() {
 
 	// DNS publication is its own asynchronous management-plane controller. It is
 	// not registered at all while its default-off feature gate is disabled.
-	if features.FeatureGate.Enabled(features.InternalDNSPublishing) {
-		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo || !enableManagementControllers {
+	if features.FeatureGate.Enabled(features.InternalDNSPublishing) && enableManagementControllers {
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo {
 			setupLog.Error(nil,
 				"InternalDNSPublishing requires Milo discovery mode and management controllers")
 			os.Exit(1)
@@ -970,8 +971,9 @@ func setupManagementControllers(
 	// back by POP-cell operators to the Karmada federation control plane, and
 	// projects them into the corresponding project namespaces via the multicluster manager.
 	if err = (&controller.InstanceProjector{
-		FederationClient: federationClient,
-		MCManager:        mgr,
+		InternalDNSEnabled: features.FeatureGate.Enabled(features.InternalDNSPublishing),
+		FederationClient:   federationClient,
+		MCManager:          mgr,
 	}).SetupWithManager(mgr.GetLocalManager(), federationCluster); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
 	}

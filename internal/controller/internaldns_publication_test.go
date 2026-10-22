@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -92,4 +93,17 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	record := recordSets[0].(map[string]any)[internalDNSRecordsField].([]any)[0].(map[string]any)
 	require.Equal(t, "10.0.0.9", record["a"].(map[string]any)[internalDNSContentField])
 	require.Equal(t, publishedStatus, contribution.Object[internalDNSStatusField])
+}
+
+func TestDNSPollingSpreadsReconciliation(t *testing.T) {
+	for _, base := range []time.Duration{internalDNSPendingWait, internalDNSObservationInterval} {
+		intervals := map[time.Duration]bool{}
+		for range 100 {
+			got := internalDNSPollInterval(base)
+			require.GreaterOrEqual(t, got, base)
+			require.Less(t, got, base+base/2)
+			intervals[got] = true
+		}
+		require.Greater(t, len(intervals), 1)
+	}
 }

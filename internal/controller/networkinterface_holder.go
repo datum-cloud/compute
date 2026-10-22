@@ -144,7 +144,13 @@ func (r *InstanceReconciler) reconcileHolderAvailability(
 			continue
 		}
 
-		if err := clusterClient.Status().Patch(ctx, &networkInterface, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		var err error
+		if r.InternalDNSEnabled {
+			err = clusterClient.Status().Patch(ctx, &networkInterface, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		} else {
+			err = clusterClient.Status().Update(ctx, &networkInterface)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("update network interface %s status: %w", key, err))
 		}
 	}

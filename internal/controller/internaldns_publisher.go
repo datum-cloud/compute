@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
 	"reflect"
 	"sort"
@@ -197,9 +198,9 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		return ctrl.Result{}, err
 	}
 	if pending {
-		return ctrl.Result{RequeueAfter: internalDNSPendingWait}, publicationErr
+		return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSPendingWait)}, publicationErr
 	}
-	return ctrl.Result{RequeueAfter: internalDNSObservationInterval}, publicationErr
+	return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSObservationInterval)}, publicationErr
 }
 
 type instanceDNSAttachment struct {
@@ -575,4 +576,9 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		WithOptions(mccontroller.Options{MaxConcurrentReconciles: concurrency}).
 		Complete(r)
+}
+
+// internalDNSPollInterval spreads observation traffic across polling cycles.
+func internalDNSPollInterval(base time.Duration) time.Duration {
+	return base + time.Duration(rand.Int64N(int64(base/2)))
 }

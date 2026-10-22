@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -52,6 +51,9 @@ type InstanceProjector struct {
 
 	// MCManager provides access to project cluster clients via GetCluster.
 	MCManager mcmanager.Manager
+
+	// InternalDNSEnabled isolates publication lifetime handling.
+	InternalDNSEnabled bool
 }
 
 const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
@@ -179,16 +181,10 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		},
 	}
 
-	if err := projectCluster.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(projection), projection); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-	oldSource := projection.Labels[computev1alpha.InstanceSourceUIDLabel]
-	newSource := downstreamInstance.Labels[computev1alpha.InstanceSourceUIDLabel]
-	if oldSource != "" && newSource != "" && oldSource != newSource {
-		if err := projectClient.Delete(ctx, projection, client.Preconditions{UID: &projection.UID, ResourceVersion: &projection.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+	if r.InternalDNSEnabled {
+		if err := reconcileDNSProjectionLifetime(ctx, projectCluster.GetAPIReader(), projectClient, projection, &downstreamInstance); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
 
 	operationResult, err := controllerutil.CreateOrUpdate(ctx, projectClient, projection, func() error {
@@ -217,7 +213,9 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	dnsStatus := projection.Status.DNS
 	projection.Status = downstreamInstance.Status
 	// Private name publication belongs to the project-side DNS publisher.
-	projection.Status.DNS = dnsStatus
+	if r.InternalDNSEnabled {
+		projection.Status.DNS = dnsStatus
+	}
 	if err := projectClient.Status().Update(ctx, projection); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("failed updating Instance projection status: %w", err)
 	}
@@ -275,4 +273,22 @@ func (r *InstanceProjector) SetupWithManager(mgr manager.Manager, federationClus
 			&handler.TypedEnqueueRequestForObject[*computev1alpha.Instance]{},
 		)).
 		Complete(r)
+}
+
+// reconcileDNSProjectionLifetime waits for the previous publication owner to be removed.
+func reconcileDNSProjectionLifetime(ctx context.Context, reader client.Reader, writer client.Client, projection, source *computev1alpha.Instance) error {
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(projection), projection); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	oldSource, newSource := projection.Labels[computev1alpha.InstanceSourceUIDLabel], source.Labels[computev1alpha.InstanceSourceUIDLabel]
+	if oldSource == "" || newSource == "" || oldSource == newSource {
+		return nil
+	}
+	if projection.DeletionTimestamp.IsZero() {
+		if err := writer.Delete(ctx, projection, client.Preconditions{UID: &projection.UID, ResourceVersion: &projection.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	// Returning an error uses the controller's exponential retry backoff.
+	return fmt.Errorf("waiting for DNS projection lifetime replacement")
 }

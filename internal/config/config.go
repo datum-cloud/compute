@@ -50,7 +50,7 @@ type WorkloadOperator struct {
 	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
 
 	// LocationSource selects the locations.miloapis.com service.
-	// Defaults to "Locations".
+	// Defaults to "Locations". "NetworkServices" is not supported.
 	LocationSource locations.Source `json:"locationSource,omitempty"`
 }
 

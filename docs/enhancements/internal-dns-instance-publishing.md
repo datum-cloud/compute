@@ -57,3 +57,51 @@ supported edge namespaces. These credentials cannot publish DNS records.
 Workload providers apply the network's resolver address and allocated search
 domain to guests. Resolver delivery belongs to network services. The publisher
 contract does not expose access deadlines on public NetworkInterfaces.
+
+## Enablement requirements
+
+Enable `InternalDNSPublishing` on both the management controller and the cells
+that report instance identity. Only the management controller publishes DNS.
+With the gate disabled, instance projections retain their identity and network
+interface conditions use the standard status update path.
+
+Before enabling the gate, grant the management controller's authenticated identity
+these permissions in **each project control plane**, including newly created
+projects:
+
+- `get,list` on `dnsresolvercontexts`.
+- `get,list,create,update,patch,delete` on `dnsregistrations` and
+  `dnsrecordcontributions`.
+- `get,update,patch` on `dnsrecordcontributions/status`.
+- `get,patch` on `instances/status`.
+
+The DNS resources use the `dns.networking.miloapis.com` API group. Instances use
+`compute.datumapis.com`. `config/components/internal-dns-rbac` supplies the role
+for installations where the controller and project API share a cluster. Applying
+it to the management cluster does not grant access to Milo project APIs. The
+platform's project provisioning configuration must install the corresponding
+grant for the controller identity. This repository does not install that Milo
+configuration. Verify permissions against each project endpoint with the same
+credentials the management controller uses, for example:
+
+```sh
+kubectl --kubeconfig="$COMPUTE_PROJECT_KUBECONFIG" auth can-i create dnsregistrations.dns.networking.miloapis.com
+kubectl --kubeconfig="$COMPUTE_PROJECT_KUBECONFIG" auth can-i patch dnsrecordcontributions.dns.networking.miloapis.com
+kubectl --kubeconfig="$COMPUTE_PROJECT_KUBECONFIG" auth can-i patch instances.compute.datumapis.com --subresource=status
+```
+
+Repeat this check for the complete permission list. Keep the feature disabled
+until the grants and automatic provisioning for new projects are in place.
+
+DNS owns name allocation. If normalization produces the same name for two
+instances, such as `a.b` and `a-b`, DNS keeps the first claim and rejects the
+later registration with `NameConflict`. Compute does not assign another name or
+report a rejected registration as published.
+
+Healthy instances poll every 30–45 seconds; pending instances poll every 10–15
+seconds. Each poll uses independent jitter. Each interface observation uses six edge
+reads plus project reads: 1,000 healthy single-interface instances generate about
+160 edge reads per second, excluding retries and project API operations. The
+publisher limits concurrent reconciliations to four and each reconciliation to
+ten seconds. Size the observation API for this load before increasing deployment
+scale; jitter spreads traffic but does not reduce the number of reads.

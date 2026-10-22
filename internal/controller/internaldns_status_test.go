@@ -32,7 +32,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 		{name: "different zone", foreignZone: true, current: true, observed: true},
 		{name: "stale generation", observed: true},
 		{name: "rejected contribution", current: true},
-		{name: "rejected registration", current: true, observed: true, rejectedRegistration: true},
+		{name: "name conflict", current: true, observed: true, rejectedRegistration: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.domain == "" {
@@ -58,7 +58,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			if tc.rejectedRegistration {
 				accepted = metav1.ConditionFalse
 			}
-			registrationConditions := append(append([]any(nil), conditions...), map[string]any{internalDNSConditionTypeField: internalDNSConditionAccepted, internalDNSStatusField: string(accepted), internalDNSObservedGenerationField: observed})
+			registrationConditions := append(append([]any(nil), conditions...), map[string]any{internalDNSConditionTypeField: internalDNSConditionAccepted, internalDNSStatusField: string(accepted), internalDNSObservedGenerationField: observed, internalDNSReasonField: "NameConflict"})
 			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": allocatedInstanceDNSName(instance) + "." + tc.domain + ".", internalDNSConditionsField: registrationConditions}
 			zoneName := "zone"
 			if tc.foreignZone {
@@ -76,6 +76,9 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 				require.Equal(t, []string{allocatedInstanceDNSName(instance) + "." + tc.domain}, got.Hostnames)
 			}
 			require.Equal(t, tc.wantReady, got.Conditions[0].Status == metav1.ConditionTrue)
+			if tc.rejectedRegistration {
+				require.Equal(t, "NameConflict", got.Conditions[0].Reason)
+			}
 		})
 	}
 }

@@ -187,7 +187,7 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 		},
 	}).Build()
 
-	r := &InstanceReconciler{NetworkingEnabled: true}
+	r := &InstanceReconciler{NetworkingEnabled: true, InternalDNSEnabled: true}
 	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, instance))
 
 	condition := getHolderCondition(t, cl)
@@ -488,4 +488,24 @@ type holderFailingStatusWriter struct {
 
 func (w *holderFailingStatusWriter) Update(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
 	return errors.New("status update refused")
+}
+
+func TestHolderAvailabilityDNSDisabledUsesStatusUpdate(t *testing.T) {
+	instance := newHolderTestInstance(&metav1.Condition{Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceAvailableReasonAvailable})
+	iface := newHolderTestInterface()
+	updates, patches := 0, 0
+	cl := fake.NewClientBuilder().WithScheme(newClaimTestScheme()).WithObjects(instance, iface).WithStatusSubresource(iface, instance).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, subresource string, object client.Object, opts ...client.SubResourceUpdateOption) error {
+			updates++
+			return cl.SubResource(subresource).Update(ctx, object, opts...)
+		},
+		SubResourcePatch: func(context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
+			patches++
+			return errors.New("unexpected patch")
+		},
+	}).Build()
+	r := &InstanceReconciler{NetworkingEnabled: true}
+	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, instance))
+	require.Equal(t, 1, updates)
+	require.Zero(t, patches)
 }
