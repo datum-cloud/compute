@@ -71,6 +71,13 @@ func TestDNSPublisherRetrySemantics(t *testing.T) {
 			require.Len(t, current.Status.DNS, 1)
 			require.Equal(t, metav1.ConditionUnknown, current.Status.DNS[0].Conditions[0].Status)
 			require.Empty(t, current.Status.Conditions, "DNS observation must not change compute readiness")
+			if unavailable {
+				version := current.ResourceVersion
+				_, err = r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: multicluster.ClusterName(internalDNSTestProjectUID), Request: ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}})
+				require.NoError(t, err)
+				require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), current))
+				require.Equal(t, version, current.ResourceVersion, "pending observations must not repeatedly write identical status")
+			}
 			retained := newDNSObject(dnsContributionGVK, contribution.GetNamespace(), contribution.GetName())
 			require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), retained))
 			require.Equal(t, contribution.Object[internalDNSSpecField], retained.Object[internalDNSSpecField], "unknown observation must preserve published records")
