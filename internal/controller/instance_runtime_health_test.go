@@ -116,6 +116,46 @@ func TestRuntimeReadyCondition(t *testing.T) {
 			message: msgRuntimeReady,
 		},
 		{
+			name: "restarted inside the crash window without a last state",
+			pod: runningPod(corev1.ContainerStatus{
+				Name:         testContainerName,
+				RestartCount: 3,
+				State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-30 * time.Second))}},
+			}),
+			status:       metav1.ConditionFalse,
+			reason:       computev1alpha.InstanceReadyReasonInstanceCrashing,
+			message:      `Container "app" keeps exiting and has restarted 3 times`,
+			recheckAfter: runtimeCrashWindow - 30*time.Second,
+		},
+		{
+			name: "finished container under a non-restarting policy",
+			pod: func() *corev1.Pod {
+				pod := runningPod(corev1.ContainerStatus{
+					Name:  testContainerName,
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+				})
+				pod.Spec.RestartPolicy = corev1.RestartPolicyOnFailure
+				return pod
+			}(),
+			status:  metav1.ConditionTrue,
+			reason:  computev1alpha.InstanceRuntimeReadyReasonReady,
+			message: msgRuntimeReady,
+		},
+		{
+			name: "exit 0 under an always-restart policy",
+			pod: func() *corev1.Pod {
+				pod := runningPod(corev1.ContainerStatus{
+					Name:  testContainerName,
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+				})
+				pod.Spec.RestartPolicy = corev1.RestartPolicyAlways
+				return pod
+			}(),
+			status:  metav1.ConditionFalse,
+			reason:  computev1alpha.InstanceReadyReasonInstanceCrashing,
+			message: `Container "app" exited with code 0 and has restarted 0 times`,
+		},
+		{
 			name: "pod not ready",
 			pod: &corev1.Pod{Status: corev1.PodStatus{
 				Phase: corev1.PodRunning,

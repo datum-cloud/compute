@@ -147,10 +147,14 @@ func (c *statefulControl) GetActions(
 			waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 
 		} else if instance.DeletionTimestamp.IsZero() {
-			// Wait for the instance to be ready before continuing processing
-			if !apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady) {
-				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
-			} else if needsUpdate(instance, instanceTemplateHash) {
+			// An outdated instance that has started is replaced whether or not it
+			// is Ready: waiting on one that crashes on the old template would hold
+			// back the template that fixes it. An instance still behind scheduling
+			// gates has not started, so it is waited on as before. Otherwise wait
+			// for the instance to be ready before continuing processing.
+			ready := apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady)
+			started := instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) == 0
+			if needsUpdate(instance, instanceTemplateHash) && (ready || started) {
 				// The instance's template hash no longer matches the desired
 				// template — e.g. an image change, or a restart requested via the
 				// RestartedAtAnnotation, which is part of the template hash. The
@@ -164,6 +168,8 @@ func (c *statefulControl) GetActions(
 				// pacing is preserved by the descending-ordinal sort, the
 				// skip-all-but-first logic, and the DeletionTimestamp WaitAction.
 				recreateActions = append(recreateActions, instancecontrol.NewDeleteAction(instance))
+			} else if !ready {
+				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 			}
 		}
 	}

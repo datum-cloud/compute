@@ -105,7 +105,7 @@ func runtimeReadyCondition(pod *corev1.Pod, now time.Time) (metav1.Condition, ti
 		return condition, 0
 	}
 
-	if message, recheckAfter, crashing := runtimeCrash(pod.Status.ContainerStatuses, now); crashing {
+	if message, recheckAfter, crashing := runtimeCrash(pod, now); crashing {
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = computev1alpha.InstanceReadyReasonInstanceCrashing
 		condition.Message = message
@@ -142,18 +142,29 @@ func runtimeReadyCondition(pod *corev1.Pod, now time.Time) (metav1.Condition, ti
 }
 
 // runtimeCrash reports whether any container is crashing: waiting to be
-// restarted, stopped, or running again for less than runtimeCrashWindow after
-// exiting. For a container inside the window it also returns the time left.
-func runtimeCrash(statuses []corev1.ContainerStatus, now time.Time) (string, time.Duration, bool) {
-	for _, status := range statuses {
+// restarted, stopped, or running again for less than runtimeCrashWindow after a
+// restart. For a container inside the window it also returns the time left.
+//
+// A container that exits 0 under a restart policy other than Always has
+// finished, not crashed. The window starts at the later of the last exit and
+// the current start, because some runtimes report only one of the two.
+func runtimeCrash(pod *corev1.Pod, now time.Time) (string, time.Duration, bool) {
+	for _, status := range pod.Status.ContainerStatuses {
 		last := status.LastTerminationState.Terminated
 		switch {
 		case status.State.Waiting != nil && status.State.Waiting.Reason == "CrashLoopBackOff":
 			return crashMessage(status.Name, last, status.RestartCount), 0, true
 		case status.State.Terminated != nil:
+			if status.State.Terminated.ExitCode == 0 && pod.Spec.RestartPolicy != "" && pod.Spec.RestartPolicy != corev1.RestartPolicyAlways {
+				continue
+			}
 			return crashMessage(status.Name, status.State.Terminated, status.RestartCount), 0, true
-		case status.State.Running != nil && last != nil:
-			if remaining := last.FinishedAt.Add(runtimeCrashWindow).Sub(now); remaining > 0 {
+		case status.State.Running != nil && status.RestartCount > 0:
+			restarted := status.State.Running.StartedAt.Time
+			if last != nil && last.FinishedAt.After(restarted) {
+				restarted = last.FinishedAt.Time
+			}
+			if remaining := restarted.Add(runtimeCrashWindow).Sub(now); remaining > 0 {
 				return crashMessage(status.Name, last, status.RestartCount), remaining, true
 			}
 		}
