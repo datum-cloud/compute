@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 
@@ -28,6 +29,8 @@ type InternalDNSObservationSource struct {
 	Reader client.Reader
 }
 
+var errDNSObservationSourceNotConfigured = errors.New("no authenticated network observation source is configured")
+
 // ObserveInternalDNSInterface checks interface programming and runtime health.
 func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, namespace string, instance *computev1alpha.Instance, nic computev1alpha.InstanceNetworkInterface, source InternalDNSObservationSource) (InternalDNSObservedInterface, error) {
 	var result InternalDNSObservedInterface
@@ -35,7 +38,7 @@ func ObserveInternalDNSInterface(ctx context.Context, project client.Reader, nam
 		return result, fmt.Errorf("interface observations require a network in the Instance namespace")
 	}
 	if source.Reader == nil {
-		return result, fmt.Errorf("no authenticated network observation source is configured for location %q", instance.Labels[computev1alpha.LocationLabel])
+		return result, fmt.Errorf("%w for location %q", errDNSObservationSourceNotConfigured, instance.Labels[computev1alpha.LocationLabel])
 	}
 	var projectNS corev1.Namespace
 	if err := project.Get(ctx, client.ObjectKey{Name: namespace}, &projectNS); err != nil {
