@@ -703,6 +703,70 @@ func TestSweepIgnoresMarkersItDidNotWrite(t *testing.T) {
 	}
 }
 
+func TestSweepSkipsTheMarkerCheckWithoutOtherSessions(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, "uid-live")
+	h.reconcile(a, testSession)
+	fakeLive(a, "uid-live", true)
+	h.exec.markers = "uid-live\n"
+	before := len(h.exec.commands)
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range h.exec.commands[before:] {
+		if c[2] == findMarkersScript {
+			t.Fatalf("ran a marker check for an instance with only a live session: %v", c)
+		}
+	}
+}
+
+func TestSweepChecksMarkersInBoundedBatches(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, "uid-live")
+	h.reconcile(a, testSession)
+	for i := range maxMarkerChecks + 1 {
+		h.session(fmt.Sprintf("old-%d", i), fmt.Sprintf("uid-old-%d", i))
+	}
+	before := len(h.exec.commands)
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	checked := 0
+	for _, c := range h.exec.commands[before:] {
+		if c[2] != findMarkersScript {
+			continue
+		}
+		if n := len(c) - 5; n > maxMarkerChecks {
+			t.Fatalf("one marker check passed %d UIDs, want at most %d", n, maxMarkerChecks)
+		}
+		checked += len(c) - 5
+	}
+	if checked != maxMarkerChecks+2 {
+		t.Fatalf("checked %d UIDs, want %d", checked, maxMarkerChecks+2)
+	}
+}
+
+func TestRunKeepsBoundedOutput(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.exec.markers = strings.Repeat("x", 2*maxRunOutput)
+
+	out, code, err := a.run(h.ctx, types.NamespacedName{Namespace: testNamespace, Name: testInstance},
+		testContainer, findMarkersCommand(testMarkerDir, []string{testEndedUID}))
+	if err != nil || code != 0 {
+		t.Fatalf("run: code %d, %v", code, err)
+	}
+	if len(out) != maxRunOutput {
+		t.Fatalf("kept %d bytes of output, want %d", len(out), maxRunOutput)
+	}
+}
+
 func TestEnsureIdentityCreatesKey(t *testing.T) {
 	h := newHarness(t)
 	a := h.agent(func(c *Config) { c.Ordinal = 1 })

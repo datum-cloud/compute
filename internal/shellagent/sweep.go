@@ -66,6 +66,10 @@ func (a *Agent) RunSweeper(ctx context.Context) error {
 	}
 }
 
+// maxMarkerChecks bounds the session UIDs one marker check passes, since each
+// becomes a query parameter of the exec request.
+const maxMarkerChecks = 64
+
 type markerPlace struct {
 	pod       types.NamespacedName
 	podUID    types.UID
@@ -131,20 +135,20 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 	if len(candidates) == 0 {
 		return
 	}
-	out, code, err := a.run(ctx, place.pod, place.container, findMarkersCommand(place.dir, candidates))
-	if err != nil || code != 0 {
-		logger.Info("could not look for session markers", "exitCode", code, "error", err)
-		return
-	}
 	found := map[string]struct{}{}
-	for _, uid := range strings.Fields(out) {
-		if !slices.Contains(candidates, uid) {
-			continue
+	for batch := range slices.Chunk(candidates, maxMarkerChecks) {
+		out, code, err := a.run(ctx, place.pod, place.container, findMarkersCommand(place.dir, batch))
+		if err != nil || code != 0 {
+			logger.Info("could not look for session markers", "exitCode", code, "error", err)
+			return
 		}
-		if _, seen := found[uid]; seen {
-			continue
+		for _, uid := range strings.Fields(out) {
+			if slices.Contains(batch, uid) {
+				found[uid] = struct{}{}
+			}
 		}
-		found[uid] = struct{}{}
+	}
+	for uid := range found {
 		state, err := a.sessionState(ctx, uid)
 		if err != nil || state != sessionEnded {
 			continue
