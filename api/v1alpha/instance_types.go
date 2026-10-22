@@ -1016,6 +1016,11 @@ const (
 	// InstanceAvailableReasonAvailable indicates that the instance is available
 	InstanceAvailableReasonAvailable = "Available"
 
+	// InstanceReadyReasonNetworkInterfaceNotProgrammed indicates the data plane
+	// has stopped carrying one of the instance's interfaces, so nothing can
+	// reach the instance over that network.
+	InstanceReadyReasonNetworkInterfaceNotProgrammed = "NetworkInterfaceNotProgrammed"
+
 	// InstanceReadyReasonSuspended indicates the instance is intentionally
 	// stopped due to project suspension. Its placement, disk, and quota
 	// allocation are retained; the process will restart from disk on reinstatement.

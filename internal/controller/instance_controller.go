@@ -1971,6 +1971,16 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
 
+	if message, unprogrammed := unprogrammedInterface(instance); unprogrammed {
+		logger.Info("instance network interface is not programmed", "instance", instance.Name)
+
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = computev1alpha.InstanceReadyReasonNetworkInterfaceNotProgrammed
+		readyCondition.Message = message
+
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
+	}
+
 	readyCondition.Status = metav1.ConditionTrue
 	readyCondition.Reason = computev1alpha.InstanceReadyReasonAvailable
 	readyCondition.Message = msgInstanceReady
@@ -2059,7 +2069,11 @@ func (r *InstanceReconciler) reconcileNetworkInterfaceStatus(
 			continue
 		}
 
-		interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, &claim))
+		status := instanceNetworkInterfaceStatus(interfaceName, &claim)
+		if err := overlayInterfaceProgrammed(ctx, clusterClient, instance.Namespace, &status); err != nil {
+			return false, err
+		}
+		interfaces = append(interfaces, status)
 	}
 
 	if apiequality.Semantic.DeepEqual(instance.Status.NetworkInterfaces, interfaces) {
@@ -2190,6 +2204,19 @@ func (r *InstanceReconciler) SetupWithManager(
 	// integration on, because the claim CRD is absent on cells without it.
 	if r.NetworkingEnabled {
 		b = b.Owns(&networkingv1alpha.NetworkInterfaceClaim{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+		// The data plane reports withdrawing an interface on the interface, not
+		// the claim, and nothing else tells the instance.
+		b = b.Watches(
+			&networkingv1alpha.NetworkInterface{},
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+					return mapNetworkInterfaceToInstance(ctx, cl.GetClient(), clusterName, obj.(*networkingv1alpha.NetworkInterface))
+				})
+			},
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(networkInterfaceProgrammedChanged()),
+		)
 	}
 
 	// The direct ResourceClaim watch resolves the quota.miloapis.com CRD only on
