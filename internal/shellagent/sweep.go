@@ -4,6 +4,7 @@ package shellagent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -74,7 +75,9 @@ type markerPlace struct {
 
 // sweep stops processes left behind by sessions that no longer exist or have
 // ended, and frees their slots. Slots name the containers sessions ran in, and
-// each of those containers is searched for marker files of other sessions.
+// each of those containers is checked for marker files of the instance's other
+// sessions. The instance's user can write marker files too, so the sweep acts
+// only on markers of sessions the cell knows, never on every file it finds.
 func (a *Agent) sweep(ctx context.Context) error {
 	var leases coordinationv1.LeaseList
 	if err := a.cell.List(ctx, &leases, client.InNamespace(a.cfg.Namespace),
@@ -120,15 +123,28 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 	if status := containerStatus(&pod, place.container); status == nil || status.State.Running == nil {
 		return
 	}
-	out, code, err := a.run(ctx, place.pod, place.container, listMarkersCommand(place.dir))
-	if err != nil || code != 0 {
-		logger.Info("could not list session markers", "exitCode", code, "error", err)
+	candidates, err := a.markerCandidates(ctx, place.pod)
+	if err != nil {
+		logger.Error(err, "list sessions of the instance")
 		return
 	}
+	if len(candidates) == 0 {
+		return
+	}
+	out, code, err := a.run(ctx, place.pod, place.container, findMarkersCommand(place.dir, candidates))
+	if err != nil || code != 0 {
+		logger.Info("could not look for session markers", "exitCode", code, "error", err)
+		return
+	}
+	found := map[string]struct{}{}
 	for _, uid := range strings.Fields(out) {
-		if a.isLive(uid) {
+		if !slices.Contains(candidates, uid) {
 			continue
 		}
+		if _, seen := found[uid]; seen {
+			continue
+		}
+		found[uid] = struct{}{}
 		state, err := a.sessionState(ctx, uid)
 		if err != nil || state != sessionEnded {
 			continue
@@ -140,4 +156,24 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 		}
 		logger.Info("stopped orphaned session processes", "session", uid)
 	}
+}
+
+// markerCandidates returns the UIDs of an instance's sessions that this agent
+// is not serving. Their number is bounded by the sessions the instance's
+// project may hold, not by what the instance writes.
+func (a *Agent) markerCandidates(ctx context.Context, pod types.NamespacedName) ([]string, error) {
+	var sessions computev1alpha.InstanceConsoleSessionList
+	if err := a.sessions.List(ctx, &sessions, client.InNamespace(pod.Namespace),
+		client.MatchingLabels{computev1alpha.InstanceConsoleSessionInstanceNameLabel: pod.Name}); err != nil {
+		return nil, err
+	}
+	var uids []string
+	for i := range sessions.Items {
+		uid := sessionUID(&sessions.Items[i])
+		if uid == "" || a.isLive(uid) || slices.Contains(uids, uid) {
+			continue
+		}
+		uids = append(uids, uid)
+	}
+	return uids, nil
 }

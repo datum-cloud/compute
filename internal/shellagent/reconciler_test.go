@@ -5,6 +5,7 @@ package shellagent
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -615,18 +616,24 @@ func TestSweepStopsOrphanedProcesses(t *testing.T) {
 	a := h.agent()
 	h.session(testSession, "uid-live")
 	h.reconcile(a, testSession)
+	h.session("ended", testEndedUID)
+	ended := h.cellSession("ended")
+	setReady(ended, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonCompleted, "done")
+	if err := h.cell.Status().Update(h.ctx, ended); err != nil {
+		t.Fatal(err)
+	}
 	orphan := &slot{
 		sessionUID: "uid-gone",
 		session:    types.NamespacedName{Namespace: testNamespace, Name: "gone"},
 		pod:        types.NamespacedName{Namespace: testNamespace, Name: testInstance},
 		podUID:     "pod-uid",
 		container:  testContainer,
-		markerDir:  "/tmp",
+		markerDir:  testMarkerDir,
 	}
 	if err := h.cell.Create(h.ctx, orphan.leaseFor(testAgentNamespace, "slot-orphan-0")); err != nil {
 		t.Fatal(err)
 	}
-	h.exec.markers = "uid-live\nuid-gone\nuid-older\n"
+	h.exec.markers = "uid-live\nuid-gone\nuid-ended\nuid-unknown\n"
 
 	if err := a.sweep(h.ctx); err != nil {
 		t.Fatal(err)
@@ -638,17 +645,61 @@ func TestSweepStopsOrphanedProcesses(t *testing.T) {
 			killed[c[4]] = true
 		}
 	}
-	for _, uid := range []string{"uid-gone", "uid-older"} {
-		if !killed[markerPath("/tmp", uid)] {
+	for _, uid := range []string{"uid-gone", testEndedUID} {
+		if !killed[markerPath(testMarkerDir, uid)] {
 			t.Fatalf("orphan %s was not stopped (killed %v)", uid, killed)
 		}
 	}
-	if killed[markerPath("/tmp", "uid-live")] {
+	if killed[markerPath(testMarkerDir, "uid-live")] {
 		t.Fatal("an open session's process was stopped")
+	}
+	if killed[markerPath(testMarkerDir, "uid-unknown")] {
+		t.Fatal("the sweep acted on a marker of a session the cell does not know")
 	}
 	slots := h.slots()
 	if len(slots) != 1 || ptr.Deref(slots[0].Spec.HolderIdentity, "") != "uid-live" {
 		t.Fatalf("slots = %v, want only the open session's", slots)
+	}
+}
+
+func TestSweepIgnoresMarkersItDidNotWrite(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, "uid-live")
+	h.reconcile(a, testSession)
+	h.session("ended", testEndedUID)
+	ended := h.cellSession("ended")
+	setReady(ended, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonCompleted, "done")
+	if err := h.cell.Status().Update(h.ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+	var markers strings.Builder
+	for i := range 5000 {
+		fmt.Fprintf(&markers, "bogus-%d\n", i)
+	}
+	markers.WriteString("uid-ended\n")
+	h.exec.markers = markers.String()
+	before := len(h.exec.commands)
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var finds, kills [][]string
+	for _, c := range h.exec.commands[before:] {
+		switch c[2] {
+		case findMarkersScript:
+			finds = append(finds, c)
+		case killScript:
+			kills = append(kills, c)
+		}
+	}
+	if len(finds) != 1 || finds[0][4] != testMarkerDir ||
+		!slices.Equal(slices.Sorted(slices.Values(finds[0][5:])), []string{testEndedUID, "uid-live"}) {
+		t.Fatalf("marker checks = %v, want one for the instance's known sessions", finds)
+	}
+	if len(kills) != 1 || kills[0][4] != markerPath(testMarkerDir, testEndedUID) {
+		t.Fatalf("ran %d stop commands, want one for the ended session", len(kills))
 	}
 }
 
