@@ -36,6 +36,7 @@ import (
 )
 
 const (
+	internalDNSNameConflict            = "NameConflict"
 	internalDNSEligibleField           = "eligible"
 	internalDNSContentField            = "content"
 	internalDNSRecordTypeField         = "recordType"

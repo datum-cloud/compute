@@ -49,8 +49,8 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		conditions, _, _ := unstructured.NestedSlice(registration.Object, internalDNSStatusField, internalDNSConditionsField)
 		for _, value := range conditions {
 			accepted, ok := value.(map[string]any)
-			if ok && accepted[internalDNSConditionTypeField] == internalDNSConditionAccepted && accepted[internalDNSStatusField] == string(metav1.ConditionFalse) && accepted[internalDNSObservedGenerationField] == registration.GetGeneration() && accepted[internalDNSReasonField] == "NameConflict" {
-				condition.Reason, condition.Message = "NameConflict", "Another resource already owns this DNS name"
+			if ok && accepted[internalDNSConditionTypeField] == internalDNSConditionAccepted && accepted[internalDNSStatusField] == string(metav1.ConditionFalse) && accepted[internalDNSObservedGenerationField] == registration.GetGeneration() && accepted[internalDNSReasonField] == internalDNSNameConflict {
+				condition.Reason, condition.Message = internalDNSNameConflict, "Another resource already owns this DNS name"
 			}
 		}
 		contribution := newDNSObject(dnsContributionGVK, namespace, resourceName)
