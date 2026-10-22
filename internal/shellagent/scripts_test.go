@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -359,5 +360,22 @@ func TestExitCheckWorksWithoutSleep(t *testing.T) {
 	}
 	if out, code := runScript(exitCheckCommand(dir, "uid")); code != 0 || strings.TrimSpace(out) != "7" {
 		t.Fatalf("exit check = %q, %d; want 7", out, code)
+	}
+}
+
+func TestFindMarkersReportsOnlyTheSessionsAskedFor(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{testEndedUID, "bogus-1", "bogus-2"} {
+		if err := os.WriteFile(markerPath(dir, uid), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := findMarkersCommand(dir+"/", []string{testEndedUID, "uid-missing"})
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(out)); !slices.Equal(got, []string{testEndedUID}) {
+		t.Fatalf("found %v, want only uid-ended", got)
 	}
 }

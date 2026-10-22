@@ -44,6 +44,8 @@ const (
 	testSession        = "s1"
 	testUID            = "uid-1"
 	testEndpointPod    = "exec-endpoint-0"
+	testMarkerDir      = "/tmp"
+	testEndedUID       = "uid-ended"
 )
 
 // clock is a settable time source shared by the agents in a test.
@@ -249,7 +251,7 @@ type fakeAPIServer struct {
 }
 
 func newFakeAPIServer() *fakeAPIServer {
-	return &fakeAPIServer{probeDir: "/tmp"}
+	return &fakeAPIServer{probeDir: testMarkerDir}
 }
 
 func (f *fakeAPIServer) ran(script string) int {
@@ -310,7 +312,7 @@ func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 			writeServerFrame(conn, channelStdout, []byte(probeDir+"\n"))
 		}
 		writeExitStatus(conn, probeExit)
-	case listMarkersScript:
+	case findMarkersScript:
 		writeServerFrame(conn, channelStdout, []byte(markers))
 		writeExitStatus(conn, 0)
 	case exitWatchScript:
