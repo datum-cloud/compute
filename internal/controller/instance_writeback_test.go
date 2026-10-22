@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -618,4 +619,24 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 	// Karmada-managed label must survive the merge.
 	assert.Equal(t, karmadaManagedLabelValue, updated.Labels[karmadaManagedLabel],
 		"Karmada-managed label must be preserved after the update merge")
+}
+
+func TestWriteBackSourceIdentityRequiresDNSGate(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(newKarmadaScheme()).WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+			r := newWriteBackReconciler(cl)
+			r.InternalDNSEnabled = enabled
+			instance := wbTestCellInstance()
+			instance.UID = "source-instance"
+			require.NoError(t, r.writeBackToUpstream(context.Background(), instance))
+			var got computev1alpha.Instance
+			require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), &got))
+			if enabled {
+				require.Equal(t, string(instance.UID), got.Labels[computev1alpha.InstanceSourceUIDLabel])
+			} else {
+				require.NotContains(t, got.Labels, computev1alpha.InstanceSourceUIDLabel)
+			}
+		})
+	}
 }

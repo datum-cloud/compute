@@ -197,6 +197,7 @@ func TestRenderPortsOpenIngress(t *testing.T) {
 	policy := spec.NetworkInterfaces[0].NetworkPolicy
 	if policy == nil {
 		t.Fatal("declared ports must open matching ingress rules")
+		return
 	}
 	if len(policy.Ingress) != 2 {
 		t.Fatalf("ingress rules = %d, want 2", len(policy.Ingress))
@@ -346,6 +347,7 @@ func TestRenderVM(t *testing.T) {
 	vm := spec.Runtime.VirtualMachine
 	if vm == nil {
 		t.Fatal("virtualMachine not rendered")
+		return
 	}
 	if len(vm.Ports) != 1 {
 		t.Errorf("vm ports = %d, want 1", len(vm.Ports))

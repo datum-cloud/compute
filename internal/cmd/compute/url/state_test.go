@@ -125,6 +125,7 @@ func TestForWorkloadWhenTheBackendKindIsNotServed(t *testing.T) {
 	}
 	if info == nil {
 		t.Fatal("info = nil, want the URL to still be reported")
+		return
 	}
 	if info.URL != testCanonicalURL {
 		t.Errorf("URL = %q, want %q", info.URL, testCanonicalURL)

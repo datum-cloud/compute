@@ -33,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
@@ -629,6 +630,37 @@ func TestInstanceProjector_SpecCopied(t *testing.T) {
 	assert.Equal(t, "test-gate", projection.Spec.Controller.SchedulingGates[0].Name)
 }
 
+func TestInstanceProjectorPreservesProjectDNSStatus(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
+	upstream.Status.DNS = []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "untrusted-edge-network", Namespace: "edge"}}}
+	network := networkingv1alpha.NetworkRef{Name: "project-network", Namespace: projTestProjNS}
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{Network: network, Hostnames: []string{"web.datum.internal"}}}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	r.InternalDNSEnabled = true
+	_, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, network, projection.Status.DNS[0].Network)
+}
+
+func TestInstanceProjectorReplacesDifferentSourceLifetime(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: "new-edge-instance"})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, UID: "old-project-instance", Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: "old-edge-instance"}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	r.InternalDNSEnabled = true
+	result, err := r.Reconcile(context.Background(), projectorRequest())
+	require.ErrorContains(t, err, "waiting for DNS projection lifetime replacement")
+	require.Zero(t, result.RequeueAfter)
+	require.True(t, apierrors.IsNotFound(cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection)))
+	_, err = r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, "new-edge-instance", projection.Labels[computev1alpha.InstanceSourceUIDLabel])
+	require.Empty(t, projection.Status.DNS)
+}
+
 // TestInstanceProjector_NamespaceResolution verifies that the projector resolves
 // the target project namespace directly from the UpstreamOwnerNamespaceLabel on
 // the Karmada Instance, landing the projection in the correct namespace.
@@ -839,4 +871,17 @@ func (l *fakeLeaseLock) gets() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.getCalls
+}
+
+func TestInstanceProjectorDNSDisabledPreservesProjectionLifetime(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: "new-source"})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, UID: "existing-projection", Finalizers: []string{"example.test/hold"}, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: "old-source"}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	result, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, types.UID("existing-projection"), projection.UID)
+	require.True(t, projection.DeletionTimestamp.IsZero())
 }
