@@ -390,3 +390,40 @@ func TestFindMarkersReportsOnlyTheSessionsAskedFor(t *testing.T) {
 		t.Fatalf("found %v, want only uid-ended", got)
 	}
 }
+
+func TestLaunchFallsBackToTheWrapperWithoutTheReaper(t *testing.T) {
+	if _, err := os.Stat(reaperPath); err == nil {
+		t.Skip("this host carries the subreaper")
+	}
+	dir := t.TempDir()
+	args := wrappedCommand(dir, "uid", []string{"sh", "-c", "exit 7"}, false, false)
+	err := exec.Command(args[0], args[1:]...).Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
+		t.Fatalf("launch ended with %v, want exit 7", err)
+	}
+	if got, err := os.ReadFile(exitPath(dir, "uid")); err != nil || strings.TrimSpace(string(got)) != "7" {
+		t.Fatalf("exit file = %q, %v; want 7", got, err)
+	}
+	if got, err := os.ReadFile(markerPath(dir, "uid")); err != nil || strings.Contains(string(got), "reaper") {
+		t.Fatalf("marker = %q, %v; want a legacy marker", got, err)
+	}
+}
+
+func TestLaunchUsesTheReaperWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "shell-reaper")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := wrappedCommand(dir, "uid", []string{"ls", "-l"}, false, false)
+	args[2] = strings.ReplaceAll(args[2], reaperPath, fake)
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("run %s %s 5 %s ls -l", markerPath(dir, "uid"), exitPath(dir, "uid"), nullStdin)
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Fatalf("reaper called with %q, want %q", got, want)
+	}
+}
