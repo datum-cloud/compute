@@ -3,8 +3,8 @@ module go.datum.net/compute
 go 1.26.4
 
 require (
-	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/KimMachineGun/automemlimit v0.7.5
+	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/google/go-cmp v0.7.0
 	github.com/karmada-io/api v1.15.0
 	github.com/onsi/ginkgo/v2 v2.28.1
@@ -13,9 +13,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	go.datum.net/network-services-operator v0.32.26
 	go.miloapis.com/locations v0.0.1
-	go.miloapis.com/milo v0.36.2
-	golang.org/x/crypto v0.56.0
-	golang.org/x/sync v0.22.0
+	go.miloapis.com/milo v0.36.3-0.20261013234308-e25b0132272f
+	golang.org/x/crypto v0.57.0
+	golang.org/x/sync v0.23.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
@@ -150,7 +150,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/x448/float16 v0.8.4 // indirect
-	go.miloapis.com/service-catalog v0.10.0
+	go.miloapis.com/service-catalog v0.14.6-0.20261023171130-8c647a6f552b
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
@@ -165,12 +165,12 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
-	golang.org/x/mod v0.40.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
