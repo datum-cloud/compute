@@ -32,7 +32,6 @@ import {
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
 import { MAX_INSTANCE_SERIES, shortInstanceLabels } from '../lib/series-view';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { useMemo } from 'react';
 
 const NOT_CONNECTED = 'Not connected';
@@ -126,59 +125,55 @@ export default function WorkloadMetrics() {
         }
       />
 
-      <Card size="sm" sectioned className="w-full overflow-hidden">
-        <CardContent>
-          <MetricsKpiRow>
+      <MetricsKpiRow>
+        <MetricsKpiCell
+          label="CPU"
+          value={
+            noMatch
+              ? '—'
+              : identityLoading
+                ? 'Loading…'
+                : formatCpuUsage(cpuCard.data?.value, coresTotal)
+          }
+          hint={resourceHint(cpuUsageHint(cpuCard.data?.value, coresTotal), coresTotal, scopeHint)}
+        />
+        <MetricsKpiCell
+          label="Memory"
+          value={
+            noMatch
+              ? '—'
+              : identityLoading
+                ? 'Loading…'
+                : formatMemoryUsage(memoryCard.data?.value, memoryTotal)
+          }
+          hint={resourceHint(memoryUsageHint(memoryCard.data?.value, memoryTotal), memoryTotal, scopeHint)}
+        />
+        {proxyId ? (
+          <>
             <MetricsKpiCell
-              label="CPU"
-              value={
-                noMatch
-                  ? '—'
-                  : identityLoading
-                    ? 'Loading…'
-                    : formatCpuUsage(cpuCard.data?.value, coresTotal)
-              }
-              hint={resourceHint(cpuUsageHint(cpuCard.data?.value, coresTotal), coresTotal, scopeHint)}
+              label="Requests"
+              value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
+              hint="load balancer"
             />
             <MetricsKpiCell
-              label="Memory"
-              value={
-                noMatch
-                  ? '—'
-                  : identityLoading
-                    ? 'Loading…'
-                    : formatMemoryUsage(memoryCard.data?.value, memoryTotal)
-              }
-              hint={resourceHint(memoryUsageHint(memoryCard.data?.value, memoryTotal), memoryTotal, scopeHint)}
+              label="p99"
+              value={formatCardValue(p99Card.data, 'milliseconds-auto')}
+              hint="load balancer"
             />
-            {proxyId ? (
-              <>
-                <MetricsKpiCell
-                  label="Requests"
-                  value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="p99"
-                  value={formatCardValue(p99Card.data, 'milliseconds-auto')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="Errors"
-                  value={formatCardValue(errorCard.data, 'percent')}
-                  hint="load balancer"
-                />
-              </>
-            ) : (
-              <>
-                <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
-              </>
-            )}
-          </MetricsKpiRow>
-        </CardContent>
-      </Card>
+            <MetricsKpiCell
+              label="Errors"
+              value={formatCardValue(errorCard.data, 'percent')}
+              hint="load balancer"
+            />
+          </>
+        ) : (
+          <>
+            <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
+          </>
+        )}
+      </MetricsKpiRow>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MetricAreaChart

@@ -24,7 +24,6 @@ import {
 } from '../lib/resource-usage';
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { useMemo } from 'react';
 
 const NOT_CONNECTED = 'Not connected';
@@ -70,47 +69,43 @@ export default function InstanceMetrics() {
     <div className="flex flex-col gap-6" data-testid="compute-plugin-instance-metrics-page">
       <MetricsTimeRangeToolbar range={range} />
 
-      <Card size="sm" sectioned className="w-full overflow-hidden">
-        <CardContent>
-          <MetricsKpiRow>
+      <MetricsKpiRow>
+        <MetricsKpiCell
+          label="CPU"
+          value={identityLoading ? 'Loading…' : formatCpuUsage(cpuCard.data?.value, allocatedCores)}
+          hint={cpuUsageHint(cpuCard.data?.value, allocatedCores)}
+        />
+        <MetricsKpiCell
+          label="Memory"
+          value={identityLoading ? 'Loading…' : formatMemoryUsage(memoryCard.data?.value, allocatedMemory)}
+          hint={memoryUsageHint(memoryCard.data?.value, allocatedMemory)}
+        />
+        {proxyId ? (
+          <>
             <MetricsKpiCell
-              label="CPU"
-              value={identityLoading ? 'Loading…' : formatCpuUsage(cpuCard.data?.value, allocatedCores)}
-              hint={cpuUsageHint(cpuCard.data?.value, allocatedCores)}
+              label="Requests"
+              value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
+              hint="load balancer"
             />
             <MetricsKpiCell
-              label="Memory"
-              value={identityLoading ? 'Loading…' : formatMemoryUsage(memoryCard.data?.value, allocatedMemory)}
-              hint={memoryUsageHint(memoryCard.data?.value, allocatedMemory)}
+              label="p99"
+              value={formatCardValue(p99Card.data, 'milliseconds-auto')}
+              hint="load balancer"
             />
-            {proxyId ? (
-              <>
-                <MetricsKpiCell
-                  label="Requests"
-                  value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="p99"
-                  value={formatCardValue(p99Card.data, 'milliseconds-auto')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="Errors"
-                  value={formatCardValue(errorCard.data, 'percent')}
-                  hint="load balancer"
-                />
-              </>
-            ) : (
-              <>
-                <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
-              </>
-            )}
-          </MetricsKpiRow>
-        </CardContent>
-      </Card>
+            <MetricsKpiCell
+              label="Errors"
+              value={formatCardValue(errorCard.data, 'percent')}
+              hint="load balancer"
+            />
+          </>
+        ) : (
+          <>
+            <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
+          </>
+        )}
+      </MetricsKpiRow>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MetricAreaChart
