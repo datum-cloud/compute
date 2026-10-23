@@ -398,7 +398,8 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	// and the end of a runtime crash window: pick the soonest non-zero deadline
 	// so no pending wait is dropped.
 	effectiveRequeue := quotaReq
-	for _, after := range []time.Duration{requeueAfter, runtimeRecheck} {
+	_, _, interfaceRecheck := unprogrammedInterface(&instance, time.Now())
+	for _, after := range []time.Duration{requeueAfter, runtimeRecheck, interfaceRecheck} {
 		if after > 0 && (effectiveRequeue == 0 || after < effectiveRequeue) {
 			effectiveRequeue = after
 		}
@@ -2001,7 +2002,7 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
 
-	if message, unprogrammed := unprogrammedInterface(instance); unprogrammed {
+	if message, unprogrammed, _ := unprogrammedInterface(instance, time.Now()); unprogrammed {
 		logger.Info("instance network interface is not programmed", "instance", instance.Name)
 
 		readyCondition.Status = metav1.ConditionFalse
@@ -2234,7 +2235,6 @@ func (r *InstanceReconciler) SetupWithManager(
 	// integration on, because the claim CRD is absent on cells without it.
 	if r.NetworkingEnabled {
 		b = b.Owns(&networkingv1alpha.NetworkInterfaceClaim{}, mcbuilder.WithEngageWithLocalCluster(false))
-
 	}
 
 	// The direct ResourceClaim watch resolves the quota.miloapis.com CRD only on
