@@ -330,6 +330,16 @@ var catalog = []ReasonInfo{
 			"serving should not exit on its own.",
 	},
 	{
+		Reason:         computev1alpha.InstanceReadyReasonNetworkInterfaceNotProgrammed,
+		ConditionTypes: []string{computev1alpha.InstanceReady},
+		Actionability:  ActionabilityPlatform,
+		Explanation: "The network has stopped carrying one of this instance's interfaces, so nothing " +
+			"can reach the instance over that network. Your container may still be running.",
+		Remediation: "Nothing to change in the workload. Datum's network needs to program the " +
+			"interface again; the instance becomes ready on its own once it does.",
+		Skill: SkillInstanceNotReady,
+	},
+	{
 		Reason:           computev1alpha.InstanceReadyReasonProvisioning,
 		ConditionTypes:   []string{computev1alpha.InstanceReady, computev1alpha.InstanceRuntimeReady},
 		Actionability:    ActionabilityTransient,
