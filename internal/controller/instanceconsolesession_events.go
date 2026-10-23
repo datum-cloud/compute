@@ -172,16 +172,20 @@ func (r *InstanceConsoleSessionReconciler) recordOnce(
 	reason string,
 	record func() error,
 ) (bool, error) {
-	if entry := sessionRecordedEvent(session, reason); entry != nil && entry.Recorded {
+	entry := sessionRecordedEvent(session, reason)
+	if entry != nil && entry.Recorded {
 		return false, nil
 	}
+	retried := entry != nil
 
 	setRecordedEvent(session, reason, r.now(), false)
 	if err := projectClient.Status().Update(ctx, session); err != nil {
+		activityEvents.WithLabelValues(reason, activityEventClaimFailed).Inc()
 		return false, fmt.Errorf("failed claiming the %s event: %w", reason, err)
 	}
 
 	if err := record(); err != nil {
+		activityEvents.WithLabelValues(reason, activityEventWriteFailed).Inc()
 		return false, err
 	}
 
@@ -191,7 +195,13 @@ func (r *InstanceConsoleSessionReconciler) recordOnce(
 		return projectClient.Status().Patch(ctx, session, client.MergeFrom(base))
 	})
 	if err != nil {
+		activityEvents.WithLabelValues(reason, activityEventMarkFailed).Inc()
 		return false, fmt.Errorf("failed marking the %s event recorded: %w", reason, err)
+	}
+	if retried {
+		activityEvents.WithLabelValues(reason, activityEventRecordedAfterRetry).Inc()
+	} else {
+		activityEvents.WithLabelValues(reason, activityEventRecorded).Inc()
 	}
 	return true, nil
 }

@@ -45,6 +45,38 @@ const (
 	claimOutcomeShutdown = "shutdown"
 )
 
+// Purposes of the commands the agent runs inside instances, the values of the
+// purpose label on agentExecs.
+const (
+	// execPurposeProbe checks a container can run a session's command.
+	execPurposeProbe = "probe"
+	// execPurposeExitCheck polls for a session command's exit status.
+	execPurposeExitCheck = "exit_check"
+	// execPurposeStop stops a session's processes.
+	execPurposeStop = "stop"
+	// execPurposeMarkerCheck looks for leftover session markers in a
+	// container during the sweep.
+	execPurposeMarkerCheck = "marker_check"
+)
+
+// Results of a command the agent ran inside an instance, the values of the
+// result label on agentExecs.
+const (
+	execResultOK      = "ok"
+	execResultNonZero = "nonzero"
+	execResultError   = "error"
+)
+
+// How the sweep found an ended session's processes, the values of the source
+// label on agentOrphansReaped.
+const (
+	// orphanSourceSlot is a session whose slot outlived it.
+	orphanSourceSlot = "slot"
+	// orphanSourceMarker is a session whose marker file was found in a
+	// container after its slot was gone.
+	orphanSourceMarker = "marker"
+)
+
 var (
 	// agentSessionsOpen is the number of sessions the agent has claimed and
 	// not yet ended, set from the agent's own count whenever it changes.
@@ -96,6 +128,57 @@ var (
 		},
 		[]string{labelCell},
 	)
+
+	// agentExecs counts the commands the agent runs inside instances. Each is
+	// an exec request to the cell's API server, so this is the agent's share
+	// of that load.
+	agentExecs = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metricsNamespace,
+			Subsystem: metricsSubsystem,
+			Name:      "execs_total",
+			Help: "Commands the agent ran inside instances, by cell, purpose " +
+				"(probe, exit_check, stop, marker_check) and result (ok, nonzero, error).",
+		},
+		[]string{labelCell, "purpose", "result"},
+	)
+
+	// agentSweepSeconds is how long each sweep for leftover session
+	// processes took. Its count is the number of sweeps.
+	agentSweepSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: metricsNamespace,
+			Subsystem: metricsSubsystem,
+			Name:      "sweep_duration_seconds",
+			Help:      "Seconds each sweep for leftover shell session processes took, by cell.",
+			Buckets:   []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
+		},
+		[]string{labelCell},
+	)
+
+	// agentSweepErrors counts sweeps that could not list the cell's slots
+	// and so did no work.
+	agentSweepErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metricsNamespace,
+			Subsystem: metricsSubsystem,
+			Name:      "sweep_errors_total",
+			Help:      "Sweeps for leftover shell session processes that failed before doing any work, by cell.",
+		},
+		[]string{labelCell},
+	)
+
+	// agentOrphansReaped counts ended sessions the sweep cleaned up after,
+	// stopping their processes or finding them already gone with their pod.
+	agentOrphansReaped = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metricsNamespace,
+			Subsystem: metricsSubsystem,
+			Name:      "orphans_reaped_total",
+			Help:      "Ended shell sessions whose leftover processes the sweep cleaned up, by cell and source (slot, marker).",
+		},
+		[]string{labelCell, "source"},
+	)
 )
 
 func init() {
@@ -104,6 +187,10 @@ func init() {
 		agentEndpointReachable,
 		agentClaims,
 		agentCleanupUnconfirmed,
+		agentExecs,
+		agentSweepSeconds,
+		agentSweepErrors,
+		agentOrphansReaped,
 	)
 }
 
@@ -117,6 +204,21 @@ func (a *Agent) recordEndpointReachable(reachable bool) {
 		value = 1
 	}
 	agentEndpointReachable.WithLabelValues(a.cfg.Cell, a.cfg.Agent).Set(value)
+}
+
+func (a *Agent) recordExec(purpose string, code int, err error) {
+	result := execResultOK
+	switch {
+	case err != nil:
+		result = execResultError
+	case code != 0:
+		result = execResultNonZero
+	}
+	agentExecs.WithLabelValues(a.cfg.Cell, purpose, result).Inc()
+}
+
+func (a *Agent) recordOrphanReaped(source string) {
+	agentOrphansReaped.WithLabelValues(a.cfg.Cell, source).Inc()
 }
 
 func (a *Agent) recordCleanupUnconfirmed() {

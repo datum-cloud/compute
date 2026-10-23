@@ -229,7 +229,7 @@ func (a *Agent) pollExit(ctx context.Context, held *slot, uid string) (string, e
 			return "", ctx.Err()
 		case <-ticker.C:
 		}
-		out, code, err := a.run(ctx, held.pod, held.container, exitCheckCommand(held.markerDir, uid))
+		out, code, err := a.run(ctx, execPurposeExitCheck, held.pod, held.container, exitCheckCommand(held.markerDir, uid))
 		if err == nil && code == 0 {
 			return out, nil
 		}

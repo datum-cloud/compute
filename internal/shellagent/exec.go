@@ -208,11 +208,13 @@ func (e *ExecFailedError) Error() string {
 }
 
 // run runs a command in a pod to completion, giving up after the agent's exec
-// timeout.
-func (a *Agent) run(ctx context.Context, pod types.NamespacedName, container string, command []string) (string, int, error) {
+// timeout, and counts it under purpose.
+func (a *Agent) run(ctx context.Context, purpose string, pod types.NamespacedName, container string, command []string) (string, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.cfg.ExecTimeout)
 	defer cancel()
-	return run(ctx, a.exec, pod, container, command)
+	out, code, err := run(ctx, a.exec, pod, container, command)
+	a.recordExec(purpose, code, err)
+	return out, code, err
 }
 
 // maxRunOutput bounds what run keeps of a command's output. The commands it

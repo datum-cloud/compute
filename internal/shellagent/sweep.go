@@ -83,9 +83,12 @@ type markerPlace struct {
 // sessions. The instance's user can write marker files too, so the sweep acts
 // only on markers of sessions the cell knows, never on every file it finds.
 func (a *Agent) sweep(ctx context.Context) error {
+	start := time.Now()
+	defer func() { agentSweepSeconds.WithLabelValues(a.cfg.Cell).Observe(time.Since(start).Seconds()) }()
 	var leases coordinationv1.LeaseList
 	if err := a.cell.List(ctx, &leases, client.InNamespace(a.cfg.Namespace),
 		client.MatchingLabels{componentLabel: slotComponent}); err != nil {
+		agentSweepErrors.WithLabelValues(a.cfg.Cell).Inc()
 		return err
 	}
 	places := map[markerPlace]struct{}{}
@@ -107,6 +110,7 @@ func (a *Agent) sweep(ctx context.Context) error {
 			continue
 		}
 		if reaped {
+			a.recordOrphanReaped(orphanSourceSlot)
 			if err := a.markStopped(ctx, s.session, s.sessionUID); err != nil {
 				log.FromContext(ctx).Error(err, "record stopped session", "session", s.sessionUID)
 			}
@@ -137,7 +141,7 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 	}
 	found := map[string]struct{}{}
 	for batch := range slices.Chunk(candidates, maxMarkerChecks) {
-		out, code, err := a.run(ctx, place.pod, place.container, findMarkersCommand(place.dir, batch))
+		out, code, err := a.run(ctx, execPurposeMarkerCheck, place.pod, place.container, findMarkersCommand(place.dir, batch))
 		if err != nil || code != 0 {
 			logger.Info("could not look for session markers", "exitCode", code, "error", err)
 			return
@@ -154,10 +158,11 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 			continue
 		}
 		grace := int(a.cfg.KillGrace.Seconds())
-		if _, code, err := a.run(ctx, place.pod, place.container, killCommand(place.dir, uid, grace)); err != nil || code != 0 {
+		if _, code, err := a.run(ctx, execPurposeStop, place.pod, place.container, killCommand(place.dir, uid, grace)); err != nil || code != 0 {
 			logger.Info("could not stop orphaned session processes", "session", uid, "exitCode", code, "error", err)
 			continue
 		}
+		a.recordOrphanReaped(orphanSourceMarker)
 		logger.Info("stopped orphaned session processes", "session", uid)
 	}
 }
