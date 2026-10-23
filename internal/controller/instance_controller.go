@@ -234,6 +234,7 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 //nolint:gocyclo // conditions are reconciled, persisted, then returned as errors; the ordered pipeline is inherently branchy
@@ -322,6 +323,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	interfacesChanged, interfacesErr := r.reconcileNetworkInterfaceStatus(ctx, cl.GetClient(), &instance)
 	statusChanged = interfacesChanged || statusChanged
 
+	runtimeChanged, runtimeRecheck, runtimeErr := r.reconcileRuntimeReadyCondition(ctx, cl.GetClient(), &instance)
+	statusChanged = runtimeChanged || statusChanged
+
 	// Transient errors from the quota and Ready-condition reconciles are
 	// returned only after any condition change has been persisted, so the
 	// failure reason is visible on the Instance while controller-runtime
@@ -329,6 +333,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	readyChanged, readyErr := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
 	if readyErr == nil && interfacesErr != nil {
 		readyErr = fmt.Errorf("failed reconciling network interface status: %w", interfacesErr)
+	}
+	if readyErr == nil && runtimeErr != nil {
+		readyErr = fmt.Errorf("failed reconciling runtime ready condition: %w", runtimeErr)
 	}
 
 	// Publish availability to the interfaces the instance holds while every
@@ -387,12 +394,14 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Honor both the quota safety-net requeue and the referenced-data resolver
-	// requeue: pick the soonest non-zero deadline so neither pending wait is
-	// dropped.
+	// Honor the quota safety-net requeue, the referenced-data resolver requeue,
+	// and the end of a runtime crash window: pick the soonest non-zero deadline
+	// so no pending wait is dropped.
 	effectiveRequeue := quotaReq
-	if requeueAfter > 0 && (effectiveRequeue == 0 || requeueAfter < effectiveRequeue) {
-		effectiveRequeue = requeueAfter
+	for _, after := range []time.Duration{requeueAfter, runtimeRecheck} {
+		if after > 0 && (effectiveRequeue == 0 || after < effectiveRequeue) {
+			effectiveRequeue = after
+		}
 	}
 	if effectiveRequeue > 0 {
 		logger.Info("requeuing instance", "after", effectiveRequeue.String(),
@@ -1930,6 +1939,12 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 				// PendingEvaluation reason displace the generic not-programmed
 				// fallback when no provider sub-condition is set yet.
 				continue
+			case computev1alpha.InstanceRuntimeReady:
+				// No runtime Pod is expected before the instance is programmed, so
+				// RuntimeNotObserved is not a cause.
+				if cond.Status != metav1.ConditionFalse {
+					continue
+				}
 			}
 			consider(cond.Status, cond.Reason, cond.Message)
 		}
@@ -1967,6 +1982,21 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 		readyCondition.Status = readyStatus
 		readyCondition.Reason = readyReason
 		readyCondition.Message = readyMessage
+
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
+	}
+
+	// Available is reported once by the provider when the instance starts, so
+	// RuntimeReady is what withdraws Ready from an instance that fails later.
+	// Only False blocks: Unknown means no runtime Pod has been seen, which a
+	// runtime that does not run instances as Pods never produces.
+	runtimeCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceRuntimeReady)
+	if runtimeCondition != nil && runtimeCondition.Status == metav1.ConditionFalse {
+		logger.Info("instance runtime is not ready", "instance", instance.Name, "reason", runtimeCondition.Reason)
+
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = runtimeCondition.Reason
+		readyCondition.Message = runtimeCondition.Message
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
@@ -2184,6 +2214,10 @@ func (r *InstanceReconciler) SetupWithManager(
 
 	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+	// The runtime Pod is the only signal of a crash after the instance starts;
+	// the provider does not revisit the instance's own conditions.
+	b = b.Owns(&corev1.Pod{}, mcbuilder.WithEngageWithLocalCluster(false))
 
 	// A claim binding and allocating is what fills in the instance's addresses,
 	// and no instance event follows it. Registered only with the networking
