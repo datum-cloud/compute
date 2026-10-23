@@ -292,6 +292,21 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 		})
 	}
 
+	t.Run("finished holder's claim is released even when the template changed", func(t *testing.T) {
+		pod := listedInterfacesPod()
+		claim := retained()
+		claim.Spec.ReclaimPolicy = networkingv1alpha.NetworkInterfaceReclaimPolicyDelete
+		claim.OwnerReferences = controlledBy(testHolderPodName)
+		cl := newPodNetworkTestClient(t, pod, claim)
+		r := &PodNetworkAttachmentReconciler{Client: cl}
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(claim), claim); !apierrors.IsNotFound(err) {
+			t.Fatalf("finished holder's mismatched claim was kept: %v", err)
+		}
+	})
+
 	t.Run("claim held by a non-Pod owner is refused", func(t *testing.T) {
 		pod := listedInterfacesPod()
 		claim := retained()

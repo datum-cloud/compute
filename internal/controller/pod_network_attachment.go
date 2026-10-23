@@ -295,6 +295,12 @@ func (r *PodNetworkAttachmentReconciler) prepareInterface(ctx context.Context, p
 		// that keeps two Pods from holding one interface.
 		return nil, wait, nil
 	}
+	// A claim another Pod holds is released or waited on whatever it asks for,
+	// so a changed template cannot strand the replacement behind a finished Pod.
+	if holder := metav1.GetControllerOf(&claim); holder != nil && !metav1.IsControlledBy(&claim, pod) {
+		result, err := r.claimHeldElsewhere(ctx, pod, &claim)
+		return nil, result, err
+	}
 	if !podClaimMatches(&claim, entry) {
 		message := fmt.Sprintf("network claim %s asks for a different network, interface, attachment mode, or reclaim policy", claim.Name)
 		r.event(pod, corev1.EventTypeWarning, "NetworkClaimMismatch", message)
@@ -370,8 +376,8 @@ func (r *PodNetworkAttachmentReconciler) claimHeldElsewhere(ctx context.Context,
 		// An evicted or failed Pod object can linger long after its sandbox is
 		// gone, and garbage collection keeps its claim until then. Deleting the
 		// claim releases the interface; Retain keeps its addresses for this Pod.
-		uid := claim.UID
-		if err := r.Delete(ctx, claim, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+		uid, version := claim.UID, claim.ResourceVersion
+		if err := r.Delete(ctx, claim, client.Preconditions{UID: &uid, ResourceVersion: &version}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
 			return ctrl.Result{}, fmt.Errorf("release network claim %s from finished Pod %s: %w", claim.Name, holder.Name, err)
 		}
 		r.event(pod, corev1.EventTypeNormal, "NetworkClaimReleased",

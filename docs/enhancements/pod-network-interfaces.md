@@ -125,6 +125,9 @@ Use `Recreate` or a StatefulSet.
   A follow-up can find and alert on them.
 - Admission checks the list only when the Pod is created. Editing the
   annotation on a Pod that is still gated can leave it gated with an event.
+- Compute trusts a holder Pod's `Failed` or `Succeeded` phase to mean its
+  network is torn down, as the kubelet only reports it after stopping the
+  sandbox.
 - A replacement Deployment Pod notices a released claim on its next retry,
   within a few seconds, rather than through a watch.
 - The late Multus annotation and CNI detach ordering still need an end-to-end
