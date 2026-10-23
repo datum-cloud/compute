@@ -417,3 +417,9 @@ func TestClosedOnSignal(t *testing.T) {
 		t.Fatalf("interrupted() = %v, want exit %d", err, exitInterrupted)
 	}
 }
+
+func TestExecNeverRequestsComputeAccess(t *testing.T) {
+	if !util.GateCheckOnly(Command()) {
+		t.Fatal("exec must only check compute access, never request it")
+	}
+}

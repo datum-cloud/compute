@@ -86,6 +86,8 @@ errors exit 2.`,
 	cmd.Flags().BoolVarP(&opts.tty, "tty", "t", false, "Run the command in a terminal")
 	cmd.Flags().DurationVar(&opts.ttl, "ttl", 0, "Maximum time the command may run (1m to 1h; default 15m)")
 
+	util.MarkGateCheckOnly(cmd)
+
 	return cmd
 }
 
