@@ -117,6 +117,34 @@ func TestUpdateWithAllReadyInstances(t *testing.T) {
 	assert.True(t, actions[1].IsSkipped())
 }
 
+// TestUpdateReplacesNotReadyInstance verifies that a template change replaces
+// an instance that is not Ready instead of waiting on it, so a template that
+// fixes a crashing instance can roll out.
+func TestUpdateReplacesNotReadyInstance(t *testing.T) {
+	ctx := context.Background()
+	control := NewWithOptions(Options{})
+
+	deployment := getWorkloadDeployment("test-deploy", 2)
+
+	crashing := getInstanceForDeployment(deployment, 0)
+	apimeta.SetStatusCondition(&crashing.Status.Conditions, metav1.Condition{
+		Type:   v1alpha.InstanceReady,
+		Status: metav1.ConditionFalse,
+		Reason: v1alpha.InstanceReadyReasonInstanceCrashing,
+	})
+	currentInstances := []v1alpha.Instance{*crashing, *getInstanceForDeployment(deployment, 1)}
+
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "test-image-fixed"
+
+	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
+
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+	for _, action := range actions {
+		assert.Equal(t, instancecontrol.ActionTypeDelete, action.ActionType(), action.Object.GetName())
+	}
+}
+
 func TestScaleUpWithNotReadyInstance(t *testing.T) {
 	ctx := context.Background()
 	control := NewWithOptions(Options{})

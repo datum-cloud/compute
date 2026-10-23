@@ -132,8 +132,12 @@ while :; do
   sleep 1; i=$((i+1))
 done`
 
-const listMarkersScript = `for f in "$1"/` + markerPrefix + `*; do
-  [ -f "$f" ] && echo "${f##*/` + markerPrefix + `}"
+// The marker check prints each of the given session UIDs whose marker file
+// is in the directory. It looks only for the sessions it is given, so marker
+// files of sessions the platform does not know cost it nothing.
+const findMarkersScript = `d=$1; shift
+for u; do
+  [ -f "$d/` + markerPrefix + `$u" ] && echo "$u"
 done
 true`
 
@@ -170,6 +174,6 @@ func killCommand(dir, sessionUID string, graceSeconds int) []string {
 	return []string{"sh", "-c", killScript, "sh", markerPath(dir, sessionUID), strconv.Itoa(graceSeconds), "/proc"}
 }
 
-func listMarkersCommand(dir string) []string {
-	return []string{"sh", "-c", listMarkersScript, "sh", dir}
+func findMarkersCommand(dir string, sessionUIDs []string) []string {
+	return append([]string{"sh", "-c", findMarkersScript, "sh", strings.TrimSuffix(dir, "/")}, sessionUIDs...)
 }
