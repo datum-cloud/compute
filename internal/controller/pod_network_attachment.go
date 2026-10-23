@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,7 @@ const (
 
 	podInterfaceAddressAnnotationPrefix = "compute.datumapis.com/address-"
 	maxPodNetworkInterfaces             = 4
+	vpcAttachmentKind                   = "VPCAttachment"
 )
 
 // PodNetworkInterface is one entry of the network interfaces annotation.
@@ -143,7 +145,7 @@ func defaultAndValidatePodNetworkInterface(pod *corev1.Pod, entry *PodNetworkInt
 
 func ownedByStatefulSet(pod *corev1.Pod) bool {
 	owner := metav1.GetControllerOf(pod)
-	return owner != nil && owner.Kind == "StatefulSet" && owner.APIVersion == "apps/v1"
+	return owner != nil && owner.Kind == "StatefulSet" && owner.APIVersion == appsv1.SchemeGroupVersion.String()
 }
 
 // podNetworkInterfaceClaimName names the claim after the slot the Pod fills
@@ -323,7 +325,7 @@ func (r *PodNetworkAttachmentReconciler) prepareInterface(ctx context.Context, p
 	// readiness check tied to the provider-published attachment ref; a future
 	// provider-neutral NAD ref should replace this name contract.
 	ref := networkInterface.Status.AttachmentRef
-	if ref == nil || ref.Name == "" || ref.Kind != "VPCAttachment" ||
+	if ref == nil || ref.Name == "" || ref.Kind != vpcAttachmentKind ||
 		(ref.APIGroup != "cloud.datumapis.com" && ref.APIGroup != "galactic.datumapis.com") {
 		return nil, wait, nil
 	}

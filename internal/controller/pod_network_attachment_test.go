@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,6 +23,7 @@ const (
 	testPodNamespace       = "tenant"
 	testRetainedClaimName  = "resolver-node"
 	testSecondaryInterface = "net1"
+	testRetainedInterfaces = `[{"network":"producer","interface":"net1","claimName":"resolver-node","reclaimPolicy":"Retain"}]`
 )
 
 func TestPodNetworkAttachmentReconcile(t *testing.T) {
@@ -80,7 +82,7 @@ func TestPodNetworkAttachmentReconcile(t *testing.T) {
 		t.Fatal("Pod changed before its network interface was visible")
 	}
 	interfaceObject := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: testPodNICName}}
-	interfaceObject.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{APIGroup: "cloud.datumapis.com", Kind: "VPCAttachment", Name: testPodNICName}
+	interfaceObject.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{APIGroup: "cloud.datumapis.com", Kind: vpcAttachmentKind, Name: testPodNICName}
 	if err := cl.Create(ctx, interfaceObject); err != nil {
 		t.Fatal(err)
 	}
@@ -115,15 +117,15 @@ func newPodNetworkTestClient(t *testing.T, objects ...client.Object) client.Clie
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 }
 
-func listedInterfacesPod(annotation string) *corev1.Pod {
+func listedInterfacesPod() *corev1.Pod {
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Namespace: testPodNamespace, Name: "resolver-abc", UID: types.UID("0b0f6a52-7c5e-4d5e-9a0e-1f6f4f6c2b11"),
 		Labels: map[string]string{
 			PodNetworkInterfacesEnabledLabel: PodPrimaryNetworkEnabledValue,
 			"compute.datumapis.com/tier":     "node",
-			"app":                            "resolver",
+			"team":                           "dns",
 		},
-		Annotations: map[string]string{PodNetworkInterfacesAnnotation: annotation},
+		Annotations: map[string]string{PodNetworkInterfacesAnnotation: testRetainedInterfaces},
 	}, Spec: corev1.PodSpec{SchedulingGates: []corev1.PodSchedulingGate{{Name: PodNetworkSchedulingGate}}}}
 }
 
@@ -138,7 +140,7 @@ func markPodClaimPrepared(t *testing.T, ctx context.Context, cl client.Client, c
 		t.Fatal(err)
 	}
 	networkInterface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Namespace: claim.Namespace, Name: interfaceName}}
-	networkInterface.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{APIGroup: "galactic.datumapis.com", Kind: "VPCAttachment", Name: interfaceName}
+	networkInterface.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{APIGroup: "galactic.datumapis.com", Kind: vpcAttachmentKind, Name: interfaceName}
 	if err := cl.Create(ctx, networkInterface); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +148,7 @@ func markPodClaimPrepared(t *testing.T, ctx context.Context, cl client.Client, c
 
 func TestPodNetworkAttachmentSecondaryRetainedInterface(t *testing.T) {
 	ctx := context.Background()
-	pod := listedInterfacesPod(`[{"network":"producer","interface":"net1","claimName":"resolver-node","reclaimPolicy":"Retain"}]`)
+	pod := listedInterfacesPod()
 	cl := newPodNetworkTestClient(t, pod)
 	r := &PodNetworkAttachmentReconciler{Client: cl}
 	key := client.ObjectKeyFromObject(pod)
@@ -165,7 +167,7 @@ func TestPodNetworkAttachmentSecondaryRetainedInterface(t *testing.T) {
 	if claim.Spec.InterfaceName != testSecondaryInterface || claim.Spec.ReclaimPolicy != networkingv1alpha.NetworkInterfaceReclaimPolicyRetain || !metav1.IsControlledBy(claim, pod) {
 		t.Fatalf("bad retained claim: %+v", claim)
 	}
-	if claim.Labels["compute.datumapis.com/tier"] != "node" || claim.Labels["app"] != "" || claim.Labels[PodNetworkInterfacesEnabledLabel] != "" {
+	if claim.Labels["compute.datumapis.com/tier"] != "node" || claim.Labels["team"] != "" || claim.Labels[PodNetworkInterfacesEnabledLabel] != "" {
 		t.Fatalf("claim labels = %v", claim.Labels)
 	}
 
@@ -197,7 +199,6 @@ func TestPodNetworkAttachmentSecondaryRetainedInterface(t *testing.T) {
 
 func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 	ctx := context.Background()
-	const annotation = `[{"network":"producer","interface":"net1","claimName":"resolver-node","reclaimPolicy":"Retain"}]`
 	retained := func() *networkingv1alpha.NetworkInterfaceClaim {
 		return &networkingv1alpha.NetworkInterfaceClaim{
 			ObjectMeta: metav1.ObjectMeta{Namespace: testPodNamespace, Name: testRetainedClaimName},
@@ -214,7 +215,7 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 	}
 
 	t.Run("unowned claim is adopted", func(t *testing.T) {
-		pod := listedInterfacesPod(annotation)
+		pod := listedInterfacesPod()
 		cl := newPodNetworkTestClient(t, pod, retained())
 		r := &PodNetworkAttachmentReconciler{Client: cl}
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}); err != nil {
@@ -230,7 +231,7 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 	})
 
 	t.Run("claim held by another Pod waits", func(t *testing.T) {
-		pod := listedInterfacesPod(annotation)
+		pod := listedInterfacesPod()
 		claim := retained()
 		claim.OwnerReferences = controlledBy("resolver-old")
 		cl := newPodNetworkTestClient(t, pod, claim)
@@ -251,7 +252,7 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 	})
 
 	t.Run("terminating claim waits", func(t *testing.T) {
-		pod := listedInterfacesPod(annotation)
+		pod := listedInterfacesPod()
 		claim := retained()
 		claim.Finalizers = []string{"networking.datumapis.com/test"}
 		now := metav1.Now()
@@ -268,7 +269,7 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 	})
 
 	t.Run("claim with a different policy is refused", func(t *testing.T) {
-		pod := listedInterfacesPod(annotation)
+		pod := listedInterfacesPod()
 		claim := retained()
 		claim.Spec.ReclaimPolicy = networkingv1alpha.NetworkInterfaceReclaimPolicyDelete
 		cl := newPodNetworkTestClient(t, pod, claim)
@@ -281,7 +282,7 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 
 func TestPodNetworkInterfaces(t *testing.T) {
 	controller := true
-	statefulSetOwner := []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "resolvers", UID: "set", Controller: &controller}}
+	statefulSetOwner := []metav1.OwnerReference{{APIVersion: appsv1.SchemeGroupVersion.String(), Kind: "StatefulSet", Name: "resolvers", UID: "set", Controller: &controller}}
 	for _, tc := range []struct {
 		name       string
 		annotation string
