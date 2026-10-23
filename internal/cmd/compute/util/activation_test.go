@@ -1,7 +1,11 @@
 package util
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -76,5 +80,65 @@ func TestGateExempt(t *testing.T) {
 				t.Fatalf("GateExempt(%s) = %v, want %v", tc.cmd.Name(), got, tc.want)
 			}
 		})
+	}
+}
+
+type recordingEntitlements struct {
+	activation.EntitlementClient
+	creates int
+}
+
+func (r *recordingEntitlements) List(context.Context) (*servicesv1alpha1.ServiceEntitlementList, error) {
+	return &servicesv1alpha1.ServiceEntitlementList{}, nil
+}
+
+func (r *recordingEntitlements) Create(context.Context, *servicesv1alpha1.ServiceEntitlement) error {
+	r.creates++
+	return nil
+}
+
+func TestCheckActivationNeverRequestsAccess(t *testing.T) {
+	service := activation.ServiceInfo{
+		ObjectName:     "compute",
+		CanonicalName:  ComputeServiceName,
+		DisplayName:    "Compute",
+		EnablementMode: servicesv1alpha1.EnablementModeSelfService,
+	}
+	ec := &recordingEntitlements{}
+	var stderr bytes.Buffer
+	streams := activation.IOStreams{In: strings.NewReader(""), Out: io.Discard, Err: &stderr}
+
+	err := checkActivation(context.Background(), service, ec, streams, "test-project", "api.staging.example.net")
+
+	if ec.creates != 0 {
+		t.Fatalf("checkActivation created %d entitlements, want none", ec.creates)
+	}
+	if got := activation.ExitCodeOf(err); got != activation.ExitNotEnabled {
+		t.Fatalf("exit code = %d, want %d (err %v)", got, activation.ExitNotEnabled, err)
+	}
+	for _, want := range []string{`"test-project"`, "api.staging.example.net", "datumctl compute access request"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestGateCheckOnly(t *testing.T) {
+	root := &cobra.Command{Use: "compute"}
+	exec := &cobra.Command{Use: "exec"}
+	MarkGateCheckOnly(exec)
+	child := &cobra.Command{Use: "child"}
+	exec.AddCommand(child)
+	deploy := &cobra.Command{Use: "deploy"}
+	root.AddCommand(exec, deploy)
+
+	if !GateCheckOnly(exec) {
+		t.Error("exec should be check-only")
+	}
+	if !GateCheckOnly(child) {
+		t.Error("a check-only command's subcommand should inherit it")
+	}
+	if GateCheckOnly(deploy) {
+		t.Error("deploy should keep enabling on first use")
 	}
 }
