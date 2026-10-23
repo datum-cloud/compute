@@ -1204,7 +1204,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Commands the agents run inside instances, by purpose. Each is an exec request to the cell's API server: probe and exit_check follow session traffic, while marker_check and stop also come from the sweep, so a climb in those without more sessions is the sweep loading the cell API.",
+         "description": "Commands the agents run inside instances, by purpose. Each is an exec request to the cell's API server: probe, exit_watch and exit_check follow session traffic, while marker_check and stop also come from the sweep, so a climb in those without more sessions is the sweep loading the cell API.",
          "fieldConfig": {
             "defaults": {
                "custom": {

@@ -385,7 +385,7 @@ local tsSweepErrors = tsPanel(
 
 local tsExecs = tsPanel(
   'Commands run in instances',
-  "Commands the agents run inside instances, by purpose. Each is an exec request to the cell's API server: probe and exit_check follow session traffic, while marker_check and stop also come from the sweep, so a climb in those without more sessions is the sweep loading the cell API.",
+  "Commands the agents run inside instances, by purpose. Each is an exec request to the cell's API server: probe, exit_watch and exit_check follow session traffic, while marker_check and stop also come from the sweep, so a climb in those without more sessions is the sweep loading the cell API.",
   [qRange('sum by (cell, purpose) (rate(compute_shell_agent_execs_total{%s}[5m]))' % cellFilter, '{{cell}} / {{purpose}}')],
   { h: 8, w: 6, x: 12, y: 50 },
   'reqps',

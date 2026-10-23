@@ -50,6 +50,9 @@ const (
 const (
 	// execPurposeProbe checks a container can run a session's command.
 	execPurposeProbe = "probe"
+	// execPurposeExitWatch waits in the container for a session command to
+	// exit, for as long as the session may last.
+	execPurposeExitWatch = "exit_watch"
 	// execPurposeExitCheck polls for a session command's exit status.
 	execPurposeExitCheck = "exit_check"
 	// execPurposeStop stops a session's processes.
@@ -138,7 +141,7 @@ var (
 			Subsystem: metricsSubsystem,
 			Name:      "execs_total",
 			Help: "Commands the agent ran inside instances, by cell, purpose " +
-				"(probe, exit_check, stop, marker_check) and result (ok, nonzero, error).",
+				"(probe, exit_watch, exit_check, stop, marker_check) and result (ok, nonzero, error).",
 		},
 		[]string{labelCell, "purpose", "result"},
 	)
