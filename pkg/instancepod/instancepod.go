@@ -38,6 +38,11 @@ import (
 // instance with an unrecognized instance type still boots with usable memory.
 const FallbackMemoryMiB int64 = 1024
 
+const (
+	shellHelperPath = "/run/datum-shell"
+	shellHelperName = "datum-shell-helper"
+)
+
 // ErrNotSandbox reports an instance this package cannot translate. Only a
 // sandbox of containers maps onto a Pod. The provider realizes a virtual
 // machine instance itself.
@@ -61,6 +66,12 @@ type Options struct {
 	// before translating, so a feature the class cannot serve fails the build
 	// instead of being dropped from the Pod.
 	Capabilities runtimeclass.Capabilities
+
+	// ShellReaperImage is the compute release image containing /shell-reaper.
+	// Providers set this only after the cell shell agent supports the reaper.
+	// An empty value keeps existing Pods unchanged; the agent refuses shell
+	// sessions on those Pods rather than running without safe cleanup.
+	ShellReaperImage string
 
 	// NodeSelector targets the nodes that can run this class.
 	NodeSelector map[string]string
@@ -168,8 +179,18 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 	}
 
 	containers := make([]corev1.Container, 0, len(instance.Spec.Runtime.Sandbox.Containers))
+	withReaper := opts.ShellReaperImage != "" && opts.Capabilities.Supports(runtimeclass.FeatureExec)
 	for i := range instance.Spec.Runtime.Sandbox.Containers {
 		container := &instance.Spec.Runtime.Sandbox.Containers[i]
+		mounts := buildVolumeMounts(container)
+		if withReaper {
+			for _, mount := range mounts {
+				if mount.MountPath == shellHelperPath || strings.HasPrefix(mount.MountPath, shellHelperPath+"/") {
+					return corev1.PodSpec{}, fmt.Errorf("container %q mounts the reserved shell helper path", container.Name)
+				}
+			}
+			mounts = append(mounts, corev1.VolumeMount{Name: shellHelperName, MountPath: shellHelperPath, ReadOnly: true})
+		}
 		containers = append(containers, corev1.Container{
 			Name:            container.Name,
 			Image:           container.Image,
@@ -179,7 +200,7 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 			EnvFrom:         buildEnvFrom(container),
 			Ports:           buildPorts(container),
 			Resources:       ContainerResources(instance, container, opts.DefaultMemoryMiB),
-			VolumeMounts:    buildVolumeMounts(container),
+			VolumeMounts:    mounts,
 			SecurityContext: buildSecurityContext(container),
 		})
 	}
@@ -194,8 +215,39 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 		podSecurityContext = &corev1.PodSecurityContext{Sysctls: sysctls}
 	}
 
+	var initContainers []corev1.Container
+	if withReaper {
+		for _, volume := range volumes {
+			if volume.Name == shellHelperName {
+				return corev1.PodSpec{}, fmt.Errorf("volume name %q is reserved for the shell helper", volume.Name)
+			}
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         shellHelperName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		initContainers = []corev1.Container{{
+			Name: "datum-shell-install", Image: opts.ShellReaperImage,
+			Command:      []string{"/shell-reaper", "install", shellHelperPath + "/shell-reaper"},
+			VolumeMounts: []corev1.VolumeMount{{Name: shellHelperName, MountPath: shellHelperPath}},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				ReadOnlyRootFilesystem:   ptr.To(true),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+			},
+		}}
+	}
 	return corev1.PodSpec{
 		Containers:       containers,
+		InitContainers:   initContainers,
 		Volumes:          volumes,
 		ImagePullSecrets: imagePullSecrets,
 		SecurityContext:  podSecurityContext,
