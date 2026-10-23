@@ -298,15 +298,16 @@ func (r *InstanceProjector) SetupWithManager(mgr manager.Manager, federationClus
 
 // reconcileDNSProjectionLifetime waits for the previous publication owner to be removed.
 func reconcileDNSProjectionLifetime(ctx context.Context, reader client.Reader, writer client.Client, projection, source *computev1alpha.Instance) error {
-	if err := reader.Get(ctx, client.ObjectKeyFromObject(projection), projection); err != nil {
+	var existing computev1alpha.Instance
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(projection), &existing); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	oldSource, newSource := projection.Labels[computev1alpha.InstanceSourceUIDLabel], source.Labels[computev1alpha.InstanceSourceUIDLabel]
+	oldSource, newSource := existing.Labels[computev1alpha.InstanceSourceUIDLabel], source.Labels[computev1alpha.InstanceSourceUIDLabel]
 	if oldSource == "" || newSource == "" || oldSource == newSource {
 		return nil
 	}
-	if projection.DeletionTimestamp.IsZero() {
-		if err := writer.Delete(ctx, projection, client.Preconditions{UID: &projection.UID, ResourceVersion: &projection.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+	if existing.DeletionTimestamp.IsZero() {
+		if err := writer.Delete(ctx, &existing, client.Preconditions{UID: &existing.UID, ResourceVersion: &existing.ResourceVersion}); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}

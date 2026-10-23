@@ -916,3 +916,13 @@ func TestInstanceProjectorDNSDisabledPreservesProjectionLifetime(t *testing.T) {
 	require.Equal(t, types.UID("existing-projection"), projection.UID)
 	require.True(t, projection.DeletionTimestamp.IsZero())
 }
+
+func TestReconcileDNSProjectionLifetimeLeavesProjectionUntouched(t *testing.T) {
+	existing := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(existing).Build()
+	source := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS}}
+	require.NoError(t, reconcileDNSProjectionLifetime(context.Background(), cl, cl, projection, source))
+	require.Empty(t, projection.ResourceVersion)
+	require.Empty(t, projection.Labels)
+}
