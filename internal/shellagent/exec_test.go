@@ -70,12 +70,12 @@ func TestWrappedCommandArguments(t *testing.T) {
 		{name: "stdin", stdin: true, mode: "-"},
 		{name: "terminal", tty: true, mode: "-"},
 		{name: "stdin and terminal", stdin: true, tty: true, mode: "-"},
-		{name: "neither", mode: "null"},
+		{name: "neither", mode: nullStdin},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := wrappedCommand("/tmp", "uid-1", []string{"ls", "-l"}, tt.stdin, tt.tty)
-			want := []string{"sh", "-c", wrapperScript, "sh", wrapperScript, "/tmp/.datum-exec-uid-1", "/tmp/.datum-exit-uid-1", tt.mode, "0", "ls", "-l"}
+			want := []string{reaperPath, "run", "/tmp/.datum-exec-uid-1", "/tmp/.datum-exit-uid-1", "5", tt.mode, "ls", "-l"}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("wrappedCommand() = %q, want %q", got, want)
 			}
