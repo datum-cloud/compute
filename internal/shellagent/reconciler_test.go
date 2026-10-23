@@ -623,10 +623,10 @@ func TestSweepStopsOrphanedProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	orphan := &slot{
-		sessionUID: "uid-gone",
+		sessionUID: testOrphanUID,
 		session:    types.NamespacedName{Namespace: testNamespace, Name: "gone"},
 		pod:        types.NamespacedName{Namespace: testNamespace, Name: testInstance},
-		podUID:     "pod-uid",
+		podUID:     testPodUID,
 		container:  testContainer,
 		markerDir:  testMarkerDir,
 	}
@@ -645,7 +645,7 @@ func TestSweepStopsOrphanedProcesses(t *testing.T) {
 			killed[c[4]] = true
 		}
 	}
-	for _, uid := range []string{"uid-gone", testEndedUID} {
+	for _, uid := range []string{testOrphanUID, testEndedUID} {
 		if !killed[markerPath(testMarkerDir, uid)] {
 			t.Fatalf("orphan %s was not stopped (killed %v)", uid, killed)
 		}

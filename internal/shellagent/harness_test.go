@@ -46,6 +46,8 @@ const (
 	testEndpointPod    = "exec-endpoint-0"
 	testMarkerDir      = "/tmp"
 	testEndedUID       = "uid-ended"
+	testOrphanUID      = "uid-gone"
+	testPodUID         = "pod-uid"
 )
 
 // clock is a settable time source shared by the agents in a test.
@@ -101,7 +103,7 @@ func newHarness(t *testing.T) *harness {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            testInstance,
 			Namespace:       testNamespace,
-			UID:             "pod-uid",
+			UID:             testPodUID,
 			Labels:          map[string]string{managedByLabel: "kata-provider"},
 			OwnerReferences: []metav1.OwnerReference{owner},
 		},
