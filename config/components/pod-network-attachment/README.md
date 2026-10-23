@@ -33,3 +33,10 @@ reference on the interface would remove that dependency. The flow still needs
 an end-to-end cell test proving that Multus observes the late annotation after
 the gate is removed, and that delete/recreate waits for CNI detach before
 releasing an address. Neither is established by unit tests.
+
+## Listed interfaces
+
+A Pod that needs more than one interface, a secondary interface, or a stable
+address opts in with `compute.datumapis.com/network-interfaces-enabled: "true"`
+and lists its interfaces in `compute.datumapis.com/network-interfaces`. See
+[Network interfaces for Pods](../../../docs/enhancements/pod-network-interfaces.md).

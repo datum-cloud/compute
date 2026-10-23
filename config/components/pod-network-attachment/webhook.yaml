@@ -22,3 +22,22 @@ webhooks:
     objectSelector:
       matchLabels:
         compute.datumapis.com/primary-network-enabled: "true"
+  - name: pod-network-interfaces.compute.datumapis.com
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    reinvocationPolicy: Never
+    clientConfig:
+      service:
+        name: webhook-service
+        namespace: compute-system
+        path: /mutate-v1-pod-primary-network
+    rules:
+      - operations: [CREATE]
+        apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods]
+        scope: Namespaced
+    objectSelector:
+      matchLabels:
+        compute.datumapis.com/network-interfaces-enabled: "true"
