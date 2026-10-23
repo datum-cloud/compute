@@ -179,6 +179,8 @@ type InstanceProjectNamespaceFunc func(
 
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
+	// InternalDNSEnabled enables publication identity and status isolation.
+	InternalDNSEnabled bool
 	mgr                clusterGetter
 	scheme             *runtime.Scheme
 	quotaClientManager *quotametrics.ProjectQuotaClientManager
@@ -232,6 +234,7 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 //nolint:gocyclo // conditions are reconciled, persisted, then returned as errors; the ordered pipeline is inherently branchy
@@ -320,6 +323,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	interfacesChanged, interfacesErr := r.reconcileNetworkInterfaceStatus(ctx, cl.GetClient(), &instance)
 	statusChanged = interfacesChanged || statusChanged
 
+	runtimeChanged, runtimeRecheck, runtimeErr := r.reconcileRuntimeReadyCondition(ctx, cl.GetClient(), &instance)
+	statusChanged = runtimeChanged || statusChanged
+
 	// Transient errors from the quota and Ready-condition reconciles are
 	// returned only after any condition change has been persisted, so the
 	// failure reason is visible on the Instance while controller-runtime
@@ -327,6 +333,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	readyChanged, readyErr := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
 	if readyErr == nil && interfacesErr != nil {
 		readyErr = fmt.Errorf("failed reconciling network interface status: %w", interfacesErr)
+	}
+	if readyErr == nil && runtimeErr != nil {
+		readyErr = fmt.Errorf("failed reconciling runtime ready condition: %w", runtimeErr)
 	}
 
 	// Publish availability to the interfaces the instance holds while every
@@ -385,12 +394,15 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Honor both the quota safety-net requeue and the referenced-data resolver
-	// requeue: pick the soonest non-zero deadline so neither pending wait is
-	// dropped.
+	// Honor the quota safety-net requeue, the referenced-data resolver requeue,
+	// and the end of a runtime crash window: pick the soonest non-zero deadline
+	// so no pending wait is dropped.
 	effectiveRequeue := quotaReq
-	if requeueAfter > 0 && (effectiveRequeue == 0 || requeueAfter < effectiveRequeue) {
-		effectiveRequeue = requeueAfter
+	_, _, interfaceRecheck := unprogrammedInterface(&instance, time.Now())
+	for _, after := range []time.Duration{requeueAfter, runtimeRecheck, interfaceRecheck} {
+		if after > 0 && (effectiveRequeue == 0 || after < effectiveRequeue) {
+			effectiveRequeue = after
+		}
 	}
 	if effectiveRequeue > 0 {
 		logger.Info("requeuing instance", "after", effectiveRequeue.String(),
@@ -1196,8 +1208,8 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 	}
 }
 
-// Finalize removes the downstream write-back Instance when the local Instance is
-// deleted.
+// Finalize removes the write-back Instance before releasing the cell Instance.
+// The write-back's projection finalizer removes the project copy first.
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	instance := obj.(*computev1alpha.Instance)
 
@@ -1213,8 +1225,15 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 	if err := r.FederationClient.Delete(ctx, downstreamInstance); client.IgnoreNotFound(err) != nil {
 		return finalizer.Result{}, fmt.Errorf("failed deleting downstream write-back instance: %w", err)
 	}
-
-	return finalizer.Result{}, nil
+	// Delete returns before the write-back's projection finalizer has run. Keep
+	// the cell Instance until the project projection and write-back are gone.
+	if err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(instance), downstreamInstance); err != nil {
+		if apierrors.IsNotFound(err) {
+			return finalizer.Result{}, nil
+		}
+		return finalizer.Result{}, fmt.Errorf("failed checking downstream write-back deletion: %w", err)
+	}
+	return finalizer.Result{}, fmt.Errorf("waiting for downstream write-back instance %s/%s to be deleted", instance.Namespace, instance.Name)
 }
 
 // writeBackToUpstream copies the Instance spec and status to the upstream
@@ -1297,8 +1316,9 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 
 	writeBack := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
+			Name:       instance.Name,
+			Namespace:  instance.Namespace,
+			Finalizers: []string{instanceProjectionFinalizer},
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: encodedClusterName,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamNamespace,
@@ -1312,6 +1332,10 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 			},
 		},
 		Spec: instance.Spec,
+	}
+
+	if r.InternalDNSEnabled {
+		writeBack.Labels[computev1alpha.InstanceSourceUIDLabel] = string(instance.UID)
 	}
 
 	// The hub's garbage collector reclaims every copy when the deployment is
@@ -1358,7 +1382,8 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		return err
 	}
 
-	if ownerChanged ||
+	finalizerChanged := controllerutil.AddFinalizer(existing, instanceProjectionFinalizer)
+	if ownerChanged || finalizerChanged ||
 		!apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
 		!apiequality.Semantic.DeepEqual(ownedLabels, writeBack.Labels) {
 		existing.Spec = instance.Spec
@@ -1915,6 +1940,12 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 				// PendingEvaluation reason displace the generic not-programmed
 				// fallback when no provider sub-condition is set yet.
 				continue
+			case computev1alpha.InstanceRuntimeReady:
+				// No runtime Pod is expected before the instance is programmed, so
+				// RuntimeNotObserved is not a cause.
+				if cond.Status != metav1.ConditionFalse {
+					continue
+				}
 			}
 			consider(cond.Status, cond.Reason, cond.Message)
 		}
@@ -1952,6 +1983,31 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 		readyCondition.Status = readyStatus
 		readyCondition.Reason = readyReason
 		readyCondition.Message = readyMessage
+
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
+	}
+
+	// Available is reported once by the provider when the instance starts, so
+	// RuntimeReady is what withdraws Ready from an instance that fails later.
+	// Only False blocks: Unknown means no runtime Pod has been seen, which a
+	// runtime that does not run instances as Pods never produces.
+	runtimeCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceRuntimeReady)
+	if runtimeCondition != nil && runtimeCondition.Status == metav1.ConditionFalse {
+		logger.Info("instance runtime is not ready", "instance", instance.Name, "reason", runtimeCondition.Reason)
+
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = runtimeCondition.Reason
+		readyCondition.Message = runtimeCondition.Message
+
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
+	}
+
+	if message, unprogrammed, _ := unprogrammedInterface(instance, time.Now()); unprogrammed {
+		logger.Info("instance network interface is not programmed", "instance", instance.Name)
+
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = computev1alpha.InstanceReadyReasonNetworkInterfaceNotProgrammed
+		readyCondition.Message = message
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
@@ -2169,6 +2225,10 @@ func (r *InstanceReconciler) SetupWithManager(
 
 	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+	// The runtime Pod is the only signal of a crash after the instance starts;
+	// the provider does not revisit the instance's own conditions.
+	b = b.Owns(&corev1.Pod{}, mcbuilder.WithEngageWithLocalCluster(false))
 
 	// A claim binding and allocating is what fills in the instance's addresses,
 	// and no instance event follows it. Registered only with the networking

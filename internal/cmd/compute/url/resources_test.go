@@ -175,6 +175,7 @@ func TestBuildHTTPProxy(t *testing.T) {
 	b := rule.Backends[0]
 	if b.NetworkService == nil {
 		t.Fatal("backend does not reference a network service")
+		return
 	}
 	if b.NetworkService.Name != ResourceName(w.Name) || b.NetworkService.Port != testPortName {
 		t.Errorf("backend ref = %+v, want {api http}", *b.NetworkService)

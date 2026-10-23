@@ -215,8 +215,12 @@ func (a *Agent) run(ctx context.Context, pod types.NamespacedName, container str
 	return run(ctx, a.exec, pod, container, command)
 }
 
+// maxRunOutput bounds what run keeps of a command's output. The commands it
+// runs print a few lines, but they run in a container its user controls.
+const maxRunOutput = 64 << 10
+
 // run runs a command to completion without stdin and returns its combined
-// output and exit code.
+// output, up to maxRunOutput bytes, and exit code.
 func run(ctx context.Context, exec Executor, pod types.NamespacedName, container string, command []string) (string, int, error) {
 	_, conn, reader, err := exec.Open(ctx, pod, ExecOptions{Container: container, Command: command}, nil)
 	if err != nil {
@@ -251,7 +255,9 @@ func run(ctx context.Context, exec Executor, pod types.NamespacedName, container
 		}
 		switch channel {
 		case channelStdout, channelStderr:
-			out.Write(f.payload)
+			if room := maxRunOutput - out.Len(); room > 0 {
+				out.Write(f.payload[:min(len(f.payload), room)])
+			}
 		case channelStatus:
 			status = append(status, f.payload...)
 		}

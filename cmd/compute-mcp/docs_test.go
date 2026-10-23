@@ -106,14 +106,16 @@ func TestSkillsMatchDocumentedSet(t *testing.T) {
 	_, docs := newTestMux(t)
 
 	want := map[string]bool{
-		"/llms-full.txt":                      true,
-		"/runbooks/workload-not-available.md": true,
-		"/runbooks/quota-triage.md":           true,
-		"/runbooks/instance-not-ready.md":     true,
-		"/runbooks/referenced-data-triage.md": true,
-		"/runbooks/placement-triage.md":       true,
-		"/runbooks/stalled-transient.md":      true,
-		"/runbooks/workload-create.md":        true,
+		"/llms-full.txt":                         true,
+		"/runbooks/workload-not-available.md":    true,
+		"/runbooks/quota-triage.md":              true,
+		"/runbooks/instance-not-ready.md":        true,
+		"/runbooks/referenced-data-triage.md":    true,
+		"/runbooks/placement-triage.md":          true,
+		"/runbooks/stalled-transient.md":         true,
+		"/runbooks/workload-create.md":           true,
+		"/runbooks/instance-command-check.md":    true,
+		"/runbooks/instance-command-check-v3.md": true,
 	}
 	got := docs.paths()
 	if len(got) != len(want) {

@@ -115,6 +115,7 @@ func TestForWorkloadPublished(t *testing.T) {
 	}
 	if info == nil {
 		t.Fatal("ForWorkload returned nil for a published workload")
+		return
 	}
 
 	if info.URL != testCanonicalURL {
@@ -344,6 +345,7 @@ func TestForWorkloadWithoutBackendsYet(t *testing.T) {
 	}
 	if info == nil {
 		t.Fatal("info = nil, want a URL with no backends")
+		return
 	}
 	if info.Backends != (Backends{}) || info.Service != nil {
 		t.Errorf("Backends = %+v, Service = %v, want empty", info.Backends, info.Service)
@@ -405,6 +407,7 @@ func TestObjectsIsTheEscapeHatchToTheRealState(t *testing.T) {
 	objs := info.Objects()
 	if objs == nil {
 		t.Fatal("Objects() = nil, want the real objects behind the URL")
+		return
 	}
 	if objs.HTTPProxy != info.Proxy || objs.NetworkService != info.Service {
 		t.Error("Objects() must hand back the objects themselves, not a summary of them")

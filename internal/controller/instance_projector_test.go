@@ -33,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
@@ -97,6 +98,16 @@ func projTestProjectNS() *corev1.Namespace {
 			UID:  projTestProjNSUID,
 		},
 	}
+}
+
+func projTestHubNamespace() *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: projTestKarmadaNS,
+		Labels: map[string]string{
+			downstreamclient.UpstreamOwnerClusterNameLabel: encodedCluster(),
+			downstreamclient.UpstreamOwnerNamespaceLabel:   projTestProjNS,
+		},
+	}}
 }
 
 // projTestWorkloadDeployment builds the project WorkloadDeployment that owns
@@ -406,6 +417,218 @@ func TestInstanceProjector_Reconcile(t *testing.T) {
 	}
 }
 
+func TestInstanceProjector_RemovesProjectionOnScaleDown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		source            *computev1alpha.Instance
+		hubNamespace      bool
+		projectionExists  bool
+		projectionMatches bool
+		wantDeleted       bool
+		wantErr           bool
+	}{
+		{
+			name:              "write-back already gone",
+			hubNamespace:      true,
+			projectionExists:  true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name: "write-back deleting",
+			source: func() *computev1alpha.Instance {
+				instance := projTestKarmadaInstance(nil)
+				now := metav1.Now()
+				instance.DeletionTimestamp = &now
+				instance.Finalizers = []string{instanceProjectionFinalizer, "test-finalizer"}
+				return instance
+			}(),
+			projectionExists:  true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name:              "already removed",
+			hubNamespace:      true,
+			projectionMatches: true,
+			wantDeleted:       true,
+		},
+		{
+			name:              "different route is preserved",
+			hubNamespace:      true,
+			projectionExists:  true,
+			projectionMatches: false,
+			wantErr:           true,
+		},
+		{
+			name:              "hub namespace removed during project teardown",
+			projectionExists:  true,
+			projectionMatches: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var hubObjects []client.Object
+			if tt.source != nil {
+				hubObjects = append(hubObjects, tt.source)
+			}
+			if tt.hubNamespace {
+				hubObjects = append(hubObjects, projTestHubNamespace())
+			}
+			var projectObjects []client.Object
+			projectObjects = append(projectObjects, projTestProjectNS(), projTestWorkloadDeployment())
+			if tt.projectionExists {
+				projection := projTestKarmadaInstance(nil)
+				projection.Namespace = projTestProjNS
+				if !tt.projectionMatches {
+					projection.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] = "another-namespace"
+				}
+				projectObjects = append(projectObjects, projection)
+			}
+
+			projectClient := fake.NewClientBuilder().
+				WithScheme(newProjectScheme()).
+				WithObjects(projectObjects...).
+				Build()
+			r := newTestProjector(newKarmadaFakeClient(hubObjects...), projectClient)
+			_, err := r.Reconcile(context.Background(), projectorRequest())
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			var projection computev1alpha.Instance
+			err = projectClient.Get(context.Background(), types.NamespacedName{
+				Name: projTestInstanceName, Namespace: projTestProjNS,
+			}, &projection)
+			if tt.wantDeleted || !tt.projectionExists {
+				assert.True(t, apierrors.IsNotFound(err), "projection should be absent")
+			} else {
+				require.NoError(t, err, "unrelated projection should remain")
+			}
+			if tt.source != nil {
+				var writeBack computev1alpha.Instance
+				require.NoError(t, r.FederationClient.Get(context.Background(), projectorRequest().NamespacedName, &writeBack))
+				assert.NotContains(t, writeBack.Finalizers, instanceProjectionFinalizer,
+					"project projection must be deleted before releasing the write-back")
+			}
+			var owner computev1alpha.WorkloadDeployment
+			require.NoError(t, projectClient.Get(context.Background(), types.NamespacedName{
+				Name: projTestWDName, Namespace: projTestProjNS,
+			}, &owner), "scale-down must preserve the WorkloadDeployment")
+		})
+	}
+}
+
+func TestInstanceProjectionDeletedBeforeCellInstanceFinalizes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	writeBack := projTestKarmadaInstance(nil)
+	writeBack.Finalizers = []string{instanceProjectionFinalizer}
+	hubClient := newKarmadaFakeClient(projTestHubNamespace(), writeBack)
+	projection := writeBack.DeepCopy()
+	projection.Namespace = projTestProjNS
+	projection.Finalizers = nil
+	projectClient := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithObjects(projTestProjectNS(), projTestWorkloadDeployment(), projection).
+		Build()
+	projector := newTestProjector(hubClient, projectClient)
+	cellReconciler := &InstanceReconciler{FederationClient: hubClient}
+
+	_, err := cellReconciler.Finalize(ctx, writeBack)
+	require.ErrorContains(t, err, "waiting for downstream write-back")
+	var terminating computev1alpha.Instance
+	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &terminating))
+	require.NotNil(t, terminating.DeletionTimestamp)
+	var stillProjected computev1alpha.Instance
+	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{
+		Name: projTestInstanceName, Namespace: projTestProjNS,
+	}, &stillProjected), "cell finalization must wait while the project Instance remains")
+
+	_, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	var removed computev1alpha.Instance
+	require.True(t, apierrors.IsNotFound(projectClient.Get(ctx, types.NamespacedName{
+		Name: projTestInstanceName, Namespace: projTestProjNS,
+	}, &removed)))
+	_, err = cellReconciler.Finalize(ctx, writeBack)
+	require.NoError(t, err, "cell finalization can finish after the projection and write-back are gone")
+}
+
+func TestInstanceProjectorWaitsForProjectDeletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	writeBack := projTestKarmadaInstance(nil)
+	writeBack.Finalizers = []string{instanceProjectionFinalizer}
+	now := metav1.Now()
+	writeBack.DeletionTimestamp = &now
+	hubClient := newKarmadaFakeClient(writeBack)
+	projection := writeBack.DeepCopy()
+	projection.Namespace = projTestProjNS
+	projection.DeletionTimestamp = nil
+	projection.Finalizers = []string{"project-cleanup"}
+	projectClient := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithObjects(projTestProjectNS(), projTestWorkloadDeployment(), projection).
+		Build()
+	projector := newTestProjector(hubClient, projectClient)
+
+	_, err := projector.Reconcile(ctx, projectorRequest())
+	require.ErrorContains(t, err, "waiting for instance projection")
+	var pending computev1alpha.Instance
+	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{
+		Name: projTestInstanceName, Namespace: projTestProjNS,
+	}, &pending))
+	require.NotNil(t, pending.DeletionTimestamp)
+	var retained computev1alpha.Instance
+	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &retained))
+	assert.Contains(t, retained.Finalizers, instanceProjectionFinalizer)
+
+	pending.Finalizers = nil
+	require.NoError(t, projectClient.Update(ctx, &pending))
+	_, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	require.True(t, apierrors.IsNotFound(hubClient.Get(ctx, projectorRequest().NamespacedName, &retained)),
+		"write-back should disappear only after the project Instance does")
+}
+
+// TestInstanceProjectorRequeuesUnengagedProjectCluster verifies that an
+// Instance whose project cluster is not engaged yet is retried on a timer
+// rather than reported as a reconcile error.
+func TestInstanceProjectorRequeuesUnengagedProjectCluster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	hubClient := newKarmadaFakeClient(projTestKarmadaInstance(nil))
+	projector := &InstanceProjector{
+		FederationClient: hubClient,
+		MCManager:        &fakeMCManager{clusters: map[string]cluster.Cluster{}},
+	}
+
+	result, err := projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+
+	writeBack := projTestKarmadaInstance(nil)
+	writeBack.Finalizers = []string{instanceProjectionFinalizer}
+	now := metav1.Now()
+	writeBack.DeletionTimestamp = &now
+	hubClient = newKarmadaFakeClient(writeBack)
+	projector.FederationClient = hubClient
+	result, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+	var retained computev1alpha.Instance
+	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &retained))
+	assert.Contains(t, retained.Finalizers, instanceProjectionFinalizer,
+		"the write-back must keep its finalizer until the projection can be removed")
+}
+
 // TestInstanceProjector_SpecCopied verifies that the Instance spec is correctly
 // propagated from the Karmada instance to the projection.
 func TestInstanceProjector_SpecCopied(t *testing.T) {
@@ -436,6 +659,37 @@ func TestInstanceProjector_SpecCopied(t *testing.T) {
 	require.NotNil(t, projection.Spec.Controller)
 	require.Len(t, projection.Spec.Controller.SchedulingGates, 1)
 	assert.Equal(t, "test-gate", projection.Spec.Controller.SchedulingGates[0].Name)
+}
+
+func TestInstanceProjectorPreservesProjectDNSStatus(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
+	upstream.Status.DNS = []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "untrusted-edge-network", Namespace: "edge"}}}
+	network := networkingv1alpha.NetworkRef{Name: "project-network", Namespace: projTestProjNS}
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{Network: network, Hostnames: []string{"web.datum.internal"}}}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	r.InternalDNSEnabled = true
+	_, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, network, projection.Status.DNS[0].Network)
+}
+
+func TestInstanceProjectorReplacesDifferentSourceLifetime(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: "new-edge-instance"})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, UID: "old-project-instance", Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: "old-edge-instance"}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	r.InternalDNSEnabled = true
+	result, err := r.Reconcile(context.Background(), projectorRequest())
+	require.ErrorContains(t, err, "waiting for DNS projection lifetime replacement")
+	require.Zero(t, result.RequeueAfter)
+	require.True(t, apierrors.IsNotFound(cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection)))
+	_, err = r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, "new-edge-instance", projection.Labels[computev1alpha.InstanceSourceUIDLabel])
+	require.Empty(t, projection.Status.DNS)
 }
 
 // TestInstanceProjector_NamespaceResolution verifies that the projector resolves
@@ -648,4 +902,27 @@ func (l *fakeLeaseLock) gets() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.getCalls
+}
+
+func TestInstanceProjectorDNSDisabledPreservesProjectionLifetime(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: "new-source"})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, UID: "existing-projection", Finalizers: []string{"example.test/hold"}, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: "old-source"}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	result, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, types.UID("existing-projection"), projection.UID)
+	require.True(t, projection.DeletionTimestamp.IsZero())
+}
+
+func TestReconcileDNSProjectionLifetimeLeavesProjectionUntouched(t *testing.T) {
+	existing := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(existing).Build()
+	source := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS}}
+	require.NoError(t, reconcileDNSProjectionLifetime(context.Background(), cl, cl, projection, source))
+	require.Empty(t, projection.ResourceVersion)
+	require.Empty(t, projection.Labels)
 }

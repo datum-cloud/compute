@@ -8,13 +8,15 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
 // The tools compute publishes to an assistant. These five diagnose what a
 // project has deployed; render.go and instancetypes.go add the two that help
-// write a new workload. None of them changes anything.
+// write a new workload, and exec_suggest.go formats a command for a person to
+// run. None of them changes anything.
 //
 // There is deliberately no mutating tool — no delete, no scale, no restart,
 // and no create. Creating a workload goes through the assistant's own plan and
@@ -35,6 +37,13 @@ const (
 type ToolDeps struct {
 	Reader    Reader
 	Namespace string
+	// ExecClient uses the same caller bearer token as Reader. The control
+	// plane enforces RBAC and project session quota on session creation.
+	ExecClient  client.Client
+	Project     string
+	BearerToken string
+	ExecKey     []byte
+	ExecNonces  ExecNonceStore
 }
 
 // DepsFor resolves the dependencies for a tool call. A function rather than a
@@ -243,6 +252,7 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 
 	registerInstanceTypesTool(s, deps)
 	registerRenderTool(s, deps)
+	registerExecSuggestTool(s, deps)
 }
 
 // ---------------------------------------------------------------- handlers

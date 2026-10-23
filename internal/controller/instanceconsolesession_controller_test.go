@@ -4,8 +4,10 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/assistantorigin"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -225,6 +228,8 @@ func (e *sessionTestEnv) setMemberReports(t *testing.T, reports bool) {
 	require.NoError(t, e.hub.Create(ctx, binding))
 }
 
+const testAssistantRequester = "alice@example.com"
+
 func testSession() *computev1alpha.InstanceConsoleSession {
 	return &computev1alpha.InstanceConsoleSession{
 		ObjectMeta: metav1.ObjectMeta{
@@ -233,7 +238,7 @@ func testSession() *computev1alpha.InstanceConsoleSession {
 			UID:               testSessionUID,
 			CreationTimestamp: metav1.NewTime(testSessionCreated),
 			Annotations: map[string]string{
-				computev1alpha.InstanceConsoleSessionRequesterAnnotation: "alice@example.com",
+				computev1alpha.InstanceConsoleSessionRequesterAnnotation: testAssistantRequester,
 			},
 		},
 		Spec: computev1alpha.InstanceConsoleSessionSpec{
@@ -430,7 +435,7 @@ func TestInstanceConsoleSessionStatusCopy(t *testing.T) {
 	assert.Equal(t, testSessionInstance, started.Related.Name)
 	assert.Equal(t, testInstanceUID, started.Related.UID)
 	assert.Equal(t, map[string]string{
-		computev1alpha.InstanceConsoleSessionRequesterAnnotation: "alice@example.com",
+		computev1alpha.InstanceConsoleSessionRequesterAnnotation: testAssistantRequester,
 		computev1alpha.InstanceConsoleSessionCellAnnotation:      testMemberCluster,
 		computev1alpha.InstanceConsoleSessionLocationAnnotation:  testFederatorLocation,
 		sessionEventInstanceAnnotation:                           testSessionInstance,
@@ -838,7 +843,7 @@ func TestInstanceConsoleSessionEndedOnCellIsReleasedAtOnce(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonCompleted, ended.Annotations[sessionEventReasonAnnotation])
 	assert.Equal(t, "3", ended.Annotations[sessionEventExitCodeAnnotation])
-	assert.Equal(t, "alice@example.com", ended.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation])
+	assert.Equal(t, testAssistantRequester, ended.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation])
 
 	session, ok := env.projectSession(t)
 	require.True(t, ok)
@@ -1241,6 +1246,30 @@ func TestInstanceConsoleSessionRecordsEachEventOnce(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestAssistantOriginActivityRequiresAStartedSignedSession(t *testing.T) {
+	key := []byte(strings.Repeat("k", 32))
+	t.Setenv(assistantorigin.KeyEnv, base64.RawStdEncoding.EncodeToString(key))
+	session := testSession()
+	session.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation] = testAssistantRequester
+	proof, err := assistantorigin.Sign(key, session, testAssistantRequester, strings.Repeat("a", 32), time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	session.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation] = proof
+	env := newSessionTestEnv(t, nil, nil)
+	require.NoError(t, env.reconciler.recordSessionEvent(context.Background(), env.project, session,
+		corev1.EventTypeNormal, EventReasonSessionEnded, "ended", nil))
+	event := env.events(t)[EventReasonSessionEnded]
+	assert.Empty(t, event.Annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"],
+		"a copied proof on a session that never connected cannot claim an assistant run")
+
+	now := metav1.Now()
+	session.Status.StartedAt = &now
+	require.NoError(t, env.reconciler.recordSessionEvent(context.Background(), env.project, session,
+		corev1.EventTypeNormal, EventReasonSessionStarted, "started", nil))
+	event = env.events(t)[EventReasonSessionStarted]
+	assert.Equal(t, "patch", event.Annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"])
+	assert.Contains(t, event.Note, "through the Datum assistant")
+}
+
 func TestInstanceConsoleSessionStaleReconcileDoesNotRecordAgain(t *testing.T) {
 	env := newClaimedSessionEnv(t)
 	stale := endProjectSession(t, env)
@@ -1341,5 +1370,86 @@ func endProjectSession(t *testing.T, env *sessionTestEnv) *computev1alpha.Instan
 	})
 	require.NoError(t, env.project.Status().Update(context.Background(), session))
 	require.NotContains(t, env.events(t), EventReasonSessionEnded)
+	return session
+}
+
+// A write to the session while its event is being recorded, such as its
+// requester deleting it, must not leave the event unmarked when the cache has
+// not caught up, or the next reconcile records it a second time.
+func TestInstanceConsoleSessionConcurrentWriteDoesNotRecordAgain(t *testing.T) {
+	for _, tc := range []struct {
+		reason  string
+		prepare func(*testing.T, *sessionTestEnv) *computev1alpha.InstanceConsoleSession
+		record  func(*InstanceConsoleSessionReconciler, client.Client, *computev1alpha.InstanceConsoleSession) error
+	}{
+		{
+			reason:  EventReasonSessionStarted,
+			prepare: startProjectSession,
+			record:  recordLifecycleEventsWith,
+		},
+		{
+			reason:  EventReasonSessionEnded,
+			prepare: endProjectSession,
+			record:  recordLifecycleEventsWith,
+		},
+		{
+			reason:  EventReasonCleanupUnconfirmed,
+			prepare: startProjectSession,
+			record: func(r *InstanceConsoleSessionReconciler, c client.Client, s *computev1alpha.InstanceConsoleSession) error {
+				return r.recordCleanupUnconfirmed(context.Background(), c, s)
+			},
+		},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			env := newClaimedSessionEnv(t)
+			session := tc.prepare(t, env)
+
+			var cached *computev1alpha.InstanceConsoleSession
+			lagging := interceptor.NewClient(env.project.(client.WithWatch), interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if err := c.Create(ctx, obj, opts...); err != nil {
+						return err
+					}
+					var current computev1alpha.InstanceConsoleSession
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(session), &current))
+					cached = current.DeepCopy()
+					metav1.SetMetaDataAnnotation(&current.ObjectMeta, "example.com/concurrent", "write")
+					return c.Update(ctx, &current)
+				},
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if s, ok := obj.(*computev1alpha.InstanceConsoleSession); ok && cached != nil {
+						cached.DeepCopyInto(s)
+						return nil
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			require.NoError(t, tc.record(env.reconciler, lagging, session))
+			require.Contains(t, env.events(t), tc.reason)
+
+			session, ok := env.projectSession(t)
+			require.True(t, ok)
+			require.NoError(t, tc.record(env.reconciler, env.project, session))
+			env.events(t)
+			entry := sessionRecordedEvent(session, tc.reason)
+			require.NotNil(t, entry)
+			assert.True(t, entry.Recorded)
+		})
+	}
+}
+
+func recordLifecycleEventsWith(r *InstanceConsoleSessionReconciler, c client.Client, s *computev1alpha.InstanceConsoleSession) error {
+	return r.recordLifecycleEvents(context.Background(), c, s, "")
+}
+
+// startProjectSession starts the project session the way copying the cell's
+// start does, without reconciling, and returns it as a reconcile would read it.
+func startProjectSession(t *testing.T, env *sessionTestEnv) *computev1alpha.InstanceConsoleSession {
+	t.Helper()
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	startedAt := metav1.NewTime(env.now)
+	session.Status.StartedAt = &startedAt
+	require.NoError(t, env.project.Status().Update(context.Background(), session))
 	return session
 }

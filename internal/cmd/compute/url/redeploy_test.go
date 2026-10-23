@@ -96,6 +96,7 @@ func TestDeclareUpdatesAChangedPort(t *testing.T) {
 	}
 	if info == nil {
 		t.Fatal("the workload lost its URL on redeploy")
+		return
 	}
 	if info.Port != 9090 {
 		t.Errorf("port = %d, want 9090", info.Port)

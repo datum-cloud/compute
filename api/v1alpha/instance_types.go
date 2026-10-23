@@ -828,6 +828,12 @@ type InstanceStatus struct {
 	// Network interface information
 	NetworkInterfaces []InstanceNetworkInterfaceStatus `json:"networkInterfaces,omitempty"`
 
+	// DNS reports assigned private names and publication readiness per network.
+	// Resolver access and record eligibility are managed by platform services.
+	// +kubebuilder:validation:Optional
+	// +listType=atomic
+	DNS []InstanceDNSStatus `json:"dns,omitempty"`
+
 	// Controller contains status information about the controller managing the instance.
 	//
 	// +kubebuilder:validation:Optional
@@ -839,6 +845,18 @@ type InstanceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	Suspended bool `json:"suspended,omitempty"`
+}
+
+// InstanceDNSStatus describes private name publication within one network.
+type InstanceDNSStatus struct {
+	// Network identifies the attached network in the owning project.
+	Network networkingv1alpha.NetworkRef `json:"network"`
+	// Hostnames contains the fully qualified names allocated for this Instance.
+	Hostnames []string `json:"hostnames,omitempty"`
+	// Conditions reports DNS readiness independently of runtime readiness.
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type InstanceControllerStatus struct {
@@ -862,6 +880,12 @@ const (
 
 	// InstanceQuotaGranted indicates whether quota has been allocated for the instance
 	InstanceQuotaGranted = "QuotaGranted"
+
+	// InstanceRuntimeReady reports the health of the instance's running process,
+	// as observed on its runtime Pod. Unlike Available, it is revisited for the
+	// instance's whole life, so an instance that crashes after starting stops
+	// being Ready.
+	InstanceRuntimeReady = "RuntimeReady"
 
 	// ReferencedDataReady indicates whether all ConfigMaps and Secrets referenced
 	// by the workload template have been resolved and delivered to the cell.
@@ -997,6 +1021,28 @@ const (
 
 	// InstanceAvailableReasonAvailable indicates that the instance is available
 	InstanceAvailableReasonAvailable = "Available"
+
+	// InstanceRuntimeReadyReasonReady indicates the runtime Pod is running and
+	// ready.
+	InstanceRuntimeReadyReasonReady = "RuntimeReady"
+
+	// InstanceRuntimeReadyReasonNotObserved indicates no runtime Pod for the
+	// instance has been observed.
+	InstanceRuntimeReadyReasonNotObserved = "RuntimeNotObserved"
+
+	// InstanceRuntimeReadyReasonNotReady indicates the runtime Pod is running but
+	// not ready, for example because its node stopped reporting or a readiness
+	// probe is failing.
+	InstanceRuntimeReadyReasonNotReady = "RuntimeNotReady"
+
+	// InstanceRuntimeReadyReasonExited indicates the runtime Pod has stopped for
+	// good and will not be restarted.
+	InstanceRuntimeReadyReasonExited = "RuntimeExited"
+
+	// InstanceReadyReasonNetworkInterfaceNotProgrammed indicates the data plane
+	// has stopped carrying one of the instance's interfaces, so nothing can
+	// reach the instance over that network.
+	InstanceReadyReasonNetworkInterfaceNotProgrammed = "NetworkInterfaceNotProgrammed"
 
 	// InstanceReadyReasonSuspended indicates the instance is intentionally
 	// stopped due to project suspension. Its placement, disk, and quota

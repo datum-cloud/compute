@@ -5,6 +5,7 @@ package shellagent
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -616,18 +617,24 @@ func TestSweepStopsOrphanedProcesses(t *testing.T) {
 	a := h.agent()
 	h.session(testSession, "uid-live")
 	h.reconcile(a, testSession)
+	h.session("ended", testEndedUID)
+	ended := h.cellSession("ended")
+	setReady(ended, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonCompleted, "done")
+	if err := h.cell.Status().Update(h.ctx, ended); err != nil {
+		t.Fatal(err)
+	}
 	orphan := &slot{
 		sessionUID: "uid-gone",
 		session:    types.NamespacedName{Namespace: testNamespace, Name: "gone"},
 		pod:        types.NamespacedName{Namespace: testNamespace, Name: testInstance},
 		podUID:     "pod-uid",
 		container:  testContainer,
-		markerDir:  "/tmp",
+		markerDir:  testMarkerDir,
 	}
 	if err := h.cell.Create(h.ctx, orphan.leaseFor(testAgentNamespace, "slot-orphan-0")); err != nil {
 		t.Fatal(err)
 	}
-	h.exec.markers = "uid-live\nuid-gone\nuid-older\n"
+	h.exec.markers = "uid-live\nuid-gone\nuid-ended\nuid-unknown\n"
 
 	if err := a.sweep(h.ctx); err != nil {
 		t.Fatal(err)
@@ -639,17 +646,125 @@ func TestSweepStopsOrphanedProcesses(t *testing.T) {
 			killed[c[4]] = true
 		}
 	}
-	for _, uid := range []string{"uid-gone", "uid-older"} {
-		if !killed[markerPath("/tmp", uid)] {
+	for _, uid := range []string{"uid-gone", testEndedUID} {
+		if !killed[markerPath(testMarkerDir, uid)] {
 			t.Fatalf("orphan %s was not stopped (killed %v)", uid, killed)
 		}
 	}
-	if killed[markerPath("/tmp", "uid-live")] {
+	if killed[markerPath(testMarkerDir, "uid-live")] {
 		t.Fatal("an open session's process was stopped")
+	}
+	if killed[markerPath(testMarkerDir, "uid-unknown")] {
+		t.Fatal("the sweep acted on a marker of a session the cell does not know")
 	}
 	slots := h.slots()
 	if len(slots) != 1 || ptr.Deref(slots[0].Spec.HolderIdentity, "") != "uid-live" {
 		t.Fatalf("slots = %v, want only the open session's", slots)
+	}
+}
+
+func TestSweepIgnoresMarkersItDidNotWrite(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, "uid-live")
+	h.reconcile(a, testSession)
+	h.session("ended", testEndedUID)
+	ended := h.cellSession("ended")
+	setReady(ended, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonCompleted, "done")
+	if err := h.cell.Status().Update(h.ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+	var markers strings.Builder
+	for i := range 5000 {
+		fmt.Fprintf(&markers, "bogus-%d\n", i)
+	}
+	markers.WriteString("uid-ended\n")
+	h.exec.markers = markers.String()
+	before := len(h.exec.commands)
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var finds, kills [][]string
+	for _, c := range h.exec.commands[before:] {
+		switch c[2] {
+		case findMarkersScript:
+			finds = append(finds, c)
+		case killScript:
+			kills = append(kills, c)
+		}
+	}
+	if len(finds) != 1 || finds[0][4] != testMarkerDir ||
+		!slices.Equal(slices.Sorted(slices.Values(finds[0][5:])), []string{testEndedUID, "uid-live"}) {
+		t.Fatalf("marker checks = %v, want one for the instance's known sessions", finds)
+	}
+	if len(kills) != 1 || kills[0][4] != markerPath(testMarkerDir, testEndedUID) {
+		t.Fatalf("ran %d stop commands, want one for the ended session", len(kills))
+	}
+}
+
+func TestSweepSkipsTheMarkerCheckWithoutOtherSessions(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, "uid-live")
+	h.reconcile(a, testSession)
+	fakeLive(a, "uid-live", true)
+	h.exec.markers = "uid-live\n"
+	before := len(h.exec.commands)
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range h.exec.commands[before:] {
+		if c[2] == findMarkersScript {
+			t.Fatalf("ran a marker check for an instance with only a live session: %v", c)
+		}
+	}
+}
+
+func TestSweepChecksMarkersInBoundedBatches(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.session(testSession, "uid-live")
+	h.reconcile(a, testSession)
+	for i := range maxMarkerChecks + 1 {
+		h.session(fmt.Sprintf("old-%d", i), fmt.Sprintf("uid-old-%d", i))
+	}
+	before := len(h.exec.commands)
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	checked := 0
+	for _, c := range h.exec.commands[before:] {
+		if c[2] != findMarkersScript {
+			continue
+		}
+		if n := len(c) - 5; n > maxMarkerChecks {
+			t.Fatalf("one marker check passed %d UIDs, want at most %d", n, maxMarkerChecks)
+		}
+		checked += len(c) - 5
+	}
+	if checked != maxMarkerChecks+2 {
+		t.Fatalf("checked %d UIDs, want %d", checked, maxMarkerChecks+2)
+	}
+}
+
+func TestRunKeepsBoundedOutput(t *testing.T) {
+	h := newHarness(t)
+	a := h.agent()
+	h.exec.markers = strings.Repeat("x", 2*maxRunOutput)
+
+	out, code, err := a.run(h.ctx, types.NamespacedName{Namespace: testNamespace, Name: testInstance},
+		testContainer, findMarkersCommand(testMarkerDir, []string{testEndedUID}))
+	if err != nil || code != 0 {
+		t.Fatalf("run: code %d, %v", code, err)
+	}
+	if len(out) != maxRunOutput {
+		t.Fatalf("kept %d bytes of output, want %d", len(out), maxRunOutput)
 	}
 }
 

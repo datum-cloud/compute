@@ -12,6 +12,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # Cancel a superseded run on the same ref. The e2e job is expensive (three Kind
 # clusters + a Karmada control plane), so we don't want stale pushes burning a
@@ -77,6 +78,19 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y python3-yaml
           fi
+
+      # Three Kind clusters share the runner's host inotify quota. When that
+      # quota is exhausted, Karmada's webhook and kube-controller-manager fail
+      # to create file watchers with "too many open files" before tests begin.
+      # The setting is host-wide and lasts only for this ephemeral CI runner.
+      - name: Allow file watchers for three Kind clusters
+        run: |
+          current=$(cat /proc/sys/fs/inotify/max_user_instances)
+          echo "Current inotify instance limit: $current"
+          if (( current < 8192 )); then
+            sudo sysctl -w fs.inotify.max_user_instances=8192
+          fi
+          test "$(cat /proc/sys/fs/inotify/max_user_instances)" -ge 8192
 
       # Split into env / deploy / test so a failure lands on the phase that broke
       # rather than a single opaque "task e2e:up" step. e2e:env:up == e2e:up minus

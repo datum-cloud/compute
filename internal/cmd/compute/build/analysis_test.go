@@ -932,6 +932,7 @@ func TestDefaultChecksAllowStaticETEXECEntrypoint(t *testing.T) {
 	tc, elfFile := detectToolchain(data)
 	if elfFile == nil {
 		t.Fatal("expected ELF")
+		return
 	}
 	if elfFile.Type == elf.ET_DYN {
 		t.Skip("test toolchain produced PIE by default")

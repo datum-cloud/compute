@@ -232,6 +232,14 @@ this list before you plan.
    plainly when the user asks for a URL: they will get an address and a port,
    not a hostname, unless they run that command themselves.
 
+   The flag publishes a URL, and so does `--http2`, so keep both out of a
+   routine redeploy. A `deploy` that changes only the image, without
+   `--http-port`, `--http2` or `--no-http`, leaves the workload served
+   exactly as it was — by its own URL, or by a load balancer someone set up
+   in the portal. Adding either flag to that redeploy puts a second,
+   separate URL in front of a workload that may already have one; only add
+   them when the user asks for a new URL.
+
 9. **Editing a ConfigMap does not restart anything.** The new contents reach the
    machines, but a process that read the file at startup goes on running with
    what it read. Say this whenever a config change is the point of the
@@ -327,7 +335,7 @@ workload is one command, and these are theirs to run, not yours to assume:
 
     datumctl services enable compute.datumapis.com
     datumctl compute build --push --output ghcr.io/acme/api:1.4.2 .
-    datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW --min=1 --port=8080
+    datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW --min=1
     datumctl compute deploy api --image=ghcr.io/acme/api:1.4.2 --city=DFW --http-port=8080
 
 The last one is the only way to get a public HTTPS URL, per trap 8. For a gRPC

@@ -1,0 +1,17 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-internal-dns-publisher
+rules:
+  - apiGroups: ["dns.networking.miloapis.com"]
+    resources: ["dnsresolvercontexts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["dns.networking.miloapis.com"]
+    resources: ["dnsregistrations", "dnsrecordcontributions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["dns.networking.miloapis.com"]
+    resources: ["dnsrecordcontributions/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instances/status"]
+    verbs: ["get", "patch"]

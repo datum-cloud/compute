@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/assistantorigin"
 )
 
 const (
@@ -157,8 +158,11 @@ func (r *InstanceConsoleSessionReconciler) recordCleanupUnconfirmed(
 // Before recording, it claims the event in the session's status with
 // optimistic concurrency, so only a reconcile that saw the session's latest
 // state can record it; one working from a stale cache conflicts and retries.
-// Once the event is written the status says so. An attempt that did not
-// finish is claimed and recorded again. The claim lives in status because
+// Once the event is written the status says so, without optimistic
+// concurrency: the claim already makes this reconcile the only one recording
+// the event, and another write to the session meanwhile, such as its
+// requester deleting it, must not leave a recorded event looking unfinished.
+// An attempt that did not finish is claimed and recorded again. The claim lives in status because
 // requesters cannot write status, so they cannot mark an event recorded and
 // keep it out of the project's activity.
 func (r *InstanceConsoleSessionReconciler) recordOnce(
@@ -181,16 +185,10 @@ func (r *InstanceConsoleSessionReconciler) recordOnce(
 		return false, err
 	}
 
-	attemptedAt := r.now()
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		setRecordedEvent(session, reason, attemptedAt, true)
-		err := projectClient.Status().Update(ctx, session)
-		if apierrors.IsConflict(err) {
-			if getErr := projectClient.Get(ctx, client.ObjectKeyFromObject(session), session); getErr != nil {
-				return getErr
-			}
-		}
-		return err
+	base := session.DeepCopy()
+	setRecordedEvent(session, reason, r.now(), true)
+	err := retry.OnError(retry.DefaultBackoff, func(err error) bool { return !apierrors.IsNotFound(err) }, func() error {
+		return projectClient.Status().Patch(ctx, session, client.MergeFrom(base))
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed marking the %s event recorded: %w", reason, err)
@@ -240,6 +238,18 @@ func (r *InstanceConsoleSessionReconciler) recordSessionEvent(
 		computev1alpha.InstanceConsoleSessionLocationAnnotation:  placement.location,
 		sessionEventInstanceAnnotation:                           session.Spec.InstanceRef.Name,
 		sessionEventContainerAnnotation:                          session.Spec.ContainerName,
+	}
+	// Never trust a client-supplied provenance label. Only the signed proof,
+	// checked against the admission-stamped requester and immutable command
+	// spec, may make the activity say this came through the assistant.
+	if session.Status.StartedAt != nil {
+		if key, err := assistantorigin.KeyFromEnv(); err == nil &&
+			assistantorigin.VerifyStored(key, session,
+				session.Annotations[computev1alpha.InstanceConsoleSessionRequesterAnnotation],
+				session.Annotations[computev1alpha.InstanceConsoleSessionAssistantProofAnnotation]) {
+			annotations[computev1alpha.AnnotationNamespace+"/assistant-origin"] = "patch"
+			note += " Requested through the Datum assistant."
+		}
 	}
 	for k, v := range extraAnnotations {
 		annotations[k] = v

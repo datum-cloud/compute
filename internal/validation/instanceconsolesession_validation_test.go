@@ -174,6 +174,13 @@ func TestValidateInstanceConsoleSessionCreate(t *testing.T) {
 			instance: sessionAdmissionInstance(),
 		},
 		{
+			name: "the assistant proof annotation reaches cryptographic admission validation",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Annotations = map[string]string{computev1alpha.InstanceConsoleSessionAssistantProofAnnotation: "signed-proof"}
+			},
+			instance: sessionAdmissionInstance(),
+		},
+		{
 			name: "metadata outside compute's namespaces is admitted",
 			session: func(s *computev1alpha.InstanceConsoleSession) {
 				s.Annotations = map[string]string{"example.com/ticket": "OPS-1", "notcompute.datumapis.com/x": "y"}

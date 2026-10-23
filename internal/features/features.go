@@ -112,6 +112,9 @@ const (
 	//
 	// alpha: v0.1
 	InstanceConsoleSessions featuregate.Feature = "InstanceConsoleSessions"
+
+	// InternalDNSPublishing publishes instance records into project DNS contexts.
+	InternalDNSPublishing featuregate.Feature = "InternalDNSPublishing"
 )
 
 // MutableFeatureGate is the mutable feature gate for the compute operator.
@@ -132,6 +135,7 @@ func init() {
 		RuntimeClasses:          {Default: false, PreRelease: featuregate.Alpha},
 		InstanceTypes:           {Default: false, PreRelease: featuregate.Alpha},
 		InstanceConsoleSessions: {Default: false, PreRelease: featuregate.Alpha},
+		InternalDNSPublishing:   {Default: false, PreRelease: featuregate.Alpha},
 	}); err != nil {
 		panic(err)
 	}

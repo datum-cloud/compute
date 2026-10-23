@@ -139,11 +139,18 @@ func (r *InstanceReconciler) reconcileHolderAvailability(
 
 		projected := condition
 		projected.ObservedGeneration = networkInterface.Generation
+		base := networkInterface.DeepCopy()
 		if !apimeta.SetStatusCondition(&networkInterface.Status.Conditions, projected) {
 			continue
 		}
 
-		if err := clusterClient.Status().Update(ctx, &networkInterface); err != nil {
+		var err error
+		if r.InternalDNSEnabled {
+			err = clusterClient.Status().Patch(ctx, &networkInterface, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		} else {
+			err = clusterClient.Status().Update(ctx, &networkInterface)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("update network interface %s status: %w", key, err))
 		}
 	}
