@@ -1,5 +1,5 @@
 {
-   "description": "Instance shell sessions from the project view (created, open, ended, time to first prompt) and the cell view (agent reachability, load, claims, cleanup).",
+   "description": "Instance shell sessions from the project view (created, open, ended, time to first prompt, limits, activity events) and the cell view (agent reachability, load, claims, cleanup, sweep).",
    "editable": true,
    "panels": [
       {
@@ -592,6 +592,228 @@
             "y": 24
          },
          "id": 12,
+         "title": "Limits and activity events",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "The ten projects with the most open sessions. The red line is the default limit of 10 open sessions per project; a project at the line has its next session refused until one ends.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "axisSoftMax": 12,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                     "mode": "line"
+                  }
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "transparent",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 10
+                     }
+                  ]
+               },
+               "unit": "short"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 25
+         },
+         "id": 13,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "topk(10, sum by (project) (compute_shell_sessions_open{project=~\"$project\", location=~\"$location\"}))",
+               "legendFormat": "{{project}}"
+            }
+         ],
+         "title": "Busiest projects by open sessions",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Sessions a cell refused because the instance already had as many sessions open as it allows (TooManySessions). Sessions refused by the project limit never reach a cell and are not counted here.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 25
+         },
+         "id": 14,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (location) (increase(compute_shell_sessions_ended_total{location=~\"$location\", reason=\"TooManySessions\"}[1h]))",
+               "legendFormat": "{{location}}"
+            }
+         ],
+         "title": "Sessions refused: instance full",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Attempts to record SessionStarted and SessionEnded in the project activity log, per hour. Each session should be recorded once per event. recorded_after_retry means an earlier attempt may already have written the event, so the activity log can show it twice; the failed results are retried on the next reconcile.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": ".*/ (claim_failed|write_failed|mark_failed)"
+                  },
+                  "properties": [
+                     {
+                        "id": "color",
+                        "value": {
+                           "fixedColor": "red",
+                           "mode": "fixed"
+                        }
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": ".*/ recorded_after_retry"
+                  },
+                  "properties": [
+                     {
+                        "id": "color",
+                        "value": {
+                           "fixedColor": "orange",
+                           "mode": "fixed"
+                        }
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 25
+         },
+         "id": 15,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (event, result) (increase(compute_shell_activity_events_total[1h]))",
+               "legendFormat": "{{event}} / {{result}}"
+            }
+         ],
+         "title": "Activity events recorded",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 33
+         },
+         "id": 16,
          "title": "Cell and agent",
          "type": "row"
       },
@@ -642,9 +864,9 @@
             "h": 7,
             "w": 24,
             "x": 0,
-            "y": 25
+            "y": 34
          },
-         "id": 13,
+         "id": 17,
          "options": {
             "legend": {
                "displayMode": "list",
@@ -694,9 +916,9 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 32
+            "y": 41
          },
-         "id": 14,
+         "id": 18,
          "options": {
             "legend": {
                "displayMode": "list",
@@ -747,9 +969,9 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 32
+            "y": 41
          },
-         "id": 15,
+         "id": 19,
          "options": {
             "legend": {
                "displayMode": "list",
@@ -816,9 +1038,9 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 32
+            "y": 41
          },
-         "id": 16,
+         "id": 20,
          "options": {
             "legend": {
                "displayMode": "list",
@@ -849,9 +1071,249 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 40
+            "y": 49
          },
-         "id": 17,
+         "id": 21,
+         "title": "Cleanup sweep",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "How long each agent sweep for leftover session processes takes, 95th percentile by cell. The sweep runs every minute, so a sweep approaching a minute is falling behind.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "s"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 0,
+            "y": 50
+         },
+         "id": 22,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (cell, le) (rate(compute_shell_agent_sweep_duration_seconds_bucket{cell=~\"$cell\"}[15m])))",
+               "legendFormat": "{{cell}}"
+            }
+         ],
+         "title": "Sweep duration",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Sweeps that failed before doing any work because the agent could not list its session slots. Leftover processes are not cleaned up while this is non-zero.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "none"
+                  }
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byType",
+                     "options": "number"
+                  },
+                  "properties": [
+                     {
+                        "id": "color",
+                        "value": {
+                           "fixedColor": "red",
+                           "mode": "fixed"
+                        }
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 6,
+            "y": 50
+         },
+         "id": 23,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (cell) (increase(compute_shell_agent_sweep_errors_total{cell=~\"$cell\"}[1h]))",
+               "legendFormat": "{{cell}}"
+            }
+         ],
+         "title": "Sweep errors",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Commands the agents run inside instances, by purpose. Each is an exec request to the cell's API server: probe and exit_check follow session traffic, while marker_check and stop also come from the sweep, so a climb in those without more sessions is the sweep loading the cell API.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "reqps"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 12,
+            "y": 50
+         },
+         "id": 24,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (cell, purpose) (rate(compute_shell_agent_execs_total{cell=~\"$cell\"}[5m]))",
+               "legendFormat": "{{cell}} / {{purpose}}"
+            }
+         ],
+         "title": "Commands run in instances",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Ended sessions whose leftover processes the sweep cleaned up, per hour. slot means the session ended without the agent stopping it; marker means a process was found inside an instance after its session was gone. A steady count means sessions are not being stopped when they end.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [ ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
+            "y": 50
+         },
+         "id": 25,
+         "options": {
+            "legend": {
+               "displayMode": "list",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (cell, source) (increase(compute_shell_agent_orphans_reaped_total{cell=~\"$cell\"}[1h]))",
+               "legendFormat": "{{cell}} / {{source}}"
+            }
+         ],
+         "title": "Leftover sessions cleaned up",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 58
+         },
+         "id": 26,
          "title": "Logs",
          "type": "row"
       },
@@ -865,9 +1327,9 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 41
+            "y": 59
          },
-         "id": 18,
+         "id": 27,
          "options": {
             "enableLogDetails": true,
             "showTime": true,
@@ -1013,3 +1475,4 @@
    "title": "Compute / Instance Shell Sessions",
    "uid": "compute-shell-sessions"
 }
+

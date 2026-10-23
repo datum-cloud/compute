@@ -3,7 +3,7 @@
 // One view of the shell-session feature from both ends: what projects see
 // (sessions created, open, ended, how long connecting takes) and what the
 // cells serving them see (agent reachability, per-agent load, claim outcomes,
-// unconfirmed cleanups). The session metrics come from the management-plane
+// unconfirmed cleanups, and the sweep for leftover session processes). The session metrics come from the management-plane
 // session controller; the agent metrics come from the shell agents on each
 // cell. Both are labelled so the same $location / $cell selection narrows the
 // two halves together.
@@ -36,6 +36,15 @@ local logsDs = { type: 'loki', uid: 'service-logs' };
 // NotConnected, Invalid, ...) is either a normal end or a request the
 // requester can fix.
 local platformFailureReasons = 'Unavailable|AgentLost|AgentShutdown';
+
+// The default number of sessions a project may hold open at once, set by the
+// project's shell session quota. Drawn as a line on the busiest-projects panel.
+local projectSessionLimit = 10;
+
+// Activity event results that mean an attempt to record a session's event did
+// not finish. recorded_after_retry finished, but after an earlier attempt that
+// may already have written the event.
+local activityEventFailures = 'claim_failed|write_failed|mark_failed';
 
 // ---------------------------------------------------------------------------
 // Query helpers
@@ -255,6 +264,49 @@ local tsDuration = tsPanel(
 );
 
 // ---------------------------------------------------------------------------
+// Limits and activity events
+// ---------------------------------------------------------------------------
+
+local tsBusiestProjects = tsPanel(
+  'Busiest projects by open sessions',
+  'The ten projects with the most open sessions. The red line is the default limit of %d open sessions per project; a project at the line has its next session refused until one ends.' % projectSessionLimit,
+  [qRange('topk(10, sum by (project) (compute_shell_sessions_open{%s}))' % sessionFilter, '{{project}}')],
+  { h: 8, w: 8, x: 0, y: 25 },
+  'short',
+)
++ timeSeries.fieldConfig.defaults.custom.withAxisSoftMax(projectSessionLimit + 2)
++ timeSeries.standardOptions.color.withMode('palette-classic')
++ timeSeries.standardOptions.thresholds.withMode('absolute')
++ timeSeries.standardOptions.thresholds.withSteps([{ color: 'transparent', value: null }, { color: 'red', value: projectSessionLimit }])
++ timeSeries.fieldConfig.defaults.custom.thresholdsStyle.withMode('line');
+
+local tsTooManySessions = tsPanel(
+  'Sessions refused: instance full',
+  'Sessions a cell refused because the instance already had as many sessions open as it allows (TooManySessions). Sessions refused by the project limit never reach a cell and are not counted here.',
+  [qRange('sum by (location) (increase(compute_shell_sessions_ended_total{%s, reason="TooManySessions"}[1h]))' % locationFilter, '{{location}}')],
+  { h: 8, w: 8, x: 8, y: 25 },
+  'short',
+);
+
+local tsActivityEvents = tsPanel(
+  'Activity events recorded',
+  'Attempts to record SessionStarted and SessionEnded in the project activity log, per hour. Each session should be recorded once per event. recorded_after_retry means an earlier attempt may already have written the event, so the activity log can show it twice; the failed results are retried on the next reconcile.',
+  [qRange('sum by (event, result) (increase(compute_shell_activity_events_total[1h]))', '{{event}} / {{result}}')],
+  { h: 8, w: 8, x: 16, y: 25 },
+  'short',
+  overrides=[
+    {
+      matcher: { id: 'byRegexp', options: '.*/ (%s)' % activityEventFailures },
+      properties: [{ id: 'color', value: { fixedColor: 'red', mode: 'fixed' } }],
+    },
+    {
+      matcher: { id: 'byRegexp', options: '.*/ recorded_after_retry' },
+      properties: [{ id: 'color', value: { fixedColor: 'orange', mode: 'fixed' } }],
+    },
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Cell and agent
 // ---------------------------------------------------------------------------
 
@@ -263,7 +315,7 @@ local cellFilter = 'cell=~"$cell"';
 local stEndpointReachable =
   stateTimeline.new('Agent endpoint reachable')
   + stateTimeline.panelOptions.withDescription('Whether each shell agent can reach its cell tunnel endpoint. An agent that cannot reach the endpoint cannot serve sessions; a cell with no reachable agent fails every session bound to it with Unavailable.')
-  + stateTimeline.panelOptions.withGridPos(7, 24, 0, 25)
+  + stateTimeline.panelOptions.withGridPos(7, 24, 0, 34)
   + stateTimeline.queryOptions.withDatasource('prometheus', ds)
   + stateTimeline.queryOptions.withTargets([
     qRange('max by (cell, agent) (compute_shell_agent_endpoint_reachable{%s})' % cellFilter, '{{cell}} / {{agent}}'),
@@ -284,7 +336,7 @@ local tsAgentOpen = tsPanel(
   'Sessions open per agent',
   'Sessions each agent is currently serving. Agents run in pairs per cell, so a lopsided pair usually means one agent restarted or lost its endpoint.',
   [qRange('sum by (cell, agent) (compute_shell_agent_sessions_open{%s})' % cellFilter, '{{cell}} / {{agent}}')],
-  { h: 8, w: 8, x: 0, y: 32 },
+  { h: 8, w: 8, x: 0, y: 41 },
   'short',
 );
 
@@ -292,7 +344,7 @@ local tsClaims = tsPanel(
   'Session claims by outcome',
   'Rate at which agents try to claim sessions, by outcome. A cell claiming nothing while sessions are created for its location is not seeing them.',
   [qRange('sum by (cell, outcome) (rate(compute_shell_agent_claims_total{%s}[5m]))' % cellFilter, '{{cell}} / {{outcome}}')],
-  { h: 8, w: 8, x: 8, y: 32 },
+  { h: 8, w: 8, x: 8, y: 41 },
   'reqps',
   stacked=true,
 );
@@ -301,11 +353,52 @@ local tsCleanupUnconfirmed = tsPanel(
   'Cleanup unconfirmed',
   'Sessions whose cell did not confirm the command stopped within the cleanup timeout. Each one may have left a running process behind in an Instance.',
   [qRange('sum by (cell) (increase(compute_shell_agent_cleanup_unconfirmed_total{%s}[1h]))' % cellFilter, '{{cell}}')],
-  { h: 8, w: 8, x: 16, y: 32 },
+  { h: 8, w: 8, x: 16, y: 41 },
   'short',
   overrides=[
     { matcher: { id: 'byType', options: 'number' }, properties: [{ id: 'color', value: { fixedColor: 'orange', mode: 'fixed' } }] },
   ],
+);
+
+// ---------------------------------------------------------------------------
+// Cleanup sweep
+// ---------------------------------------------------------------------------
+
+local tsSweepDuration = tsPanel(
+  'Sweep duration',
+  'How long each agent sweep for leftover session processes takes, 95th percentile by cell. The sweep runs every minute, so a sweep approaching a minute is falling behind.',
+  [qRange('histogram_quantile(0.95, sum by (cell, le) (rate(compute_shell_agent_sweep_duration_seconds_bucket{%s}[15m])))' % cellFilter, '{{cell}}')],
+  { h: 8, w: 6, x: 0, y: 50 },
+  's',
+);
+
+local tsSweepErrors = tsPanel(
+  'Sweep errors',
+  'Sweeps that failed before doing any work because the agent could not list its session slots. Leftover processes are not cleaned up while this is non-zero.',
+  [qRange('sum by (cell) (increase(compute_shell_agent_sweep_errors_total{%s}[1h]))' % cellFilter, '{{cell}}')],
+  { h: 8, w: 6, x: 6, y: 50 },
+  'short',
+  overrides=[
+    { matcher: { id: 'byType', options: 'number' }, properties: [{ id: 'color', value: { fixedColor: 'red', mode: 'fixed' } }] },
+  ],
+);
+
+local tsExecs = tsPanel(
+  'Commands run in instances',
+  "Commands the agents run inside instances, by purpose. Each is an exec request to the cell's API server: probe and exit_check follow session traffic, while marker_check and stop also come from the sweep, so a climb in those without more sessions is the sweep loading the cell API.",
+  [qRange('sum by (cell, purpose) (rate(compute_shell_agent_execs_total{%s}[5m]))' % cellFilter, '{{cell}} / {{purpose}}')],
+  { h: 8, w: 6, x: 12, y: 50 },
+  'reqps',
+  stacked=true,
+);
+
+local tsOrphansReaped = tsPanel(
+  'Leftover sessions cleaned up',
+  'Ended sessions whose leftover processes the sweep cleaned up, per hour. slot means the session ended without the agent stopping it; marker means a process was found inside an instance after its session was gone. A steady count means sessions are not being stopped when they end.',
+  [qRange('sum by (cell, source) (increase(compute_shell_agent_orphans_reaped_total{%s}[1h]))' % cellFilter, '{{cell}} / {{source}}')],
+  { h: 8, w: 6, x: 18, y: 50 },
+  'short',
+  stacked=true,
 );
 
 // ---------------------------------------------------------------------------
@@ -315,7 +408,7 @@ local tsCleanupUnconfirmed = tsPanel(
 local logsSession =
   logs.new('Session controller logs')
   + logs.panelOptions.withDescription('Management-plane session controller logs from the platform Loki, filtered by the session UID box. Cell agent logs are not shipped to this Loki; read them on the cell as described at the top.')
-  + logs.panelOptions.withGridPos(10, 24, 0, 41)
+  + logs.panelOptions.withGridPos(10, 24, 0, 59)
   + logs.queryOptions.withDatasource('loki', logsDs.uid)
   + logs.queryOptions.withTargets([
     loki.new(logsDs.uid, '{namespace="compute-system"} |= "$session_uid" |~ "(?i)consolesession|shell"')
@@ -332,7 +425,7 @@ local logsSession =
 
 g.dashboard.new('Compute / Instance Shell Sessions')
 + g.dashboard.withUid('compute-shell-sessions')
-+ g.dashboard.withDescription('Instance shell sessions from the project view (created, open, ended, time to first prompt) and the cell view (agent reachability, load, claims, cleanup).')
++ g.dashboard.withDescription('Instance shell sessions from the project view (created, open, ended, time to first prompt, limits, activity events) and the cell view (agent reachability, load, claims, cleanup, sweep).')
 + g.dashboard.withTags(['compute', 'shell-sessions'])
 + g.dashboard.withEditable(true)
 + g.dashboard.withRefresh('1m')
@@ -361,13 +454,24 @@ g.dashboard.new('Compute / Instance Shell Sessions')
     tsConnectLatency,
     tsDuration,
 
-    rowPanel('Cell and agent', 200, 24),
+    rowPanel('Limits and activity events', 400, 24),
+    tsBusiestProjects,
+    tsTooManySessions,
+    tsActivityEvents,
+
+    rowPanel('Cell and agent', 200, 33),
     stEndpointReachable,
     tsAgentOpen,
     tsClaims,
     tsCleanupUnconfirmed,
 
-    rowPanel('Logs', 300, 40),
+    rowPanel('Cleanup sweep', 500, 49),
+    tsSweepDuration,
+    tsSweepErrors,
+    tsExecs,
+    tsOrphansReaped,
+
+    rowPanel('Logs', 300, 58),
     logsSession,
   ],
   setPanelIDs=true,
