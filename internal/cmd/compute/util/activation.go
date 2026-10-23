@@ -22,6 +22,8 @@ const gateSkipAnnotation = "compute.datumapis.com/skip-activation-gate"
 // project without Compute is a mistake to report, not a reason to enable it.
 const gateCheckOnlyAnnotation = "compute.datumapis.com/activation-check-only"
 
+const annotationTrue = "true"
+
 // ComputeServiceName is the canonical catalog name of the compute service. The
 // activation SDK builds its user-facing commands from this name, for example
 // `datumctl services enable compute.datumapis.com`.
@@ -83,7 +85,7 @@ func MarkGateExempt(cmd *cobra.Command) {
 	if cmd.Annotations == nil {
 		cmd.Annotations = map[string]string{}
 	}
-	cmd.Annotations[gateSkipAnnotation] = "true"
+	cmd.Annotations[gateSkipAnnotation] = annotationTrue
 }
 
 // RunActivationGate runs the compute activation preflight for the given command.
@@ -159,13 +161,13 @@ func MarkGateCheckOnly(cmd *cobra.Command) {
 	if cmd.Annotations == nil {
 		cmd.Annotations = map[string]string{}
 	}
-	cmd.Annotations[gateCheckOnlyAnnotation] = "true"
+	cmd.Annotations[gateCheckOnlyAnnotation] = annotationTrue
 }
 
 // GateCheckOnly reports whether the command or a parent is tagged check-only.
 func GateCheckOnly(cmd *cobra.Command) bool {
 	for c := cmd; c != nil; c = c.Parent() {
-		if c.Annotations[gateCheckOnlyAnnotation] == "true" {
+		if c.Annotations[gateCheckOnlyAnnotation] == annotationTrue {
 			return true
 		}
 	}
@@ -184,7 +186,7 @@ func GateExempt(cmd *cobra.Command) bool {
 		if c.Name() == "completion" {
 			return true
 		}
-		if c.Annotations[gateSkipAnnotation] == "true" {
+		if c.Annotations[gateSkipAnnotation] == annotationTrue {
 			return true
 		}
 	}

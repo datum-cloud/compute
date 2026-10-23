@@ -99,7 +99,6 @@ func (r *recordingEntitlements) Create(context.Context, *servicesv1alpha1.Servic
 
 func TestCheckActivationNeverRequestsAccess(t *testing.T) {
 	service := activation.ServiceInfo{
-		ObjectName:     "compute",
 		CanonicalName:  ComputeServiceName,
 		DisplayName:    "Compute",
 		EnablementMode: servicesv1alpha1.EnablementModeSelfService,
@@ -124,7 +123,7 @@ func TestCheckActivationNeverRequestsAccess(t *testing.T) {
 }
 
 func TestGateCheckOnly(t *testing.T) {
-	root := &cobra.Command{Use: "compute"}
+	root := &cobra.Command{Use: rootUse}
 	exec := &cobra.Command{Use: "exec"}
 	MarkGateCheckOnly(exec)
 	child := &cobra.Command{Use: "child"}
