@@ -18,7 +18,6 @@ const (
 // container has no writable directory for the marker file. A container
 // without sh cannot run it at all.
 const probeScript = `command -v "$1" >/dev/null 2>&1 || exit 4
-if [ ! -x /run/datum-shell/shell-reaper ]; then exit 5; fi
 for d in /tmp /dev/shm /run /var/tmp; do
   if [ -d "$d" ] && [ -w "$d" ]; then echo "$d"; exit 0; fi
 done
@@ -29,7 +28,6 @@ const exitWatchNoSleep = 3
 const (
 	probeExitCommandMissing = 4
 	probeExitNoWritableDir  = 3
-	probeExitNoReaper       = 5
 )
 
 // procStatFunction reads /proc/<pid>/stat into Z (state), G (process group),
@@ -38,7 +36,7 @@ const (
 const procStatFunction = `st() { Z=; G=; S=; T=; read -r l < "$P/$1/stat" 2>/dev/null || return 1; set -- ${l##*)}; Z=$1 G=$3 S=$4 T=${20}; }
 `
 
-// Legacy wrapper for sessions created before the native subreaper rollout.
+// Legacy wrapper for instances started before the native subreaper rollout.
 // The wrapper records who to stop when the session ends, runs the command,
 // and records the command's exit code. Job control moves background jobs to
 // process groups of their own but never out of the session, so the wrapper
@@ -67,6 +65,13 @@ if [ "$mode" = null ]; then "$@" </dev/null; else "$@"; fi
 rc=$?
 echo "$rc" > "$x"
 exit "$rc"`
+
+// The launch script runs the command under the subreaper when the instance
+// carries it, and under the legacy wrapper otherwise, so instances started
+// before the subreaper rollout keep working until they restart.
+const launchScript = `w=$1; shift
+if [ -x ` + reaperPath + ` ]; then m=$1 x=$2 mode=$3; shift 4; exec ` + reaperPath + ` run "$m" "$x" 5 "$mode" "$@"; fi
+exec sh -c "$w" sh "$w" "$@"`
 
 // The exit watch prints the command's exit code once the wrapper records it.
 // It gives up once the marker it saw is removed, when the session has been
@@ -165,8 +170,8 @@ func wrappedCommand(dir, sessionUID string, command []string, stdin, tty bool) [
 	if !stdin && !tty {
 		mode = nullStdin
 	}
-	return append([]string{reaperPath, "run", markerPath(dir, sessionUID),
-		exitPath(dir, sessionUID), "5", mode}, command...)
+	return append([]string{"sh", "-c", launchScript, "sh", wrapperScript,
+		markerPath(dir, sessionUID), exitPath(dir, sessionUID), mode, "0"}, command...)
 }
 
 func exitCheckCommand(dir, sessionUID string) []string {
