@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const observationTestAddress = "10.20.0.10/32"
+
 func TestObserveInternalDNSInterface(t *testing.T) {
 	const delegatedPrefix = "fd20:0:f::5:0:0/96"
 	const delegatedAddress = "fd20:0:f::5:0:0"
@@ -27,7 +29,7 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 		wantErr       bool
 		wantAddresses []networkingv1alpha.NetworkInterfaceAddress
 	}{
-		{name: "ready instance with a programmed interface", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: "10.20.0.10/32"}}},
+		{name: "ready instance with a programmed interface", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: observationTestAddress}}},
 		{name: "delegated IPv6 block publishes its host address", eligible: true, wantAddresses: []networkingv1alpha.NetworkInterfaceAddress{{Address: delegatedAddress}}, mutate: func(i *computev1alpha.Instance) {
 			i.Status.NetworkInterfaces[0].Addresses = []computev1alpha.InstanceNetworkInterfaceAddress{{Address: delegatedPrefix}}
 		}},
@@ -87,7 +89,7 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 					NetworkInterfaces: []computev1alpha.InstanceNetworkInterfaceStatus{{
 						Name:                defaultInterfaceName,
 						NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: "interface"},
-						Addresses:           []computev1alpha.InstanceNetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: "10.20.0.10/32", Gateway: "10.20.0.1", Primary: true}},
+						Addresses:           []computev1alpha.InstanceNetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: observationTestAddress, Gateway: "10.20.0.1", Primary: true}},
 						Conditions: []metav1.Condition{
 							{Type: computev1alpha.InstanceNetworkInterfaceAllocated, Status: metav1.ConditionTrue, Reason: "Allocated"},
 							{Type: computev1alpha.InstanceNetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: wdTestReasonProgrammed},
@@ -107,7 +109,7 @@ func TestObserveInternalDNSInterface(t *testing.T) {
 			require.Equal(t, tc.eligible, got.Eligible)
 			if tc.eligible {
 				if tc.wantAddresses == nil {
-					tc.wantAddresses = []networkingv1alpha.NetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: "10.20.0.10/32"}}
+					tc.wantAddresses = []networkingv1alpha.NetworkInterfaceAddress{{Family: networkingv1alpha.IPv4Protocol, Address: observationTestAddress}}
 				}
 				require.ElementsMatch(t, tc.wantAddresses, got.Addresses)
 			} else {
