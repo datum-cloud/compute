@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  collectInstanceAddresses,
+  collectInstanceExternalIPs,
+  collectInstanceHostnames,
   collectInstanceInternalIPs,
   toInstance,
   toWorkload,
@@ -77,6 +80,88 @@ describe("collectInstanceInternalIPs", () => {
     const instance = toInstance(raw({}));
     expect(instance.internalIP).toBeUndefined();
     expect(instance.internalIPs).toEqual([]);
+  });
+});
+
+describe("collectInstanceAddresses", () => {
+  test("delegated IPv6 block reads as the address it is written with", () => {
+    const instance = toInstance(
+      raw({
+        networkInterfaces: [
+          {
+            assignments: { networkIP: "fd20:0:10:1:0:3::/96" },
+            addresses: [{ address: "fd20:0:10:1:0:3::/96" }],
+          },
+        ],
+      }),
+    );
+    expect(instance.addresses).toEqual(["fd20:0:10:1:0:3::"]);
+    expect(instance.internalIPs).toEqual([]);
+  });
+
+  test("host routes bare, v4 and v6, deduplicated", () => {
+    expect(
+      collectInstanceAddresses(
+        raw({
+          networkInterfaces: [
+            {
+              assignments: { networkIP: "10.0.1.4" },
+              addresses: [{ address: "10.0.1.4/32" }, { address: "2001:db8::1/128" }],
+            },
+          ],
+        }),
+      ),
+    ).toEqual(["10.0.1.4", "2001:db8::1"]);
+  });
+
+  test("skips IPv4 blocks", () => {
+    expect(
+      collectInstanceAddresses(raw({ networkInterfaces: [{ addresses: [{ address: "10.0.1.0/24" }] }] })),
+    ).toEqual([]);
+  });
+});
+
+describe("collectInstanceExternalIPs", () => {
+  test("externalAddresses and assignments, deduplicated", () => {
+    expect(
+      collectInstanceExternalIPs(
+        raw({
+          networkInterfaces: [
+            {
+              assignments: { networkIP: "10.0.1.4", externalIP: "203.0.113.9" },
+              externalAddresses: [{ address: "203.0.113.9" }, { address: "2001:db8::9" }],
+            },
+          ],
+        }),
+      ),
+    ).toEqual(["203.0.113.9", "2001:db8::9"]);
+  });
+
+  test("ignores internal addresses", () => {
+    const instance = toInstance(
+      raw({ networkInterfaces: [{ assignments: { networkIP: "10.0.1.4" } }] }),
+    );
+    expect(instance.externalIPs).toEqual([]);
+  });
+});
+
+describe("collectInstanceHostnames", () => {
+  test("every network's hostnames, deduplicated", () => {
+    expect(
+      collectInstanceHostnames(
+        raw({
+          dns: [
+            { hostnames: ["inst-1.default.internal", "inst-1.web.internal"] },
+            { hostnames: ["inst-1.default.internal"] },
+            {},
+          ],
+        }),
+      ),
+    ).toEqual(["inst-1.default.internal", "inst-1.web.internal"]);
+  });
+
+  test("empty status", () => {
+    expect(toInstance(raw({})).hostnames).toEqual([]);
   });
 });
 

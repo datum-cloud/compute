@@ -162,6 +162,9 @@ function instance(name: string, conditions: Instance['conditions'], status: Inst
     ports: [],
     containers: [],
     internalIPs: [],
+    addresses: [],
+    externalIPs: [],
+    hostnames: [],
     status,
     conditions,
   };
