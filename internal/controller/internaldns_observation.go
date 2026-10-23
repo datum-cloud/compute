@@ -47,8 +47,8 @@ func ObserveInternalDNSInterface(_ context.Context, _ client.Reader, namespace s
 		return result, nil
 	}
 	// Ready tolerates a runtime that was never observed, for runtimes that do
-	// not run instances as Pods. Every runtime private DNS serves does, so an
-	// unobserved one is not eligible.
+	// not run instances as Pods. Every runtime private DNS serves does, so once
+	// RuntimeReady is reported it must be True, including when it is Unknown.
 	if runtimeCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceRuntimeReady); runtimeCondition != nil && runtimeCondition.Status != metav1.ConditionTrue {
 		return result, nil
 	}
