@@ -563,8 +563,13 @@ func main() {
 		}
 		// Always registered, regardless of InstanceTypes: the gate is checked
 		// inside validation, which rejects every write with an explained reason
+		var projectReaders *computewebhook.ProjectReaders
+		if projectReaders, err = webhookProjectReaders(serverConfig); err != nil {
+			setupLog.Error(err, "unable to create project readers", "webhook", "InstanceType")
+			os.Exit(1)
+		}
 		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
-			mgr, instanceTypeDeprecationGracePeriod,
+			mgr, projectReaders, instanceTypeDeprecationGracePeriod,
 		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
 			os.Exit(1)
@@ -632,6 +637,23 @@ func main() {
 		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
+}
+
+// webhookProjectReaders returns uncached readers for project control planes
+// when consumer-scoped projection is configured, so admission does not wait
+// for the consumer provider to engage a newly entitled project. It returns nil
+// in every other discovery mode, where webhooks read through the engaged
+// cluster as before.
+func webhookProjectReaders(serverConfig config.WorkloadOperator) (*computewebhook.ProjectReaders, error) {
+	csp := serverConfig.Discovery.ConsumerScopedProjection
+	if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo || csp == nil {
+		return nil, nil
+	}
+	discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+	}
+	return computewebhook.NewProjectReaders(discoveryRestConfig, csp.ProviderProject, scheme)
 }
 
 func initializeClusterDiscovery(

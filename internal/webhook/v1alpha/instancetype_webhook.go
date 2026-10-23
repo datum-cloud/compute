@@ -17,10 +17,12 @@ import (
 )
 
 // SetupInstanceTypeWebhookWithManager sets up the webhook with the Manager.
-func SetupInstanceTypeWebhookWithManager(mgr mcmanager.Manager, deprecationGracePeriod time.Duration) error {
+// When readers is set, validation reads the project directly rather than
+// through its engaged cluster; see liveProjectReader.
+func SetupInstanceTypeWebhookWithManager(mgr mcmanager.Manager, readers *computewebhook.ProjectReaders, deprecationGracePeriod time.Duration) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &computev1alpha.InstanceType{}).
 		WithValidator(&instanceTypeValidator{
-			reader:                 projectReader(mgr),
+			reader:                 liveProjectReader(mgr, readers),
 			deprecationGracePeriod: deprecationGracePeriod,
 		}).
 		Complete()
@@ -36,6 +38,26 @@ func projectReader(mgr mcmanager.Manager) func(context.Context) (client.Reader, 
 			return nil, err
 		}
 		return cl.GetAPIReader(), nil
+	}
+}
+
+// liveProjectReader returns an uncached reader for the project control plane a
+// request is admitted into. With readers set, it reads the project directly,
+// so admission neither waits on nor depends on the provider having engaged
+// the project. Service-catalog installs a service's instance types the moment
+// the project is entitled, which is before the provider engages it. Without
+// readers, or for a request with no project, it falls back to projectReader.
+func liveProjectReader(mgr mcmanager.Manager, readers *computewebhook.ProjectReaders) func(context.Context) (client.Reader, error) {
+	fallback := projectReader(mgr)
+	if readers == nil {
+		return fallback
+	}
+	return func(ctx context.Context) (client.Reader, error) {
+		project := computewebhook.ClusterNameFromContext(ctx)
+		if project == "" {
+			return fallback(ctx)
+		}
+		return readers.Reader(project)
 	}
 }
 

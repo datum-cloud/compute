@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -18,6 +19,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/features"
+	computewebhook "go.datum.net/compute/internal/webhook"
 )
 
 const (
@@ -526,4 +528,20 @@ func activeType(name string) *computev1alpha.InstanceType {
 			},
 		},
 	}
+}
+
+// TestLiveProjectReader_ReadsProjectWithoutEngagement verifies that, with
+// project readers configured, the validator's reader comes from them and not
+// from the multicluster manager, so admission works before engagement.
+func TestLiveProjectReader_ReadsProjectWithoutEngagement(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	require.NoError(t, computev1alpha.AddToScheme(scheme))
+	readers, err := computewebhook.NewProjectReaders(&rest.Config{Host: "https://milo.example"}, "provider", scheme)
+	require.NoError(t, err)
+
+	// A nil manager panics if the reader falls back to the engaged cluster.
+	reader := liveProjectReader(nil, readers)
+	r, err := reader(computewebhook.WithClusterName(context.Background(), "project-a"))
+	require.NoError(t, err)
+	assert.NotNil(t, r)
 }
