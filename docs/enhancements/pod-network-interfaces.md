@@ -59,15 +59,22 @@ asked for again, so its address would stay reserved forever.
    `compute.datumapis.com/` are copied to the claim, and network services
    carries them on to the interface.
 3. If a claim of that name already exists with no owner and the same network,
-   interface, and policy, compute adopts it. This lets existing GitOps claims
-   move over without changing address.
-4. If the claim belongs to another Pod, or is being deleted, compute waits.
-   The claim name works as a lock, so two Pods never hold one interface.
+   interface, policy, and container attachment mode, compute adopts it and adds
+   the Pod's labels. This lets existing GitOps claims move over without
+   changing address.
+4. If the claim belongs to another running Pod, or is being deleted, compute
+   waits. The claim name works as a lock, so two Pods never hold one
+   interface. If the holder Pod is gone, failed, or finished, compute deletes
+   its claim so the new Pod can take the name; Retain keeps the address. A
+   claim held by anything other than a Pod is refused.
 5. Once every claim is bound, allocated, and prepared, compute sets the Multus
    default network for `eth0`, adds the other interfaces to the Pod's Multus
    networks list, and writes each interface's address to
    `compute.datumapis.com/address-<interface>`.
 6. In a separate write, compute removes the gate.
+
+While a Pod waits or is refused, compute records an event on it that names
+the claim and what holds it.
 
 A container reads its address through the downward API:
 
@@ -103,8 +110,9 @@ Use `Recreate` or a StatefulSet.
    downward API, and drop the copied Multus networks value.
 3. Check that the address did not change and the resolver goes Ready.
 4. When all five have moved, remove the claims and copied settings from Git.
-   The Flux Kustomization that applies them orphans on delete, so the claims
-   stay for compute.
+   The Flux Kustomization that applies them does not prune, so the claims stay
+   for compute. A Kustomization that prunes would delete them under the running
+   Pods; mark such claims `kustomize.toolkit.fluxcd.io/prune: disabled` first.
 
 ## Not covered
 
@@ -115,5 +123,9 @@ Use `Recreate` or a StatefulSet.
   addresses fixed, but they are still copied.
 - Compute does not release retained interfaces after their workload is gone.
   A follow-up can find and alert on them.
+- Admission checks the list only when the Pod is created. Editing the
+  annotation on a Pod that is still gated can leave it gated with an event.
+- A replacement Deployment Pod notices a released claim on its next retry,
+  within a few seconds, rather than through a watch.
 - The late Multus annotation and CNI detach ordering still need an end-to-end
   check on the resolver runtime class, as noted in the native Pod design.

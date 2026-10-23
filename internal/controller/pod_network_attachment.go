@@ -17,11 +17,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -40,6 +40,8 @@ const (
 	podInterfaceAddressAnnotationPrefix = "compute.datumapis.com/address-"
 	maxPodNetworkInterfaces             = 4
 	vpcAttachmentKind                   = "VPCAttachment"
+	podKind                             = "Pod"
+	statefulSetKind                     = "StatefulSet"
 )
 
 // PodNetworkInterface is one entry of the network interfaces annotation.
@@ -102,12 +104,11 @@ func PodNetworkInterfaces(pod *corev1.Pod) ([]PodNetworkInterface, error) {
 			return nil, fmt.Errorf("interface %s is listed more than once", entry.Interface)
 		}
 		interfaceNames[entry.Interface] = true
-		if entry.ClaimName != "" {
-			if claimNames[entry.ClaimName] {
-				return nil, fmt.Errorf("claim %s is listed more than once", entry.ClaimName)
-			}
-			claimNames[entry.ClaimName] = true
+		claimName := podNetworkInterfaceClaimName(pod, *entry)
+		if claimNames[claimName] {
+			return nil, fmt.Errorf("claim %s is used by more than one interface", claimName)
 		}
+		claimNames[claimName] = true
 	}
 	return interfaces, nil
 }
@@ -145,7 +146,7 @@ func defaultAndValidatePodNetworkInterface(pod *corev1.Pod, entry *PodNetworkInt
 
 func ownedByStatefulSet(pod *corev1.Pod) bool {
 	owner := metav1.GetControllerOf(pod)
-	return owner != nil && owner.Kind == "StatefulSet" && owner.APIVersion == appsv1.SchemeGroupVersion.String()
+	return owner != nil && owner.Kind == statefulSetKind && owner.APIVersion == appsv1.SchemeGroupVersion.String()
 }
 
 // podNetworkInterfaceClaimName names the claim after the slot the Pod fills
@@ -172,6 +173,7 @@ func PodInterfaceAddressAnnotation(interfaceName string) string {
 // It runs only against the cell cluster, not project control planes.
 type PodNetworkAttachmentReconciler struct {
 	client.Client
+	recorder events.EventRecorder
 }
 
 type preparedPodInterface struct {
@@ -183,6 +185,7 @@ type preparedPodInterface struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var pod corev1.Pod
@@ -196,7 +199,7 @@ func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 	entries, err := PodNetworkInterfaces(&pod)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Pod network interfaces are invalid; leaving the Pod gated")
+		r.event(&pod, corev1.EventTypeWarning, "InvalidNetworkInterfaces", err.Error())
 		return ctrl.Result{}, nil
 	}
 	if len(entries) == 0 {
@@ -293,20 +296,13 @@ func (r *PodNetworkAttachmentReconciler) prepareInterface(ctx context.Context, p
 		return nil, wait, nil
 	}
 	if !podClaimMatches(&claim, entry) {
-		return nil, ctrl.Result{}, fmt.Errorf("network claim %s requests a different network, interface, or reclaim policy than Pod %s", claim.Name, pod.Name)
+		message := fmt.Sprintf("network claim %s asks for a different network, interface, attachment mode, or reclaim policy", claim.Name)
+		r.event(pod, corev1.EventTypeWarning, "NetworkClaimMismatch", message)
+		return nil, ctrl.Result{}, errors.New(message)
 	}
 	if !metav1.IsControlledBy(&claim, pod) {
-		if metav1.GetControllerOf(&claim) != nil {
-			log.FromContext(ctx).Info("waiting for another holder to release the network claim", "claim", claim.Name)
-			return nil, wait, nil
-		}
-		if err := controllerutil.SetControllerReference(pod, &claim, r.Scheme()); err != nil {
-			return nil, ctrl.Result{}, err
-		}
-		if err := r.Update(ctx, &claim); err != nil {
-			return nil, ctrl.Result{}, fmt.Errorf("adopt network claim %s: %w", claim.Name, err)
-		}
-		return nil, ctrl.Result{RequeueAfter: time.Second}, nil
+		result, err := r.claimHeldElsewhere(ctx, pod, &claim)
+		return nil, result, err
 	}
 	if !networkInterfaceClaimSatisfied(&claim) || claim.Status.NetworkInterfaceRef == nil {
 		return nil, wait, nil
@@ -338,6 +334,62 @@ func (r *PodNetworkAttachmentReconciler) prepareInterface(ctx context.Context, p
 	}, ctrl.Result{}, nil
 }
 
+// claimHeldElsewhere decides what a Pod does about a claim of its name that it
+// does not control: adopt it when nothing controls it, release it when its Pod
+// holder is gone or finished, and otherwise wait for the holder to go away.
+func (r *PodNetworkAttachmentReconciler) claimHeldElsewhere(ctx context.Context, pod *corev1.Pod, claim *networkingv1alpha.NetworkInterfaceClaim) (ctrl.Result, error) {
+	holder := metav1.GetControllerOf(claim)
+	if holder == nil {
+		if err := controllerutil.SetControllerReference(pod, claim, r.Scheme()); err != nil {
+			return ctrl.Result{}, err
+		}
+		if claim.Labels == nil {
+			claim.Labels = map[string]string{}
+		}
+		for key, value := range podClaimLabels(pod) {
+			claim.Labels[key] = value
+		}
+		if err := r.Update(ctx, claim); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adopt network claim %s: %w", claim.Name, err)
+		}
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	if holder.Kind != podKind || holder.APIVersion != "v1" {
+		message := fmt.Sprintf("network claim %s belongs to %s %s", claim.Name, holder.Kind, holder.Name)
+		r.event(pod, corev1.EventTypeWarning, "NetworkClaimInUse", message)
+		return ctrl.Result{}, errors.New(message)
+	}
+
+	var holderPod corev1.Pod
+	err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: holder.Name}, &holderPod)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	finished := holderPod.Status.Phase == corev1.PodFailed || holderPod.Status.Phase == corev1.PodSucceeded
+	if apierrors.IsNotFound(err) || holderPod.UID != holder.UID || finished {
+		// An evicted or failed Pod object can linger long after its sandbox is
+		// gone, and garbage collection keeps its claim until then. Deleting the
+		// claim releases the interface; Retain keeps its addresses for this Pod.
+		uid := claim.UID
+		if err := r.Delete(ctx, claim, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("release network claim %s from finished Pod %s: %w", claim.Name, holder.Name, err)
+		}
+		r.event(pod, corev1.EventTypeNormal, "NetworkClaimReleased",
+			fmt.Sprintf("released network claim %s from finished Pod %s", claim.Name, holder.Name))
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	r.event(pod, corev1.EventTypeNormal, "WaitingForNetworkClaim",
+		fmt.Sprintf("waiting for Pod %s to release network claim %s", holder.Name, claim.Name))
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+func (r *PodNetworkAttachmentReconciler) event(pod *corev1.Pod, eventType, reason, message string) {
+	if r.recorder == nil {
+		return
+	}
+	r.recorder.Eventf(pod, nil, eventType, reason, "AttachNetwork", "%s", message)
+}
+
 func podClaimMatches(claim *networkingv1alpha.NetworkInterfaceClaim, entry PodNetworkInterface) bool {
 	interfaceName := claim.Spec.InterfaceName
 	if interfaceName == "" {
@@ -347,7 +399,12 @@ func podClaimMatches(claim *networkingv1alpha.NetworkInterfaceClaim, entry PodNe
 	if policy == "" {
 		policy = networkingv1alpha.NetworkInterfaceReclaimPolicyDelete
 	}
-	return claim.Spec.Network.Name == entry.Network && interfaceName == entry.Interface && policy == entry.ReclaimPolicy
+	mode := claim.Spec.AttachmentMode
+	if mode == "" {
+		mode = networkingv1alpha.NetworkInterfaceAttachmentModeNetns
+	}
+	return claim.Spec.Network.Name == entry.Network && interfaceName == entry.Interface &&
+		policy == entry.ReclaimPolicy && mode == networkingv1alpha.NetworkInterfaceAttachmentModeNetns
 }
 
 // podClaimLabels copies the Pod's compute labels, which NSO carries on to the
@@ -367,13 +424,19 @@ func podClaimLabels(pod *corev1.Pod) map[string]string {
 	return labels
 }
 
-// primaryClaimAddress is the first address the claim holds, without its prefix
-// length. For a delegated IPv6 block that is the block's first address.
+// primaryClaimAddress is the claim's primary address without its prefix length.
+// For a delegated IPv6 block that is the block's first address.
 func primaryClaimAddress(claim *networkingv1alpha.NetworkInterfaceClaim) string {
 	if len(claim.Status.Addresses) == 0 {
 		return ""
 	}
 	address := claim.Status.Addresses[0].Address
+	for _, candidate := range claim.Status.Addresses {
+		if candidate.Primary {
+			address = candidate.Address
+			break
+		}
+	}
 	if prefix, err := netip.ParsePrefix(address); err == nil {
 		return prefix.Addr().String()
 	}
@@ -399,11 +462,12 @@ func hasPodNetworkGate(pod *corev1.Pod) bool {
 
 func (r *PodNetworkAttachmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Client = mgr.GetClient()
+	r.recorder = mgr.GetEventRecorder("pod-network-attachment")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
 		Watches(&networkingv1alpha.NetworkInterfaceClaim{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
 			for _, owner := range obj.GetOwnerReferences() {
-				if owner.Kind == "Pod" && owner.APIVersion == "v1" {
+				if owner.Kind == podKind && owner.APIVersion == "v1" {
 					return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: owner.Name}}}
 				}
 			}

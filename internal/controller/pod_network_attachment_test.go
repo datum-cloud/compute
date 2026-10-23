@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,6 +24,8 @@ const (
 	testPodNamespace       = "tenant"
 	testRetainedClaimName  = "resolver-node"
 	testSecondaryInterface = "net1"
+	testHolderPodName      = "resolver-old"
+	testTierValue          = "node"
 	testRetainedInterfaces = `[{"network":"producer","interface":"net1","claimName":"resolver-node","reclaimPolicy":"Retain"}]`
 )
 
@@ -122,7 +125,7 @@ func listedInterfacesPod() *corev1.Pod {
 		Namespace: testPodNamespace, Name: "resolver-abc", UID: types.UID("0b0f6a52-7c5e-4d5e-9a0e-1f6f4f6c2b11"),
 		Labels: map[string]string{
 			PodNetworkInterfacesEnabledLabel: PodPrimaryNetworkEnabledValue,
-			"compute.datumapis.com/tier":     "node",
+			"compute.datumapis.com/tier":     testTierValue,
 			"team":                           "dns",
 		},
 		Annotations: map[string]string{PodNetworkInterfacesAnnotation: testRetainedInterfaces},
@@ -167,7 +170,7 @@ func TestPodNetworkAttachmentSecondaryRetainedInterface(t *testing.T) {
 	if claim.Spec.InterfaceName != testSecondaryInterface || claim.Spec.ReclaimPolicy != networkingv1alpha.NetworkInterfaceReclaimPolicyRetain || !metav1.IsControlledBy(claim, pod) {
 		t.Fatalf("bad retained claim: %+v", claim)
 	}
-	if claim.Labels["compute.datumapis.com/tier"] != "node" || claim.Labels["team"] != "" || claim.Labels[PodNetworkInterfacesEnabledLabel] != "" {
+	if claim.Labels["compute.datumapis.com/tier"] != testTierValue || claim.Labels["team"] != "" || claim.Labels[PodNetworkInterfacesEnabledLabel] != "" {
 		t.Fatalf("claim labels = %v", claim.Labels)
 	}
 
@@ -211,7 +214,7 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 	}
 	controlledBy := func(name string) []metav1.OwnerReference {
 		controller := true
-		return []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: name, UID: types.UID(name), Controller: &controller}}
+		return []metav1.OwnerReference{{APIVersion: "v1", Kind: podKind, Name: name, UID: types.UID(name), Controller: &controller}}
 	}
 
 	t.Run("unowned claim is adopted", func(t *testing.T) {
@@ -228,13 +231,18 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 		if !metav1.IsControlledBy(claim, pod) {
 			t.Fatalf("claim was not adopted: %+v", claim.OwnerReferences)
 		}
+		if claim.Labels["compute.datumapis.com/tier"] != testTierValue {
+			t.Fatalf("adopted claim labels = %v", claim.Labels)
+		}
 	})
 
 	t.Run("claim held by another Pod waits", func(t *testing.T) {
 		pod := listedInterfacesPod()
 		claim := retained()
-		claim.OwnerReferences = controlledBy("resolver-old")
-		cl := newPodNetworkTestClient(t, pod, claim)
+		claim.OwnerReferences = controlledBy(testHolderPodName)
+		holder := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testPodNamespace, Name: testHolderPodName, UID: testHolderPodName}}
+		holder.Status.Phase = corev1.PodRunning
+		cl := newPodNetworkTestClient(t, pod, claim, holder)
 		r := &PodNetworkAttachmentReconciler{Client: cl}
 		result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
 		if err != nil {
@@ -248,6 +256,65 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 		}
 		if metav1.IsControlledBy(claim, pod) {
 			t.Fatal("claim taken from another Pod")
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		holder *corev1.Pod
+	}{
+		{name: "holder Pod deleted"},
+		{name: "holder Pod failed", holder: &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testPodNamespace, Name: testHolderPodName, UID: testHolderPodName},
+			Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+		}},
+		{name: "holder name reused by a new Pod", holder: &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testPodNamespace, Name: testHolderPodName, UID: "reused-name-uid"},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		}},
+	} {
+		t.Run(tc.name+" releases the claim", func(t *testing.T) {
+			pod := listedInterfacesPod()
+			claim := retained()
+			claim.OwnerReferences = controlledBy(testHolderPodName)
+			objects := []client.Object{pod, claim}
+			if tc.holder != nil {
+				objects = append(objects, tc.holder)
+			}
+			cl := newPodNetworkTestClient(t, objects...)
+			r := &PodNetworkAttachmentReconciler{Client: cl}
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(claim), claim); !apierrors.IsNotFound(err) {
+				t.Fatalf("claim of a finished holder was kept: %v", err)
+			}
+		})
+	}
+
+	t.Run("claim held by a non-Pod owner is refused", func(t *testing.T) {
+		pod := listedInterfacesPod()
+		claim := retained()
+		controller := true
+		claim.OwnerReferences = []metav1.OwnerReference{{APIVersion: "compute.datumapis.com/v1alpha", Kind: internalDNSInstanceKind, Name: "vm", UID: "vm", Controller: &controller}}
+		cl := newPodNetworkTestClient(t, pod, claim)
+		r := &PodNetworkAttachmentReconciler{Client: cl}
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}); err == nil {
+			t.Fatal("claim owned by an Instance was not refused")
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("claim for a hypervisor is refused", func(t *testing.T) {
+		pod := listedInterfacesPod()
+		claim := retained()
+		claim.Spec.AttachmentMode = networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor
+		cl := newPodNetworkTestClient(t, pod, claim)
+		r := &PodNetworkAttachmentReconciler{Client: cl}
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}); err == nil {
+			t.Fatal("hypervisor claim was adopted")
 		}
 	})
 
@@ -282,7 +349,7 @@ func TestPodNetworkAttachmentExistingClaims(t *testing.T) {
 
 func TestPodNetworkInterfaces(t *testing.T) {
 	controller := true
-	statefulSetOwner := []metav1.OwnerReference{{APIVersion: appsv1.SchemeGroupVersion.String(), Kind: "StatefulSet", Name: "resolvers", UID: "set", Controller: &controller}}
+	statefulSetOwner := []metav1.OwnerReference{{APIVersion: appsv1.SchemeGroupVersion.String(), Kind: statefulSetKind, Name: "resolvers", UID: "set", Controller: &controller}}
 	for _, tc := range []struct {
 		name       string
 		annotation string
@@ -326,5 +393,29 @@ func TestPodNetworkInterfaces(t *testing.T) {
 	}}}
 	if _, err := PodNetworkInterfaces(both); err == nil {
 		t.Fatal("both opt-in labels were accepted")
+	}
+}
+
+func TestPrimaryClaimAddress(t *testing.T) {
+	claim := &networkingv1alpha.NetworkInterfaceClaim{}
+	claim.Status.Addresses = []networkingv1alpha.NetworkInterfaceAddress{
+		{Family: networkingv1alpha.IPv4Protocol, Address: "10.0.0.5/32"},
+		{Family: networkingv1alpha.IPv6Protocol, Address: "fd20:0:e::4:0:0/96", Primary: true},
+	}
+	if got := primaryClaimAddress(claim); got != "fd20:0:e::4:0:0" {
+		t.Fatalf("primary address = %q", got)
+	}
+}
+
+func TestPodNetworkInterfacesResolvedClaimCollision(t *testing.T) {
+	controller := true
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "r-0", UID: "uid",
+		OwnerReferences: []metav1.OwnerReference{{APIVersion: appsv1.SchemeGroupVersion.String(), Kind: statefulSetKind, Name: "r", UID: "set", Controller: &controller}},
+		Labels:          map[string]string{PodNetworkInterfacesEnabledLabel: PodPrimaryNetworkEnabledValue},
+		Annotations:     map[string]string{PodNetworkInterfacesAnnotation: `[{"network":"a","interface":"net1"},{"network":"b","interface":"net2","claimName":"r-0-net1"}]`},
+	}}
+	if _, err := PodNetworkInterfaces(pod); err == nil {
+		t.Fatal("derived and explicit claim names collided without an error")
 	}
 }
