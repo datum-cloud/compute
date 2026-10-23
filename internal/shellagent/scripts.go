@@ -25,6 +25,11 @@ exit 3`
 
 const exitWatchNoSleep = 3
 
+// exitWatchStartSeconds is how long the exit watch waits for a session's
+// marker or exit file to appear. Both are written as the command starts, so a
+// watch that sees neither in that time started after the session was over.
+const exitWatchStartSeconds = 10
+
 const (
 	probeExitCommandMissing = 4
 	probeExitNoWritableDir  = 3
@@ -75,14 +80,16 @@ exec sh -c "$w" sh "$w" "$@"`
 
 // The exit watch prints the command's exit code once the wrapper records it.
 // It gives up once the marker it saw is removed, when the session has been
-// stopped, or after its limit in seconds. It exits 3 without looking when the
+// stopped, when neither file appears within its start window, because the
+// session ended and was cleaned up before the watch began, or after its limit
+// in seconds. It exits 3 without looking when the
 // container has no sleep, so it never spins; the agent then polls with the
 // exit check, which uses only shell builtins.
-const exitWatchScript = `x=$1 m=$2 n=$3 seen=0 i=0
+const exitWatchScript = `x=$1 m=$2 n=$3 s=$4 seen=0 i=0
 command -v sleep >/dev/null 2>&1 || exit 3
 while [ "$i" -lt "$n" ]; do
   if [ -s "$x" ]; then read -r rc < "$x"; echo "$rc"; exit 0; fi
-  if [ -f "$m" ]; then seen=1; elif [ "$seen" = 1 ]; then exit 2; fi
+  if [ -f "$m" ]; then seen=1; elif [ "$seen" = 1 ] || [ "$i" -ge "$s" ]; then exit 2; fi
   sleep 1; i=$((i+1))
 done
 exit 2`
@@ -101,12 +108,13 @@ exit 2`
 // to retry. A leader whose process ID now belongs to a younger process means
 // the session is long gone. A process that starts a session of its own, with
 // setsid, leaves the recorded session and is not stopped. The command's exit
-// file goes with the marker.
+// file goes with the marker, including once the subreaper confirms its stop,
+// since the subreaper may write the exit file while it stops.
 const killScript = `f=$1 grace=$2 P=${3:-/proc}
 x=${f%/*}/` + exitPrefix + `${f##*/` + markerPrefix + `}
 [ -f "$f" ] || { rm -f "$x"; exit 0; }
 read -r p t kind < "$f"
-if [ "$kind" = reaper ]; then exec /run/datum-shell/shell-reaper stop "$f" "$grace"; fi
+if [ "$kind" = reaper ]; then ` + reaperPath + ` stop "$f" "$grace" || exit; rm -f "$x"; exit 0; fi
 case "$p" in ''|*[!0-9]*) rm -f "$f" "$x"; exit 0 ;; esac
 case "$t" in *[!0-9]*) t= ;; esac
 ` + procStatFunction + `if [ -n "$t" ] && st "$p" && [ "$T" != "$t" ]; then rm -f "$f" "$x"; exit 0; fi
@@ -179,7 +187,8 @@ func exitCheckCommand(dir, sessionUID string) []string {
 }
 
 func exitWatchCommand(dir, sessionUID string, limitSeconds int) []string {
-	return []string{"sh", "-c", exitWatchScript, "sh", exitPath(dir, sessionUID), markerPath(dir, sessionUID), strconv.Itoa(limitSeconds)}
+	return []string{"sh", "-c", exitWatchScript, "sh", exitPath(dir, sessionUID), markerPath(dir, sessionUID),
+		strconv.Itoa(limitSeconds), strconv.Itoa(exitWatchStartSeconds)}
 }
 
 func killCommand(dir, sessionUID string, graceSeconds int) []string {

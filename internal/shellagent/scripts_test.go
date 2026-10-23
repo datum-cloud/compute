@@ -337,6 +337,108 @@ func TestExitWatchGivesUpOnceTheSessionIsStopped(t *testing.T) {
 	}
 }
 
+// A one-off command can finish, and its session be cleaned up, before the
+// exit watch starts. The watch then sees neither file and must not wait out
+// its whole limit.
+func TestExitWatchGivesUpWhenTheSessionEndedBeforeItStarted(t *testing.T) {
+	dir := t.TempDir()
+	watch := exitWatchCommand(dir, "uid", 30)
+	watch[len(watch)-1] = "1"
+	cmd := exec.Command(watch[0], watch[1:]...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+			t.Fatalf("exit watch ended with %v, want exit 2", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the exit watch outlived a session that had already ended")
+	}
+}
+
+func TestExitWatchWaitsForAMarkerWithinItsStartWindow(t *testing.T) {
+	dir := t.TempDir()
+	watch := exitWatchCommand(dir, "uid", 30)
+	cmd := exec.Command(watch[0], watch[1:]...)
+	var out strings.Builder
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	time.Sleep(1500 * time.Millisecond)
+	if err := os.WriteFile(markerPath(dir, "uid"), []byte("1 1 reaper\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exitPath(dir, "uid"), []byte("4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil || strings.TrimSpace(out.String()) != "4" {
+			t.Fatalf("exit watch = %q, %v; want the command's exit code 4", out.String(), err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the exit watch missed the command's exit")
+	}
+}
+
+func TestKillScriptRemovesTheExitFileOnceTheReaperStops(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reaper    string
+		wantExit  int
+		wantFiles bool
+	}{
+		{name: "stopped", reaper: `rm -f "$2"; echo 143 > "$EXIT"`, wantExit: 0},
+		{name: "not confirmed", reaper: `exit 125`, wantExit: 125, wantFiles: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fake := filepath.Join(dir, "shell-reaper")
+			if err := os.WriteFile(fake, []byte("#!/bin/sh\n"+tc.reaper+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(markerPath(dir, "uid"), []byte("1 1 reaper\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := killCommand(dir, "uid", 1)
+			args[2] = strings.ReplaceAll(args[2], reaperPath, fake)
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Env = append(os.Environ(), "EXIT="+exitPath(dir, "uid"))
+			err := cmd.Run()
+			code := 0
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				code = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if code != tc.wantExit {
+				t.Fatalf("kill script exited %d, want %d", code, tc.wantExit)
+			}
+			_, markerErr := os.Stat(markerPath(dir, "uid"))
+			if tc.wantFiles && markerErr != nil {
+				t.Fatalf("marker removed although the stop was not confirmed")
+			}
+			_, exitFileErr := os.Stat(exitPath(dir, "uid"))
+			if !tc.wantFiles && exitFileErr == nil {
+				t.Fatalf("exit file left behind after the session stopped")
+			}
+		})
+	}
+}
+
 // Without sleep the exit watch refuses to spin, and the exit check, which uses
 // only builtins, reports the code instead.
 func TestExitCheckWorksWithoutSleep(t *testing.T) {
