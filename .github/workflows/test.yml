@@ -17,6 +17,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install resource metric rule validator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y prometheus
+
       - name: Running Tests
         run: |
           go mod tidy
