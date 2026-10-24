@@ -1,0 +1,49 @@
+# Least-privilege federation access for the edge (cell) compute-manager on the
+# Karmada control plane. This is a dedicated ClusterRole — deliberately NOT the
+# broad compute-manager role above (which the management plane needs) — scoped to
+# what the cell InstanceReconciler's FederationClient does on the hub in Finalize
+# + writeBackToUpstream (internal/controller/instance_controller.go):
+#
+#   * Get the federation Namespace to resolve write-back identity labels.
+#   * Get / Create / Update / Delete this cell's own write-back Instance.
+#   * Update the write-back Instance's status.
+#
+# The cell uses a direct (non-caching) federation client, so no list/watch is
+# required, and it never touches configmaps/secrets, workloaddeployments, or
+# propagationpolicies on the hub. (The functional minimum is get/create/update/
+# delete on instances + update on instances/status; the extra patch/status-get
+# verbs mirror the role first shipped in infra#3202 so this relocation is a
+# faithful, thrash-free move — patch is a partial-update peer of update.)
+#
+# Bound to the dedicated edge identity by CN specifically — the client cert the
+# infra deployment control plane issues (CN
+# system:compute-edge-federation@compute.datumapis.com) — not to the broad
+# compute.datumapis.com group, so only this identity receives the edge role.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: compute-edge-federation
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instances"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  - apiGroups: ["compute.datumapis.com"]
+    resources: ["instances/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: compute-edge-federation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: compute-edge-federation
+subjects:
+  - kind: User
+    name: system:compute-edge-federation@compute.datumapis.com
+    apiGroup: rbac.authorization.k8s.io
