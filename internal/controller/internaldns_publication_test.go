@@ -64,7 +64,7 @@ func TestAllocatedInstanceDNSName(t *testing.T) {
 	first := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "Web_01", UID: "first"}}
 	second := first.DeepCopy()
 	second.UID = "second"
-	require.Equal(t, "web-01", allocatedInstanceDNSName(first))
+	require.Equal(t, "web-01.instances", allocatedInstanceDNSName(first))
 	require.Equal(t, allocatedInstanceDNSName(first), allocatedInstanceDNSName(second))
 	require.Equal(t, allocatedInstanceDNSName(first), allocatedInstanceDNSName(first.DeepCopy()))
 }

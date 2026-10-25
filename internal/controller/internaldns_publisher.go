@@ -488,7 +488,16 @@ func referenceName(values map[string]any) string {
 	return value
 }
 
+// instanceDNSScope is the label under which compute publishes instance names in
+// a zone, so an instance named web-01 is web-01.instances.<zone>.
+const instanceDNSScope = "instances"
+
+// allocatedInstanceDNSName is the instance's owner name relative to its zone.
 func allocatedInstanceDNSName(instance *computev1alpha.Instance) string {
+	return instanceDNSLabel(instance) + "." + instanceDNSScope
+}
+
+func instanceDNSLabel(instance *computev1alpha.Instance) string {
 	base := strings.ToLower(instance.Name)
 	var b strings.Builder
 	for _, r := range base {
