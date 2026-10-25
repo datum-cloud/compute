@@ -18,7 +18,6 @@ import (
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/config"
 	cliflags "github.com/docker/cli/cli/flags"
-	dockerbuildkit "github.com/docker/docker/client/buildkit"
 	bkclient "github.com/moby/buildkit/client"
 	bkappdefaults "github.com/moby/buildkit/util/appdefaults"
 	mobyclient "github.com/moby/moby/client"
@@ -132,7 +131,7 @@ func connectEngineBuildkit(ctx context.Context) (*bkclient.Client, func(), strin
 		_ = engine.Close()
 		return nil, nil, "", engineUnreachableError(sel, host, runtime.GOOS, err)
 	}
-	c, err := bkclient.New(ctx, "", dockerbuildkit.ClientOpts(engine)...)
+	c, err := bkclient.New(ctx, "", engineBuildkitOpts(engine)...)
 	if err == nil {
 		if _, err = c.Info(ctx); err != nil {
 			_ = c.Close()
@@ -419,5 +418,16 @@ func explicitBuildkitError(address, source string, err error) error {
 			"Check the address, or "+unset+" to use your container engine's\nbuilt-in BuildKit.",
 		),
 		cause: err,
+	}
+}
+
+func engineBuildkitOpts(engine mobyclient.APIClient) []bkclient.ClientOpt {
+	return []bkclient.ClientOpt{
+		bkclient.WithSessionDialer(func(ctx context.Context, proto string, meta map[string][]string) (net.Conn, error) {
+			return engine.DialHijack(ctx, "/session", proto, meta)
+		}),
+		bkclient.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return engine.DialHijack(ctx, "/grpc", "h2c", nil)
+		}),
 	}
 }
