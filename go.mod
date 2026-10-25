@@ -195,7 +195,6 @@ require (
 // image build pipeline (buildkit/docker/containerregistry/erofs).
 require (
 	github.com/docker/cli v29.5.3+incompatible
-	github.com/docker/docker v28.5.2+incompatible
 	github.com/erofs/go-erofs v0.3.1
 	github.com/fatih/color v1.19.0
 	github.com/google/go-containerregistry v0.21.6
