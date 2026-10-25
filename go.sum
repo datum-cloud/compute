@@ -375,8 +375,8 @@ go.datum.net/network-services-operator v0.32.26 h1:z5SrWqbUvU/XH9QX+ePR/s9NcMQBG
 go.datum.net/network-services-operator v0.32.26/go.mod h1:DpbypH11jaKhJ5F9ER6xc2hhgFFGc3kqLhBHyvOz8vo=
 go.miloapis.com/locations v0.0.1 h1:voJKqBzyLX5x96M3+5y/ga7fgq9/+vypTizd+bBvqUY=
 go.miloapis.com/locations v0.0.1/go.mod h1:gzfAfHhSMwl/N68k/uSNYXOKK3IOBJCdXYaBgCE3gdE=
-go.miloapis.com/milo v0.36.10 h1:sViGWYigPmKhgfGtsM1XWsMVQ8tWagwi4VnSQG4P6qI=
-go.miloapis.com/milo v0.36.10/go.mod h1:cWoX3mFL5XFzASwdILE0oJM1bmBYCVw5CDQnoQwStZg=
+go.miloapis.com/milo v0.36.9 h1:nRZi2/oA1kW5XkVWETWiJmt3NenKMb3x7sPrgcgzk4Y=
+go.miloapis.com/milo v0.36.9/go.mod h1:cWoX3mFL5XFzASwdILE0oJM1bmBYCVw5CDQnoQwStZg=
 go.miloapis.com/service-catalog v0.14.6-0.20261023171130-8c647a6f552b h1:nlBTAzW1pM+9W+TdffUvqPq+Ihm98JIRwt+zJwOgiwU=
 go.miloapis.com/service-catalog v0.14.6-0.20261023171130-8c647a6f552b/go.mod h1:ANn726K+CJbJsvK4rjaQFxJ6fRlFCn0xDxKaebfWlPk=
 go.miloapis.com/telemetry/cli v0.5.0 h1:i7TrjcJGm+8C5nLVFlKR6C/EdUytdl2M9MIU5VeJMj8=
