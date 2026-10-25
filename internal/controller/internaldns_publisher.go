@@ -441,11 +441,17 @@ func ownedBy(obj metav1.Object, owner metav1.OwnerReference) bool {
 
 func ptrBool(value bool) *bool { return &value }
 
+// authorityReferencesChanged reports a change to a field the DNS API treats as
+// immutable, which can only be applied by recreating the object.
 func authorityReferencesChanged(gvk schema.GroupVersionKind, current, desired map[string]any) bool {
-	if gvk != dnsContributionGVK {
-		return false
+	switch gvk {
+	case dnsContributionGVK:
+		return !reflect.DeepEqual(current[internalDNSRegistrationRefField], desired[internalDNSRegistrationRefField])
+	case dnsRegistrationGVK:
+		return !reflect.DeepEqual(current[internalDNSNameField], desired[internalDNSNameField]) ||
+			!reflect.DeepEqual(current[internalDNSZoneRefField], desired[internalDNSZoneRefField])
 	}
-	return !reflect.DeepEqual(current[internalDNSRegistrationRefField], desired[internalDNSRegistrationRefField])
+	return false
 }
 
 func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, instanceUID types.UID, keep map[string]struct{}) error {
@@ -488,7 +494,16 @@ func referenceName(values map[string]any) string {
 	return value
 }
 
+// instanceDNSScope is the label under which compute publishes instance names in
+// a zone, so an instance named web-01 is web-01.instances.<zone>.
+const instanceDNSScope = "instances"
+
+// allocatedInstanceDNSName is the instance's owner name relative to its zone.
 func allocatedInstanceDNSName(instance *computev1alpha.Instance) string {
+	return instanceDNSLabel(instance) + "." + instanceDNSScope
+}
+
+func instanceDNSLabel(instance *computev1alpha.Instance) string {
 	base := strings.ToLower(instance.Name)
 	var b strings.Builder
 	for _, r := range base {

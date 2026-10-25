@@ -24,12 +24,14 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
+const internalDNSTestAddress = "10.0.0.8"
+
 func TestUnavailableObservationLeavesPublishedStateUntouched(t *testing.T) {
 	s := runtime.NewScheme()
 	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
 	published := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	published.SetUID("contribution")
-	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: internalDNSTestAddress}}}}}}
 	published.Object[internalDNSSpecField].(map[string]any)[internalDNSEligibleField] = true
 	published.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}}}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).WithStatusSubresource(published).Build()
@@ -64,7 +66,7 @@ func TestAllocatedInstanceDNSName(t *testing.T) {
 	first := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "Web_01", UID: "first"}}
 	second := first.DeepCopy()
 	second.UID = "second"
-	require.Equal(t, "web-01", allocatedInstanceDNSName(first))
+	require.Equal(t, "web-01.instances", allocatedInstanceDNSName(first))
 	require.Equal(t, allocatedInstanceDNSName(first), allocatedInstanceDNSName(second))
 	require.Equal(t, allocatedInstanceDNSName(first), allocatedInstanceDNSName(first.DeepCopy()))
 }
@@ -87,7 +89,7 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestNamespace, UID: internalDNSTestInstanceUID}}
 	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
 	access := InternalDNSProjectAccess{Reader: cl, Writer: cl}
-	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: internalDNSTestAddress}}}}}}
 	ready := false
 	for range 3 {
 		var err error
@@ -116,6 +118,71 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	record := recordSets[0].(map[string]any)[internalDNSRecordsField].([]any)[0].(map[string]any)
 	require.Equal(t, "10.0.0.9", record["a"].(map[string]any)[internalDNSContentField])
 	require.Equal(t, publishedStatus, contribution.Object[internalDNSStatusField])
+}
+
+func TestPublisherRecreatesRegistrationWhenItsNameChanges(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, gvk := range []schema.GroupVersionKind{dnsResolverContextGVK, dnsRegistrationGVK, dnsContributionGVK} {
+		scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+	}
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestNamespace, UID: internalDNSTestInstanceUID}}
+	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
+	resolver := resolverContextObject("context", internalDNSTestProjectUID, internalDNSTestVPCUID, true)
+	created := 0
+	enforceImmutableName := true
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver).WithStatusSubresource(newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			created++
+			obj.SetUID(types.UID(fmt.Sprintf("%s-uid-%d", obj.GetName(), created)))
+			obj.SetGeneration(1)
+			return c.Create(ctx, obj, opts...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if enforceImmutableName && obj.GetObjectKind().GroupVersionKind().Kind == dnsRegistrationGVK.Kind {
+				current := newDNSObject(dnsRegistrationGVK, obj.GetNamespace(), obj.GetName())
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+					return err
+				}
+				was, _, _ := unstructured.NestedString(current.Object, internalDNSSpecField, internalDNSNameField)
+				now, _, _ := unstructured.NestedString(obj.(*unstructured.Unstructured).Object, internalDNSSpecField, internalDNSNameField)
+				if was != now {
+					return fmt.Errorf("name is immutable")
+				}
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}).Build()
+	access := InternalDNSProjectAccess{Reader: cl, Writer: cl}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: internalDNSTestAddress}}}}}}
+	reconciler := &InternalDNSPublisherReconciler{}
+	reconcile := func() bool {
+		ready, err := reconciler.reconcileAttachment(context.Background(), access, InternalDNSProjectIdentity{ProjectUID: internalDNSTestProjectUID}, internalDNSTestNamespace, instance, owner, attachment, "record")
+		require.NoError(t, err)
+		return ready
+	}
+	for range 3 {
+		reconcile()
+	}
+
+	registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, "record")
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(registration), registration))
+	require.NoError(t, unstructured.SetNestedField(registration.Object, internalDNSTestInstanceName, internalDNSSpecField, internalDNSNameField))
+	enforceImmutableName = false
+	require.NoError(t, cl.Update(context.Background(), registration))
+	enforceImmutableName = true
+	ready := false
+	for range 6 {
+		ready = reconcile()
+	}
+	require.True(t, ready)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(registration), registration))
+	name, _, _ := unstructured.NestedString(registration.Object, internalDNSSpecField, internalDNSNameField)
+	require.Equal(t, allocatedInstanceDNSName(instance), name)
+	contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), contribution))
+	ref, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, internalDNSUIDField)
+	require.Equal(t, string(registration.GetUID()), ref)
 }
 
 type internalDNSTestCluster struct {

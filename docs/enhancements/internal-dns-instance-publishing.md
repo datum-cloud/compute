@@ -3,7 +3,8 @@
 Compute publishes private instance names in each attached network's managed
 zone. Network services requests `datum.internal` by default. Compute reads the
 allocated suffix, so users attach workloads to networks without selecting zones.
-An instance named `web-01` receives `web-01.datum.internal`. Overlapping domains
+An instance named `web-01` receives `web-01.instances.datum.internal`: compute
+publishes instance names under the zone's `instances` scope. Overlapping domains
 remain isolated by the network's DNS context.
 
 `Instance.status.dns` reports hostnames and publication readiness per network.
@@ -17,7 +18,7 @@ status:
     - network:
         name: application
         namespace: production
-      hostnames: [web-01.datum.internal]
+      hostnames: [web-01.instances.datum.internal]
       conditions:
         - type: Ready
           status: "True"
