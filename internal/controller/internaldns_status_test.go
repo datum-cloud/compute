@@ -26,6 +26,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 		domain                       string
 		foreignZone                  bool
 		rejectedRegistration         bool
+		replacedRegistration         bool
 		current, observed, wantReady bool
 	}{
 		{name: "published", current: true, observed: true, wantReady: true},
@@ -34,6 +35,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 		{name: "stale generation", observed: true},
 		{name: "rejected contribution", current: true},
 		{name: "name conflict", current: true, observed: true, rejectedRegistration: true},
+		{name: "contribution for a replaced registration", current: true, observed: true, replacedRegistration: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.domain == "" {
@@ -48,8 +50,14 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
 			registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
 			registration.SetGeneration(2)
+			registration.SetUID("registration")
 			contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
 			contribution.SetGeneration(2)
+			contributionRegistration := "registration"
+			if tc.replacedRegistration {
+				contributionRegistration = "previous-registration"
+			}
+			contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: map[string]any{"uid": contributionRegistration}}
 			observed := int64(1)
 			if tc.current {
 				observed = 2
