@@ -24,12 +24,14 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
+const internalDNSTestAddress = "10.0.0.8"
+
 func TestUnavailableObservationLeavesPublishedStateUntouched(t *testing.T) {
 	s := runtime.NewScheme()
 	s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
 	published := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	published.SetUID("contribution")
-	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	published.Object[internalDNSSpecField] = map[string]any{"recordSets": []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "api", "a": map[string]any{internalDNSContentField: internalDNSTestAddress}}}}}}
 	published.Object[internalDNSSpecField].(map[string]any)[internalDNSEligibleField] = true
 	published.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionPublished, internalDNSStatusField: string(metav1.ConditionTrue)}}}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(published).WithStatusSubresource(published).Build()
@@ -87,7 +89,7 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestNamespace, UID: internalDNSTestInstanceUID}}
 	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
 	access := InternalDNSProjectAccess{Reader: cl, Writer: cl}
-	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: internalDNSTestAddress}}}}}}
 	ready := false
 	for range 3 {
 		var err error
@@ -152,7 +154,7 @@ func TestPublisherRecreatesRegistrationWhenItsNameChanges(t *testing.T) {
 		},
 	}).Build()
 	access := InternalDNSProjectAccess{Reader: cl, Writer: cl}
-	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: "10.0.0.8"}}}}}}
+	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "", "a": map[string]any{internalDNSContentField: internalDNSTestAddress}}}}}}
 	reconciler := &InternalDNSPublisherReconciler{}
 	reconcile := func() bool {
 		ready, err := reconciler.reconcileAttachment(context.Background(), access, InternalDNSProjectIdentity{ProjectUID: internalDNSTestProjectUID}, internalDNSTestNamespace, instance, owner, attachment, "record")
@@ -179,7 +181,7 @@ func TestPublisherRecreatesRegistrationWhenItsNameChanges(t *testing.T) {
 	require.Equal(t, allocatedInstanceDNSName(instance), name)
 	contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), contribution))
-	ref, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, "uid")
+	ref, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, internalDNSUIDField)
 	require.Equal(t, string(registration.GetUID()), ref)
 }
 

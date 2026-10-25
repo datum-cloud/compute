@@ -57,7 +57,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			if tc.replacedRegistration {
 				contributionRegistration = "previous-registration"
 			}
-			contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: map[string]any{"uid": contributionRegistration}}
+			contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: map[string]any{internalDNSUIDField: contributionRegistration}}
 			observed := int64(1)
 			if tc.current {
 				observed = 2

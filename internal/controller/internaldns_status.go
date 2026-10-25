@@ -58,7 +58,7 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
 			return result, err
 		}
-		contributionRegistration, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, "uid")
+		contributionRegistration, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, internalDNSUIDField)
 		if observed && len(result.Hostnames) > 0 && contributionRegistration == string(registration.GetUID()) && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
 		}
