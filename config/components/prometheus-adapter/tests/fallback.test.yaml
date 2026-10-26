@@ -1,0 +1,45 @@
+evaluation_interval: 30s
+rule_files:
+- rules.yaml
+tests:
+- interval: 30s
+  input_series:
+  - series: container_cpu_usage_seconds_total{namespace="test",pod="infra",container="serving",job="cadvisor"}
+    values: 0+30x10
+  - series: container_cpu_usage_seconds_total{namespace="test",pod="infra",container="serving",job="kubelet-resource"}
+    values: 0+30x10
+  - series: container_cpu_usage_seconds_total{namespace="test",pod="kata",container="app",job="kubelet-resource"}
+    values: 0+60x10
+  - series: datum_compute_instance_cpu_usage_seconds_total{namespace="test",pod="kata",container="app"}
+    values: 0+15x10
+  - series: container_cpu_usage_seconds_total{namespace="test",pod="infra",container="",job="cadvisor"}
+    values: 0+300x10
+  - series: container_cpu_usage_seconds_total{namespace="test",pod="infra",container="POD",job="cadvisor"}
+    values: 0+300x10
+  - series: container_memory_working_set_bytes{namespace="test",pod="infra",container="serving",job="cadvisor"}
+    values: 1000+0x10
+  - series: container_memory_working_set_bytes{namespace="test",pod="infra",container="serving",job="kubelet-resource"}
+    values: 1000+0x10
+  - series: container_memory_working_set_bytes{namespace="test",pod="kata",container="app",job="kubelet-resource"}
+    values: 9000+0x10
+  - series: datum_compute_instance_memory_working_set_bytes{namespace="test",pod="kata",container="app"}
+    values: 2000+0x10
+  - series: container_memory_working_set_bytes{namespace="test",pod="infra",container="",job="cadvisor"}
+    values: 900000+0x10
+  - series: container_memory_working_set_bytes{namespace="test",pod="infra",container="POD",job="cadvisor"}
+    values: 900000+0x10
+  promql_expr_test:
+  - expr: adapter_cpu
+    eval_time: 5m
+    exp_samples:
+    - labels: adapter_cpu{namespace="test",pod="infra",container="serving"}
+      value: 1
+    - labels: adapter_cpu{namespace="test",pod="kata",container="app"}
+      value: 0.5
+  - expr: adapter_memory
+    eval_time: 5m
+    exp_samples:
+    - labels: adapter_memory{namespace="test",pod="infra",container="serving"}
+      value: 1000
+    - labels: adapter_memory{namespace="test",pod="kata",container="app"}
+      value: 2000
