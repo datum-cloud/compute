@@ -36,14 +36,14 @@ spec:
               label_replace(
                 max by (cluster, region, namespace, pod, node) (kube_pod_info{node!~"kraftlet-.+"})
                 and on (cluster, namespace, pod)
-                max by (cluster, namespace, pod) (kube_pod_runtimeclass_name_info{runtimeclass_name=~"kata-clh|kata-qemu|katars"}),
+                max by (cluster, namespace, pod) (kube_pod_runtimeclass_name_info{runtimeclass_name=~"kata.*"}),
                 "owner", "general-purpose", "", ""
               )
               or
               label_replace(
                 max by (cluster, region, namespace, pod, node) (kube_pod_info{node!~"kraftlet-.+"})
                 unless on (cluster, namespace, pod)
-                max by (cluster, namespace, pod) (kube_pod_runtimeclass_name_info{runtimeclass_name=~"kata-clh|kata-qemu|katars"}),
+                max by (cluster, namespace, pod) (kube_pod_runtimeclass_name_info{runtimeclass_name=~"kata.*"}),
                 "owner", "system", "", ""
               )
             )
@@ -147,5 +147,5 @@ spec:
               and on (cluster, node) (kube_node_status_condition{condition="Ready", status="true"} == 1)
               unless on (cluster, node) label_replace(kube_node_status_condition{condition="Ready", status="true", node=~"kraftlet-.+"} == 0, "node", "$1", "node", "kraftlet-(.+)")
             )
-            or
+            or on (cluster, region)
             cell:compute_hosts:count * 0
