@@ -2,11 +2,13 @@
  * Instance Overview tab body. Mounted under {@link ./instance-detail.tsx}'s
  * layout shell via `<Outlet />` — chrome stays mounted across tab changes.
  */
+import { instanceFailure } from '../adapter';
 import { CommandBlock } from '../components/cli-section';
 import { DetailList, StatusBadge } from '../components/detail-list';
 import { RecentInstanceLogs } from '../components/instance-logs';
-import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
+import { MetricAreaChart } from '../components/metric-area-chart';
 import { useInstanceOutlet } from './instance-outlet-context';
+import { splitSlashValue } from '../lib/format';
 import {
   cpuUsageHint,
   formatCpuUsage,
@@ -16,15 +18,9 @@ import {
   parseMemoryBytes,
 } from '../lib/resource-usage';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
-import {
-  albErrorRateQuery,
-  albP99Query,
-  albRpsQuery,
-  cpuUsageQuery,
-  memoryUsageQuery,
-  useInstanceMetricIdentity,
-} from '../lib/metrics-queries';
-import { lastThirtyMinutesRange, usePrometheusCard } from '../lib/prometheus';
+import { cpuUsageQuery, memoryUsageQuery, useInstanceMetricIdentity } from '../lib/metrics-queries';
+import { lastThirtyMinutesRange, usePrometheusCard, type PrometheusTimeRange } from '../lib/prometheus';
+import { instanceStatusLabel } from '../lib/workload-presenters';
 import { instanceStatusToBadgeType, type Instance } from '../schema';
 import {
   Card,
@@ -37,70 +33,33 @@ import {
 import { Button } from '@datum-cloud/datum-ui/button';
 import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { toast } from '@datum-cloud/datum-ui/toast';
 import { cn } from '@datum-cloud/datum-ui/utils';
+import { formatDistanceToNowStrict } from 'date-fns';
 import {
   ChartColumnIncreasingIcon,
   CheckIcon,
   CopyIcon,
   GlobeIcon,
+  NetworkIcon,
   SquareLibraryIcon,
   SquareTerminalIcon,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Link } from 'react-router';
 
-const COMING_SOON = 'Coming soon';
-const NOT_CONNECTED = 'Not connected';
-
-/** Minimal local stand-in for the portal's internal `TextCopy` / `BadgeCopy`. */
-function CopyableText({
-  value,
-  text,
-  className,
-  textClassName,
-}: {
-  value: string;
-  text?: string;
-  className?: string;
-  textClassName?: string;
-}) {
-  const [, copy] = useCopyToClipboard();
-  const [copied, setCopied] = useState(false);
-  const display = text ?? value;
-
-  return (
-    <button
-      type="button"
-      title={display}
-      onClick={() =>
-        copy(value).then(() => {
-          toast.success('Copied to clipboard');
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        })
-      }
-      className={cn('inline-flex max-w-full min-w-0 items-center gap-1.5 text-left', className)}>
-      <span className={cn('min-w-0 truncate', textClassName)}>{display}</span>
-      {copied ? (
-        <Icon icon={CheckIcon} size={14} className="shrink-0" />
-      ) : (
-        <Icon icon={CopyIcon} size={14} className="shrink-0 opacity-60" />
-      )}
-    </button>
-  );
-}
+/** Rows that hold a `CopyValue` reveal its button on hover. */
+const COPY_ROW = 'group/row';
 
 /**
- * Canonical ALB hostname with the same hover-copy treatment as portal
- * `ValueRow` (copy button fades in on the CardField row).
+ * A value with the same hover-copy treatment as portal `ValueRow` (copy
+ * button fades in on the CardField row).
  */
-function HostnameCopyValue({ value }: { value: string }) {
+function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
   const [copied, copy] = useCopyToClipboard();
 
   return (
     <span className="flex min-w-0 items-center gap-1">
-      <span className="min-w-0 truncate font-mono text-sm" title={value}>
+      <span className={cn('min-w-0 truncate text-sm', mono && 'font-mono')} title={value}>
         {value}
       </span>
       <Button
@@ -119,16 +78,23 @@ function HostnameCopyValue({ value }: { value: string }) {
   );
 }
 
-function ComingSoonValue() {
-  return <span className="text-muted-foreground">{COMING_SOON}</span>;
+function CopyValues({ values }: { values: readonly string[] }) {
+  return (
+    <span className="flex min-w-0 flex-col">
+      {values.map((value) => (
+        <CopyValue key={value} value={value} />
+      ))}
+    </span>
+  );
+}
+
+function Muted({ children }: { children: ReactNode }) {
+  return <span className="text-muted-foreground">{children}</span>;
 }
 
 function formatCpu(cpu?: string): string | undefined {
   if (!cpu) return undefined;
-  if (/^\d+(\.\d+)?$/.test(cpu)) {
-    const n = Number(cpu);
-    return `${cpu} ${n === 1 ? 'core' : 'cores'}`;
-  }
+  if (/^\d+(\.\d+)?$/.test(cpu)) return `${cpu} vCPU`;
   return cpu;
 }
 
@@ -153,28 +119,49 @@ function formatCreatedAt(date: Date): string {
   });
 }
 
+/** "1 vCPU · 2 GiB", then the instance type it came from. */
+function SizeValue({ instance }: { instance: Instance }) {
+  const resources = [formatCpu(instance.cpu), formatMemory(instance.memory)].filter(Boolean);
+  const type = instance.instanceType ? splitSlashValue(instance.instanceType).main : undefined;
+  if (resources.length === 0 && !type) return <Muted>—</Muted>;
+
+  return (
+    <span className="flex min-w-0 flex-col">
+      {resources.length > 0 ? <span>{resources.join(' · ')}</span> : null}
+      {type ? (
+        <span className="text-muted-foreground truncate text-xs" title={instance.instanceType}>
+          {type}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/** Badge, plus what's wrong when the instance is failing. */
+function StatusValue({ instance }: { instance: Instance }) {
+  const failure = instanceFailure(instance.conditions);
+
+  return (
+    <span className="flex min-w-0 flex-col gap-1">
+      <StatusBadge type={instanceStatusToBadgeType(instance.status)}>
+        {instanceStatusLabel(instance)}
+      </StatusBadge>
+      {failure?.message ? (
+        <span className="text-muted-foreground text-xs">{failure.message}</span>
+      ) : null}
+    </span>
+  );
+}
+
 function GeneralCard({
   instance,
-  projectId,
-  proxyId,
-  albHostname,
-  albDisplayName,
-  albLoading,
   locationLabel,
   locationTooltip,
 }: {
   instance: Instance;
-  projectId?: string;
-  proxyId?: string;
-  albHostname?: string;
-  albDisplayName?: string;
-  albLoading?: boolean;
   locationLabel: string;
   locationTooltip?: string;
 }) {
-  const cpu = formatCpu(instance.cpu);
-  const memory = formatMemory(instance.memory);
-
   return (
     <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="compute-plugin-instance-general">
       <CardHeader size="sm" bordered>
@@ -188,40 +175,114 @@ function GeneralCard({
           items={[
             {
               label: 'Status',
-              content: (
-                <StatusBadge type={instanceStatusToBadgeType(instance.status)}>
-                  {instance.status}
-                </StatusBadge>
-              ),
+              content: <StatusValue instance={instance} />,
             },
             {
               label: 'Resource Name',
-              content: <CopyableText value={instance.name} className="font-mono" />,
+              className: COPY_ROW,
+              content: <CopyValue value={instance.name} />,
             },
             {
               label: 'Location',
               content: instance.location ? (
                 <span title={locationTooltip}>{locationLabel}</span>
               ) : (
-                <span className="text-muted-foreground">—</span>
+                <Muted>—</Muted>
               ),
+            },
+            {
+              label: 'Size',
+              content: <SizeValue instance={instance} />,
+            },
+            {
+              label: 'Image',
+              hidden: !instance.image,
+              className: COPY_ROW,
+              content: instance.image ? <CopyValue value={instance.image} /> : null,
+            },
+            {
+              label: 'Created',
+              content: (
+                <span title={formatCreatedAt(instance.createdAt)}>
+                  {formatDistanceToNowStrict(instance.createdAt, { addSuffix: true })}
+                </span>
+              ),
+            },
+          ]}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function NetworkingCard({
+  instance,
+  projectId,
+  proxyId,
+  albHostname,
+  albDisplayName,
+  albLoading,
+}: {
+  instance: Instance;
+  projectId?: string;
+  proxyId?: string;
+  albHostname?: string;
+  albDisplayName?: string;
+  albLoading?: boolean;
+}) {
+  // Addresses arrive once the instance is programmed; until then say so.
+  const unassigned = instance.status === 'Pending' ? <Muted>Assigning…</Muted> : <Muted>—</Muted>;
+
+  return (
+    <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="compute-plugin-instance-networking">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={NetworkIcon} size={16} className="text-secondary" />
+          Networking
+        </CardTitle>
+      </CardHeader>
+      <CardContent padding="none">
+        <DetailList
+          items={[
+            {
+              label: instance.addresses.length > 1 ? 'Internal IPs' : 'Internal IP',
+              className: COPY_ROW,
+              content:
+                instance.addresses.length > 0 ? <CopyValues values={instance.addresses} /> : unassigned,
+            },
+            {
+              label: instance.externalIPs.length > 1 ? 'External IPs' : 'External IP',
+              className: COPY_ROW,
+              content:
+                instance.externalIPs.length > 0 ? <CopyValues values={instance.externalIPs} /> : <Muted>None</Muted>,
+            },
+            {
+              label: 'Private DNS',
+              hidden: instance.hostnames.length === 0,
+              className: COPY_ROW,
+              content: <CopyValues values={instance.hostnames} />,
+            },
+            {
+              label: 'Ports',
+              hidden: instance.ports.length === 0,
+              content: <span className="font-mono text-sm">{instance.ports.join(', ')}</span>,
             },
             {
               label: 'Default Hostname',
               hidden: !proxyId,
-              className: 'group/row',
+              className: COPY_ROW,
               content: albLoading ? (
-                <span className="text-muted-foreground">—</span>
+                <Muted>—</Muted>
               ) : albHostname ? (
-                <HostnameCopyValue value={albHostname} />
+                <CopyValue value={albHostname} />
               ) : (
-                <ComingSoonValue />
+                <Muted>Coming soon</Muted>
               ),
             },
             {
               label: 'Load balancer',
               content: albLoading ? (
-                <span className="text-muted-foreground">—</span>
+                <Muted>—</Muted>
               ) : proxyId && projectId ? (
                 <Link
                   to={`/project/${projectId}/alb/${proxyId}/overview`}
@@ -230,25 +291,77 @@ function GeneralCard({
                   {albDisplayName || proxyId}
                 </Link>
               ) : (
-                <span className="text-muted-foreground">Not connected</span>
+                <Muted>Not connected</Muted>
               ),
-            },
-            {
-              label: 'Created At',
-              content: formatCreatedAt(instance.createdAt),
-            },
-            {
-              label: 'vCPU',
-              content: cpu ?? <ComingSoonValue />,
-            },
-            {
-              label: 'Memory',
-              content: memory ?? <ComingSoonValue />,
             },
           ]}
         />
       </CardContent>
     </Card>
+  );
+}
+
+/** Headline figure over a small chart of the same series. */
+function UsageChart({
+  title,
+  value,
+  hint,
+  query,
+  timeRange,
+  format,
+  rawFormat,
+  allocated,
+  color,
+  enabled,
+  pending,
+  denied,
+}: {
+  title: string;
+  value: string;
+  hint?: string;
+  query?: string;
+  timeRange: PrometheusTimeRange;
+  format: 'cores' | 'bytes';
+  rawFormat: 'cores' | 'bytes';
+  allocated?: number;
+  color?: string;
+  enabled: boolean;
+  pending: boolean;
+  denied: boolean;
+}) {
+  const divisor = useMemo(() => (allocated ? () => allocated : undefined), [allocated]);
+  const muted = value === '—' || value === 'Loading…';
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-muted-foreground text-xs font-medium">{title}</span>
+        <span className="flex items-baseline gap-2">
+          {hint && !muted ? <span className="text-muted-foreground text-xs">{hint}</span> : null}
+          <span
+            className={cn(
+              'font-semibold tabular-nums',
+              muted ? 'text-muted-foreground text-sm' : 'text-foreground text-base'
+            )}>
+            {value}
+          </span>
+        </span>
+      </div>
+      <MetricAreaChart
+        title={title}
+        query={query}
+        timeRange={timeRange}
+        format={allocated ? 'percent' : format}
+        seriesDivisor={divisor}
+        rawFormat={rawFormat}
+        color={color}
+        enabled={enabled}
+        pending={pending}
+        denied={denied}
+        embedded
+        height={120}
+      />
+    </div>
   );
 }
 
@@ -268,9 +381,6 @@ function MetricsCard({
   const cpuQuery = enabled && identity && projectId ? cpuUsageQuery(projectId, identity) : undefined;
   const memoryQuery =
     enabled && identity && projectId ? memoryUsageQuery(projectId, identity) : undefined;
-  const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
-  const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
-  const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
 
   const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
 
@@ -278,47 +388,19 @@ function MetricsCard({
   const allocatedMemory = parseMemoryBytes(instance.memory);
   const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
   const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled });
-  const rps = usePrometheusCard(rpsQuery, 'requestsPerSecond', { enabled: !!proxyId });
-  const p99 = usePrometheusCard(p99Query, 'milliseconds-auto', { enabled: !!proxyId });
-  const errors = usePrometheusCard(errorQuery, 'percent', { enabled: !!proxyId });
-
-  // `title` carries the absolute figure behind a percentage, shown on hover.
-  const kpis: Array<{ label: string; value: string; title?: string }> = [
-    {
-      label: 'CPU',
-      value: identityLoading ? 'Loading…' : formatCpuUsage(cpu.data?.value, allocatedCores),
-      title: allocatedCores ? cpuUsageHint(cpu.data?.value, allocatedCores) : undefined,
-    },
-    {
-      label: 'Memory',
-      value: identityLoading ? 'Loading…' : formatMemoryUsage(memory.data?.value, allocatedMemory),
-      title: allocatedMemory ? memoryUsageHint(memory.data?.value, allocatedMemory) : undefined,
-    },
-    {
-      label: 'Requests',
-      value: proxyId ? formatCardValue(rps.data, 'requestsPerSecond') : NOT_CONNECTED,
-    },
-    {
-      label: 'p99',
-      value: proxyId ? formatCardValue(p99.data, 'milliseconds-auto') : NOT_CONNECTED,
-    },
-    {
-      label: 'Errors',
-      value: proxyId ? formatCardValue(errors.data, 'percent') : NOT_CONNECTED,
-    },
-  ];
 
   return (
     <Card
       size="sm"
       sectioned
-      className="w-full flex-1 overflow-hidden"
+      className="w-full overflow-hidden"
       data-testid="compute-plugin-instance-metrics">
       <CardHeader size="sm" bordered>
         <CardTitle className="flex items-center gap-2 text-sm">
           <Icon icon={ChartColumnIncreasingIcon} size={16} className="text-secondary" />
           Metrics
         </CardTitle>
+        <CardDescription className="text-xs">Last 30 min</CardDescription>
         <CardAction>
           <Link to={metricsHref} className="text-primary text-xs font-medium hover:underline">
             View all
@@ -326,38 +408,41 @@ function MetricsCard({
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div
-          className="divide-border border-border scrollbar-hide flex divide-x overflow-x-auto rounded-lg border"
-          style={{ overscrollBehaviorX: 'contain' }}>
-          {kpis.map((kpi) => (
-            <div key={kpi.label} className="flex min-w-24 flex-1 flex-col gap-1 px-3 py-3">
-              <p className="text-muted-foreground text-xs font-medium">{kpi.label}</p>
-              <p
-                title={kpi.title}
-                className={cn(
-                  'text-2xl font-semibold whitespace-nowrap tabular-nums',
-                  (kpi.value === '—' || kpi.value === NOT_CONNECTED || kpi.value === 'Loading…') &&
-                    'text-muted-foreground text-sm font-medium'
-                )}>
-                {kpi.value}
-              </p>
-            </div>
-          ))}
-        </div>
-        <div>
-          <p className="text-muted-foreground mb-2 text-xs font-medium">Network I/O</p>
-          <MetricAreaChart
-            title="Network I/O"
-            query={undefined}
-            timeRange={timeRange}
-            format="bytesPerSecond"
-            enabled={false}
-            unavailable
-            unavailableLabel="Not collected yet"
-            embedded
-            height={144}
-          />
-        </div>
+        <UsageChart
+          title="CPU"
+          value={identityLoading ? 'Loading…' : formatCpuUsage(cpu.data?.value, allocatedCores)}
+          hint={allocatedCores ? cpuUsageHint(cpu.data?.value, allocatedCores) : undefined}
+          query={cpuQuery}
+          timeRange={timeRange}
+          format="cores"
+          rawFormat="cores"
+          allocated={allocatedCores}
+          enabled={enabled}
+          pending={identityLoading}
+          denied={identityDenied}
+        />
+        <UsageChart
+          title="Memory"
+          value={identityLoading ? 'Loading…' : formatMemoryUsage(memory.data?.value, allocatedMemory)}
+          hint={allocatedMemory ? memoryUsageHint(memory.data?.value, allocatedMemory) : undefined}
+          query={memoryQuery}
+          timeRange={timeRange}
+          format="bytes"
+          rawFormat="bytes"
+          allocated={allocatedMemory}
+          color="var(--color-chart-1)"
+          enabled={enabled}
+          pending={identityLoading}
+          denied={identityDenied}
+        />
+        {proxyId ? (
+          <p className="text-muted-foreground text-xs">
+            Requests, latency and errors are measured at the load balancer for the whole workload.{' '}
+            <Link to={metricsHref} className="text-primary font-medium hover:underline">
+              View traffic
+            </Link>
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -380,32 +465,41 @@ export default function InstanceOverview() {
   return (
     <>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="flex h-full flex-col gap-6">
-          <GeneralCard
-            instance={instance}
-            projectId={projectId}
-            proxyId={proxyId}
-            albHostname={albHostname}
-            albDisplayName={albDisplayName}
-            albLoading={albLoading}
-            locationLabel={formatLocationName(instance.location, locationIndex)}
-            locationTooltip={formatLocationTooltip(instance.location, locationIndex)}
-          />
-          <MetricsCard
-            projectId={projectId}
-            instance={instance}
-            proxyId={proxyId}
-            metricsHref={metricsHref}
-          />
-        </div>
-        <RecentInstanceLogs
-          logsHref={logsHref}
+        <GeneralCard
+          instance={instance}
+          locationLabel={formatLocationName(instance.location, locationIndex)}
+          locationTooltip={formatLocationTooltip(instance.location, locationIndex)}
+        />
+        <NetworkingCard
+          instance={instance}
           projectId={projectId}
           proxyId={proxyId}
           albHostname={albHostname}
-          instanceName={instance.name}
-          upstreamIPs={instance.internalIPs}
+          albDisplayName={albDisplayName}
+          albLoading={albLoading}
         />
+        <MetricsCard
+          projectId={projectId}
+          instance={instance}
+          proxyId={proxyId}
+          metricsHref={metricsHref}
+        />
+        {/*
+          The metrics card sets this row's height and the logs scroll inside
+          it; a long log list would otherwise stretch the row. The floor keeps
+          the card usable when it stacks on narrow screens.
+        */}
+        <div style={{ display: 'flex', flexDirection: 'column', height: 0, minHeight: 'max(100%, 20rem)' }}>
+          <RecentInstanceLogs
+            className="flex-1"
+            logsHref={logsHref}
+            projectId={projectId}
+            proxyId={proxyId}
+            albHostname={albHostname}
+            instanceName={instance.name}
+            upstreamIPs={instance.internalIPs}
+          />
+        </div>
       </div>
 
       <Card size="sm" sectioned className="w-full overflow-hidden" data-testid="compute-plugin-instance-cli">
@@ -414,7 +508,6 @@ export default function InstanceOverview() {
             <Icon icon={SquareTerminalIcon} size={16} className="text-secondary" />
             datumctl Commands
           </CardTitle>
-          <CardDescription>CLI</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

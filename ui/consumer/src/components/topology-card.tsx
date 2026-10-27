@@ -124,7 +124,7 @@ function InstanceBody({
 
   const cpuPct = percent(cpu.data?.value, parseCpuCores(instance.cpu));
   const memPct = percent(memory.data?.value, parseMemoryBytes(instance.memory));
-  const ip = instance.externalIP ?? instance.internalIP;
+  const ip = instance.externalIP ?? instance.addresses[0];
 
   return (
     <>

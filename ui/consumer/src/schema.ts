@@ -140,6 +140,15 @@ export const instanceResourceSchema = z.object({
   internalIP: z.string().optional(),
   /** Host-route in-network IPs Envoy may dial (`upstream_host`), v4 and v6. */
   internalIPs: z.array(z.string()).default([]),
+  /**
+   * Every in-network address the guest answers on, v4 and v6, for display.
+   * Unlike `internalIPs` it keeps a delegated IPv6 block, by its base address.
+   */
+  addresses: z.array(z.string()).default([]),
+  /** Every externally reachable address, v4 and v6. */
+  externalIPs: z.array(z.string()).default([]),
+  /** Private DNS names allocated in the instance's networks (`status.dns[].hostnames`). */
+  hostnames: z.array(z.string()).default([]),
   conditions: z.array(instanceConditionSchema).default([]),
 });
 
