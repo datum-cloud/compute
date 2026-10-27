@@ -1,0 +1,14 @@
+rule_files:
+  - reconcile-storm.rules.yaml
+
+evaluation_interval: 20s
+
+tests:
+  # Loads the rules so a broken expression fails here; no behaviour asserted.
+  - interval: 20s
+    input_series: []
+    metricsql_expr_test:
+      - expr: vector(1)
+        eval_time: 5m
+        exp_samples:
+          - value: 1

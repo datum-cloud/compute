@@ -8,7 +8,12 @@ Never edit the rendered JSON by hand: CI re-renders it and fails on any
 difference.
 
 Alert rules are plain `VMRule` manifests under `config/components/alerts/`,
-with a runbook per alert under `docs/runbooks/`.
+with a runbook per alert under `docs/runbooks/`. Their unit tests live in
+`config/components/alerts/tests/` and run with `hack/test-alert-rules`, which
+needs `yq` and `vmalert-tool`. Every `VMRule` must be named in some test's
+`rule_files`. When a rule fails to evaluate, vmalert-tool panics with a nil
+pointer dereference instead of printing the error; the usual cause is two
+series with one labelset once vmalert adds its external label (#513).
 
 ## Layout
 

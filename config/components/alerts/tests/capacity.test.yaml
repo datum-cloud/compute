@@ -1,0 +1,100 @@
+rule_files:
+  - capacity.rules.yaml
+
+evaluation_interval: 20s
+
+tests:
+  # us-central-1 has its one host ready. us-east-1 has one of two ready, plus a
+  # cordoned host that counts toward neither. us-west-1 has none ready: one
+  # host's kraftlet virtual node is not Ready, and the other is down, its
+  # kubelet silent since the first minute but its Node object still present.
+  - interval: 20s
+    input_series:
+      - series: 'kubelet_node_name{cluster="us-central-1-alice",region="us-central-1",node="compute-a",compute_datumapis_com_runtime="kata"}'
+        values: "1x40"
+      - series: 'kubelet_node_name{cluster="us-east-1-alice",region="us-east-1",node="compute-b1",compute_datumapis_com_runtime="kata"}'
+        values: "1x40"
+      - series: 'kubelet_node_name{cluster="us-east-1-alice",region="us-east-1",node="compute-b2",compute_datumapis_com_runtime="kata"}'
+        values: "1x40"
+      - series: 'kubelet_node_name{cluster="us-east-1-alice",region="us-east-1",node="compute-b3",compute_datumapis_com_runtime="kata"}'
+        values: "1x40"
+      - series: 'kubelet_node_name{cluster="us-west-1-alice",region="us-west-1",node="compute-c1",compute_datumapis_com_runtime="kata"}'
+        values: "1x40"
+      - series: 'kubelet_node_name{cluster="us-west-1-alice",region="us-west-1",node="compute-c2",compute_datumapis_com_runtime="kata"}'
+        values: "1x2 _x38"
+
+      - series: 'kube_node_info{cluster="us-central-1-alice",region="us-central-1",node="compute-a"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-central-1-alice",region="us-central-1",node="kraftlet-compute-a"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-east-1-alice",region="us-east-1",node="compute-b1"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-east-1-alice",region="us-east-1",node="kraftlet-compute-b1"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-east-1-alice",region="us-east-1",node="compute-b2"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-east-1-alice",region="us-east-1",node="kraftlet-compute-b2"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-east-1-alice",region="us-east-1",node="compute-b3"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-west-1-alice",region="us-west-1",node="compute-c1"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-west-1-alice",region="us-west-1",node="kraftlet-compute-c1"}'
+        values: "1x40"
+      - series: 'kube_node_info{cluster="us-west-1-alice",region="us-west-1",node="compute-c2"}'
+        values: "1x40"
+
+      - series: 'kube_node_spec_unschedulable{cluster="us-central-1-alice",region="us-central-1",node="compute-a"}'
+        values: "0x40"
+      - series: 'kube_node_spec_unschedulable{cluster="us-east-1-alice",region="us-east-1",node="compute-b1"}'
+        values: "0x40"
+      - series: 'kube_node_spec_unschedulable{cluster="us-east-1-alice",region="us-east-1",node="compute-b2"}'
+        values: "0x40"
+      - series: 'kube_node_spec_unschedulable{cluster="us-east-1-alice",region="us-east-1",node="compute-b3"}'
+        values: "1x40"
+      - series: 'kube_node_spec_unschedulable{cluster="us-west-1-alice",region="us-west-1",node="compute-c1"}'
+        values: "0x40"
+      - series: 'kube_node_spec_unschedulable{cluster="us-west-1-alice",region="us-west-1",node="compute-c2"}'
+        values: "0x40"
+
+      - series: 'kube_node_status_condition{cluster="us-central-1-alice",region="us-central-1",node="compute-a",condition="Ready",status="true"}'
+        values: "1x40"
+      - series: 'kube_node_status_condition{cluster="us-central-1-alice",region="us-central-1",node="kraftlet-compute-a",condition="Ready",status="true"}'
+        values: "1x40"
+      - series: 'kube_node_status_condition{cluster="us-east-1-alice",region="us-east-1",node="compute-b1",condition="Ready",status="true"}'
+        values: "1x40"
+      - series: 'kube_node_status_condition{cluster="us-east-1-alice",region="us-east-1",node="kraftlet-compute-b1",condition="Ready",status="true"}'
+        values: "1x40"
+      - series: 'kube_node_status_condition{cluster="us-east-1-alice",region="us-east-1",node="compute-b2",condition="Ready",status="true"}'
+        values: "0x40"
+      - series: 'kube_node_status_condition{cluster="us-east-1-alice",region="us-east-1",node="kraftlet-compute-b2",condition="Ready",status="true"}'
+        values: "1x40"
+      - series: 'kube_node_status_condition{cluster="us-east-1-alice",region="us-east-1",node="compute-b3",condition="Ready",status="true"}'
+        values: "1x40"
+      - series: 'kube_node_status_condition{cluster="us-west-1-alice",region="us-west-1",node="compute-c1",condition="Ready",status="true"}'
+        values: "1x40"
+      - series: 'kube_node_status_condition{cluster="us-west-1-alice",region="us-west-1",node="kraftlet-compute-c1",condition="Ready",status="true"}'
+        values: "0x40"
+      - series: 'kube_node_status_condition{cluster="us-west-1-alice",region="us-west-1",node="compute-c2",condition="Ready",status="true"}'
+        values: "0x40"
+
+    metricsql_expr_test:
+      - expr: cell:compute_hosts:count
+        eval_time: 10m
+        exp_samples:
+          - labels: 'cell:compute_hosts:count{alerting_environment="test",cluster="us-central-1-alice",region="us-central-1"}'
+            value: 1
+          - labels: 'cell:compute_hosts:count{alerting_environment="test",cluster="us-east-1-alice",region="us-east-1"}'
+            value: 2
+          - labels: 'cell:compute_hosts:count{alerting_environment="test",cluster="us-west-1-alice",region="us-west-1"}'
+            value: 2
+
+      - expr: cell:compute_hosts_ready:count
+        eval_time: 10m
+        exp_samples:
+          - labels: 'cell:compute_hosts_ready:count{alerting_environment="test",cluster="us-central-1-alice",region="us-central-1"}'
+            value: 1
+          - labels: 'cell:compute_hosts_ready:count{alerting_environment="test",cluster="us-east-1-alice",region="us-east-1"}'
+            value: 1
+          - labels: 'cell:compute_hosts_ready:count{alerting_environment="test",cluster="us-west-1-alice",region="us-west-1"}'
+            value: 0

@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+#
+# Runs the vmalert-tool unit tests in config/components/alerts/tests against the
+# VMRules beside them. vmalert adds its external labels to every series a rule
+# writes, and a rule that reads its group's own output back sees them, so the
+# tests run with one set the way the deployed vmalerts do.
+#
+# vmalert-tool loads only the rule files a test names, so every VMRule must be
+# named by at least one test or this script fails.
+#
+# Needs yq (v4) and vmalert-tool; set VMALERT_TOOL when it is not on PATH.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT
+cd "$REPO_ROOT"
+
+readonly RULES_DIR=config/components/alerts
+readonly TESTS_DIR="${RULES_DIR}/tests"
+readonly EXTERNAL_LABEL="alerting_environment=test"
+readonly VMALERT_TOOL="${VMALERT_TOOL:-vmalert-tool}"
+
+if ! command -v yq >/dev/null 2>&1; then
+  echo "FAIL: yq (v4) is not on PATH"
+  exit 1
+fi
+yq_version="$(yq --version 2>&1 || true)"
+if ! grep -qE 'mikefarah/yq.* version v?4\.' <<<"${yq_version}"; then
+  echo "FAIL: need mikefarah yq v4, found: ${yq_version}"
+  exit 1
+fi
+if ! command -v "${VMALERT_TOOL}" >/dev/null 2>&1; then
+  echo "FAIL: vmalert-tool not found at '${VMALERT_TOOL}'; install it or set VMALERT_TOOL"
+  exit 1
+fi
+
+work="$(mktemp -d)"
+readonly work
+trap 'rm -rf -- "${work}"' EXIT
+
+query() {
+  local file="$1" result
+  shift
+  if ! result="$(yq "$@" "${file}" 2>&1)"; then
+    echo "FAIL: cannot read ${file}: ${result}" >&2
+    return 1
+  fi
+  printf '%s\n' "${result}"
+}
+
+shopt -s nullglob
+
+rule_files=()
+manifests=()
+for manifest in "${RULES_DIR}"/*.yaml "${RULES_DIR}"/*.yml; do
+  documents="$(query "${manifest}" ea '[.] | length')"
+  if [[ "${documents}" -ne 1 ]]; then
+    echo "FAIL: ${manifest} holds ${documents} YAML documents; keep one manifest per file"
+    exit 1
+  fi
+  kind="$(query "${manifest}" '.kind')"
+  [[ "${kind}" == "VMRule" ]] || continue
+  name="${manifest##*/}"
+  name="${name%.yaml}"
+  name="${name%.yml}.rules.yaml"
+  if [[ -e "${work}/${name}" ]]; then
+    echo "FAIL: two VMRule files in ${RULES_DIR} map to ${name}"
+    exit 1
+  fi
+  query "${manifest}" '.spec' >"${work}/${name}"
+  groups="$(query "${work}/${name}" '.groups | length')"
+  if [[ "${groups}" -eq 0 ]]; then
+    echo "FAIL: ${manifest} has no rule groups"
+    exit 1
+  fi
+  rule_files+=("${name}")
+  manifests+=("${manifest}")
+done
+
+if [[ "${#rule_files[@]}" -eq 0 ]]; then
+  echo "FAIL: no VMRule found in ${RULES_DIR}"
+  exit 1
+fi
+
+files=()
+referenced=""
+for test_file in "${TESTS_DIR}"/*.test.yaml; do
+  [[ -e "${test_file}" ]] || continue
+  tests="$(query "${test_file}" '.tests | length')"
+  if [[ "${tests}" -eq 0 ]]; then
+    echo "FAIL: ${test_file} has no tests"
+    exit 1
+  fi
+  names="$(query "${test_file}" '.rule_files[]')"
+  referenced+="${names}"$'\n'
+  cp "${test_file}" "${work}/"
+  files+=("--files=$(basename "${test_file}")")
+done
+
+if [[ "${#files[@]}" -eq 0 ]]; then
+  echo "FAIL: no *.test.yaml found in ${TESTS_DIR}"
+  exit 1
+fi
+
+untested=0
+for i in "${!rule_files[@]}"; do
+  if ! grep -qxF "${rule_files[i]}" <<<"${referenced}"; then
+    echo "FAIL: no test in ${TESTS_DIR} lists ${rule_files[i]} in rule_files (from ${manifests[i]})"
+    untested=$((untested + 1))
+  fi
+done
+if [[ "${untested}" -gt 0 ]]; then
+  exit 1
+fi
+
+cd "${work}"
+rc=0
+output="$("${VMALERT_TOOL}" unittest --external.label="${EXTERNAL_LABEL}" "${files[@]}" 2>&1)" || rc=$?
+printf '%s\n' "${output}"
+
+if [[ "${rc}" -ne 0 ]] &&
+  grep -q 'nil pointer dereference' <<<"${output}" &&
+  grep -qE '\(\*(Recording|Alerting)Rule\)\.exec' <<<"${output}"; then
+  echo ""
+  echo "HINT: vmalert-tool panics when a rule fails to evaluate, instead of"
+  echo "printing the evaluation error. The usual cause is two series with one"
+  echo "labelset once vmalert adds its external label (datum-cloud/compute#513):"
+  echo "match an 'or' fallback 'on' the labels the computed side keeps."
+fi
+
+exit "${rc}"

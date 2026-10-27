@@ -1,0 +1,51 @@
+name: Test Alert Rules
+
+# Evaluates the alert component's rules with vmalert-tool, at the vmalert
+# version the platform runs, so a rule that only fails inside vmalert cannot
+# merge.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-alert-rules.yaml'
+      - 'hack/test-alert-rules'
+      - 'config/components/alerts/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/test-alert-rules.yaml'
+      - 'hack/test-alert-rules'
+      - 'config/components/alerts/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Keep in step with the vmalert tag in datum-cloud/infra
+  # infrastructure/monitoring/victoria-metrics/base/vmalert.yaml. vmalert only
+  # schedules the rules: production runs their queries in vmselect (v1.129.1),
+  # so MetricsQL changes between the two versions are not covered here.
+  VMUTILS_VERSION: v1.121.0
+  VMUTILS_SHA256: 09bb214fa89e3f4523815e839ad2beccedd601d515a6c93906007dc62d364e18
+
+jobs:
+  test-alert-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install vmalert-tool
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/vmutils.tar.gz" "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/${VMUTILS_VERSION}/vmutils-linux-amd64-${VMUTILS_VERSION}.tar.gz"
+          echo "${VMUTILS_SHA256}  $RUNNER_TEMP/vmutils.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/vmutils.tar.gz" -C "$RUNNER_TEMP" vmalert-tool-prod
+
+      - name: Run rule unit tests
+        run: hack/test-alert-rules
+        env:
+          VMALERT_TOOL: ${{ runner.temp }}/vmalert-tool-prod
+
+      - name: Validate the alerts component builds
+        run: kubectl kustomize config/overlays/management-plane >/dev/null && kubectl kustomize config/overlays/single-cluster >/dev/null
