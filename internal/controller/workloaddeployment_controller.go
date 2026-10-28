@@ -358,7 +358,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 	instances []computev1alpha.Instance,
 	networkReadyByInstance map[string]bool,
 ) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas int, err error) {
-	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
+	templateHashes := instancecontrol.HashTemplate(deployment.Spec.Template)
 	for _, instance := range instances {
 		// Backfill the canonical desired location on instances created before the
 		// location contract was introduced.
@@ -414,7 +414,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 		// Status.Controller is a pointer the infra provider may not have populated
 		// yet; guard the deref to avoid a panic that would abort the reconcile.
 		onLatestRevision := instance.Status.Controller != nil &&
-			instance.Status.Controller.ObservedTemplateHash == templateHash
+			templateHashes.Matches(instance.Status.Controller.ObservedTemplateHash)
 		if onLatestRevision {
 			updatedReplicas++
 		}

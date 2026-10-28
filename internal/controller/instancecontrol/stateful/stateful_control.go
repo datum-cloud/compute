@@ -60,7 +60,7 @@ func (c *statefulControl) GetActions(
 	desiredReplicas int32,
 	currentInstances []v1alpha.Instance,
 ) ([]instancecontrol.Action, error) {
-	instanceTemplateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
+	templateHashes := instancecontrol.HashTemplate(deployment.Spec.Template)
 
 	// lowest -> highest
 	var createActions []instancecontrol.Action
@@ -124,7 +124,7 @@ func (c *statefulControl) GetActions(
 			}
 
 			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
-				TemplateHash:    instanceTemplateHash,
+				TemplateHash:    templateHashes.Current,
 				SchedulingGates: gates,
 			}
 
@@ -154,7 +154,7 @@ func (c *statefulControl) GetActions(
 			// for the instance to be ready before continuing processing.
 			ready := apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady)
 			started := instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) == 0
-			if needsUpdate(instance, instanceTemplateHash) && (ready || started) {
+			if needsUpdate(instance, templateHashes) && (ready || started) {
 				// The instance's template hash no longer matches the desired
 				// template — e.g. an image change, or a restart requested via the
 				// RestartedAtAnnotation, which is part of the template hash. The
@@ -203,10 +203,12 @@ func (c *statefulControl) GetActions(
 		}
 	}
 
+	patchTemplateHashActions := legacyTemplateHashPatches(desiredInstances, templateHashes)
+
 	slices.SortFunc(recreateActions, descendingOrdinal)
 	slices.SortFunc(deleteActions, descendingOrdinal)
 
-	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions))
+	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions)+len(patchTemplateHashActions))
 
 	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
 	case v1alpha.OrderedReadyInstanceManagementPolicyType:
@@ -234,8 +236,27 @@ func (c *statefulControl) GetActions(
 	}
 
 	actions = append(actions, patchLabelActions...)
+	actions = append(actions, patchTemplateHashActions...)
 
 	return actions, nil
+}
+
+func legacyTemplateHashPatches(instances []*v1alpha.Instance, hashes instancecontrol.TemplateHashes) []instancecontrol.Action {
+	var actions []instancecontrol.Action
+	for _, instance := range instances {
+		if instance.CreationTimestamp.IsZero() || !instance.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		if hasLegacyTemplateHash(instance, hashes) {
+			base := instance.DeepCopy()
+			patched := instance.DeepCopy()
+			patched.Spec.Controller.TemplateHash = hashes.Current
+			actions = append(actions, instancecontrol.NewPatchTemplateHashAction(patched, base))
+		}
+	}
+
+	return actions
 }
 
 func addInstanceControllerLabels(instance *v1alpha.Instance, index int, deployment *v1alpha.WorkloadDeployment) {

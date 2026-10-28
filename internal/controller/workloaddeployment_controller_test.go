@@ -278,6 +278,11 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 		Controller: &computev1alpha.InstanceControllerStatus{ObservedTemplateHash: templateHash},
 	}
 
+	instanceLegacyHash := wdControllerTestInstance("instance-legacy-hash")
+	instanceLegacyHash.Status = computev1alpha.InstanceStatus{
+		Controller: &computev1alpha.InstanceControllerStatus{ObservedTemplateHash: instancecontrol.LegacyComputeHash(deployment.Spec.Template)},
+	}
+
 	// Quota-blocked: QuotaGranted=False as the instance quota controller writes it.
 	instanceQuotaBlocked := wdControllerTestInstance("instance-quota-blocked")
 	instanceQuotaBlocked.Status = computev1alpha.InstanceStatus{
@@ -303,7 +308,7 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 
 	cl := newProjectFakeClient()
 	r := &WorkloadDeploymentReconciler{}
-	instances := []computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceQuotaBlocked, instanceImageUnavailable, instanceCrashing}
+	instances := []computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceLegacyHash, instanceQuotaBlocked, instanceImageUnavailable, instanceCrashing}
 
 	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, _, err := r.reconcileInstanceGates(
 		context.Background(),
@@ -314,7 +319,7 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, updatedReplicas, "matching-hash instances count as updated; the stale-hash instance must not")
+	assert.Equal(t, 3, updatedReplicas, "current- and legacy-hash instances count as updated; the stale-hash instance must not")
 	assert.Equal(t, 1, currentReplicas, "only updated AND Programmed instances count as current")
 	assert.Equal(t, 2, readyReplicas, "Ready=True counts regardless of revision")
 	assert.Equal(t, 1, quotaBlockedReplicas, "QuotaGranted=False counts as quota-blocked")
