@@ -4,6 +4,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -1281,4 +1285,94 @@ func TestWorkloadDeploymentReconcile_RecordsScaleDown(t *testing.T) {
 	assert.Equal(t, wdControllerTestName+"-1", terminating.Regarding.Name)
 	assert.Equal(t, "Scaling down to 1 replicas", terminating.Note)
 	assert.Equal(t, wdControllerTestWorkload, terminating.Related.Name)
+}
+
+func TestWorkloadDeploymentReconcile_LegacyTemplateHashPatchFailure(t *testing.T) {
+	t.Parallel()
+
+	const failingInstance = wdControllerTestName + "-0"
+
+	tests := []struct {
+		name          string
+		failHashPatch bool
+	}{
+		{name: "hash rewrite succeeds", failHashPatch: false},
+		{name: "hash rewrite fails for one instance", failHashPatch: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := wdControllerTestDeployment(3)
+			deployment.Finalizers = []string{workloadControllerFinalizer}
+			hashes := instancecontrol.HashTemplate(deployment.Spec.Template)
+
+			objs := make([]client.Object, 0, 3)
+			objs = append(objs, deployment)
+			for _, index := range []string{"0", "1"} {
+				instance := wdControllerTestInstance(wdControllerTestName + "-" + index)
+				instance.Labels[computev1alpha.InstanceIndexLabel] = index
+				instance.CreationTimestamp = metav1.Now()
+				instance.Spec.Location = &deployment.Spec.LocationRef
+				instance.Spec.Controller = &computev1alpha.InstanceController{TemplateHash: hashes.Legacy}
+				instance.Status.Conditions = []metav1.Condition{{
+					Type: computev1alpha.InstanceReady, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceReadyReasonAvailable,
+				}}
+				objs = append(objs, &instance)
+			}
+
+			var hashPatchAttempts []string
+			cl := fake.NewClientBuilder().
+				WithScheme(newProjectScheme()).
+				WithObjects(objs...).
+				WithStatusSubresource(objs...).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						data, err := patch.Data(obj)
+						if err != nil {
+							return err
+						}
+						if strings.Contains(string(data), "templateHash") {
+							hashPatchAttempts = append(hashPatchAttempts, obj.GetName())
+							if test.failHashPatch && obj.GetName() == failingInstance {
+								return errors.New("injected patch failure")
+							}
+						}
+						return c.Patch(ctx, obj, patch, opts...)
+					},
+				}).
+				Build()
+
+			r := newTestWDReconciler(cl)
+			r.events = newTestLifecycleWriter()
+			req := mcreconcile.Request{
+				ClusterName: testCluster,
+				Request: ctrl.Request{
+					NamespacedName: types.NamespacedName{Name: wdControllerTestName, Namespace: wdControllerTestNS},
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err, "a failed hash rewrite must not abort the reconcile")
+
+			assert.ElementsMatch(t, []string{wdControllerTestName + "-0", wdControllerTestName + "-1"}, hashPatchAttempts,
+				"a failed hash rewrite must not stop the rewrite of the next instance")
+
+			var created computev1alpha.Instance
+			require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: wdControllerTestName + "-2", Namespace: wdControllerTestNS}, &created),
+				"the missing instance must still be created")
+
+			for _, index := range []string{"0", "1"} {
+				var instance computev1alpha.Instance
+				require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: wdControllerTestName + "-" + index, Namespace: wdControllerTestNS}, &instance),
+					"instance %s must not be deleted", index)
+				want := hashes.Current
+				if test.failHashPatch && instance.Name == failingInstance {
+					want = hashes.Legacy
+				}
+				assert.Equal(t, want, instance.Spec.Controller.TemplateHash)
+			}
+		})
+	}
 }

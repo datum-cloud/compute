@@ -204,18 +204,8 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 
 	logger.Info("collected instance control actions", "count", len(actions))
 
-	for _, action := range actions {
-		// We don't need to actually check this, but it'll reduce log noise.
-		if action.IsSkipped() {
-			continue
-		}
-
-		logger.Info("instance control action", "instance", action.Object.GetName(), "action", action.ActionType())
-
-		if err := action.Execute(ctx, cl.GetClient()); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed executing instance control action: %w", err)
-		}
-		r.events.recordInstanceTerminating(ctx, cl, action, desiredReplicas)
+	if err := r.executeInstanceActions(ctx, cl, actions, desiredReplicas); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// When networking is disabled, bypass the entire network provisioning path.
@@ -349,6 +339,35 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *WorkloadDeploymentReconciler) executeInstanceActions(
+	ctx context.Context,
+	cl cluster.Cluster,
+	actions []instancecontrol.Action,
+	desiredReplicas int32,
+) error {
+	logger := log.FromContext(ctx)
+
+	for _, action := range actions {
+		// We don't need to actually check this, but it'll reduce log noise.
+		if action.IsSkipped() {
+			continue
+		}
+
+		logger.Info("instance control action", "instance", action.Object.GetName(), "action", action.ActionType())
+
+		if err := action.Execute(ctx, cl.GetClient()); err != nil {
+			if action.ActionType() == instancecontrol.ActionTypePatchTemplateHash {
+				logger.Error(err, "failed rewriting legacy template hash", "instance", action.Object.GetName())
+				continue
+			}
+			return fmt.Errorf("failed executing instance control action: %w", err)
+		}
+		r.events.recordInstanceTerminating(ctx, cl, action, desiredReplicas)
+	}
+
+	return nil
 }
 
 func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
