@@ -8,9 +8,14 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
-func needsUpdate(instance *v1alpha.Instance, instanceTemplateHash string) bool {
+func needsUpdate(instance *v1alpha.Instance, hashes instancecontrol.TemplateHashes) bool {
 	return instance.Spec.Controller == nil ||
-		instance.Spec.Controller.TemplateHash != instanceTemplateHash
+		!hashes.Matches(instance.Spec.Controller.TemplateHash)
+}
+
+func hasLegacyTemplateHash(instance *v1alpha.Instance, hashes instancecontrol.TemplateHashes) bool {
+	return instance.Spec.Controller != nil &&
+		hashes.IsLegacy(instance.Spec.Controller.TemplateHash)
 }
 
 // getInstanceOrdinal returns the ordinal of the instance, or -1 if the instance

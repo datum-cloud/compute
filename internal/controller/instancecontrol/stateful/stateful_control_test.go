@@ -634,6 +634,82 @@ func TestRuntimeClass_ChangesTemplateHash(t *testing.T) {
 	)
 }
 
+func TestLegacyTemplateHash_GetActions(t *testing.T) {
+	tests := []struct {
+		name            string
+		storedHash      func(template v1alpha.InstanceTemplateSpec) string
+		changeTemplate  bool
+		wantRecreate    bool
+		wantPatchedHash bool
+	}{
+		{
+			name:            "legacy hash of unchanged template is kept running and rewritten",
+			storedHash:      instancecontrol.LegacyComputeHash,
+			wantPatchedHash: true,
+		},
+		{
+			name:       "current hash of unchanged template is left alone",
+			storedHash: instancecontrol.ComputeHash,
+		},
+		{
+			name:           "legacy hash of changed template is recreated",
+			storedHash:     instancecontrol.LegacyComputeHash,
+			changeTemplate: true,
+			wantRecreate:   true,
+		},
+		{
+			name:           "current hash of changed template is recreated",
+			storedHash:     instancecontrol.ComputeHash,
+			changeTemplate: true,
+			wantRecreate:   true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deployment := getWorkloadDeployment("test-legacy-hash", 1)
+			instance := getInstanceForDeployment(deployment, 0)
+			instance.Spec.Controller.TemplateHash = test.storedHash(deployment.Spec.Template)
+
+			if test.changeTemplate {
+				deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "changed"
+			}
+
+			actions, err := New().GetActions(context.Background(), scheme, deployment, 1, []v1alpha.Instance{*instance})
+			require.NoError(t, err)
+
+			var recreates, hashPatches []instancecontrol.Action
+			for _, action := range actions {
+				switch action.ActionType() {
+				case instancecontrol.ActionTypeDelete:
+					recreates = append(recreates, action)
+				case instancecontrol.ActionTypePatchTemplateHash:
+					hashPatches = append(hashPatches, action)
+				}
+			}
+
+			if test.wantRecreate {
+				assert.Len(t, recreates, 1)
+			} else {
+				assert.Empty(t, recreates)
+			}
+
+			if !test.wantPatchedHash {
+				assert.Empty(t, hashPatches)
+				return
+			}
+
+			require.Len(t, hashPatches, 1)
+			assert.False(t, hashPatches[0].IsSkipped())
+			patched, ok := hashPatches[0].Object.(*v1alpha.Instance)
+			require.True(t, ok)
+			assert.Equal(t, instancecontrol.ComputeHash(deployment.Spec.Template), patched.Spec.Controller.TemplateHash)
+			assert.Equal(t, instance.Spec.Runtime, patched.Spec.Runtime)
+			assert.Equal(t, instance.Labels, patched.Labels)
+		})
+	}
+}
+
 func getWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDeployment {
 	instance := getInstanceTemplate(name, 0)
 	deployment := &v1alpha.WorkloadDeployment{
