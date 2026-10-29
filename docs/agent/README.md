@@ -19,6 +19,7 @@ assistant owns the document schema that carries it.
 | `../../internal/agent` | The reason catalog and the diagnosis walk that back the tools. |
 | `../../pkg/computeagent` | A re-export of the tools for MCP servers outside this module. datum-mcp mounts them from here, so it runs the same diagnosis on a customer's machine that the assistant runs in-cluster. |
 | `../../config/components/assistant-capability` | Registration. The agent customers talk to, and the content it offers them. |
+| `../../claude-plugin` | The `datum-compute` Claude Code plugin. Each skill here has an entry there that loads it through datum-mcp's `compute_guide`; `TestClaudePluginOffersEveryPublishedSkill` fails when one is missing. |
 
 ## Status
 
