@@ -115,6 +115,17 @@ const instanceConditionSchema = z.object({
 
 export type InstanceCondition = z.infer<typeof instanceConditionSchema>;
 
+export const instanceNetworkInterfaceSchema = z.object({
+  /** Spec interface name, for example "eth0". */
+  name: z.string(),
+  /** VPC network the interface attaches to (spec `network.name`). */
+  network: z.string().optional(),
+  /** `status.networkInterfaces[].networkInterfaceRef.name`; the `network` label on traffic series. */
+  networkInterfaceRef: z.string().optional(),
+});
+
+export type InstanceNetworkInterface = z.infer<typeof instanceNetworkInterfaceSchema>;
+
 export const instanceResourceSchema = z.object({
   uid: z.string(),
   name: z.string(),
@@ -149,6 +160,8 @@ export const instanceResourceSchema = z.object({
   externalIPs: z.array(z.string()).default([]),
   /** Private DNS names allocated in the instance's networks (`status.dns[].hostnames`). */
   hostnames: z.array(z.string()).default([]),
+  /** Interfaces in spec order, each joined to its status entry by name. */
+  networkInterfaces: z.array(instanceNetworkInterfaceSchema).default([]),
   conditions: z.array(instanceConditionSchema).default([]),
 });
 
