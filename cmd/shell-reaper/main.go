@@ -84,6 +84,13 @@ func run(marker string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read own start time: %w", err)
 	}
+	// Register the signal handler before the marker exists. The agent may
+	// send SIGTERM as soon as it sees the marker; a signal delivered before
+	// this point takes the default action and kills the reaper without
+	// removing the marker, so cleanup is never confirmed.
+	signals := make(chan os.Signal, 8)
+	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	defer signal.Stop(signals)
 	// The marker is created before the command, so a failed exec is still
 	// visible to the agent's cleanup path.
 	if err := os.WriteFile(marker, []byte(fmt.Sprintf("%d %d reaper\n", os.Getpid(), start)), 0600); err != nil {
@@ -106,9 +113,6 @@ func run(marker string, args []string) error {
 	}
 	primary := cmd.Process.Pid
 	_ = cmd.Process.Release() // wait4 below collects the child instead.
-	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-	defer signal.Stop(signals)
 	code := 0
 	primaryExited, stopping := false, false
 	var graceDeadline time.Time
