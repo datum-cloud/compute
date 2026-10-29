@@ -493,7 +493,7 @@ function WorkloadCard({
       ? workloadMemorySumQuery(projectId, identityLabel, instanceKeys)
       : undefined;
   const rpsQuery = projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
-  const rps = usePrometheusCard(rpsQuery, "requestsPerSecond", { enabled: !!proxyId });
+  const rps = usePrometheusCard(projectId, rpsQuery, "requestsPerSecond", { enabled: !!proxyId });
   const [copied, copy] = useCopyToClipboard();
 
   return (
@@ -552,6 +552,7 @@ function WorkloadCard({
           />
         ) : null}
         <CpuMemorySparks
+          projectId={projectId}
           cpuQuery={cpuQuery}
           memoryQuery={memoryQuery}
           timeRange={timeRange}
@@ -699,7 +700,7 @@ export default function WorkloadList() {
     projectId && fleetProxyIds.length > 0
       ? albRpsQueryMany(projectId, fleetProxyIds)
       : undefined;
-  const fleetRps = usePrometheusCard(fleetRpsQuery, "requestsPerSecond", {
+  const fleetRps = usePrometheusCard(projectId, fleetRpsQuery, "requestsPerSecond", {
     enabled: computeEnabled && fleetProxyIds.length > 0,
   });
 

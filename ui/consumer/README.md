@@ -185,9 +185,10 @@ server you want running:
   Instance pages gate on `{compute.datumapis.com, instances, get}`.
   Overview embeds a last-30-minutes `Logs.Table` and live metric KPIs. The
   Logs tab mounts the full explorer against ALB access logs when the workload
-  has a published HTTPProxy. Metrics query the portal `POST /api/prometheus`
-  VictoriaMetrics path for `datum_compute_instance_*` CPU/memory (and Envoy
-  ALB series when published).
+  has a published HTTPProxy. Metrics query telemetry queryapi's
+  Prometheus-shaped routes through the portal's `/api/proxy`, scoped to the
+  project, for `datum_compute_instance_*` CPU/memory (and Envoy ALB series
+  when published).
 
 Three things stay in lockstep, same as the sample plugin:
 
@@ -211,7 +212,8 @@ ui/consumer/
   public/plugin-manifest.json
   src/
     lib/api.ts             fetch wrappers + useQuery hooks (workloads/instances/HTTPProxy)
-    lib/prometheus.ts       POST /api/prometheus helpers
+    lib/prometheus.ts       queryapi metric queries + useQuery hooks
+    lib/prometheus-format.ts  Prometheus results → chart series / card values
     lib/o11y-logs.ts        Loki query_range + ALB LogQL
     lib/metrics-queries.ts  PromQL builders + instance identity discovery
     lib/format.ts           formatUptime / splitSlashValue (ported as-is)

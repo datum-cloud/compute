@@ -14,6 +14,7 @@ import { Link } from 'react-router';
 import { Area, AreaChart, YAxis } from 'recharts';
 
 export function SparklineStatCard({
+  projectId,
   title,
   href,
   query,
@@ -29,6 +30,8 @@ export function SparklineStatCard({
   rangeLabel,
   value,
 }: {
+  /** Project whose metrics to read; unused for a static `value` card. */
+  projectId?: string;
   title: string;
   href?: string;
   query?: string;
@@ -51,8 +54,8 @@ export function SparklineStatCard({
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const enabled = !!query && !unavailable && !identityDenied && !pending;
-  const chart = usePrometheusChart(query, timeRange, { enabled });
-  const card = usePrometheusCard(headlineQuery ?? query, format, { enabled });
+  const chart = usePrometheusChart(projectId, query, timeRange, { enabled });
+  const card = usePrometheusCard(projectId, headlineQuery ?? query, format, { enabled });
 
   const dataKey = chart.data?.series[0]?.name || 'value';
   const series = useMemo(() => {

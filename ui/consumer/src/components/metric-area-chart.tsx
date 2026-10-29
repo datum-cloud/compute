@@ -6,6 +6,7 @@
  * arbitrary values.
  */
 import {
+  metricErrorMessage,
   transformForRecharts,
   usePrometheusChart,
   type ChartSeries,
@@ -207,6 +208,7 @@ function SeriesLegend({
 }
 
 export function MetricAreaChart({
+  projectId,
   query,
   timeRange,
   title,
@@ -226,6 +228,8 @@ export function MetricAreaChart({
   seriesDivisor,
   rawFormat,
 }: {
+  /** Project whose metrics to read. */
+  projectId: string | undefined;
   query: string | undefined;
   timeRange: PrometheusTimeRange;
   title: string;
@@ -254,7 +258,7 @@ export function MetricAreaChart({
   rawFormat?: ChartFormat;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const { data, isLoading, error } = usePrometheusChart(query, timeRange, {
+  const { data, isLoading, error } = usePrometheusChart(projectId, query, timeRange, {
     enabled: enabled && !unavailable && !denied && !pending && !!query,
   });
   const scaled = useMemo(
@@ -329,7 +333,7 @@ export function MetricAreaChart({
         <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
           {error.status === 403 || error.status === 401
             ? "You don't have permission to view metrics"
-            : 'Unable to load metrics'}
+            : metricErrorMessage(error)}
         </div>
       ) : chartData.length === 0 ? (
         <div className="text-muted-foreground flex h-full items-center justify-center text-xs">

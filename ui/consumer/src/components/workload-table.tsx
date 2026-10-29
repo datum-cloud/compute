@@ -230,6 +230,7 @@ export function WorkloadTable({
           const keys = instanceKeysByWorkload[row.original.name] ?? [];
           return (
             <MetricSparkline
+              projectId={projectId}
               query={projectId && identityLabel && keys.length > 0 ? workloadCpuSumQuery(projectId, identityLabel, keys) : undefined}
               timeRange={timeRange}
               format="cores"
@@ -250,6 +251,7 @@ export function WorkloadTable({
           const keys = instanceKeysByWorkload[row.original.name] ?? [];
           return (
             <MetricSparkline
+              projectId={projectId}
               query={projectId && identityLabel && keys.length > 0 ? workloadMemorySumQuery(projectId, identityLabel, keys) : undefined}
               timeRange={timeRange}
               format="bytes"

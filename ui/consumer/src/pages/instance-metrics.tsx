@@ -29,8 +29,13 @@ import { useMemo } from 'react';
 const NOT_CONNECTED = 'Not connected';
 const NETWORK_IO_UNAVAILABLE = 'Not collected yet';
 
-function useKpi(query: string | undefined, format: MetricFormat, enabled: boolean) {
-  return usePrometheusCard(query, format, { enabled: enabled && !!query });
+function useKpi(
+  projectId: string | undefined,
+  query: string | undefined,
+  format: MetricFormat,
+  enabled: boolean
+) {
+  return usePrometheusCard(projectId, query, format, { enabled: enabled && !!query });
 }
 
 export default function InstanceMetrics() {
@@ -57,11 +62,11 @@ export default function InstanceMetrics() {
   const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
 
-  const cpuCard = useKpi(cpuQuery, 'number', !identityLoading);
-  const memoryCard = useKpi(memoryQuery, 'bytes', !identityLoading);
-  const rpsCard = useKpi(rpsQuery, 'requestsPerSecond', !!proxyId);
-  const p99Card = useKpi(p99Query, 'milliseconds-auto', !!proxyId);
-  const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
+  const cpuCard = useKpi(projectId, cpuQuery, 'number', !identityLoading);
+  const memoryCard = useKpi(projectId, memoryQuery, 'bytes', !identityLoading);
+  const rpsCard = useKpi(projectId, rpsQuery, 'requestsPerSecond', !!proxyId);
+  const p99Card = useKpi(projectId, p99Query, 'milliseconds-auto', !!proxyId);
+  const errorCard = useKpi(projectId, errorQuery, 'percent', !!proxyId);
 
   const chartsEnabled = !identityLoading && !identityDenied && !!identity;
 
@@ -109,6 +114,7 @@ export default function InstanceMetrics() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MetricAreaChart
+          projectId={projectId}
           title="CPU"
           query={cpuQuery}
           timeRange={range.timeRange}
@@ -120,6 +126,7 @@ export default function InstanceMetrics() {
           denied={identityDenied}
         />
         <MetricAreaChart
+          projectId={projectId}
           title="Memory"
           query={memoryQuery}
           timeRange={range.timeRange}
@@ -133,6 +140,7 @@ export default function InstanceMetrics() {
       </div>
 
       <MetricAreaChart
+        projectId={projectId}
         title="Network I/O"
         query={undefined}
         timeRange={range.timeRange}
@@ -145,6 +153,7 @@ export default function InstanceMetrics() {
       {proxyId ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <MetricAreaChart
+            projectId={projectId}
             title="Requests"
             query={rpsQuery}
             timeRange={range.timeRange}
@@ -152,6 +161,7 @@ export default function InstanceMetrics() {
             color="var(--color-chart-2)"
           />
           <MetricAreaChart
+            projectId={projectId}
             title="Latency p99"
             query={p99Query}
             timeRange={range.timeRange}
@@ -159,6 +169,7 @@ export default function InstanceMetrics() {
             color="var(--color-chart-1)"
           />
           <MetricAreaChart
+            projectId={projectId}
             title="Error rate"
             query={errorQuery}
             timeRange={range.timeRange}
