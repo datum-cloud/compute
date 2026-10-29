@@ -34,6 +34,10 @@ type Options struct {
 	// ConfigMaps or Secrets. Defaults to false. See FeatureFlagsConfig for the
 	// full safety rationale.
 	EnableReferencedDataGate bool
+
+	// PreserveInstances updates the desired runtime without deleting its Instance.
+	// Enable only after providers implement the runtime revision contract.
+	PreserveInstances bool
 }
 
 // Behavior inspired by https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/statefulset
@@ -155,20 +159,20 @@ func (c *statefulControl) GetActions(
 			ready := apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady)
 			started := instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) == 0
 			if needsUpdate(instance, templateHashes) && (ready || started) {
-				// The instance's template hash no longer matches the desired
-				// template — e.g. an image change, or a restart requested via the
-				// RestartedAtAnnotation, which is part of the template hash. The
-				// unikraft provider bakes the pod's runtime, rootfs, and file
-				// mounts at pod-creation time and never reconciles an existing
-				// pod's spec, so an in-place Instance update would silently fail to
-				// roll the running workload. Delete the instance instead; the next
-				// reconcile recreates it from the current template via the create
-				// path above, and the provider tears down the old pod
-				// (finalizer-gated) and boots a fresh one. Ordered, one-at-a-time
-				// pacing is preserved by the descending-ordinal sort, the
-				// skip-all-but-first logic, and the DeletionTimestamp WaitAction.
-				recreateActions = append(recreateActions, instancecontrol.NewDeleteAction(instance))
-			} else if !ready {
+				// Legacy providers require Instance replacement to change their
+				// immutable Pod spec. Revision-aware providers replace the runtime
+				// while keeping the Instance and its network claims. Once opted in,
+				// an Instance must never fall back to delete/recreate on gate rollback.
+				if c.opts.PreserveInstances || instance.Spec.Controller != nil && instance.Spec.Controller.RuntimeRevision > 0 {
+					updated, err := runtimeUpdate(instance, deployment, templateHashes.Current)
+					if err != nil {
+						return nil, err
+					}
+					recreateActions = append(recreateActions, instancecontrol.NewUpdateAction(updated))
+				} else {
+					recreateActions = append(recreateActions, instancecontrol.NewDeleteAction(instance))
+				}
+			} else if !ready || runtimeUpdatePending(instance) {
 				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 			}
 		}
