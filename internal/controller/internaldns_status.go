@@ -55,12 +55,8 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		if matches {
 			result.Hostnames = []string{allocatedInstanceDNSName(instance) + "." + strings.TrimPrefix(canonical, instanceDNSScope+".")}
 		}
-		conditions, _, _ := unstructured.NestedSlice(registration.Object, internalDNSStatusField, internalDNSConditionsField)
-		for _, value := range conditions {
-			accepted, ok := value.(map[string]any)
-			if ok && accepted[internalDNSConditionTypeField] == internalDNSConditionAccepted && accepted[internalDNSStatusField] == string(metav1.ConditionFalse) && accepted[internalDNSObservedGenerationField] == registration.GetGeneration() && accepted[internalDNSReasonField] == internalDNSNameConflict {
-				condition.Reason, condition.Message = internalDNSNameConflict, "Another resource already owns this DNS name"
-			}
+		if registrationHasNameConflict(registration) {
+			condition.Reason, condition.Message = internalDNSNameConflict, "Another resource already owns this DNS name"
 		}
 		contribution := newDNSObject(dnsContributionGVK, namespace, resourceName)
 		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
@@ -84,6 +80,17 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 	}
 	apimeta.SetStatusCondition(&result.Conditions, condition)
 	return result, nil
+}
+
+func registrationHasNameConflict(registration *unstructured.Unstructured) bool {
+	conditions, _, _ := unstructured.NestedSlice(registration.Object, internalDNSStatusField, internalDNSConditionsField)
+	for _, value := range conditions {
+		accepted, ok := value.(map[string]any)
+		if ok && accepted[internalDNSConditionTypeField] == internalDNSConditionAccepted && accepted[internalDNSStatusField] == string(metav1.ConditionFalse) && accepted[internalDNSObservedGenerationField] == registration.GetGeneration() && accepted[internalDNSReasonField] == internalDNSNameConflict {
+			return true
+		}
+	}
+	return false
 }
 
 func publicationMatchesContext(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, attachment instanceDNSAttachment, registration *unstructured.Unstructured, canonical string) (bool, error) {
