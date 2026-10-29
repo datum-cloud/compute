@@ -106,7 +106,7 @@ spec:
               compute.datumapis.com/federation-namespace: ($hubNS)
             # Other controllers add finalizers to the same object, so this asserts
             # presence rather than the exact list.
-            (contains(finalizers, 'compute.datumapis.com/federator')): true
+            (finalizers != null && contains(finalizers, 'compute.datumapis.com/federator')): true
 
   - name: wait-for-the-hub-copy
     description: |
