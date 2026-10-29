@@ -50,6 +50,14 @@ type InstanceSpec struct {
 }
 
 type InstanceController struct {
+	// RuntimeRevision changes only when an intentional runtime update is requested.
+	// Unlike TemplateHash, rewriting a comparison format must not change it.
+	// Zero identifies the runtime of an Instance created before revision tracking.
+	// Providers must report the revision actually running, not echo this field.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	RuntimeRevision int64 `json:"runtimeRevision,omitempty"`
+
 	// TemplateHash is the hash of the instance template applied for this instance.
 	//
 	// +kubebuilder:validation:Required
@@ -860,6 +868,12 @@ type InstanceDNSStatus struct {
 }
 
 type InstanceControllerStatus struct {
+	// ObservedRuntimeRevision identifies the runtime the provider has made ready.
+	// It must remain on the previous revision until its replacement is ready.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	ObservedRuntimeRevision int64 `json:"observedRuntimeRevision,omitempty"`
+
 	// ObservedTemplateHash is the hash of the instance template applied for this instance.
 	//
 	// +kubebuilder:validation:Required
