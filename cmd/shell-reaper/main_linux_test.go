@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -72,6 +73,57 @@ func TestStopWaitsForCleanup(t *testing.T) {
 	}
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("interrupted command should not exit successfully")
+	}
+}
+
+// TestHandlesSIGTERMInMarkerWindow stops the supervisor in the window between
+// its marker appearing and its poll loop starting, where a cleanup signal can
+// arrive before the command has started. The marker records that cleanup is
+// unconfirmed, so a signal in that window must still be handled and the marker
+// must be removed.
+func TestHandlesSIGTERMInMarkerWindow(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		dir := t.TempDir()
+		marker, exitFile := filepath.Join(dir, "marker"), filepath.Join(dir, "exit")
+		cmd := testReaper("run", marker, exitFile, "0", "null", "sh", "-c", "sleep 30 & wait")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(marker); err == nil {
+				break
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("supervisor did not write its marker: %v", err)
+		}
+		fields := strings.Fields(string(data))
+		if len(fields) != 3 {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("unexpected marker %q", data)
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatal(err)
+		}
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			t.Fatalf("signal supervisor: %v", err)
+		}
+		_ = cmd.Wait()
+		if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			t.Fatalf("iteration %d: supervisor died from %v instead of handling it", i, status.Signal())
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("iteration %d: supervisor left its marker behind: %v", i, err)
+		}
 	}
 }
 
