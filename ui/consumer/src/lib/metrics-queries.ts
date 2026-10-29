@@ -203,7 +203,7 @@ export function useProjectResourceIdentity(
 ): ProjectResourceIdentity {
   const match = projectId ? instanceSeriesMatch(projectId) : undefined;
   const enabled = (options?.enabled ?? true) && !!projectId && !!match;
-  const names = usePrometheusLabelValues('resource_name', match, { enabled });
+  const names = usePrometheusLabelValues(projectId, 'resource_name', match, { enabled });
   const isDenied = isPrometheusDenied(names.error);
   return {
     identityLabel: !isDenied && (names.data?.length ?? 0) > 0 ? 'resource_name' : undefined,

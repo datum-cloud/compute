@@ -404,6 +404,7 @@ function LiveTrafficCard({
       <CardContent className="relative flex min-h-0 flex-1 flex-col">
         {rpsQuery ? (
           <MetricAreaChart
+            projectId={projectId}
             title="Requests"
             query={rpsQuery}
             timeRange={range.timeRange}

@@ -303,6 +303,7 @@ function NetworkingCard({
 
 /** Headline figure over a small chart of the same series. */
 function UsageChart({
+  projectId,
   title,
   value,
   hint,
@@ -316,6 +317,7 @@ function UsageChart({
   pending,
   denied,
 }: {
+  projectId: string | undefined;
   title: string;
   value: string;
   hint?: string;
@@ -348,6 +350,7 @@ function UsageChart({
         </span>
       </div>
       <MetricAreaChart
+        projectId={projectId}
         title={title}
         query={query}
         timeRange={timeRange}
@@ -386,8 +389,8 @@ function MetricsCard({
 
   const allocatedCores = parseCpuCores(instance.cpu);
   const allocatedMemory = parseMemoryBytes(instance.memory);
-  const cpu = usePrometheusCard(cpuQuery, 'number', { enabled });
-  const memory = usePrometheusCard(memoryQuery, 'bytes', { enabled });
+  const cpu = usePrometheusCard(projectId, cpuQuery, 'number', { enabled });
+  const memory = usePrometheusCard(projectId, memoryQuery, 'bytes', { enabled });
 
   return (
     <Card
@@ -409,6 +412,7 @@ function MetricsCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <UsageChart
+          projectId={projectId}
           title="CPU"
           value={identityLoading ? 'Loading…' : formatCpuUsage(cpu.data?.value, allocatedCores)}
           hint={allocatedCores ? cpuUsageHint(cpu.data?.value, allocatedCores) : undefined}
@@ -422,6 +426,7 @@ function MetricsCard({
           denied={identityDenied}
         />
         <UsageChart
+          projectId={projectId}
           title="Memory"
           value={identityLoading ? 'Loading…' : formatMemoryUsage(memory.data?.value, allocatedMemory)}
           hint={allocatedMemory ? memoryUsageHint(memory.data?.value, allocatedMemory) : undefined}

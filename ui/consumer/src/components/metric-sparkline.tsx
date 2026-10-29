@@ -13,6 +13,7 @@ import { Area, AreaChart, YAxis } from 'recharts';
 
 /** Compact last-hour sparkline plus current value — table cells and list cards. */
 export function MetricSparkline({
+  projectId,
   query,
   timeRange,
   format,
@@ -26,6 +27,8 @@ export function MetricSparkline({
   denied = false,
   allocated,
 }: {
+  /** Project whose metrics to read. */
+  projectId: string | undefined;
   query?: string;
   timeRange: PrometheusTimeRange;
   /** Format of the raw values; shown when `allocated` is unknown. */
@@ -44,7 +47,7 @@ export function MetricSparkline({
   allocated?: number;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const chart = usePrometheusChart(query, timeRange, { enabled: !!query && !denied });
+  const chart = usePrometheusChart(projectId, query, timeRange, { enabled: !!query && !denied });
 
   const dataKey = chart.data?.series[0]?.name || 'value';
   const rows = useMemo(() => {
@@ -152,6 +155,7 @@ function rawTitle(used: number, allocated: number, format: ChartFormat): string 
 }
 
 export function CpuMemorySparks({
+  projectId,
   cpuQuery,
   memoryQuery,
   timeRange,
@@ -161,6 +165,8 @@ export function CpuMemorySparks({
   denied = false,
   allocation,
 }: {
+  /** Project whose metrics to read. */
+  projectId: string | undefined;
   cpuQuery?: string;
   memoryQuery?: string;
   timeRange: PrometheusTimeRange;
@@ -187,6 +193,7 @@ export function CpuMemorySparks({
   return (
     <div className={cn('flex flex-col', compact ? 'gap-1 py-0.5' : 'gap-2')}>
       <MetricSparkline
+        projectId={projectId}
         query={cpuQuery}
         timeRange={timeRange}
         format="cores"
@@ -197,6 +204,7 @@ export function CpuMemorySparks({
         pending={pending}
       />
       <MetricSparkline
+        projectId={projectId}
         query={memoryQuery}
         timeRange={timeRange}
         format="bytes"

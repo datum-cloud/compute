@@ -63,9 +63,9 @@ function AlbBody({
   onTraffic: (proxyId: string, rps: number | undefined) => void;
 }) {
   // Instant queries: use a 5m window so low-volume bursts register (see metrics-queries).
-  const rps = usePrometheusCard(albRpsQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'requestsPerSecond');
-  const errors = usePrometheusCard(albErrorRateQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'percent');
-  const p99 = usePrometheusCard(albP99Query(projectId, proxyId, ALB_INSTANT_WINDOW), 'milliseconds-auto');
+  const rps = usePrometheusCard(projectId, albRpsQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'requestsPerSecond');
+  const errors = usePrometheusCard(projectId, albErrorRateQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'percent');
+  const p99 = usePrometheusCard(projectId, albP99Query(projectId, proxyId, ALB_INSTANT_WINDOW), 'milliseconds-auto');
 
   const rpsValue = rps.data?.value;
   useEffect(() => {
@@ -114,10 +114,12 @@ function InstanceBody({
 }) {
   const { identity } = useInstanceMetricIdentity(projectId, instance);
   const cpu = usePrometheusCard(
+    projectId,
     projectId && identity ? cpuUsageQuery(projectId, identity) : undefined,
     'number'
   );
   const memory = usePrometheusCard(
+    projectId,
     projectId && identity ? memoryUsageQuery(projectId, identity) : undefined,
     'bytes'
   );

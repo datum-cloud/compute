@@ -1,15 +1,21 @@
 /**
- * Same-origin VictoriaMetrics access via the portal's `POST /api/prometheus`.
+ * Project-scoped metrics via telemetry queryapi's Prometheus-shaped routes.
  *
- * Plugins cannot import cloud-portal's `usePrometheusChart` / `MetricChart`.
- * This module mirrors that HTTP contract so instance CPU/memory (and ALB
- * traffic when a URL is published) query the same `vmsingle-datum-resource-metrics`
- * the built-in edge metrics pages use.
+ * Mirrors cloud-portal `app/resources/o11y-metrics` and the formatting in
+ * `app/modules/metrics` without importing portal internals. Requests go through
+ * the portal's `/api/proxy` (see `getProjectScopedBase`), which adds the user's
+ * token; queryapi scopes every query to the project from that identity.
+ * `query` and `query_range` must be form-encoded POSTs.
  */
-import { ApiError, PLUGIN_ID } from './api';
+import { ApiError, PLUGIN_ID, getProjectScopedBase } from './api';
+import {
+  formatForCard,
+  formatForChart,
+  type PrometheusQueryResult,
+} from './prometheus-format';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 
-const PROMETHEUS_ROUTE_PATH = '/api/prometheus';
+export const O11Y_METRICS_API_PATH = '/apis/o11y.miloapis.com/v1alpha1/metrics/api/v1';
 
 export type MetricFormat =
   | 'number'
@@ -51,12 +57,11 @@ export interface MetricCardData {
   labels?: Record<string, string>;
 }
 
-interface PrometheusAPIResponse<T> {
-  success: boolean;
-  data: T;
+interface PrometheusEnvelope<T> {
+  status: 'success' | 'error';
+  data?: T;
   error?: string;
-  type?: string;
-  details?: unknown;
+  errorType?: string;
 }
 
 export class PrometheusError extends Error {
@@ -76,25 +81,91 @@ function toUnixRange(timeRange: PrometheusTimeRange): { start: number; end: numb
   };
 }
 
-async function prometheusRequest<T>(body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(PROMETHEUS_ROUTE_PATH, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+/** Reads queryapi's error text from a Prometheus envelope or a Kubernetes Status. */
+async function errorText(res: Response): Promise<string | undefined> {
+  try {
+    const body = (await res.json()) as { error?: unknown; message?: unknown };
+    if (typeof body.error === 'string') return body.error;
+    if (typeof body.message === 'string') return body.message;
+  } catch {
+    // Non-JSON error body; fall back to the status.
+  }
+  return undefined;
+}
+
+async function metricsRequest<T>(projectId: string, path: string, init: RequestInit): Promise<T> {
+  const res = await fetch(`${getProjectScopedBase(projectId)}${O11Y_METRICS_API_PATH}${path}`, {
+    ...init,
+    headers: { Accept: 'application/json', ...init.headers },
   });
 
-  let payload: PrometheusAPIResponse<T> | undefined;
-  try {
-    payload = (await res.json()) as PrometheusAPIResponse<T>;
-  } catch {
-    throw new PrometheusError(`Prometheus request failed (${res.status})`, res.status);
+  if (!res.ok) {
+    throw new PrometheusError(
+      (await errorText(res)) ?? `Metrics request failed (${res.status})`,
+      res.status
+    );
   }
 
-  if (!res.ok || !payload.success) {
-    throw new PrometheusError(payload.error || `Prometheus request failed (${res.status})`, res.status);
+  const body = (await res.json()) as PrometheusEnvelope<T>;
+  if (body.status === 'error') {
+    throw new PrometheusError(body.error || 'Metrics query failed', 400);
   }
+  return body.data as T;
+}
 
-  return payload.data;
+function postForm<T>(projectId: string, path: string, params: Record<string, string>): Promise<T> {
+  return metricsRequest<T>(projectId, path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  });
+}
+
+export async function queryRange(
+  projectId: string,
+  query: string,
+  timeRange: PrometheusTimeRange,
+  step: string
+): Promise<FormattedMetricData> {
+  const range = toUnixRange(timeRange);
+  const data = await postForm<PrometheusQueryResult>(projectId, '/query_range', {
+    query,
+    start: String(range.start),
+    end: String(range.end),
+    step,
+  });
+  return formatForChart(data, range);
+}
+
+export async function queryInstant(
+  projectId: string,
+  query: string,
+  metricFormat: MetricFormat,
+  time?: Date
+): Promise<MetricCardData> {
+  const data = await postForm<PrometheusQueryResult>(projectId, '/query', {
+    query,
+    ...(time ? { time: String(Math.floor(time.getTime() / 1000)) } : {}),
+  });
+  return formatForCard(data, metricFormat);
+}
+
+/** Statuses a retry won't change: auth, a bad query, too much data, a timeout. */
+const NO_RETRY_STATUSES = new Set([400, 401, 403, 422, 503, 504]);
+
+export function shouldRetryMetrics(failureCount: number, error: unknown): boolean {
+  if (error instanceof PrometheusError && error.status !== undefined && NO_RETRY_STATUSES.has(error.status)) {
+    return false;
+  }
+  return failureCount < 2;
+}
+
+/** User-facing text for a failed chart, other than the permission case. */
+export function metricErrorMessage(error: unknown): string {
+  const status = error instanceof PrometheusError ? error.status : undefined;
+  if (status === 422) return 'Too much data to show. Try a shorter time range';
+  if (status === 503 || status === 504) return 'Took too long to load. Try a shorter time range';
+  return 'Unable to load metrics';
 }
 
 /** Last hour, used as the default Metrics tab window. */
@@ -115,85 +186,71 @@ export function chartStepFor(timeRange: PrometheusTimeRange): string {
 }
 
 export function usePrometheusChart(
+  projectId: string | undefined,
   query: string | undefined,
   timeRange: PrometheusTimeRange,
   options?: { enabled?: boolean; refetchInterval?: number | false }
 ): UseQueryResult<FormattedMetricData, PrometheusError> {
   const step = chartStepFor(timeRange);
-  return useQuery({
+  return useQuery<FormattedMetricData, PrometheusError>({
     queryKey: [
       PLUGIN_ID,
       'prometheus-chart',
+      projectId,
       query,
       timeRange.start.getTime(),
       timeRange.end.getTime(),
       step,
     ],
-    enabled: (options?.enabled ?? true) && !!query,
-    queryFn: () =>
-      prometheusRequest<FormattedMetricData>({
-        type: 'chart',
-        query,
-        timeRange: toUnixRange(timeRange),
-        step,
-      }),
+    enabled: (options?.enabled ?? true) && !!projectId && !!query,
+    queryFn: () => queryRange(projectId as string, query as string, timeRange, step),
     refetchInterval: options?.refetchInterval ?? 30_000,
     staleTime: 15_000,
-    retry: (failureCount, error) => {
-      if (error instanceof PrometheusError && (error.status === 401 || error.status === 403)) {
-        return false;
-      }
-      return failureCount < 2;
-    },
+    retry: shouldRetryMetrics,
   });
 }
 
 export function usePrometheusCard(
+  projectId: string | undefined,
   query: string | undefined,
   metricFormat: MetricFormat,
   options?: { enabled?: boolean; time?: Date; refetchInterval?: number | false }
 ): UseQueryResult<MetricCardData, PrometheusError> {
   const time = options?.time;
-  return useQuery({
-    queryKey: [PLUGIN_ID, 'prometheus-card', query, metricFormat, time?.getTime()],
-    enabled: (options?.enabled ?? true) && !!query,
-    queryFn: () =>
-      prometheusRequest<MetricCardData>({
-        type: 'card',
-        query,
-        metricFormat,
-        ...(time
-          ? { timeRange: { start: Math.floor(time.getTime() / 1000), end: Math.floor(time.getTime() / 1000) } }
-          : {}),
-      }),
+  return useQuery<MetricCardData, PrometheusError>({
+    queryKey: [PLUGIN_ID, 'prometheus-card', projectId, query, metricFormat, time?.getTime()],
+    enabled: (options?.enabled ?? true) && !!projectId && !!query,
+    queryFn: () => queryInstant(projectId as string, query as string, metricFormat, time),
     refetchInterval: options?.refetchInterval ?? 30_000,
     staleTime: 15_000,
-    retry: (failureCount, error) => {
-      if (error instanceof PrometheusError && (error.status === 401 || error.status === 403)) {
-        return false;
-      }
-      return failureCount < 2;
-    },
+    retry: shouldRetryMetrics,
   });
 }
 
-export function fetchPrometheusLabelValues(label: string, match: string): Promise<string[]> {
-  return prometheusRequest<string[]>({
-    type: 'labels',
-    label,
-    match,
-  });
+export async function fetchPrometheusLabelValues(
+  projectId: string,
+  label: string,
+  match: string
+): Promise<string[]> {
+  const search = new URLSearchParams({ 'match[]': match });
+  const values = await metricsRequest<string[]>(
+    projectId,
+    `/label/${encodeURIComponent(label)}/values?${search.toString()}`,
+    { method: 'GET' }
+  );
+  return values ?? [];
 }
 
 export function usePrometheusLabelValues(
+  projectId: string | undefined,
   label: string,
   match: string | undefined,
   options?: { enabled?: boolean }
 ): UseQueryResult<string[], PrometheusError> {
   return useQuery({
-    queryKey: [PLUGIN_ID, 'prometheus-labels', label, match],
-    enabled: (options?.enabled ?? true) && !!match,
-    queryFn: () => fetchPrometheusLabelValues(label, match as string),
+    queryKey: [PLUGIN_ID, 'prometheus-labels', projectId, label, match],
+    enabled: (options?.enabled ?? true) && !!projectId && !!match,
+    queryFn: () => fetchPrometheusLabelValues(projectId as string, label, match as string),
     staleTime: 5 * 60_000,
     retry: false,
   });
