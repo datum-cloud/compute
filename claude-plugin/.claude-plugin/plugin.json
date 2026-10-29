@@ -1,0 +1,23 @@
+{
+  "name": "datum-compute",
+  "description": "Deploy containers to Datum Cloud Compute, put them on a public URL, operate them, and find out why a workload isn't running",
+  "version": "0.1.0",
+  "author": {
+    "name": "Datum Cloud",
+    "url": "https://github.com/datum-cloud"
+  },
+  "homepage": "https://www.datum.net/docs/",
+  "repository": "https://github.com/datum-cloud/compute",
+  "license": "AGPL-3.0",
+  "dependencies": [
+    "datum-cloud"
+  ],
+  "keywords": [
+    "datum-cloud",
+    "compute",
+    "workloads",
+    "containers",
+    "deploy",
+    "troubleshooting"
+  ]
+}
