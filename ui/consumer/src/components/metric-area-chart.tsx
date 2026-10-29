@@ -6,6 +6,7 @@
  * arbitrary values.
  */
 import {
+  isPrometheusDenied,
   metricErrorMessage,
   transformForRecharts,
   usePrometheusChart,
@@ -13,6 +14,7 @@ import {
   type MetricFormat,
   type PrometheusTimeRange,
 } from '../lib/prometheus';
+import { formatBitsPerSecond } from '../lib/format-bits';
 import { formatBytes, formatCores, formatPercent } from '../lib/resource-usage';
 import { busiestSeries, nextHiddenSeries, type SeriesLegendModifiers } from '../lib/series-view';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
@@ -59,6 +61,8 @@ function formatAxisValue(value: number, format: ChartFormat): string {
       return formatBytes(value);
     case 'bytesPerSecond':
       return `${formatBytes(value)}/s`;
+    case 'bitsPerSecond':
+      return formatBitsPerSecond(value);
     case 'percent':
       return formatPercent(value, false);
     case 'cores':
@@ -80,6 +84,8 @@ function formatAxisTick(value: number, format: ChartFormat): string {
       return formatBytes(value);
     case 'bytesPerSecond':
       return `${formatBytes(value)}/s`;
+    case 'bitsPerSecond':
+      return formatBitsPerSecond(value);
     case 'percent':
       return formatPercent(value, true);
     case 'cores':
@@ -96,6 +102,7 @@ function axisWidth(format: ChartFormat): number {
   switch (format) {
     case 'bytes':
     case 'bytesPerSecond':
+    case 'bitsPerSecond':
       return 48;
     case 'percent':
     case 'cores':
@@ -219,6 +226,7 @@ export function MetricAreaChart({
   unavailableLabel = 'No data',
   pending = false,
   denied = false,
+  error: upstreamError,
   className,
   height = 224,
   embedded = false,
@@ -242,6 +250,8 @@ export function MetricAreaChart({
   pending?: boolean;
   /** Identity probe (or similar) returned 401/403. */
   denied?: boolean;
+  /** Identity probe (or similar) failed; rendered like a failed chart query. */
+  error?: unknown;
   className?: string;
   height?: number;
   /** Skip the Card chrome so this can sit inside another card. */
@@ -258,9 +268,11 @@ export function MetricAreaChart({
   rawFormat?: ChartFormat;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const { data, isLoading, error } = usePrometheusChart(projectId, query, timeRange, {
-    enabled: enabled && !unavailable && !denied && !pending && !!query,
+  const chart = usePrometheusChart(projectId, query, timeRange, {
+    enabled: enabled && !unavailable && !denied && !pending && !upstreamError && !!query,
   });
+  const { data, isLoading } = chart;
+  const error = upstreamError ?? chart.error;
   const scaled = useMemo(
     () => (data && seriesDivisor ? { ...data, series: divideSeries(data.series, seriesDivisor) } : data),
     [data, seriesDivisor]
@@ -331,7 +343,7 @@ export function MetricAreaChart({
         </div>
       ) : error ? (
         <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
-          {error.status === 403 || error.status === 401
+          {isPrometheusDenied(error)
             ? "You don't have permission to view metrics"
             : metricErrorMessage(error)}
         </div>

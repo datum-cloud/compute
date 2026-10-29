@@ -204,6 +204,25 @@ The host provides `react`, `react-dom`, `react-router`, and
 `vite.config.ts`). This plugin bundles its own copy of `@datum-cloud/datum-ui`
 (not shared as a singleton in v1), so its CSS ships with the bundle.
 
+## Network interface traffic
+
+The instance Metrics page shows "Network in" and "Network out" charts. They
+query two counters through queryapi:
+
+- `datum_vpc_interface_receive_bytes_total`
+- `datum_vpc_interface_transmit_bytes_total`
+
+The `network` label on both metrics equals
+`status.networkInterfaces[].networkInterfaceRef.name` on the Instance. The
+queries in `src/lib/metrics-queries.ts` select series by that value.
+
+Charts show bits per second: `rate(<metric>[5m]) * 8`.
+
+Before charting, `src/lib/network-interface-metrics.ts` probes the label
+values of `network` on the receive metric. If no value matches the instance's
+interfaces, the page keeps showing "Not collected yet". The charts appear
+when series exist for the instance's interfaces.
+
 ## File layout
 
 ```
@@ -216,6 +235,7 @@ ui/consumer/
     lib/prometheus-format.ts  Prometheus results → chart series / card values
     lib/o11y-logs.ts        Loki query_range + ALB LogQL
     lib/metrics-queries.ts  PromQL builders + instance identity discovery
+    lib/network-interface-metrics.ts  probe for network interface metric labels
     lib/format.ts           formatUptime / splitSlashValue (ported as-is)
     schema.ts                Zod schemas for Workload / Instance
     adapter.ts                raw K8s JSON → schema mappers
