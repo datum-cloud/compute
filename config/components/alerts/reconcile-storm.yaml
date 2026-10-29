@@ -16,22 +16,24 @@ spec:
         # Reconciles keep succeeding, so reconcile_errors_total stays flat and
         # error-based alerting misses it entirely. The fingerprint is a high
         # reconcile rate while the workqueue stays mostly drained. Evaluated per
-        # controller across every controller compute-manager reports (job label
-        # scopes to compute-manager; the controller/name label identifies which
+        # cluster and controller across every controller compute-manager reports
+        # (job scopes to compute-manager; cluster and controller identify which
         # one is storming when it fires) so it also covers cell-side controllers
-        # and any controller added later. The average-depth guard keeps a
+        # and any controller added later. Keep cluster in both aggregations and
+        # the join: separate cells must not combine rates or dilute queue depth.
+        # The average-depth guard keeps a
         # legitimately busy controller (sustained backlog) from tripping it
         # without clearing the alert on a brief queue-depth spike.
         - alert: ComputeControllerReconcileStorm
           expr: |
             (
-              sum by (controller) (
+              sum by (cluster, controller) (
                 rate(controller_runtime_reconcile_total{job="compute-metrics"}[5m])
               ) > 0.5
             )
-            and on (controller)
+            and on (cluster, controller)
             (
-              avg by (controller) (
+              avg by (cluster, controller) (
                 avg_over_time(workqueue_depth{job="compute-metrics"}[5m])
               ) < 5
             )
@@ -42,9 +44,9 @@ spec:
             namespace: compute-system
             team: compute
           annotations:
-            summary: Compute {{ $labels.controller }} controller is reconciling in a hot loop
+            summary: Compute {{ $labels.controller }} controller in {{ $labels.cluster }} is reconciling in a hot loop
             description: |
-              The compute controller "{{ $labels.controller }}" has been
+              The compute controller "{{ $labels.controller }}" in cluster "{{ $labels.cluster }}" has been
               reconciling at {{ $value | humanize }}/s (>30/min) for 15 minutes
               while its workqueue has stayed mostly drained on average. The same objects are being
               re-reconciled in a self-perpetuating loop, burning control-plane
