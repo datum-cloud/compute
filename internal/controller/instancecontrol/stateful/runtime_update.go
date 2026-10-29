@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 
 	"go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
 // runtimeUpdate deliberately supports only changes that leave placement, quota,
@@ -53,4 +54,15 @@ func runtimeUpdatePending(instance *v1alpha.Instance) bool {
 	return instance.Status.Controller == nil ||
 		instance.Status.Controller.ObservedRuntimeRevision != instance.Spec.Controller.RuntimeRevision ||
 		instance.Status.Controller.ObservedTemplateHash != instance.Spec.Controller.TemplateHash
+}
+
+func (c *statefulControl) templateUpdateAction(instance *v1alpha.Instance, deployment *v1alpha.WorkloadDeployment, hash string) (instancecontrol.Action, error) {
+	if c.opts.PreserveInstances || instance.Spec.Controller != nil && instance.Spec.Controller.RuntimeRevision > 0 {
+		updated, err := runtimeUpdate(instance, deployment, hash)
+		if err != nil {
+			return instancecontrol.Action{}, err
+		}
+		return instancecontrol.NewUpdateAction(updated), nil
+	}
+	return instancecontrol.NewDeleteAction(instance), nil
 }

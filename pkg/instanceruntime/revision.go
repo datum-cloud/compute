@@ -42,7 +42,7 @@ func PodRevision(instance *v1alpha.Instance, pod *corev1.Pod) (int64, error) {
 	owner := metav1.GetControllerOf(pod)
 	if instance.UID == "" || owner == nil || owner.UID != instance.UID ||
 		owner.Kind != "Instance" || owner.APIVersion != v1alpha.GroupVersion.String() {
-		return 0, fmt.Errorf("Pod %s/%s does not belong to Instance %s", pod.Namespace, pod.Name, instance.UID)
+		return 0, fmt.Errorf("pod %s/%s does not belong to Instance %s", pod.Namespace, pod.Name, instance.UID)
 	}
 	value := pod.Annotations[PodRevisionAnnotation]
 	if value == "" {
@@ -50,7 +50,7 @@ func PodRevision(instance *v1alpha.Instance, pod *corev1.Pod) (int64, error) {
 	}
 	revision, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || revision < 0 {
-		return 0, fmt.Errorf("Pod %s/%s has invalid runtime revision %q", pod.Namespace, pod.Name, value)
+		return 0, fmt.Errorf("pod %s/%s has invalid runtime revision %q", pod.Namespace, pod.Name, value)
 	}
 	return revision, nil
 }

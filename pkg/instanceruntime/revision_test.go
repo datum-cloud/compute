@@ -4,15 +4,24 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.datum.net/compute/api/v1alpha"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+
+	"go.datum.net/compute/api/v1alpha"
 )
 
 func TestPodRevisionMigrationAndReplacement(t *testing.T) {
-	instance := &v1alpha.Instance{ObjectMeta: metav1.ObjectMeta{UID: "instance"}, Spec: v1alpha.InstanceSpec{Controller: &v1alpha.InstanceController{TemplateHash: "old"}}}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "pod-old", OwnerReferences: []metav1.OwnerReference{{APIVersion: v1alpha.GroupVersion.String(), Kind: "Instance", UID: instance.UID, Controller: ptr.To(true)}}}}
+	instance := &v1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{UID: "instance"},
+		Spec:       v1alpha.InstanceSpec{Controller: &v1alpha.InstanceController{TemplateHash: "old"}},
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		UID: "pod-old",
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: v1alpha.GroupVersion.String(), Kind: "Instance", UID: instance.UID, Controller: ptr.To(true),
+		}},
+	}}
 	current, err := PodCurrent(instance, pod)
 	require.NoError(t, err)
 	require.True(t, current)
@@ -42,7 +51,11 @@ func TestPodRevisionMigrationAndReplacement(t *testing.T) {
 
 func TestPodRevisionRejectsForeignAndMalformedPods(t *testing.T) {
 	instance := &v1alpha.Instance{ObjectMeta: metav1.ObjectMeta{UID: "instance"}}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{OwnerReferences: []metav1.OwnerReference{{APIVersion: v1alpha.GroupVersion.String(), Kind: "Instance", UID: "previous", Controller: ptr.To(true)}}}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: v1alpha.GroupVersion.String(), Kind: "Instance", UID: "previous", Controller: ptr.To(true),
+		}},
+	}}
 	_, err := PodRevision(instance, pod)
 	require.Error(t, err)
 	pod.OwnerReferences[0].UID = instance.UID

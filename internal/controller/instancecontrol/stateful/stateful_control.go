@@ -163,15 +163,11 @@ func (c *statefulControl) GetActions(
 				// immutable Pod spec. Revision-aware providers replace the runtime
 				// while keeping the Instance and its network claims. Once opted in,
 				// an Instance must never fall back to delete/recreate on gate rollback.
-				if c.opts.PreserveInstances || instance.Spec.Controller != nil && instance.Spec.Controller.RuntimeRevision > 0 {
-					updated, err := runtimeUpdate(instance, deployment, templateHashes.Current)
-					if err != nil {
-						return nil, err
-					}
-					recreateActions = append(recreateActions, instancecontrol.NewUpdateAction(updated))
-				} else {
-					recreateActions = append(recreateActions, instancecontrol.NewDeleteAction(instance))
+				action, err := c.templateUpdateAction(instance, deployment, templateHashes.Current)
+				if err != nil {
+					return nil, err
 				}
+				recreateActions = append(recreateActions, action)
 			} else if !ready || runtimeUpdatePending(instance) {
 				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 			}
