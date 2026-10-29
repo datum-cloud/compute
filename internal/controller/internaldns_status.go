@@ -32,20 +32,28 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		}
 	}
 	condition := metav1.Condition{Type: internalDNSConditionReady, Status: metav1.ConditionFalse, Reason: "PendingPublication", Message: "Waiting for DNS publication", ObservedGeneration: instance.Generation}
-	registration := newDNSObject(dnsRegistrationGVK, namespace, resourceName)
-	err := reader.Get(ctx, client.ObjectKeyFromObject(registration), registration)
+	resolver, err := findResolverContext(ctx, reader, namespace, identity.ProjectUID, attachment.VPCUID)
+	if err != nil {
+		return result, err
+	}
+	registrationName := resourceName
+	if resolver != nil {
+		registrationName = instanceDNSReservationName(resolver)
+	}
+	registration := newDNSObject(dnsRegistrationGVK, namespace, registrationName)
+	err = reader.Get(ctx, client.ObjectKeyFromObject(registration), registration)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return result, err
 	}
 	if err == nil {
 		canonical, _, _ := unstructured.NestedString(registration.Object, internalDNSStatusField, "canonicalFQDN")
 		canonical = strings.TrimSuffix(strings.ToLower(canonical), ".")
-		matches, err := publicationMatchesContext(ctx, reader, identity, namespace, instance, attachment, registration, canonical)
+		matches, err := publicationMatchesContext(ctx, reader, identity, namespace, attachment, registration, canonical)
 		if err != nil {
 			return result, err
 		}
 		if matches {
-			result.Hostnames = []string{canonical}
+			result.Hostnames = []string{allocatedInstanceDNSName(instance) + "." + strings.TrimPrefix(canonical, instanceDNSScope+".")}
 		}
 		conditions, _, _ := unstructured.NestedSlice(registration.Object, internalDNSStatusField, internalDNSConditionsField)
 		for _, value := range conditions {
@@ -58,8 +66,8 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
 			return result, err
 		}
-		contributionRegistration, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, internalDNSUIDField)
-		if observed && len(result.Hostnames) > 0 && contributionRegistration == string(registration.GetUID()) && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
+		contributionRegistration, _, _ := unstructured.NestedMap(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField)
+		if observed && len(result.Hostnames) > 0 && reflect.DeepEqual(contributionRegistration, objectReference(registration)) && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
 		}
 	}
@@ -78,7 +86,7 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 	return result, nil
 }
 
-func publicationMatchesContext(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, registration *unstructured.Unstructured, canonical string) (bool, error) {
+func publicationMatchesContext(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, attachment instanceDNSAttachment, registration *unstructured.Unstructured, canonical string) (bool, error) {
 	resolver, err := findResolverContext(ctx, reader, namespace, identity.ProjectUID, attachment.VPCUID)
 	if err != nil || resolver == nil {
 		return false, err
@@ -88,7 +96,7 @@ func publicationMatchesContext(ctx context.Context, reader client.Reader, identi
 		return false, err
 	}
 	registeredZone, _, _ := unstructured.NestedMap(registration.Object, internalDNSSpecField, internalDNSZoneRefField)
-	return canonical == allocatedInstanceDNSName(instance)+"."+suffix && referenceName(registeredZone) == referenceName(zone), nil
+	return canonical == instanceDNSScope+"."+suffix && referenceName(registeredZone) == referenceName(zone), nil
 }
 
 func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {

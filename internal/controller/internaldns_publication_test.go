@@ -120,7 +120,7 @@ func TestPublisherCreatesRegistrationAndContribution(t *testing.T) {
 	require.Equal(t, publishedStatus, contribution.Object[internalDNSStatusField])
 }
 
-func TestPublisherRecreatesRegistrationWhenItsNameChanges(t *testing.T) {
+func TestPublisherRepairsReservationAndRebindsContributions(t *testing.T) {
 	scheme := runtime.NewScheme()
 	for _, gvk := range []schema.GroupVersionKind{dnsResolverContextGVK, dnsRegistrationGVK, dnsContributionGVK} {
 		scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
@@ -165,7 +165,7 @@ func TestPublisherRecreatesRegistrationWhenItsNameChanges(t *testing.T) {
 		reconcile()
 	}
 
-	registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, "record")
+	registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, instanceDNSReservationName(resolver))
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(registration), registration))
 	require.NoError(t, unstructured.SetNestedField(registration.Object, internalDNSTestInstanceName, internalDNSSpecField, internalDNSNameField))
 	enforceImmutableName = false
@@ -178,7 +178,7 @@ func TestPublisherRecreatesRegistrationWhenItsNameChanges(t *testing.T) {
 	require.True(t, ready)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(registration), registration))
 	name, _, _ := unstructured.NestedString(registration.Object, internalDNSSpecField, internalDNSNameField)
-	require.Equal(t, allocatedInstanceDNSName(instance), name)
+	require.Equal(t, instanceDNSScope, name)
 	contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "record")
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(contribution), contribution))
 	ref, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, internalDNSUIDField)

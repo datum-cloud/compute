@@ -28,6 +28,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 		rejectedRegistration         bool
 		replacedRegistration         bool
 		current, observed, wantReady bool
+		staleRegistration            bool
 	}{
 		{name: "published", current: true, observed: true, wantReady: true},
 		{name: "custom domain", domain: "private.example.net", current: true, observed: true, wantReady: true},
@@ -36,6 +37,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 		{name: "rejected contribution", current: true},
 		{name: "name conflict", current: true, observed: true, rejectedRegistration: true},
 		{name: "contribution for a replaced registration", current: true, observed: true, replacedRegistration: true},
+		{name: "contribution for an older policy generation", current: true, observed: true, staleRegistration: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.domain == "" {
@@ -48,7 +50,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			require.NoError(t, unstructured.SetNestedField(resolver.Object, tc.domain, internalDNSStatusField, "managedNamespace", "suffix"))
 			s.AddKnownTypeWithName(dnsRegistrationGVK, &unstructured.Unstructured{})
 			s.AddKnownTypeWithName(dnsContributionGVK, &unstructured.Unstructured{})
-			registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
+			registration := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, instanceDNSReservationName(resolver))
 			registration.SetGeneration(2)
 			registration.SetUID("registration")
 			contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, internalDNSTestInstanceName)
@@ -57,7 +59,12 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 			if tc.replacedRegistration {
 				contributionRegistration = "previous-registration"
 			}
-			contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: map[string]any{internalDNSUIDField: contributionRegistration}}
+			ref := objectReference(registration)
+			ref[internalDNSUIDField] = contributionRegistration
+			if tc.staleRegistration {
+				ref["generation"] = int64(1)
+			}
+			contribution.Object[internalDNSSpecField] = map[string]any{internalDNSRegistrationRefField: ref}
 			observed := int64(1)
 			if tc.current {
 				observed = 2
@@ -68,7 +75,7 @@ func TestPublicationStatusRequiresCurrentAuthorizedPublication(t *testing.T) {
 				accepted = metav1.ConditionFalse
 			}
 			registrationConditions := append(append([]any(nil), conditions...), map[string]any{internalDNSConditionTypeField: internalDNSConditionAccepted, internalDNSStatusField: string(accepted), internalDNSObservedGenerationField: observed, internalDNSReasonField: internalDNSNameConflict})
-			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": allocatedInstanceDNSName(instance) + "." + tc.domain + ".", internalDNSConditionsField: registrationConditions}
+			registration.Object[internalDNSStatusField] = map[string]any{"canonicalFQDN": instanceDNSScope + "." + tc.domain + ".", internalDNSConditionsField: registrationConditions}
 			zoneName := "zone"
 			if tc.foreignZone {
 				zoneName = internalDNSTestForeignValue

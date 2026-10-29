@@ -303,10 +303,6 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	if managed == nil {
 		return false, nil
 	}
-	_, zoneRef, err := allocatedDNSNamespace(managed)
-	if err != nil {
-		return false, err
-	}
 
 	labels := map[string]string{
 		internalDNSInstanceUID: string(instance.UID),
@@ -322,13 +318,7 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		}
 	}
 
-	registrationSpec := map[string]any{
-		internalDNSZoneRefField:     zoneRef,
-		internalDNSNameField:        ownerName,
-		internalDNSRecordTypesField: []any{"A", internalDNSRecordTypeAAAA},
-		"ttlSeconds":                int64(30),
-	}
-	registration, changed, err := ensureDNSObject(ctx, access, dnsRegistrationGVK, namespace, resourceName, labels, owner, registrationSpec)
+	registration, changed, err := ensureInstanceDNSReservation(ctx, access, managed)
 	if err != nil || changed {
 		return false, err
 	}
@@ -464,7 +454,7 @@ func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Co
 		}
 		for i := range list.Items {
 			item := &list.Items[i]
-			if _, retained := keep[item.GetName()]; retained {
+			if _, retained := keep[item.GetName()]; retained && gvk != dnsRegistrationGVK {
 				continue
 			}
 			if err := access.Writer.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
@@ -584,6 +574,9 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 		return errors.New("an internal DNS project identity resolver is required")
 	}
 	r.mgr = mgr
+	if err := (&internalDNSReservationReconciler{publisher: r}).SetupWithManager(mgr); err != nil {
+		return err
+	}
 	concurrency := r.MaxConcurrentReconciles
 	if concurrency <= 0 {
 		concurrency = defaultDNSConcurrency
