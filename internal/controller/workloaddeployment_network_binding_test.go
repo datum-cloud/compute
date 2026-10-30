@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -565,4 +566,37 @@ func TestNetworkBindingStateDoesNotGateInstances(t *testing.T) {
 		"a binding waiting on a context must not even be reported, let alone acted on")
 	assert.True(t, networkInterfaceClaimSatisfied(claim),
 		"binding state is not an input to instance gating")
+}
+
+func TestNetworkBindingChanged(t *testing.T) {
+	base := &networkingv1alpha.NetworkBinding{}
+	cases := []struct {
+		name   string
+		change func(*networkingv1alpha.NetworkBinding)
+		want   bool
+	}{
+		{"annotation", func(b *networkingv1alpha.NetworkBinding) {
+			b.Annotations = map[string]string{"networking.datumapis.com/presence-observed": "new"}
+			b.ResourceVersion = "2"
+		}, false},
+		{"status", func(b *networkingv1alpha.NetworkBinding) {
+			b.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse}}
+		}, true},
+		{"spec", func(b *networkingv1alpha.NetworkBinding) { b.Spec.Network.Name = "changed" }, true},
+		{"owner", func(b *networkingv1alpha.NetworkBinding) {
+			b.OwnerReferences = []metav1.OwnerReference{{Name: "changed"}}
+		}, true},
+		{"deletion", func(b *networkingv1alpha.NetworkBinding) { now := metav1.Now(); b.DeletionTimestamp = &now }, true},
+		{"labels", func(b *networkingv1alpha.NetworkBinding) { b.Labels = map[string]string{"network": "changed"} }, true},
+	}
+	p := networkBindingChanged()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := base.DeepCopy()
+			tc.change(b)
+			require.Equal(t, tc.want, p.Update(event.TypedUpdateEvent[*networkingv1alpha.NetworkBinding]{ObjectOld: base, ObjectNew: b}))
+		})
+	}
+	require.True(t, p.Create(event.TypedCreateEvent[*networkingv1alpha.NetworkBinding]{Object: base}))
+	require.True(t, p.Delete(event.TypedDeleteEvent[*networkingv1alpha.NetworkBinding]{Object: base}))
 }
