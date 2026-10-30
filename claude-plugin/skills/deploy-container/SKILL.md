@@ -44,7 +44,7 @@ Ask only for what you cannot read from the repository:
 | Choice | Where it comes from | Note |
 |---|---|---|
 | Workload name | the person; default to the app's directory name | Lowercase letters, digits and `-`. |
-| Image | `--image`, fully qualified, e.g. `ghcr.io/acme/api:1.4.2` | Also where `--build` pushes to, so the person must be able to push there. |
+| Image | `--image`, fully qualified with registry and tag, e.g. `ghcr.io/acme/api:1.4.2` | `deploy` rejects a short name: write `docker.io/traefik/whoami:v1.10.3`, not `traefik/whoami`. Also where `--build` pushes to, so the person must be able to push there. |
 | Port | the port the app listens on; read it from the Dockerfile `EXPOSE`, the start command or the app's config | This is `--http-port`. Getting it wrong publishes a URL that answers with errors. |
 | Locations | `--location`, `--city` (e.g. `DFW,IAD`) or `--location-selector` | List what the project may use with datum-mcp's `resource` tool, `group: locations.miloapis.com`, `kind: Location`; load the `resource` toolset with `toolsets` first if it is missing. |
 | Instances | `--min` per location (default 1), `--max` to autoscale | Replicas times instance size has to fit in what `datumctl compute quota` shows is left. |
