@@ -1,7 +1,7 @@
 {
   "name": "datum-compute",
   "description": "Deploy containers to Datum Cloud Compute, put them on a public URL, operate them, and find out why a workload isn't running",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Datum Cloud",
     "url": "https://github.com/datum-cloud"
