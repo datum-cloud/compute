@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { federation } from '@module-federation/vite';
+import { sentryVitePlugin } from '@sentry/vite-plugin';
 import react from '@vitejs/plugin-react';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -79,84 +80,113 @@ function consoleWasm(): Plugin {
 // browser never contacts this origin directly. MF's automatic publicPath makes
 // federated chunks resolve relative to remoteEntry.js, which is what lets them
 // load correctly through that same-origin proxy prefix.
-export default defineConfig({
-  server: {
-    port: 7778,
-    strictPort: true,
-    // Allow cross-origin fetches of the manifest/remote during Tier 0/standalone.
-    cors: true,
-  },
-  preview: {
-    port: 7778,
-    // Bind IPv4 explicitly — "localhost"-only binding resolves to IPv6-only
-    // ([::1]) on some hosts, and the portal's server-side manifest fetch to
-    // http://localhost:7778 then gets ECONNREFUSED on IPv4, silently dropping
-    // the plugin out of the registry with no visible error.
-    host: '127.0.0.1',
-    strictPort: true,
-    cors: true,
-  },
-  build: {
-    target: 'esnext',
-    // Keep the plugin readable when inspecting the built bundle.
-    minify: false,
-  },
-  experimental: {
-    renderBuiltUrl(_filename, { hostType }) {
-      return hostType === 'js' ? { relative: true } : undefined;
+export default defineConfig(({ command }) => {
+  const hostShared = (requiredVersion: string | false) => ({
+    singleton: true,
+    requiredVersion,
+    ...(command === 'build' ? { import: false as const } : {}),
+  });
+
+  return {
+    server: {
+      port: 7778,
+      strictPort: true,
+      // Allow cross-origin fetches of the manifest/remote during Tier 0/standalone.
+      cors: true,
     },
-  },
-  plugins: [
-    react(),
-    consoleWasm(),
-    federation({
-      // MUST equal the manifest `name` — the host keys the remote by this id.
-      name: 'workload.compute.datumapis.com',
-      // The manifest's `remoteEntry` field points the host at this filename,
-      // requested through the asset proxy as /api/plugins/compute/remoteEntry.js.
-      filename: 'remoteEntry.js',
-      manifest: true,
-      // Exposed keys map 1:1 to the manifest's `exposedModules` keys / $codeRefs.
-      // The host loads e.g. loadRemote('workload.compute.datumapis.com/WorkloadList').
-      exposes: {
-        './WorkloadList': './src/pages/workload-list.tsx',
-        './WorkloadDetail': './src/pages/workload-detail.tsx',
-        './InstanceDetail': './src/pages/instance-detail.tsx',
-        './InstanceShellWindow': './src/pages/instance-shell-window.tsx',
-        './WorkloadsHomeColumn': './src/cards/workloads-home-column.tsx',
+    preview: {
+      port: 7778,
+      // Bind IPv4 explicitly — "localhost"-only binding resolves to IPv6-only
+      // ([::1]) on some hosts, and the portal's server-side manifest fetch to
+      // http://localhost:7778 then gets ECONNREFUSED on IPv4, silently dropping
+      // the plugin out of the registry with no visible error.
+      host: '127.0.0.1',
+      strictPort: true,
+      cors: true,
+    },
+    build: {
+      target: 'esnext',
+      // Maps for Sentry (below); no sourceMappingURL comment, so browsers
+      // never request them. The Dockerfile drops them from the image.
+      sourcemap: 'hidden',
+    },
+    experimental: {
+      renderBuiltUrl(_filename, { hostType }) {
+        return hostType === 'js' ? { relative: true } : undefined;
       },
-      // Host-pinned singletons. requiredVersion tracks the host's majors
-      // (react 19, react-router 8, react-query 5) — cloud-portal moved
-      // react-router 7 -> 8 in fabef049 without bumping this, which silently
-      // broke every plugin page here (Module Federation rejects a singleton
-      // whose requiredVersion the host's actual version doesn't satisfy).
-      // Keep this in lockstep with cloud-portal's package.json majors.
-      // singleton:true guarantees one instance — the host provides all of
-      // these, so plugin queries share the host's QueryClient cache.
-      shared: {
-        react: { singleton: true, requiredVersion: '^19.0.0' },
-        'react-dom': { singleton: true, requiredVersion: '^19.0.0' },
-        'react-router': { singleton: true, requiredVersion: '^8.0.0' },
-        '@tanstack/react-query': { singleton: true, requiredVersion: '^5.0.0' },
-        // Curated datum-ui subset shared by the host (see the host's
-        // federation-host.ts DATUM_UI_SHARED). requiredVersion:false — the
-        // host's copy always wins, which is what keeps styling identical to
-        // built-in pages; the local install is types + standalone fallback.
-        '@datum-cloud/datum-ui/badge': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/button': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/card': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/empty-content': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/icons': { singleton: true, requiredVersion: false },
-        // Do not share `logs`: MF colocates lucide-react / date-fns into the
-        // logs loadShare chunk, so a host-provided logs module replaces those
-        // exports and crashes WorkloadDetail / related pages.
-        // `select` is shared by the host (see cloud-portal `federation-host.ts`) so
-        // the overview range control renders the same Select as ALB.
-        '@datum-cloud/datum-ui/select': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/separator': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/skeleton': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/table': { singleton: true, requiredVersion: false },
-      },
-    }),
-  ],
+    },
+    plugins: [
+      react(),
+      consoleWasm(),
+      federation({
+        // MUST equal the manifest `name` — the host keys the remote by this id.
+        name: 'workload.compute.datumapis.com',
+        // The manifest's `remoteEntry` field points the host at this filename,
+        // requested through the asset proxy as /api/plugins/compute/remoteEntry.js.
+        filename: 'remoteEntry.js',
+        manifest: true,
+        // Exposed keys map 1:1 to the manifest's `exposedModules` keys / $codeRefs.
+        // The host loads e.g. loadRemote('workload.compute.datumapis.com/WorkloadList').
+        exposes: {
+          './WorkloadList': './src/pages/workload-list.tsx',
+          './WorkloadDetail': './src/pages/workload-detail.tsx',
+          './InstanceDetail': './src/pages/instance-detail.tsx',
+          './InstanceShellWindow': './src/pages/instance-shell-window.tsx',
+          './WorkloadsHomeColumn': './src/cards/workloads-home-column.tsx',
+        },
+        // Host-pinned singletons. requiredVersion tracks the host's majors
+        // (react 19, react-router 8, react-query 5) — cloud-portal moved
+        // react-router 7 -> 8 in fabef049 without bumping this, which silently
+        // broke every plugin page here (Module Federation rejects a singleton
+        // whose requiredVersion the host's actual version doesn't satisfy).
+        // Keep this in lockstep with cloud-portal's package.json majors.
+        // singleton:true guarantees one instance — the host provides all of
+        // these, so plugin queries share the host's QueryClient cache.
+        // Builds rely on the host for these (import: false), so they bundle no
+        // fallback copy: each was its own chunk, about 300KB gzipped in all,
+        // fetched and parsed on every load though the host's copy always wins.
+        // Dev keeps the fallbacks so the standalone preview runs without a host.
+        shared: {
+          react: hostShared('^19.0.0'),
+          // The host does not share this subpath, so it keeps its (small)
+          // fallback; left implicit it would inherit import: false from
+          // `react` and throw "must be provided by host".
+          'react/jsx-runtime': { singleton: true, requiredVersion: '^19.0.0' },
+          'react-dom': hostShared('^19.0.0'),
+          'react-router': hostShared('^8.0.0'),
+          '@tanstack/react-query': hostShared('^5.0.0'),
+          // Curated datum-ui subset shared by the host (see the host's
+          // federation-host.ts DATUM_UI_SHARED). requiredVersion:false — the
+          // host's copy always wins, which is what keeps styling identical to
+          // built-in pages; the local install is types + standalone fallback.
+          '@datum-cloud/datum-ui/badge': hostShared(false),
+          '@datum-cloud/datum-ui/button': hostShared(false),
+          '@datum-cloud/datum-ui/card': hostShared(false),
+          '@datum-cloud/datum-ui/empty-content': hostShared(false),
+          '@datum-cloud/datum-ui/icons': hostShared(false),
+          // Do not share `logs`: MF colocates lucide-react / date-fns into the
+          // logs loadShare chunk, so a host-provided logs module replaces those
+          // exports and crashes WorkloadDetail / related pages.
+          // `select` is shared by the host (see cloud-portal `federation-host.ts`) so
+          // the overview range control renders the same Select as ALB.
+          '@datum-cloud/datum-ui/select': hostShared(false),
+          '@datum-cloud/datum-ui/separator': hostShared(false),
+          '@datum-cloud/datum-ui/skeleton': hostShared(false),
+          '@datum-cloud/datum-ui/table': hostShared(false),
+        },
+      }),
+      // The plugin runs inside cloud-portal, so its errors reach the portal's
+      // Sentry project. Debug IDs tie frames to these maps without a release,
+      // since the portal's release names its own build, not this plugin's.
+      // No token (local builds, forks) skips the upload.
+      sentryVitePlugin({
+        org: 'sentry',
+        project: 'cloud-portal',
+        authToken: process.env.SENTRY_AUTH_TOKEN,
+        disable: command !== 'build' || !process.env.SENTRY_AUTH_TOKEN,
+        release: { create: false, finalize: false, inject: false },
+        telemetry: false,
+      }),
+    ],
+  };
 });

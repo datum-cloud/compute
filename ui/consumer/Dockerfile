@@ -41,7 +41,13 @@ RUN bun install --frozen-lockfile
 COPY ui/consumer/ .
 COPY --from=console-wasm /out/ /console-wasm/
 ENV CONSOLE_WASM_DIR=/console-wasm
-RUN bun run build
+# The Sentry token is a BuildKit secret (publish-docker's build-secrets), so it
+# never lands in a layer, the image history or the exported build cache. When
+# absent the file is missing, the variable is empty and the upload is skipped.
+# Maps go to Sentry, not the image: serve.ts serves every file in dist/.
+RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN,required=false \
+  SENTRY_AUTH_TOKEN="$(cat /run/secrets/SENTRY_AUTH_TOKEN 2>/dev/null)" bun run build && \
+  find dist -name '*.map' -delete
 
 FROM oven/bun:1-slim
 WORKDIR /app
