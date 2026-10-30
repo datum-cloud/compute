@@ -926,3 +926,27 @@ func TestReconcileDNSProjectionLifetimeLeavesProjectionUntouched(t *testing.T) {
 	require.Empty(t, projection.ResourceVersion)
 	require.Empty(t, projection.Labels)
 }
+
+func TestInstanceProjectorRetriesConcurrentDNSPublication(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}}
+	base := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(projection).Build()
+	writes := 0
+	cl := interceptor.NewClient(base, interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+		writes++
+		if writes == 1 {
+			current := &computev1alpha.Instance{}
+			require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(projection), current))
+			current.Status.DNS = []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "concurrent-publication"}}}
+			require.NoError(t, base.Status().Update(ctx, current))
+		}
+		return cl.SubResource(sub).Update(ctx, obj, opts...)
+	}})
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	r.InternalDNSEnabled = true
+	_, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.Equal(t, 2, writes)
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, "concurrent-publication", projection.Status.DNS[0].Network.Name)
+}

@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -230,14 +231,21 @@ func (r *InstanceProjector) reconcile(ctx context.Context, req ctrl.Request) err
 
 	logger.Info("reconciled Instance projection", "operation", operationResult, "namespace", targetNamespace, "cluster", clusterName)
 
-	// Status is a separate subresource.
-	dnsStatus := projection.Status.DNS
-	projection.Status = downstreamInstance.Status
-	// Private name publication belongs to the project-side DNS publisher.
-	if r.InternalDNSEnabled {
-		projection.Status.DNS = dnsStatus
-	}
-	if err := projectClient.Status().Update(ctx, projection); err != nil && !apierrors.IsNotFound(err) {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &computev1alpha.Instance{}
+		if err := projectCluster.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(projection), latest); err != nil {
+			return err
+		}
+		if latest.UID != projection.UID || latest.Generation != projection.Generation {
+			return fmt.Errorf("instance projection changed during status publication")
+		}
+		dnsStatus := latest.Status.DNS
+		latest.Status = downstreamInstance.Status
+		if r.InternalDNSEnabled {
+			latest.Status.DNS = dnsStatus
+		}
+		return projectClient.Status().Update(ctx, latest)
+	}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("failed updating Instance projection status: %w", err)
 	}
 

@@ -190,7 +190,7 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 			publicationErr = errors.Join(publicationErr, err)
 		}
 	}
-	if err := r.reportPublication(ctx, access.Writer, &projectInstance, publicationStatus); err != nil {
+	if err := r.reportPublication(ctx, access.Writer, access.Reader, &projectInstance, publicationStatus); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, desired); err != nil {

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
 	"github.com/stretchr/testify/require"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -120,7 +122,7 @@ func TestReportPublicationPreservesRuntimeStatus(t *testing.T) {
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
 	r := &InternalDNSPublisherReconciler{}
 	network := networkingv1alpha.NetworkRef{Name: internalDNSTestNetworkName, Namespace: internalDNSTestNamespace}
-	require.NoError(t, r.reportPublication(context.Background(), cl, instance, []computev1alpha.InstanceDNSStatus{{Network: network}}))
+	require.NoError(t, r.reportPublication(context.Background(), cl, cl, instance, []computev1alpha.InstanceDNSStatus{{Network: network}}))
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
 	require.Equal(t, metav1.ConditionTrue, instance.Status.Conditions[0].Status)
 	require.Len(t, instance.Status.DNS, 1)
@@ -154,5 +156,49 @@ func TestPublicationStatusMatchesNamespacedNetworkReference(t *testing.T) {
 			require.Len(t, got.Conditions, 1)
 			require.Equal(t, tc.matches, got.Conditions[0].LastTransitionTime.Equal(&transition))
 		})
+	}
+}
+
+func TestReportPublicationRetriesConcurrentRuntimeStatus(t *testing.T) {
+	s := runtime.NewScheme()
+	require.NoError(t, computev1alpha.AddToScheme(s))
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "publication-race", Namespace: internalDNSTestNamespace, UID: "original", Generation: 1}}
+	base := fake.NewClientBuilder().WithScheme(s).WithObjects(instance).WithStatusSubresource(instance).Build()
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
+	writes := 0
+	writer := interceptor.NewClient(base, interceptor.Funcs{SubResourcePatch: func(ctx context.Context, cl client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+		writes++
+		if writes == 1 {
+			current := &computev1alpha.Instance{}
+			require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(instance), current))
+			current.Status.Conditions = []metav1.Condition{{Type: computev1alpha.InstanceReady, Status: metav1.ConditionTrue}}
+			require.NoError(t, base.Status().Update(ctx, current))
+		}
+		return cl.SubResource(sub).Patch(ctx, obj, patch, opts...)
+	}})
+	status := []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "private"}}}
+	require.NoError(t, (&InternalDNSPublisherReconciler{}).reportPublication(context.Background(), writer, base, instance, status))
+	require.Equal(t, 2, writes)
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
+	require.Equal(t, status, instance.Status.DNS)
+	require.Equal(t, metav1.ConditionTrue, instance.Status.Conditions[0].Status)
+}
+
+func TestReportPublicationRejectsChangedInstance(t *testing.T) {
+	for _, changedUID := range []bool{false, true} {
+		s := runtime.NewScheme()
+		require.NoError(t, computev1alpha.AddToScheme(s))
+		original := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "changed", Namespace: internalDNSTestNamespace, UID: "original", Generation: 1}}
+		latest := original.DeepCopy()
+		if changedUID {
+			latest.UID = "replacement"
+		} else {
+			latest.Generation++
+		}
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(latest).WithStatusSubresource(latest).Build()
+		err := (&InternalDNSPublisherReconciler{}).reportPublication(context.Background(), cl, cl, original, []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "private"}}})
+		require.Error(t, err)
+		require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(latest), latest))
+		require.Empty(t, latest.Status.DNS)
 	}
 }
