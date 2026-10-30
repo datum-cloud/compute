@@ -253,3 +253,50 @@ describe("toInstance status", () => {
     expect(instance.status).toBe("Pending");
   });
 });
+
+describe("toInstance networkInterfaces", () => {
+  test("joins spec and status interfaces by name", () => {
+    const instance = toInstance({
+      metadata: { name: "web-0" },
+      spec: {
+        networkInterfaces: [{ name: "eth0", network: { name: "default" } }],
+      },
+      status: {
+        networkInterfaces: [
+          { name: "eth0", networkInterfaceRef: { name: "web-0-eth0" } },
+        ],
+      },
+    });
+    expect(instance.networkInterfaces).toEqual([
+      { name: "eth0", network: "default", networkInterfaceRef: "web-0-eth0" },
+    ]);
+  });
+
+  test("keeps a spec interface whose status has no ref yet", () => {
+    const instance = toInstance({
+      spec: { networkInterfaces: [{ name: "eth0", network: { name: "default" } }] },
+      status: { networkInterfaces: [{ name: "eth0" }] },
+    });
+    expect(instance.networkInterfaces).toEqual([
+      { name: "eth0", network: "default", networkInterfaceRef: undefined },
+    ]);
+  });
+
+  test("defaults an unnamed spec interface to eth0, as the controller does", () => {
+    const instance = toInstance({
+      spec: { networkInterfaces: [{ network: { name: "default" } }] },
+      status: {
+        networkInterfaces: [
+          { name: "eth0", networkInterfaceRef: { name: "web-0-eth0" } },
+        ],
+      },
+    });
+    expect(instance.networkInterfaces).toEqual([
+      { name: "eth0", network: "default", networkInterfaceRef: "web-0-eth0" },
+    ]);
+  });
+
+  test("is empty when the spec declares no interfaces", () => {
+    expect(toInstance({}).networkInterfaces).toEqual([]);
+  });
+});

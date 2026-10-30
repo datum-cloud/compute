@@ -1,6 +1,7 @@
 /**
- * Instance Metrics tab: CPU/memory always, plus ALB traffic when the workload
- * is published on a URL. Charts query the portal VictoriaMetrics endpoint.
+ * Instance Metrics tab: CPU, memory, and network in/out always, plus ALB
+ * traffic when the workload is published on a URL. Charts query the project's
+ * queryapi through the portal's control-plane proxy (see lib/prometheus.ts).
  */
 import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
 import { MetricsKpiCell, MetricsKpiRow } from '../components/metrics-kpis';
@@ -23,6 +24,7 @@ import {
   parseMemoryBytes,
 } from '../lib/resource-usage';
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
+import { useNetworkInterfaceMetrics } from '../lib/network-interface-metrics';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
 import { useMemo } from 'react';
 
@@ -43,6 +45,7 @@ export default function InstanceMetrics() {
   const range = useMetricsTimeRange();
   const { identity, isLoading: identityLoading, isDenied: identityDenied } =
     useInstanceMetricIdentity(projectId, instance);
+  const net = useNetworkInterfaceMetrics(projectId, instance);
 
   // Percent needs the instance's size; fall back to cores when it is unknown.
   const allocatedCores = parseCpuCores(instance.cpu);
@@ -139,16 +142,34 @@ export default function InstanceMetrics() {
         />
       </div>
 
-      <MetricAreaChart
-        projectId={projectId}
-        title="Network I/O"
-        query={undefined}
-        timeRange={range.timeRange}
-        format="bytesPerSecond"
-        enabled={false}
-        unavailable
-        unavailableLabel={NETWORK_IO_UNAVAILABLE}
-      />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network in"
+          query={net.receiveQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={net.seriesLabels}
+          pending={net.isLoading}
+          denied={net.isDenied}
+          error={net.error}
+          unavailable={net.unavailable}
+          unavailableLabel={NETWORK_IO_UNAVAILABLE}
+        />
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network out"
+          query={net.transmitQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={net.seriesLabels}
+          pending={net.isLoading}
+          denied={net.isDenied}
+          error={net.error}
+          unavailable={net.unavailable}
+          unavailableLabel={NETWORK_IO_UNAVAILABLE}
+        />
+      </div>
 
       {proxyId ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

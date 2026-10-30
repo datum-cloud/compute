@@ -14,6 +14,7 @@ import type {
   MetricCardData,
   MetricFormat,
 } from './prometheus';
+import { formatBitsPerSecond } from './format-bits';
 
 export type PrometheusSample = [number, string];
 
@@ -173,6 +174,8 @@ export function formatValue(value: number, format: MetricFormat = 'number', prec
       return `${(value * 100).toFixed(precision)}%`;
     case 'bytes':
       return formatBytes(value, precision);
+    case 'bitsPerSecond':
+      return formatBitsPerSecond(value);
     case 'requestsPerSecond':
       return `${value.toFixed(precision)} req/s`;
     case 'milliseconds':

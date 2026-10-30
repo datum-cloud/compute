@@ -16,6 +16,7 @@
  * name. Those charts are workload-scoped, not per-instance.
  */
 import { isPrometheusDenied, usePrometheusLabelValues } from './prometheus';
+import type { InstanceNetworkInterface } from '../schema';
 
 export const CPU_METRIC = 'datum_compute_instance_cpu_usage_seconds_total';
 export const MEMORY_METRIC = 'datum_compute_instance_memory_working_set_bytes';
@@ -44,8 +45,9 @@ function escapePromQL(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/** Regex-escape a literal, then escape it again for the quoted string it sits in. */
 function escapePromQLRegexp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escapePromQL(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 }
 
 export function namesMatcher(label: string, names: readonly string[]): string | undefined {
@@ -53,6 +55,65 @@ export function namesMatcher(label: string, names: readonly string[]): string | 
   if (unique.length === 0) return undefined;
   if (unique.length === 1) return `${label}="${escapePromQL(unique[0])}"`;
   return `${label}=~"${unique.map(escapePromQLRegexp).join('|')}"`;
+}
+
+export const VPC_INTERFACE_RECEIVE_METRIC = 'datum_vpc_interface_receive_bytes_total';
+export const VPC_INTERFACE_TRANSMIT_METRIC = 'datum_vpc_interface_transmit_bytes_total';
+
+export type TrafficDirection = 'receive' | 'transmit';
+
+/** Interfaces that have a ref, which is what the `network` label carries. */
+export function networkInterfaceRefs(interfaces: readonly InstanceNetworkInterface[]): string[] {
+  return interfaces.flatMap((i) => (i.networkInterfaceRef ? [i.networkInterfaceRef] : []));
+}
+
+function networkTrafficLabels(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[]
+): string | undefined {
+  const matcher = namesMatcher('network', networkInterfaceRefs(interfaces));
+  if (!matcher || !namespace) return undefined;
+  return `resourcemanager_datumapis_com_project_name="${escapePromQL(projectId)}",resource_namespace="${escapePromQL(namespace)}",${matcher}`;
+}
+
+/**
+ * bits/s per interface, keyed by the `network` label.
+ * `undefined` when no interface has a ref yet or the namespace is unknown.
+ */
+export function networkTrafficQuery(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[],
+  direction: TrafficDirection
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  const metric = direction === 'receive' ? VPC_INTERFACE_RECEIVE_METRIC : VPC_INTERFACE_TRANSMIT_METRIC;
+  return `sum by (network) (rate(${metric}{${labels}}[5m])) * 8`;
+}
+
+/** Instant selector used to probe whether the metric exists for this instance. */
+export function networkTrafficSeriesMatch(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[]
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  return `{__name__="${VPC_INTERFACE_RECEIVE_METRIC}",${labels}}`;
+}
+
+/** Series name (the ref) -> "eth0 · default". Unknown names are omitted so the chart shows the raw name. */
+export function networkInterfaceSeriesLabels(
+  interfaces: readonly InstanceNetworkInterface[]
+): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const i of interfaces) {
+    if (!i.networkInterfaceRef) continue;
+    labels[i.networkInterfaceRef] = i.network ? `${i.name} · ${i.network}` : i.name;
+  }
+  return labels;
 }
 
 export function instanceSeriesMatch(projectId: string): string {

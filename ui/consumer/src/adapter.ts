@@ -12,6 +12,7 @@
  */
 import type {
   Instance,
+  InstanceNetworkInterface,
   InstanceStatusValue,
   Workload,
   WorkloadHealth,
@@ -372,10 +373,15 @@ export function toWorkloadList(items: RawWorkload[]): Workload[] {
 
 export interface RawInstance {
   metadata?: RawObjectMeta;
-  spec?: { runtime?: RawRuntime };
+  spec?: {
+    runtime?: RawRuntime;
+    networkInterfaces?: { name?: string; network?: { name?: string } }[];
+  };
   status?: {
     conditions?: RawCondition[];
     networkInterfaces?: {
+      name?: string;
+      networkInterfaceRef?: { name?: string };
       assignments?: { networkIP?: string; externalIP?: string };
       addresses?: { address?: string }[];
       externalAddresses?: { address?: string }[];
@@ -538,6 +544,25 @@ export function collectInstanceHostnames(raw: RawInstance): string[] {
   return [...new Set(names.filter(Boolean))];
 }
 
+/** API default for an interface that does not name itself; the controller uses the same. */
+const DEFAULT_INTERFACE_NAME = 'eth0';
+
+/**
+ * Interfaces in spec order, each joined to its status entry by name. The
+ * status `networkInterfaceRef` is unset until the interface is realized.
+ */
+export function collectInstanceNetworkInterfaces(raw: RawInstance): InstanceNetworkInterface[] {
+  const status = raw.status?.networkInterfaces ?? [];
+  return (raw.spec?.networkInterfaces ?? []).map((iface) => {
+    const name = iface.name || DEFAULT_INTERFACE_NAME;
+    return {
+      name,
+      network: iface.network?.name,
+      networkInterfaceRef: status.find((s) => s.name === name)?.networkInterfaceRef?.name,
+    };
+  });
+}
+
 export function toInstance(raw: RawInstance): Instance {
   const labels = raw.metadata?.labels ?? {};
   const assignments = raw.status?.networkInterfaces?.[0]?.assignments;
@@ -573,6 +598,7 @@ export function toInstance(raw: RawInstance): Instance {
     addresses: collectInstanceAddresses(raw),
     externalIPs: collectInstanceExternalIPs(raw),
     hostnames: collectInstanceHostnames(raw),
+    networkInterfaces: collectInstanceNetworkInterfaces(raw),
     conditions: conditions.map((c) => ({
       type: c.type ?? '',
       status: c.status ?? 'Unknown',

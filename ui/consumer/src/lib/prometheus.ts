@@ -21,6 +21,7 @@ export type MetricFormat =
   | 'number'
   | 'bytes'
   | 'bytesPerSecond'
+  | 'bitsPerSecond'
   | 'percent'
   | 'requestsPerSecond'
   | 'milliseconds'
