@@ -4,8 +4,9 @@ package controller
 
 import (
 	"context"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"testing"
+
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -569,6 +570,7 @@ func TestNetworkBindingStateDoesNotGateInstances(t *testing.T) {
 }
 
 func TestNetworkBindingChanged(t *testing.T) {
+	const changedName = "changed"
 	base := &networkingv1alpha.NetworkBinding{}
 	cases := []struct {
 		name   string
@@ -580,14 +582,14 @@ func TestNetworkBindingChanged(t *testing.T) {
 			b.ResourceVersion = "2"
 		}, false},
 		{"status", func(b *networkingv1alpha.NetworkBinding) {
-			b.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse}}
+			b.Status.Conditions = []metav1.Condition{{Type: networkingv1alpha.NetworkBindingReady, Status: metav1.ConditionFalse}}
 		}, true},
-		{"spec", func(b *networkingv1alpha.NetworkBinding) { b.Spec.Network.Name = "changed" }, true},
+		{"spec", func(b *networkingv1alpha.NetworkBinding) { b.Spec.Network.Name = changedName }, true},
 		{"owner", func(b *networkingv1alpha.NetworkBinding) {
-			b.OwnerReferences = []metav1.OwnerReference{{Name: "changed"}}
+			b.OwnerReferences = []metav1.OwnerReference{{Name: changedName}}
 		}, true},
 		{"deletion", func(b *networkingv1alpha.NetworkBinding) { now := metav1.Now(); b.DeletionTimestamp = &now }, true},
-		{"labels", func(b *networkingv1alpha.NetworkBinding) { b.Labels = map[string]string{"network": "changed"} }, true},
+		{"labels", func(b *networkingv1alpha.NetworkBinding) { b.Labels = map[string]string{"network": changedName} }, true},
 	}
 	p := networkBindingChanged()
 	for _, tc := range cases {
