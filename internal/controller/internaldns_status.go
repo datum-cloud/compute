@@ -14,6 +14,8 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -106,14 +108,26 @@ func publicationMatchesContext(ctx context.Context, reader client.Reader, identi
 	return canonical == instanceDNSScope+"."+suffix && referenceName(registeredZone) == referenceName(zone), nil
 }
 
-func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {
+func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, reader client.Reader, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {
 	if reflect.DeepEqual(instance.Status.DNS, status) {
 		return nil
 	}
-	base := instance.DeepCopy()
-	instance.Status.DNS = status
-	if err := writer.Status().Patch(ctx, instance, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		return fmt.Errorf("report Instance DNS publication: %w", err)
-	}
-	return nil
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &computev1alpha.Instance{}
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(instance), latest); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if latest.UID != instance.UID || latest.Generation != instance.Generation {
+			return apierrors.NewConflict(schema.GroupResource{Group: "compute.datumapis.com", Resource: "instances"}, instance.Name, fmt.Errorf("instance changed during DNS publication"))
+		}
+		if reflect.DeepEqual(latest.Status.DNS, status) {
+			return nil
+		}
+		base := latest.DeepCopy()
+		latest.Status.DNS = status
+		if err := writer.Status().Patch(ctx, latest, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("report Instance DNS publication: %w", err)
+		}
+		return nil
+	})
 }
