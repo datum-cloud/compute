@@ -40,9 +40,19 @@ internalDNS:
       kubeconfigPath: /etc/compute/edge-dfw.kubeconfig
 ```
 
-Compute selects the network's resolver context and reads its managed zone. It
-reserves a name through `DNSRegistration` and publishes addresses and eligibility
-atomically through `DNSRecordContribution`. Project RBAC authorizes writes.
+With publishing enabled, a separate context reconciler creates one persistent
+`compute-instances-<context-UID-hash>` registration in every ready managed context,
+including projects with zero instances. Its owner name and `reservedDescendants`
+are both `instances`. This is compute policy; DNS does not contain that label.
+The registration is owned by the resolver context, so deleting an instance or
+its last endpoint never releases the reservation.
+
+Endpoint contributions reference the shared registration's UID and generation
+and publish their individual `<instance-name>.instances` names. Contributions
+remain Instance-owned. Old per-instance registrations are removed during normal
+publisher cleanup; replacement contexts and registration lifetimes rebind the
+contributions. Instance status reports the endpoint hostname, not the shared
+registration's root name. Project RBAC authorizes writes.
 Object lifetime references and contribution generations prevent stale publishers
 from changing replacement resources.
 
@@ -75,6 +85,7 @@ projects:
 - `get,list,watch` on `dnsresolvercontexts`.
 - `get,list,watch,create,update,patch,delete` on `dnsregistrations` and
   `dnsrecordcontributions`.
+- `reserve,publish` on the service's `dnsregistrations` (additional to CRUD).
 - `get,update,patch` on `dnsrecordcontributions/status`.
 - `get,patch` on `instances/status`.
 
@@ -107,3 +118,7 @@ resyncs every 10–15 minutes, with independent jitter, to bound how long a miss
 event can leave publication stale. 1,000 steady instances generate about 1.3
 reconciles per second from resyncs. The publisher limits concurrent
 reconciliations to four and each reconciliation to ten seconds.
+
+This requires the generic service-owned reservation contract in dns-operator
+PR #423. Use the matching DNS, compute, and staging configuration changes when
+testing; no production migration or temporary DNS default is introduced.
