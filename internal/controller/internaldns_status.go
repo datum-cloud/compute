@@ -118,7 +118,7 @@ func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, 
 			return client.IgnoreNotFound(err)
 		}
 		if latest.UID != instance.UID || latest.Generation != instance.Generation {
-			return apierrors.NewConflict(schema.GroupResource{Group: "compute.datumapis.com", Resource: "instances"}, instance.Name, fmt.Errorf("instance changed during DNS publication"))
+			return apierrors.NewConflict(schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "instances"}, instance.Name, fmt.Errorf("instance changed during DNS publication"))
 		}
 		if reflect.DeepEqual(latest.Status.DNS, status) {
 			return nil

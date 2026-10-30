@@ -162,7 +162,7 @@ func TestPublicationStatusMatchesNamespacedNetworkReference(t *testing.T) {
 func TestReportPublicationRetriesConcurrentRuntimeStatus(t *testing.T) {
 	s := runtime.NewScheme()
 	require.NoError(t, computev1alpha.AddToScheme(s))
-	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "publication-race", Namespace: "default", UID: "original", Generation: 1}}
+	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "publication-race", Namespace: internalDNSTestNamespace, UID: "original", Generation: 1}}
 	base := fake.NewClientBuilder().WithScheme(s).WithObjects(instance).WithStatusSubresource(instance).Build()
 	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
 	writes := 0
@@ -188,7 +188,7 @@ func TestReportPublicationRejectsChangedInstance(t *testing.T) {
 	for _, changedUID := range []bool{false, true} {
 		s := runtime.NewScheme()
 		require.NoError(t, computev1alpha.AddToScheme(s))
-		original := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "changed", Namespace: "default", UID: "original", Generation: 1}}
+		original := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: "changed", Namespace: internalDNSTestNamespace, UID: "original", Generation: 1}}
 		latest := original.DeepCopy()
 		if changedUID {
 			latest.UID = "replacement"
