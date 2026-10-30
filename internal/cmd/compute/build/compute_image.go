@@ -20,9 +20,17 @@ import (
 // values Datum Compute uses to select images, both in the image config and
 // the index manifest's platform.
 const (
-	computePlatformOS   = "kraftcloud"
+	computePlatformOS   = "datum"
 	computePlatformArch = "x86_64"
 )
+
+// computePlatforms lists the platforms inspect treats as a Compute image, in
+// the order the runtime prefers them. Images built before the switch to datum
+// carry kraftcloud, and the runtime still boots them.
+var computePlatforms = []v1.Platform{
+	{OS: computePlatformOS, Architecture: computePlatformArch},
+	{OS: "kraftcloud", Architecture: computePlatformArch},
+}
 
 // assembleComputeImage packs the rootfs into a Compute OCI image. The runtime kernel
 // is intentionally omitted; Datum Compute injects the correct runtime at boot.

@@ -104,7 +104,7 @@ func pushImage(ctx context.Context, opts *Options, img v1.Image) (string, error)
 		}
 	}()
 	// Push the Compute index, not the bare image manifest, so registries expose
-	// the kraftcloud/x86_64 platform descriptor to the runtime pull path.
+	// the datum/x86_64 platform descriptor to the runtime pull path.
 	index := computeImageIndex(img)
 	err = remote.WriteIndex(ref, index,
 		remote.WithContext(ctx),

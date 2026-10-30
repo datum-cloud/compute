@@ -1,15 +1,16 @@
 package build
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
+	"github.com/google/go-containerregistry/pkg/v1/match"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/spf13/cobra"
@@ -228,17 +229,19 @@ func inspectIndex(out *imageInspection, idx v1.ImageIndex) error {
 		return nil
 	}
 
+	// Pick the variant the runtime would pull, trying platforms in the order
+	// it prefers them rather than taking the first one in the index.
 	selected := manifest.Manifests[0]
-	for _, candidate := range manifest.Manifests {
-		if isComputePlatform(fmtPlatform(candidate.Platform)) {
-			selected = candidate
+	for _, want := range computePlatforms {
+		if i := slices.IndexFunc(manifest.Manifests, match.Platforms(want)); i >= 0 {
+			selected = manifest.Manifests[i]
 			break
 		}
 	}
 	out.SelectedPlatform = fmtPlatform(selected.Platform)
 	out.ManifestDigest = selected.Digest.String()
-	if !isComputePlatform(out.SelectedPlatform) {
-		out.Issues = append(out.Issues, "no kraftcloud/x86_64 image variant found")
+	if !isComputePlatform(selected.Platform) {
+		out.Issues = append(out.Issues, fmt.Sprintf("no %s/%s image variant found", computePlatformOS, computePlatformArch))
 	}
 	img, err := idx.Image(selected.Digest)
 	if err != nil {
@@ -263,8 +266,8 @@ func inspectImage(out *imageInspection, img v1.Image, platform *v1.Platform) err
 	if out.SelectedPlatform == "" || out.SelectedPlatform == unknownPlatformLabel {
 		out.SelectedPlatform = platformFromConfig(platform, config)
 	}
-	if !isComputePlatform(out.SelectedPlatform) && out.SelectedPlatform != "single manifest" {
-		out.Issues = append(out.Issues, fmt.Sprintf("selected platform is %s, expected kraftcloud/x86_64", out.SelectedPlatform))
+	if out.SelectedPlatform != "single manifest" && !isComputePlatform(cmp.Or(platform, config.Platform())) {
+		out.Issues = append(out.Issues, fmt.Sprintf("selected platform is %s, expected %s/%s", out.SelectedPlatform, computePlatformOS, computePlatformArch))
 	}
 
 	out.HasKernelLayer = hasLayerAnnotation(manifest.Layers, annotationKernelPath)
@@ -411,8 +414,8 @@ func fmtPlatform(p *v1.Platform) string {
 	return p.OS + "/" + p.Architecture
 }
 
-func isComputePlatform(s string) bool {
-	return strings.HasPrefix(s, "kraftcloud/") || strings.HasPrefix(s, "fc/")
+func isComputePlatform(p *v1.Platform) bool {
+	return p != nil && slices.ContainsFunc(computePlatforms, p.Equals)
 }
 
 func fmtArgs(args []string) string {
