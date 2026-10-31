@@ -27,7 +27,7 @@ jobs:
       contents: write
     steps:
       - name: Clone the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # goreleaser derives the version from the tag, so check out the tag
           # itself rather than whatever the default ref resolves to, and keep
