@@ -17,7 +17,7 @@ spec:
   # staging-specific hostname).
   #
   # No caBundle needed: the plugin's CSI-issued server cert chains to
-  # datum-control-plane-ca, which cloud-portal's Bun runtime already trusts
+  # datum-control-plane-ca, which cloud-portal's Node runtime already trusts
   # platform-wide via NODE_EXTRA_CA_CERTS (set in both its staging and
   # production Deployment env, pointing at the same datum-control-plane-
   # trust-bundle ConfigMap). withCaBundle() is a no-op when caBundle is

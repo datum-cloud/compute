@@ -9,10 +9,10 @@
     "preview": "vite preview",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "vitest run"
   },
   "dependencies": {
-    "@datum-cloud/activity-ui": "0.7.0",
+    "@datum-cloud/activity-ui": "0.7.1",
     "@datum-cloud/datum-ui": "^3.4.1",
     "@tanstack/react-query": "5.101.4",
     "@tanstack/react-table": "^9.1.2",
@@ -39,6 +39,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
     "typescript": "^6.0.3",
-    "vite": "^7.3.5"
+    "vite": "^7.3.5",
+    "vitest": "^5.0.5"
   }
 }

@@ -135,11 +135,12 @@ warns and the Shell tab stays hidden. Install and run it in isolation:
 
 ```bash
 cd ui/consumer
-bun install
-bun run dev        # Vite dev server (:7778, HMR) — standalone/direct
-bun run preview    # built dist/ served (:7778) — proxy-safe
-bun run build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
-bun run typecheck  # tsc --noEmit
+npm install
+npm run dev        # Vite dev server (:7778, HMR) — standalone/direct
+npm run preview    # built dist/ served (:7778) — proxy-safe
+npm run build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
+npm run typecheck  # tsc --noEmit
+npm test           # vitest unit tests
 ```
 
 ### Serve `dev` or `preview`? (it matters for the portal proxy)

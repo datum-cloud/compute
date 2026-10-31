@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { matchPath, matchRoutes } from 'react-router';
 import manifest from '../../public/plugin-manifest.json';
 import {
