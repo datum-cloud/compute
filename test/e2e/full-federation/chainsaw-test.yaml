@@ -270,7 +270,7 @@ spec:
           metadata:
             namespace: ($downstreamNS)
             name: test-full-fed-wd-1
-            (contains(finalizers, 'compute.datumapis.com/instance-controller')): true
+            (finalizers != null && contains(finalizers, 'compute.datumapis.com/instance-controller')): true
     cleanup:
     - script:
         env:
@@ -299,7 +299,7 @@ spec:
           metadata:
             namespace: ($downstreamNS)
             name: test-full-fed-wd-1
-            (contains(finalizers, 'compute.datumapis.com/instance-projection')): true
+            (finalizers != null && contains(finalizers, 'compute.datumapis.com/instance-projection')): true
 
   - name: assert-second-projection
     try:
@@ -411,7 +411,7 @@ spec:
           metadata:
             namespace: ($downstreamNS)
             name: test-full-fed-wd-1
-            (contains(finalizers, 'compute.datumapis.com/instance-projection')): true
+            (finalizers != null && contains(finalizers, 'compute.datumapis.com/instance-projection')): true
 
   - name: assert-cell-instance-still-present
     description: The cell Instance must wait for its hub write-back to disappear.
