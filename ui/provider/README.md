@@ -62,10 +62,10 @@ backend.
 ## Local dev
 
 ```
-bun install
-bun run build
-bun run preview   # built dist/ served at :5199
-bun run dev       # standalone preview harness at :5199, direct (no proxy)
+npm install
+npm run build
+npm run preview   # built dist/ served at :5199
+npm run dev       # standalone preview harness at :5199, direct (no proxy)
 ```
 
 ### Serve `dev` or `preview`?
@@ -81,7 +81,7 @@ calls 404 there since there's no staff-portal proxy to reach); use
 To register it with a local staff-portal:
 
 ```
-bun run build && bun run preview
+npm run build && npm run preview
 ```
 
 ```

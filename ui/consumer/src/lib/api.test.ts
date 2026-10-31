@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { focusManager, MutationObserver, QueryClient, QueryObserver } from '@tanstack/react-query';
 import {
   computeEntitlementQueryOptions,
@@ -72,7 +72,7 @@ describe('workload polling', () => {
 
       focusManager.setFocused(false);
       focusManager.setFocused(true);
-      await Bun.sleep(0);
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(fetchCalls).toHaveLength(1);
     } finally {
