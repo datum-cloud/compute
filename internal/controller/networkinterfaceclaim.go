@@ -10,6 +10,7 @@ import (
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -28,6 +29,9 @@ const (
 	// name itself. Claims are named after the interface, so a name is needed even
 	// for objects written before the field existed.
 	defaultInterfaceName = "eth0"
+
+	// instanceKind is the kind that controls the claims compute creates.
+	instanceKind = "Instance"
 )
 
 // networkInterfaceClaimName derives a claim name from the instance slot and the
@@ -113,6 +117,69 @@ func networkInterfaceClaimSatisfied(claim *networkingv1alpha.NetworkInterfaceCla
 	return apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimBound) &&
 		apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimAllocated) &&
 		apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimPrepared)
+}
+
+// networkInterfaceClaimHolding describes how an existing claim of an instance
+// slot's name relates to the instance currently filling that slot.
+type networkInterfaceClaimHolding int
+
+const (
+	// claimHeld means the instance controls the claim, or nothing does. A claim
+	// without a controller is used as it always was.
+	claimHeld networkInterfaceClaimHolding = iota
+	// claimTerminating means the claim is being deleted. Its interface is about
+	// to be released, so nothing may be attached to it.
+	claimTerminating
+	// claimStale means an earlier instance in the same slot controls the claim:
+	// an Instance of the same name with a different UID. That instance is gone,
+	// since two objects of one name cannot coexist, and garbage collection will
+	// remove the claim.
+	claimStale
+	// claimForeign means something else controls the claim: another kind, or an
+	// Instance of a different name whose derived claim name collides with this
+	// one. That holder may be live, so the claim is never released for it.
+	claimForeign
+)
+
+// networkInterfaceClaimHoldingFor classifies a claim found under an instance
+// slot's name.
+//
+// The claim name identifies the slot, not the instance, so a replacement
+// instance finds the previous instance's claim under the same name until
+// garbage collection removes it. That claim can still report Prepared, but its
+// interface is deleted with it under the Delete reclaim policy. A replacement
+// that opened its Network gate on it would get a Pod wired to an attachment
+// that is about to disappear.
+func networkInterfaceClaimHoldingFor(
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	instance *computev1alpha.Instance,
+) networkInterfaceClaimHolding {
+	if !claim.DeletionTimestamp.IsZero() {
+		return claimTerminating
+	}
+
+	holder := metav1.GetControllerOf(claim)
+	switch {
+	case holder == nil:
+		return claimHeld
+	case holder.UID == instance.UID:
+		return claimHeld
+	case holder.Kind == instanceKind &&
+		holder.Name == instance.Name &&
+		apiGroupOf(holder.APIVersion) == computev1alpha.GroupVersion.Group:
+		return claimStale
+	default:
+		return claimForeign
+	}
+}
+
+// apiGroupOf returns the group of an apiVersion, or "" when it cannot be parsed.
+func apiGroupOf(apiVersion string) string {
+	gv, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return ""
+	}
+	return gv.Group
 }
 
 // networkInterfaceClaimRejection returns the reason and message of the first
