@@ -78,7 +78,7 @@ jobs:
           repositories: datumctl-plugins
 
       - name: Update the compute plugin manifest
-        uses: datum-cloud/actions/update-plugin-index@v1.23.1
+        uses: datum-cloud/actions/update-plugin-index@v1.26.0
         with:
           index-repo: datum-cloud/datumctl-plugins
           plugin-name: compute
