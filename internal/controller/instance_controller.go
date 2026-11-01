@@ -2052,7 +2052,16 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 			}
 			return false, "", fmt.Errorf("failed fetching network interface claim: %w", err)
 		}
-		if networkInterfaceClaimHoldingFor(&claim, instance) != claimHeld {
+		switch networkInterfaceClaimHoldingFor(&claim, instance) {
+		case claimHeld:
+		case claimForeign:
+			// Something that may still be live holds a claim of this slot's name,
+			// and compute never releases it. Name the holder, since the instance
+			// stays gated until someone removes it.
+			holder := metav1.GetControllerOf(&claim)
+			return true, fmt.Sprintf("Interface %q: NetworkInterfaceClaimInUse: claim %s is controlled by %s %s",
+				interfaceName, claim.Name, holder.Kind, holder.Name), nil
+		default:
 			// A previous instance's claim, or one being deleted, is about to be
 			// replaced. Its rejection says nothing about this instance.
 			continue

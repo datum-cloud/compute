@@ -354,3 +354,27 @@ func TestInstanceIgnoresClaimItDoesNotHold(t *testing.T) {
 		})
 	}
 }
+
+// TestInstanceNamesForeignClaimHolder verifies an instance gated behind a claim
+// something else controls says so on Ready, naming the holder, rather than
+// waiting with no explanation.
+func TestInstanceNamesForeignClaimHolder(t *testing.T) {
+	t.Parallel()
+
+	instance := newHoldingTestInstance()
+	foreign := newPreparedClaimControlledBy(instance, &metav1.OwnerReference{
+		APIVersion: "v1", Kind: "Pod", Name: "holder-pod", UID: "pod-uid", Controller: new(true),
+	})
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newClaimTestScheme()).
+		WithObjects(instance, foreign).
+		Build()
+
+	r := &InstanceReconciler{NetworkingEnabled: true}
+	failed, message, err := r.checkForNetworkCreationFailure(context.Background(), cl, instance)
+	require.NoError(t, err)
+	assert.True(t, failed)
+	assert.Contains(t, message, "NetworkInterfaceClaimInUse")
+	assert.Contains(t, message, "Pod holder-pod")
+}
