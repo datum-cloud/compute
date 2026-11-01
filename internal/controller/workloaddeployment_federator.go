@@ -942,6 +942,7 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 			r.FederationCluster,
 			&networkingv1alpha.NetworkBinding{},
 			preserveOnBinding,
+			networkBindingChanged(),
 		))
 	}
 

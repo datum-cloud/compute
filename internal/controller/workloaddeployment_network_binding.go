@@ -15,7 +15,9 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -332,4 +334,24 @@ func applyNetworkBindingRefusal(
 	}
 	refusal.ObservedGeneration = observedGeneration
 	apimeta.SetStatusCondition(&status.Conditions, *refusal)
+}
+
+// networkBindingChanged ignores annotation bookkeeping while preserving
+// reconciliation inputs, ownership, and deletion lifecycle changes.
+func networkBindingChanged() predicate.TypedPredicate[*networkingv1alpha.NetworkBinding] {
+	return predicate.TypedFuncs[*networkingv1alpha.NetworkBinding]{
+		UpdateFunc: func(e event.TypedUpdateEvent[*networkingv1alpha.NetworkBinding]) bool {
+			a, b := e.ObjectOld, e.ObjectNew
+			if a == nil || b == nil {
+				return true
+			}
+			return a.UID != b.UID ||
+				!equality.Semantic.DeepEqual(a.Spec, b.Spec) ||
+				!equality.Semantic.DeepEqual(a.Status, b.Status) ||
+				!equality.Semantic.DeepEqual(a.Labels, b.Labels) ||
+				!equality.Semantic.DeepEqual(a.OwnerReferences, b.OwnerReferences) ||
+				!equality.Semantic.DeepEqual(a.Finalizers, b.Finalizers) ||
+				!equality.Semantic.DeepEqual(a.DeletionTimestamp, b.DeletionTimestamp)
+		},
+	}
 }
