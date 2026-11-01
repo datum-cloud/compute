@@ -74,9 +74,14 @@ func instanceInterfaceName(networkInterface computev1alpha.InstanceNetworkInterf
 // An empty attachment mode is left off the claim, which leaves the networking
 // API's own default in force and the data plane free to attach the interface
 // the way the cell already attaches every other one.
+//
+// attachedTo names the instance the interface belongs to. NSO carries it,
+// uninterpreted, onto the bound interface and its EndpointSlice, so an operator
+// reading an edge access log can tell which instance served a request.
 func desiredNetworkInterfaceClaimSpec(
 	networkInterface computev1alpha.InstanceNetworkInterface,
 	attachmentMode networkingv1alpha.NetworkInterfaceAttachmentMode,
+	instanceName string,
 ) networkingv1alpha.NetworkInterfaceClaimSpec {
 	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
 		Network:        networkingv1alpha.LocalNetworkRef{Name: networkInterface.Network.Name},
@@ -84,6 +89,11 @@ func desiredNetworkInterfaceClaimSpec(
 		IPFamilies:     append([]networkingv1alpha.IPFamily(nil), networkInterface.IPFamilies...),
 		ReclaimPolicy:  networkInterface.ReclaimPolicy,
 		AttachmentMode: attachmentMode,
+		AttachedTo: &networkingv1alpha.AttachedToRef{
+			APIGroup: computev1alpha.GroupVersion.Group,
+			Kind:     "Instance",
+			Name:     instanceName,
+		},
 	}
 
 	for _, address := range networkInterface.Addresses {
