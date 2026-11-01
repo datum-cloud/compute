@@ -142,8 +142,9 @@ func TestNetworkInterfaceClaimIsControlledByItsInstance(t *testing.T) {
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: healthTestInstance, Namespace: claimTestNamespace, UID: "health-test-uid"}}
 	networkInterface := computev1alpha.InstanceNetworkInterface{Name: defaultInterfaceName, Network: networkingv1alpha.NetworkRef{Name: claimTestNetwork}}
 
-	claim, err := (&WorkloadDeploymentReconciler{}).ensureNetworkInterfaceClaim(context.Background(), cl, deployment, instance, networkInterface)
+	claim, usable, err := (&WorkloadDeploymentReconciler{}).ensureNetworkInterfaceClaim(context.Background(), cl, deployment, instance, networkInterface)
 	require.NoError(t, err)
+	assert.True(t, usable, "a claim the instance just created is its own to use")
 
 	owner := metav1.GetControllerOf(claim)
 	require.NotNil(t, owner, "the Instance watch on claims maps back through the controller reference")
