@@ -363,8 +363,8 @@ func (r *InstanceConsoleSessionReconciler) buildHubCopy(
 	}
 
 	labels := map[string]string{
-		locationLabel:                                          location,
-		sessionMemberClusterLabel:                              memberCluster,
+		locationLabel:             location,
+		sessionMemberClusterLabel: memberCluster,
 		computev1alpha.InstanceConsoleSessionUIDLabel:          string(session.UID),
 		computev1alpha.InstanceConsoleSessionInstanceNameLabel: instance.Name,
 		computev1alpha.WorkloadDeploymentUIDLabel:              cellDeploymentUID,
