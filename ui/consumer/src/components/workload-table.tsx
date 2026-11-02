@@ -1,13 +1,17 @@
 /**
- * Table view of the workloads list, built on the same datum-ui `DataTable`
- * the portal's ALB list renders through `Table.Client`: search toolbar,
- * sortable column headers, bordered panel, conditional pagination and
- * whole-row click-through. Columns are kept to what identifies a workload
- * and how it's doing (status, CPU, memory, where it runs, which network it's
- * on) so the list fits
- * without horizontal scrolling; image, load balancer and instance detail
- * live on the workload's own page. `RowsContent` ignores clicks that bubble
- * from an `<a>`, so nested links need no `stopPropagation`.
+ * Table view of the workloads list, built on datum-ui's `DataTable` and
+ * styled like the project home page: a plain header, `h-10` rows with thin
+ * lines, status as a dot and muted text, sortable column headers,
+ * conditional pagination and whole-row click-through (`onRowClick`, which
+ * leaves clicks on links and buttons to them). Columns are kept to what
+ * identifies a workload and how it's doing (status, CPU, memory, where it
+ * runs, which network it's on) so the list fits without horizontal
+ * scrolling; image, load balancer and instance detail live on the
+ * workload's own page.
+ *
+ * CPU and Memory come from one request per metric for the whole table
+ * (`useUsageSeries`), and both columns stay hidden until that request shows
+ * at least one row has data, so an empty fleet never shows them.
  *
  * The host does not share `datum-ui/data-table`, so this plugin bundles its
  * own copy (plus the `@tanstack/react-table` / `nuqs` peers). Class names are
@@ -15,67 +19,127 @@
  */
 import { MetricSparkline } from './metric-sparkline';
 import { SortableHeader } from './sortable-header';
-import { HealthDot, WorkloadStatusBadge } from './workload-status-badge';
+import { QuietNotice } from './surface/quiet-notice';
+import { HealthDot, WorkloadStatusDot } from './workload-status-badge';
 import type { LocationIndex } from '../lib/locations';
-import type { Allocation } from '../lib/resource-usage';
+import { usageColumnsVisible, type Allocation } from '../lib/resource-usage';
 import {
   type InstanceIdentityLabel,
-  workloadCpuSumQuery,
-  workloadMemorySumQuery,
+  seriesByWorkload,
+  workloadCpuByInstanceQuery,
+  workloadMemoryByInstanceQuery,
 } from '../lib/metrics-queries';
-import type { PrometheusTimeRange } from '../lib/prometheus';
-import { HEALTH_ORDER, regionLabel } from '../lib/workload-presenters';
+import { usePrometheusChart, type ChartDataPoint, type PrometheusTimeRange } from '../lib/prometheus';
+import { HEALTH_ORDER, regionLabel, workloadStatusSortWeight } from '../lib/workload-presenters';
 import type { Workload, WorkloadPlacementRegion } from '../schema';
 import {
   DataTable,
   useDataTablePagination,
-  useDataTableRows,
   type DataTableFeatures,
 } from '@datum-cloud/datum-ui/data-table';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import type { ColumnDef } from '@tanstack/react-table';
-import { useCallback, useMemo, type MouseEvent } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Link } from 'react-router';
 
 type WorkloadColumn = ColumnDef<DataTableFeatures, Workload, unknown>;
 
+const TABLE_ID = 'compute-plugin-workload-table';
+
 /**
- * Row-click delegation, as the portal's `TableContent` does: datum-ui's
- * `DataTable.Content` has no onRowClick, so walk up from the click target to
- * the `<tr>` and look the row up in the store. The nested name link
- * navigates on its own without also opening the row.
+ * Caps the Network and Locations lines so long names truncate. Inline
+ * because the host compiles no `max-w-48`, and a missing utility fails
+ * silently (see ui/CLAUDE.md).
  */
-function RowsContent({ onOpen }: { onOpen: (workload: Workload) => void }) {
-  const { rows } = useDataTableRows<Workload>();
+const CELL_LINE_STYLE = { maxWidth: '12rem' } as const;
 
-  const handleClick = useCallback(
-    (event: MouseEvent<HTMLDivElement>) => {
-      const target = event.target as HTMLElement;
-      if (target.closest('a')) return;
-      const tr = target.closest('tbody tr');
-      const tbody = tr?.closest('tbody');
-      if (!tr || !tbody) return;
-      const index = Array.from(tbody.children).indexOf(tr as HTMLTableRowElement);
-      const row = rows[index];
-      if (row) onOpen(row.original);
-    },
-    [onOpen, rows]
-  );
+/**
+ * The host styles every DataTable through `.datum-ui-data-table [data-slot=…]`
+ * rules (filled header, bordered header cells, `py-3` cells), which outrank
+ * any utility class passed in. A rule scoped to this table outranks those and
+ * gives it the home page's look: a plain muted header, `h-10` rows, thin
+ * lines and `bg-accent` on hover.
+ */
+const TABLE_STYLES = `
+[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-header-row'],
+[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-row'] {
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-header-cell'] {
+  background: transparent;
+  border-right: 0;
+  height: 2.5rem;
+  padding: 0 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+}
+[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-row'] {
+  background: transparent;
+}
+[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-row']:hover {
+  background: var(--accent);
+}
+[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-cell'] {
+  height: 2.5rem;
+  padding: 0 0.5rem;
+}
+`;
 
-  return (
-    <div onClick={handleClick} className="[&_tbody_tr]:cursor-pointer">
-      <DataTable.Content
-        emptyMessage={
-          <EmptyContent
-            title="Try adjusting your search"
-            className="w-full rounded-none border-0"
-          />
-        }
-      />
-    </div>
+interface UsageSeries {
+  cpu: Record<string, ChartDataPoint[]>;
+  memory: Record<string, ChartDataPoint[]>;
+  /** At least one row has a CPU or memory point. */
+  visible: boolean;
+}
+
+/**
+ * CPU and memory for every row in two requests (one per metric) instead of
+ * two per row: a per-instance query over every workload's instances, split
+ * back into per-workload sums for the rows shown. The last result is kept
+ * while a changed query (new instances) loads, so the columns don't drop out
+ * and return.
+ */
+function useUsageSeries({
+  projectId,
+  identityLabel,
+  instanceKeysByWorkload,
+  workloads,
+  timeRange,
+  denied,
+}: {
+  projectId?: string;
+  identityLabel?: InstanceIdentityLabel;
+  instanceKeysByWorkload: Record<string, string[]>;
+  workloads: Workload[];
+  timeRange: PrometheusTimeRange;
+  denied: boolean;
+}): UsageSeries {
+  const keys = useMemo(
+    () => Object.fromEntries(workloads.map((w) => [w.name, instanceKeysByWorkload[w.name] ?? []])),
+    [workloads, instanceKeysByWorkload]
   );
+  // The query covers every workload, not just the ones the search leaves, so
+  // typing in the search doesn't send a new request per keystroke.
+  const allKeys = useMemo(() => Object.values(instanceKeysByWorkload).flat(), [instanceKeysByWorkload]);
+  const ready = !!projectId && !!identityLabel && !denied && allKeys.length > 0;
+  const cpuQuery = ready ? workloadCpuByInstanceQuery(projectId, identityLabel, allKeys) : undefined;
+  const memoryQuery = ready ? workloadMemoryByInstanceQuery(projectId, identityLabel, allKeys) : undefined;
+  const cpuChart = usePrometheusChart(projectId, cpuQuery, timeRange, { enabled: ready, keepPrevious: true });
+  const memoryChart = usePrometheusChart(projectId, memoryQuery, timeRange, { enabled: ready, keepPrevious: true });
+
+  return useMemo(() => {
+    if (!identityLabel || !ready) return { cpu: {}, memory: {}, visible: false };
+    const cpu = seriesByWorkload(cpuChart.error ? undefined : cpuChart.data, identityLabel, keys);
+    const memory = seriesByWorkload(memoryChart.error ? undefined : memoryChart.data, identityLabel, keys);
+    const visible = usageColumnsVisible(
+      [...Object.values(cpu), ...Object.values(memory)].map((points) => ({ points }))
+    );
+    return { cpu, memory, visible };
+  }, [identityLabel, ready, keys, cpuChart.data, cpuChart.error, memoryChart.data, memoryChart.error]);
 }
 
 /**
@@ -95,7 +159,7 @@ function LocationsCell({
   const [first] = sorted;
   const extra = sorted.length - 1;
   const line = (
-    <span className="flex max-w-48 items-center gap-1.5 text-xs">
+    <span className="flex items-center gap-1.5 font-mono text-xs" style={CELL_LINE_STYLE}>
       <HealthDot health={first.health} className="size-1.5" label={first.health} />
       <span className="truncate">{regionLabel(first, locationIndex)}</span>
       {extra > 0 ? <span className="text-muted-foreground shrink-0">+{extra}</span> : null}
@@ -106,7 +170,7 @@ function LocationsCell({
       message={
         <span className="flex flex-col gap-0.5">
           {sorted.map((region) => (
-            <span key={region.name} className="flex items-center gap-1.5">
+            <span key={region.name} className="flex items-center gap-1.5 font-mono">
               <HealthDot health={region.health} className="size-1.5" label={region.health} />
               {region.locations.join(', ') || regionLabel(region, locationIndex)}
             </span>
@@ -145,7 +209,7 @@ function NetworkCell({ networks, projectId }: { networks: string[]; projectId?: 
     </span>
   );
   const line = (
-    <span className="flex max-w-48 items-center gap-1.5 text-xs">
+    <span className="flex items-center gap-1.5 font-mono text-xs" style={CELL_LINE_STYLE}>
       {name}
       {extra > 0 ? <span className="text-muted-foreground shrink-0">+{extra}</span> : null}
     </span>
@@ -156,7 +220,9 @@ function NetworkCell({ networks, projectId }: { networks: string[]; projectId?: 
       message={
         <span className="flex flex-col gap-0.5">
           {networks.map((network) => (
-            <span key={network}>{network}</span>
+            <span key={network} className="font-mono">
+              {network}
+            </span>
           ))}
         </span>
       }>
@@ -198,6 +264,15 @@ export function WorkloadTable({
   workloadHref: (name: string) => string;
   onOpen: (name: string) => void;
 }) {
+  const usage = useUsageSeries({
+    projectId,
+    identityLabel,
+    instanceKeysByWorkload,
+    workloads,
+    timeRange,
+    denied: identityDenied || identityLoading,
+  });
+
   const columns = useMemo<WorkloadColumn[]>(
     () => [
       {
@@ -208,7 +283,7 @@ export function WorkloadTable({
           <div className="flex min-w-0" style={{ minWidth: 160 }}>
             <Link
               to={workloadHref(row.original.name)}
-              className={cn('truncate font-medium hover:underline', row.original.deleting && 'text-muted-foreground')}
+              className={cn('truncate text-sm font-medium hover:underline', row.original.deleting && 'text-muted-foreground')}
               title={row.original.name}
               data-e2e="workload-name">
               {row.original.name}
@@ -218,53 +293,45 @@ export function WorkloadTable({
       },
       {
         id: 'status',
-        accessorFn: (workload) => HEALTH_ORDER[workload.health],
+        accessorFn: (workload) => workloadStatusSortWeight(workload),
         header: ({ column }) => <SortableHeader column={column} title="Status" />,
-        cell: ({ row }) => <WorkloadStatusBadge workload={row.original} dot={false} />,
+        cell: ({ row }) => <WorkloadStatusDot workload={row.original} />,
       },
-      {
-        id: 'cpu',
-        header: 'CPU',
-        enableSorting: false,
-        cell: ({ row }) => {
-          const keys = instanceKeysByWorkload[row.original.name] ?? [];
-          return (
-            <MetricSparkline
-              projectId={projectId}
-              query={projectId && identityLabel && keys.length > 0 ? workloadCpuSumQuery(projectId, identityLabel, keys) : undefined}
-              timeRange={timeRange}
-              format="cores"
-              allocated={allocationByWorkload[row.original.name]?.cores}
-              compact
-              pending={identityLoading}
-              denied={identityDenied}
-              emptyTitle="CPU metrics aren't available yet"
-            />
-          );
-        },
-      },
-      {
-        id: 'memory',
-        header: 'Memory',
-        enableSorting: false,
-        cell: ({ row }) => {
-          const keys = instanceKeysByWorkload[row.original.name] ?? [];
-          return (
-            <MetricSparkline
-              projectId={projectId}
-              query={projectId && identityLabel && keys.length > 0 ? workloadMemorySumQuery(projectId, identityLabel, keys) : undefined}
-              timeRange={timeRange}
-              format="bytes"
-              allocated={allocationByWorkload[row.original.name]?.memoryBytes}
-              color="var(--color-chart-1)"
-              compact
-              pending={identityLoading}
-              denied={identityDenied}
-              emptyTitle="Memory metrics aren't available yet"
-            />
-          );
-        },
-      },
+      ...(usage.visible
+        ? ([
+            {
+              id: 'cpu',
+              header: 'CPU',
+              enableSorting: false,
+              cell: ({ row }) => (
+                <MetricSparkline
+                  projectId={projectId}
+                  series={usage.cpu[row.original.name] ?? []}
+                  timeRange={timeRange}
+                  format="cores"
+                  allocated={allocationByWorkload[row.original.name]?.cores}
+                  compact
+                />
+              ),
+            },
+            {
+              id: 'memory',
+              header: 'Memory',
+              enableSorting: false,
+              cell: ({ row }) => (
+                <MetricSparkline
+                  projectId={projectId}
+                  series={usage.memory[row.original.name] ?? []}
+                  timeRange={timeRange}
+                  format="bytes"
+                  allocated={allocationByWorkload[row.original.name]?.memoryBytes}
+                  color="var(--color-chart-1)"
+                  compact
+                />
+              ),
+            },
+          ] satisfies WorkloadColumn[])
+        : []),
       {
         id: 'network',
         accessorFn: (workload) => workload.networks[0] ?? '',
@@ -278,7 +345,7 @@ export function WorkloadTable({
         cell: ({ row }) => <LocationsCell regions={row.original.placementRegions} locationIndex={locationIndex} />,
       },
     ],
-    [projectId, instanceKeysByWorkload, allocationByWorkload, identityLabel, identityLoading, identityDenied, timeRange, locationIndex, workloadHref]
+    [projectId, usage, allocationByWorkload, timeRange, locationIndex, workloadHref]
   );
 
   const open = useCallback((workload: Workload) => onOpen(workload.name), [onOpen]);
@@ -289,8 +356,14 @@ export function WorkloadTable({
       columns={columns}
       getRowId={(workload) => workload.uid || workload.name}
       className="space-y-6">
-      <div className="overflow-hidden rounded-lg border" data-testid="compute-plugin-workload-table">
-        <RowsContent onOpen={open} />
+      <div data-testid={TABLE_ID}>
+        <style>{TABLE_STYLES}</style>
+        <DataTable.Content<Workload>
+          onRowClick={open}
+          emptyMessage={
+            <QuietNotice title="No workloads match your search" description="Try a different name, image or location." />
+          }
+        />
       </div>
       <ConditionalPagination />
     </DataTable.Client>

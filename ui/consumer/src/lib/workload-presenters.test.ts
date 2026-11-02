@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
   DEPLOY_STALLED_AFTER_MS,
+  HEALTH_DOT_COLOR,
+  STATUS_TONE_COLOR,
   deployStatus,
   formatElapsed,
   homeColumnWorkloads,
@@ -9,6 +11,8 @@ import {
   instanceStatusLabel,
   matchesWorkloadSearch,
   statusLabel,
+  workloadStatusSortWeight,
+  workloadStatusTone,
 } from './workload-presenters';
 import type { Instance, Workload, WorkloadHealth } from '../schema';
 
@@ -268,5 +272,92 @@ describe('matchesWorkloadSearch', () => {
   test('tolerates a workload with no optional fields set', () => {
     expect(matchesWorkloadSearch(workload('bare', 'Unknown', '2026-01-01'), 'bare')).toBe(true);
     expect(matchesWorkloadSearch(workload('bare', 'Unknown', '2026-01-01'), 'nope')).toBe(false);
+  });
+});
+
+describe('workloadStatusTone', () => {
+  const now = Date.parse('2026-03-01T00:10:00Z');
+
+  test('maps Available→ok, Degraded→warn, Unavailable→error, Unknown and deleting→muted', () => {
+    expect(workloadStatusTone(workload('a', 'Available', '2026-01-01'), now).tone).toBe('ok');
+    expect(workloadStatusTone(workload('b', 'Degraded', '2026-01-01'), now).tone).toBe('warn');
+    expect(workloadStatusTone(workload('c', 'Unavailable', '2026-01-01'), now).tone).toBe('error');
+    expect(workloadStatusTone(workload('u', 'Unknown', '2026-01-01'), now)).toEqual({ tone: 'muted', label: 'Unknown' });
+    expect(workloadStatusTone({ ...workload('d', 'Available', '2026-01-01'), deleting: true }, now)).toEqual({
+      tone: 'muted',
+      label: 'Deleting',
+    });
+  });
+
+  test('label is never all-caps', () => {
+    const healths: WorkloadHealth[] = ['Available', 'Degraded', 'Deploying', 'Unavailable', 'Unknown'];
+    for (const health of healths) {
+      const { label } = workloadStatusTone(workload('w', health, '2026-03-01T00:09:30Z'), now);
+      expect(label).not.toBe(label.toUpperCase());
+    }
+  });
+
+  test('reports a stalled deploy as warn', () => {
+    const createdAt = new Date(now - DEPLOY_STALLED_AFTER_MS - 1).toISOString();
+    expect(workloadStatusTone(workload('slow', 'Deploying', createdAt), now)).toEqual({
+      tone: 'warn',
+      label: 'Deploying',
+      reason: 'Taking longer than expected',
+    });
+    const fresh = new Date(now - 1_000).toISOString();
+    expect(workloadStatusTone(workload('fresh', 'Deploying', fresh), now)).toEqual({
+      tone: 'muted',
+      label: 'Deploying',
+    });
+  });
+
+  test('reports a quota wait as warn, with the label alone naming it', () => {
+    const waiting: Workload = {
+      ...workload('quota', 'Deploying', new Date(now - 1_000).toISOString()),
+      conditions: [{ type: 'Available', status: 'False', reason: 'QuotaNotGranted' }],
+    };
+    expect(workloadStatusTone(waiting, now)).toEqual({ tone: 'warn', label: 'Waiting for quota' });
+  });
+});
+
+describe('workloadStatusSortWeight', () => {
+  const now = Date.parse('2026-03-01T00:10:00Z');
+
+  test('sorts by the state the row shows, problems first', () => {
+    const stalled = workload('stalled', 'Deploying', new Date(now - DEPLOY_STALLED_AFTER_MS - 1).toISOString());
+    const deleting = { ...workload('deleting', 'Unavailable', '2026-01-01'), deleting: true };
+    const ordered = [
+      workload('healthy', 'Available', '2026-01-01'),
+      deleting,
+      stalled,
+      workload('down', 'Unavailable', '2026-01-01'),
+    ].sort((a, b) => workloadStatusSortWeight(a, now) - workloadStatusSortWeight(b, now));
+    expect(ordered.map((w) => w.name)).toEqual(['down', 'stalled', 'deleting', 'healthy']);
+  });
+});
+
+describe('dot colors', () => {
+  test('every status tone uses a datum-ui badge token', () => {
+    expect(STATUS_TONE_COLOR).toEqual({
+      ok: 'var(--color-badge-success)',
+      warn: 'var(--color-badge-warning)',
+      error: 'var(--color-badge-danger)',
+      muted: 'var(--color-badge-muted)',
+    });
+  });
+
+  test('health dots share the status tone colors', () => {
+    expect(HEALTH_DOT_COLOR.Available).toBe(STATUS_TONE_COLOR.ok);
+    expect(HEALTH_DOT_COLOR.Degraded).toBe(STATUS_TONE_COLOR.warn);
+    expect(HEALTH_DOT_COLOR.Unavailable).toBe(STATUS_TONE_COLOR.error);
+    expect(HEALTH_DOT_COLOR.Unknown).toBe(STATUS_TONE_COLOR.muted);
+    expect(HEALTH_DOT_COLOR.Deploying).toBe('var(--color-badge-info)');
+  });
+});
+
+describe('instance reason labels', () => {
+  test('a reason named like an Object prototype member is not treated as a label', () => {
+    const pending = instance('a', [{ type: 'Ready', status: 'False', reason: 'constructor' }]);
+    expect(instanceStatusLabel(pending)).toBe('Pending');
   });
 });

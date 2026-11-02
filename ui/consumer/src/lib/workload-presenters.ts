@@ -3,15 +3,36 @@
  */
 import { instanceFailure, QUOTA_REASONS } from '../adapter';
 import { formatLocationNames, formatLocationSelector, type LocationIndex } from './locations';
-import type { Instance, Workload, WorkloadHealth, WorkloadPlacementRegion } from '../schema';
+import {
+  workloadHealthToBadgeType,
+  type Instance,
+  type Workload,
+  type WorkloadHealth,
+  type WorkloadPlacementRegion,
+} from '../schema';
 
-/** `Deploying` has no class: the host doesn't compile a blue one, so its dot is styled inline (`HealthDot`). */
-export const HEALTH_DOT_CLASS: Record<WorkloadHealth, string> = {
-  Available: 'bg-green-500',
-  Degraded: 'bg-yellow-500',
-  Deploying: '',
-  Unavailable: 'bg-red-500',
-  Unknown: 'bg-muted-foreground',
+/**
+ * Dot colors come from datum-ui's badge tokens, the palette its status badges
+ * use. They're set inline because the host compiles only the utility classes it
+ * uses itself, and these tokens have no utility class there.
+ */
+export const STATUS_TONE_COLOR: Record<StatusTone, string> = {
+  ok: 'var(--color-badge-success)',
+  warn: 'var(--color-badge-warning)',
+  error: 'var(--color-badge-danger)',
+  muted: 'var(--color-badge-muted)',
+};
+
+/**
+ * Dot color per raw health, for places that show a health directly (region
+ * rows). Shares `STATUS_TONE_COLOR`, plus datum-ui's info token while deploying.
+ */
+export const HEALTH_DOT_COLOR: Record<WorkloadHealth, string> = {
+  Available: STATUS_TONE_COLOR.ok,
+  Degraded: STATUS_TONE_COLOR.warn,
+  Deploying: 'var(--color-badge-info)',
+  Unavailable: STATUS_TONE_COLOR.error,
+  Unknown: STATUS_TONE_COLOR.muted,
 };
 
 /** Sort weight: unhealthy first so problems surface at the top of a status sort. */
@@ -128,7 +149,7 @@ export function instanceFailureSummary(instances: readonly Instance[]): string |
   if (failures.length === 0) return undefined;
   const [first] = failures;
   const count = failures.length === 1 ? '1 instance' : `${failures.length} instances`;
-  return `${count} failing: ${first.message || INSTANCE_REASON_LABEL[first.reason ?? ''] || first.reason}`;
+  return `${count} failing: ${first.message || instanceReasonLabel(first.reason) || first.reason}`;
 }
 
 /** Badge wording for the reasons a not-yet-available instance reports. */
@@ -147,6 +168,11 @@ const INSTANCE_REASON_LABEL: Record<string, string> = {
   ConfigurationError: 'Configuration error',
 };
 
+/** Badge wording for a reason, read from the table's own keys only. */
+function instanceReasonLabel(reason: string | undefined): string | undefined {
+  return reason && Object.hasOwn(INSTANCE_REASON_LABEL, reason) ? INSTANCE_REASON_LABEL[reason] : undefined;
+}
+
 /**
  * Instance badge text: the status, or for a pending/failed instance the step
  * or failure it reports ("Starting", "Image unavailable").
@@ -154,10 +180,11 @@ const INSTANCE_REASON_LABEL: Record<string, string> = {
 export function instanceStatusLabel(instance: Instance): string {
   if (instance.status === 'Available' || instance.status === 'Unknown') return instance.status;
   const failure = instanceFailure(instance.conditions);
-  if (failure) return INSTANCE_REASON_LABEL[failure.reason ?? ''] ?? 'Failed';
+  if (failure) return instanceReasonLabel(failure.reason) ?? 'Failed';
   for (const type of ['Ready', 'Available', 'Programmed']) {
     const reason = instance.conditions.find((c) => c.type === type && c.status !== 'True')?.reason;
-    if (reason && INSTANCE_REASON_LABEL[reason]) return INSTANCE_REASON_LABEL[reason];
+    const label = instanceReasonLabel(reason);
+    if (label) return label;
   }
   return instance.status;
 }
@@ -179,6 +206,55 @@ export function statusLabel(workload: Workload): string {
   }
   if (workload.health === 'Unavailable') return 'Unavailable';
   return 'Unknown';
+}
+
+/** The four states a dot can show; the project home page uses the same set. */
+export type StatusTone = 'ok' | 'warn' | 'error' | 'muted';
+
+const BADGE_TONE: Record<ReturnType<typeof workloadHealthToBadgeType>, StatusTone> = {
+  success: 'ok',
+  warning: 'warn',
+  danger: 'error',
+  // `StatusTone` has no blue, matching the home page's four states: a
+  // deploy in progress needs no attention, so it reads as neutral.
+  info: 'muted',
+  muted: 'muted',
+};
+
+/**
+ * Dot tone and sentence-case wording for a workload, as the list shows it.
+ * Tones come from the same `workloadHealthToBadgeType` mapping the status
+ * badge uses, so the list and the badge agree. A deploy turns `warn` once
+ * it is blocked on quota or past `DEPLOY_STALLED_AFTER_MS`; a stalled one
+ * also carries a `reason`, so the state isn't shown by color alone.
+ */
+export function workloadStatusTone(
+  workload: Workload,
+  now: number = Date.now()
+): { tone: StatusTone; label: string; reason?: string } {
+  if (workload.deleting) return { tone: 'muted', label: 'Deleting' };
+  const deploy = deployStatus(workload, now);
+  if (deploy?.tone === 'warning') {
+    // A stalled deploy keeps the label "Deploying", so say why it's amber
+    // rather than leaving the color to carry it.
+    return deploy.title === deploy.label
+      ? { tone: 'warn', label: deploy.label }
+      : { tone: 'warn', label: deploy.label, reason: deploy.title };
+  }
+  if (deploy) return { tone: 'muted', label: deploy.label };
+  return { tone: BADGE_TONE[workloadHealthToBadgeType(workload.health)], label: statusLabel(workload) };
+}
+
+/** Sort weight per tone: problems first, then neutral states, healthy last. */
+const STATUS_TONE_ORDER: Record<StatusTone, number> = { error: 0, warn: 1, muted: 2, ok: 3 };
+
+/**
+ * Status column sort weight, from the tone the row shows (`workloadStatusTone`)
+ * rather than the raw health: a deleting workload sorts with the neutral
+ * states, not by its last health, and a stalled deploy sorts with warnings.
+ */
+export function workloadStatusSortWeight(workload: Workload, now: number = Date.now()): number {
+  return STATUS_TONE_ORDER[workloadStatusTone(workload, now).tone];
 }
 
 export function regionLabel(region: WorkloadPlacementRegion, index: LocationIndex): string {
