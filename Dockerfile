@@ -7,7 +7,7 @@
 # assistant answering "no catalog entry for this reason" on exactly the
 # failures it exists to explain. Each Deployment picks its binary with
 # `command`; see config/base/manager and config/components/compute-mcp.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
