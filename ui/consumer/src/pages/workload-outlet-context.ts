@@ -3,7 +3,7 @@
  * and Metrics do not re-fetch or remount breadcrumbs / title / tabs.
  */
 import type { InstanceIdentityLabel } from '../lib/metrics-queries';
-import type { PublishedUrl } from '../lib/api';
+import type { ApiError, PublishedUrl } from '../lib/api';
 import type { LocationIndex } from '../lib/locations';
 import type { Instance, Workload } from '../schema';
 import { useOutletContext } from 'react-router';
@@ -11,6 +11,9 @@ import { useOutletContext } from 'react-router';
 export type WorkloadOutletContext = {
   workload: Workload;
   instances: Instance[];
+  /** The instances query hasn't answered yet; `instances` is empty until it does. */
+  instancesLoading: boolean;
+  instancesError: ApiError | null;
   projectId?: string;
   proxyId?: string;
   published?: PublishedUrl | null;

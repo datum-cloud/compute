@@ -257,6 +257,252 @@ export function workloadStatusSortWeight(workload: Workload, now: number = Date.
   return STATUS_TONE_ORDER[workloadStatusTone(workload, now).tone];
 }
 
+/** Plain words for the reasons an instance's `Ready` condition reports. */
+export const READY_REASON_COPY: Readonly<Record<string, string>> = {
+  Provisioning: 'Starting up',
+  InstanceCrashing: 'Crashing on start',
+  ImageUnavailable: "Image can't be pulled",
+  ConfigurationError: 'Configuration rejected',
+  SchedulingGatesPresent: 'Waiting to be scheduled',
+  NetworkFailedToCreate: "Network couldn't be set up",
+};
+
+/** `Ready` reasons that need a new image or spec to clear, so they read as failed. */
+const UNRECOVERABLE_READY_REASONS: ReadonlySet<string> = new Set([
+  'ImageUnavailable',
+  'ConfigurationError',
+  'NetworkFailedToCreate',
+]);
+
+/** An instance row's dot: tone, short label and, when known, why it isn't serving. */
+export interface InstanceReadiness {
+  tone: StatusTone;
+  label: string;
+  reason?: string;
+}
+
+type Condition = Instance['conditions'][number];
+
+/** The plain-words reason for a condition: mapped copy, then its message, then the raw reason. */
+function conditionReason(condition: Condition | undefined): string | undefined {
+  if (!condition) return undefined;
+  // Own keys only: a raw reason like `constructor` must not hit Object.prototype.
+  const copy = condition.reason && Object.hasOwn(READY_REASON_COPY, condition.reason)
+    ? READY_REASON_COPY[condition.reason]
+    : undefined;
+  return copy || condition.message || condition.reason || undefined;
+}
+
+/**
+ * Dot tone, label and reason for one instance on the workload Overview.
+ *
+ * Programmed but not Ready is amber ("running but not Ready") even when the
+ * adapter has already called the instance Failed: it is placed and running,
+ * and the reason says why it isn't serving. The exceptions are reasons that
+ * won't clear without a new image or spec, which are red. Failed before it
+ * was programmed is red too. Anything still on its way up is muted "Starting".
+ */
+export function instanceReadiness(instance: Instance): InstanceReadiness {
+  const find = (type: string) => instance.conditions.find((c) => c.type === type);
+  const ready = find('Ready');
+  const programmed = find('Programmed');
+
+  if (instance.status === 'Available' && ready?.status !== 'False') {
+    return { tone: 'ok', label: 'Running' };
+  }
+  if (programmed?.status === 'True' && ready?.status !== 'True') {
+    const unrecoverable = UNRECOVERABLE_READY_REASONS.has(ready?.reason ?? '');
+    const base: InstanceReadiness = unrecoverable
+      ? { tone: 'error', label: 'Failed' }
+      : { tone: 'warn', label: 'Not ready' };
+    return withReason(base, conditionReason(ready));
+  }
+  // A reason that won't clear on its own is a failure even before the
+  // instance is programmed, e.g. its network could not be created.
+  if (ready?.status === 'False' && UNRECOVERABLE_READY_REASONS.has(ready.reason ?? '')) {
+    return withReason({ tone: 'error', label: 'Failed' }, conditionReason(ready));
+  }
+  if (instance.status === 'Failed') {
+    const failure = instanceFailure(instance.conditions) ?? ready ?? programmed;
+    return withReason({ tone: 'error', label: 'Failed' }, conditionReason(failure));
+  }
+  // "Starting · Starting up" says the same thing twice.
+  const pending = [ready, programmed].find((c) => c && c.status !== 'True' && c.reason !== 'Provisioning');
+  return withReason({ tone: 'muted', label: 'Starting' }, conditionReason(pending));
+}
+
+function withReason(base: InstanceReadiness, reason: string | undefined): InstanceReadiness {
+  return reason ? { ...base, reason } : base;
+}
+
+/** An instance's published private names, or why it has none. */
+export type PrivateNameState ={ kind: 'names'; names: string[] } | { kind: 'missing'; reason: string };
+
+/**
+ * The private DNS names the platform published for an instance, or why there
+ * are none. There's no DNS-specific condition, so availability is the only
+ * signal: names are assigned once the instance runs.
+ */
+export function privateNameState(instance: Instance): PrivateNameState {
+  if (instance.hostnames.length > 0) return { kind: 'names', names: [...instance.hostnames] };
+  return {
+    kind: 'missing',
+    reason:
+      instance.status === 'Available'
+        ? 'No private name published on this network'
+        : 'Assigned once the instance is running',
+  };
+}
+
+function isEmptyValue(value: unknown): boolean {
+  return value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0);
+}
+
+/** Detail rows with a value worth showing. `0` and `false` count as values. Returns a new array. */
+export function compactDetailRows<T extends { value: unknown }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !isEmptyValue(row.value));
+}
+
+/** What `instancesSectionState` needs to know about the instances query. */
+export interface InstancesSectionInput {
+  count: number;
+  /** The instances query hasn't answered yet. */
+  loading: boolean;
+  /** The instances query failed; `status` is the HTTP status when known. */
+  error?: { status?: number } | null;
+  deploying: boolean;
+  deleting: boolean;
+}
+
+/** Rows, placeholder rows, or a notice with its copy. */
+export type InstancesSectionState =
+  | { kind: 'loading' }
+  | { kind: 'rows' }
+  | { kind: 'notice'; title: string; description?: string };
+
+/**
+ * What the Overview's Instances section shows. An unanswered or failed query
+ * must not read as "no instances": rows hold their place while loading, a
+ * failure says so, and rows already on screen outlive a failed refresh.
+ */
+export function instancesSectionState({
+  count,
+  loading,
+  error,
+  deploying,
+  deleting,
+}: InstancesSectionInput): InstancesSectionState {
+  if (count > 0) return { kind: 'rows' };
+  if (loading) return { kind: 'loading' };
+  if (error) {
+    return error.status === 403
+      ? {
+          kind: 'notice',
+          title: 'Access restricted',
+          description: "You don't have permission to view this workload's instances.",
+        }
+      : {
+          kind: 'notice',
+          title: "Couldn't load instances",
+          description: 'They will appear here once the next refresh succeeds.',
+        };
+  }
+  if (deleting) return { kind: 'notice', title: 'Instances are shutting down' };
+  if (deploying) return { kind: 'notice', title: 'Instances are being created' };
+  return {
+    kind: 'notice',
+    title: 'No running instances',
+    description: 'This workload has no instances right now, for example after scaling to zero.',
+  };
+}
+
+export interface OverviewHealth {
+  health: WorkloadHealth;
+  /** Why instances are failing, or the workload's own unavailable message. */
+  failure?: string;
+  /** Instance failures overrode the workload's health; no deploy progress applies. */
+  instancesFailing: boolean;
+}
+
+/**
+ * Effective health for the workload Overview and Topology. A crash loop or
+ * bad image still reads as provisioning at the workload level; only the
+ * instances say otherwise, so their failures win unless the workload is
+ * available or deleting. Otherwise an unavailable workload explains itself
+ * through its `Available` condition.
+ */
+export function overviewHealth(workload: Workload, instances: readonly Instance[]): OverviewHealth {
+  const instanceFailure =
+    workload.health !== 'Available' && !workload.deleting ? instanceFailureSummary(instances) : undefined;
+  if (instanceFailure) return { health: 'Unavailable', failure: instanceFailure, instancesFailing: true };
+  const message =
+    workload.health === 'Unavailable'
+      ? workload.conditions.find((c) => c.type === 'Available')?.message
+      : undefined;
+  return message
+    ? { health: workload.health, failure: message, instancesFailing: false }
+    : { health: workload.health, instancesFailing: false };
+}
+
+/** The health, deploy and load balancer inputs behind the Overview's status line. */
+export interface OverviewStatusInput {
+  health: WorkloadHealth;
+  deleting: boolean;
+  healthyCount: number;
+  totalCount: number;
+  locationCount: number;
+  /** Set while the workload is coming up, see `deployStatus`. */
+  deploy?: DeployStatus;
+  /** Why instances are failing, e.g. from `instanceFailureSummary`. */
+  failure?: string;
+  /** The attached load balancer's error, when it has one. */
+  albError?: string;
+  now?: number;
+}
+
+/** What `StatusLine` renders: tone, bold title and muted detail. */
+export interface OverviewStatus {
+  tone: StatusTone;
+  title: string;
+  detail: string;
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * The workload Overview's one-line status, from the same inputs the old
+ * health strip used. Red for failures, amber for a stalled or quota-blocked
+ * deploy, degraded health or a load balancer error; plain otherwise.
+ */
+export function overviewStatusLine(input: OverviewStatusInput): OverviewStatus {
+  const { health, deploy, failure, healthyCount, totalCount, locationCount } = input;
+  const available = `${healthyCount}/${totalCount} instances available`;
+
+  if (input.deleting) return { tone: 'muted', title: 'Deleting', detail: 'Instances are shutting down' };
+  if (deploy) {
+    const detail = [
+      deploy.inProgress ? deploy.step : (deploy.message ?? deploy.step),
+      `${healthyCount}/${plural(totalCount, 'instance', 'instances')} ready`,
+      `started ${formatElapsed(deploy.since, input.now)} ago`,
+    ].join(' · ');
+    return { tone: deploy.tone === 'warning' ? 'warn' : 'muted', title: deploy.title, detail };
+  }
+  if (failure) return { tone: 'error', title: 'Unavailable', detail: `${failure} · ${available}` };
+  if (health === 'Unavailable') {
+    return { tone: 'error', title: 'Unavailable', detail: totalCount === 0 ? 'No running instances' : available };
+  }
+  if (input.albError) return { tone: 'warn', title: health === 'Degraded' ? 'Degraded' : 'Serving normally', detail: `Load balancer: ${input.albError}` };
+  if (health === 'Degraded') return { tone: 'warn', title: 'Degraded', detail: available };
+  if (health === 'Available') {
+    return {
+      tone: 'ok',
+      title: 'Serving normally',
+      detail: `${healthyCount}/${plural(totalCount, 'instance', 'instances')} · ${plural(locationCount, 'location', 'locations')}`,
+    };
+  }
+  return { tone: 'muted', title: 'Waiting for status', detail: 'Workload health has not been reported yet' };
+}
+
 export function regionLabel(region: WorkloadPlacementRegion, index: LocationIndex): string {
   if (region.locations.length > 0) return formatLocationNames(region.locations, index);
   if (region.locationSelector) {
