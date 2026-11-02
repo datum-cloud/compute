@@ -1,27 +1,27 @@
 /**
  * `portal.page/project` extension at the plugin mount root, exposed as `WorkloadList`.
  *
- * Home layout matches the workloads wireframe: fleet summary strip + 2-column
- * cards with regions. Real compute API fields fill operational slots;
+ * Styled like the project home page: a compact stat strip, then the table
+ * (or 2-column cards with regions), status as a dot and muted text. Real compute API fields fill operational slots;
  * Requests and CPU / memory totals come from the same Prometheus series (and
  * the same sum across instances) as the workload Metrics tab.
  */
 import { CliBanner, SectionCard } from "../components/cli-section";
 import { formatKpiValue } from "../components/metric-area-chart";
 import { CpuMemorySparks } from "../components/metric-sparkline";
-import { SparklineStatCard } from "../components/sparkline-stat-card";
+import { QuietNotice } from "../components/surface/quiet-notice";
+import { StatStrip } from "../components/stat-strip";
+import { TryDemoDialog, TryDemoWorkloadCard, useDemoWorkloadDialog } from "../components/try-demo";
 import { WorkloadSearch } from "../components/workload-search";
-import { HealthDot, WorkloadStatusBadge } from "../components/workload-status-badge";
+import { HealthDot, WorkloadStatusDot } from "../components/workload-status-badge";
 import { WorkloadUrl } from "../components/workload-url";
 import { albStatus, workloadUrlState } from "../lib/alb-status";
 import { WorkloadListCardsSkeleton, WorkloadListTableSkeleton } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
 import {
   useComputeEnablement,
-  useCreateDemoWorkload,
   useInstances,
   usePublishedUrls,
-  useWorkload,
   useWorkloads,
   type PublishedUrl,
 } from "../lib/api";
@@ -34,15 +34,13 @@ import {
   workloadCpuSumQuery,
   workloadMemorySumQuery,
 } from "../lib/metrics-queries";
-import { lastThirtyMinutesRange, usePrometheusCard } from "../lib/prometheus";
+import { usePrometheusCard } from "../lib/prometheus";
 import { allocationOf, type Allocation } from "../lib/resource-usage";
 import { useOverviewRange } from "../components/overview-range";
 import { useLocationIndex, type LocationIndex } from "../lib/locations";
 import { matchesWorkloadSearch, newestFirst, regionLabel } from "../lib/workload-presenters";
 import type { Workload } from "../schema";
-import { Badge } from "@datum-cloud/datum-ui/badge";
 import { Button, LinkButton } from "@datum-cloud/datum-ui/button";
-import { Dialog } from "@datum-cloud/datum-ui/dialog";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -51,18 +49,8 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@datum-cloud/datum-ui/breadcrumb";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@datum-cloud/datum-ui/card";
-import { EmptyContent } from "@datum-cloud/datum-ui/empty-content";
+import { Card, CardContent } from "@datum-cloud/datum-ui/card";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
-import { Tabs, TabsList, TabsTrigger } from "@datum-cloud/datum-ui/tabs";
-import { toast } from "@datum-cloud/datum-ui/toast";
 import { useCopyToClipboard } from "@datum-cloud/datum-ui/hooks";
 import { Icon } from "@datum-cloud/datum-ui/icons";
 import { cn } from "@datum-cloud/datum-ui/utils";
@@ -110,7 +98,15 @@ function readStoredView(): WorkloadView {
   }
 }
 
-/** Table / cards switch — datum-ui's segmented Tabs, placed in the page title actions like ALB's toolbar. */
+const VIEW_OPTIONS = [
+  { value: "table", label: "Table view", icon: Rows3Icon },
+  { value: "cards", label: "Card view", icon: LayoutGridIcon },
+] as const;
+
+/**
+ * Table / cards switch: a borderless icon pair in the page title actions.
+ * Each button names its view and reports whether it is the current one.
+ */
 function ViewToggle({
   view,
   onChange,
@@ -119,31 +115,47 @@ function ViewToggle({
   onChange: (view: WorkloadView) => void;
 }) {
   return (
-    <Tabs
-      value={view}
-      onValueChange={(value) => onChange(value as WorkloadView)}
+    <div
+      role="group"
+      aria-label="Workload view"
+      className="flex items-center gap-0.5"
       data-testid="compute-plugin-workload-view-toggle"
     >
-      <TabsList aria-label="Workload view" className="border-card-border border">
-        <TabsTrigger value="table" className="gap-1.5">
-          <Icon icon={Rows3Icon} size={14} />
-          Table
-        </TabsTrigger>
-        <TabsTrigger value="cards" className="gap-1.5">
-          <Icon icon={LayoutGridIcon} size={14} />
-          Cards
-        </TabsTrigger>
-      </TabsList>
-    </Tabs>
+      {VIEW_OPTIONS.map((option) => {
+        const active = view === option.value;
+        return (
+          <Button
+            key={option.value}
+            htmlType="button"
+            type="quaternary"
+            theme="borderless"
+            size="icon"
+            aria-label={option.label}
+            aria-pressed={active}
+            title={option.label}
+            onClick={() => onChange(option.value)}
+            className={cn(active ? "bg-accent text-foreground" : "text-muted-foreground")}
+          >
+            <Icon icon={option.icon} size={16} aria-hidden />
+          </Button>
+        );
+      })}
+    </div>
   );
 }
 
+/**
+ * The fleet at a glance, one compact row like the home page's: counts from
+ * the loaded list, and requests per second across every connected load
+ * balancer. A value that is loading, errored or not applicable shows "—".
+ */
 function FleetSummary({
   workloads,
   requests,
 }: {
   workloads: Workload[];
-  requests: string;
+  /** Undefined while loading, on error, or with no load balancer attached. */
+  requests?: string;
 }) {
   const readyInstances = workloads.reduce((sum, w) => sum + w.readyReplicas, 0);
   const desiredInstances = workloads.reduce(
@@ -152,34 +164,22 @@ function FleetSummary({
   );
   const healthy = workloads.filter((w) => w.health === "Available").length;
 
-  const timeRange = useMemo(() => lastThirtyMinutesRange(), []);
-
   return (
-    <div
-      className="grid grid-cols-2 gap-6 lg:grid-cols-4"
-      data-testid="compute-plugin-fleet-summary"
-    >
-      <SparklineStatCard
-        title="Workloads"
-        value={String(workloads.length)}
-        timeRange={timeRange}
-      />
-      <SparklineStatCard
-        title="Instances"
-        value={
-          desiredInstances > 0
-            ? `${readyInstances} / ${desiredInstances}`
-            : String(readyInstances)
-        }
-        timeRange={timeRange}
-      />
-      <SparklineStatCard
-        title="Healthy"
-        value={String(healthy)}
-        timeRange={timeRange}
-      />
-      <SparklineStatCard title="Requests" value={requests} timeRange={timeRange} />
-    </div>
+    <StatStrip
+      testId="compute-plugin-fleet-summary"
+      items={[
+        { label: "Workloads", value: String(workloads.length) },
+        {
+          label: "Instances",
+          value:
+            desiredInstances > 0
+              ? `${readyInstances} / ${desiredInstances}`
+              : String(readyInstances),
+        },
+        { label: "Healthy", value: String(healthy) },
+        { label: "Requests", value: requests },
+      ]}
+    />
   );
 }
 
@@ -241,207 +241,6 @@ function WorkloadCliSections({ projectId }: { projectId: string | undefined }) {
   );
 }
 
-/** Confirm → create → wait → ready, with the user deciding when to leave at
- * every step. Kept as a dialog (rather than showing progress inline in the
- * grid) because a demo Workload appearing mid-reconciliation among the
- * user's real workloads, then changing shape as it comes up, reads as a
- * glitch. Navigation is always a manual click, never automatic — the dialog
- * polls readiness only to update its own copy/buttons, and just says so
- * once the instance is up rather than whisking the user away on its own. */
-type DemoPhase = "confirm" | "creating" | "waiting" | "ready" | "error";
-
-const DEMO_PHASE_COPY: Record<DemoPhase, string> = {
-  confirm: "This deploys a running workload into your project — one instance in DFW, usually live within a minute.",
-  creating: "Deploying your workload…",
-  waiting: "Your workload is coming up in the background. You can wait here or head to its page now — it'll keep coming up either way.",
-  ready: "Your workload is live.",
-  error: "Something went wrong deploying the workload.",
-};
-
-/** Owns the demo dialog's state. Deliberately hoisted out of the CTA card:
- * the workloads grid switches between an "empty" and a "populated" branch
- * as soon as the demo Workload shows up (via the query invalidation on
- * create), and each branch renders its own `<TryDemoWorkloadCard>` element —
- * if the dialog's open/phase state lived inside that card, the branch swap
- * would unmount the open dialog's instance and mount a fresh, closed one,
- * which looks exactly like the dialog auto-closing itself. Called once in
- * `WorkloadList` and threaded into both the card and a single, always-mounted
- * `TryDemoDialog` so the state survives that swap. */
-function useDemoWorkloadDialog(projectId: string | undefined) {
-  const [open, setOpen] = useState(false);
-  const [phase, setPhase] = useState<DemoPhase>("confirm");
-  const [deployedName, setDeployedName] = useState<string | undefined>();
-  const { mutate } = useCreateDemoWorkload(projectId);
-  // Only polls while actually waiting on readiness — stops once ready, on
-  // error, or when the dialog isn't tracking a deploy.
-  const { data: workload, error: workloadError } = useWorkload(
-    projectId,
-    phase === "waiting" ? deployedName : undefined,
-  );
-
-  useEffect(() => {
-    if (phase !== "waiting") return;
-    if (workload?.health === "Available" && workload.readyReplicas > 0) {
-      setPhase("ready");
-    } else if (workloadError && workloadError.status !== 404) {
-      setPhase("error");
-    }
-  }, [phase, workload, workloadError]);
-
-  // The create call itself (a handful of sequential POSTs) is quick and has
-  // no object to show yet, so closing is blocked until it settles. Once
-  // we're waiting on readiness, the Workload already exists and keeps
-  // reconciling in the background regardless of the dialog — the user can
-  // leave any time, either back to the list or straight to the workload.
-  const canClose = phase !== "creating";
-
-  const openDialog = () => {
-    setPhase("confirm");
-    setDeployedName(undefined);
-    setOpen(true);
-  };
-
-  const close = () => {
-    if (!canClose) return;
-    setOpen(false);
-  };
-
-  const confirm = () => {
-    setPhase("creating");
-    mutate(undefined, {
-      onSuccess: (workloadName) => {
-        setDeployedName(workloadName);
-        setPhase("waiting");
-      },
-      onError: () => {
-        setPhase("error");
-        toast.error("Failed to deploy the workload");
-      },
-    });
-  };
-
-  const goToWorkload = (onView: (workloadName: string) => void) => {
-    setOpen(false);
-    if (deployedName) onView(deployedName);
-  };
-
-  return { open, phase, canClose, openDialog, close, confirm, goToWorkload };
-}
-
-/** Static CTA card offering a one-click demo deploy, shown in the empty state
- * of a project with no workloads yet. Once there are workloads, the same
- * action lives in the list toolbar instead, where both views can reach it.
- * Purely presentational: the dialog it opens is owned and rendered by the
- * parent (see `useDemoWorkloadDialog`), since this card gets
- * unmounted/remounted when the page switches branches once the demo
- * appears. */
-function TryDemoWorkloadCard({
-  projectId,
-  onOpen,
-}: {
-  projectId?: string;
-  onOpen: () => void;
-}) {
-  return (
-    <Card
-      className="border-secondary/20 bg-secondary/5 flex h-full flex-col items-center justify-center gap-4 p-6 text-center"
-      data-testid="compute-plugin-try-demo-card"
-    >
-      <Icon icon={RocketIcon} size={28} className="text-secondary" />
-      <div className="flex flex-col gap-1">
-        <h3 className="text-sm font-semibold">Ready to deploy?</h3>
-        <p className="text-muted-foreground text-sm">
-          Launch a running workload in one click
-        </p>
-      </div>
-      <Button type="secondary" theme="solid" size="small" disabled={!projectId} onClick={onOpen}>
-        Deploy Now
-      </Button>
-    </Card>
-  );
-}
-
-/** The demo confirm/progress dialog itself — rendered once, unconditionally,
- * by `WorkloadList` (see `useDemoWorkloadDialog` for why). */
-function TryDemoDialog({
-  open,
-  phase,
-  canClose,
-  onClose,
-  onConfirm,
-  onGoToWorkload,
-}: {
-  open: boolean;
-  phase: DemoPhase;
-  canClose: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-  onGoToWorkload: () => void;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <Dialog.Content>
-        <Dialog.Header
-          title="Deploy a workload"
-          description={
-            // Two lines held for every phase: the copy changes length as the
-            // deploy moves on, and a centred dialog would jump with it.
-            <span style={{ display: "block", minHeight: "2lh" }}>{DEMO_PHASE_COPY[phase]}</span>
-          }
-          onClose={canClose ? onClose : undefined}
-        />
-        <Dialog.Footer>
-          {phase === "confirm" && (
-            <>
-              <Button type="secondary" theme="outline" size="small" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="secondary" theme="solid" size="small" onClick={onConfirm}>
-                Deploy
-              </Button>
-            </>
-          )}
-          {phase === "creating" && (
-            <Button type="secondary" theme="solid" size="small" loading disabled>
-              Creating…
-            </Button>
-          )}
-          {phase === "waiting" && (
-            <>
-              <Button type="secondary" theme="outline" size="small" onClick={onClose}>
-                Close
-              </Button>
-              <Button type="secondary" theme="solid" size="small" onClick={onGoToWorkload}>
-                Go to Workload
-              </Button>
-            </>
-          )}
-          {phase === "ready" && (
-            <>
-              <Button type="secondary" theme="outline" size="small" onClick={onClose}>
-                Close
-              </Button>
-              <Button type="secondary" theme="solid" size="small" onClick={onGoToWorkload}>
-                View Workload
-              </Button>
-            </>
-          )}
-          {phase === "error" && (
-            <>
-              <Button type="secondary" theme="outline" size="small" onClick={onClose}>
-                Close
-              </Button>
-              <Button type="secondary" theme="solid" size="small" onClick={onConfirm}>
-                Try Again
-              </Button>
-            </>
-          )}
-        </Dialog.Footer>
-      </Dialog.Content>
-    </Dialog>
-  );
-}
-
 function WorkloadCard({
   workload,
   projectId,
@@ -499,18 +298,17 @@ function WorkloadCard({
   return (
     <Card
       size="sm"
-      sectioned
       className="overflow-hidden"
       data-testid="compute-plugin-workload-card"
     >
-      <CardHeader size="sm" bordered>
-        <CardTitle className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+      <div className="flex min-w-0 items-start justify-between gap-3 px-4 pt-3">
+        <h3 className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
           <span className="flex min-w-0 items-center gap-1.5">
             <Link
               to={href}
               // A utility only renders if the host already compiled it, and cloud-portal
               // never generates focus-visible:underline — hence ring utilities for focus.
-              className="truncate font-semibold hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              className="truncate font-medium hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
               data-e2e="workload-card-name-link"
             >
               {workload.name}
@@ -535,11 +333,9 @@ function WorkloadCard({
               {tags.join(" · ")}
             </span>
           )}
-        </CardTitle>
-        <CardAction>
-          <WorkloadStatusBadge workload={workload} />
-        </CardAction>
-      </CardHeader>
+        </h3>
+        <WorkloadStatusDot workload={workload} className="shrink-0" />
+      </div>
       {/* Dimmed while deleting: the numbers are the last ones before teardown. */}
       <CardContent className={cn("flex flex-col gap-4", workload.deleting && "opacity-50")}>
         {primaryAlb?.hostname ? (
@@ -581,7 +377,7 @@ function WorkloadCard({
 
         {workload.placementRegions.length > 0 && (
           <div className="flex flex-col gap-1.5">
-            <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+            <p className="text-muted-foreground text-xs font-medium">
               Locations
             </p>
             {workload.placementRegions.map((region) => (
@@ -591,7 +387,7 @@ function WorkloadCard({
               >
                 <div className="flex min-w-0 items-center gap-2">
                   <HealthDot health={region.health} label={region.health} />
-                  <span className="truncate" title={region.locations.join(", ") || region.locationSelector}>
+                  <span className="truncate font-mono text-xs" title={region.locations.join(", ") || region.locationSelector}>
                     {regionLabel(region, locationIndex)}
                   </span>
                 </div>
@@ -603,7 +399,7 @@ function WorkloadCard({
           </div>
         )}
       </CardContent>
-      <CardFooter bordered className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 px-4 pb-3 text-xs">
         <span>
           {workload.deleting
             ? "Deleting — instances are being stopped"
@@ -612,8 +408,8 @@ function WorkloadCard({
         <LinkButton
           as={Link}
           href={href}
-          type="secondary"
-          theme="outline"
+          type="quaternary"
+          theme="borderless"
           size="xs"
           icon={<Icon icon={ArrowRightIcon} size={12} />}
           iconPosition="right"
@@ -621,7 +417,7 @@ function WorkloadCard({
         >
           View workload
         </LinkButton>
-      </CardFooter>
+      </div>
     </Card>
   );
 }
@@ -827,10 +623,10 @@ export default function WorkloadList() {
           <FleetSummary
             workloads={workloads}
             requests={
-              fleetProxyIds.length > 0
-                ? (fleetRps.data?.formattedValue ??
-                  formatKpiValue(fleetRps.data?.value, "requestsPerSecond"))
-                : "—"
+              fleetProxyIds.length > 0 && fleetRps.data && !fleetRps.error
+                ? (fleetRps.data.formattedValue ||
+                  formatKpiValue(fleetRps.data.value, "requestsPerSecond"))
+                : undefined
             }
           />
           {/* Shared by both views: search on the left, page actions on the
@@ -839,15 +635,15 @@ export default function WorkloadList() {
             <WorkloadSearch value={search} onChange={setSearch} />
             <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
               <Button
-                type="secondary"
+                type="primary"
                 theme="solid"
                 size="small"
                 disabled={!projectId}
                 onClick={demoDialog.openDialog}
+                icon={<Icon icon={RocketIcon} size={14} aria-hidden />}
                 data-testid="compute-plugin-try-demo-button"
               >
-                <Icon icon={RocketIcon} size={14} />
-                Deploy Now
+                Deploy now
               </Button>
             </div>
           </div>
@@ -868,9 +664,10 @@ export default function WorkloadList() {
               />
             </Suspense>
           ) : visibleWorkloads.length === 0 ? (
-            <EmptyContent
-              title="Try adjusting your search"
-              data-testid="compute-plugin-workload-grid-empty"
+            <QuietNotice
+              title="No workloads match your search"
+              description="Try a different name, image or location."
+              testId="compute-plugin-workload-grid-empty"
             />
           ) : (
             <div

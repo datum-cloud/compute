@@ -13,7 +13,7 @@ import {
   formatForChart,
   type PrometheusQueryResult,
 } from './prometheus-format';
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, type UseQueryResult } from '@tanstack/react-query';
 
 export const O11Y_METRICS_API_PATH = '/apis/o11y.miloapis.com/v1alpha1/metrics/api/v1';
 
@@ -186,14 +186,36 @@ export function chartStepFor(timeRange: PrometheusTimeRange): string {
   return `${Math.floor(step / 3600)}h`;
 }
 
+/** Where `usePrometheusChart` puts the project id in its query key. */
+const CHART_KEY_PROJECT_INDEX = 2;
+
+/**
+ * `keepPreviousData`, but only while the project stays the same: instance
+ * names can repeat across projects, so another project's last result would
+ * otherwise paint this project's rows until its own query returns. Reads the
+ * project id from the query key at `CHART_KEY_PROJECT_INDEX`.
+ */
+export function keepPreviousInProject<T>(
+  projectId: string | undefined
+): (previous: T | undefined, previousQuery?: { queryKey: readonly unknown[] }) => T | undefined {
+  return (previous, previousQuery) =>
+    previousQuery?.queryKey[CHART_KEY_PROJECT_INDEX] === projectId ? keepPreviousData(previous) : undefined;
+}
+
 export function usePrometheusChart(
   projectId: string | undefined,
   query: string | undefined,
   timeRange: PrometheusTimeRange,
-  options?: { enabled?: boolean; refetchInterval?: number | false }
+  options?: {
+    enabled?: boolean;
+    refetchInterval?: number | false;
+    /** Keep the last result while a changed query loads, so dependent layout doesn't flicker. */
+    keepPrevious?: boolean;
+  }
 ): UseQueryResult<FormattedMetricData, PrometheusError> {
   const step = chartStepFor(timeRange);
   return useQuery<FormattedMetricData, PrometheusError>({
+    // Keep projectId at CHART_KEY_PROJECT_INDEX; keepPreviousInProject reads it.
     queryKey: [
       PLUGIN_ID,
       'prometheus-chart',
@@ -208,6 +230,7 @@ export function usePrometheusChart(
     refetchInterval: options?.refetchInterval ?? 30_000,
     staleTime: 15_000,
     retry: shouldRetryMetrics,
+    placeholderData: options?.keepPrevious ? keepPreviousInProject(projectId) : undefined,
   });
 }
 

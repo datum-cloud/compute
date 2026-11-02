@@ -11,6 +11,7 @@ import {
   memoryUsageHint,
   parseCpuCores,
   parseMemoryBytes,
+  usageColumnsVisible,
 } from "./resource-usage";
 
 describe("formatCores", () => {
@@ -117,5 +118,18 @@ describe("memory", () => {
     expect(memoryUsageHint(190 * 1024 ** 2, 2 * 1024 ** 3)).toBe("190 MB of 2.0 GB");
     expect(memoryUsageHint(undefined, 2 * 1024 ** 3)).toBe("of 2.0 GB");
     expect(memoryUsageHint(190 * 1024 ** 2, undefined)).toBe("in use");
+  });
+});
+
+describe("usageColumnsVisible", () => {
+  test("returns false when every series is empty or errored", () => {
+    expect(usageColumnsVisible([])).toBe(false);
+    expect(usageColumnsVisible([undefined])).toBe(false);
+    expect(usageColumnsVisible([{ points: [] }])).toBe(false);
+    expect(usageColumnsVisible([undefined, { points: [] }, {}])).toBe(false);
+  });
+
+  test("returns true when any series has a point", () => {
+    expect(usageColumnsVisible([undefined, { points: [] }, { points: [{ value: 0 }] }])).toBe(true);
   });
 });

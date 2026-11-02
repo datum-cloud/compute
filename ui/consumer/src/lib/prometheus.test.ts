@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  keepPreviousInProject,
   fetchPrometheusLabelValues,
   metricErrorMessage,
   O11Y_METRICS_API_PATH,
@@ -217,5 +218,21 @@ describe('formatter', () => {
     expect(formatValue(3.5, 'requestsPerSecond')).toBe('3.50 req/s');
     expect(formatValue(1500, 'milliseconds-auto')).toBe('1.50s');
     expect(formatValue(42, 'milliseconds-auto')).toBe('42ms');
+  });
+});
+
+describe('keepPreviousInProject', () => {
+  const key = (projectId: string) => ({ queryKey: ['compute', 'prometheus-chart', projectId, 'q'] });
+
+  test('keeps the last result while the project is unchanged', () => {
+    expect(keepPreviousInProject<number>('p1')(7, key('p1'))).toBe(7);
+  });
+
+  test('drops the last result when it came from another project', () => {
+    expect(keepPreviousInProject<number>('p2')(7, key('p1'))).toBeUndefined();
+  });
+
+  test('has nothing to keep on the first load', () => {
+    expect(keepPreviousInProject<number>('p1')(undefined, undefined)).toBeUndefined();
   });
 });
