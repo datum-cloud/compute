@@ -34,6 +34,27 @@ export const ALB_LOGS_PAGE_LIMIT = 500;
 export const ALB_LOGS_PREVIEW_LIMIT = 20;
 export const ALB_LOGS_LIVE_POLL_MS = 5_000;
 
+/**
+ * How far back the recent-logs preview looks for its latest rows. A day
+ * covers a workload that has been quiet for hours. Queries go backward with
+ * a small limit, so a busy stream stops at its newest rows; only a quiet one
+ * scans the whole day, and that's cheap for a pinned stream selector. A week
+ * would multiply that scan on every live poll for little gain.
+ */
+export const RECENT_LOGS_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+/** datum-ui preset with the same span, so live polling slides the window forward. */
+const RECENT_LOGS_PRESET = "last-24h";
+
+/** The recent-logs window: the last `RECENT_LOGS_LOOKBACK_MS`, ending at `now`. */
+export function recentLogsRange(now: number = Date.now()): LogTimeRange {
+  return {
+    from: new Date(now - RECENT_LOGS_LOOKBACK_MS).toISOString(),
+    to: new Date(now).toISOString(),
+    preset: RECENT_LOGS_PRESET,
+  };
+}
+
 const ALB_LOG_LABELS = [
   "method",
   "path",

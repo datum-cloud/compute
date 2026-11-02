@@ -6,6 +6,13 @@
 import { Badge } from '@datum-cloud/datum-ui/badge';
 import { CardField, CardFieldLabel, CardFieldValue } from '@datum-cloud/datum-ui/card';
 import { cn } from '@datum-cloud/datum-ui/utils';
+import type { CSSProperties } from 'react';
+
+/** Rows pad with `--card-px`; outside a card, match the home page's `px-2` rows. */
+export const OPEN_ROW_PADDING = { '--card-px': '0.5rem' } as CSSProperties;
+
+/** Two columns from `lg`, filled row by row so dropped rows leave no holes. */
+export const DETAILS_GRID_CLASS = 'grid grid-cols-1 gap-x-6 lg:grid-cols-2';
 
 export interface DetailListItem {
   label: React.ReactNode;
