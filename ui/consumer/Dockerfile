@@ -21,7 +21,7 @@
 # plugin, and the Go sources are bind-mounted rather than copied, so no source
 # file lands in a cached layer.
 
-FROM --platform=$BUILDPLATFORM golang:1.26 AS console-wasm
+FROM --platform=$BUILDPLATFORM golang:1.27 AS console-wasm
 WORKDIR /workspace
 COPY go.mod go.sum Makefile ./
 RUN go mod download
