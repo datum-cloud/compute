@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { computeResourceLinkResolver, instanceActivityFilter, workloadActivityFilter } from "./activity";
 
 describe("workloadActivityFilter", () => {

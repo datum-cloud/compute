@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { createWorkerConnector, type ShellWorker } from './connector';
 import type { FromWorker, ToWorker } from './messages';
 

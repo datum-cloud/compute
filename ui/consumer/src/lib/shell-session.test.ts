@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import type { ShellConnector } from './console-client/connector';
 import type { ConsoleEnding } from './console-client/wasm-adapter';
 import { ApiError } from './api';

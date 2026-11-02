@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { MAX_COMMAND_ARGS, parseCommand } from './shell-command';
 
 function argv(text: string): string[] {

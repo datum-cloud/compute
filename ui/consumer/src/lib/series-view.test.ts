@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { Instance } from "../schema";
 import { filterInstances, parseListParam } from "./instance-filters";
 import type { ChartSeries } from "./prometheus";

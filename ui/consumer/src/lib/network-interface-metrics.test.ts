@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { resolveNetworkInterfaceMetrics } from './network-interface-metrics';
 
 const ifaces = [{ name: 'eth0', network: 'default', networkInterfaceRef: 'web-0-eth0' }];
