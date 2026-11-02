@@ -437,6 +437,20 @@ func resolveSpecInputs(workload *computev1alpha.Workload, creating bool, opts *o
 	return inputs, nil
 }
 
+// resolveInputs resolves the spec inputs and then refuses an image the
+// resolved runtime class cannot boot, so the refusal names the class the
+// workload will run in rather than the one the flag asked for.
+func resolveInputs(ctx context.Context, c client.Client, workload *computev1alpha.Workload, creating bool, opts *options) (*specInputs, error) {
+	inputs, err := resolveSpecInputs(workload, creating, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkImageRuntime(ctx, c, opts.image, inputs.runtimeClass, build.ImagePlatforms); err != nil {
+		return nil, err
+	}
+	return inputs, nil
+}
+
 // resolveScaleSettings picks the baseline scale settings for this deploy's
 // flags to merge onto, and returns the merged, validated result.
 //
@@ -515,7 +529,7 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 	}
 	httpPort := svc.port
 
-	inputs, err := resolveSpecInputs(&workload, creating, opts)
+	inputs, err := resolveInputs(ctx, c, &workload, creating, opts)
 	if err != nil {
 		return err
 	}

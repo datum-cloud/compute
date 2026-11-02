@@ -27,7 +27,7 @@ jobs:
       contents: write
     steps:
       - name: Clone the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # goreleaser derives the version from the tag, so check out the tag
           # itself rather than whatever the default ref resolves to, and keep
@@ -36,7 +36,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -78,7 +78,7 @@ jobs:
           repositories: datumctl-plugins
 
       - name: Update the compute plugin manifest
-        uses: datum-cloud/actions/update-plugin-index@v1.23.1
+        uses: datum-cloud/actions/update-plugin-index@v1.26.0
         with:
           index-repo: datum-cloud/datumctl-plugins
           plugin-name: compute
