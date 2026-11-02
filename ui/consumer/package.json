@@ -42,6 +42,9 @@
     "vite": "^7.3.5",
     "vitest": "^5.0.5"
   },
+  "engines": {
+    "node": ">=26"
+  },
   "overrides": {
     "@module-federation/dts-plugin": {
       "undici": "^7.30.1"
