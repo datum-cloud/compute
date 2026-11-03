@@ -54,41 +54,6 @@ const TABLE_ID = 'compute-plugin-workload-table';
  */
 const CELL_LINE_STYLE = { maxWidth: '12rem' } as const;
 
-/**
- * The host styles every DataTable through `.datum-ui-data-table [data-slot=…]`
- * rules (filled header, bordered header cells, `py-3` cells), which outrank
- * any utility class passed in. A rule scoped to this table outranks those and
- * gives it the home page's look: a plain muted header, `h-10` rows, thin
- * lines and `bg-accent` on hover.
- */
-const TABLE_STYLES = `
-[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-header-row'],
-[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-row'] {
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
-}
-[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-header-cell'] {
-  background: transparent;
-  border-right: 0;
-  height: 2.5rem;
-  padding: 0 0.5rem;
-  color: var(--muted-foreground);
-  font-size: 0.75rem;
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: normal;
-}
-[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-row'] {
-  background: transparent;
-}
-[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-row']:hover {
-  background: var(--accent);
-}
-[data-testid='${TABLE_ID}'] .datum-ui-data-table [data-slot='dt-cell'] {
-  height: 2.5rem;
-  padding: 0 0.5rem;
-}
-`;
-
 interface UsageSeries {
   cpu: Record<string, ChartDataPoint[]>;
   memory: Record<string, ChartDataPoint[]>;
@@ -356,8 +321,11 @@ export function WorkloadTable({
       columns={columns}
       getRowId={(workload) => workload.uid || workload.name}
       className="space-y-6">
-      <div data-testid={TABLE_ID}>
-        <style>{TABLE_STYLES}</style>
+      {/* Same shell as the host's TablePanel (app/components/table/components/panel.tsx),
+          which is portal-internal, so the plugin mirrors its classes here. */}
+      <div
+        className="animate-data-table-fade-in overflow-hidden rounded-lg border"
+        data-testid={TABLE_ID}>
         <DataTable.Content<Workload>
           onRowClick={open}
           emptyMessage={
