@@ -40,7 +40,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: zendesk/setup-jsonnet@v16
+      - uses: zendesk/setup-jsonnet@v17
         with:
           version: v0.20.0
 
