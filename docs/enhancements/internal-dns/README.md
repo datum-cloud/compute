@@ -47,7 +47,8 @@ overlapping addresses or private zone names.
 - Resolve short instance names within the attached VPC.
 - Configure guest resolvers from verified network-interface settings.
 - Publish IPv4 and IPv6 host addresses only while their network attachment is valid.
-- Bound stale answers when instances disappear or publishers lose connectivity.
+- Withdraw records on confirmed instance deletion and retain published state during
+  publisher or API outages.
 
 ### Non-Goals
 
@@ -189,7 +190,7 @@ Providers reconcile updates and ignore stale revisions. Applied settings persist
 
 ### Record publication
 
-Compute publishes through the DNS-owned `DNSRegistration` and `DNSRecordContribution` resources. Their schema and validation are defined by the [dns-operator API types](https://github.com/datum-cloud/dns-operator/blob/fix/internal-dns-name-references/api/v1alpha1/internaldns_project_types.go) ([dns-operator#244](https://github.com/datum-cloud/dns-operator/pull/244)); this document describes only what Compute writes.
+Compute publishes through the DNS-owned `DNSRegistration` and `DNSRecordContribution` resources. Their schema and validation are defined by the [dns-operator API types](https://github.com/datum-cloud/dns-operator/blob/3178786b4b874cfee7b641bbbec96cecb2644950/api/v1alpha1/internaldns_project_types.go) ([dns-operator#244](https://github.com/datum-cloud/dns-operator/pull/244)); this document describes only what Compute writes.
 
 For each Instance and attached VPC, Compute finds the ready `DNSResolverContext` whose `consumerID` is `<project UID>/<Network UID>` and creates, in the project namespace:
 
