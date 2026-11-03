@@ -6,3 +6,5 @@
 resources:
   - compute-admin.yaml
   - compute-viewer.yaml
+  - compute-instancetype-viewer.yaml
+  - compute-instancetype-staff-admin.yaml

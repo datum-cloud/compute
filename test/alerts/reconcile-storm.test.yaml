@@ -1,0 +1,102 @@
+# Run with test/alerts/test-reconcile-storm.sh (requires yq and promtool).
+rule_files:
+- reconcile-storm.rules.yaml
+evaluation_interval: 1m
+tests:
+- name: Two quiet cells must not combine to fire
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+18x25
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
+    values: 0+0x25
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="central",controller="instance",result="success"}
+    values: 0+18x25
+  - series: workqueue_depth{job="compute-metrics",cluster="central",controller="instance"}
+    values: 0+0x25
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 20m
+    exp_samples: []
+- name: A hot cell fires independently of another cell backlog
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+60x25
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
+    values: 0+0x25
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="central",controller="instance",result="success"}
+    values: 0+6x25
+  - series: workqueue_depth{job="compute-metrics",cluster="central",controller="instance"}
+    values: 20+0x25
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 14m
+    exp_samples: []
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 20m
+    exp_samples:
+    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute-controllers",severity="warning",team="compute"}
+      value: 1
+- name: A busy cell backlog must not be diluted by an idle cell
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+60x25
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
+    values: 8+0x25
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="central",controller="instance",result="success"}
+    values: 0+6x25
+  - series: workqueue_depth{job="compute-metrics",cluster="central",controller="instance"}
+    values: 0+0x25
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 20m
+    exp_samples: []
+- name: Controllers within one cluster remain independent
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+18x25
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
+    values: 0+0x25
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="workload",result="success"}
+    values: 0+18x25
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="workload"}
+    values: 0+0x25
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 20m
+    exp_samples: []
+- name: Two hot cells retain distinct identities
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+60x25
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
+    values: 0+0x25
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="central",controller="instance",result="success"}
+    values: 0+60x25
+  - series: workqueue_depth{job="compute-metrics",cluster="central",controller="instance"}
+    values: 0+0x25
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 20m
+    exp_samples:
+    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute-controllers",severity="warning",team="compute"}
+      value: 1
+    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="central",controller="instance",namespace="compute-system",service="compute-controllers",severity="warning",team="compute"}
+      value: 1
+- name: Missing queue data in hot cell cannot match another cell
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+60x25
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="central",controller="instance",result="success"}
+    values: 0+6x25
+  - series: workqueue_depth{job="compute-metrics",cluster="central",controller="instance"}
+    values: 0+0x25
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 20m
+    exp_samples: []

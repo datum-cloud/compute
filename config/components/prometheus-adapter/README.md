@@ -17,6 +17,15 @@ measurements that infra records into this shape before the adapter queries them.
 The adapter then exposes those samples through the standard Kubernetes Resource
 Metrics API used by HPA.
 
+For pods without normalized instance metrics, container queries fall back to
+`container_cpu_usage_seconds_total` and `container_memory_working_set_bytes`.
+This keeps infrastructure pods visible through the cluster-wide API as well.
+The normalized series take precedence for each pod/container, preserving runtime
+semantics for Kata and Unikraft. The fallback takes the maximum across scrape
+jobs for each container, so cAdvisor and kubelet resource samples are not added
+together. Empty and `POD` containers are excluded. Node queries retain their
+existing compute-instance aggregation.
+
 Infrastructure overlays must patch before enabling this component:
 
 - `PROMETHEUS_URL` should point at the edge-local VictoriaMetrics query endpoint.
@@ -27,3 +36,12 @@ Infrastructure overlays must patch before enabling this component:
   different namespace, patch the `Certificate.spec.dnsNames` and the
   `APIService` service namespace / `cert-manager.io/inject-ca-from` annotation
   in the consuming overlay.
+
+Validate the pod fallback queries with `promtool` and Python's `PyYAML` installed:
+
+```sh
+python3 config/components/prometheus-adapter/tests/check.py
+```
+
+The fixtures cover infrastructure pods, duplicate scrape jobs, normalized runtime
+metric precedence, and exclusion of sandbox/empty container series.

@@ -5,6 +5,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/distribution/reference"
 	"golang.org/x/crypto/ssh"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -25,9 +26,6 @@ const (
 
 	// defaultImageName is the only currently supported container image.
 	defaultImageName = "datumcloud/ubuntu-2204-lts"
-
-	// defaultInstanceType is the only currently supported instance type.
-	defaultInstanceType = "datumcloud/d1-standard-2"
 )
 
 func validateInstanceTemplate(
@@ -85,6 +83,8 @@ func validateInstanceSpec(
 	allErrs = append(allErrs, volumeErrs...)
 
 	allErrs = append(allErrs, validateInstanceRuntimeSpec(spec.Runtime, volumes, fieldPath.Child("runtime"))...)
+	allErrs = append(allErrs, validateRuntimeClassSelection(spec, fieldPath, opts)...)
+	allErrs = append(allErrs, validateInstanceTypeSelection(spec, fieldPath, opts)...)
 	allErrs = append(allErrs, validateInstanceNetworkInterfaces(spec.NetworkInterfaces, fieldPath.Child("networkInterfaces"), opts)...)
 	allErrs = append(allErrs, validateReferencedDataAccess(spec, fieldPath, opts)...)
 
@@ -716,10 +716,11 @@ func validateContainerCommon(
 		}
 	}
 
+	// The registry requirement is enforced separately, in validateWorkloadImages
+	// (workload_validation.go), so an update can skip re-checking an unchanged
+	// image.
 	if len(container.Image) == 0 {
 		allErrs = append(allErrs, field.Required(fieldPath.Child("image"), ""))
-
-		// TODO(jreese) validate container image name, ensure it's fully qualified
 	}
 
 	if container.Resources != nil {
@@ -732,10 +733,92 @@ func validateContainerCommon(
 
 	allErrs = append(allErrs, validateEnvFrom(container.EnvFrom, fieldPath.Child("envFrom"))...)
 
+	if container.SecurityContext != nil {
+		allErrs = append(allErrs, validateSandboxCapabilities(container.SecurityContext.Capabilities,
+			fieldPath.Child("securityContext", "capabilities"))...)
+	}
+
 	// TODO(jreese) validate named ports are unique across all containers?
 	allErrs = append(allErrs, validateNamedPorts(container.Ports, fieldPath.Child("ports"))...)
 
 	return allErrs
+}
+
+// validateContainerImage rejects an image reference with no registry: left
+// unqualified, the node agent silently defaults one the caller never named,
+// and the pull then fails in a way that looks like a broken image, not a
+// misrouted one.
+func validateContainerImage(image string, fieldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if _, err := reference.ParseNormalizedNamed(image); err != nil {
+		return append(allErrs, field.Invalid(fieldPath, image, fmt.Sprintf("must be a valid image reference: %s", err)))
+	}
+
+	if !imageHasExplicitRegistry(image) {
+		allErrs = append(allErrs, field.Invalid(fieldPath, image,
+			"must include a registry, e.g. ghcr.io/acme/api:1.4.2"))
+	}
+
+	return allErrs
+}
+
+// imageHasExplicitRegistry reports whether the first path segment of image
+// is a registry host, not a namespace — mirroring distribution/reference's
+// unexported splitDockerDomain: a dot, a colon, "localhost", or an uppercase
+// letter marks it as a host.
+//
+// Must run on the raw string: reference.ParseNormalizedNamed always fills in
+// a default registry, which would make every image look explicit.
+func imageHasExplicitRegistry(image string) bool {
+	maybeDomain, _, ok := strings.Cut(image, "/")
+	if !ok {
+		return false
+	}
+	return maybeDomain == "localhost" ||
+		strings.ContainsAny(maybeDomain, ".:") ||
+		strings.ToLower(maybeDomain) != maybeDomain
+}
+
+// validateSandboxCapabilities checks the shape of a capability request. Whether
+// the selected runtime class grants each capability is checked with the class.
+//
+// The schema pattern admits CAP_-prefixed names, and Kubernetes manifests
+// written for other tools often use them, so the prefix gets a message saying
+// how to fix it rather than a class rejection naming a capability that looks
+// correct.
+func validateSandboxCapabilities(capabilities *computev1alpha.SandboxCapabilities, fldPath *field.Path) field.ErrorList {
+	if capabilities == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+
+	addPath := fldPath.Child("add")
+	for i, capability := range capabilities.Add {
+		if capability == computev1alpha.CapabilityAll {
+			allErrs = append(allErrs, field.Forbidden(addPath.Index(i),
+				"ALL may not be added; list each capability the container needs"))
+			continue
+		}
+		allErrs = append(allErrs, validateCapabilityName(capability, addPath.Index(i))...)
+	}
+
+	dropPath := fldPath.Child("drop")
+	for i, capability := range capabilities.Drop {
+		allErrs = append(allErrs, validateCapabilityName(capability, dropPath.Index(i))...)
+	}
+
+	return allErrs
+}
+
+func validateCapabilityName(capability computev1alpha.Capability, fldPath *field.Path) field.ErrorList {
+	name := string(capability)
+	if trimmed, ok := strings.CutPrefix(name, "CAP_"); ok {
+		return field.ErrorList{field.Invalid(fldPath, name,
+			fmt.Sprintf("must omit the CAP_ prefix, for example %q", trimmed))}
+	}
+	return nil
 }
 
 // validateEnvFrom validates the envFrom field on a SandboxContainer.
@@ -910,10 +993,11 @@ func validateNamedPorts(ports []computev1alpha.NamedPort, fieldPath *field.Path)
 func validateInstanceRuntimeResources(resources computev1alpha.InstanceRuntimeResources, fieldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// TODO(jreese) look up available instance types
-	if resources.InstanceType != defaultInstanceType {
-		allErrs = append(allErrs, field.NotSupported(fieldPath, resources.InstanceType, []string{defaultInstanceType}))
-	}
+	// instanceType is validated against the project's InstanceType catalog by
+	// validateInstanceTypeSelection, which has the catalog and the admission
+	// context. With no catalog (gate off, or a storage path that skipped the
+	// webhook) the selection is left alone so previously-stored workloads stay
+	// updatable.
 
 	if resources.Requests != nil {
 		allErrs = append(allErrs, field.Forbidden(fieldPath.Child("requests"), "not implemented"))

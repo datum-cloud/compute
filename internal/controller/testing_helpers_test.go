@@ -9,6 +9,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -17,9 +18,12 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // ─── Scheme helpers ───────────────────────────────────────────────────────────
@@ -31,6 +35,8 @@ func newProjectScheme() *runtime.Scheme {
 	_ = autoscalingv2.AddToScheme(s)
 	_ = corev1.AddToScheme(s)
 	_ = computev1alpha.AddToScheme(s)
+	_ = locationsv1alpha1.AddToScheme(s)
+	_ = eventsv1.AddToScheme(s)
 	return s
 }
 
@@ -41,7 +47,10 @@ func newKarmadaScheme() *runtime.Scheme {
 	_ = corev1.AddToScheme(s)
 	_ = computev1alpha.AddToScheme(s)
 	_ = networkingv1alpha.AddToScheme(s)
+	_ = locationsv1alpha1.AddToScheme(s)
 	_ = karmadapolicyv1alpha1.Install(s)
+	_ = karmadaclusterv1alpha1.Install(s)
+	_ = karmadaworkv1alpha2.Install(s)
 	return s
 }
 
@@ -96,7 +105,7 @@ func (m *fakeMCManager) GetCluster(_ context.Context, name multicluster.ClusterN
 	if c, ok := m.clusters[string(name)]; ok {
 		return c, nil
 	}
-	return nil, fmt.Errorf("cluster %q not found in fake manager", name)
+	return nil, fmt.Errorf("cluster %q not found in fake manager: %w", name, multicluster.ErrClusterNotFound)
 }
 
 // newFakeMCManager returns a fakeMCManager with a single named cluster.

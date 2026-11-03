@@ -4,21 +4,27 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	eventsv1 "k8s.io/api/events/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
@@ -28,9 +34,9 @@ const (
 	wdControllerTestNS   = "default"
 	wdControllerTestUID  = "wd-uid-test"
 
-	// wdControllerTestCityCode is the shared CityCode fixture for
+	// wdControllerTestLocation is the shared canonical Location fixture for
 	// WorkloadDeployment controller tests.
-	wdControllerTestCityCode = "DFW"
+	wdControllerTestLocation = "us-east-1"
 
 	// wdControllerTestWorkload is the shared WorkloadRef fixture.
 	wdControllerTestWorkload = "test-workload"
@@ -52,7 +58,7 @@ func wdControllerTestDeployment(minReplicas int32) *computev1alpha.WorkloadDeplo
 			UID:       wdControllerTestUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      wdControllerTestCityCode,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: wdControllerTestLocation},
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: wdControllerTestWorkload},
 			Replicas:      new(minReplicas),
@@ -203,7 +209,7 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 	deployment := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{Name: wdControllerTestName, Namespace: wdControllerTestNS, UID: wdControllerTestUID},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      wdControllerTestCityCode,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: wdControllerTestLocation},
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: wdControllerTestWorkload},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
@@ -241,6 +247,8 @@ func TestReconcileInstanceGates_NilSpecController_DoesNotPanic(t *testing.T) {
 //   - currentReplicas: the Programmed=True subset of updated instances.
 //   - readyReplicas: Ready=True regardless of revision.
 //   - quotaBlockedReplicas: QuotaGranted=False.
+//   - firstStartFailure: the first failing instance by name, counting only
+//     instances with its reason; Available need only be not True.
 func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 	t.Parallel()
 
@@ -274,6 +282,11 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 		Controller: &computev1alpha.InstanceControllerStatus{ObservedTemplateHash: templateHash},
 	}
 
+	instanceLegacyHash := wdControllerTestInstance("instance-legacy-hash")
+	instanceLegacyHash.Status = computev1alpha.InstanceStatus{
+		Controller: &computev1alpha.InstanceControllerStatus{ObservedTemplateHash: instancecontrol.LegacyComputeHash(deployment.Spec.Template)},
+	}
+
 	// Quota-blocked: QuotaGranted=False as the instance quota controller writes it.
 	instanceQuotaBlocked := wdControllerTestInstance("instance-quota-blocked")
 	instanceQuotaBlocked.Status = computev1alpha.InstanceStatus{
@@ -288,22 +301,33 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 		},
 	}
 
+	instanceImageUnavailable := wdControllerTestInstance("instance-image-unavailable")
+	instanceImageUnavailable.Status.Conditions = []metav1.Condition{
+		{Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionFalse, Reason: computev1alpha.InstanceReadyReasonImageUnavailable, Message: "image message"},
+	}
+	instanceCrashing := wdControllerTestInstance("instance-crashing")
+	instanceCrashing.Status.Conditions = []metav1.Condition{
+		{Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionUnknown, Reason: computev1alpha.InstanceReadyReasonInstanceCrashing, Message: "crash message"},
+	}
+
 	cl := newProjectFakeClient()
 	r := &WorkloadDeploymentReconciler{}
+	instances := []computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceLegacyHash, instanceQuotaBlocked, instanceImageUnavailable, instanceCrashing}
 
 	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, _, err := r.reconcileInstanceGates(
 		context.Background(),
 		cl,
 		deployment,
-		[]computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceQuotaBlocked},
+		instances,
 		nil,
 	)
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, updatedReplicas, "matching-hash instances count as updated; the stale-hash instance must not")
+	assert.Equal(t, 3, updatedReplicas, "current- and legacy-hash instances count as updated; the stale-hash instance must not")
 	assert.Equal(t, 1, currentReplicas, "only updated AND Programmed instances count as current")
 	assert.Equal(t, 2, readyReplicas, "Ready=True counts regardless of revision")
 	assert.Equal(t, 1, quotaBlockedReplicas, "QuotaGranted=False counts as quota-blocked")
+	assert.Equal(t, instanceStartFailure{reason: computev1alpha.InstanceReadyReasonInstanceCrashing, message: "crash message", count: 1}, firstStartFailure(instances))
 }
 
 // TestReconcileInstanceGates_ClearsNetworkSchedulingGate verifies the network
@@ -490,6 +514,32 @@ func TestWorkloadDeploymentReconcile_FinalizerAddRequeues(t *testing.T) {
 	assert.Equal(t, workloadDeploymentPodSelector(&updated), updated.Status.Selector)
 	assert.True(t, apimeta.IsStatusConditionTrue(updated.Status.Conditions, computev1alpha.WorkloadDeploymentReplicasReady),
 		"no instances are quota-blocked, so ReplicasReady must be true")
+
+	// An instance the provider reports as unable to start surfaces on both
+	// conditions.
+	var instances computev1alpha.InstanceList
+	require.NoError(t, cl.List(context.Background(), &instances))
+	require.Len(t, instances.Items, 1)
+	instance := instances.Items[0]
+	instance.CreationTimestamp = metav1.Now() // The fake client does not stamp it.
+	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionFalse, Reason: computev1alpha.InstanceReadyReasonImageUnavailable, Message: "image message",
+	})
+	require.NoError(t, cl.Update(context.Background(), &instance))
+
+	_, err = r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	require.NoError(t, cl.Get(context.Background(), req.NamespacedName, &updated))
+	for condType, want := range map[string]string{
+		computev1alpha.WorkloadDeploymentReplicasReady: "1 of 1 desired replicas are failing: image message",
+		computev1alpha.WorkloadDeploymentAvailable:     "1 of 1 instances are failing: image message",
+	} {
+		cond := apimeta.FindStatusCondition(updated.Status.Conditions, condType)
+		require.NotNil(t, cond, condType)
+		assert.Equal(t, computev1alpha.InstanceReadyReasonImageUnavailable, cond.Reason, condType)
+		assert.Equal(t, want, cond.Message, condType)
+	}
 }
 
 func TestWorkloadDeploymentReconcile_UsesSpecReplicas(t *testing.T) {
@@ -900,7 +950,7 @@ func TestWDAvailableCondition_ReferencedDataSourceNotFound(t *testing.T) {
 	deployment := makeWDForAvailTest(gen, metav1.ConditionFalse,
 		computev1alpha.ReferencedDataReasonSourceNotFound, msg)
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -919,7 +969,7 @@ func TestWDAvailableCondition_QuotaNotGranted(t *testing.T) {
 	)
 	deployment := makeWDForAvailTest(gen, metav1.ConditionTrue, computev1alpha.ReferencedDataReasonReady, "all present")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 2, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 2, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonQuotaNotGranted, cond.Reason)
@@ -940,7 +990,7 @@ func TestWDAvailableCondition_ReferencedDataWinsOverQuota(t *testing.T) {
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		`ConfigMap "X" not found in namespace "default"`)
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"ReferencedDataNotReady (priority 4) must beat QuotaNotGranted (priority 3)")
@@ -961,7 +1011,7 @@ func TestWDAvailableCondition_NetworkProvisioningVsReferencedData(t *testing.T) 
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		`ConfigMap "X" not found`)
 
-	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, false /* !networkReady */, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"ReferencedDataNotReady (priority 4) must beat NetworkProvisioning (priority 2)")
@@ -986,6 +1036,9 @@ func TestWDBlockingReasonPriority_WD(t *testing.T) {
 		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
 		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
 		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
+		{computev1alpha.InstanceReadyReasonImageUnavailable, 5},
+		{computev1alpha.InstanceReadyReasonInstanceCrashing, 5},
+		{computev1alpha.InstanceReadyReasonConfigurationError, 5},
 		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
 		{reasonNetworkFailedToCreate, 7},
 	}
@@ -1004,7 +1057,7 @@ func TestWDAvailableCondition_ObservedGeneration(t *testing.T) {
 	const gen = int64(42)
 	deployment := makeWDForAvailTest(gen, "", "", "")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, 0, 1)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, 0, 1, instanceStartFailure{})
 
 	assert.Equal(t, gen, cond.ObservedGeneration, "ObservedGeneration must match deployment generation")
 	// Verify the condition is also reachable via apimeta.FindStatusCondition (field
@@ -1062,7 +1115,7 @@ func TestWDAvailableCondition_AnnotationSourceNotFound(t *testing.T) {
 	)
 	deployment := makeWDWithAnnotation(gen, annot)
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentAvailable, cond.Type)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
@@ -1100,7 +1153,7 @@ func TestWDAvailableCondition_AnnotationAndConditionBothPresent(t *testing.T) {
 		},
 	}
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	// Both paths arrive at the same terminal reason; the winner is stable regardless
@@ -1125,7 +1178,7 @@ func TestWDAvailableCondition_AnnotationWinsOverQuota(t *testing.T) {
 	deployment := makeWDWithAnnotation(gen, annot)
 
 	// quotaBlockedReplicas=1 would normally surface QuotaNotGranted (priority 3).
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 1, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNotFound, cond.Reason,
 		"SourceNotFound (priority 5) must beat QuotaNotGranted (priority 3)")
@@ -1143,7 +1196,7 @@ func TestWDAvailableCondition_NoAnnotationPropagationLag(t *testing.T) {
 	// No annotation, no ReferencedDataReady condition: companions still propagating.
 	deployment := makeWDForAvailTest(gen, "", "", "")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 1, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonReferencedDataNotReady, cond.Reason,
 		"propagation-lag path must still fire when annotation is absent")
@@ -1160,7 +1213,7 @@ func TestWDAvailableCondition_AnnotationEmptyString(t *testing.T) {
 	)
 	deployment := makeWDWithAnnotation(gen, "")
 
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	// No real blockers; falls through to InstancesProvisioning.
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason)
@@ -1178,8 +1231,148 @@ func TestWDAvailableCondition_AnnotationMalformedJSON(t *testing.T) {
 	deployment := makeWDWithAnnotation(gen, "not-valid-json{{")
 
 	// Should not panic; malformed annotation is skipped.
-	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas)
+	cond := selectWDBlockingCondition(deployment, true, resolvedTestLocation(), 0, 0, replicas, desiredReplicas, instanceStartFailure{})
 
 	assert.Equal(t, computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, cond.Reason,
 		"malformed annotation must be silently ignored; fallback to InstancesProvisioning")
+}
+
+func TestWorkloadDeploymentReconcile_RecordsScaleDown(t *testing.T) {
+	t.Parallel()
+
+	deployment := wdControllerTestDeployment(1)
+	deployment.Finalizers = []string{workloadControllerFinalizer}
+	deployment.Status.DesiredReplicas = 2
+	deployment.Status.ObservedGeneration = 1
+	objs := make([]client.Object, 0, 3)
+	objs = append(objs, deployment)
+	for _, index := range []string{"0", "1"} {
+		instance := wdControllerTestInstance(wdControllerTestName + "-" + index)
+		instance.Labels[computev1alpha.InstanceIndexLabel] = index
+		instance.Labels[computev1alpha.WorkloadNameLabel] = wdControllerTestWorkload
+		instance.CreationTimestamp = metav1.Now()
+		// A ready, current instance 0 leaves the scale-down as the only action.
+		instance.Spec.Controller = &computev1alpha.InstanceController{
+			TemplateHash: instancecontrol.ComputeHash(deployment.Spec.Template),
+		}
+		instance.Status.Conditions = []metav1.Condition{{
+			Type: computev1alpha.InstanceReady, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceReadyReasonAvailable,
+		}}
+		objs = append(objs, &instance)
+	}
+	cl := newProjectFakeClient(objs...)
+	r := newTestWDReconciler(cl)
+	r.events = newTestLifecycleWriter()
+	req := mcreconcile.Request{
+		ClusterName: testCluster,
+		Request: ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: wdControllerTestName, Namespace: wdControllerTestNS},
+		},
+	}
+
+	_, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	byReason := map[string]eventsv1.Event{}
+	for _, e := range listLifecycleEvents(t, cl) {
+		byReason[e.Reason] = e
+	}
+	require.Len(t, byReason, 2)
+	scaled := byReason[eventReasonDeploymentScaled]
+	assert.Equal(t, "Scaled from 2 to 1 replicas", scaled.Note)
+	assert.Equal(t, wdControllerTestWorkload, scaled.Related.Name)
+	terminating := byReason[eventReasonInstanceTerminating]
+	assert.Equal(t, wdControllerTestName+"-1", terminating.Regarding.Name)
+	assert.Equal(t, "Scaling down to 1 replicas", terminating.Note)
+	assert.Equal(t, wdControllerTestWorkload, terminating.Related.Name)
+}
+
+func TestWorkloadDeploymentReconcile_LegacyTemplateHashPatchFailure(t *testing.T) {
+	t.Parallel()
+
+	const failingInstance = wdControllerTestName + "-0"
+
+	tests := []struct {
+		name          string
+		failHashPatch bool
+	}{
+		{name: "hash rewrite succeeds", failHashPatch: false},
+		{name: "hash rewrite fails for one instance", failHashPatch: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			deployment := wdControllerTestDeployment(3)
+			deployment.Finalizers = []string{workloadControllerFinalizer}
+			hashes := instancecontrol.HashTemplate(deployment.Spec.Template)
+
+			objs := make([]client.Object, 0, 3)
+			objs = append(objs, deployment)
+			for _, index := range []string{"0", "1"} {
+				instance := wdControllerTestInstance(wdControllerTestName + "-" + index)
+				instance.Labels[computev1alpha.InstanceIndexLabel] = index
+				instance.CreationTimestamp = metav1.Now()
+				instance.Spec.Location = &deployment.Spec.LocationRef
+				instance.Spec.Controller = &computev1alpha.InstanceController{TemplateHash: hashes.Legacy}
+				instance.Status.Conditions = []metav1.Condition{{
+					Type: computev1alpha.InstanceReady, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceReadyReasonAvailable,
+				}}
+				objs = append(objs, &instance)
+			}
+
+			var hashPatchAttempts []string
+			cl := fake.NewClientBuilder().
+				WithScheme(newProjectScheme()).
+				WithObjects(objs...).
+				WithStatusSubresource(objs...).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						data, err := patch.Data(obj)
+						if err != nil {
+							return err
+						}
+						if strings.Contains(string(data), "templateHash") {
+							hashPatchAttempts = append(hashPatchAttempts, obj.GetName())
+							if test.failHashPatch && obj.GetName() == failingInstance {
+								return errors.New("injected patch failure")
+							}
+						}
+						return c.Patch(ctx, obj, patch, opts...)
+					},
+				}).
+				Build()
+
+			r := newTestWDReconciler(cl)
+			r.events = newTestLifecycleWriter()
+			req := mcreconcile.Request{
+				ClusterName: testCluster,
+				Request: ctrl.Request{
+					NamespacedName: types.NamespacedName{Name: wdControllerTestName, Namespace: wdControllerTestNS},
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err, "a failed hash rewrite must not abort the reconcile")
+
+			assert.ElementsMatch(t, []string{wdControllerTestName + "-0", wdControllerTestName + "-1"}, hashPatchAttempts,
+				"a failed hash rewrite must not stop the rewrite of the next instance")
+
+			var created computev1alpha.Instance
+			require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: wdControllerTestName + "-2", Namespace: wdControllerTestNS}, &created),
+				"the missing instance must still be created")
+
+			for _, index := range []string{"0", "1"} {
+				var instance computev1alpha.Instance
+				require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: wdControllerTestName + "-" + index, Namespace: wdControllerTestNS}, &instance),
+					"instance %s must not be deleted", index)
+				want := hashes.Current
+				if test.failHashPatch && instance.Name == failingInstance {
+					want = hashes.Legacy
+				}
+				assert.Equal(t, want, instance.Spec.Controller.TemplateHash)
+			}
+		})
+	}
 }

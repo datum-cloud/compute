@@ -1,16 +1,30 @@
 /**
- * Layout for `workloads/:workloadName/instances/:instanceName/*`.
+ * Layout for `:workloadName/instances/:instanceName/*`.
  *
  * Host mounts this as a splat page; nested routes keep breadcrumbs, title, and
- * tabs mounted while Overview / Logs swap through `<Outlet />`.
+ * tabs mounted while Overview / Logs / Metrics swap through `<Outlet />`.
  */
 import { InstancePageChrome } from '../components/instance-page-chrome';
-import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
-import { useInstance } from '../lib/api';
+import {
+  InstanceLogsSkeleton,
+  InstanceMetricsSkeleton,
+  InstanceOverviewSkeleton,
+} from '../components/skeletons';
+import { ErrorOrRestrictedState } from '../components/states';
+import { useInstance, usePublishedUrl } from '../lib/api';
+import { instancePageView } from '../lib/instance-page-view';
+import { useShellAvailable } from '../lib/use-shell-available';
+import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import type { InstanceOutletContext } from './instance-outlet-context';
 import InstanceLogs from './instance-logs';
+import InstanceMetrics from './instance-metrics';
 import InstanceOverview from './instance-overview';
+import { lazy, Suspense } from 'react';
 import { Outlet, Route, Routes, useLocation, useParams } from 'react-router';
+
+const InstanceShellPage = lazy(() => import('./instance-shell'));
+// activity-ui is sizeable; load it only when the tab is opened.
+const InstanceActivity = lazy(() => import('./instance-activity'));
 
 function InstanceLayoutShell({
   projectHref,
@@ -18,6 +32,8 @@ function InstanceLayoutShell({
   instancesHref,
   overviewHref,
   logsHref,
+  metricsHref,
+  shellHref,
   titleName,
   workloadName,
 }: {
@@ -26,14 +42,25 @@ function InstanceLayoutShell({
   instancesHref: string;
   overviewHref: string;
   logsHref: string;
+  metricsHref: string;
+  shellHref: string;
   titleName: string;
   workloadName?: string;
 }) {
+  const { pathname } = useLocation();
   const { projectId, instanceName } = useParams<{
     projectId: string;
     instanceName: string;
   }>();
   const { data: instance, isLoading, error, refetch } = useInstance(projectId, instanceName);
+  const published = usePublishedUrl(projectId, workloadName ?? instance?.workloadName);
+  const locationIndex = useLocationIndex(projectId);
+  const shellAvailable = useShellAvailable(projectId, instance);
+  const view = instancePageView({
+    isLoading,
+    hasInstance: !!instance,
+    errorStatus: error?.status,
+  });
 
   return (
     <InstancePageChrome
@@ -42,13 +69,27 @@ function InstanceLayoutShell({
       instancesHref={instancesHref}
       overviewHref={overviewHref}
       logsHref={logsHref}
+      metricsHref={metricsHref}
+      shellHref={shellAvailable ? shellHref : undefined}
       titleName={instance?.name ?? titleName}
       workloadName={workloadName}
       instance={instance}
-      onRefresh={() => void refetch()}>
-      {isLoading && <LoadingSkeleton />}
+      locationLabel={
+        instance?.location ? formatLocationName(instance.location, locationIndex) : undefined
+      }
+      locationTooltip={
+        instance?.location ? formatLocationTooltip(instance.location, locationIndex) : undefined
+      }>
+      {view === 'loading' &&
+        (pathname === metricsHref || pathname.startsWith(`${metricsHref}/`) ? (
+          <InstanceMetricsSkeleton />
+        ) : pathname === logsHref || pathname.startsWith(`${logsHref}/`) ? (
+          <InstanceLogsSkeleton />
+        ) : (
+          <InstanceOverviewSkeleton />
+        ))}
 
-      {!isLoading && (error || !instance) && (
+      {view === 'error' && (
         <ErrorOrRestrictedState
           error={error}
           restrictedMessage="You don't have permission to view this instance."
@@ -56,13 +97,21 @@ function InstanceLayoutShell({
         />
       )}
 
-      {!isLoading && !error && instance && (
+      {view === 'ready' && instance && (
         <Outlet
           context={
             {
               instance,
               workloadName,
+              workloadHref: instancesHref,
+              projectId,
               logsHref,
+              metricsHref,
+              shellAvailable,
+              proxyId: published.data?.proxyName,
+              albHostname: published.data?.hostname,
+              albDisplayName: published.data?.displayName,
+              albLoading: published.isLoading,
             } satisfies InstanceOutletContext
           }
         />
@@ -80,8 +129,10 @@ export default function InstanceDetail() {
   const location = useLocation();
 
   const path = location.pathname.replace(/\/$/, '');
-  const overviewHref = path.endsWith('/logs') ? path.slice(0, -'/logs'.length) : path;
+  const overviewHref = path.replace(/\/(logs|metrics|shell|activity)$/, '');
   const logsHref = `${overviewHref}/logs`;
+  const metricsHref = `${overviewHref}/metrics`;
+  const shellHref = `${overviewHref}/shell`;
   const instancesHref = overviewHref.replace(/\/instances\/[^/]+$/, '');
   const workloadsHref = instancesHref.replace(/\/[^/]+$/, '');
   const projectHref = projectId ? `/project/${projectId}` : '/';
@@ -97,12 +148,31 @@ export default function InstanceDetail() {
             instancesHref={instancesHref}
             overviewHref={overviewHref}
             logsHref={logsHref}
+            metricsHref={metricsHref}
+            shellHref={shellHref}
             titleName={titleName}
             workloadName={workloadName}
           />
         }>
         <Route index element={<InstanceOverview />} />
         <Route path="logs" element={<InstanceLogs />} />
+        <Route path="metrics" element={<InstanceMetrics />} />
+        <Route
+          path="activity"
+          element={
+            <Suspense fallback={null}>
+              <InstanceActivity />
+            </Suspense>
+          }
+        />
+        <Route
+          path="shell"
+          element={
+            <Suspense fallback={null}>
+              <InstanceShellPage />
+            </Suspense>
+          }
+        />
       </Route>
     </Routes>
   );

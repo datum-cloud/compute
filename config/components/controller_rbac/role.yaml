@@ -26,6 +26,15 @@ rules:
   - list
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - autoscaling
   resources:
   - horizontalpodautoscalers
@@ -40,7 +49,40 @@ rules:
 - apiGroups:
   - compute.datumapis.com
   resources:
+  - instanceconsolesessions
+  verbs:
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instanceconsolesessions/finalizers
+  - instancetypes/finalizers
+  - workloaddeployments/finalizers
+  - workloads/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instanceconsolesessions/status
+  - instances/status
+  - instancetypes/status
+  - workloaddeployments/status
+  - workloads/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - compute.datumapis.com
+  resources:
   - instances
+  - instancetypes
   - workloaddeployments
   - workloads
   verbs:
@@ -55,20 +97,17 @@ rules:
   - compute.datumapis.com
   resources:
   - instances/finalizers
-  - workloaddeployments/finalizers
-  - workloads/finalizers
   verbs:
+  - patch
   - update
 - apiGroups:
   - compute.datumapis.com
   resources:
-  - instances/status
-  - workloaddeployments/status
-  - workloads/status
+  - runtimeclasses
   verbs:
   - get
-  - patch
-  - update
+  - list
+  - watch
 - apiGroups:
   - events.k8s.io
   resources:
@@ -76,6 +115,25 @@ rules:
   verbs:
   - create
   - patch
+- apiGroups:
+  - locations.miloapis.com
+  resources:
+  - locations
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - locationbindings
+  - networkinterfaces
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - networking.datumapis.com
   resources:
@@ -91,21 +149,20 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
-  - networkinterfaces
-  - networks
-  - servinglocations
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - networking.datumapis.com
-  resources:
   - networkinterfaces/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networks
+  verbs:
+  - get
+  - list
+  - use
+  - watch
 - apiGroups:
   - quota.miloapis.com
   resources:
@@ -119,6 +176,8 @@ rules:
 - apiGroups:
   - services.miloapis.com
   resources:
+  - serviceavailabilities
+  - serviceconfigurations
   - serviceconsumers
   - services
   verbs:

@@ -6,6 +6,8 @@ import (
 	"context"
 	"testing"
 
+	"sigs.k8s.io/controller-runtime/pkg/event"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -18,13 +20,16 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
 const (
-	testNetworkName  = "default"
-	testLocationName = "dfw"
-	testHubWDUID     = types.UID("hub-wd-uid-9999")
+	testNetworkName       = "default"
+	testLocationName      = "dfw"
+	testOtherLocationName = "ord"
+	testWestLocationName  = "us-west-1"
+	testHubWDUID          = types.UID("hub-wd-uid-9999")
 )
 
 // testHubDeployment returns the hub copy of the test WorkloadDeployment, already
@@ -37,7 +42,7 @@ func testHubDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *comput
 			UID:       testHubWDUID,
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode: testCityCodeLAX,
+			LocationRef: locationsv1alpha1.LocationReference{Name: testLocationName},
 			Template: computev1alpha.InstanceTemplateSpec{
 				Spec: computev1alpha.InstanceSpec{
 					NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{
@@ -58,7 +63,7 @@ func testHubDeployment(opts ...func(*computev1alpha.WorkloadDeployment)) *comput
 // which on the hub arrives through Karmada status aggregation.
 func withServingLocation(name string) func(*computev1alpha.WorkloadDeployment) {
 	return func(wd *computev1alpha.WorkloadDeployment) {
-		wd.Status.Location = &networkingv1alpha.LocationReference{Name: name}
+		wd.Spec.LocationRef = locationsv1alpha1.LocationReference{Name: name}
 	}
 }
 
@@ -98,7 +103,7 @@ func TestEnsureNetworkBinding_DeclaresPresenceWhereDeploymentRuns(t *testing.T) 
 	require.NoError(t, err)
 
 	assert.Equal(t, testNetworkName, stored.Spec.Network.Name)
-	assert.Equal(t, testLocationName, stored.Spec.Location.Name)
+	assert.Equal(t, hubWD.Spec.LocationRef.Name, stored.Spec.Location.Name)
 
 	require.NotNil(t, stored.Spec.Consumer)
 	assert.Equal(t, computev1alpha.GroupVersion.Group, stored.Spec.Consumer.APIGroup)
@@ -129,10 +134,6 @@ func TestEnsureNetworkBinding_NothingToDeclareYet(t *testing.T) {
 		name  string
 		hubWD *computev1alpha.WorkloadDeployment
 	}{
-		{
-			name:  "no serving location",
-			hubWD: testHubDeployment(),
-		},
 		{
 			name: "no network interfaces",
 			hubWD: testHubDeployment(withServingLocation(testLocationName), func(wd *computev1alpha.WorkloadDeployment) {
@@ -246,9 +247,9 @@ func TestEnsureNetworkBinding_RecreatesOnDivergence(t *testing.T) {
 		},
 		{
 			name:         "serving location changed",
-			changed:      withServingLocation("ord"),
+			changed:      withServingLocation(testOtherLocationName),
 			wantNetwork:  testNetworkName,
-			wantLocation: "ord",
+			wantLocation: testOtherLocationName,
 		},
 	}
 
@@ -302,7 +303,7 @@ func TestEnsureNetworkBinding_LeavesForeignBindingAlone(t *testing.T) {
 		},
 		Spec: networkingv1alpha.NetworkBindingSpec{
 			Network:  networkingv1alpha.NetworkRef{Name: "someone-elses-network"},
-			Location: networkingv1alpha.LocationReference{Name: testLocationName},
+			Location: locationsv1alpha1.LocationReference{Name: testLocationName},
 		},
 	}
 	karmadaClient := newKarmadaFakeClient(hubWD, foreign)
@@ -341,7 +342,7 @@ func TestWorkloadDeploymentFederator_CreatesNetworkBindingOnReconcile(t *testing
 	stored, err := getBinding(t, karmadaClient)
 	require.NoError(t, err)
 	assert.Equal(t, testNetworkName, stored.Spec.Network.Name)
-	assert.Equal(t, testLocationName, stored.Spec.Location.Name)
+	assert.Equal(t, wd.Spec.LocationRef.Name, stored.Spec.Location.Name)
 }
 
 // TestMapNetworkBindingToRequest verifies the binding-to-deployment mapping: the
@@ -566,4 +567,38 @@ func TestNetworkBindingStateDoesNotGateInstances(t *testing.T) {
 		"a binding waiting on a context must not even be reported, let alone acted on")
 	assert.True(t, networkInterfaceClaimSatisfied(claim),
 		"binding state is not an input to instance gating")
+}
+
+func TestNetworkBindingChanged(t *testing.T) {
+	const changedName = "changed"
+	base := &networkingv1alpha.NetworkBinding{}
+	cases := []struct {
+		name   string
+		change func(*networkingv1alpha.NetworkBinding)
+		want   bool
+	}{
+		{"annotation", func(b *networkingv1alpha.NetworkBinding) {
+			b.Annotations = map[string]string{"networking.datumapis.com/presence-observed": "new"}
+			b.ResourceVersion = "2"
+		}, false},
+		{"status", func(b *networkingv1alpha.NetworkBinding) {
+			b.Status.Conditions = []metav1.Condition{{Type: networkingv1alpha.NetworkBindingReady, Status: metav1.ConditionFalse}}
+		}, true},
+		{"spec", func(b *networkingv1alpha.NetworkBinding) { b.Spec.Network.Name = changedName }, true},
+		{"owner", func(b *networkingv1alpha.NetworkBinding) {
+			b.OwnerReferences = []metav1.OwnerReference{{Name: changedName}}
+		}, true},
+		{"deletion", func(b *networkingv1alpha.NetworkBinding) { now := metav1.Now(); b.DeletionTimestamp = &now }, true},
+		{"labels", func(b *networkingv1alpha.NetworkBinding) { b.Labels = map[string]string{"network": changedName} }, true},
+	}
+	p := networkBindingChanged()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := base.DeepCopy()
+			tc.change(b)
+			require.Equal(t, tc.want, p.Update(event.TypedUpdateEvent[*networkingv1alpha.NetworkBinding]{ObjectOld: base, ObjectNew: b}))
+		})
+	}
+	require.True(t, p.Create(event.TypedCreateEvent[*networkingv1alpha.NetworkBinding]{Object: base}))
+	require.True(t, p.Delete(event.TypedDeleteEvent[*networkingv1alpha.NetworkBinding]{Object: base}))
 }

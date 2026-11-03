@@ -17,12 +17,14 @@ var kraftfileNames = []string{
 	"kraft.yml",
 	"Kraftfile.yml",
 	"Kraftfile.yaml",
-	"Kraftfile",
+	kraftfileName,
 }
 
-// findKraftfile returns the path of the first Kraftfile found in dir, or ""
-// if none exist.
-func findKraftfile(dir string) string {
+const kraftfileName = "Kraftfile"
+
+// FindKraftfile returns the path of the first Kraftfile found in dir, or ""
+// if none exist. Builds only use one when it's passed with --kraftfile.
+func FindKraftfile(dir string) string {
 	for _, name := range kraftfileNames {
 		p := filepath.Join(dir, name)
 		if _, err := os.Stat(p); err == nil {
@@ -33,41 +35,41 @@ func findKraftfile(dir string) string {
 }
 
 // runKraftBuild delegates the entire build to unikraft's own CLI
-// (https://github.com/unikraft/cli) when a Kraftfile is present, instead of
+// (https://github.com/unikraft/cli) for --kraftfile, instead of
 // reimplementing Kraftfile semantics (rootfs source/format, cmd, ...) here.
 //
 // unikraft build takes an input directory, not an explicit Kraftfile path —
-// it auto-discovers one of kraftfileNames within it — so opts.kraftfile must
+// it auto-discovers one of kraftfileNames within it — so opts.Kraftfile must
 // live directly in that directory under one of those names.
-func runKraftBuild(ctx context.Context, opts *options) error {
-	if !slices.Contains(kraftfileNames, filepath.Base(opts.kraftfile)) {
+func runKraftBuild(ctx context.Context, opts *Options) error {
+	if !slices.Contains(kraftfileNames, filepath.Base(opts.Kraftfile)) {
 		return fmt.Errorf(
 			"--kraftfile %s has a name the unikraft CLI won't auto-discover; rename it to one of %v",
-			displayPath(opts.kraftfile), kraftfileNames,
+			displayPath(opts.Kraftfile), kraftfileNames,
 		)
 	}
-	inputDir, err := filepath.Abs(filepath.Dir(opts.kraftfile))
+	inputDir, err := filepath.Abs(filepath.Dir(opts.Kraftfile))
 	if err != nil {
 		return fmt.Errorf("resolving Kraftfile directory: %w", err)
 	}
 
 	unikraftPath, err := exec.LookPath("unikraft")
 	if err != nil {
-		return fmt.Errorf(
-			"found a Kraftfile at %s, but the unikraft CLI is not installed; install it from https://github.com/unikraft/cli and re-run, or remove the Kraftfile to use the default Dockerfile-based build",
-			displayPath(opts.kraftfile),
-		)
+		return &userError{message: paragraphs(
+			"building from a Kraftfile needs the unikraft CLI, which isn't installed.",
+			"Install it from https://github.com/unikraft/cli, then run this command again.",
+		)}
 	}
 
 	args := []string{"build", inputDir} //nolint:goconst
-	for _, arg := range opts.buildArgs {
+	for _, arg := range opts.BuildArgs {
 		args = append(args, "--build-arg", arg)
 	}
-	if opts.output != "" {
-		args = append(args, "--output", opts.output)
+	if opts.Output != "" {
+		args = append(args, "--output", opts.Output)
 	}
 
-	fmt.Fprintf(os.Stderr, "Kraftfile found at %s: this build is entirely delegated to the unikraft CLI, not datumctl.\n", displayPath(opts.kraftfile))
+	fmt.Fprintf(os.Stderr, "Building from %s with the unikraft CLI.\n", filepath.Base(opts.Kraftfile))
 	fmt.Fprintf(os.Stderr, "Running: %s\n", formatCommand(unikraftPath, args))
 
 	cmd := exec.CommandContext(ctx, unikraftPath, args...)
@@ -78,6 +80,38 @@ func runKraftBuild(ctx context.Context, opts *options) error {
 		return fmt.Errorf("unikraft build: %w", err)
 	}
 	return nil
+}
+
+// HasDockerfile reports whether a build of dir without -f would find a
+// Dockerfile, given its default name.
+func HasDockerfile(dir, dockerfile string) bool {
+	path, err := resolveDockerfilePath(dir, dockerfile, false)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+func missingDockerfileError(opts *Options, kraftfile string) error {
+	if opts.DockerfileExplicit {
+		return &userError{message: paragraphs(
+			fmt.Sprintf("there's no Dockerfile at %s.", displayPath(opts.Dockerfile)),
+			"Check the path you passed to -f.",
+		)}
+	}
+	where, here := "this folder", "here"
+	if cwd, err := os.Getwd(); err != nil || cwd != opts.ContextDir {
+		where, here = displayPath(opts.ContextDir), "there"
+		if !filepath.IsAbs(where) {
+			where = "./" + where
+		}
+	}
+	next := "Add a Dockerfile, or use -f to point to one."
+	if kraftfile != "" {
+		next = fmt.Sprintf("To build from the %s %s, add --kraftfile %s.", filepath.Base(kraftfile), here, displayPath(kraftfile))
+	}
+	return &userError{message: paragraphs(fmt.Sprintf("there's no Dockerfile in %s.", where), next)}
 }
 
 // formatCommand renders path and args as a copy-pasteable shell command,

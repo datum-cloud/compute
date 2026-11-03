@@ -39,6 +39,7 @@ ENTRYPOINT ["/usr/local/bin/app"]
 	node, sourceStage := df.findEntrypointProducer("/usr/local/bin/app", toolchain{Kind: toolchainGo})
 	if node == nil {
 		t.Fatal("expected producer")
+		return
 	}
 	if node.StartLine != 3 {
 		t.Fatalf("expected line 3, got %d", node.StartLine)
@@ -62,6 +63,7 @@ ENTRYPOINT ["/server"]
 	node := df.findEntrypointCopy("/server")
 	if node == nil {
 		t.Fatal("expected entrypoint copy")
+		return
 	}
 	if node.StartLine != 4 {
 		t.Fatalf("expected line 4, got %d", node.StartLine)
@@ -222,7 +224,7 @@ func TestBuildAnalysisResultFromViewRelativeScriptGuard(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			view := &tarFSView{Paths: map[string]struct{}{}}
-			_, err := buildAnalysisResultFromView(&options{}, view, tt.args, nil, nil, nil)
+			_, err := buildAnalysisResultFromView(&Options{}, view, tt.args, nil, nil, nil)
 			if err == nil {
 				t.Fatal("expected an error (either relative-script or entrypoint-not-found)")
 			}
@@ -399,6 +401,7 @@ func TestCheckMissingLibrariesReportsDynamicLoader(t *testing.T) {
 	_, elfFile := detectToolchain(data)
 	if elfFile == nil {
 		t.Fatal("expected ELF")
+		return
 	}
 	if interp := elfInterp(elfFile); interp == "" {
 		t.Skip("test toolchain produced no PT_INTERP")
@@ -929,6 +932,7 @@ func TestDefaultChecksAllowStaticETEXECEntrypoint(t *testing.T) {
 	tc, elfFile := detectToolchain(data)
 	if elfFile == nil {
 		t.Fatal("expected ELF")
+		return
 	}
 	if elfFile.Type == elf.ET_DYN {
 		t.Skip("test toolchain produced PIE by default")
@@ -1000,10 +1004,11 @@ func TestRootfsBuildError(t *testing.T) {
 	}{
 		{name: "keeps Dockerfile build failures as-is",
 			input:  `process "/bin/sh -c go build ./..." did not complete successfully: exit code: 1`,
-			wantIn: "go build", wantNotIn: "Docker is not running"},
-		{name: "simplifies Docker availability failures",
-			input: "could not connect to buildkit: could not start ephemeral BuildKit container",
-			want:  "building root filesystem: Docker is not running or is not accessible"},
+			wantIn: "go build"},
+		{name: "explains a missing credential helper",
+			input: `failed to solve: error getting credentials - err: exec: "docker-credential-desktop": executable file not found in $PATH, out: ` + "``",
+			wantIn: `can't be read, so your Dockerfile's base images can't be pulled.` + "\n\n" +
+				`Your Docker config says sign-ins are stored by "desktop"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

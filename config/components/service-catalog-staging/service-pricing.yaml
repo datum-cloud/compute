@@ -1,0 +1,64 @@
+# Rates match on the runtime_class dimension declared on these meters, so each
+# class can carry its own price. Per-class metric names would break every
+# existing query, dashboard, and invoice line built on the current names.
+#
+# Order matters. Milo applies the first matching rate and treats the trailing
+# unmatched rate as the catch-all, which prices usage events that carry no
+# runtime_class dimension. Once every producer attaches the dimension, a new
+# pricing version replaces the catch-all with an explicit unikernel match. The
+# Amberflo backend also requires that step, because it cannot materialize a
+# rate set that mixes matched and catch-all rates. Per-class prices take effect
+# there only when every dimension value is priced explicitly.
+#
+# general-purpose carries the unikernel rate until its higher per-instance
+# overhead is measured on Datum hardware. That measurement sets its rate, and
+# the class is not placeable until then.
+#
+# These replace the earlier instance/cpu-seconds and instance/memory-seconds
+# prices, which billed wrong: vCPU was priced on cpu-seconds, which carries no
+# usage, and memory's per-GiB-second rate was applied per byte-second. Same
+# rates and units, on the meters that carry usage, converted into the pricing
+# unit first.
+apiVersion: billing.miloapis.com/v1alpha1
+kind: ServicePricing
+metadata:
+  name: compute-vcpu-v1
+  namespace: milo-system
+spec:
+  chargeType: Usage
+  serviceRef: compute.datumapis.com
+  currency: USD
+  displayName: Compute vCPU
+  metric: compute.datumapis.com/instance/milli-cpu-seconds
+  pricingUnit: vcpu-second
+  unitConversion:
+    meterUnitsPerPricingUnit: "1000"
+    description: CPU is metered in millicore-seconds and priced per vCPU-second; 1 vCPU = 1000 millicores.
+  rates:
+    - match:
+        dimension: runtime_class
+        value: general-purpose
+      flat: "0.000014"
+    - flat: "0.000014"
+---
+apiVersion: billing.miloapis.com/v1alpha1
+kind: ServicePricing
+metadata:
+  name: compute-memory-v1
+  namespace: milo-system
+spec:
+  chargeType: Usage
+  serviceRef: compute.datumapis.com
+  currency: USD
+  displayName: Compute Memory
+  metric: compute.datumapis.com/instance/memory-seconds
+  pricingUnit: gib-second
+  unitConversion:
+    meterUnitsPerPricingUnit: "1073741824"
+    description: Memory is metered in byte-seconds and priced per GiB-second; 1 GiB = 2^30 bytes.
+  rates:
+    - match:
+        dimension: runtime_class
+        value: general-purpose
+      flat: "0.0000045"
+    - flat: "0.0000045"

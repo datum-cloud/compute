@@ -1,0 +1,15 @@
+# The catalog tier this suite projects. The name is unique to the suite so the
+# projection and cleanup never touch a tier another suite owns, and the spec
+# uses deliberately non-round CPU/memory so a cell copy asserting these exact
+# values can only be satisfied by the hub copy's spec carried through verbatim
+# — never by a coincidentally-equal default.
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceType
+metadata:
+  name: datumcloud-itprojector-e2e
+spec:
+  resources:
+    cpu: 750m
+    memory: 1536Mi
+  lifecycle:
+    phase: Active

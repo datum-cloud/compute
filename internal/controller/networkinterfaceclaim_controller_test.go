@@ -17,6 +17,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
@@ -59,7 +60,7 @@ func newClaimTestDeployment() *computev1alpha.WorkloadDeployment {
 			UID:       "claim-test-wd-uid",
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      wdControllerTestCityCode,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: wdControllerTestLocation},
 			PlacementName: claimTestPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: claimTestWorkload},
 		},
@@ -133,7 +134,7 @@ func TestReconcileNetworkInterfaceClaims_CreatesClaimPerInterface(t *testing.T) 
 		Build()
 
 	r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-	ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+	ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 		[]computev1alpha.Instance{*instance})
 	require.NoError(t, err)
 	assert.False(t, ready[instance.Name],
@@ -209,7 +210,7 @@ func TestReconcileNetworkInterfaceClaims_ReadinessPerInstance(t *testing.T) {
 		Build()
 
 	r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-	ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+	ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 		[]computev1alpha.Instance{*allocated, *pending})
 	require.NoError(t, err)
 
@@ -483,7 +484,7 @@ func TestNetworkGateReleasesWhileProgrammedIsNotTrue(t *testing.T) {
 				Build()
 
 			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-			ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+			ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 				[]computev1alpha.Instance{*instance})
 			require.NoError(t, err)
 			require.True(t, ready[instance.Name],
@@ -560,7 +561,7 @@ func TestNetworkGateHeldUntilPrepared(t *testing.T) {
 				Build()
 
 			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-			ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+			ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 				[]computev1alpha.Instance{*instance})
 			require.NoError(t, err)
 			assert.False(t, ready[instance.Name],
@@ -602,7 +603,7 @@ func TestDesiredNetworkInterfaceClaimLabels(t *testing.T) {
 			want: map[string]string{
 				computev1alpha.WorkloadNameLabel:  claimTestWorkload,
 				computev1alpha.PlacementNameLabel: claimTestPlacement,
-				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+				computev1alpha.LocationLabel:      wdControllerTestLocation,
 				computev1alpha.InstanceIndexLabel: "0",
 			},
 		},
@@ -613,7 +614,7 @@ func TestDesiredNetworkInterfaceClaimLabels(t *testing.T) {
 			},
 			want: map[string]string{
 				computev1alpha.WorkloadNameLabel:  claimTestWorkload,
-				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+				computev1alpha.LocationLabel:      wdControllerTestLocation,
 				computev1alpha.InstanceIndexLabel: "0",
 			},
 		},
@@ -625,7 +626,7 @@ func TestDesiredNetworkInterfaceClaimLabels(t *testing.T) {
 			want: map[string]string{
 				computev1alpha.WorkloadNameLabel:  claimTestWorkload,
 				computev1alpha.PlacementNameLabel: claimTestPlacement,
-				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+				computev1alpha.LocationLabel:      wdControllerTestLocation,
 			},
 		},
 	}
@@ -658,7 +659,7 @@ func TestReconcileNetworkInterfaceClaims_Labels(t *testing.T) {
 	wantLabels := map[string]string{
 		computev1alpha.WorkloadNameLabel:  claimTestWorkload,
 		computev1alpha.PlacementNameLabel: claimTestPlacement,
-		computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+		computev1alpha.LocationLabel:      wdControllerTestLocation,
 		computev1alpha.InstanceIndexLabel: "0",
 	}
 
@@ -699,7 +700,7 @@ func TestReconcileNetworkInterfaceClaims_Labels(t *testing.T) {
 			existing: map[string]string{
 				computev1alpha.WorkloadNameLabel:  "a-workload-renamed-since",
 				computev1alpha.PlacementNameLabel: claimTestPlacement,
-				computev1alpha.CityCodeLabel:      wdControllerTestCityCode,
+				computev1alpha.LocationLabel:      wdControllerTestLocation,
 				computev1alpha.InstanceIndexLabel: "0",
 			},
 			expectExisted: true,
@@ -742,7 +743,7 @@ func TestReconcileNetworkInterfaceClaims_Labels(t *testing.T) {
 			cl := builder.Build()
 
 			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-			_, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+			_, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 				[]computev1alpha.Instance{*instance})
 			require.NoError(t, err)
 

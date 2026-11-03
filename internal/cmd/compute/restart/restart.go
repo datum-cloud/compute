@@ -16,24 +16,25 @@ import (
 )
 
 func Command() *cobra.Command {
-	var city string
+	var location string
 
 	cmd := &cobra.Command{
 		Use:   "restart <workload-name>",
 		Short: "Trigger a rolling restart of a workload",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRestart(cmd, args, city)
+			return runRestart(cmd, args, location)
 		},
 		ValidArgsFunction: util.CompleteWorkloadNames,
 	}
 
-	cmd.Flags().StringVar(&city, "city", "", "Restart only instances in a specific city")
+	cmd.Flags().StringVar(&location, "location", "", "Restart only instances in a specific location")
+	_ = cmd.RegisterFlagCompletionFunc("location", util.CompleteLocations)
 
 	return cmd
 }
 
-func runRestart(cmd *cobra.Command, args []string, city string) error {
+func runRestart(cmd *cobra.Command, args []string, location string) error {
 	project := util.ProjectFromCmd(cmd)
 
 	c, err := util.NewClient(project)
@@ -55,7 +56,7 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 	restartedAt := time.Now().UTC().Format(time.RFC3339)
 	out := cmd.OutOrStdout()
 
-	if city == "" {
+	if location == "" {
 		// Restart all placements by annotating the workload template.
 		if workload.Spec.Template.Annotations == nil {
 			workload.Spec.Template.Annotations = make(map[string]string)
@@ -73,7 +74,7 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 		return nil
 	}
 
-	// Restart only deployments in the given city.
+	// Restart only deployments in the given location.
 	selector := labels.SelectorFromSet(labels.Set{
 		computev1alpha.WorkloadUIDLabel: string(workload.UID),
 	})
@@ -87,13 +88,13 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 
 	var matched []computev1alpha.WorkloadDeployment
 	for _, d := range deployList.Items {
-		if d.Spec.CityCode == city {
+		if d.Spec.LocationRef.Name == location {
 			matched = append(matched, d)
 		}
 	}
 
 	if len(matched) == 0 {
-		return fmt.Errorf("no deployment found for workload %q in city %q", workloadName, city)
+		return fmt.Errorf("no deployment found for workload %q in location %q", workloadName, location)
 	}
 
 	for i := range matched {
@@ -103,13 +104,13 @@ func runRestart(cmd *cobra.Command, args []string, city string) error {
 		matched[i].Spec.Template.Annotations[computev1alpha.RestartedAtAnnotation] = restartedAt
 
 		if err := c.Update(ctx, &matched[i]); err != nil {
-			return fmt.Errorf("updating deployment in %s: %w", city, err)
+			return fmt.Errorf("updating deployment in %s: %w", location, err)
 		}
 	}
 
 	fmt.Fprintf(out,
 		"Restarting workload %q in %s — rolling restart initiated.\nRun 'datumctl compute rollout %s' to watch progress.\n",
-		workloadName, city, workloadName,
+		workloadName, location, workloadName,
 	)
 	return nil
 }

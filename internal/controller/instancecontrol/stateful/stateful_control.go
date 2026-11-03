@@ -60,7 +60,7 @@ func (c *statefulControl) GetActions(
 	desiredReplicas int32,
 	currentInstances []v1alpha.Instance,
 ) ([]instancecontrol.Action, error) {
-	instanceTemplateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
+	templateHashes := instancecontrol.HashTemplate(deployment.Spec.Template)
 
 	// lowest -> highest
 	var createActions []instancecontrol.Action
@@ -100,10 +100,7 @@ func (c *statefulControl) GetActions(
 				},
 				Spec: deployment.Spec.Template.Spec,
 			}
-			// Set Location best-effort: when Status.Location is nil (no matching
-			// Location object for the city code) Instance.Spec.Location stays nil and
-			// instance creation proceeds normally — this must not block scheduling.
-			desiredInstances[i].Spec.Location = deployment.Status.Location
+			desiredInstances[i].Spec.Location = &deployment.Spec.LocationRef
 
 			// TODO(jreese) consider adding scheduling gates via mutating webhooks
 			gates := []v1alpha.SchedulingGate{
@@ -127,7 +124,7 @@ func (c *statefulControl) GetActions(
 			}
 
 			desiredInstances[i].Spec.Controller = &v1alpha.InstanceController{
-				TemplateHash:    instanceTemplateHash,
+				TemplateHash:    templateHashes.Current,
 				SchedulingGates: gates,
 			}
 
@@ -150,10 +147,14 @@ func (c *statefulControl) GetActions(
 			waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 
 		} else if instance.DeletionTimestamp.IsZero() {
-			// Wait for the instance to be ready before continuing processing
-			if !apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady) {
-				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
-			} else if needsUpdate(instance, instanceTemplateHash) {
+			// An outdated instance that has started is replaced whether or not it
+			// is Ready: waiting on one that crashes on the old template would hold
+			// back the template that fixes it. An instance still behind scheduling
+			// gates has not started, so it is waited on as before. Otherwise wait
+			// for the instance to be ready before continuing processing.
+			ready := apimeta.IsStatusConditionTrue(instance.Status.Conditions, v1alpha.InstanceReady)
+			started := instance.Spec.Controller != nil && len(instance.Spec.Controller.SchedulingGates) == 0
+			if needsUpdate(instance, templateHashes) && (ready || started) {
 				// The instance's template hash no longer matches the desired
 				// template — e.g. an image change, or a restart requested via the
 				// RestartedAtAnnotation, which is part of the template hash. The
@@ -167,6 +168,8 @@ func (c *statefulControl) GetActions(
 				// pacing is preserved by the descending-ordinal sort, the
 				// skip-all-but-first logic, and the DeletionTimestamp WaitAction.
 				recreateActions = append(recreateActions, instancecontrol.NewDeleteAction(instance))
+			} else if !ready {
+				waitActions = append(waitActions, instancecontrol.NewWaitAction(instance))
 			}
 		}
 	}
@@ -200,10 +203,12 @@ func (c *statefulControl) GetActions(
 		}
 	}
 
+	patchTemplateHashActions := legacyTemplateHashPatches(desiredInstances, templateHashes)
+
 	slices.SortFunc(recreateActions, descendingOrdinal)
 	slices.SortFunc(deleteActions, descendingOrdinal)
 
-	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions))
+	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions)+len(patchTemplateHashActions))
 
 	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
 	case v1alpha.OrderedReadyInstanceManagementPolicyType:
@@ -231,8 +236,27 @@ func (c *statefulControl) GetActions(
 	}
 
 	actions = append(actions, patchLabelActions...)
+	actions = append(actions, patchTemplateHashActions...)
 
 	return actions, nil
+}
+
+func legacyTemplateHashPatches(instances []*v1alpha.Instance, hashes instancecontrol.TemplateHashes) []instancecontrol.Action {
+	var actions []instancecontrol.Action
+	for _, instance := range instances {
+		if instance.CreationTimestamp.IsZero() || !instance.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		if hasLegacyTemplateHash(instance, hashes) {
+			base := instance.DeepCopy()
+			patched := instance.DeepCopy()
+			patched.Spec.Controller.TemplateHash = hashes.Current
+			actions = append(actions, instancecontrol.NewPatchTemplateHashAction(patched, base))
+		}
+	}
+
+	return actions
 }
 
 func addInstanceControllerLabels(instance *v1alpha.Instance, index int, deployment *v1alpha.WorkloadDeployment) {
@@ -249,19 +273,33 @@ func addInstanceControllerLabels(instance *v1alpha.Instance, index int, deployme
 // that every instance should carry. Used both when stamping a new instance
 // and when checking whether an existing instance needs a backfill patch.
 func desiredControllerLabels(index int, deployment *v1alpha.WorkloadDeployment) map[string]string {
-	return map[string]string{
+	desired := map[string]string{
 		v1alpha.InstanceIndexLabel:         strconv.Itoa(index),
 		v1alpha.WorkloadUIDLabel:           string(deployment.Spec.WorkloadRef.UID),
 		v1alpha.WorkloadDeploymentUIDLabel: string(deployment.GetUID()),
 		// Self-describing labels for routing, filtering, and observability.
 		v1alpha.WorkloadDeploymentNameLabel: deployment.GetName(),
-		v1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		v1alpha.LocationLabel:               deployment.Spec.LocationRef.Name,
 		v1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		v1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
 		// Scopes consumer-project cleanup: the consumer provider deletes
 		// resources by this label when a project's ServiceConsumer is revoked.
 		labelServiceKey: labelServiceValue,
 	}
+
+	// Providers select instances by runtime class, so the label copies the class
+	// the deployment resolved at admission. Deriving a class here would override
+	// the catalog's decision.
+	//
+	// An empty class means no class was resolved. Those instances carry no class
+	// label and are claimed by whichever provider the cell runs. Supplying a
+	// class would route them to a class-selecting provider that may not serve
+	// them.
+	if class := deployment.Spec.Template.Spec.Runtime.Class; class != "" {
+		desired[v1alpha.RuntimeClassLabel] = class
+	}
+
+	return desired
 }
 
 // labelsNeedBackfill reports whether any of the desired controller-managed

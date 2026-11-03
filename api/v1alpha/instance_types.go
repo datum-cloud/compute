@@ -5,6 +5,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // InstanceSpec defines the desired state of Instance
@@ -40,7 +41,7 @@ type InstanceSpec struct {
 	// The location which the instance has been scheduled to
 	//
 	// +kubebuilder:validation:Optional
-	Location *networkingv1alpha.LocationReference `json:"location,omitempty"`
+	Location *locationsv1alpha1.LocationReference `json:"location,omitempty"`
 
 	// Controller contains settings driven by the controller managing the instance.
 	//
@@ -87,6 +88,37 @@ type InstanceRuntimeSpec struct {
 
 	// A virtual machine is a classical VM environment, booting a full OS provided by the user via an image.
 	VirtualMachine *VirtualMachineRuntime `json:"virtualMachine,omitempty"`
+
+	// The execution tier the instance runs in. The value names a RuntimeClass
+	// in the platform catalog, which Datum publishes and customers do not
+	// define. Publishing a new tier adds a class instead of changing this API.
+	//
+	// The class is independent of the runtime shape above. Either a sandbox or
+	// a virtual machine can run in any class the platform offers.
+	//
+	// An empty value selects the class the catalog marks as default. Admission
+	// records that choice on the workload and never resolves it again, so an
+	// existing workload keeps the tier, cost, and startup characteristics it
+	// was created with.
+	//
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Optional
+	Class string `json:"class,omitempty"`
+
+	// How long, in seconds, the instance's processes have to exit after being
+	// asked to stop. When an instance is deleted, replaced, or suspended, each
+	// container's main process receives SIGTERM, and any process still running
+	// when the period ends is killed. Zero kills the processes immediately.
+	//
+	// The instance keeps its resources and addresses until it has stopped, so
+	// a longer period delays their release. A value above zero requires a
+	// runtime class that offers graceful termination. When unset, the runtime
+	// class's own default applies.
+	//
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=300
+	// +kubebuilder:validation:Optional
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
 type SandboxRuntime struct {
@@ -103,6 +135,38 @@ type SandboxRuntime struct {
 	//
 	// +kubebuilder:validation:Optional
 	ImagePullSecrets []LocalSecretReference `json:"imagePullSecrets,omitempty"`
+
+	// Linux kernel parameters to set for every container in the sandbox.
+	//
+	// Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+	// value must be published by the selected runtime class; prefixes and
+	// wildcards are never accepted. This keeps host-level kernel configuration
+	// outside the workload API while allowing an isolated runtime to expose a
+	// deliberately small set of guest-kernel options.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	Sysctls []SandboxSysctl `json:"sysctls,omitempty"`
+}
+
+// SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+// selected runtime class decides which exact name/value pairs it supports.
+type SandboxSysctl struct {
+	// The exact dotted sysctl name, for example net.ipv4.ip_forward.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$`
+	Name string `json:"name"`
+
+	// The value to write before the sandbox's containers start. The selected
+	// runtime class must publish this exact value for this name.
+	//
+	// +kubebuilder:validation:Required
+	Value SysctlValue `json:"value"`
 }
 
 type SandboxContainer struct {
@@ -111,7 +175,8 @@ type SandboxContainer struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// The fully qualified container image name.
+	// The container image to run. Must include a registry, e.g.
+	// "ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".
 	//
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
@@ -173,7 +238,113 @@ type SandboxContainer struct {
 	// +listType=map
 	// +listMapKey=name
 	Ports []NamedPort `json:"ports,omitempty"`
+
+	// Security options for the container.
+	//
+	// +kubebuilder:validation:Optional
+	SecurityContext *SandboxSecurityContext `json:"securityContext,omitempty"`
 }
+
+// SandboxSecurityContext holds the security options a sandbox container can
+// request. It mirrors the shape of the Kubernetes container security context so
+// existing manifests carry over, and exposes only the options the platform can
+// honor in every runtime class that serves them.
+type SandboxSecurityContext struct {
+	// The Linux capabilities to grant to or remove from the container.
+	//
+	// +kubebuilder:validation:Optional
+	Capabilities *SandboxCapabilities `json:"capabilities,omitempty"`
+
+	// Whether a process in the container can gain more privileges than its
+	// parent. Setuid binaries and file capabilities rely on it, so an image that
+	// escalates at startup, such as one running ping or a privilege-dropping
+	// entrypoint, needs it true.
+	//
+	// Left unset, the selected runtime class's published default is written here
+	// at admission, so the stored container states the value it runs with.
+	//
+	// +kubebuilder:validation:Optional
+	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
+
+	// The seccomp profile confining the container's system calls.
+	//
+	// Left unset, the selected runtime class's published default is written here
+	// at admission, so the stored container states the profile it runs with.
+	//
+	// +kubebuilder:validation:Optional
+	SeccompProfile *SandboxSeccompProfile `json:"seccompProfile,omitempty"`
+}
+
+// SandboxSeccompProfile selects the seccomp profile a container runs under. It
+// mirrors the shape of the Kubernetes seccomp profile so existing manifests
+// carry over.
+type SandboxSeccompProfile struct {
+	// The kind of seccomp profile to apply.
+	//
+	// +kubebuilder:validation:Required
+	Type SeccompProfileType `json:"type"`
+}
+
+// SeccompProfileType is the kind of seccomp profile a container runs under.
+//
+// A profile loaded from a file on the host is deliberately absent. Naming one
+// would point at a path on a machine the customer cannot see, and the value
+// would have to reach a runtime unchecked. The values here are a closed set the
+// platform resolves itself.
+//
+// +kubebuilder:validation:Enum=RuntimeDefault;Unconfined
+type SeccompProfileType string
+
+const (
+	// SeccompProfileTypeRuntimeDefault applies the profile the container runtime
+	// ships, which blocks the system calls a workload has no ordinary use for.
+	SeccompProfileTypeRuntimeDefault SeccompProfileType = "RuntimeDefault"
+
+	// SeccompProfileTypeUnconfined applies no seccomp filtering. A class whose
+	// isolation boundary is a guest kernel can offer it, because the boundary
+	// does not depend on system call filtering.
+	SeccompProfileTypeUnconfined SeccompProfileType = "Unconfined"
+)
+
+// SandboxCapabilities adjusts the Linux capabilities a container runs with.
+//
+// The platform removes every capability from a sandbox container unless the
+// container requests it back. Many stock images need a few capabilities to start,
+// for example to bind a port below 1024 or to change file ownership, so a
+// container lists them in add. Each added capability must be one the selected
+// runtime class grants, and the class publishes that set.
+type SandboxCapabilities struct {
+	// The capabilities to grant to the container. Each must be one that the
+	// selected runtime class grants. ALL is not allowed, so a container states
+	// exactly what it needs.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:Optional
+	Add []Capability `json:"add,omitempty"`
+
+	// The capabilities to remove from the container. The platform already removes
+	// every capability, so drop is accepted for compatibility with Kubernetes
+	// manifests, for example drop: [ALL]. Naming a capability here also removes
+	// it when the runtime class would otherwise grant it by default.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:Optional
+	Drop []Capability `json:"drop,omitempty"`
+}
+
+// Capability is a Linux capability name without the CAP_ prefix, for example
+// CHOWN or NET_BIND_SERVICE.
+//
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=64
+// +kubebuilder:validation:Pattern=`^[A-Z_]+$`
+type Capability string
+
+// CapabilityAll names every Linux capability. A container may drop it and may
+// not add it.
+const CapabilityAll Capability = "ALL"
 
 // EnvFromSource represents a source for a set of ConfigMaps or Secrets to be
 // used as environment variables in a container.
@@ -289,14 +460,18 @@ type VolumeAttachment struct {
 type InstanceRuntimeResources struct {
 	// Full or partial URL of the instance type resource to use for this instance.
 	//
-	// For example: `datumcloud/d1-standard-2`
+	// For example: `datumcloud-d1-standard-2`
 	//
 	// May be combined with `resources` to allow for custom instance types for
 	// instance families that support customization. Instance types which support
 	// customization will appear in the form `<project>/<instanceFamily>-custom`.
 	//
-	// +kubebuilder:validation:Required
-	InstanceType string `json:"instanceType"`
+	// When omitted, the instance runs on the platform's default instance type,
+	// `datumcloud-d1-standard-2`, for compatibility with workloads written
+	// before instance types could be chosen.
+	//
+	// +kubebuilder:validation:Optional
+	InstanceType string `json:"instanceType,omitempty"`
 
 	// Describes adjustments to the resources defined by the instance type.
 	//
@@ -653,6 +828,12 @@ type InstanceStatus struct {
 	// Network interface information
 	NetworkInterfaces []InstanceNetworkInterfaceStatus `json:"networkInterfaces,omitempty"`
 
+	// DNS reports assigned private names and publication readiness per network.
+	// Resolver access and record eligibility are managed by platform services.
+	// +kubebuilder:validation:Optional
+	// +listType=atomic
+	DNS []InstanceDNSStatus `json:"dns,omitempty"`
+
 	// Controller contains status information about the controller managing the instance.
 	//
 	// +kubebuilder:validation:Optional
@@ -664,6 +845,18 @@ type InstanceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	Suspended bool `json:"suspended,omitempty"`
+}
+
+// InstanceDNSStatus describes private name publication within one network.
+type InstanceDNSStatus struct {
+	// Network identifies the attached network in the owning project.
+	Network networkingv1alpha.NetworkRef `json:"network"`
+	// Hostnames contains the fully qualified names allocated for this Instance.
+	Hostnames []string `json:"hostnames,omitempty"`
+	// Conditions reports DNS readiness independently of runtime readiness.
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type InstanceControllerStatus struct {
@@ -687,6 +880,12 @@ const (
 
 	// InstanceQuotaGranted indicates whether quota has been allocated for the instance
 	InstanceQuotaGranted = "QuotaGranted"
+
+	// InstanceRuntimeReady reports the health of the instance's running process,
+	// as observed on its runtime Pod. Unlike Available, it is revisited for the
+	// instance's whole life, so an instance that crashes after starting stops
+	// being Ready.
+	InstanceRuntimeReady = "RuntimeReady"
 
 	// ReferencedDataReady indicates whether all ConfigMaps and Secrets referenced
 	// by the workload template have been resolved and delivered to the cell.
@@ -729,6 +928,13 @@ const (
 	// ReferencedDataReasonSourceTooLarge indicates one or more referenced objects
 	// exceed the allowed size limit.
 	ReferencedDataReasonSourceTooLarge = "SourceTooLarge"
+
+	// ReferencedDataReasonSourceNameTooLong indicates a referenced object's name
+	// leaves no room for the suffix the federation engine appends when it names
+	// the object's binding, so the data could never reach a cell. Renaming the
+	// source is the only fix, which is why this is reported rather than worked
+	// around by shortening the delivered copy.
+	ReferencedDataReasonSourceNameTooLong = "SourceNameTooLong"
 
 	// ReferencedDataReasonReady indicates all referenced data has been resolved
 	// and is present on the cell.
@@ -816,6 +1022,28 @@ const (
 	// InstanceAvailableReasonAvailable indicates that the instance is available
 	InstanceAvailableReasonAvailable = "Available"
 
+	// InstanceRuntimeReadyReasonReady indicates the runtime Pod is running and
+	// ready.
+	InstanceRuntimeReadyReasonReady = "RuntimeReady"
+
+	// InstanceRuntimeReadyReasonNotObserved indicates no runtime Pod for the
+	// instance has been observed.
+	InstanceRuntimeReadyReasonNotObserved = "RuntimeNotObserved"
+
+	// InstanceRuntimeReadyReasonNotReady indicates the runtime Pod is running but
+	// not ready, for example because its node stopped reporting or a readiness
+	// probe is failing.
+	InstanceRuntimeReadyReasonNotReady = "RuntimeNotReady"
+
+	// InstanceRuntimeReadyReasonExited indicates the runtime Pod has stopped for
+	// good and will not be restarted.
+	InstanceRuntimeReadyReasonExited = "RuntimeExited"
+
+	// InstanceReadyReasonNetworkInterfaceNotProgrammed indicates the data plane
+	// has stopped carrying one of the instance's interfaces, so nothing can
+	// reach the instance over that network.
+	InstanceReadyReasonNetworkInterfaceNotProgrammed = "NetworkInterfaceNotProgrammed"
+
 	// InstanceReadyReasonSuspended indicates the instance is intentionally
 	// stopped due to project suspension. Its placement, disk, and quota
 	// allocation are retained; the process will restart from disk on reinstatement.
@@ -871,11 +1099,11 @@ const (
 	// waits until the platform resolves the conflict.
 	WorkloadDeploymentReasonAmbiguousServingLocation = "AmbiguousServingLocation"
 
-	// WorkloadDeploymentReasonCityCodeMismatch is set on
-	// WorkloadDeployment.Available when the deployment asks for one city and the
-	// cell serves another. It means the deployment was placed on the wrong cell,
+	// WorkloadDeploymentReasonLocationMismatch is set on
+	// WorkloadDeployment.Available when the deployment asks for one location and
+	// the cell serves another. It means the deployment was placed on the wrong cell,
 	// which is a platform fault rather than anything the user can correct.
-	WorkloadDeploymentReasonCityCodeMismatch = "CityCodeMismatch"
+	WorkloadDeploymentReasonLocationMismatch = "LocationMismatch"
 
 	// WorkloadDeploymentReasonNetworkProvisioning is set on WorkloadDeployment.Available
 	// while the network binding or subnet is still being provisioned.
@@ -907,6 +1135,11 @@ const (
 	// WorkloadReasonNoAvailableDeployments is set on a placement's Available
 	// condition when no deployment in that placement is available.
 	WorkloadReasonNoAvailableDeployments = "NoAvailableDeployments"
+
+	// WorkloadReasonNoMatchingLocations is set on a placement's Available
+	// condition when none of the locations it names is Ready, or its selector
+	// matches no Ready location, so the placement has nowhere to run.
+	WorkloadReasonNoMatchingLocations = "NoMatchingLocations"
 )
 
 type InstanceTemplateSpec struct {
@@ -923,6 +1156,7 @@ type InstanceTemplateSpec struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
+// +kubebuilder:selectablefield:JSONPath=`.spec.runtime.class`
 
 // Instance is the Schema for the instances API
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

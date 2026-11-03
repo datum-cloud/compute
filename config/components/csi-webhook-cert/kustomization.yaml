@@ -29,4 +29,4 @@ patches:
                   readOnly: true
                   volumeAttributes:
                     csi.cert-manager.io/fs-group: "65532"
-                    csi.cert-manager.io/dns-names: compute-webhook.compute-system.svc,compute-webhook.compute-system.svc.cluster.local
+                    csi.cert-manager.io/dns-names: webhook-service.compute-system.svc,webhook-service.compute-system.svc.cluster.local

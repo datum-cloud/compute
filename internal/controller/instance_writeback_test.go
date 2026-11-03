@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,7 +37,7 @@ const (
 
 	// The four self-describing labels.
 	wbTestWDName       = "my-workload-deployment"
-	wbTestCityCode     = "DFW"
+	wbTestLocation     = "us-east-1"
 	wbTestWorkloadName = "my-workload"
 	wbTestPlacement    = "us-central"
 
@@ -58,7 +59,7 @@ func wbTestCellInstance() *computev1alpha.Instance {
 				computev1alpha.WorkloadDeploymentUIDLabel:  wbTestWDUID,
 				computev1alpha.InstanceIndexLabel:          wbTestInstanceIndex,
 				computev1alpha.WorkloadDeploymentNameLabel: wbTestWDName,
-				computev1alpha.CityCodeLabel:               wbTestCityCode,
+				computev1alpha.LocationLabel:               wbTestLocation,
 				computev1alpha.WorkloadNameLabel:           wbTestWorkloadName,
 				computev1alpha.PlacementNameLabel:          wbTestPlacement,
 			},
@@ -145,6 +146,8 @@ func TestWriteBackToUpstream_CreatePath_AllLabels(t *testing.T) {
 	require.NoError(t, upstreamClient.Get(context.Background(),
 		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
 		&created))
+	assert.Contains(t, created.Finalizers, instanceProjectionFinalizer,
+		"write-back must retain its project projection until cleanup")
 
 	assert.Equal(t, wbTestEncodedCluster, created.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
 		"UpstreamOwnerClusterNameLabel must be set")
@@ -208,6 +211,8 @@ func TestWriteBackToUpstream_UpdatePath_LabelMerge(t *testing.T) {
 	require.NoError(t, upstreamClient.Get(context.Background(),
 		types.NamespacedName{Namespace: wbTestNamespace, Name: wbTestInstanceName},
 		&updated))
+	assert.Contains(t, updated.Finalizers, instanceProjectionFinalizer,
+		"existing write-backs must acquire the projection finalizer")
 
 	// All five owned labels must be present with correct values.
 	assert.Equal(t, wbTestEncodedCluster, updated.Labels[downstreamclient.UpstreamOwnerClusterNameLabel])
@@ -314,7 +319,7 @@ func TestWriteBackToUpstream_MissingLinkingLabels_Error(t *testing.T) {
 		computev1alpha.WorkloadDeploymentUIDLabel,
 		computev1alpha.InstanceIndexLabel,
 		computev1alpha.WorkloadDeploymentNameLabel,
-		computev1alpha.CityCodeLabel,
+		computev1alpha.LocationLabel,
 		computev1alpha.WorkloadNameLabel,
 		computev1alpha.PlacementNameLabel,
 	} {
@@ -412,7 +417,7 @@ func TestWriteBackToUpstream_MissingSelfDescribingLabel_Error(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), computev1alpha.WorkloadDeploymentNameLabel,
 		"error must name the missing label")
-	assert.NotContains(t, err.Error(), computev1alpha.CityCodeLabel,
+	assert.NotContains(t, err.Error(), computev1alpha.LocationLabel,
 		"a present label must not be reported missing")
 
 	var created computev1alpha.Instance
@@ -551,8 +556,8 @@ func TestWriteBackToUpstream_FourNewLabels_CreatePath(t *testing.T) {
 
 	assert.Equal(t, wbTestWDName, created.Labels[computev1alpha.WorkloadDeploymentNameLabel],
 		"WorkloadDeploymentNameLabel must propagate to Karmada object")
-	assert.Equal(t, wbTestCityCode, created.Labels[computev1alpha.CityCodeLabel],
-		"CityCodeLabel must propagate to Karmada object")
+	assert.Equal(t, wbTestLocation, created.Labels[computev1alpha.LocationLabel],
+		"LocationLabel must propagate to Karmada object")
 	assert.Equal(t, wbTestWorkloadName, created.Labels[computev1alpha.WorkloadNameLabel],
 		"WorkloadNameLabel must propagate to Karmada object")
 	assert.Equal(t, wbTestPlacement, created.Labels[computev1alpha.PlacementNameLabel],
@@ -604,8 +609,8 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 
 	assert.Equal(t, wbTestWDName, updated.Labels[computev1alpha.WorkloadDeploymentNameLabel],
 		"WorkloadDeploymentNameLabel must be set on update path")
-	assert.Equal(t, wbTestCityCode, updated.Labels[computev1alpha.CityCodeLabel],
-		"CityCodeLabel must be set on update path")
+	assert.Equal(t, wbTestLocation, updated.Labels[computev1alpha.LocationLabel],
+		"LocationLabel must be set on update path")
 	assert.Equal(t, wbTestWorkloadName, updated.Labels[computev1alpha.WorkloadNameLabel],
 		"WorkloadNameLabel must be set on update path")
 	assert.Equal(t, wbTestPlacement, updated.Labels[computev1alpha.PlacementNameLabel],
@@ -614,4 +619,24 @@ func TestWriteBackToUpstream_FourNewLabels_UpdatePath(t *testing.T) {
 	// Karmada-managed label must survive the merge.
 	assert.Equal(t, karmadaManagedLabelValue, updated.Labels[karmadaManagedLabel],
 		"Karmada-managed label must be preserved after the update merge")
+}
+
+func TestWriteBackSourceIdentityRequiresDNSGate(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(newKarmadaScheme()).WithObjects(wbTestDownstreamNS(), wbTestHubDeployment()).WithStatusSubresource(&computev1alpha.Instance{}).Build()
+			r := newWriteBackReconciler(cl)
+			r.InternalDNSEnabled = enabled
+			instance := wbTestCellInstance()
+			instance.UID = "source-instance"
+			require.NoError(t, r.writeBackToUpstream(context.Background(), instance))
+			var got computev1alpha.Instance
+			require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), &got))
+			if enabled {
+				require.Equal(t, string(instance.UID), got.Labels[computev1alpha.InstanceSourceUIDLabel])
+			} else {
+				require.NotContains(t, got.Labels, computev1alpha.InstanceSourceUIDLabel)
+			}
+		})
+	}
 }

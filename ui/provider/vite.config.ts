@@ -6,11 +6,17 @@ import { defineConfig } from 'vite';
 // staff-portal host at runtime (see staff-portal's app/modules/plugins/,
 // ported from cloud-portal's plugin-host system).
 //
-// Declares three extensions: `portal.resource/platform` (data-only, lets
+// Declares five extensions: `portal.resource/platform` (data-only, lets
 // staff-portal's /customers/resources page query and render Workload rows
-// itself — no plugin code executes for that) and two `portal.page/project`
+// itself — no plugin code executes for that), two `portal.page/project`
 // pages — `WorkloadList` (the mount's index) and `WorkloadDetail`
-// (`:workloadName`) — the actual support views.
+// (`:workloadName`) — the per-consumer support views, and two
+// `portal.page/service` pages: `FleetWorkloads` (path "workloads") — every
+// workload across the fleet, sortable/paginated — and `ServiceOverview`
+// (path "" — the reserved "replace the built-in Overview" convention, see
+// staff-portal's types.ts) — the fleet "at a glance" numbers, rendered in
+// place of staff-portal's built-in Overview content on its own
+// /admin/service-catalog/compute detail page.
 //
 // Assets are fetched server-side by staff-portal's asset proxy and served
 // under /api/plugins/<slug>/…, so plain http://localhost during dev is fine
@@ -30,7 +36,9 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    minify: false,
+    // Minified: the browser parses every byte of a plugin chunk on first load.
+    // Sourcemaps keep stack traces readable without shipping readable code.
+    sourcemap: true,
   },
   plugins: [
     react(),
@@ -45,9 +53,13 @@ export default defineConfig({
       exposes: {
         './WorkloadList': './src/pages/workload-list.tsx',
         './WorkloadDetail': './src/pages/workload-detail.tsx',
+        './InstanceDetail': './src/pages/instance-detail.tsx',
+        './FleetWorkloads': './src/pages/fleet-workloads.tsx',
+        './ServiceOverview': './src/pages/service-overview.tsx',
       },
       shared: {
         react: { singleton: true, requiredVersion: '^19.0.0' },
+        'react/jsx-runtime': { singleton: true, requiredVersion: false },
         'react-dom': { singleton: true, requiredVersion: '^19.0.0' },
         // `react-dom/client` is only ever imported by this plugin's
         // standalone preview harness (main.tsx, never loaded by the real
@@ -66,6 +78,9 @@ export default defineConfig({
         '@datum-cloud/datum-ui/button': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/card': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/icons': { singleton: true, requiredVersion: false },
+        // Do not share `logs`: MF colocates lucide-react / date-fns into the
+        // logs loadShare chunk, so a host-provided logs module replaces those
+        // exports and crashes WorkloadDetail / related pages.
         '@datum-cloud/datum-ui/skeleton': { singleton: true, requiredVersion: false },
       },
     }),

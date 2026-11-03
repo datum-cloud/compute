@@ -64,15 +64,80 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet envtest interpreter-test ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
+.PHONY: test-console
+test-console: ## Run the console session client's tests with the race detector, and the browser build's tests under Node.
+	go test -race ./internal/consoleclient/... ./internal/cmd/compute/exec/...
+	PATH="$$(go env GOROOT)/lib/wasm:$$PATH" GOOS=js GOARCH=wasm go test ./cmd/console-wasm/...
+
 .PHONY: interpreter-test
 interpreter-test: karmadactl ## Validate Karmada resource interpreter customizations.
 	$(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --check
+	KARMADACTL=$(KARMADACTL) test/interpreter/instanceconsolesession.sh
 	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
-	if ! grep -q "replicas: 5" <<<"$$out"; then \
+	if ! grep -q "replicas: 1" <<<"$$out"; then \
 	  printf '%s\n' "$$out"; \
-	  printf '%s\n' "expected retained WorkloadDeployment replicas to be 5"; \
+	  printf '%s\n' "expected manual WorkloadDeployment replicas to be 1"; \
 	  exit 1; \
 	fi
+	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-retain-observed.yaml --observed-file test/interpreter/workloaddeployment-retain-desired.yaml)"; \
+	if ! grep -q "replicas: 5" <<<"$$out"; then \
+	  printf '%s\n' "$$out"; \
+	  printf '%s\n' "expected manual WorkloadDeployment replicas to scale up to 5"; \
+	  exit 1; \
+	fi
+	@out="$$($(KARMADACTL) interpret -f config/components/federation/workloaddeployment-interpreter.yaml --operation retain --desired-file test/interpreter/workloaddeployment-autoscaled-desired.yaml --observed-file test/interpreter/workloaddeployment-retain-observed.yaml)"; \
+	if ! grep -q "replicas: 5" <<<"$$out"; then \
+	  printf '%s\n' "$$out"; \
+	  printf '%s\n' "expected autoscaled WorkloadDeployment replicas to remain 5"; \
+	  exit 1; \
+	fi
+	@$(MAKE) --no-print-directory interpreter-test-dependency
+
+# The dependency hook decides what the federation engine ships to cells, so it
+# is exercised against karmadactl's own Lua sandbox rather than reviewed by eye.
+# Each case asserts both what must be delivered and what must not be.
+.PHONY: interpreter-test-dependency
+interpreter-test-dependency: karmadactl
+	@set -e; \
+	customization=config/components/federation/workloaddeployment-interpreter.yaml; \
+	run() { $(KARMADACTL) interpret -f $$customization --operation interpretDependency --observed-file "test/interpreter/dependency/$$1"; }; \
+	expect_present() { \
+	  if ! grep -q "$$2" <<<"$$3"; then \
+	    printf '%s\n' "$$3"; \
+	    printf 'case %s: expected %s in the interpreted dependencies\n' "$$1" "$$2"; \
+	    exit 1; \
+	  fi; \
+	}; \
+	expect_absent() { \
+	  if grep -q "$$2" <<<"$$3"; then \
+	    printf '%s\n' "$$3"; \
+	    printf 'case %s: %s must not appear in the interpreted dependencies\n' "$$1" "$$2"; \
+	    exit 1; \
+	  fi; \
+	}; \
+	out="$$(run case-both.yaml)"; \
+	for want in "name: app-config" "name: app-secret" "name: registry-creds" "namespace: ns-1c1f3c2a-1111-2222-3333-444455556666"; do \
+	  expect_present case-both.yaml "$$want" "$$out"; \
+	done; \
+	for name in case-empty-array.yaml case-no-anno.yaml case-malformed.yaml; do \
+	  out="$$(run $$name)"; \
+	  expect_present "$$name" "\[\]" "$$out"; \
+	done; \
+	out="$$(run case-disallowed-kind.yaml)"; \
+	expect_present case-disallowed-kind.yaml "name: ok" "$$out"; \
+	expect_absent case-disallowed-kind.yaml "kind: Pod" "$$out"; \
+	expect_absent case-disallowed-kind.yaml "kind: ServiceAccount" "$$out"; \
+	out="$$(run case-dupes.yaml)"; \
+	if [ "$$(grep -c 'name: dup' <<<"$$out")" != "1" ]; then \
+	  printf '%s\n' "$$out"; \
+	  printf 'case case-dupes.yaml: a repeated token must be interpreted once\n'; \
+	  exit 1; \
+	fi; \
+	out="$$(run case-degenerate.yaml)"; \
+	expect_present case-degenerate.yaml "name: good" "$$out"; \
+	expect_absent case-degenerate.yaml "name: name-only" "$$out"; \
+	expect_absent case-degenerate.yaml "name: noslash" "$$out"; \
+	printf 'dependency interpretation: 7 cases OK\n'
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
@@ -104,6 +169,17 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
+
+CONSOLE_WASM ?= bin/console-session.wasm
+CONSOLE_WASM_EXEC ?= bin/console-session-wasm_exec.js
+
+.PHONY: build-console-wasm
+build-console-wasm: ## Build the browser console session client and report its size.
+	GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o $(CONSOLE_WASM) ./cmd/console-wasm
+	install -m 0644 "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $(CONSOLE_WASM_EXEC)
+	@echo "$(CONSOLE_WASM): $$(wc -c < $(CONSOLE_WASM) | tr -d ' ') bytes raw," \
+		"$$(gzip -9c $(CONSOLE_WASM) | wc -c | tr -d ' ') gzip," \
+		"$$(if command -v brotli >/dev/null; then brotli -c $(CONSOLE_WASM) | wc -c | tr -d ' '; else echo n/a; fi) brotli"
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
@@ -189,7 +265,7 @@ CONTROLLER_TOOLS_VERSION ?= v0.16.4
 DEFAULTER_GEN_VERSION ?= v0.32.3
 ENVTEST_VERSION ?= release-0.19
 KARMADA_VERSION ?= v1.18.1
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.15.0
 
 # renovate: datasource=go depName=fybrik.io/crdoc
 CRDOC_VERSION ?= v0.6.4

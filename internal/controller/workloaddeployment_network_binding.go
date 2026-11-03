@@ -15,12 +15,15 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
@@ -43,11 +46,7 @@ func (r *WorkloadDeploymentFederator) ensureNetworkBinding(
 	ctx context.Context,
 	hubDeployment *computev1alpha.WorkloadDeployment,
 ) (*networkingv1alpha.NetworkBinding, error) {
-	// The location is written by the cell that serves the deployment and reaches
-	// the hub through Karmada status aggregation, so it is absent for as long as
-	// nothing has placed the deployment. There is no presence to ask for until
-	// then, and a binding without a location cannot be created at all.
-	if hubDeployment.Status.Location == nil || hubDeployment.Status.Location.Name == "" {
+	if hubDeployment.Spec.LocationRef.Name == "" {
 		return nil, nil
 	}
 
@@ -55,7 +54,7 @@ func (r *WorkloadDeploymentFederator) ensureNetworkBinding(
 	if !ok {
 		return nil, nil
 	}
-	location := *hubDeployment.Status.Location
+	location := locationsv1alpha1.LocationReference{Name: hubDeployment.Spec.LocationRef.Name}
 
 	key := client.ObjectKey{Namespace: hubDeployment.Namespace, Name: hubDeployment.Name}
 	var existing networkingv1alpha.NetworkBinding
@@ -117,7 +116,7 @@ func (r *WorkloadDeploymentFederator) createNetworkBinding(
 	ctx context.Context,
 	hubDeployment *computev1alpha.WorkloadDeployment,
 	network networkingv1alpha.NetworkRef,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) (*networkingv1alpha.NetworkBinding, error) {
 	binding := &networkingv1alpha.NetworkBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -172,7 +171,7 @@ func (r *WorkloadDeploymentFederator) reconcileNetworkBindingLabels(
 	ctx context.Context,
 	binding *networkingv1alpha.NetworkBinding,
 	network networkingv1alpha.NetworkRef,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) error {
 	desired := networkBindingLabels(network, location)
 
@@ -206,7 +205,7 @@ func (r *WorkloadDeploymentFederator) reconcileNetworkBindingLabels(
 // the only metadata on the binding compute owns.
 func networkBindingLabels(
 	network networkingv1alpha.NetworkRef,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) map[string]string {
 	return map[string]string{
 		networkingv1alpha.NetworkLabel:  network.Name,
@@ -335,4 +334,24 @@ func applyNetworkBindingRefusal(
 	}
 	refusal.ObservedGeneration = observedGeneration
 	apimeta.SetStatusCondition(&status.Conditions, *refusal)
+}
+
+// networkBindingChanged ignores annotation bookkeeping while preserving
+// reconciliation inputs, ownership, and deletion lifecycle changes.
+func networkBindingChanged() predicate.TypedPredicate[*networkingv1alpha.NetworkBinding] {
+	return predicate.TypedFuncs[*networkingv1alpha.NetworkBinding]{
+		UpdateFunc: func(e event.TypedUpdateEvent[*networkingv1alpha.NetworkBinding]) bool {
+			a, b := e.ObjectOld, e.ObjectNew
+			if a == nil || b == nil {
+				return true
+			}
+			return a.UID != b.UID ||
+				!equality.Semantic.DeepEqual(a.Spec, b.Spec) ||
+				!equality.Semantic.DeepEqual(a.Status, b.Status) ||
+				!equality.Semantic.DeepEqual(a.Labels, b.Labels) ||
+				!equality.Semantic.DeepEqual(a.OwnerReferences, b.OwnerReferences) ||
+				!equality.Semantic.DeepEqual(a.Finalizers, b.Finalizers) ||
+				!equality.Semantic.DeepEqual(a.DeletionTimestamp, b.DeletionTimestamp)
+		},
+	}
 }

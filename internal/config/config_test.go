@@ -7,6 +7,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+
+	"go.datum.net/compute/internal/locations"
 )
 
 func decode(t *testing.T, data string) *WorkloadOperator {
@@ -24,6 +26,24 @@ func decode(t *testing.T, data string) *WorkloadOperator {
 		t.Fatalf("decode: %v", err)
 	}
 	return &cfg
+}
+
+func TestInternalDNSConfigDecodeAndDeepCopy(t *testing.T) {
+	cfg := decode(t, `
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: WorkloadOperator
+metricsServer:
+  bindAddress: "0"
+internalDNS:
+  observationSources:
+    - location: dfw
+      kubeconfigPath: /etc/compute/edge.kubeconfig
+`)
+	copy := cfg.DeepCopy()
+	copy.InternalDNS.ObservationSources[0].Location = "changed"
+	if cfg.InternalDNS.ObservationSources[0].Location != "dfw" {
+		t.Fatal("WorkloadOperator DeepCopy aliases observation identities")
+	}
 }
 
 func TestWebhookServer_Absent(t *testing.T) {
@@ -120,5 +140,32 @@ users:
 	}
 	if restCfg == nil {
 		t.Error("QuotaRestConfig() = nil, want non-nil when file exists")
+	}
+}
+
+// TestLocationSource_DefaultsToLocations: a config that does not set the
+// source reads the locations service, the only source left.
+func TestLocationSource_DefaultsToLocations(t *testing.T) {
+	cfg := decode(t, `
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: WorkloadOperator
+metricsServer:
+  bindAddress: "0"
+`)
+	if cfg.LocationSource != locations.SourceLocations {
+		t.Errorf("LocationSource = %q, want %q", cfg.LocationSource, locations.SourceLocations)
+	}
+}
+
+func TestLocationSource_Explicit(t *testing.T) {
+	cfg := decode(t, `
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: WorkloadOperator
+metricsServer:
+  bindAddress: "0"
+locationSource: Locations
+`)
+	if cfg.LocationSource != locations.SourceLocations {
+		t.Errorf("LocationSource = %q, want %q", cfg.LocationSource, locations.SourceLocations)
 	}
 }

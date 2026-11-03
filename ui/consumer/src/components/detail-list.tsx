@@ -1,9 +1,18 @@
 /**
- * Field list matching cloud-portal `app/components/list/list.tsx` exactly
- * (same classes as ALB General / Configuration — do not add flex-1 on values).
+ * Field list matching cloud-portal `app/components/list/list.tsx`: datum-ui
+ * `CardField` rows so a list inside a `sectioned` Card lines up with
+ * hand-written fields (50/50 grid, inset dividers).
  */
 import { Badge } from '@datum-cloud/datum-ui/badge';
+import { CardField, CardFieldLabel, CardFieldValue } from '@datum-cloud/datum-ui/card';
 import { cn } from '@datum-cloud/datum-ui/utils';
+import type { CSSProperties } from 'react';
+
+/** Rows pad with `--card-px`; outside a card, match the home page's `px-2` rows. */
+export const OPEN_ROW_PADDING = { '--card-px': '0.5rem' } as CSSProperties;
+
+/** Two columns from `lg`, filled row by row so dropped rows leave no holes. */
+export const DETAILS_GRID_CLASS = 'grid grid-cols-1 gap-x-6 lg:grid-cols-2';
 
 export interface DetailListItem {
   label: React.ReactNode;
@@ -28,24 +37,10 @@ export function DetailList({
       {items
         .filter((item) => !item.hidden)
         .map((item, index) => (
-          <div
-            key={index}
-            className={cn(
-              'border-border flex w-full flex-col gap-2 py-3 not-last:border-b sm:flex-row sm:items-center',
-              itemClassName,
-              item.className
-            )}>
-            <div
-              className={cn(
-                'flex min-w-0 items-center justify-start gap-1.5 text-left text-sm font-semibold sm:min-w-[200px]',
-                labelClassName
-              )}>
-              {item.label}
-            </div>
-            <div className="flex min-w-0 max-w-full justify-start overflow-hidden text-left text-sm font-normal wrap-break-word sm:justify-end sm:text-right">
-              {item.content}
-            </div>
-          </div>
+          <CardField key={index} className={cn(itemClassName, item.className)}>
+            <CardFieldLabel className={labelClassName}>{item.label}</CardFieldLabel>
+            <CardFieldValue className="min-w-0 wrap-break-word">{item.content}</CardFieldValue>
+          </CardField>
         ))}
     </div>
   );
@@ -64,7 +59,7 @@ export function StatusBadge({
       <Badge
         type={type}
         theme="light"
-        className="text-2xs flex cursor-default items-center gap-1.5 px-1 py-0.5 font-bold tracking-[0.03em] uppercase">
+        className="text-xs flex cursor-default items-center gap-1.5 px-1 py-0.5 font-medium">
         {children}
       </Badge>
     </div>

@@ -20,6 +20,11 @@ builds:
     goarch:
       - amd64
       - arm64
+    ignore:
+      # datumctl publishes no windows/arm64 asset name; drop the combination
+      # rather than shipping an archive the plugin catalog can't resolve.
+      - goos: windows
+        goarch: arm64
     ldflags:
       - "-X main.version=v{{.Version}}"
 
@@ -43,6 +48,15 @@ archives:
 
 checksum:
   name_template: "checksums.txt"
+
+release:
+  # Releases are tagged and published by hand with their own notes; keep the
+  # plugin build from replacing them when it attaches its archives.
+  mode: append
+  # Dev tags (v0.8.0-dev.9) are previews, not the release users should land
+  # on. "auto" keys off the tag's prerelease suffix, so a GA tag still
+  # publishes as the latest release.
+  prerelease: auto
 
 changelog:
   sort: asc

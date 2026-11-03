@@ -17,7 +17,7 @@ spec:
   # staging-specific hostname).
   #
   # No caBundle needed: the plugin's CSI-issued server cert chains to
-  # datum-control-plane-ca, which cloud-portal's Bun runtime already trusts
+  # datum-control-plane-ca, which cloud-portal's Node runtime already trusts
   # platform-wide via NODE_EXTRA_CA_CERTS (set in both its staging and
   # production Deployment env, pointing at the same datum-control-plane-
   # trust-bundle ConfigMap). withCaBundle() is a no-op when caBundle is
@@ -37,6 +37,11 @@ spec:
         baseURL: https://compute-consumer-ui-plugin.compute-system.svc.cluster.local
       visibility:
         entitlement: None
+      # The instance shell runs a WebAssembly client in a worker and reaches
+      # the regional iroh relays directly from the browser.
+      contentSecurityPolicy:
+      - "script-src 'wasm-unsafe-eval'"
+      - "connect-src https://iroh-relay.us-central-1.datumconnect.net wss://iroh-relay.us-central-1.datumconnect.net https://iroh-relay.us-east-1.datumconnect.net wss://iroh-relay.us-east-1.datumconnect.net https://iroh-relay.us-east-3.datumconnect.net wss://iroh-relay.us-east-3.datumconnect.net https://iroh-relay.us-west-1.datumconnect.net wss://iroh-relay.us-west-1.datumconnect.net"
     provider:
       assets:
         baseURL: https://compute-provider-ui-plugin.compute-system.svc.cluster.local
@@ -46,7 +51,7 @@ spec:
   monitoredResourceTypes:
   - type: compute.datumapis.com/Instance
     displayName: Compute Instance
-    description: A Unikraft virtual machine instance.
+    description: A running compute instance, billed for the runtime class it runs in.
     gvk:
       group: compute.datumapis.com
       kind: Instance
@@ -55,32 +60,73 @@ spec:
       description: The region where the instance is running.
     - name: tier
       description: The service tier of the instance.
+    # Runtime class is a separate label rather than a reuse of `tier`. `tier`
+    # names a commercial support tier and is also a common name for customer
+    # workload labels, so an invoice line broken out by `tier` would be
+    # ambiguous. Providers register the classes they serve, so compute cannot
+    # name the values here. An instance that selects no class reports an empty
+    # dimension, which the catch-all rate prices.
+    - name: runtime_class
+      description: >-
+        The execution tier the instance runs in. Isolation, image
+        compatibility, startup latency, and price differ per class.
   metrics:
+  # instance/cpu-seconds (replaced by milli-cpu-seconds), cpu-allocated,
+  # memory-allocated and uptime-seconds carry no usage and no price, and
+  # nothing emits them. They are Retired rather than removed: invoices, usage
+  # queries and exports join on the meter name, so the meters and their
+  # history stay, and any event for them is quarantined.
+  #
+  # Every instance meter declares the runtime_class dimension. A producer may
+  # only attach a key declared here, and a rate may only match on a declared
+  # dimension. Without the declaration, per-class rates cannot be expressed and
+  # events carrying the class are quarantined.
   - name: compute.datumapis.com/instance/cpu-seconds
     displayName: Compute Instance CPU Seconds
     description: CPU seconds consumed by a running instance.
     kind: Cumulative
     unit: s
+    dimensions:
+    - runtime_class
+    phase: Retired
+  - name: compute.datumapis.com/instance/milli-cpu-seconds
+    displayName: Compute Instance Milli-CPU Seconds
+    description: Milli-CPU seconds consumed by a running instance.
+    kind: Cumulative
+    unit: '{millicore}.s'
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/instance/memory-seconds
     displayName: Compute Instance Memory Seconds
     description: Memory byte-seconds consumed by a running instance.
     kind: Cumulative
     unit: By.s
+    dimensions:
+    - runtime_class
   - name: compute.datumapis.com/instance/cpu-allocated
     displayName: Compute Instance CPU Allocated
     description: Number of vCPUs allocated to an instance.
     kind: Gauge
     unit: '{cpu}'
+    dimensions:
+    - runtime_class
+    phase: Retired
   - name: compute.datumapis.com/instance/memory-allocated
     displayName: Compute Instance Memory Allocated
     description: Bytes of memory allocated to an instance.
     kind: Gauge
     unit: By
+    dimensions:
+    - runtime_class
+    phase: Retired
   - name: compute.datumapis.com/instance/uptime-seconds
     displayName: Compute Instance Uptime
     description: Seconds the instance has been in a running state.
     kind: Cumulative
     unit: s
+    dimensions:
+    - runtime_class
+    phase: Retired
   - name: compute.datumapis.com/workloads
     displayName: Compute Workloads
     description: Number of compute workloads.
@@ -101,15 +147,28 @@ spec:
     description: Memory allocated across all instances.
     kind: Gauge
     unit: MiB
+  - name: compute.datumapis.com/instanceconsolesessions
+    displayName: Compute Shell Sessions
+    description: Number of open shell sessions into instances.
+    kind: Gauge
+    unit: '{session}'
   billing:
     consumerDestinations:
     - monitoredResourceType: compute.datumapis.com/Instance
       metrics:
       - compute.datumapis.com/instance/cpu-seconds
+      - compute.datumapis.com/instance/milli-cpu-seconds
       - compute.datumapis.com/instance/memory-seconds
       - compute.datumapis.com/instance/cpu-allocated
       - compute.datumapis.com/instance/memory-allocated
       - compute.datumapis.com/instance/uptime-seconds
+  # Quota stays pooled across runtime classes. Entitling a class separately
+  # requires a registered resource type per class, because a ResourceClaim names
+  # a flat resource type and is immutable once created. It also requires a fresh
+  # grant for every existing project, and existing quota headroom does not carry
+  # over. Revisit once the runtime_class dimension on the meters above and the
+  # class label on each ResourceClaim show per-class consumption against the
+  # pooled limits.
   quota:
     metricRules:
     - selector:
@@ -117,6 +176,11 @@ spec:
         kind: Workload
       metricCosts:
         compute.datumapis.com/workloads: 1
+    - selector:
+        apiGroup: compute.datumapis.com
+        kind: InstanceConsoleSession
+      metricCosts:
+        compute.datumapis.com/instanceconsolesessions: 1
     limits:
     - name: compute-workloads
       displayName: Workloads
@@ -154,3 +218,15 @@ spec:
         kind: Project
       unit: MiB
       defaultLimit: 81920
+    # Sessions end and are deleted within an hour, so this bounds how many
+    # shells a project holds open at once rather than how many it opens. A
+    # grant raises or lowers it for one project.
+    - name: compute-instanceconsolesessions
+      displayName: Shell sessions
+      description: Maximum number of shell sessions that can be open into instances within a project.
+      metric: compute.datumapis.com/instanceconsolesessions
+      consumerType:
+        apiGroup: resourcemanager.miloapis.com
+        kind: Project
+      unit: session
+      defaultLimit: 10

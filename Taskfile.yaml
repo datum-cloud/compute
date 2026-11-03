@@ -12,6 +12,13 @@ vars:
   # Chainsaw version for e2e testing (kyverno/chainsaw)
   CHAINSAW_VERSION: v0.2.15
 
+  # cert-manager Helm chart version, installed into the control-plane cluster
+  # to back the InstanceType/Workload admission webhook's serving cert. Kind
+  # has no CSI driver of its own, so this is a plain cert-manager install
+  # (controller + cainjector), not the csi.cert-manager.io driver used in
+  # production.
+  CERT_MANAGER_VERSION: v1.16.2
+
   # Local tool directory (mirrors Makefile convention)
   LOCALBIN: '{{.ROOT_DIR}}/bin'
   KARMADACTL: '{{.ROOT_DIR}}/bin/karmadactl'
@@ -48,6 +55,21 @@ vars:
   # Namespace the operators deploy into (matches config/overlays/* namespace:).
   COMPUTE_NAMESPACE: compute-system
 
+# ─── Includes ───────────────────────────────────────────────────────────────
+
+# One Taskfile per grafonnet dashboard under observability/dashboards/. The
+# dashboards:* tasks below fan out to each so a new dashboard only needs an
+# entry here and a line in those two tasks.
+includes:
+  shell-sessions-dashboard:
+    taskfile: observability/dashboards/shell-sessions/Taskfile.yaml
+    dir: observability/dashboards/shell-sessions
+    internal: true
+  overview-dashboard:
+    taskfile: observability/dashboards/overview/Taskfile.yaml
+    dir: observability/dashboards/overview
+    internal: true
+
 # ─── Tasks ──────────────────────────────────────────────────────────────────
 
 tasks:
@@ -56,6 +78,31 @@ tasks:
     cmds:
       - task --list
     silent: true
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  Grafana dashboards (grafonnet)
+  # ════════════════════════════════════════════════════════════════════════
+
+  install-jsonnet-tools:
+    desc: "Install jsonnet and jsonnet-bundler if not already installed"
+    status:
+      - which jsonnet
+      - which jb
+    cmds:
+      - brew install go-jsonnet
+      - go install -a github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@latest
+
+  dashboards:install:
+    desc: "Fetch grafonnet into each dashboard's vendor/ directory"
+    cmds:
+      - task: shell-sessions-dashboard:install
+      - task: overview-dashboard:install
+
+  dashboards:build:
+    desc: "Render every dashboard JSON into config/components/dashboards/"
+    cmds:
+      - task: shell-sessions-dashboard:build
+      - task: overview-dashboard:build
 
   # ════════════════════════════════════════════════════════════════════════
   #  e2e environment lifecycle
@@ -89,6 +136,7 @@ tasks:
       - task: e2e:karmada:install
       - task: e2e:karmada:configure
       - task: e2e:karmada:join-clusters
+      - task: e2e:cert-manager:install
       - task: e2e:crds:install
 
   e2e:down:
@@ -129,6 +177,19 @@ tasks:
           --config test/e2e/chainsaw-config.yaml \
           {{.CLI_ARGS}} \
           test/e2e/
+
+  e2e:test:path:
+    desc: "Run only the suite(s) under a given test/e2e/<dir> (e.g. task e2e:test:path DIR=instance-types) — deterministic, no regex"
+    deps: [e2e:tools:chainsaw]
+    requires:
+      vars: [DIR]
+    cmds:
+      - |
+        KUBECONFIG={{.KUBECONFIG_DIR}}/control-plane.yaml \
+        {{.CHAINSAW}} test \
+          --config test/e2e/chainsaw-config.yaml \
+          test/e2e/{{.DIR}} \
+          {{.CLI_ARGS}}
 
   # ════════════════════════════════════════════════════════════════════════
   #  Tool installation
@@ -180,7 +241,7 @@ tasks:
       - test -f {{.CHAINSAW}}
 
   e2e:tools:helm-repo:
-    desc: "Add/update karmada-charts Helm repository"
+    desc: "Add/update karmada-charts and jetstack Helm repositories"
     cmds:
       - |
         if ! helm repo list 2>/dev/null | grep -q karmada-charts; then
@@ -188,8 +249,15 @@ tasks:
           echo "Added karmada-charts Helm repository"
         fi
         helm repo update karmada-charts
+      - |
+        if ! helm repo list 2>/dev/null | grep -q jetstack; then
+          helm repo add jetstack https://charts.jetstack.io
+          echo "Added jetstack Helm repository"
+        fi
+        helm repo update jetstack
     status:
       - helm repo list 2>/dev/null | grep -q karmada-charts
+      - helm repo list 2>/dev/null | grep -q jetstack
 
   # ════════════════════════════════════════════════════════════════════════
   #  Kind cluster management
@@ -280,6 +348,11 @@ tasks:
             -n karmada-system get deploy karmada-apiserver &>/dev/null; then
           echo "Karmada already present — waiting for its components to become Available..."
         else
+          # PropagateDeps carries a WorkloadDeployment's referenced ConfigMaps
+          # and Secrets to the cells it runs on. The chart pins the gate off,
+          # overriding the upstream default, so it has to be set explicitly here
+          # and in any environment that serves referenced data — otherwise
+          # companions never leave the hub and instances hold their gate.
           echo "Installing Karmada {{.KARMADA_VERSION}} via Helm..."
           helm install karmada karmada-charts/karmada \
             --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
@@ -288,6 +361,7 @@ tasks:
             --version {{.KARMADA_VERSION}} \
             --set apiServer.serviceType=NodePort \
             --set apiServer.nodePort={{.KARMADA_API_NODEPORT}} \
+            --set controllerManager.featureGates.PropagateDeps=true \
             --wait \
             --timeout 10m \
             || echo "Helm --wait did not settle in time; will wait on the deployments directly below"
@@ -431,7 +505,7 @@ tasks:
   # ════════════════════════════════════════════════════════════════════════
 
   e2e:karmada:join-clusters:
-    desc: "Register POP cell clusters with Karmada and apply city-code labels"
+    desc: "Register POP cell clusters with Karmada and apply canonical location labels"
     cmds:
       # cluster.karmada.io is served by the karmada-aggregated-apiserver through
       # API aggregation, and can briefly return ServiceUnavailable after the pod
@@ -507,7 +581,7 @@ tasks:
           {{.CLUSTER_NAME}} \
           {{.INTERNAL_KUBECONFIG}}
       # ── Apply cluster labels ───────────────────────────────────────────
-      # city-code is what compute's federator places deployments by.
+      # location is the canonical identity compute's federator places deployments by.
       #
       # infra.datum.net/gateways=enabled is what NSO's propagation policy selects
       # on, and every cell in infra carries it. Without it that policy matches no
@@ -516,10 +590,38 @@ tasks:
       - |
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml \
           label cluster {{.CLUSTER_NAME}} \
-          topology.datum.net/city-code={{.CITY_CODE}} \
+          topology.datum.net/location={{.CITY_CODE}} \
           infra.datum.net/gateways=enabled \
           --overwrite
-        echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/city-code={{.CITY_CODE}} and infra.datum.net/gateways=enabled"
+        echo "Labeled cluster '{{.CLUSTER_NAME}}' with topology.datum.net/location={{.CITY_CODE}} and infra.datum.net/gateways=enabled"
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  cert-manager (backs the admission webhook's serving cert)
+  # ════════════════════════════════════════════════════════════════════════
+
+  e2e:cert-manager:install:
+    desc: "Install cert-manager into the control-plane cluster (idempotent)"
+    deps: [e2e:tools:helm-repo]
+    cmds:
+      - |
+        if kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml -n cert-manager get deploy cert-manager &>/dev/null; then
+          echo "cert-manager already present — waiting for it to become Available..."
+        else
+          echo "Installing cert-manager {{.CERT_MANAGER_VERSION}} via Helm..."
+          helm install cert-manager jetstack/cert-manager \
+            --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            --namespace cert-manager \
+            --create-namespace \
+            --version {{.CERT_MANAGER_VERSION}} \
+            --set crds.enabled=true \
+            --wait \
+            --timeout 5m \
+            || echo "Helm --wait did not settle in time; will wait on the deployments directly below"
+        fi
+      - |
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml -n cert-manager \
+          wait --for=condition=Available --timeout=180s \
+          deploy/cert-manager deploy/cert-manager-webhook deploy/cert-manager-cainjector
 
   # ════════════════════════════════════════════════════════════════════════
   #  CRD installation
@@ -530,6 +632,7 @@ tasks:
     cmds:
       - task: _e2e:crds:compute
       - task: _e2e:crds:nso
+      - task: _e2e:crds:locations
       - task: _e2e:crds:quota
       # Depends on _e2e:crds:nso having registered the kinds it selects.
       - task: _e2e:federation:nso-policy
@@ -601,6 +704,28 @@ tasks:
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/karmada.yaml apply \
           -f "${NSO_FEDERATION_PATH}/clusterpropagationpolicy.yaml" \
           --server-side --validate=false
+
+  _e2e:crds:locations:
+    internal: true
+    desc: "Apply locations service CRDs to all clusters and the Karmada API server"
+    cmds:
+      # Compute reads placement locations (Location) and a cell's own location
+      # (ServingLocation) from locations.miloapis.com. A cell refuses to start
+      # when the ServingLocation kind is not served, and the workload webhook
+      # finds no placement locations without the Location kind.
+      - |
+        go mod download go.miloapis.com/locations
+        LOCATIONS_VERSION=$(go list -m -f '{{`{{.Version}}`}}' go.miloapis.com/locations)
+        LOCATIONS_CRD_PATH="$(go env GOMODCACHE)/go.miloapis.com/locations@${LOCATIONS_VERSION}/config/base/crd"
+        echo "Locations CRDs from: ${LOCATIONS_CRD_PATH}"
+        for KC in \
+          {{.KUBECONFIG_DIR}}/control-plane.yaml \
+          {{.KUBECONFIG_DIR}}/karmada.yaml \
+          {{.KUBECONFIG_DIR}}/pop-dfw.yaml \
+          {{.KUBECONFIG_DIR}}/pop-ord.yaml; do
+          echo "Installing locations CRDs → $(basename $KC .yaml)..."
+          kubectl --kubeconfig="$KC" apply -k "${LOCATIONS_CRD_PATH}" --server-side --validate=false
+        done
 
   _e2e:crds:quota:
     internal: true

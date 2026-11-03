@@ -1,0 +1,169 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  labels:
+    alert-group: compute
+    app.kubernetes.io/name: compute
+    app.kubernetes.io/component: shell-sessions
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-shell-session-alerts
+spec:
+  groups:
+    - name: compute-shell-sessions.recording
+      rules:
+        # Hourly session creation count per location, kept as a series so the
+        # volume alert can compare the current hour against a week of history
+        # with avg_over_time instead of nesting range queries.
+        - record: compute:shell_sessions_created:increase1h
+          expr: |
+            sum by (location) (increase(compute_shell_sessions_created_total[1h]))
+
+    - name: compute-shell-sessions.availability
+      rules:
+        # A session ends with Unavailable when no cell claims it within the
+        # 30-second window, and with AgentLost when the cell that had it stops
+        # reporting. Either one is the platform failing a requester, not the
+        # requester doing something wrong, so any sustained rate is a page.
+        - alert: ComputeShellSessionsUnavailable
+          expr: |
+            sum by (location, reason) (
+              rate(compute_shell_sessions_ended_total{reason=~"Unavailable|AgentLost"}[10m])
+            ) > 0
+          for: 10m
+          labels:
+            severity: critical
+            service: compute-shell-sessions
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: Shell sessions in {{ $labels.location }} are ending with {{ $labels.reason }}
+            description: |
+              Shell sessions bound to location "{{ $labels.location }}" have
+              been ending with reason {{ $labels.reason }} at
+              {{ $value | humanize }}/s for 10 minutes. Requesters in this
+              location are getting sessions that never become usable.
+
+              Unavailable means no cell in the location claimed the session
+              within its window. AgentLost means the cell that claimed it
+              stopped reporting. Check the shell agents on the location's
+              cells and whether sessions are reaching them.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-shell-sessions-unavailable.md
+
+        # An agent that cannot reach its cell's tunnel endpoint cannot serve
+        # sessions. One agent down is degraded (its pair carries the cell);
+        # every agent on a cell down means every session bound to that cell
+        # fails.
+        - alert: ComputeShellAgentEndpointUnreachable
+          expr: |
+            max by (cell, agent) (compute_shell_agent_endpoint_reachable) == 0
+          for: 5m
+          labels:
+            severity: warning
+            service: compute-shell-sessions
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: Shell agent {{ $labels.agent }} on cell {{ $labels.cell }} cannot reach its endpoint
+            description: |
+              Shell agent "{{ $labels.agent }}" on cell "{{ $labels.cell }}"
+              has reported its tunnel endpoint unreachable for 5 minutes. The
+              cell's other agent is carrying sessions alone; if it also fails,
+              sessions bound to this cell will end with Unavailable.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-shell-agent-endpoint-unreachable.md
+
+        - alert: ComputeShellCellEndpointUnreachable
+          expr: |
+            max by (cell) (compute_shell_agent_endpoint_reachable) == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: compute-shell-sessions
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: No shell agent on cell {{ $labels.cell }} can reach its endpoint
+            description: |
+              Every shell agent on cell "{{ $labels.cell }}" has reported its
+              tunnel endpoint unreachable for 5 minutes. No session bound to
+              this cell can be served; each one ends with Unavailable after
+              its claim window.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-shell-agent-endpoint-unreachable.md
+
+    - name: compute-shell-sessions.latency
+      rules:
+        # Time from session creation to a connected client is the requester's
+        # whole experience of "opening a shell". Five seconds is well above the
+        # measured steady state and below where people give up.
+        - alert: ComputeShellSessionConnectLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum by (location, le) (rate(compute_shell_session_connect_seconds_bucket[15m]))
+            ) > 5
+          for: 15m
+          labels:
+            severity: warning
+            service: compute-shell-sessions
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: Shell sessions in {{ $labels.location }} take {{ $value | humanizeDuration }} to connect (p95)
+            description: |
+              The 95th percentile time from creating a shell session to a
+              connected client in location "{{ $labels.location }}" has been
+              {{ $value | humanizeDuration }} for 15 minutes, above the 5s
+              target. Requesters are waiting on a prompt that used to appear
+              in about a second.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-shell-session-connect-latency-high.md
+
+    - name: compute-shell-sessions.cleanup
+      rules:
+        # A cell that does not confirm a session's command stopped may have
+        # left a process running inside a customer's Instance. Rare by design,
+        # so a single occurrence is worth a look.
+        - alert: ComputeShellSessionCleanupUnconfirmed
+          expr: |
+            sum by (cell) (increase(compute_shell_agent_cleanup_unconfirmed_total[1h])) > 0
+          labels:
+            severity: warning
+            service: compute-shell-sessions
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: Cell {{ $labels.cell }} did not confirm cleanup for {{ $value | humanize }} shell sessions
+            description: |
+              In the last hour, cell "{{ $labels.cell }}" failed to confirm
+              within the cleanup timeout that {{ $value | humanize }} ended
+              shell session(s) had their command stopped. The session's
+              process may still be running inside the Instance. Each affected
+              session carries a CleanupUnconfirmed activity event.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-shell-session-cleanup-unconfirmed.md
+
+    - name: compute-shell-sessions.volume
+      rules:
+        # Sessions are a privileged path into customer Instances, so a
+        # creation burst far above a location's weekly baseline deserves
+        # eyes: abuse, a runaway automation, or a client retry loop. The floor
+        # keeps a quiet location's first busy hour from firing on a tiny
+        # baseline.
+        - alert: ComputeShellSessionVolumeUnusual
+          expr: |
+            (
+              compute:shell_sessions_created:increase1h
+              > 5 * avg_over_time(compute:shell_sessions_created:increase1h[7d])
+            )
+            and compute:shell_sessions_created:increase1h > 20
+          for: 10m
+          labels:
+            severity: warning
+            service: compute-shell-sessions
+            namespace: compute-system
+            team: compute
+          annotations:
+            summary: Shell session creation in {{ $labels.location }} is far above its weekly baseline
+            description: |
+              {{ $value | humanize }} shell sessions were created in location
+              "{{ $labels.location }}" in the last hour, more than five times
+              the location's average hourly count over the past week. Check
+              which projects are creating them and whether the pattern looks
+              like automation, a retry loop, or abuse.
+            runbook_url: https://github.com/datum-cloud/compute/blob/main/docs/runbooks/compute-shell-session-volume-unusual.md

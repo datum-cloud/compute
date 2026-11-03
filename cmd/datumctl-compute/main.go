@@ -6,9 +6,10 @@ import (
 	"os"
 
 	"go.datum.net/datumctl/plugin"
-	"go.datum.net/datumctl/serviceactivation"
+	"go.miloapis.com/service-catalog/pkg/activation"
 
 	"go.datum.net/compute/internal/cmd/compute"
+	"go.datum.net/compute/internal/cmd/compute/util"
 )
 
 // version is set at build time via ldflags.
@@ -28,9 +29,17 @@ func main() {
 		return
 	}
 
+	var exitErr *util.ExitError
+	if errors.As(err, &exitErr) {
+		if exitErr.Err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", exitErr.Err)
+		}
+		os.Exit(exitErr.Code)
+	}
+
 	// The activation SDK already wrote its user-facing copy to stderr; only
 	// non-SDK errors need printing here (cobra's own printing is silenced).
-	var activationErr *serviceactivation.Error
+	var activationErr *activation.Error
 	if !errors.As(err, &activationErr) {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 	}
@@ -38,5 +47,5 @@ func main() {
 	// Plugins are exec'd binaries, so the plugin owns its exit status. Map the
 	// SDK's typed errors onto the documented exit-code contract (10–13); any
 	// other error exits 1.
-	os.Exit(serviceactivation.ExitCodeOf(err))
+	os.Exit(activation.ExitCodeOf(err))
 }

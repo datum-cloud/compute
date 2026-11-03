@@ -19,6 +19,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"go.datum.net/compute/internal/locations"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 )
 
@@ -42,6 +43,34 @@ type WorkloadOperator struct {
 
 	// ReferencedData configures the ReferencedDataController.
 	ReferencedData ReferencedDataConfig `json:"referencedData,omitempty"`
+
+	// InternalDNS configures project identities for the optional instance DNS
+	// publisher. It is ignored unless the InternalDNSPublishing feature gate is
+	// enabled.
+	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
+
+	// LocationSource selects the locations.miloapis.com service.
+	// Defaults to "Locations". "NetworkServices" is not supported.
+	LocationSource locations.Source `json:"locationSource,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSConfig struct {
+	// ObservationSources selects authenticated edge APIs for live interface and
+	// node observations. Credentials must have read-only observation permissions.
+	ObservationSources []InternalDNSObservationSource `json:"observationSources,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSObservationSource struct {
+	Location       string `json:"location"`
+	KubeconfigPath string `json:"kubeconfigPath"`
+}
+
+func SetDefaults_WorkloadOperator(obj *WorkloadOperator) {
+	if obj.LocationSource == "" {
+		obj.LocationSource = locations.SourceLocations
+	}
 }
 
 // +k8s:deepcopy-gen=true
@@ -59,6 +88,21 @@ type ReferencedDataConfig struct {
 	// all companion objects for a single WorkloadDeployment.
 	// A value of 0 uses the built-in default of 1 MiB.
 	AggregateLimitBytes int64 `json:"aggregateLimitBytes,omitempty"`
+
+	// ResolverUsernames lists the authenticated users allowed to write the
+	// expected-referenced-data annotation on a WorkloadDeployment.
+	//
+	// The annotation authorizes propagation: the federation engine delivers
+	// whatever companions it names. Only the resolver may write it, so the
+	// WorkloadDeployment webhook rejects writes from anyone else. Entries are
+	// full authentication usernames, for a service account the
+	// "system:serviceaccount:<namespace>:<name>" form.
+	//
+	// When empty the webhook falls back to the namespace and service account
+	// the manager itself runs as, read from POD_NAMESPACE and
+	// SERVICE_ACCOUNT_NAME. Set this explicitly when the resolver runs under an
+	// identity the manager cannot infer.
+	ResolverUsernames []string `json:"resolverUsernames,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

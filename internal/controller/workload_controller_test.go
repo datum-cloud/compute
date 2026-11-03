@@ -4,20 +4,42 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/compute/internal/features"
+	"go.datum.net/compute/internal/locations"
+	"go.datum.net/compute/pkg/instancetype"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
+
+// newTestComputeAvailability returns the record the platform mirrors into a
+// project to say compute is deployed and validated at the location.
+func newTestComputeAvailability(location string) *servicesv1alpha1.ServiceAvailability {
+	return &servicesv1alpha1.ServiceAvailability{
+		ObjectMeta: metav1.ObjectMeta{Name: "compute--" + location},
+		Spec: servicesv1alpha1.ServiceAvailabilitySpec{
+			ServiceRef:  servicesv1alpha1.ServiceRef{Name: locations.ComputeServiceName},
+			LocationRef: servicesv1alpha1.LocationRef{Name: location},
+		},
+		Status: servicesv1alpha1.ServiceAvailabilityStatus{
+			Conditions: []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue}},
+		},
+	}
+}
 
 // makeWorkload builds a Workload with the given generation for use in
 // reconcileWorkloadStatus unit tests.
@@ -49,6 +71,20 @@ func makeWDWithAvailCond(name string, status metav1.ConditionStatus, reason, mes
 		LastTransitionTime: metav1.Now(),
 	})
 	return d
+}
+
+// newTestInstanceType builds an InstanceType object at the given lifecycle for
+// workload status-condition tests.
+func newTestInstanceType(phase computev1alpha.InstanceTypeLifecyclePhase, replacement string) *computev1alpha.InstanceType {
+	return &computev1alpha.InstanceType{
+		ObjectMeta: metav1.ObjectMeta{Name: instancetype.D1Standard2},
+		Spec: computev1alpha.InstanceTypeSpec{
+			Lifecycle: computev1alpha.InstanceTypeLifecycle{
+				Phase:                   phase,
+				ReplacementInstanceType: replacement,
+			},
+		},
+	}
 }
 
 // runReconcileWorkloadStatus is a minimal harness that calls reconcileWorkloadStatus
@@ -87,7 +123,7 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 
 	workload := &computev1alpha.Workload{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-workload",
+			Name:      rdTestWorkloadName,
 			Namespace: testDefaultNamespace,
 			UID:       types.UID("workload-uid"),
 		},
@@ -95,7 +131,7 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 			Placements: []computev1alpha.WorkloadPlacement{
 				{
 					Name:      testDefaultPlacement,
-					CityCodes: []string{"DFW"},
+					Locations: []locationsv1alpha1.LocationReference{{Name: testLocationName}},
 					ScaleSettings: computev1alpha.HorizontalScaleSettings{
 						MinReplicas: 2,
 					},
@@ -103,18 +139,13 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 			},
 		},
 	}
-	location := &networkingv1alpha.LocationBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "dfw"},
-		Spec: networkingv1alpha.LocationBindingSpec{
-			LocationRef: corev1.LocalObjectReference{Name: "dfw"},
-			Topology:    map[string]string{"topology.datum.net/city-code": "DFW"},
-		},
-	}
+	location := newLocationsServiceLocation(testLocationName, "DFW")
 
 	s := newNetworkingScheme()
+	require.NoError(t, locationsv1alpha1.AddToScheme(s))
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(location).
+		WithObjects(location, newTestComputeAvailability(testLocationName)).
 		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
 		Build()
 	r := &WorkloadReconciler{}
@@ -125,6 +156,8 @@ func TestGetDeploymentsForWorkload_InitializesReplicas(t *testing.T) {
 	require.Len(t, desired, 1)
 	require.NotNil(t, desired[0].Spec.Replicas)
 	assert.Equal(t, int32(2), *desired[0].Spec.Replicas)
+	assert.Equal(t, testLocationName, desired[0].Spec.LocationRef.Name)
+	assert.Equal(t, testLocationName, desired[0].Labels[computev1alpha.LocationLabel])
 }
 
 // TestReconcileWorkloadStatus_AllDeploymentsSameReason verifies that when all
@@ -248,6 +281,240 @@ func TestReconcileWorkloadStatus_ObservedGeneration(t *testing.T) {
 		"Available condition ObservedGeneration must equal workload.Generation")
 }
 
+// TestReconcileInstanceTypeCondition_Deprecated verifies that a workload on a
+// deprecated instance type gains the InstanceTypeDeprecated condition carrying
+// the migration guidance published on the type.
+func TestReconcileInstanceTypeCondition_Deprecated(t *testing.T) {
+	enableInstanceTypes(t)
+	workload := makeWorkload(4)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+	require.NotNil(t, cond, "InstanceTypeDeprecated condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, computev1alpha.InstanceTypeConditionDeprecated, cond.Reason)
+	assert.Contains(t, cond.Message, "datumcloud-d1-standard-4")
+	assert.Equal(t, workload.Generation, cond.ObservedGeneration)
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled),
+		"a deprecated type must not also set the disabled condition")
+}
+
+// TestReconcileInstanceTypeCondition_Disabled verifies that a workload on a
+// disabled instance type gains the InstanceTypeDisabled condition carrying the
+// published replacement guidance.
+func TestReconcileInstanceTypeCondition_Disabled(t *testing.T) {
+	enableInstanceTypes(t)
+	workload := makeWorkload(2)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4"))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+	require.NotNil(t, cond, "InstanceTypeDisabled condition must be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, computev1alpha.InstanceTypeConditionDisabled, cond.Reason)
+	assert.Contains(t, cond.Message, "datumcloud-d1-standard-4")
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated),
+		"a disabled type must not also set the deprecated condition")
+}
+
+// TestReconcileInstanceTypeCondition_DisabledWithoutReplacement uses the
+// no-replacement wording when the type lists no successor.
+func TestReconcileInstanceTypeCondition_DisabledWithoutReplacement(t *testing.T) {
+	enableInstanceTypes(t)
+	workload := makeWorkload(1)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	cl := newProjectFakeClient(newTestInstanceType(
+		computev1alpha.InstanceTypePhaseDisabled, ""))
+
+	status := &computev1alpha.WorkloadStatus{}
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "lists no replacement")
+}
+
+// enableInstanceTypes turns the InstanceTypes gate on for the duration of a
+// test; the lifecycle conditions are reported only while it is on.
+func enableInstanceTypes(t *testing.T) {
+	t.Helper()
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, true)
+}
+
+// priorDeprecatedStatus is a status carrying an InstanceTypeDeprecated
+// condition from an earlier reconcile.
+func priorDeprecatedStatus() *computev1alpha.WorkloadStatus {
+	return &computev1alpha.WorkloadStatus{
+		Conditions: []metav1.Condition{
+			{Type: computev1alpha.InstanceTypeConditionDeprecated, Status: metav1.ConditionTrue, Reason: "previous-reason"},
+		},
+	}
+}
+
+// TestReconcileInstanceTypeCondition_FollowsPhase verifies the conditions track
+// the type's current lifecycle phase rather than accumulating: a type that is
+// Active again, one the project no longer publishes, or one that moved on to
+// Disabled each replace a condition left by an earlier reconcile.
+func TestReconcileInstanceTypeCondition_FollowsPhase(t *testing.T) {
+	enableInstanceTypes(t)
+
+	tests := []struct {
+		name         string
+		objs         []client.Object
+		wantDisabled bool
+	}{
+		{name: "an active type drops the condition",
+			objs: []client.Object{newTestInstanceType(
+				computev1alpha.InstanceTypePhaseActive, "")}},
+		{name: "an unpublished type drops the condition",
+			objs: nil},
+		{name: "a type moved on to disabled swaps the condition",
+			objs: []client.Object{newTestInstanceType(
+				computev1alpha.InstanceTypePhaseDisabled, "datumcloud-d1-standard-4")},
+			wantDisabled: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workload := makeWorkload(1)
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+			status := priorDeprecatedStatus()
+			reconcileInstanceTypeCondition(context.Background(), newProjectFakeClient(tc.objs...), workload, status)
+
+			assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated),
+				"the earlier deprecated condition must not outlive the phase it described")
+			disabled := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled)
+			if tc.wantDisabled {
+				require.NotNil(t, disabled)
+				assert.Equal(t, metav1.ConditionTrue, disabled.Status)
+			} else {
+				assert.Nil(t, disabled)
+			}
+		})
+	}
+}
+
+// TestReconcileInstanceTypeCondition_UnreadableKeepsPrior verifies that a read
+// failure other than the type not being published leaves the prior conditions
+// untouched, so a transient error never flaps them.
+func TestReconcileInstanceTypeCondition_UnreadableKeepsPrior(t *testing.T) {
+	enableInstanceTypes(t)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return errors.New("project control plane unavailable")
+			},
+		}).
+		Build()
+
+	workload := makeWorkload(1)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	status := priorDeprecatedStatus()
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	prior := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+	require.NotNil(t, prior, "an unreadable type must leave the prior condition in place")
+	assert.Equal(t, "previous-reason", prior.Reason)
+}
+
+// TestReconcileInstanceTypeCondition_ResolvesTypeName verifies the condition is
+// reported against the type the instances actually run on: the platform's
+// fallback for a workload naming none, and the renamed type for a workload
+// stored under its retired name.
+func TestReconcileInstanceTypeCondition_ResolvesTypeName(t *testing.T) {
+	enableInstanceTypes(t)
+
+	for _, selected := range []string{"", instancetype.LegacyD1Standard2} {
+		t.Run("selected "+selected, func(t *testing.T) {
+			workload := makeWorkload(1)
+			workload.Spec.Template.Spec.Runtime.Resources.InstanceType = selected
+
+			cl := newProjectFakeClient(newTestInstanceType(
+				computev1alpha.InstanceTypePhaseDeprecated, "datumcloud-d1-standard-4"))
+
+			status := &computev1alpha.WorkloadStatus{}
+			reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+			cond := apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated)
+			require.NotNil(t, cond, "the deprecation of the type the instances run on must be reported")
+			assert.Contains(t, cond.Message, "datumcloud-d1-standard-4")
+		})
+	}
+}
+
+// TestReconcileInstanceTypeCondition_GateOff verifies that with the gate off
+// the InstanceType API is never read and conditions left from a period with the
+// gate on are dropped.
+func TestReconcileInstanceTypeCondition_GateOff(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InstanceTypes, false)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				t.Error("the InstanceType API must not be read while the gate is off")
+				return nil
+			},
+		}).
+		Build()
+
+	workload := makeWorkload(1)
+	workload.Spec.Template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
+
+	status := priorDeprecatedStatus()
+	reconcileInstanceTypeCondition(context.Background(), cl, workload, status)
+
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDeprecated))
+	assert.Nil(t, apimeta.FindStatusCondition(status.Conditions, computev1alpha.InstanceTypeConditionDisabled))
+}
+
+// TestEnqueueWorkloadsOnInstanceType verifies a change to an instance type
+// re-queues exactly the workloads that run on it, including one that names no
+// type (it runs on the fallback) and one stored under the retired name.
+func TestEnqueueWorkloadsOnInstanceType(t *testing.T) {
+	onType := func(name, instanceType string) *computev1alpha.Workload {
+		w := makeWorkload(1)
+		w.Name = name
+		w.Spec.Template.Spec.Runtime.Resources.InstanceType = instanceType
+		return w
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newProjectScheme()).
+		WithObjects(
+			onType("named", instancetype.D1Standard2),
+			onType("fallback", ""),
+			onType("retired-name", instancetype.LegacyD1Standard2),
+			onType("other", "datumcloud-d2-standard-2"),
+		).
+		WithIndex(&computev1alpha.Workload{}, workloadInstanceTypeIndex, workloadInstanceTypeIndexFunc).
+		Build()
+
+	requests := enqueueWorkloadsOnInstanceType(context.Background(), cl, "project", instancetype.D1Standard2)
+
+	names := make([]string, 0, len(requests))
+	for _, r := range requests {
+		assert.Equal(t, multicluster.ClusterName("project"), r.ClusterName)
+		names = append(names, r.Name)
+	}
+	assert.ElementsMatch(t, []string{"named", "fallback", "retired-name"}, names)
+}
+
 // TestMergeDeploymentMetadata_PreservesForeignAnnotation verifies that merging
 // the controller-owned desired metadata onto an existing WorkloadDeployment
 // writes the desired keys while preserving peer-owned metadata — in particular
@@ -323,6 +590,9 @@ func TestWorkloadBlockingReasonPriority(t *testing.T) {
 		{computev1alpha.ReferencedDataReasonSourceNotFound, 5},
 		{computev1alpha.ReferencedDataReasonSourceTooLarge, 5},
 		{computev1alpha.ReferencedDataReasonSourceUnauthorized, 5},
+		{computev1alpha.InstanceReadyReasonImageUnavailable, 5},
+		{computev1alpha.InstanceReadyReasonInstanceCrashing, 5},
+		{computev1alpha.InstanceReadyReasonConfigurationError, 5},
 		// Priority 6
 		{computev1alpha.WorkloadReasonNetworkNotFound, 6},
 	}
@@ -332,5 +602,210 @@ func TestWorkloadBlockingReasonPriority(t *testing.T) {
 			assert.Equal(t, tt.wantPrio, workloadBlockingReasonPriority(tt.reason),
 				"unexpected priority for reason %q", tt.reason)
 		})
+	}
+}
+
+// TestGetDeploymentsForWorkload_LocationSelector verifies that a placement
+// selecting locations by topology gets one deployment per Ready location the
+// selector matches, in name order, and nothing for locations it excludes.
+func TestGetDeploymentsForWorkload_LocationSelector(t *testing.T) {
+	t.Parallel()
+
+	workload := &computev1alpha.Workload{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rdTestWorkloadName,
+			Namespace: testDefaultNamespace,
+			UID:       types.UID("workload-uid"),
+		},
+		Spec: computev1alpha.WorkloadSpec{
+			Placements: []computev1alpha.WorkloadPlacement{
+				{
+					Name: testDefaultPlacement,
+					LocationSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{locations.TopologyCityCodeKey: "DFW"},
+					},
+					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+				},
+			},
+		},
+	}
+
+	s := newNetworkingScheme()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(
+			newLocationsServiceLocation("dfw-b", "DFW"),
+			newLocationsServiceLocation("dfw-a", "DFW"),
+			newLocationsServiceLocation(testOtherLocationName, "ORD"),
+			newTestComputeAvailability("dfw-a"),
+			newTestComputeAvailability("dfw-b"),
+			newTestComputeAvailability(testOtherLocationName),
+		).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, orphaned, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Empty(t, orphaned)
+	require.Len(t, desired, 2)
+	assert.Equal(t, "dfw-a", desired[0].Spec.LocationRef.Name)
+	assert.Equal(t, "dfw-b", desired[1].Spec.LocationRef.Name)
+	assert.Equal(t, rdTestWorkloadName+"-"+testDefaultPlacement+"-dfw-a", desired[0].Name)
+	assert.Equal(t, "dfw-a", desired[0].Labels[computev1alpha.LocationLabel])
+}
+
+// TestGetDeploymentsForWorkload_LocationSelectorFollowsLocations verifies the
+// dynamic half of a selector: a deployment at a location the selector no
+// longer matches is orphaned, so the placement follows the fleet.
+func TestGetDeploymentsForWorkload_LocationSelectorFollowsLocations(t *testing.T) {
+	t.Parallel()
+
+	workload := &computev1alpha.Workload{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rdTestWorkloadName,
+			Namespace: testDefaultNamespace,
+			UID:       types.UID("workload-uid"),
+		},
+		Spec: computev1alpha.WorkloadSpec{
+			Placements: []computev1alpha.WorkloadPlacement{
+				{
+					Name: testDefaultPlacement,
+					LocationSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{locations.TopologyCityCodeKey: "DFW"},
+					},
+					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+				},
+			},
+		},
+	}
+	// The ord deployment was created when the location matched; the binding
+	// has since changed city.
+	stale := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rdTestWorkloadName + "-" + testDefaultPlacement + "-ord",
+			Namespace: testDefaultNamespace,
+			Labels:    map[string]string{computev1alpha.WorkloadUIDLabel: "workload-uid"},
+		},
+		Spec: computev1alpha.WorkloadDeploymentSpec{
+			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName, UID: types.UID("workload-uid")},
+			PlacementName: testDefaultPlacement,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: testOtherLocationName},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newNetworkingScheme()).
+		WithObjects(
+			newLocationsServiceLocation(testLocationName, "DFW"), newLocationsServiceLocation(testOtherLocationName, "ORD"),
+			newTestComputeAvailability(testLocationName), newTestComputeAvailability(testOtherLocationName),
+			stale,
+		).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, orphaned, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Len(t, desired, 1)
+	assert.Equal(t, testLocationName, desired[0].Spec.LocationRef.Name)
+	require.Len(t, orphaned, 1)
+	assert.Equal(t, stale.Name, orphaned[0].Name)
+}
+
+// TestReconcileWorkloadStatus_PlacementWithNoLocations verifies that a
+// placement in the spec that resolved to nothing is still reported, with a
+// reason that says so, and that the reason reaches the workload condition.
+func TestReconcileWorkloadStatus_PlacementWithNoLocations(t *testing.T) {
+	workload := makeWorkload(1)
+	workload.Spec.Placements = []computev1alpha.WorkloadPlacement{{
+		Name: testPlacementA,
+		LocationSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{locations.TopologyCityCodeKey: "LHR"},
+		},
+	}}
+
+	cond := runReconcileWorkloadStatus(t, workload, map[string][]computev1alpha.WorkloadDeployment{})
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.WorkloadReasonNoMatchingLocations, cond.Reason)
+
+	require.Len(t, workload.Status.Placements, 1)
+	placement := workload.Status.Placements[0]
+	assert.Equal(t, testPlacementA, placement.Name)
+	assert.Empty(t, placement.Locations)
+	placementCond := apimeta.FindStatusCondition(placement.Conditions, workloadConditionTypeAvailable)
+	require.NotNil(t, placementCond)
+	assert.Equal(t, computev1alpha.WorkloadReasonNoMatchingLocations, placementCond.Reason)
+}
+
+// TestReconcileWorkloadStatus_ReportsResolvedLocations verifies the placement
+// status names the locations its deployments run at, in name order.
+func TestReconcileWorkloadStatus_ReportsResolvedLocations(t *testing.T) {
+	workload := makeWorkload(1)
+	wdB := makeWDWithAvailCond("wd-b", metav1.ConditionTrue, "AvailableDeploymentFound", "")
+	wdB.Spec.LocationRef = locationsv1alpha1.LocationReference{Name: testOtherLocationName}
+	wdA := makeWDWithAvailCond("wd-a", metav1.ConditionTrue, "AvailableDeploymentFound", "")
+	wdA.Spec.LocationRef = locationsv1alpha1.LocationReference{Name: testLocationName}
+
+	cond := runReconcileWorkloadStatus(t, workload, map[string][]computev1alpha.WorkloadDeployment{
+		testPlacementA: {wdB, wdA},
+	})
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+
+	require.Len(t, workload.Status.Placements, 1)
+	assert.Equal(t, []locationsv1alpha1.LocationReference{{Name: testLocationName}, {Name: testOtherLocationName}}, workload.Status.Placements[0].Locations)
+}
+
+// TestGetDeploymentsForWorkload_RequiresComputeAvailability verifies the
+// availability gate: a Ready location the project may use, but where compute
+// is not available, receives no deployment, whether named or selected.
+func TestGetDeploymentsForWorkload_RequiresComputeAvailability(t *testing.T) {
+	t.Parallel()
+
+	workload := &computev1alpha.Workload{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rdTestWorkloadName,
+			Namespace: testDefaultNamespace,
+			UID:       types.UID("workload-uid"),
+		},
+		Spec: computev1alpha.WorkloadSpec{
+			Placements: []computev1alpha.WorkloadPlacement{
+				{
+					Name:          "named",
+					Locations:     []locationsv1alpha1.LocationReference{{Name: testLocationName}, {Name: testOtherLocationName}},
+					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+				},
+				{
+					Name: "selected",
+					LocationSelector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{{
+							Key: locations.TopologyCityCodeKey, Operator: metav1.LabelSelectorOpExists,
+						}},
+					},
+					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+				},
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newNetworkingScheme()).
+		WithObjects(
+			newLocationsServiceLocation(testLocationName, "DFW"),
+			newLocationsServiceLocation(testOtherLocationName, "ORD"),
+			// Compute is only available in one of the two locations.
+			newTestComputeAvailability(testLocationName),
+		).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, _, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Len(t, desired, 2, "each placement lands only where compute is available")
+	for _, deployment := range desired {
+		assert.Equal(t, testLocationName, deployment.Spec.LocationRef.Name)
 	}
 }

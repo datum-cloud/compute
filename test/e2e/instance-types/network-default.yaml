@@ -1,0 +1,13 @@
+# The namespaced Network the workloads in this suite attach to. The Workload
+# controller refuses to render WorkloadDeployments while a referenced network
+# does not exist (it sets Available=False / NetworkNotFound), and the e2e
+# environment ships the networking CRDs with an empty registry, so the suite
+# seeds its own. Chainsaw injects the test namespace -- the same namespace the
+# workloads land in -- because no namespace is set here (template suite).
+apiVersion: networking.datumapis.com/v1alpha
+kind: Network
+metadata:
+  name: default
+spec:
+  ipam:
+    mode: Auto

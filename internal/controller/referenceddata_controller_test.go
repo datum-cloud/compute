@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -30,6 +31,7 @@ import (
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/referenceddata"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 const (
@@ -1507,10 +1509,10 @@ func TestFederator_StatusSync_PreservesReferencedDataReadyCondition(t *testing.T
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testWDName,
 			Namespace: testKarmadaNSStr,
-			Labels:    map[string]string{cityCodeLabel: testCityCodeLAX},
+			Labels:    map[string]string{locationLabel: testWestLocationName},
 		},
 		Spec: computev1alpha.WorkloadDeploymentSpec{
-			CityCode:      testCityCodeLAX,
+			LocationRef:   locationsv1alpha1.LocationReference{Name: testWestLocationName},
 			PlacementName: testDefaultPlacement,
 			WorkloadRef:   computev1alpha.WorkloadReference{Name: rdTestWorkloadName},
 			ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
@@ -1810,4 +1812,77 @@ func TestReferencedData_Federated_ImagePullSecretAlsoMounted_NotReleased(t *test
 	refs, err := decodeRefCount(stillThere.Annotations)
 	require.NoError(t, err)
 	assert.Contains(t, refs, types.NamespacedName{Namespace: projNS, Name: wdName}.String())
+}
+
+// TestReferencedData_SourceNameTooLong_Rejected pins the name ceiling as a
+// reported failure rather than a silent shortening.
+//
+// The federation engine appends a kind suffix when it names a companion's
+// binding, so a name above the cap could never propagate. Consumers reference a
+// companion by its source name with no translation step, so delivering a
+// shortened copy would mount nothing while reporting success.
+func TestReferencedData_SourceNameTooLong_Rejected(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := strings.Repeat("a", referenceddata.MaxCompanionNameLength+1)
+
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
+	}
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(rdTestScheme(t)).
+		WithObjects(srcCM, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	c, clusterName := newRDController(t, cl, nil)
+
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
+	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, computev1alpha.ReferencedDataReasonSourceNameTooLong, cond.Reason)
+
+	// No expected-companion annotation, so the engine is never told to deliver a
+	// name it cannot bind.
+	assert.NotContains(t, wd.Annotations, computev1alpha.ExpectedReferencedDataAnnotation)
+}
+
+// TestReferencedData_SourceNameAtLimit_Accepted holds the boundary: a name
+// exactly at the cap still resolves, so the rejection above is the ceiling and
+// not an off-by-one.
+func TestReferencedData_SourceNameAtLimit_Accepted(t *testing.T) {
+	ns := rdTestNamespace
+	cmName := strings.Repeat("a", referenceddata.MaxCompanionNameLength)
+
+	srcCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cmName},
+		Data:       map[string]string{rdTestDataKey: rdTestDataValue},
+	}
+	wd := makeWD(ns, rdTestWD1, templateWithConfigMap(cmName))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(rdTestScheme(t)).
+		WithObjects(srcCM, wd).
+		WithStatusSubresource(wd).
+		Build()
+
+	c, clusterName := newRDController(t, cl, nil)
+
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+	reconcileWD(t, c, clusterName, ns, rdTestWD1)
+
+	wd = getWD(t, cl, types.NamespacedName{Namespace: ns, Name: rdTestWD1})
+	cond := apimeta.FindStatusCondition(wd.Status.Conditions, computev1alpha.ReferencedDataReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+
+	// The companion keeps the source name verbatim, which is what lets the
+	// instance's volume reference resolve without a translation step.
+	assert.Contains(t, wd.Annotations[computev1alpha.ExpectedReferencedDataAnnotation], cmName)
 }

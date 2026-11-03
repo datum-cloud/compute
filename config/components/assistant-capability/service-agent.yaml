@@ -1,0 +1,25 @@
+# Compute's agent: the thing a customer's assistant talks to when they ask about
+# their workloads.
+#
+# Published means customers can get it. The content it offers lives in
+# service-agent-configuration.yaml, so this object rarely changes.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgent
+metadata:
+  name: compute-diagnostics-agent
+  labels:
+    app.kubernetes.io/name: compute-diagnostics-agent
+    app.kubernetes.io/part-of: compute.datumapis.com
+spec:
+  # Must match the NAME of the catalog entry in
+  # ../service-catalog/service.yaml, which is "compute" — not the reverse-DNS
+  # service name. Get it wrong and nothing reports it: the agent simply never
+  # reaches any customer.
+  serviceRef:
+    name: compute
+  phase: Published
+  displayName: Compute diagnostics
+  description: |
+    Answers questions about a project's compute workloads and diagnoses why one
+    is not running: reads workloads, deployments and instances, walks their
+    conditions to a root cause, and helps plan a new deployment.

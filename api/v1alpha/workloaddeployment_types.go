@@ -1,9 +1,8 @@
 package v1alpha
 
 import (
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // WorkloadDeploymentSpec defines the desired state of WorkloadDeployment
@@ -18,11 +17,10 @@ type WorkloadDeploymentSpec struct {
 	// +kubebuilder:validation:Required
 	PlacementName string `json:"placementName"`
 
-	// TODO(jreese) think through how to structure this a bit better for when
-	// deployments can be scheduled in ways other than just a city code.
+	// The location where this deployment runs.
 	//
 	// +kubebuilder:validation:Required
-	CityCode string `json:"cityCode"`
+	LocationRef locationsv1alpha1.LocationReference `json:"locationRef"`
 
 	// Defines settings for each instance.
 	//
@@ -39,15 +37,21 @@ type WorkloadDeploymentSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// How a guest takes the network interface the platform gives it, resolved
+	// from the runtime class this deployment runs in.
+	//
+	// The class catalog is readable only where a deployment is created, so the
+	// answer is resolved once here and carried to the cell that acts on it. An
+	// empty value asks the networking layer for nothing and leaves the cell's
+	// own setting deciding, which is what every deployment does today.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkAttachment RuntimeClassNetworkAttachment `json:"networkAttachment,omitempty"`
 }
 
 // WorkloadDeploymentStatus defines the observed state of WorkloadDeployment
 type WorkloadDeploymentStatus struct {
-	// The location which the deployment has been scheduled to
-	//
-	// +kubebuilder:validation:Optional
-	Location *networkingv1alpha.LocationReference `json:"location,omitempty"`
-
 	// Represents the observations of a deployment's current state.
 	// Known condition types are: "Available", "Progressing"
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -112,8 +116,7 @@ const (
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Desired",type=string,JSONPath=`.status.desiredReplicas`
 // +kubebuilder:printcolumn:name="Up-to-date",type=string,JSONPath=`.status.updatedReplicas`
-// +kubebuilder:printcolumn:name="Location Namespace",type=string,JSONPath=`.status.location.namespace`,priority=1
-// +kubebuilder:printcolumn:name="Location Name",type=string,JSONPath=`.status.location.name`,priority=1
+// +kubebuilder:printcolumn:name="Location",type=string,JSONPath=`.spec.locationRef.name`
 type WorkloadDeployment struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

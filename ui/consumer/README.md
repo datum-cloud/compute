@@ -1,29 +1,66 @@
 # Compute Portal Plugin
 
-A read-only operational dashboard for the compute service (`compute.datumapis.com`),
+An operational dashboard for the compute service (`compute.datumapis.com`),
 shipped as a **Module Federation remote** that the cloud portal loads at
 runtime — the [Portal Plugin System](https://github.com/datum-cloud/cloud-portal/blob/main/docs/enhancements/portal-plugin-system.md).
 Structural template: [`examples/sample-plugin/`](https://github.com/datum-cloud/cloud-portal/tree/main/examples/sample-plugin)
 in the `cloud-portal` repo.
 
-## Scope — v1 is read-only
+## Scope — visibility, plus delete
 
-This is a **CLI-first** service: workload creation, deployment, scaling,
-restarts, and deletion all happen via `datumctl compute …`. The plugin's job
-is to give operators visibility into what's already running:
+This is a **CLI-first** service: workload creation, deployment, scaling and
+restarts all happen via `datumctl compute …`. The plugin's job is to give
+operators visibility into what's already running, and to delete workloads:
 
-- **Workloads** (`workloads`) — list, with health, ready count, placements,
-  age.
-- **Workload detail** (`workloads/:workloadName`) — Overview tab only: stat
-  tiles, configuration, and an embedded running-instances table.
-- **Instance detail** (`workloads/:workloadName/instances/:instanceName`) —
-  Overview tab only: stat tiles (uptime, region, instance type, image),
-  network card, health conditions, runtime config.
+Paths below are relative to the plugin mount, `/project/:projectId/services/<slug>`
+(the slug is operator-supplied; `workloads` locally). The list page is the
+mount root so URLs read `…/services/workloads/<workloadName>`, not
+`…/services/workloads/workloads/<workloadName>`.
 
-No deploy/edit/delete forms, and no Activity/Metrics/Settings tabs in v1 —
-those stay out of scope until there's a real telemetry/activity source to back
-them. `CliBanner`/`SectionCard` (in `src/components/cli-section.tsx`) point
-users at the equivalent `datumctl` commands wherever the portal can't do
+- **Workloads** (`""`, the mount root) — list, switchable between cards and a
+  table, with health, ready count, placements, activity sparkline, age.
+- **Workload detail** (`:workloadName/*`) — Overview tab: health strip, live
+  metric tiles, topology (load balancer → workload → instances), live traffic,
+  instances, locations and recent logs panels. Metrics is nested at
+  `…/metrics`.
+- **Instance detail** (`:workloadName/instances/:instanceName/*`) —
+  Overview, Metrics, and Logs. Overview shows live CPU/memory KPIs (and ALB
+  request/p99/error KPIs when the workload is published on a URL). The Logs
+  tab always queries instance stdout; ALB access logs are merged in when an
+  HTTPProxy exists. Manage/Activity remain placeholders.
+- **Instance shell** (`…/instances/:instanceName/shell`) — an interactive
+  shell in one of the instance's containers, through an
+  `InstanceConsoleSession`. The tab appears only when the plugin was built
+  with the wasm client, the user may `create` `instanceconsolesessions`, the
+  project's `compute.datumapis.com/instanceconsolesessions` allowance is not
+  zero or missing (sessions are enabled per project by granting one; when the
+  allowance can't be read the tab shows and a create denial explains it), and the
+  instance's runtime class (or the catalog default) declares the `exec`
+  feature, so it stays hidden until an environment publishes that feature.
+  The connection runs in a Web Worker that loads the wasm client on first
+  use and holds the session key; closing the shell or leaving the page
+  terminates the worker and deletes the session.
+- **Shell window** (`…/instances/:instanceName/shell/window`) — the Shell
+  tab's **Open in new window** opens this page in a named browser window.
+  The manifest declares it with `layout: "bare"`, so the portal shows only a
+  compact title bar and the terminal, without its header or sidebar; portals
+  that predate bare pages show it inside the usual chrome. The window starts
+  its own session, since a session's key can't leave the worker that made it,
+  and the tab's session closes. A second click focuses the open window rather
+  than opening another, and closing the window ends its session.
+
+**Delete** is in the workload detail page header.
+The confirmation dialog (`src/components/delete-workload-dialog.tsx`) also
+offers the workload's Application Load Balancers (HTTPProxy plus the
+NetworkService behind it) and Networks as opt-in extras, because deleting the
+Workload doesn't remove them. Anything shared with another workload can't be
+ticked. Following the portal's RBAC conventions, the delete action is
+hidden when a `delete` SelfSubjectAccessReview on `workloads` fails, and
+extras the user can't delete are disabled with a tooltip.
+
+No deploy/edit forms. Activity stays out of scope until there is a
+real activity source. `CliBanner`/`SectionCard` (in `src/components/cli-section.tsx`)
+point users at the equivalent `datumctl` commands wherever the portal can't do
 something itself.
 
 ## Relationship to cloud-portal PR #1315
@@ -71,7 +108,10 @@ plugin queries live in the host's cache next to built-in pages. This plugin
 does **not** create its own `QueryClient`. In place of PR #1315's watch-stream
 hook (`useResourceWatch`, portal-internal and unavailable to plugins), each
 query hook in `src/lib/api.ts` sets `refetchInterval: 10_000` for live-ish
-updates — a deliberate v1 trade-off, not equivalent to a real watch.
+updates — a deliberate v1 trade-off, not equivalent to a real watch. Workload
+and instance queries drop to 3s while a workload is deploying, and the
+load balancer lookup does the same while an ALB is coming up, so the page
+catches up as soon as either serves.
 
 ### RBAC — known v1 gap
 
@@ -86,16 +126,21 @@ version — accepted for v1.
 ## This is its own project
 
 `ui/consumer/` has its **own** `package.json` and lockfile,
-independent of the rest of this repo. It never touches the repo's Makefile,
-CI, or other root files. Install and run it in isolation:
+independent of the rest of this repo. The one exception is the shell's wasm
+client: the image builds it with `make build-console-wasm` from the
+repository root, and `vite build` emits `bin/console-session.wasm` and
+`bin/console-session-wasm_exec.js` (or the files in `$CONSOLE_WASM_DIR`) as
+hashed assets, which the portal's asset proxy caches. Without them the build
+warns and the Shell tab stays hidden. Install and run it in isolation:
 
 ```bash
 cd ui/consumer
-bun install
-bun run dev        # Vite dev server (:7778, HMR) — standalone/direct
-bun run preview    # built dist/ served (:7778) — proxy-safe
-bun run build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
-bun run typecheck  # tsc --noEmit
+npm install
+npm run dev        # Vite dev server (:7778, HMR) — standalone/direct
+npm run preview    # built dist/ served (:7778) — proxy-safe
+npm run build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
+npm run typecheck  # tsc --noEmit
+npm test           # vitest unit tests
 ```
 
 ### Serve `dev` or `preview`? (it matters for the portal proxy)
@@ -115,16 +160,36 @@ server you want running:
 
 `public/plugin-manifest.json` declares:
 
-- **`portal.nav/project`** — a "Workloads" sidebar item (icon `server`),
-  gated on `{compute.datumapis.com, workloads, list}`.
-- **`portal.page/project`** ×3 — `workloads` (`WorkloadList`),
-  `workloads/:workloadName` (`WorkloadDetail`), and
-  `workloads/:workloadName/instances/:instanceName/*` (`InstanceDetail`
+- **`portal.nav/project`** — **Compute** under Build (`section: "build"`,
+  `order: 10`), with `serviceRef: "compute.datumapis.com"` (canonical Service
+  `spec.serviceName`). Every project opens the live `path: ""` mount; one
+  without an Active entitlement for that service lands on the same page, which
+  enables Compute for it (the service is self-service) before loading.
+
+  The soft launch is over, so the `comingSoon` / `comingSoonMode` /
+  `roadmapUrl` trio is gone. While `comingSoon` was set, the portal showed a
+  Coming Soon badge on any project lacking an Active entitlement — which
+  outlived the launch and made a fresh project look unreleased
+  (cloud-portal#1622). `comingSoonMode: "plugin"` only chose where the badged
+  item linked (the live mount rather than a holding page), so dropping it
+  changes the badge and the muted styling and nothing else; the nav already
+  pointed at the real page. Note that the service catalog has had
+  `visibility: entitlement: None` throughout
+  (`config/components/service-catalog/service-configuration.yaml`) — the nav
+  item was never gated, only badged.
+- **`portal.page/project`** ×3 — `""` (`WorkloadList`, at the mount root),
+  `:workloadName/*` (`WorkloadDetail`), and
+  `:workloadName/instances/:instanceName/*` (`InstanceDetail`
   layout). The instance layout owns breadcrumbs / title / tabs and nests
-  Overview (index) plus Logs (`…/logs`) through `<Outlet />`. Instance pages
-  gate on `{compute.datumapis.com, instances, get}`. Overview embeds a
-  last-30-minutes `Logs.Table`; the Logs tab mounts the full explorer.
-  Entries stay empty until a Loki query is wired.
+  Overview (index), Metrics (`…/metrics`), and Logs (`…/logs`) through
+  `<Outlet />`. The workload splat does the same for Overview and Metrics.
+  Instance pages gate on `{compute.datumapis.com, instances, get}`.
+  Overview embeds a last-30-minutes `Logs.Table` and live metric KPIs. The
+  Logs tab mounts the full explorer against ALB access logs when the workload
+  has a published HTTPProxy. Metrics query telemetry queryapi's
+  Prometheus-shaped routes through the portal's `/api/proxy`, scoped to the
+  project, for `datum_compute_instance_*` CPU/memory (and Envoy ALB series
+  when published).
 
 Three things stay in lockstep, same as the sample plugin:
 
@@ -140,6 +205,25 @@ The host provides `react`, `react-dom`, `react-router`, and
 `vite.config.ts`). This plugin bundles its own copy of `@datum-cloud/datum-ui`
 (not shared as a singleton in v1), so its CSS ships with the bundle.
 
+## Network interface traffic
+
+The instance Metrics page shows "Network in" and "Network out" charts. They
+query two counters through queryapi:
+
+- `datum_vpc_interface_receive_bytes_total`
+- `datum_vpc_interface_transmit_bytes_total`
+
+The `network` label on both metrics equals
+`status.networkInterfaces[].networkInterfaceRef.name` on the Instance. The
+queries in `src/lib/metrics-queries.ts` select series by that value.
+
+Charts show bits per second: `rate(<metric>[5m]) * 8`.
+
+Before charting, `src/lib/network-interface-metrics.ts` probes the label
+values of `network` on the receive metric. If no value matches the instance's
+interfaces, the page keeps showing "Not collected yet". The charts appear
+when series exist for the instance's interfaces.
+
 ## File layout
 
 ```
@@ -147,7 +231,12 @@ ui/consumer/
   vite.config.ts          MF container "workload.compute.datumapis.com"
   public/plugin-manifest.json
   src/
-    lib/api.ts             fetch wrappers + useQuery hooks (workloads/instances)
+    lib/api.ts             fetch wrappers + useQuery hooks (workloads/instances/HTTPProxy)
+    lib/prometheus.ts       queryapi metric queries + useQuery hooks
+    lib/prometheus-format.ts  Prometheus results → chart series / card values
+    lib/o11y-logs.ts        Loki query_range + ALB LogQL
+    lib/metrics-queries.ts  PromQL builders + instance identity discovery
+    lib/network-interface-metrics.ts  probe for network interface metric labels
     lib/format.ts           formatUptime / splitSlashValue (ported as-is)
     schema.ts                Zod schemas for Workload / Instance
     adapter.ts                raw K8s JSON → schema mappers
@@ -156,5 +245,8 @@ ui/consumer/
     pages/workload-list.tsx
     pages/workload-detail.tsx
     pages/instance-detail.tsx
+    pages/instance-overview.tsx
+    pages/instance-logs.tsx
+    pages/instance-metrics.tsx
     main.tsx                 standalone preview harness only
 ```

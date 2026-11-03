@@ -4,15 +4,18 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
+	jsonpatch "github.com/evanphx/json-patch/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -162,9 +165,29 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 		Status: metav1.ConditionTrue,
 		Reason: computev1alpha.InstanceAvailableReasonAvailable,
 	})
-	cl := holderTestClient(instance, newHolderTestInterface())
+	iface := newHolderTestInterface()
+	patched := false
+	cl := fake.NewClientBuilder().WithScheme(newClaimTestScheme()).WithObjects(instance, iface).
+		WithStatusSubresource(iface, instance).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, cl client.Client, subresource string, object client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			settings := map[string]any{"nameservers": []any{"fd53::53"}, "searches": []any{internalDNSTestDefaultDomain}}
+			original, err := json.Marshal(map[string]any{"status": map[string]any{"dns": settings}})
+			require.NoError(t, err)
+			data, err := patch.Data(object)
+			require.NoError(t, err)
+			merged, err := jsonpatch.MergePatch(original, data)
+			require.NoError(t, err)
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(merged, &result))
+			dns := result["status"].(map[string]any)["dns"].(map[string]any)
+			require.Equal(t, []any{"fd53::53"}, dns["nameservers"])
+			require.Equal(t, []any{internalDNSTestDefaultDomain}, dns["searches"])
+			patched = true
+			return cl.SubResource(subresource).Patch(ctx, object, patch, opts...)
+		},
+	}).Build()
 
-	r := &InstanceReconciler{NetworkingEnabled: true}
+	r := &InstanceReconciler{NetworkingEnabled: true, InternalDNSEnabled: true}
 	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, instance))
 
 	condition := getHolderCondition(t, cl)
@@ -173,6 +196,7 @@ func TestReconcileHolderAvailability_BecomesAvailable(t *testing.T) {
 	assert.Equal(t, computev1alpha.InstanceAvailableReasonAvailable, condition.Reason)
 	assert.Equal(t, int64(4), condition.ObservedGeneration,
 		"the interface's generation, not the instance's")
+	require.True(t, patched)
 }
 
 // TestReconcileHolderAvailability_LeavesAvailable covers the drain path: an
@@ -464,4 +488,24 @@ type holderFailingStatusWriter struct {
 
 func (w *holderFailingStatusWriter) Update(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
 	return errors.New("status update refused")
+}
+
+func TestHolderAvailabilityDNSDisabledUsesStatusUpdate(t *testing.T) {
+	instance := newHolderTestInstance(&metav1.Condition{Type: computev1alpha.InstanceAvailable, Status: metav1.ConditionTrue, Reason: computev1alpha.InstanceAvailableReasonAvailable})
+	iface := newHolderTestInterface()
+	updates, patches := 0, 0
+	cl := fake.NewClientBuilder().WithScheme(newClaimTestScheme()).WithObjects(instance, iface).WithStatusSubresource(iface, instance).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, subresource string, object client.Object, opts ...client.SubResourceUpdateOption) error {
+			updates++
+			return cl.SubResource(subresource).Update(ctx, object, opts...)
+		},
+		SubResourcePatch: func(context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
+			patches++
+			return errors.New("unexpected patch")
+		},
+	}).Build()
+	r := &InstanceReconciler{NetworkingEnabled: true}
+	require.NoError(t, r.reconcileHolderAvailability(context.Background(), cl, instance))
+	require.Equal(t, 1, updates)
+	require.Zero(t, patches)
 }

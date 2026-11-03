@@ -84,10 +84,10 @@ WorkloadDeploymentSpec defines the desired state of WorkloadDeployment
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>cityCode</b></td>
-        <td>string</td>
+        <td><b><a href="#workloaddeploymentspeclocationref">locationRef</a></b></td>
+        <td>object</td>
         <td>
-          deployments can be scheduled in ways other than just a city code.<br/>
+          The location where this deployment runs.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -119,6 +119,21 @@ WorkloadDeploymentSpec defines the desired state of WorkloadDeployment
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>networkAttachment</b></td>
+        <td>enum</td>
+        <td>
+          How a guest takes the network interface the platform gives it, resolved
+from the runtime class this deployment runs in.
+
+The class catalog is readable only where a deployment is created, so the
+answer is resolved once here and carried to the cell that acts on it. An
+empty value asks the networking layer for nothing and leaves the cell's
+own setting deciding, which is what every deployment does today.<br/>
+          <br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>replicas</b></td>
         <td>integer</td>
         <td>
@@ -128,6 +143,33 @@ unset, the deployment reconciles to scaleSettings.minReplicas.<br/>
             <i>Format</i>: int32<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.locationRef
+<sup><sup>[↩ Parent](#workloaddeploymentspec)</sup></sup>
+
+
+
+The location where this deployment runs.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of a datum location<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -348,7 +390,13 @@ Describes the desired configuration of an instance
         <td><b><a href="#workloaddeploymentspectemplatespecnetworkinterfacesindex">networkInterfaces</a></b></td>
         <td>[]object</td>
         <td>
-          Network interface configuration.<br/>
+          Network interface configuration.
+
+Keyed by interface name so an interface keeps its identity, and therefore
+its addresses, across updates to the rest of the list.
+
+Limited to a single interface until the data plane can attach more than
+one to an instance.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -389,7 +437,13 @@ Virtual Machine.<br/>
 
 
 
+InstanceNetworkInterface describes one interface an instance needs. The
+fields beyond `network` and `networkPolicy` are copied verbatim onto the
+NetworkInterfaceClaim created for each instance slot, so they carry the same
+meaning, defaults, and immutability the claim API defines.
 
+The location an interface is claimed in is implicit: the claim is created in
+the control plane serving the instance, which is already location scoped.
 
 <table>
     <thead>
@@ -408,6 +462,53 @@ Virtual Machine.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecnetworkinterfacesindexaddressesindex">addresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          Requests for addresses beyond the ones the interface holds inside its
+network, such as a public IPv4 address in front of a private one. Each is
+reported in the interface's `externalAddresses` status.
+
+Omit this field for ordinary private addressing, which is the common case.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(a, self.exists_one(b, b.class == a.class)): Each address class may be requested at most once</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>ipFamilies</b></td>
+        <td>[]enum</td>
+        <td>
+          The address families the interface must carry, in priority order. List
+[IPv6, IPv4] for a dual-stack interface. The first family listed holds the
+interface's primary address, which is the one reported as the instance's
+network IP.
+
+Every family listed must be satisfiable or the interface is never
+published, so asking for a family the network does not carry fails rather
+than yielding a partially addressed interface.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be requested at most once</li><li>self == oldSelf: ipFamilies is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
+            <i>Default</i>: [IPv6]<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The name of the interface, such as eth0 or eth1. It is both the device
+name the guest operating system sees and the suffix of the interface
+claim's name, which is what keeps an interface's addresses with the
+instance slot across replacement.
+
+Immutable, because the guest is configured against it and the claim is
+named after it.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: name is immutable and cannot be changed after creation</li>
+            <i>Default</i>: eth0<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloaddeploymentspectemplatespecnetworkinterfacesindexnetworkpolicy">networkPolicy</a></b></td>
         <td>object</td>
         <td>
@@ -417,6 +518,29 @@ If provided, this will result in a platform managed network policy being
 created that targets the specfiic instance interface. This network policy
 will be of the lowest priority, and can effectively be prohibited from
 influencing network connectivity.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reclaimPolicy</b></td>
+        <td>enum</td>
+        <td>
+          What becomes of the interface, and its addresses, when the instance slot
+it serves goes away.
+
+Delete returns the addresses to IPAM, so an instance recreated later comes
+back on different addresses. Retain keeps them reserved, and billable, so a
+later instance filling the same slot returns to the same addresses. Choose
+Retain when an address is published in DNS, allowed through a firewall, or
+otherwise depended on from outside.
+
+Both policies keep the addresses for as long as the slot exists, including
+across instance replacement. They differ only on scale-down and deletion.
+
+Immutable. An address keeps the policy it was allocated under.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: reclaimPolicy is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: Delete, Retain<br/>
+            <i>Default</i>: Delete<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -455,6 +579,38 @@ The network to attach the network interface to.
 Defaults to the namespace for the type the reference is embedded in.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.networkInterfaces[index].addresses[index]
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecnetworkinterfacesindex)</sup></sup>
+
+
+
+InstanceNetworkInterfaceAddressRequest asks for one address beyond the ones
+the interface holds inside its network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The IPAM class to allocate from, such as public-ipv4.
+
+A class names a kind of address, and the platform decides which pool and
+prefix length serve it. A class never names a pool, a prefix length, or a
+CIDR, so a class cannot be used to ask for a particular address.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -682,10 +838,46 @@ A virtual machine runtime will be provided all requested resources.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          The execution tier the instance runs in. The value names a RuntimeClass
+in the platform catalog, which Datum publishes and customers do not
+define. Publishing a new tier adds a class instead of changing this API.
+
+The class is independent of the runtime shape above. Either a sandbox or
+a virtual machine can run in any class the platform offers.
+
+An empty value selects the class the catalog marks as default. Admission
+records that choice on the workload and never resolves it again, so an
+existing workload keeps the tier, cost, and startup characteristics it
+was created with.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#workloaddeploymentspectemplatespecruntimesandbox">sandbox</a></b></td>
         <td>object</td>
         <td>
           A sandbox is a managed isolated environment capable of running containers.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>terminationGracePeriodSeconds</b></td>
+        <td>integer</td>
+        <td>
+          How long, in seconds, the instance's processes have to exit after being
+asked to stop. When an instance is deleted, replaced, or suspended, each
+container's main process receives SIGTERM, and any process still running
+when the period ends is killed. Zero kills the processes immediately.
+
+The instance keeps its resources and addresses until it has stopped, so
+a longer period delays their release. A value above zero requires a
+runtime class that offers graceful termination. When unset, the runtime
+class's own default applies.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 300<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -729,13 +921,17 @@ A virtual machine runtime will be provided all requested resources.
         <td>
           Full or partial URL of the instance type resource to use for this instance.
 
-For example: `datumcloud/d1-standard-2`
+For example: `datumcloud-d1-standard-2`
 
 May be combined with `resources` to allow for custom instance types for
 instance families that support customization. Instance types which support
-customization will appear in the form `<project>/<instanceFamily>-custom`.<br/>
+customization will appear in the form `<project>/<instanceFamily>-custom`.
+
+When omitted, the instance runs on the platform's default instance type,
+`datumcloud-d1-standard-2`, for compatibility with workloads written
+before instance types could be chosen.<br/>
         </td>
-        <td>true</td>
+        <td>false</td>
       </tr><tr>
         <td><b>requests</b></td>
         <td>map[string]int or string</td>
@@ -778,6 +974,19 @@ A sandbox is a managed isolated environment capable of running containers.
 used by the instance.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecruntimesandboxsysctlsindex">sysctls</a></b></td>
+        <td>[]object</td>
+        <td>
+          Linux kernel parameters to set for every container in the sandbox.
+
+Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+value must be published by the selected runtime class; prefixes and
+wildcards are never accepted. This keeps host-level kernel configuration
+outside the workload API while allowing an isolated runtime to expose a
+deliberately small set of guest-kernel options.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -802,7 +1011,8 @@ used by the instance.<br/>
         <td><b>image</b></td>
         <td>string</td>
         <td>
-          The fully qualified container image name.<br/>
+          The container image to run. Must include a registry, e.g.
+"ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -869,6 +1079,13 @@ take precedence.<br/>
         <td>object</td>
         <td>
           The resource requirements for the container, such as CPU, memory, and GPUs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontext">securityContext</a></b></td>
+        <td>object</td>
+        <td>
+          Security options for the container.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1412,6 +1629,127 @@ The resource requirements for the container, such as CPU, memory, and GPUs.
 </table>
 
 
+### WorkloadDeployment.spec.template.spec.runtime.sandbox.containers[index].securityContext
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandboxcontainersindex)</sup></sup>
+
+
+
+Security options for the container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowPrivilegeEscalation</b></td>
+        <td>boolean</td>
+        <td>
+          Whether a process in the container can gain more privileges than its
+parent. Setuid binaries and file capabilities rely on it, so an image that
+escalates at startup, such as one running ping or a privilege-dropping
+entrypoint, needs it true.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the value it runs with.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontextcapabilities">capabilities</a></b></td>
+        <td>object</td>
+        <td>
+          The Linux capabilities to grant to or remove from the container.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontextseccompprofile">seccompProfile</a></b></td>
+        <td>object</td>
+        <td>
+          The seccomp profile confining the container's system calls.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the profile it runs with.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.runtime.sandbox.containers[index].securityContext.capabilities
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontext)</sup></sup>
+
+
+
+The Linux capabilities to grant to or remove from the container.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>add</b></td>
+        <td>[]string</td>
+        <td>
+          The capabilities to grant to the container. Each must be one that the
+selected runtime class grants. ALL is not allowed, so a container states
+exactly what it needs.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>drop</b></td>
+        <td>[]string</td>
+        <td>
+          The capabilities to remove from the container. The platform already removes
+every capability, so drop is accepted for compatibility with Kubernetes
+manifests, for example drop: [ALL]. Naming a capability here also removes
+it when the runtime class would otherwise grant it by default.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.runtime.sandbox.containers[index].securityContext.seccompProfile
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandboxcontainersindexsecuritycontext)</sup></sup>
+
+
+
+The seccomp profile confining the container's system calls.
+
+Left unset, the selected runtime class's published default is written here
+at admission, so the stored container states the profile it runs with.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          The kind of seccomp profile to apply.<br/>
+          <br/>
+            <i>Enum</i>: RuntimeDefault, Unconfined<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
 ### WorkloadDeployment.spec.template.spec.runtime.sandbox.containers[index].volumeAttachments[index]
 <sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandboxcontainersindex)</sup></sup>
 
@@ -1474,6 +1812,42 @@ reference.
         <td>string</td>
         <td>
           The name of the secret<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### WorkloadDeployment.spec.template.spec.runtime.sandbox.sysctls[index]
+<sup><sup>[↩ Parent](#workloaddeploymentspectemplatespecruntimesandbox)</sup></sup>
+
+
+
+SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+selected runtime class decides which exact name/value pairs it supports.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          The exact dotted sysctl name, for example net.ipv4.ip_forward.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>value</b></td>
+        <td>string</td>
+        <td>
+          The value to write before the sandbox's containers start. The selected
+runtime class must publish this exact value for this name.<br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -1683,13 +2057,6 @@ The location which the instance has been scheduled to
         <td>string</td>
         <td>
           Name of a datum location<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -2436,13 +2803,6 @@ Known condition types are: "Available", "Progressing"<br/>
         </td>
         <td>false</td>
       </tr><tr>
-        <td><b><a href="#workloaddeploymentstatuslocation">location</a></b></td>
-        <td>object</td>
-        <td>
-          The location which the deployment has been scheduled to<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
         <td><b>observedGeneration</b></td>
         <td>integer</td>
         <td>
@@ -2458,6 +2818,14 @@ latest spec (e.g. a restart request).<br/>
         <td>string</td>
         <td>
           Selector is the label selector that identifies Pods backing this deployment.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>suspended</b></td>
+        <td>boolean</td>
+        <td>
+          Suspended, when true, requests that all instances managed by this deployment
+be stopped without releasing their placement, disk attachments, or quota allocation.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -2537,39 +2905,5 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### WorkloadDeployment.status.location
-<sup><sup>[↩ Parent](#workloaddeploymentstatus)</sup></sup>
-
-
-
-The location which the deployment has been scheduled to
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b>name</b></td>
-        <td>string</td>
-        <td>
-          Name of a datum location<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>

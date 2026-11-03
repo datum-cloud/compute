@@ -43,3 +43,6 @@ sample-compute-build/
 
 # Module Federation diagnostics / typegen cache
 ui/**/.mf/
+
+# jsonnet-bundler vendored libraries for dashboards (fetched by `task dashboards:install`)
+observability/**/vendor/

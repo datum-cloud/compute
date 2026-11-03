@@ -42,8 +42,10 @@ import (
 	"go.miloapis.com/milo/pkg/downstreamclient"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
+	"go.datum.net/compute/internal/features"
 	quotametrics "go.datum.net/compute/internal/quota"
 	"go.datum.net/compute/internal/referenceddata"
+	"go.datum.net/compute/pkg/instancetype"
 )
 
 const (
@@ -111,31 +113,7 @@ const maxEventNoteLen = 1024
 
 // instanceTypeD1Standard2 is the platform instance type name for the
 // 1 vCPU / 2 GiB size used as the catalog baseline for quota accounting.
-const instanceTypeD1Standard2 = "datumcloud/d1-standard-2"
-
-// instanceTypeResources holds the vCPU and memory for a named instance type.
-type instanceTypeResources struct {
-	// CPUMillicores is the number of CPU millicores (1000 = 1 vCPU).
-	CPUMillicores int64
-	// MemoryMiB is the amount of RAM in mebibytes.
-	MemoryMiB int64
-}
-
-// instanceTypeCatalog maps platform instance type names to their resource
-// dimensions used for quota accounting when the instance spec carries only an
-// instanceType and no explicit container Limits or instance-level Requests.
-//
-// These are the platform-declared quota sizes for the instance type, not a
-// derivation of any infra provider's machine type. (infra-provider-gcp separately
-// maps datumcloud/d1-standard-2 to the GCP n2-standard-2 machine type for VM
-// provisioning; that mapping does not define the quota size here.) When new
-// instance types are added, add them here with their vCPU/memory values.
-var instanceTypeCatalog = map[string]instanceTypeResources{
-	instanceTypeD1Standard2: {
-		CPUMillicores: 1000, // 1 vCPU
-		MemoryMiB:     2048, // 2 GiB
-	},
-}
+const instanceTypeD1Standard2 = instancetype.D1Standard2
 
 // Quota-pending requeue backoff. The instance controller is normally re-queued by
 // the ResourceClaim watch when a claim is granted, but that grant event lives on
@@ -201,6 +179,8 @@ type InstanceProjectNamespaceFunc func(
 
 // InstanceReconciler reconciles an Instance object
 type InstanceReconciler struct {
+	// InternalDNSEnabled enables publication identity and status isolation.
+	InternalDNSEnabled bool
 	mgr                clusterGetter
 	scheme             *runtime.Scheme
 	quotaClientManager *quotametrics.ProjectQuotaClientManager
@@ -208,6 +188,8 @@ type InstanceReconciler struct {
 	// recorder emits Kubernetes events on the Instance object for quota failure
 	// modes so operators can diagnose issues via `kubectl describe`.
 	recorder events.EventRecorder
+	// events records the instance's lifecycle for the project activity timeline.
+	events *lifecycleEventWriter
 	// projectIDForInstance derives the Milo project ID used for quota
 	// ResourceClaim management. In Milo mode it returns string(clusterName); in
 	// single-cell mode it reads the upstream-cluster-name label from the edge
@@ -252,6 +234,7 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 //nolint:gocyclo // conditions are reconciled, persisted, then returned as errors; the ordered pipeline is inherently branchy
@@ -308,6 +291,8 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
+	priorReadyReason := readyReason(&instance)
+
 	statusChanged, quotaErr := r.reconcileQuotaCondition(ctx, req.ClusterName, &instance)
 
 	// Safety-net requeue while quota is not yet granted, computed up front so
@@ -338,6 +323,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	interfacesChanged, interfacesErr := r.reconcileNetworkInterfaceStatus(ctx, cl.GetClient(), &instance)
 	statusChanged = interfacesChanged || statusChanged
 
+	runtimeChanged, runtimeRecheck, runtimeErr := r.reconcileRuntimeReadyCondition(ctx, cl.GetClient(), &instance)
+	statusChanged = runtimeChanged || statusChanged
+
 	// Transient errors from the quota and Ready-condition reconciles are
 	// returned only after any condition change has been persisted, so the
 	// failure reason is visible on the Instance while controller-runtime
@@ -345,6 +333,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	readyChanged, readyErr := r.reconcileInstanceReadyCondition(ctx, cl.GetClient(), &instance, r.checkForNetworkCreationFailure)
 	if readyErr == nil && interfacesErr != nil {
 		readyErr = fmt.Errorf("failed reconciling network interface status: %w", interfacesErr)
+	}
+	if readyErr == nil && runtimeErr != nil {
+		readyErr = fmt.Errorf("failed reconciling runtime ready condition: %w", runtimeErr)
 	}
 
 	// Publish availability to the interfaces the instance holds while every
@@ -364,6 +355,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 			}
 			return ctrl.Result{}, err
 		}
+		r.events.recordInstanceReadyTransition(ctx, cl, &instance, priorReadyReason)
 		if readyErr != nil {
 			return ctrl.Result{}, readyErr
 		}
@@ -402,12 +394,15 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Honor both the quota safety-net requeue and the referenced-data resolver
-	// requeue: pick the soonest non-zero deadline so neither pending wait is
-	// dropped.
+	// Honor the quota safety-net requeue, the referenced-data resolver requeue,
+	// and the end of a runtime crash window: pick the soonest non-zero deadline
+	// so no pending wait is dropped.
 	effectiveRequeue := quotaReq
-	if requeueAfter > 0 && (effectiveRequeue == 0 || requeueAfter < effectiveRequeue) {
-		effectiveRequeue = requeueAfter
+	_, _, interfaceRecheck := unprogrammedInterface(&instance, time.Now())
+	for _, after := range []time.Duration{requeueAfter, runtimeRecheck, interfaceRecheck} {
+		if after > 0 && (effectiveRequeue == 0 || after < effectiveRequeue) {
+			effectiveRequeue = after
+		}
 	}
 	if effectiveRequeue > 0 {
 		logger.Info("requeuing instance", "after", effectiveRequeue.String(),
@@ -794,7 +789,8 @@ func isTerminalReferencedDataReason(reason string) bool {
 	switch reason {
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized,
-		computev1alpha.ReferencedDataReasonSourceTooLarge:
+		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong:
 		return true
 	}
 	return false
@@ -1212,8 +1208,8 @@ func (r *InstanceReconciler) reconcileQuotaCondition(ctx context.Context, cluste
 	}
 }
 
-// Finalize removes the downstream write-back Instance when the local Instance is
-// deleted.
+// Finalize removes the write-back Instance before releasing the cell Instance.
+// The write-back's projection finalizer removes the project copy first.
 func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	instance := obj.(*computev1alpha.Instance)
 
@@ -1229,8 +1225,15 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 	if err := r.FederationClient.Delete(ctx, downstreamInstance); client.IgnoreNotFound(err) != nil {
 		return finalizer.Result{}, fmt.Errorf("failed deleting downstream write-back instance: %w", err)
 	}
-
-	return finalizer.Result{}, nil
+	// Delete returns before the write-back's projection finalizer has run. Keep
+	// the cell Instance until the project projection and write-back are gone.
+	if err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(instance), downstreamInstance); err != nil {
+		if apierrors.IsNotFound(err) {
+			return finalizer.Result{}, nil
+		}
+		return finalizer.Result{}, fmt.Errorf("failed checking downstream write-back deletion: %w", err)
+	}
+	return finalizer.Result{}, fmt.Errorf("waiting for downstream write-back instance %s/%s to be deleted", instance.Namespace, instance.Name)
 }
 
 // writeBackToUpstream copies the Instance spec and status to the upstream
@@ -1278,7 +1281,7 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		computev1alpha.WorkloadDeploymentUIDLabel,
 		computev1alpha.InstanceIndexLabel,
 		computev1alpha.WorkloadDeploymentNameLabel,
-		computev1alpha.CityCodeLabel,
+		computev1alpha.LocationLabel,
 		computev1alpha.WorkloadNameLabel,
 		computev1alpha.PlacementNameLabel,
 	} {
@@ -1313,8 +1316,9 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 
 	writeBack := &computev1alpha.Instance{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
+			Name:       instance.Name,
+			Namespace:  instance.Namespace,
+			Finalizers: []string{instanceProjectionFinalizer},
 			Labels: map[string]string{
 				downstreamclient.UpstreamOwnerClusterNameLabel: encodedClusterName,
 				downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamNamespace,
@@ -1322,12 +1326,16 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 				computev1alpha.WorkloadDeploymentUIDLabel:      instance.Labels[computev1alpha.WorkloadDeploymentUIDLabel],
 				computev1alpha.InstanceIndexLabel:              instance.Labels[computev1alpha.InstanceIndexLabel],
 				computev1alpha.WorkloadDeploymentNameLabel:     instance.Labels[computev1alpha.WorkloadDeploymentNameLabel],
-				computev1alpha.CityCodeLabel:                   instance.Labels[computev1alpha.CityCodeLabel],
+				computev1alpha.LocationLabel:                   instance.Labels[computev1alpha.LocationLabel],
 				computev1alpha.WorkloadNameLabel:               instance.Labels[computev1alpha.WorkloadNameLabel],
 				computev1alpha.PlacementNameLabel:              instance.Labels[computev1alpha.PlacementNameLabel],
 			},
 		},
 		Spec: instance.Spec,
+	}
+
+	if r.InternalDNSEnabled {
+		writeBack.Labels[computev1alpha.InstanceSourceUIDLabel] = string(instance.UID)
 	}
 
 	// The hub's garbage collector reclaims every copy when the deployment is
@@ -1374,7 +1382,8 @@ func (r *InstanceReconciler) writeBackToUpstream(ctx context.Context, instance *
 		return err
 	}
 
-	if ownerChanged ||
+	finalizerChanged := controllerutil.AddFinalizer(existing, instanceProjectionFinalizer)
+	if ownerChanged || finalizerChanged ||
 		!apiequality.Semantic.DeepEqual(existing.Spec, instance.Spec) ||
 		!apiequality.Semantic.DeepEqual(ownedLabels, writeBack.Labels) {
 		existing.Spec = instance.Spec
@@ -1476,7 +1485,30 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		},
 	}
 
-	cpuMillicores, memMiB, resolved := resolveInstanceResources(instance)
+	// InstanceType objects are published into each project's control plane and
+	// nothing copies them into cells, so they are read from the project that
+	// owns the instance, through the same client its claim is written with.
+	// While the gate is off there is no catalog to read and sizing comes from
+	// the hardcoded catalog alone, so the cell takes no dependency on the
+	// InstanceType API.
+	var readInstanceType instanceTypeReader
+	if features.FeatureGate.Enabled(features.InstanceTypes) {
+		readInstanceType = instanceTypeReaderFromClient(projectClient)
+	}
+
+	cpuMillicores, memMiB, resolved, err := resolveInstanceResources(ctx, instance, readInstanceType)
+	if err != nil {
+		msg := fmt.Sprintf("Quota sizing unavailable for instance %s/%s: %v", instance.Namespace, instance.Name, err)
+		r.emitEvent(instance, corev1.EventTypeWarning,
+			computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable, eventActionClaimingQuota, msg)
+		quotametrics.EvalFailuresTotal.WithLabelValues(quotametrics.ReasonBackendUnavailable).Inc()
+		return &metav1.Condition{
+			Type:    computev1alpha.InstanceQuotaGranted,
+			Status:  metav1.ConditionFalse,
+			Reason:  computev1alpha.InstanceQuotaGrantedReasonBackendUnavailable,
+			Message: msg,
+		}, fmt.Errorf("sizing instance %s/%s: %w", instance.Namespace, instance.Name, err)
+	}
 	if !resolved {
 		logger.Info("unable to resolve resource amounts from instance spec, claiming instance count only")
 	} else {
@@ -1492,14 +1524,24 @@ func (r *InstanceReconciler) reconcileQuotaClaim(ctx context.Context, clusterNam
 		)
 	}
 
+	claimLabels := map[string]string{
+		instanceQuotaClaimSourceLabel:    r.edgeClusterName,
+		instanceQuotaClaimNamespaceLabel: instance.Namespace,
+	}
+	// Records which runtime class consumed the budget. Claim requests name flat
+	// resource types and are immutable after creation, so entitling a class
+	// separately would require splitting the pooled resource types and
+	// re-granting every project. This label makes per-class consumption of the
+	// pooled budget measurable before that one-way split.
+	if class := instance.Spec.Runtime.Class; class != "" {
+		claimLabels[computev1alpha.RuntimeClassLabel] = class
+	}
+
 	desired := &quotav1alpha1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      claimName,
 			Namespace: claimNamespace,
-			Labels: map[string]string{
-				instanceQuotaClaimSourceLabel:    r.edgeClusterName,
-				instanceQuotaClaimNamespaceLabel: instance.Namespace,
-			},
+			Labels:    claimLabels,
 		},
 		Spec: quotav1alpha1.ResourceClaimSpec{
 			ConsumerRef: quotav1alpha1.ConsumerRef{
@@ -1588,6 +1630,32 @@ func (r *InstanceReconciler) classifyCreateError(
 	}, fmt.Errorf("failed creating resource claim: %w", err)
 }
 
+// instanceTypeReader fetches an InstanceType object by name from the project
+// control plane that owns an instance. It returns (nil, nil) when the project
+// does not publish the type, so a caller can fall through to the hardcoded
+// catalog before declaring the sizing unresolved. A non-nil error is transient
+// and the caller retries rather than under-claiming quota.
+type instanceTypeReader func(ctx context.Context, name string) (*computev1alpha.InstanceType, error)
+
+// instanceTypeReaderFromClient returns an instanceTypeReader backed by a live
+// client Get against a project control plane. A retired name is read under the
+// name that replaced it. A project that does not serve the InstanceType kind
+// yet (its provisioning has not reached it) is treated like one that does not
+// publish the type, so sizing falls back to the hardcoded catalog.
+func instanceTypeReaderFromClient(c client.Client) instanceTypeReader {
+	return func(ctx context.Context, name string) (*computev1alpha.InstanceType, error) {
+		var t computev1alpha.InstanceType
+		err := c.Get(ctx, types.NamespacedName{Name: instancetype.Canonical(name)}, &t)
+		if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &t, nil
+	}
+}
+
 // resolveInstanceResources determines the vCPU and memory amounts to claim
 // for an instance. Explicit sizing always takes precedence over the instance
 // type catalog, so a workload that overrides container limits is accounted at
@@ -1597,12 +1665,17 @@ func (r *InstanceReconciler) classifyCreateError(
 //  1. Sandbox container Limits (sum across all containers) — all containers
 //     must have both cpu and memory Limits for this path to succeed.
 //  2. Instance-level Resources.Requests — both cpu and memory must be present.
-//  3. instanceTypeCatalog lookup by instanceType — used for the common case
-//     where a workload is sized only by instanceType with no explicit limits.
+//  3. The published InstanceType object the instance selects, when its name is
+//     non-empty and a reader is available.
+//  4. The hardcoded instancetype catalog, which every consumer imports so the
+//     claimed amounts match what the provider runs. This covers old installs
+//     and a type not yet projected into the cell.
 //
-// Returns (0, 0, false) when none of the above yield a complete sizing, so
-// the caller falls back to claiming only the instance count.
-func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores int64, memMiB int64, resolved bool) {
+// Returns (0, 0, false, nil) when none of the above yield a complete sizing, so
+// the caller falls back to claiming only the instance count. A failed
+// InstanceType read (readInstanceType non-nil) returns a non-nil error instead,
+// so the caller surfaces a transient failure rather than under-claiming.
+func resolveInstanceResources(ctx context.Context, instance *computev1alpha.Instance, readInstanceType instanceTypeReader) (cpuMillicores int64, memMiB int64, resolved bool, err error) {
 	rt := instance.Spec.Runtime
 
 	// Path 1: explicit per-container Limits — most specific, wins if fully set.
@@ -1625,10 +1698,10 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 			totalMem.Add(mem)
 		}
 		if allSet && len(rt.Sandbox.Containers) > 0 {
-			return totalCPU.MilliValue(), totalMem.Value() / (1024 * 1024), true
+			return totalCPU.MilliValue(), totalMem.Value() / (1024 * 1024), true, nil
 		}
 		// Containers exist but limits are incomplete — fall through so the
-		// instance-level Requests and instanceType catalog paths can still
+		// instance-level Requests and instance type catalog paths can still
 		// yield a sizing.
 	}
 
@@ -1636,18 +1709,44 @@ func resolveInstanceResources(instance *computev1alpha.Instance) (cpuMillicores 
 	cpu, hasCPU := rt.Resources.Requests[corev1.ResourceCPU]
 	mem, hasMem := rt.Resources.Requests[corev1.ResourceMemory]
 	if hasCPU && hasMem {
-		return cpu.MilliValue(), mem.Value() / (1024 * 1024), true
+		return cpu.MilliValue(), mem.Value() / (1024 * 1024), true, nil
 	}
 
-	// Path 3: instanceType catalog — handles the typical production case where
-	// instanceType is the only sizing signal and no explicit limits are set.
-	if rt.Resources.InstanceType != "" {
-		if spec, ok := instanceTypeCatalog[rt.Resources.InstanceType]; ok {
-			return spec.CPUMillicores, spec.MemoryMiB, true
+	// Path 3: the InstanceType object the owning project publishes for the
+	// selected name.
+	if readInstanceType != nil && rt.Resources.InstanceType != "" {
+		t, rerr := readInstanceType(ctx, rt.Resources.InstanceType)
+		if rerr != nil {
+			return 0, 0, false, fmt.Errorf("reading InstanceType %q: %w", rt.Resources.InstanceType, rerr)
+		}
+		if t != nil {
+			cpuMillicores = t.Spec.Resources.CPU.MilliValue()
+			memMiB = t.Spec.Resources.Memory.Value() / (1024 * 1024)
+			if cpuMillicores > 0 && memMiB > 0 {
+				return cpuMillicores, memMiB, true, nil
+			}
+			// A type published with a zero dimension is invalid; fall through to
+			// the hardcoded catalog rather than claim an empty amount.
 		}
 	}
 
-	return 0, 0, false
+	// TODO(instance-type-catalog): delete this hardcoded lookup table once the
+	// live InstanceType CRD read path above is proven in production. The static
+	// go.datum.net/compute/pkg/instancetype catalog only covers names the reader
+	// does not hold yet (old installs, types not projected into this cell); once
+	// every cell reliably serves InstanceType objects, sizing must come from a
+	// single source — the published catalog — and could otherwise drift from the
+	// footprint compute claims against quota.
+
+	// Path 4: hardcoded instance type catalog — handles the typical production
+	// case where instanceType is the only sizing signal and no explicit limits
+	// are set. The providers that run the instance share this catalog, so the
+	// claimed amounts match the amounts the instance receives.
+	if sizing, ok := instancetype.Lookup(rt.Resources.InstanceType); ok {
+		return sizing.CPUMillicores, sizing.MemoryMiB, true, nil
+	}
+
+	return 0, 0, false, nil
 }
 
 // instanceBlockingReasonPriority ranks Instance blocking reasons so the most
@@ -1680,6 +1779,7 @@ func instanceBlockingReasonPriority(reason string) int {
 		computev1alpha.InstanceReadyReasonConfigurationError,
 		computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
+		computev1alpha.ReferencedDataReasonSourceNameTooLong,
 		computev1alpha.ReferencedDataReasonSourceUnauthorized:
 		// Hard runtime errors are user-actionable (wrong image, crashing app, bad
 		// config) and rank highest among non-infra reasons so they are not buried
@@ -1840,6 +1940,12 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 				// PendingEvaluation reason displace the generic not-programmed
 				// fallback when no provider sub-condition is set yet.
 				continue
+			case computev1alpha.InstanceRuntimeReady:
+				// No runtime Pod is expected before the instance is programmed, so
+				// RuntimeNotObserved is not a cause.
+				if cond.Status != metav1.ConditionFalse {
+					continue
+				}
 			}
 			consider(cond.Status, cond.Reason, cond.Message)
 		}
@@ -1877,6 +1983,31 @@ func (r *InstanceReconciler) reconcileInstanceReadyCondition(
 		readyCondition.Status = readyStatus
 		readyCondition.Reason = readyReason
 		readyCondition.Message = readyMessage
+
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
+	}
+
+	// Available is reported once by the provider when the instance starts, so
+	// RuntimeReady is what withdraws Ready from an instance that fails later.
+	// Only False blocks: Unknown means no runtime Pod has been seen, which a
+	// runtime that does not run instances as Pods never produces.
+	runtimeCondition := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceRuntimeReady)
+	if runtimeCondition != nil && runtimeCondition.Status == metav1.ConditionFalse {
+		logger.Info("instance runtime is not ready", "instance", instance.Name, "reason", runtimeCondition.Reason)
+
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = runtimeCondition.Reason
+		readyCondition.Message = runtimeCondition.Message
+
+		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
+	}
+
+	if message, unprogrammed, _ := unprogrammedInterface(instance, time.Now()); unprogrammed {
+		logger.Info("instance network interface is not programmed", "instance", instance.Name)
+
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = computev1alpha.InstanceReadyReasonNetworkInterfaceNotProgrammed
+		readyCondition.Message = message
 
 		return apimeta.SetStatusCondition(&instance.Status.Conditions, *readyCondition), nil
 	}
@@ -1921,6 +2052,20 @@ func (r *InstanceReconciler) checkForNetworkCreationFailure(ctx context.Context,
 			}
 			return false, "", fmt.Errorf("failed fetching network interface claim: %w", err)
 		}
+		switch networkInterfaceClaimHoldingFor(&claim, instance) {
+		case claimHeld:
+		case claimForeign:
+			// Something that may still be live holds a claim of this slot's name,
+			// and compute never releases it. Name the holder, since the instance
+			// stays gated until someone removes it.
+			holder := metav1.GetControllerOf(&claim)
+			return true, fmt.Sprintf("Interface %q: NetworkInterfaceClaimInUse: claim %s is controlled by %s %s",
+				interfaceName, claim.Name, holder.Kind, holder.Name), nil
+		default:
+			// A previous instance's claim, or one being deleted, is about to be
+			// replaced. Its rejection says nothing about this instance.
+			continue
+		}
 
 		if reason, claimMessage := networkInterfaceClaimRejection(&claim); reason != "" {
 			return true, fmt.Sprintf("Interface %q: %s: %s", interfaceName, reason, claimMessage), nil
@@ -1962,7 +2107,10 @@ func (r *InstanceReconciler) reconcileNetworkInterfaceStatus(
 			return false, fmt.Errorf("failed fetching network interface claim: %w", err)
 		}
 
-		if apierrors.IsNotFound(err) {
+		// A previous instance's claim, or one being deleted, is reported as
+		// absent. Publishing its interface reference would point a provider at an
+		// interface that is torn down when the claim goes.
+		if apierrors.IsNotFound(err) || networkInterfaceClaimHoldingFor(&claim, instance) != claimHeld {
 			// Report the interface by name while its claim is still being created,
 			// so the shape of the status matches the spec from the start.
 			interfaces = append(interfaces, instanceNetworkInterfaceStatus(interfaceName, nil))
@@ -2066,6 +2214,7 @@ func (r *InstanceReconciler) SetupWithManager(
 	r.mgr = mgr
 	r.scheme = mgr.GetLocalManager().GetScheme()
 	r.recorder = mgr.GetLocalManager().GetEventRecorder("instance-controller")
+	r.events = newLifecycleEventWriter(instanceLifecycleReportingController)
 	r.edgeClusterName = edgeClusterName
 	r.projectIDForInstance = projectIDForInstance
 	r.projectNamespaceForInstance = projectNamespaceForInstance
@@ -2093,6 +2242,10 @@ func (r *InstanceReconciler) SetupWithManager(
 
 	b := mcbuilder.ControllerManagedBy(mgr).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false))
+
+	// The runtime Pod is the only signal of a crash after the instance starts;
+	// the provider does not revisit the instance's own conditions.
+	b = b.Owns(&corev1.Pod{}, mcbuilder.WithEngageWithLocalCluster(false))
 
 	// A claim binding and allocating is what fills in the instance's addresses,
 	// and no instance event follows it. Registered only with the networking

@@ -9,7 +9,14 @@ import { z } from 'zod';
 
 // ── Workload ─────────────────────────────────────────────────────────────
 
-export type WorkloadHealth = 'Available' | 'Degraded' | 'Unavailable' | 'Unknown';
+/**
+ * `Deploying` covers a workload that has not served yet and is still being
+ * brought up — the controller reports `Available=False` with a transient
+ * reason. See `adapter.ts`'s `deriveWorkloadHealth`.
+ */
+export type WorkloadHealth = 'Available' | 'Degraded' | 'Deploying' | 'Unavailable' | 'Unknown';
+
+const WORKLOAD_HEALTH = ['Available', 'Degraded', 'Deploying', 'Unavailable', 'Unknown'] as const;
 
 const workloadConditionSchema = z.object({
   type: z.string(),
@@ -22,10 +29,12 @@ const workloadConditionSchema = z.object({
 
 export const workloadPlacementRegionSchema = z.object({
   name: z.string(),
-  cityCodes: z.array(z.string()).default([]),
+  locations: z.array(z.string()).default([]),
+  /** Topology selector the placement resolves through, when it does not name locations. */
+  locationSelector: z.string().optional(),
   readyReplicas: z.number(),
   desiredReplicas: z.number(),
-  health: z.enum(['Available', 'Degraded', 'Unavailable', 'Unknown']),
+  health: z.enum(WORKLOAD_HEALTH),
 });
 
 export type WorkloadPlacementRegion = z.infer<typeof workloadPlacementRegionSchema>;
@@ -39,7 +48,7 @@ export const workloadResourceSchema = z.object({
   /** Latest status condition transition, when present — used for “Updated … ago”. */
   updatedAt: z.coerce.date().optional(),
   image: z.string().optional(),
-  health: z.enum(['Available', 'Degraded', 'Unavailable', 'Unknown']),
+  health: z.enum(WORKLOAD_HEALTH),
   /** Programmed replicas (latest template applied) — not the same as ready. */
   currentReplicas: z.number(),
   /** Ready-to-serve replicas — prefer this for health counts. */
@@ -54,9 +63,13 @@ export const workloadResourceSchema = z.object({
   runtimeType: z.string().optional(),
   tags: z.array(z.string()).default([]),
   ports: z.array(z.string()).default([]),
-  regions: z.array(z.string()).default([]),
+  locations: z.array(z.string()).default([]),
   resources: z.string().optional(),
   replicasPerRegion: z.number().optional(),
+  /** Networks the instance template attaches to (`networkInterfaces[].network.name`). */
+  networks: z.array(z.string()).default([]),
+  /** Set once `metadata.deletionTimestamp` is — the finalizer is tearing the workload down. */
+  deleting: z.boolean().default(false),
 });
 
 export type Workload = z.infer<typeof workloadResourceSchema>;
@@ -73,10 +86,12 @@ export type WorkloadList = z.infer<typeof workloadListSchema>;
  */
 export function workloadHealthToBadgeType(
   health: WorkloadHealth
-): 'success' | 'warning' | 'danger' | 'muted' {
+): 'success' | 'warning' | 'danger' | 'info' | 'muted' {
   switch (health) {
     case 'Available':
       return 'success';
+    case 'Deploying':
+      return 'info';
     case 'Degraded':
       return 'warning';
     case 'Unavailable':
@@ -100,6 +115,17 @@ const instanceConditionSchema = z.object({
 
 export type InstanceCondition = z.infer<typeof instanceConditionSchema>;
 
+export const instanceNetworkInterfaceSchema = z.object({
+  /** Spec interface name, for example "eth0". */
+  name: z.string(),
+  /** VPC network the interface attaches to (spec `network.name`). */
+  network: z.string().optional(),
+  /** `status.networkInterfaces[].networkInterfaceRef.name`; the `network` label on traffic series. */
+  networkInterfaceRef: z.string().optional(),
+});
+
+export type InstanceNetworkInterface = z.infer<typeof instanceNetworkInterfaceSchema>;
+
 export const instanceResourceSchema = z.object({
   uid: z.string(),
   name: z.string(),
@@ -107,7 +133,7 @@ export const instanceResourceSchema = z.object({
   createdAt: z.coerce.date(),
   workloadName: z.string().optional(),
   workloadUid: z.string().optional(),
-  city: z.string().optional(),
+  location: z.string().optional(),
   placement: z.string().optional(),
   instanceType: z.string().optional(),
   /** Allocated CPU — from requests, or resolved from instanceType catalog (e.g. "1"). */
@@ -116,9 +142,26 @@ export const instanceResourceSchema = z.object({
   memory: z.string().optional(),
   image: z.string().optional(),
   ports: z.array(z.string()).default([]),
+  /** Sandbox container names, in spec order. Empty for virtual machines. */
+  containers: z.array(z.string()).default([]),
+  /** RuntimeClass the instance names; unset selects the catalog default. */
+  runtimeClass: z.string().optional(),
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
   externalIP: z.string().optional(),
   internalIP: z.string().optional(),
+  /** Host-route in-network IPs Envoy may dial (`upstream_host`), v4 and v6. */
+  internalIPs: z.array(z.string()).default([]),
+  /**
+   * Every in-network address the guest answers on, v4 and v6, for display.
+   * Unlike `internalIPs` it keeps a delegated IPv6 block, by its base address.
+   */
+  addresses: z.array(z.string()).default([]),
+  /** Every externally reachable address, v4 and v6. */
+  externalIPs: z.array(z.string()).default([]),
+  /** Private DNS names allocated in the instance's networks (`status.dns[].hostnames`). */
+  hostnames: z.array(z.string()).default([]),
+  /** Interfaces in spec order, each joined to its status entry by name. */
+  networkInterfaces: z.array(instanceNetworkInterfaceSchema).default([]),
   conditions: z.array(instanceConditionSchema).default([]),
 });
 

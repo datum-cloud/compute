@@ -1,0 +1,946 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package instancepod
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+
+	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/pkg/instancetype"
+	"go.datum.net/compute/pkg/runtimeclass"
+)
+
+const (
+	testContainerName    = "app"
+	testConfigVolumeName = "config"
+	testDiskVolumeName   = "data"
+	testConfigMapName    = "settings"
+	testSecretName       = "api-key"
+	testWorkloadName     = "web"
+	testManagedByKey     = "managed-by"
+	testManagedByValue   = "infra-provider-unikraft"
+	testMemory2Gi        = "2Gi"
+	testLabelValueTrue   = "true"
+	testNginxImage       = "docker.io/library/nginx:1.27"
+
+	// Untyped so they fit both compute and Kubernetes capability lists.
+	testCapAll            = "ALL"
+	testCapChown          = "CHOWN"
+	testCapNetBindService = "NET_BIND_SERVICE"
+	testCapSysAdmin       = "SYS_ADMIN"
+	testCapSetuid         = "SETUID"
+	testCapSetgid         = "SETGID"
+
+	// These class names are invented rather than the ones the platform ships.
+	// Translating an instance must not depend on what its class is called.
+	testClassAzurite = "azurite"
+	testClassBasalt  = "basalt"
+
+	testIPv4ForwardingSysctl     = "net.ipv4.ip_forward"
+	testIPv6AllForwardingSysctl  = "net.ipv6.conf.all.forwarding"
+	testIPv6DefaultForwardSysctl = "net.ipv6.conf.default.forwarding"
+)
+
+// sandboxCapabilities serves the whole sandbox surface, so a translation test
+// exercises translation rather than capability rejection.
+var sandboxCapabilities = runtimeclass.Capabilities{
+	Class: testClassAzurite,
+	Features: []runtimeclass.Feature{
+		runtimeclass.FeatureSandboxRuntime,
+		runtimeclass.FeatureConfigMapVolumes,
+		runtimeclass.FeatureSecretVolumes,
+		runtimeclass.FeatureDeviceVolumeAttachments,
+		runtimeclass.FeatureEnvFrom,
+		runtimeclass.FeatureImagePullSecrets,
+	},
+}
+
+func newInstance(containers ...computev1alpha.SandboxContainer) *computev1alpha.Instance {
+	return &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-0", Namespace: "project"},
+		Spec: computev1alpha.InstanceSpec{
+			Runtime: computev1alpha.InstanceRuntimeSpec{
+				Resources: computev1alpha.InstanceRuntimeResources{InstanceType: instancetype.D1Standard2},
+				Sandbox:   &computev1alpha.SandboxRuntime{Containers: containers},
+			},
+		},
+	}
+}
+
+func TestBuildPodSpecTranslation(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance *computev1alpha.Instance
+		opts     Options
+		want     func(spec corev1.PodSpec) error
+	}{
+		{
+			name: "ConfigMap and Secret volumes pass through",
+			instance: func() *computev1alpha.Instance {
+				instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+				instance.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name: testConfigVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: testConfigMapName},
+							},
+						},
+					},
+					{
+						Name: "credentials",
+						VolumeSource: computev1alpha.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{SecretName: testSecretName},
+						},
+					},
+				}
+				return instance
+			}(),
+			opts: Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				want := []corev1.Volume{
+					{
+						Name: testConfigVolumeName,
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: testConfigMapName},
+							},
+						},
+					},
+					{
+						Name: "credentials",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{SecretName: testSecretName},
+						},
+					},
+				}
+				return diff(want, spec.Volumes)
+			},
+		},
+		{
+			name: "environment carries ValueFrom through",
+			instance: newInstance(computev1alpha.SandboxContainer{
+				Name: testContainerName,
+				Env: []corev1.EnvVar{
+					{Name: "LITERAL", Value: "value"},
+					{
+						Name: "FROM_SECRET",
+						ValueFrom: &corev1.EnvVarSource{
+							SecretKeyRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: testSecretName},
+								Key:                  "token",
+							},
+						},
+					},
+				},
+			}),
+			opts: Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				want := []corev1.EnvVar{
+					{Name: "LITERAL", Value: "value"},
+					{
+						Name: "FROM_SECRET",
+						ValueFrom: &corev1.EnvVarSource{
+							SecretKeyRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: testSecretName},
+								Key:                  "token",
+							},
+						},
+					},
+				}
+				return diff(want, spec.Containers[0].Env)
+			},
+		},
+		{
+			name: "envFrom translates field by field",
+			instance: newInstance(computev1alpha.SandboxContainer{
+				Name: testContainerName,
+				EnvFrom: []computev1alpha.EnvFromSource{
+					{
+						Prefix:       "APP_",
+						ConfigMapRef: &computev1alpha.ConfigMapEnvSource{Name: testConfigMapName, Optional: ptr.To(true)},
+					},
+					{
+						SecretRef: &computev1alpha.SecretEnvSource{Name: testSecretName},
+					},
+				},
+			}),
+			opts: Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				want := []corev1.EnvFromSource{
+					{
+						Prefix: "APP_",
+						ConfigMapRef: &corev1.ConfigMapEnvSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: testConfigMapName},
+							Optional:             ptr.To(true),
+						},
+					},
+					{
+						SecretRef: &corev1.SecretEnvSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: testSecretName},
+						},
+					},
+				}
+				return diff(want, spec.Containers[0].EnvFrom)
+			},
+		},
+		{
+			name: "ports carry name, number and protocol",
+			instance: newInstance(computev1alpha.SandboxContainer{
+				Name: testContainerName,
+				Ports: []computev1alpha.NamedPort{
+					{Name: "http", Port: 8080},
+					{Name: "dns", Port: 53, Protocol: ptr.To(corev1.ProtocolUDP)},
+				},
+			}),
+			opts: Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				want := []corev1.ContainerPort{
+					{Name: "http", ContainerPort: 8080},
+					{Name: "dns", ContainerPort: 53, Protocol: corev1.ProtocolUDP},
+				}
+				return diff(want, spec.Containers[0].Ports)
+			},
+		},
+		{
+			name: "attachments with a mount path become mounts, raw devices do not",
+			instance: newInstance(computev1alpha.SandboxContainer{
+				Name: testContainerName,
+				VolumeAttachments: []computev1alpha.VolumeAttachment{
+					{Name: testConfigVolumeName, MountPath: ptr.To("/etc/app")},
+					{Name: "raw"},
+				},
+			}),
+			opts: Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				want := []corev1.VolumeMount{{Name: testConfigVolumeName, MountPath: "/etc/app"}}
+				return diff(want, spec.Containers[0].VolumeMounts)
+			},
+		},
+		{
+			name: "command and args pass through untouched",
+			instance: newInstance(computev1alpha.SandboxContainer{
+				Name:    testContainerName,
+				Image:   "index.unikraft.io/datum/app:latest",
+				Command: []string{"/app"},
+				Args:    []string{"--serve"},
+			}),
+			opts: Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				container := spec.Containers[0]
+				if err := diff([]string{"/app"}, container.Command); err != nil {
+					return err
+				}
+				if err := diff([]string{"--serve"}, container.Args); err != nil {
+					return err
+				}
+				return diff("index.unikraft.io/datum/app:latest", container.Image)
+			},
+		},
+		{
+			name: "image pull secrets reach the pod",
+			instance: func() *computev1alpha.Instance {
+				instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+				instance.Spec.Runtime.Sandbox.ImagePullSecrets = []computev1alpha.LocalSecretReference{{Name: "registry"}}
+				return instance
+			}(),
+			opts: Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				return diff([]corev1.LocalObjectReference{{Name: "registry"}}, spec.ImagePullSecrets)
+			},
+		},
+		{
+			name:     "node targeting comes from the caller",
+			instance: newInstance(computev1alpha.SandboxContainer{Name: testContainerName}),
+			opts: Options{
+				Capabilities: sandboxCapabilities,
+				NodeSelector: map[string]string{"unikraft.com/virtual-kubelet": testLabelValueTrue},
+				Tolerations: []corev1.Toleration{{
+					Key:      "virtual-kubelet.io/provider",
+					Operator: corev1.TolerationOpEqual,
+					Value:    "ukc",
+					Effect:   corev1.TaintEffectNoSchedule,
+				}},
+			},
+			want: func(spec corev1.PodSpec) error {
+				wantSelector := map[string]string{"unikraft.com/virtual-kubelet": testLabelValueTrue}
+				if err := diff(wantSelector, spec.NodeSelector); err != nil {
+					return err
+				}
+				return diff([]corev1.Toleration{{
+					Key:      "virtual-kubelet.io/provider",
+					Operator: corev1.TolerationOpEqual,
+					Value:    "ukc",
+					Effect:   corev1.TaintEffectNoSchedule,
+				}}, spec.Tolerations)
+			},
+		},
+		{
+			name:     "an instance is denied Kubernetes API access and restarts on exit",
+			instance: newInstance(computev1alpha.SandboxContainer{Name: testContainerName}),
+			opts:     Options{Capabilities: sandboxCapabilities},
+			want: func(spec corev1.PodSpec) error {
+				if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
+					return errors.New("service account token is mounted into the instance")
+				}
+				if spec.EnableServiceLinks == nil || *spec.EnableServiceLinks {
+					return errors.New("service links are enabled for the instance")
+				}
+				return diff(corev1.RestartPolicyAlways, spec.RestartPolicy)
+			},
+		},
+		{
+			name: "a disk volume is realized by the class's resolver",
+			instance: func() *computev1alpha.Instance {
+				instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+				instance.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name:         testDiskVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{Disk: &computev1alpha.DiskTemplateVolumeSource{}},
+					},
+				}
+				return instance
+			}(),
+			opts: Options{
+				Capabilities: runtimeclass.Capabilities{
+					Class: testClassBasalt,
+					Features: []runtimeclass.Feature{
+						runtimeclass.FeatureSandboxRuntime,
+						runtimeclass.FeatureDiskVolumes,
+					},
+				},
+				ResolveVolumeSource: func(volume computev1alpha.InstanceVolume) (corev1.VolumeSource, error) {
+					return corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: volume.Name},
+					}, nil
+				},
+			},
+			want: func(spec corev1.PodSpec) error {
+				want := []corev1.Volume{{
+					Name: testDiskVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: testDiskVolumeName},
+					},
+				}}
+				return diff(want, spec.Volumes)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec, err := BuildPodSpec(test.instance, test.opts)
+			if err != nil {
+				t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+			}
+			if err := test.want(spec); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+func TestBuildPodSpecErrors(t *testing.T) {
+	tests := []struct {
+		name         string
+		instance     *computev1alpha.Instance
+		opts         Options
+		wantContains string
+	}{
+		{
+			name: "a virtual machine instance is not translated to a pod",
+			instance: &computev1alpha.Instance{
+				Spec: computev1alpha.InstanceSpec{
+					Runtime: computev1alpha.InstanceRuntimeSpec{
+						VirtualMachine: &computev1alpha.VirtualMachineRuntime{},
+					},
+				},
+			},
+			opts:         Options{Capabilities: sandboxCapabilities},
+			wantContains: "does not declare a sandbox runtime",
+		},
+		{
+			name: "an unsupported feature fails the build rather than being dropped",
+			instance: func() *computev1alpha.Instance {
+				instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+				instance.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name:         testDiskVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{Disk: &computev1alpha.DiskTemplateVolumeSource{}},
+					},
+				}
+				return instance
+			}(),
+			opts:         Options{Capabilities: sandboxCapabilities},
+			wantContains: `disk-backed volumes are not supported by the "azurite" runtime class`,
+		},
+		{
+			name: "a class claiming disk support without a resolver is reported",
+			instance: func() *computev1alpha.Instance {
+				instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+				instance.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name:         testDiskVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{Disk: &computev1alpha.DiskTemplateVolumeSource{}},
+					},
+				}
+				return instance
+			}(),
+			opts: Options{Capabilities: runtimeclass.Capabilities{
+				Class: testClassBasalt,
+				Features: []runtimeclass.Feature{
+					runtimeclass.FeatureSandboxRuntime,
+					runtimeclass.FeatureDiskVolumes,
+				},
+			}},
+			wantContains: "supplied no volume source resolver",
+		},
+		{
+			name: "a resolver failure is surfaced with the volume name",
+			instance: func() *computev1alpha.Instance {
+				instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+				instance.Spec.Volumes = []computev1alpha.InstanceVolume{
+					{
+						Name:         testDiskVolumeName,
+						VolumeSource: computev1alpha.VolumeSource{Disk: &computev1alpha.DiskTemplateVolumeSource{}},
+					},
+				}
+				return instance
+			}(),
+			opts: Options{
+				Capabilities: runtimeclass.Capabilities{
+					Class: testClassBasalt,
+					Features: []runtimeclass.Feature{
+						runtimeclass.FeatureSandboxRuntime,
+						runtimeclass.FeatureDiskVolumes,
+					},
+				},
+				ResolveVolumeSource: func(computev1alpha.InstanceVolume) (corev1.VolumeSource, error) {
+					return corev1.VolumeSource{}, errors.New("no storage class available")
+				},
+			},
+			wantContains: `failed to resolve volume "data"`,
+		},
+		{
+			name: "a volume with no source is reported rather than skipped",
+			instance: func() *computev1alpha.Instance {
+				instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+				instance.Spec.Volumes = []computev1alpha.InstanceVolume{{Name: "mystery"}}
+				return instance
+			}(),
+			opts:         Options{Capabilities: sandboxCapabilities},
+			wantContains: `volume "mystery" declares no source`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := BuildPodSpec(test.instance, test.opts)
+			if err == nil {
+				t.Fatal("BuildPodSpec() succeeded, want an error")
+			}
+			if !strings.Contains(err.Error(), test.wantContains) {
+				t.Errorf("error %q does not contain %q", err, test.wantContains)
+			}
+		})
+	}
+}
+
+func TestBuildPodSpecSysctls(t *testing.T) {
+	requested := []computev1alpha.SandboxSysctl{
+		{Name: testIPv6DefaultForwardSysctl, Value: "1"},
+		{Name: testIPv4ForwardingSysctl, Value: "1"},
+		{Name: testIPv6AllForwardingSysctl, Value: "1"},
+	}
+	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+	instance.Spec.Runtime.Sandbox.Sysctls = requested
+	opts := Options{Capabilities: runtimeclass.Capabilities{
+		Class:    testClassBasalt,
+		Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureSandboxSysctls},
+		SupportedSysctls: []runtimeclass.Sysctl{
+			{Name: testIPv4ForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: testIPv6AllForwardingSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+			{Name: testIPv6DefaultForwardSysctl, AllowedValues: []computev1alpha.SysctlValue{"0", "1"}},
+		},
+	}}
+
+	spec, err := BuildPodSpec(instance, opts)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	want := []corev1.Sysctl{
+		{Name: testIPv4ForwardingSysctl, Value: "1"},
+		{Name: testIPv6AllForwardingSysctl, Value: "1"},
+		{Name: testIPv6DefaultForwardSysctl, Value: "1"},
+	}
+	if spec.SecurityContext == nil {
+		t.Fatal("Pod security context is nil")
+	}
+	if err := diff(want, spec.SecurityContext.Sysctls); err != nil {
+		t.Error(err)
+	}
+	if err := diff(requested, instance.Spec.Runtime.Sandbox.Sysctls); err != nil {
+		t.Errorf("BuildPodSpec mutated the Instance sysctls: %v", err)
+	}
+}
+
+func TestBuildPodSpecWithoutSysctlsLeavesPodSecurityContextUnset(t *testing.T) {
+	spec, err := BuildPodSpec(
+		newInstance(computev1alpha.SandboxContainer{Name: testContainerName}),
+		Options{Capabilities: sandboxCapabilities},
+	)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	if spec.SecurityContext != nil {
+		t.Errorf("Pod security context = %#v, want nil", spec.SecurityContext)
+	}
+}
+
+func TestBuildPodSpecTerminationGracePeriod(t *testing.T) {
+	graceful := Options{Capabilities: runtimeclass.Capabilities{
+		Class:    testClassBasalt,
+		Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureGracefulTermination},
+	}}
+
+	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+	instance.Spec.Runtime.TerminationGracePeriodSeconds = ptr.To[int64](90)
+	spec, err := BuildPodSpec(instance, graceful)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	if err := diff(ptr.To[int64](90), spec.TerminationGracePeriodSeconds); err != nil {
+		t.Error(err)
+	}
+
+	spec, err = BuildPodSpec(newInstance(computev1alpha.SandboxContainer{Name: testContainerName}), graceful)
+	if err != nil {
+		t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+	}
+	if spec.TerminationGracePeriodSeconds != nil {
+		t.Errorf("TerminationGracePeriodSeconds = %d, want unset", *spec.TerminationGracePeriodSeconds)
+	}
+}
+
+// TestBuildPodSpecSecurityContext covers how a container's capability request
+// reaches the Pod.
+func TestBuildPodSpecSecurityContext(t *testing.T) {
+	capabilityOptions := Options{Capabilities: runtimeclass.Capabilities{
+		Class: testClassBasalt,
+		Features: []runtimeclass.Feature{
+			runtimeclass.FeatureSandboxRuntime,
+			runtimeclass.FeatureContainerCapabilities,
+		},
+		GrantableCapabilities: []runtimeclass.Capability{testCapNetBindService, testCapChown, testCapSetuid, testCapSetgid},
+	}}
+
+	nginx := func(capabilities *computev1alpha.SandboxCapabilities) computev1alpha.SandboxContainer {
+		container := computev1alpha.SandboxContainer{
+			Name:  testContainerName,
+			Image: testNginxImage,
+		}
+		if capabilities != nil {
+			container.SecurityContext = &computev1alpha.SandboxSecurityContext{Capabilities: capabilities}
+		}
+		return container
+	}
+
+	tests := []struct {
+		name      string
+		container computev1alpha.SandboxContainer
+		want      *corev1.SecurityContext
+	}{
+		{
+			name:      "no request drops ALL and adds nothing",
+			container: nginx(nil),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
+		},
+		{
+			name: "a security context without capabilities drops ALL and adds nothing",
+			container: computev1alpha.SandboxContainer{
+				Name:            testContainerName,
+				Image:           "docker.io/library/nginx:1.27",
+				SecurityContext: &computev1alpha.SandboxSecurityContext{},
+			},
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
+		},
+		{
+			name: "requested capabilities are added in sorted order after dropping ALL",
+			container: nginx(&computev1alpha.SandboxCapabilities{
+				Add:  []computev1alpha.Capability{testCapSetuid, testCapChown, testCapSetgid},
+				Drop: []computev1alpha.Capability{testCapAll},
+			}),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+				Add:  []corev1.Capability{testCapChown, testCapSetgid, testCapSetuid},
+			}},
+		},
+		{
+			name: "a drop-only request still drops ALL",
+			container: nginx(&computev1alpha.SandboxCapabilities{
+				Drop: []computev1alpha.Capability{testCapNetBindService},
+			}),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+			}},
+		},
+		{
+			name: "a capability both added and dropped is not added",
+			container: nginx(&computev1alpha.SandboxCapabilities{
+				Add:  []computev1alpha.Capability{testCapChown, testCapNetBindService},
+				Drop: []computev1alpha.Capability{testCapNetBindService},
+			}),
+			want: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{testCapAll},
+				Add:  []corev1.Capability{testCapChown},
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec, err := BuildPodSpec(newInstance(test.container), capabilityOptions)
+			if err != nil {
+				t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+			}
+			if err := diff(test.want, spec.Containers[0].SecurityContext); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// TestBuildPodSpecRejectsUngrantedCapability confirms a provider building a Pod
+// refuses a capability its class does not grant rather than passing it through.
+func TestBuildPodSpecRejectsUngrantedCapability(t *testing.T) {
+	instance := newInstance(computev1alpha.SandboxContainer{
+		Name:  testContainerName,
+		Image: testNginxImage,
+		SecurityContext: &computev1alpha.SandboxSecurityContext{
+			Capabilities: &computev1alpha.SandboxCapabilities{Add: []computev1alpha.Capability{testCapSysAdmin}},
+		},
+	})
+
+	_, err := BuildPodSpec(instance, Options{Capabilities: sandboxCapabilities})
+	want := `container capability requests are not supported by the "azurite" runtime class`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("BuildPodSpec() error = %v, want it to contain %q", err, want)
+	}
+}
+
+func TestBuildPodSpecNotSandboxIsIdentifiable(t *testing.T) {
+	instance := &computev1alpha.Instance{}
+	if _, err := BuildPodSpec(instance, Options{Capabilities: sandboxCapabilities}); !errors.Is(err, ErrNotSandbox) {
+		t.Errorf("error = %v, want ErrNotSandbox", err)
+	}
+}
+
+func TestContainerResources(t *testing.T) {
+	tests := []struct {
+		name             string
+		instanceType     string
+		limits           corev1.ResourceList
+		defaultMemoryMiB int64
+		wantCPU          string
+		wantMemory       string
+	}{
+		{
+			name:         "instance type sizes the container",
+			instanceType: instancetype.D1Standard2,
+			wantCPU:      "1",
+			wantMemory:   testMemory2Gi,
+		},
+		{
+			name:         "explicit limits win over the catalog",
+			instanceType: instancetype.D1Standard2,
+			limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+			wantCPU:    "500m",
+			wantMemory: "512Mi",
+		},
+		{
+			name:         "an explicit memory limit still leaves CPU to the catalog",
+			instanceType: instancetype.D1Standard2,
+			limits:       corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			wantCPU:      "1",
+			wantMemory:   "512Mi",
+		},
+		{
+			name:         "an explicit CPU limit still leaves memory to the catalog",
+			instanceType: instancetype.D1Standard2,
+			limits:       corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m")},
+			wantCPU:      "250m",
+			wantMemory:   testMemory2Gi,
+		},
+		{
+			name:         "an unknown instance type falls back to memory only",
+			instanceType: "datumcloud-d1-standard-64",
+			wantMemory:   "1Gi",
+		},
+		{
+			name:             "the class may raise the memory fallback",
+			instanceType:     "datumcloud-d1-standard-64",
+			defaultMemoryMiB: 2048,
+			wantMemory:       testMemory2Gi,
+		},
+		{
+			name:       "no instance type at all still yields a viable footprint",
+			wantMemory: "1Gi",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := newInstance()
+			instance.Spec.Runtime.Resources.InstanceType = test.instanceType
+			container := &computev1alpha.SandboxContainer{Name: testContainerName}
+			if test.limits != nil {
+				container.Resources = &computev1alpha.ContainerResourceRequirements{Limits: test.limits}
+			}
+
+			got := ContainerResources(instance, container, test.defaultMemoryMiB)
+
+			memory := got.Limits[corev1.ResourceMemory]
+			if want := resource.MustParse(test.wantMemory); memory.Cmp(want) != 0 {
+				t.Errorf("memory limit = %s, want %s", memory.String(), want.String())
+			}
+
+			cpu, hasCPU := got.Limits[corev1.ResourceCPU]
+			if test.wantCPU == "" {
+				if hasCPU {
+					t.Errorf("cpu limit = %s, want no cpu limit", cpu.String())
+				}
+			} else {
+				if !hasCPU {
+					t.Fatalf("cpu limit missing, want %s", test.wantCPU)
+				}
+				if want := resource.MustParse(test.wantCPU); cpu.Cmp(want) != 0 {
+					t.Errorf("cpu limit = %s, want %s", cpu.String(), want.String())
+				}
+			}
+
+			// Equal requests and limits give the guaranteed quality of service
+			// (QoS) class and the footprint quota claimed.
+			if err := diff(got.Limits, got.Requests); err != nil {
+				t.Errorf("requests differ from limits: %v", err)
+			}
+		})
+	}
+}
+
+// TestContainerResourcesRequestsAreIndependent checks that requests and limits
+// do not share one map. A caller adjusting one would otherwise move the other
+// and drop the instance out of the guaranteed QoS class.
+func TestContainerResourcesRequestsAreIndependent(t *testing.T) {
+	instance := newInstance()
+	resources := ContainerResources(instance, &computev1alpha.SandboxContainer{Name: testContainerName}, 0)
+
+	resources.Requests[corev1.ResourceMemory] = resource.MustParse("1Mi")
+
+	memory := resources.Limits[corev1.ResourceMemory]
+	if want := resource.MustParse(testMemory2Gi); memory.Cmp(want) != 0 {
+		t.Errorf("limit changed with the request: memory limit = %s, want %s", memory.String(), want.String())
+	}
+}
+
+func TestBuildPod(t *testing.T) {
+	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+	instance.Labels = map[string]string{
+		computev1alpha.WorkloadNameLabel:  testWorkloadName,
+		computev1alpha.InstanceIndexLabel: "0",
+		"customer-team":                   "payments",
+	}
+
+	pod, err := BuildPod(instance, Options{
+		Capabilities:   sandboxCapabilities,
+		PodLabels:      map[string]string{testManagedByKey: testManagedByValue},
+		PodAnnotations: map[string]string{"cloud.unikraft.v1.instances/cni-enabled": testLabelValueTrue},
+	})
+	if err != nil {
+		t.Fatalf("BuildPod() returned an unexpected error: %v", err)
+	}
+
+	if pod.Name != "app-0" || pod.Namespace != "project" {
+		t.Errorf("pod is %s/%s, want project/app-0", pod.Namespace, pod.Name)
+	}
+
+	wantLabels := map[string]string{
+		computev1alpha.WorkloadNameLabel:  testWorkloadName,
+		computev1alpha.InstanceIndexLabel: "0",
+		testManagedByKey:                  testManagedByValue,
+	}
+	if err := diff(wantLabels, pod.Labels); err != nil {
+		t.Errorf("unexpected pod labels: %v", err)
+	}
+
+	wantAnnotations := map[string]string{"cloud.unikraft.v1.instances/cni-enabled": testLabelValueTrue}
+	if err := diff(wantAnnotations, pod.Annotations); err != nil {
+		t.Errorf("unexpected pod annotations: %v", err)
+	}
+
+	if len(pod.Spec.Containers) != 1 {
+		t.Errorf("pod has %d containers, want 1", len(pod.Spec.Containers))
+	}
+}
+
+// TestBuildPodDoesNotMutateOptions checks that BuildPod leaves the caller's
+// Options untouched, because a caller reuses one Options value across every
+// instance it builds.
+func TestBuildPodDoesNotMutateOptions(t *testing.T) {
+	labels := map[string]string{testManagedByKey: testManagedByValue}
+	opts := Options{Capabilities: sandboxCapabilities, PodLabels: labels}
+
+	instance := newInstance(computev1alpha.SandboxContainer{Name: testContainerName})
+	instance.Labels = map[string]string{computev1alpha.WorkloadNameLabel: testWorkloadName}
+
+	if _, err := BuildPod(instance, opts); err != nil {
+		t.Fatalf("BuildPod() returned an unexpected error: %v", err)
+	}
+
+	if err := diff(map[string]string{testManagedByKey: testManagedByValue}, labels); err != nil {
+		t.Errorf("caller's labels were mutated: %v", err)
+	}
+}
+
+func TestIdentityLabels(t *testing.T) {
+	instance := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				computev1alpha.WorkloadUIDLabel:            "workload-uid",
+				computev1alpha.WorkloadDeploymentUIDLabel:  "deployment-uid",
+				computev1alpha.WorkloadDeploymentNameLabel: "web-dfw",
+				computev1alpha.WorkloadNameLabel:           testWorkloadName,
+				computev1alpha.PlacementNameLabel:          "dfw",
+				computev1alpha.LocationLabel:               "loc-dfw-1",
+				computev1alpha.InstanceIndexLabel:          "0",
+				computev1alpha.RuntimeClassLabel:           testClassAzurite,
+				"customer-team":                            "payments",
+			},
+		},
+	}
+
+	// Tenant-writable labels stay off the Pod. A customer must not be able to
+	// set the identity that platform selectors rely on.
+	want := map[string]string{
+		computev1alpha.WorkloadUIDLabel:            "workload-uid",
+		computev1alpha.WorkloadDeploymentUIDLabel:  "deployment-uid",
+		computev1alpha.WorkloadDeploymentNameLabel: "web-dfw",
+		computev1alpha.WorkloadNameLabel:           testWorkloadName,
+		computev1alpha.PlacementNameLabel:          "dfw",
+		computev1alpha.LocationLabel:               "loc-dfw-1",
+		computev1alpha.InstanceIndexLabel:          "0",
+	}
+	if err := diff(want, IdentityLabels(instance)); err != nil {
+		t.Error(err)
+	}
+
+	if err := diff(map[string]string{}, IdentityLabels(&computev1alpha.Instance{})); err != nil {
+		t.Errorf("an unlabelled instance should yield no identity labels: %v", err)
+	}
+}
+
+func diff(want, got any) error {
+	if delta := cmp.Diff(want, got, cmpopts.EquateEmpty()); delta != "" {
+		return errors.New("(-want +got):\n" + delta)
+	}
+	return nil
+}
+
+// TestBuildPodSpecCarriesStatedConfinement covers the rest of the security
+// context an Instance states. A provider runs what the Instance says and picks
+// nothing of its own, so an Instance stating neither value leaves both unset and
+// keeps the behavior of an Instance admitted before classes published a default.
+func TestBuildPodSpecCarriesStatedConfinement(t *testing.T) {
+	allow := true
+	deny := false
+
+	tests := []struct {
+		name                 string
+		securityContext      *computev1alpha.SandboxSecurityContext
+		wantAllowsEscalation *bool
+		wantSeccompProfile   *corev1.SeccompProfile
+	}{
+		{
+			name:            "an Instance stating nothing leaves both unset",
+			securityContext: nil,
+		},
+		{
+			name: "privilege escalation carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				AllowPrivilegeEscalation: &allow,
+			},
+			wantAllowsEscalation: &allow,
+		},
+		{
+			name: "refusing privilege escalation carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				AllowPrivilegeEscalation: &deny,
+			},
+			wantAllowsEscalation: &deny,
+		},
+		{
+			name: "the runtime default seccomp profile carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+			wantSeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+		{
+			name: "an unconfined seccomp profile carries across",
+			securityContext: &computev1alpha.SandboxSecurityContext{
+				SeccompProfile: &computev1alpha.SandboxSeccompProfile{
+					Type: computev1alpha.SeccompProfileTypeUnconfined,
+				},
+			},
+			wantSeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			container := computev1alpha.SandboxContainer{
+				Name:            testContainerName,
+				Image:           testNginxImage,
+				SecurityContext: test.securityContext,
+			}
+
+			spec, err := BuildPodSpec(newInstance(container), Options{Capabilities: runtimeclass.Capabilities{
+				Class:    testClassBasalt,
+				Features: []runtimeclass.Feature{runtimeclass.FeatureSandboxRuntime},
+			}})
+			if err != nil {
+				t.Fatalf("BuildPodSpec() returned an unexpected error: %v", err)
+			}
+
+			built := spec.Containers[0].SecurityContext
+			if err := diff(test.wantAllowsEscalation, built.AllowPrivilegeEscalation); err != nil {
+				t.Errorf("allowPrivilegeEscalation: %v", err)
+			}
+			if err := diff(test.wantSeccompProfile, built.SeccompProfile); err != nil {
+				t.Errorf("seccompProfile: %v", err)
+			}
+
+			// The capability floor is unchanged by either statement.
+			if err := diff(&corev1.Capabilities{Drop: []corev1.Capability{testCapAll}}, built.Capabilities); err != nil {
+				t.Errorf("capabilities: %v", err)
+			}
+		})
+	}
+}

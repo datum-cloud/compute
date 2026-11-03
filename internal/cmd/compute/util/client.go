@@ -7,7 +7,9 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/datumctl/plugin"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +33,11 @@ func ProjectControlPlaneURL(apiHost, projectID string) string {
 
 // NewClient builds a Kubernetes client targeting the project's virtual control plane.
 func NewClient(project string) (client.Client, error) {
+	return NewWatchClient(project)
+}
+
+// NewWatchClient is NewClient for callers that also watch resources.
+func NewWatchClient(project string) (client.WithWatch, error) {
 	if project == "" {
 		return nil, fmt.Errorf("no project set — pass --project or run 'datumctl config set project <name>'")
 	}
@@ -52,6 +59,12 @@ func NewClient(project string) (client.Client, error) {
 	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering networking scheme: %w", err)
 	}
+	if err := locationsv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering locations scheme: %w", err)
+	}
+	if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering services scheme: %w", err)
+	}
 	if err := quotav1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering quota scheme: %w", err)
 	}
@@ -61,7 +74,7 @@ func NewClient(project string) (client.Client, error) {
 		BearerToken: token,
 	}
 
-	return client.New(cfg, client.Options{Scheme: scheme})
+	return client.NewWithWatch(cfg, client.Options{Scheme: scheme})
 }
 
 // NewPlatformClient builds a Kubernetes client targeting the platform API server
@@ -78,6 +91,12 @@ func NewPlatformClient() (client.Client, error) {
 	}
 
 	scheme := runtime.NewScheme()
+	if err := locationsv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering locations scheme: %w", err)
+	}
+	if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering services scheme: %w", err)
+	}
 	if err := quotav1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering quota scheme: %w", err)
 	}

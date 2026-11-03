@@ -1,117 +1,617 @@
 /**
  * Instance log surfaces built on `@datum-cloud/datum-ui/logs`.
  *
- * - {@link RecentInstanceLogs} — compact last-30-minutes table for Overview
+ * - {@link RecentInstanceLogs} — live feed on Overview (stdout, plus ALB when published)
  * - {@link InstanceLogsExplorer} — full explorer for the Logs tab
  *
- * No log backend yet — entries stay empty until a Loki query is wired.
+ * Instance stdout is always queried. ALB access logs are merged in when the
+ * workload has a published HTTPProxy.
  */
-import { Card, CardContent } from "@datum-cloud/datum-ui/card";
-import { Icon } from "@datum-cloud/datum-ui/icons";
+import { ApiError } from '../lib/api';
 import {
+  ALB_LOGS_PREVIEW_LIMIT,
+  combinedLogFacets,
+  COMPUTE_LOG_INSTANCE_LABEL,
+  filterCombinedLogs,
+  LOG_SOURCE_ALB,
+  recentLogsRange,
+  useInstanceLogs,
+  useWorkloadLogs,
+} from '../lib/o11y-logs';
+import { Badge } from '@datum-cloud/datum-ui/badge';
+import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@datum-cloud/datum-ui/card';
+import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
+import {
+  facetsFromEntries,
+  httpStatusBadgeType,
   lastThirtyMinutes,
+  logRequestHost,
   Logs,
+  parseLogLine,
+  resolveLogTimeRange,
+  type LogColumn,
+  type LogColumnSpec,
+  type LogEntry,
   type LogFilters,
   type LogTimeRange,
-} from "@datum-cloud/datum-ui/logs";
-import { cn } from "@datum-cloud/datum-ui/utils";
-import { ScrollTextIcon } from "lucide-react";
-import { useCallback, useState } from "react";
-import { Link } from "react-router";
+} from '@datum-cloud/datum-ui/logs';
+import { cn } from '@datum-cloud/datum-ui/utils';
+import { formatDistanceToNowStrict } from 'date-fns';
+import { CheckIcon, CopyIcon, LogsIcon, RadioIcon } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { Link } from 'react-router';
+import { OPEN_ROW_PADDING } from './detail-list';
+import { QuietNotice, SectionFrame } from './surface';
 
-const OVERVIEW_COLUMNS = ["time", "severity", "message"] as const;
-const FULL_COLUMNS = ["time", "severity", "status", "path", "message"] as const;
+const SOURCE_COLUMN: LogColumn = {
+  id: 'source',
+  header: 'Source',
+  size: 'hug',
+  className: 'text-muted-foreground font-mono text-xs',
+  cell: ({ entry }) => entry.labels.source ?? '—',
+};
 
-/** Compact last-30-minutes log table for the instance Overview card. */
-export function RecentInstanceLogs({
-  logsHref,
+const DETAIL_COLUMN: LogColumn = {
+  id: 'detail',
+  header: 'Detail',
+  size: 'fill',
+  className: 'truncate font-mono text-xs',
+  cell: ({ entry, path, message }) => {
+    const text = entry.labels.source === LOG_SOURCE_ALB ? path : message || path;
+    return (
+      <span className={text ? undefined : 'text-muted-foreground'} title={text ?? undefined}>
+        {text || '—'}
+      </span>
+    );
+  },
+};
+
+const EXPLORER_COLUMNS: readonly LogColumnSpec[] = [
+  'time',
+  SOURCE_COLUMN,
+  'status',
+  'host',
+  DETAIL_COLUMN,
+];
+
+const ROW_LIMIT = ALB_LOGS_PREVIEW_LIMIT;
+
+const NO_LOGS_TITLE = 'No logs';
+const RECENT_WINDOW_COPY = 'Nothing logged in the last 24 hours.';
+const DENIED_MESSAGE = "You don't have permission to view logs.";
+
+/** Quiet "no logs" notice; `description` says which window was searched. */
+function NoLogs({ description, className }: { description?: string; className?: string }) {
+  return (
+    <div className={cn('flex min-h-0 flex-1 flex-col px-(--card-px)', className)}>
+      <QuietNotice title={NO_LOGS_TITLE} description={description} />
+    </div>
+  );
+}
+
+function LogsDenied({ className }: { className?: string }) {
+  return (
+    <div className={cn('flex min-h-0 flex-1 flex-col px-(--card-px)', className)}>
+      <QuietNotice title="Access restricted" description={DENIED_MESSAGE} />
+    </div>
+  );
+}
+
+/** Same first-request prompt as the cloud-portal ALB overview logs card. */
+function AlbLogsEmpty({ hostname }: { hostname: string }) {
+  const command = `curl -I https://${hostname}/`;
+  const [copied, copy] = useCopyToClipboard();
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center">
+      <span className="bg-muted flex size-10 items-center justify-center rounded-full">
+        <Icon icon={RadioIcon} size={18} className="text-muted-foreground" aria-hidden="true" />
+      </span>
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">Waiting for the first request…</p>
+        <p className="text-muted-foreground max-w-xs text-xs">
+          Send a test request and it will appear here live.
+        </p>
+      </div>
+      <div className="bg-muted/60 border-border flex w-full max-w-sm items-center gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-left">
+        <code className="min-w-0 flex-1 font-mono text-xs break-all">{command}</code>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-md"
+          aria-label="Copy test request command"
+          onClick={() => void copy(command, { withToast: true })}>
+          <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LogsEmpty({
+  hostname,
+  searched = true,
   className,
 }: {
-  /** Link target for “View all” (Logs tab). */
-  logsHref: string;
+  hostname?: string;
+  /** False when there was nothing to query, so no window was searched. */
+  searched?: boolean;
   className?: string;
 }) {
-  const [timeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
+  if (hostname) return <AlbLogsEmpty hostname={hostname} />;
+  return <NoLogs description={searched ? RECENT_WINDOW_COPY : undefined} className={className} />;
+}
+
+function isLogsDenied(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
+}
+
+function relativeAge(date: Date): string {
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${formatDistanceToNowStrict(date, { roundingMethod: 'floor' })
+    .replace(/ minutes?/, 'm')
+    .replace(/ hours?/, 'h')
+    .replace(/ days?/, 'd')} ago`;
+}
+
+function LivePulse() {
+  return (
+    <span
+      className="relative flex size-4 items-center justify-center"
+      role="img"
+      aria-label="Active">
+      <span className="size-2.5 rounded-full shadow-[0_0_0_3px_rgba(34,197,94,0.4)]" />
+      <span className="absolute size-2.5 animate-pulse rounded-full bg-green-500" />
+    </span>
+  );
+}
+
+function RequestRow({ entry, logsHref }: { entry: LogEntry; logsHref: string }) {
+  const parsed = parseLogLine(entry.line, entry.labels);
+  const host = logRequestHost(entry.labels);
+
+  if (parsed.kind !== 'http') {
+    return (
+      <li>
+        <Link
+          to={logsHref}
+          className="hover:bg-muted/40 flex items-center gap-3 px-(--card-px) py-2 transition-colors">
+          <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs">
+            {parsed.line}
+          </span>
+          <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+            {relativeAge(entry.timestamp)}
+          </span>
+        </Link>
+      </li>
+    );
+  }
+
+  return (
+    <li>
+      <Link
+        to={logsHref}
+        className="hover:bg-muted/40 flex items-center gap-3 px-(--card-px) py-2 transition-colors">
+        <Badge
+          type={httpStatusBadgeType(parsed.status)}
+          theme="light"
+          className="h-5 w-11 shrink-0 justify-center rounded-md px-0 font-mono text-[11px] font-medium tabular-nums">
+          {parsed.status}
+        </Badge>
+        <span className="text-muted-foreground w-12 shrink-0 font-mono text-[11px] font-medium">
+          {parsed.method}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs" title={parsed.path}>
+          {parsed.path}
+        </span>
+        {host ? (
+          <span className="text-muted-foreground hidden max-w-40 shrink-0 truncate text-xs lg:inline">
+            {host}
+          </span>
+        ) : null}
+        <span
+          className={cn(
+            'w-14 shrink-0 text-right font-mono text-xs tabular-nums',
+            parsed.durationMs >= 1000 ? 'text-(--color-badge-warning)' : 'text-muted-foreground'
+          )}>
+          {parsed.durationMs >= 1000
+            ? `${(parsed.durationMs / 1000).toFixed(1)}s`
+            : `${Math.round(parsed.durationMs)}ms`}
+        </span>
+        <span className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">
+          {relativeAge(entry.timestamp)}
+        </span>
+      </Link>
+    </li>
+  );
+}
+
+interface RecentInstanceLogsProps {
+  logsHref: string;
+  projectId?: string;
+  proxyId?: string;
+  /** Set when a load balancer is attached. Empty results then show the curl prompt. */
+  albHostname?: string;
+  instanceName?: string;
+  instanceNames?: readonly string[];
+  /** In-network IPs for the instance path; pins ALB rows to this replica. */
+  upstreamIPs?: readonly string[];
+  /** Render as an open "Recent logs" section instead of a card (workload Overview). */
+  bare?: boolean;
+  /** Show the loading state while the caller is still resolving what to query. */
+  waiting?: boolean;
+  className?: string;
+}
+
+/**
+ * Live feed of the newest `ROW_LIMIT` lines within `recentLogsRange()`, for
+ * the instance and workload Overviews. The window is a day wide so a workload
+ * that has been quiet for hours still shows its last lines.
+ */
+export function RecentInstanceLogs({
+  logsHref,
+  projectId,
+  proxyId,
+  albHostname,
+  instanceName,
+  instanceNames,
+  upstreamIPs,
+  bare = false,
+  waiting = false,
+  className,
+}: RecentInstanceLogsProps) {
+  const [timeRange] = useState<LogTimeRange>(() => recentLogsRange());
+  const names = useMemo(
+    () => instanceNames ?? (instanceName ? [instanceName] : []),
+    [instanceName, instanceNames]
+  );
+  const instanceScoped = !!instanceName && instanceNames === undefined;
+  const instanceLogs = useInstanceLogs(projectId, proxyId, instanceName, {
+    timeRange,
+    limit: ROW_LIMIT,
+    live: true,
+    enabled: instanceScoped,
+    upstreamIPs,
+  });
+  const workloadLogs = useWorkloadLogs(projectId, proxyId, names, {
+    timeRange,
+    limit: ROW_LIMIT,
+    live: true,
+    enabled: !instanceScoped && (names.length > 0 || !!proxyId),
+  });
+  const logsQuery = instanceScoped ? instanceLogs : workloadLogs;
+  // No load balancer and no instances (none yet, or their query failed).
+  const searched = instanceScoped || names.length > 0 || !!proxyId;
+
+  const loading = waiting || logsQuery.isLoading;
+  const denied = isLogsDenied(logsQuery.error);
+  const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
+  const entries = (logsQuery.data ?? []).slice(0, ROW_LIMIT);
+  const waitingForRequest =
+    !!albHostname && !loading && !denied && !errorMessage && entries.length === 0;
+
+  const indicator = (
+    <>
+      {entries.length > 0 ? <LivePulse /> : null}
+      {waitingForRequest ? (
+        <Badge
+          type="muted"
+          theme="solid"
+          className="h-5 gap-1.5 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap">
+          <span className="bg-muted-foreground/60 size-1.5 rounded-full" aria-hidden="true" />
+          Idle
+        </Badge>
+      ) : null}
+    </>
+  );
+  const viewAll = (
+    <Link to={logsHref} className="text-primary text-xs font-medium hover:underline">
+      View all
+    </Link>
+  );
+  const body = denied ? (
+    <LogsDenied className="min-h-48" />
+  ) : loading ? (
+    <div className="flex h-full min-h-48 items-center justify-center">
+      <SpinnerIcon size="sm" />
+    </div>
+  ) : errorMessage ? (
+    <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm">
+      Unable to load logs.
+    </div>
+  ) : entries.length === 0 ? (
+    <LogsEmpty hostname={albHostname} searched={searched} className="min-h-48" />
+  ) : (
+    <ul className="divide-border divide-y">
+      {entries.map((entry) => (
+        <RequestRow key={entry.id} entry={entry} logsHref={logsHref} />
+      ))}
+    </ul>
+  );
+
+  if (bare) {
+    return (
+      <SectionFrame
+        title="Recent logs"
+        testId="compute-plugin-instance-logs"
+        className={className}
+        action={
+          <span className="flex items-center gap-2">
+            {indicator}
+            {viewAll}
+          </span>
+        }>
+        {/* Rows pad with --card-px; outside a card they line up with the home page's px-2 rows. */}
+        <div className="flex min-h-0 flex-col" style={OPEN_ROW_PADDING}>
+          {body}
+        </div>
+      </SectionFrame>
+    );
+  }
 
   return (
     <Card
-      className={cn(
-        "flex h-full w-full flex-col gap-0 overflow-hidden rounded-xl px-3 py-4 shadow sm:pt-6 sm:pb-4",
-        className,
-      )}
-      data-testid="compute-plugin-instance-logs"
-    >
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-0 sm:px-6 sm:pb-4">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <Icon
-              icon={ScrollTextIcon}
-              size={20}
-              className="text-muted-foreground"
-            />
-            <span className="text-base font-semibold">Recent Logs</span>
-            <span className="text-muted-foreground text-xs">Last 30 min</span>
-          </div>
-          <Link
-            to={logsHref}
-            className="text-muted-foreground hover:text-foreground text-xs transition-colors"
-          >
-            View all →
-          </Link>
-        </div>
+      size="sm"
+      sectioned
+      className={cn('relative flex h-full w-full flex-col overflow-hidden', className)}
+      data-testid="compute-plugin-instance-logs">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={LogsIcon} size={16} className="text-secondary" />
+          Logs
+          {indicator}
+        </CardTitle>
+        <CardDescription className="text-xs">Most recent · last 24 hours</CardDescription>
+        <CardAction>{viewAll}</CardAction>
+      </CardHeader>
+      <CardContent padding="none" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {body}
+      </CardContent>
+    </Card>
+  );
+}
 
+
+/** Full log explorer for the instance Logs tab. */
+export function InstanceLogsExplorer({
+  projectId,
+  proxyId,
+  instanceName,
+  upstreamIPs,
+  className,
+}: {
+  projectId?: string;
+  proxyId?: string;
+  instanceName?: string;
+  upstreamIPs?: readonly string[];
+  className?: string;
+}) {
+  const [filters, setFilters] = useState<LogFilters>({});
+  const [search, setSearch] = useState('');
+  const [live, setLive] = useState(false);
+  const [timeRange, setTimeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
+
+  const handleRefresh = useCallback(() => {
+    setTimeRange((current) =>
+      current.preset ? resolveLogTimeRange(current) : lastThirtyMinutes()
+    );
+  }, []);
+
+  const logsQuery = useInstanceLogs(projectId, proxyId, instanceName, {
+    timeRange,
+    filters,
+    search,
+    live,
+    enabled: !!proxyId || !!instanceName,
+    upstreamIPs,
+  });
+
+  const visibleEntries = useMemo(
+    () => filterCombinedLogs(logsQuery.data ?? [], filters),
+    [logsQuery.data, filters]
+  );
+  const facets = useMemo(() => combinedLogFacets(logsQuery.data ?? []), [logsQuery.data]);
+
+  const denied = isLogsDenied(logsQuery.error);
+  const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
+
+  if (!proxyId && !instanceName) {
+    return (
+      <div
+        className={cn('flex min-h-96 flex-1 flex-col', className)}
+        data-testid="compute-plugin-instance-logs-explorer">
+        <NoLogs className="min-h-96" />
+      </div>
+    );
+  }
+
+  if (denied) {
+    return (
+      <div
+        className={cn('flex min-h-96 flex-col', className)}
+        data-testid="compute-plugin-instance-logs-explorer">
+        <LogsDenied />
+      </div>
+    );
+  }
+
+  return (
+    <Card
+      size="sm"
+      sectioned
+      className={cn('flex min-h-96 flex-col overflow-hidden', className)}
+      style={{ minHeight: '32rem' }}
+      data-testid="compute-plugin-instance-logs-explorer">
+      <CardContent padding="none" className="flex min-h-0 flex-1 flex-col">
         <Logs.Root
-          entries={[]}
-          facets={[{ name: "severity", label: "Severity", options: [] }]}
+          entries={visibleEntries}
+          facets={facets}
           timeRange={timeRange}
-          columns={[...OVERVIEW_COLUMNS]}
-          className="border-border flex min-h-48 flex-1 flex-col overflow-hidden rounded-lg border lg:min-h-72"
-        >
-          <Logs.Table />
+          filters={filters}
+          search={search}
+          live={live}
+          isLoading={logsQuery.isLoading}
+          error={errorMessage}
+          columns={[...EXPLORER_COLUMNS]}
+          onTimeRangeChange={setTimeRange}
+          onFiltersChange={setFilters}
+          onSearchChange={setSearch}
+          onLiveChange={setLive}
+          onRefresh={handleRefresh}
+          className="bg-card flex min-h-0 flex-1 flex-col">
+          {/* Same class string as the portal's AlbLogsExplorer so the filters bar matches. */}
+          <Logs.Explorer className="bg-card **:data-[slot=logs-filters]:bg-card min-h-0 flex-1" />
         </Logs.Root>
       </CardContent>
     </Card>
   );
 }
 
-/** Full log explorer for the instance Logs tab. */
-export function InstanceLogsExplorer({ className }: { className?: string }) {
-  const [filters, setFilters] = useState<LogFilters>({});
-  const [search, setSearch] = useState("");
-  const [live, setLive] = useState(false);
-  const [timeRange, setTimeRange] = useState<LogTimeRange>(() =>
-    lastThirtyMinutes(),
+const INSTANCE_COLUMN: LogColumn = {
+  id: 'instance',
+  header: 'Instance',
+  size: 'hug',
+  className: 'text-muted-foreground truncate font-mono text-xs',
+  cell: ({ entry }) => {
+    const name = entry.labels[COMPUTE_LOG_INSTANCE_LABEL];
+    if (!name) return '—';
+    return (
+      <span className="block truncate" style={{ maxWidth: '10rem' }} title={name}>
+        {name}
+      </span>
+    );
+  },
+};
+
+const WORKLOAD_EXPLORER_COLUMNS: readonly LogColumnSpec[] = [
+  'time',
+  SOURCE_COLUMN,
+  INSTANCE_COLUMN,
+  'status',
+  'host',
+  DETAIL_COLUMN,
+];
+
+function filterWorkloadExplorerLogs(entries: readonly LogEntry[], filters: LogFilters): LogEntry[] {
+  const names = filters[COMPUTE_LOG_INSTANCE_LABEL];
+  const rest = { ...filters };
+  delete rest[COMPUTE_LOG_INSTANCE_LABEL];
+  let result = filterCombinedLogs(entries, rest);
+  if (!names?.length) return result;
+  return result.filter((entry) =>
+    names.includes(entry.labels[COMPUTE_LOG_INSTANCE_LABEL] ?? '')
   );
+}
+
+/** ALB access logs plus stdout from every instance on the workload. */
+export function WorkloadLogsExplorer({
+  projectId,
+  proxyId,
+  instanceNames,
+  className,
+}: {
+  projectId?: string;
+  proxyId?: string;
+  instanceNames: readonly string[];
+  className?: string;
+}) {
+  const [filters, setFilters] = useState<LogFilters>({});
+  const [search, setSearch] = useState('');
+  const [live, setLive] = useState(false);
+  const [timeRange, setTimeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
 
   const handleRefresh = useCallback(() => {
-    setTimeRange(lastThirtyMinutes());
+    setTimeRange((current) =>
+      current.preset ? resolveLogTimeRange(current) : lastThirtyMinutes()
+    );
   }, []);
 
+  const queryFilters = useMemo(() => {
+    if (!filters[COMPUTE_LOG_INSTANCE_LABEL]) return filters;
+    const rest = { ...filters };
+    delete rest[COMPUTE_LOG_INSTANCE_LABEL];
+    return rest;
+  }, [filters]);
+
+  const logsQuery = useWorkloadLogs(projectId, proxyId, instanceNames, {
+    timeRange,
+    filters: queryFilters,
+    search,
+    live,
+    enabled: !!proxyId || instanceNames.length > 0,
+  });
+
+  const visibleEntries = useMemo(
+    () => filterWorkloadExplorerLogs(logsQuery.data ?? [], filters),
+    [logsQuery.data, filters]
+  );
+  const facets = useMemo(() => {
+    const entries = logsQuery.data ?? [];
+    const instance = facetsFromEntries(entries, [COMPUTE_LOG_INSTANCE_LABEL]).map((facet) => ({
+      ...facet,
+      label: 'Instance',
+    }));
+    return [...combinedLogFacets(entries), ...instance];
+  }, [logsQuery.data]);
+
+  const denied = isLogsDenied(logsQuery.error);
+  const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
+
+  if (!proxyId && instanceNames.length === 0) {
+    return (
+      <div
+        className={cn('flex min-h-96 flex-1 flex-col', className)}
+        data-testid="compute-plugin-workload-logs-explorer">
+        <NoLogs className="min-h-96" />
+      </div>
+    );
+  }
+
+  if (denied) {
+    return (
+      <div
+        className={cn('flex min-h-96 flex-col', className)}
+        data-testid="compute-plugin-workload-logs-explorer">
+        <LogsDenied />
+      </div>
+    );
+  }
+
   return (
-    <div
-      className={cn(
-        "border-border bg-card flex min-h-[32rem] flex-col overflow-hidden rounded-xl border",
-        className,
-      )}
-      data-testid="compute-plugin-instance-logs-explorer"
-    >
-      <Logs.Root
-        entries={[]}
-        facets={[{ name: "severity", label: "Severity", options: [] }]}
-        timeRange={timeRange}
-        filters={filters}
-        search={search}
-        live={live}
-        columns={[...FULL_COLUMNS]}
-        onTimeRangeChange={setTimeRange}
-        onFiltersChange={setFilters}
-        onSearchChange={setSearch}
-        onLiveChange={setLive}
-        onRefresh={handleRefresh}
-        className="flex min-h-0 flex-1 bg-card flex-col"
-      >
-        <Logs.Explorer />
-      </Logs.Root>
-    </div>
+    <Card
+      size="sm"
+      sectioned
+      className={cn('flex min-h-96 flex-col overflow-hidden', className)}
+      style={{ minHeight: '32rem' }}
+      data-testid="compute-plugin-workload-logs-explorer">
+      <CardContent padding="none" className="flex min-h-0 flex-1 flex-col">
+        <Logs.Root
+          entries={visibleEntries}
+          facets={facets}
+          timeRange={timeRange}
+          filters={filters}
+          search={search}
+          live={live}
+          isLoading={logsQuery.isLoading}
+          error={errorMessage}
+          columns={[...WORKLOAD_EXPLORER_COLUMNS]}
+          onTimeRangeChange={setTimeRange}
+          onFiltersChange={setFilters}
+          onSearchChange={setSearch}
+          onLiveChange={setLive}
+          onRefresh={handleRefresh}
+          className="bg-card flex min-h-0 flex-1 flex-col">
+          <Logs.Explorer className="bg-card **:data-[slot=logs-filters]:bg-card min-h-0 flex-1" />
+        </Logs.Root>
+      </CardContent>
+    </Card>
   );
 }

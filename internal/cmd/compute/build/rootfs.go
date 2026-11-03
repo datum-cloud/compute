@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,52 +32,48 @@ type packagingArtifact struct {
 // fragile against upstream wording changes, but there's no structured error
 // type to match on instead.
 func rootfsBuildError(err error) error {
+	if errors.As(err, new(*userError)) {
+		return err
+	}
 	msg := err.Error()
+	if strings.Contains(msg, "error getting credentials") && isMissingCredentialHelper(err) {
+		return credentialStoreError("", "your Dockerfile's base images can't be pulled", true, err)
+	}
 	if strings.Contains(msg, "could not create EroFS archive") && strings.Contains(msg, "could not create symlink") {
 		return fmt.Errorf("building root filesystem: EROFS packaging failed on duplicate symlink metadata")
-	}
-	for _, s := range []string{
-		"could not connect to buildkit",
-		"could not start ephemeral BuildKit container",
-		"creating buildkit container",
-		"creating container buildkit client",
-		"connecting to buildkit client",
-	} {
-		if strings.Contains(msg, s) {
-			return fmt.Errorf("building root filesystem: Docker is not running or is not accessible")
-		}
 	}
 	return fmt.Errorf("building root filesystem: %w", err)
 }
 
-func buildFinalStage(ctx context.Context, opts *options) (packagingArtifact, error) {
+func buildFinalStage(ctx context.Context, opts *Options) (packagingArtifact, error) {
 	var progress io.Writer = os.Stderr
-	if opts.quietBuild {
-		logPath := filepath.Join(opts.tmpDir, "buildkit.log")
+	if opts.QuietBuild {
+		logPath := filepath.Join(opts.TmpDir, "buildkit.log")
 		logFile, err := os.Create(logPath)
 		if err != nil {
 			return packagingArtifact{}, fmt.Errorf("creating build log: %w", err)
 		}
 		defer logFile.Close()
-		opts.lastBuildLog = logPath
+		opts.LastBuildLog = logPath
 		progress = logFile
 	} else {
-		opts.lastBuildLog = ""
+		opts.LastBuildLog = ""
 	}
 
-	rootfsTar := filepath.Join(opts.tmpDir, "rootfs.tar")
-	ociTar := filepath.Join(opts.tmpDir, "image.oci.tar")
+	rootfsTar := filepath.Join(opts.TmpDir, "rootfs.tar")
+	ociTar := filepath.Join(opts.TmpDir, "image.oci.tar")
 	var task *task
-	if opts.quietBuild {
+	if opts.QuietBuild {
 		task = stderrSpinner.Start("Building Dockerfile")
 	} else {
 		fmt.Fprintln(os.Stderr, "Building Dockerfile ...")
 	}
 	result, err := buildDockerfileFinalStageQuietly(ctx, dockerfileFinalStageRequest{
-		ContextDir:  opts.contextDir,
-		Dockerfile:  opts.dockerfile,
-		Target:      opts.buildTarget,
-		BuildArgs:   slices.Clone(opts.buildArgs),
+		Address:     opts.BuildkitHost,
+		ContextDir:  opts.ContextDir,
+		Dockerfile:  opts.Dockerfile,
+		Target:      opts.BuildTarget,
+		BuildArgs:   slices.Clone(opts.BuildArgs),
 		RootFSTar:   rootfsTar,
 		OCITar:      ociTar,
 		progressOut: progress,
@@ -85,17 +82,17 @@ func buildFinalStage(ctx context.Context, opts *options) (packagingArtifact, err
 		task.Done(err)
 	}
 	if err != nil {
-		return packagingArtifact{}, rootfsBuildError(err)
+		return packagingArtifact{}, withErrorDetails(opts.Verbose, rootfsBuildError(err))
 	}
 	return result, nil
 }
 
-func packageRootFS(opts *options, build packagingArtifact) (packagingArtifact, error) {
-	rootfsPath := filepath.Join(opts.tmpDir, "rootfs.erofs")
+func packageRootFS(opts *Options, build packagingArtifact) (packagingArtifact, error) {
+	rootfsPath := filepath.Join(opts.TmpDir, "rootfs.erofs")
 	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
 		return packagingArtifact{}, err
 	}
-	if err := withProgress("Packaging root filesystem", func() error { return createErofsFromTar(build.Path, rootfsPath) }); err != nil {
+	if err := withProgress("Packaging root filesystem", func() error { return createErofsFromTar(build.Path, rootfsPath, opts.sourceDateEpoch) }); err != nil {
 		return packagingArtifact{}, rootfsBuildError(err)
 	}
 	return packagingArtifact{Path: rootfsPath, Config: build.Config}, nil

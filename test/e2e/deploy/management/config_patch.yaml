@@ -8,11 +8,12 @@
 #   through FEDERATION_KUBECONFIG (unchanged from the overlay). This matches how
 #   the retired host-run harness drove the management operator.
 #
-# - webhookServer is intentionally omitted, which disables the admission webhook
-#   server. The production overlay serves it with a cert delivered by the
-#   cert-manager CSI driver, which is not installed in Kind and whose issuer is
-#   supplied by infra rather than the overlay. The e2e suites never create
-#   Workload objects, so the Workload webhook is never exercised.
+# - webhookServer: {} enables the admission webhook server with its defaults
+#   (port 9443, cert dir /tmp/k8s-webhook-server/serving-certs). The production
+#   overlay serves it with a cert delivered by the cert-manager CSI driver,
+#   which is not installed in Kind; webhook-cert.yaml + deployment_patch.yaml
+#   substitute a cert from a plain cert-manager install instead, mounted at the
+#   same default path so no TLS config override is needed here.
 #
 # - featureFlags.enableReferencedDataGate mirrors the flag set on the cell so the
 #   two operators share one feature-flag surface, matching the retired host-run
@@ -33,5 +34,6 @@ data:
       bindAddress: "0"
     discovery:
       mode: single
+    webhookServer: {}
     featureFlags:
       enableReferencedDataGate: true

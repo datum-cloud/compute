@@ -1,0 +1,14 @@
+# Applied (merge) over instance-type-d1-standard-2 to transition the tier to
+# Deprecated. Active -> Deprecated is a legal one-way transition, so the
+# InstanceType webhook accepts this update immediately.
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceType
+metadata:
+  name: datumcloud-d1-standard-2
+spec:
+  resources:
+    cpu: 1000m
+    memory: 2048Mi
+  lifecycle:
+    phase: Deprecated
+    replacementInstanceType: datumcloud-d2-standard-2

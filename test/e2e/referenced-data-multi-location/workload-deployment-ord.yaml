@@ -1,0 +1,46 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: WorkloadDeployment
+metadata:
+  name: test-multiloc-ord-wd
+  # namespace injected by Chainsaw from ($namespace)
+  #
+  # Both deployments carry the same workloadRef and placementName: this is the
+  # shape the Workload controller produces when one placement resolves to two
+  # locations, which is the cheapest way a user reaches shared referenced data
+  # across locations.
+spec:
+  locationRef:
+    name: ord
+  placementName: default
+  workloadRef:
+    name: test-workload
+    uid: "00000000-0000-0000-0000-000000000005"
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud/d1-standard-2
+        sandbox:
+          imagePullSecrets:
+          - name: shared-registry-creds
+          containers:
+          - name: app
+            image: docker.io/library/busybox:stable
+            env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shared-secret
+                  key: db.password
+            volumeAttachments:
+            - name: config-vol
+              mountPath: /etc/config
+      volumes:
+      - name: config-vol
+        configMap:
+          name: shared-config
+      networkInterfaces:
+      - network:
+          name: test-network
+  scaleSettings:
+    minReplicas: 1

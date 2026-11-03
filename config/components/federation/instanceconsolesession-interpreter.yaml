@@ -1,0 +1,86 @@
+# The cell's shell agent writes a session's status only on its cell copy.
+# Karmada reflects it from every cell the copy reaches and aggregates it onto
+# the hub copy, where compute's session controller reads it.
+#
+# The control plane labels each hub copy with the one member cluster Karmada
+# scheduled the session's WorkloadDeployment to, the only cell that runs the
+# instance. Aggregation takes status only from that cluster, so a claim or a
+# refusal written by any other cell the copy reaches is ignored. Once the hub
+# copy holds a claim, only status for the same endpoint replaces it. Among
+# statuses from the member cluster, the one that says the most wins: a claim,
+# then an end, then anything else, and one that says less never replaces the
+# hub copy's.
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: instanceconsolesession
+spec:
+  target:
+    apiVersion: compute.datumapis.com/v1alpha
+    kind: InstanceConsoleSession
+  customizations:
+    statusReflection:
+      luaScript: |
+        function ReflectStatus(observedObj)
+          if observedObj.status == nil then
+            return nil
+          end
+          return observedObj.status
+        end
+    statusAggregation:
+      luaScript: |
+        local function weight(status)
+          if status == nil then
+            return 0
+          end
+          if status.connection ~= nil then
+            return 3
+          end
+          if status.conditions == nil then
+            return 0
+          end
+          for i = 1, #status.conditions do
+            local condition = status.conditions[i]
+            if condition.type == "Ready" and condition.status == "False" then
+              return 2
+            end
+          end
+          if #status.conditions > 0 then
+            return 1
+          end
+          return 0
+        end
+
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or desiredObj.metadata == nil or desiredObj.metadata.labels == nil then
+            return desiredObj
+          end
+          local member = desiredObj.metadata.labels["compute.datumapis.com/member-cluster"]
+          if member == nil or member == "" then
+            return desiredObj
+          end
+          local claimed = nil
+          if desiredObj.status ~= nil and desiredObj.status.connection ~= nil then
+            claimed = desiredObj.status.connection.endpointID
+          end
+          local best = nil
+          local bestWeight = 0
+          for i = 1, #statusItems do
+            local item = statusItems[i]
+            local status = item.status
+            local sameClaim = claimed == nil or status == nil or status.connection == nil or
+              status.connection.endpointID == claimed
+            if item.clusterName == member and sameClaim then
+              local w = weight(status)
+              if w > bestWeight then
+                best = status
+                bestWeight = w
+              end
+            end
+          end
+          if best == nil or bestWeight < weight(desiredObj.status) then
+            return desiredObj
+          end
+          desiredObj.status = best
+          return desiredObj
+        end

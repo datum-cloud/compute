@@ -17,4 +17,5 @@ components:
   - ../../components/csi-webhook-cert
   - ../../components/management-controllers
   - ../../components/alerts
+  - ../../components/dashboards
   - ../../components/cell-controllers

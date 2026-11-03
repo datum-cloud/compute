@@ -132,7 +132,7 @@ func workloadDeploymentHPALabels(deployment *computev1alpha.WorkloadDeployment) 
 		computev1alpha.WorkloadDeploymentNameLabel: deployment.Name,
 		computev1alpha.WorkloadNameLabel:           deployment.Spec.WorkloadRef.Name,
 		computev1alpha.PlacementNameLabel:          deployment.Spec.PlacementName,
-		computev1alpha.CityCodeLabel:               deployment.Spec.CityCode,
+		computev1alpha.LocationLabel:               deployment.Spec.LocationRef.Name,
 	}
 }
 

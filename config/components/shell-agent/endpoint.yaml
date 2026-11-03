@@ -1,0 +1,158 @@
+# Datum Connect tunnel endpoints. Ordinal n serves the identity key in
+# endpoint-key-<n>, which its paired agent creates and rotates, and proxies to
+# that agent only. Both keys are projected and the ordinal picks one, because a
+# StatefulSet cannot name a different Secret per pod.
+#
+# The relay-probe container dials the endpoint the way a session's client
+# does, through the relays in exec-relays, and holds the pod unready while that
+# fails. The paired agent claims sessions only while the pod is ready.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: exec-endpoint
+  namespace: compute-shell-system
+  labels:
+    app.kubernetes.io/name: exec-endpoint
+    app.kubernetes.io/part-of: compute
+spec:
+  replicas: 2
+  serviceName: exec-endpoint
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exec-endpoint
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exec-endpoint
+        app.kubernetes.io/part-of: compute
+    spec:
+      serviceAccountName: exec-endpoint
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: exec-endpoint
+      containers:
+        - name: endpoint
+          image: ghcr.io/datum-cloud/datum-connect
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --listen-key-file=/var/run/datum-connect/keys/$(POD_INDEX)
+            - --tcp-proxy=exec-agent-$(POD_INDEX).exec-agent.$(POD_NAMESPACE).svc.cluster.local:7777
+          env:
+            - name: POD_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUST_LOG
+              value: info
+          envFrom:
+            - configMapRef:
+                name: exec-relays
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          volumeMounts:
+            - name: keys
+              mountPath: /var/run/datum-connect/keys
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/datum-connect
+        - name: relay-probe
+          # The manager's image, which carries this binary too.
+          image: ghcr.io/datum-cloud/compute:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /shell-endpoint-probe
+          args:
+            - --listen=:8082
+            - --key-file=/var/run/datum-connect/keys/$(POD_INDEX)
+            - --target=exec-agent-$(POD_INDEX).exec-agent.$(POD_NAMESPACE).svc.cluster.local:7777
+          env:
+            - name: POD_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          envFrom:
+            - configMapRef:
+                name: exec-relays
+          ports:
+            - name: probes
+              containerPort: 8082
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: keys
+              mountPath: /var/run/datum-connect/keys
+              readOnly: true
+      volumes:
+        - name: keys
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: endpoint-key-0
+                  optional: true
+                  items:
+                    - key: key
+                      path: "0"
+              - secret:
+                  name: endpoint-key-1
+                  optional: true
+                  items:
+                    - key: key
+                      path: "1"
+        - name: state
+          emptyDir: {}

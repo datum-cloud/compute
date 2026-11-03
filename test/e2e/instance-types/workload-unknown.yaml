@@ -1,0 +1,26 @@
+# Rejection companion: a Workload naming a tier the catalog does not publish.
+# Admission refuses it with the published catalog names; the error is asserted
+# to carry the instanceType and the offending name.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: instance-types-wl-unknown
+spec:
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud-no-such-type
+        sandbox:
+          containers:
+            - name: app
+              image: docker.io/library/nginx:latest
+      networkInterfaces:
+      - network:
+          name: default
+  placements:
+  - name: default
+    locations:
+    - name: dfw
+    scaleSettings:
+      minReplicas: 1

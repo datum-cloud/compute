@@ -1,70 +1,77 @@
 /**
  * Shared loading / empty / error / restricted-access states for the plugin's
  * pages. Not part of PR #1315 (which used the portal's server-side
- * `runDetailLoader`/`runListLoader` RBAC gate + `EmptyContent` for this) —
+ * `runDetailLoader`/`runListLoader` RBAC gate + datum-ui's empty state for this) —
  * written fresh here since a plugin has no server loader. See `lib/api.ts`'s
  * `ApiError` for how a 403 response reaches these.
  *
- * `LoadingSkeleton` is content-only — pages must keep breadcrumbs / titles /
- * tabs mounted and only swap the data region for this skeleton. Never wrap
- * the whole page.
+ * Page chrome stays mounted. Loading placeholders live in `skeletons.tsx`.
  */
 import { ApiError } from '../lib/api';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { QuietNotice } from './surface';
+import { Button } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
-import { LockIcon, ServerCrashIcon } from 'lucide-react';
+import { LockIcon, ServerCrashIcon, SquareTerminalIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 
-/** Content-area placeholder only (fleet strip + cards). No page chrome. */
-export function LoadingSkeleton() {
+/** A `QuietNotice` with a leading icon: open, no card, in the home page's style. */
+function IconNotice({
+  icon,
+  iconClassName = 'text-muted-foreground',
+  testId,
+  ...notice
+}: {
+  icon: typeof LockIcon;
+  iconClassName?: string;
+  testId: string;
+  title: string;
+  description?: ReactNode;
+  action?: ReactNode;
+}) {
   return (
-    <div data-testid="compute-plugin-loading" className="flex flex-col gap-4">
-      <Skeleton className="h-14 w-full rounded-xl" />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Skeleton className="h-44 w-full rounded-xl" />
-        <Skeleton className="h-44 w-full rounded-xl" />
-      </div>
+    <div data-testid={testId} className="flex items-start gap-1 px-1">
+      <span className="flex h-10 shrink-0 items-center">
+        <Icon icon={icon} size={16} className={iconClassName} aria-hidden />
+      </span>
+      <QuietNotice className="min-w-0 flex-1" {...notice} />
     </div>
   );
 }
 
+/** The open notice for a 403: the page has nothing it may show. */
 export function RestrictedState({ message }: { message: string }) {
-  return (
-    <div data-testid="compute-plugin-restricted" className="flex flex-col gap-4">
-      <Card className="max-w-md">
-        <CardContent className="flex flex-col items-start gap-3">
-          <Icon icon={LockIcon} size={24} className="text-muted-foreground" />
-          <div>
-            <p className="font-semibold">Access restricted</p>
-            <p className="text-muted-foreground mt-1 text-sm">{message}</p>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  return <IconNotice testId="compute-plugin-restricted" icon={LockIcon} title="Access restricted" description={message} />;
 }
 
+/** The open notice for a failed load, with a Retry button. */
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const message = error instanceof Error ? error.message : 'An unknown error occurred';
 
   return (
-    <div data-testid="compute-plugin-error" className="flex flex-col gap-4">
-      <Card className="max-w-md">
-        <CardContent className="flex flex-col items-start gap-3">
-          <Icon icon={ServerCrashIcon} size={24} className="text-destructive" />
-          <div>
-            <p className="font-semibold">Failed to load</p>
-            <p className="text-muted-foreground mt-1 text-sm">{message}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="border-border hover:bg-muted mt-1 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors">
-            Retry
-          </button>
-        </CardContent>
-      </Card>
-    </div>
+    <IconNotice
+      testId="compute-plugin-error"
+      icon={ServerCrashIcon}
+      iconClassName="text-destructive"
+      title="Failed to load"
+      description={message}
+      action={
+        <Button type="secondary" theme="outline" size="xs" onClick={onRetry}>
+          Retry
+        </Button>
+      }
+    />
+  );
+}
+
+/** The instance has no shell: either the user may not open one, or its runtime can't. */
+export function ShellUnavailableNotice() {
+  return (
+    <IconNotice
+      testId="compute-plugin-shell-unavailable"
+      icon={SquareTerminalIcon}
+      title="Shell isn't available for this instance"
+      description="Opening a shell needs permission to create shell sessions and an instance whose runtime supports them."
+    />
   );
 }
 

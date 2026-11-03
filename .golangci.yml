@@ -45,10 +45,25 @@ linters:
       - linters:
           - prealloc
         path: internal/controller/instancecontrol/
+      # Policy fixtures are easier to read inline
+      - linters:
+          - goconst
+        path: test/activitypolicy/
       # CLI output helpers (fmt.Fprintf to stdout) have no actionable error.
       - linters:
           - errcheck
         path: internal/cmd/.*
+      - linters:
+          - staticcheck
+        text: 'SA1019: \(sigs\.k8s\.io/controller-runtime\.Result\)\.Requeue is deprecated'
+      - linters:
+          - staticcheck
+        path: internal/validation/instance_validation\.go
+        text: 'SA4006: this value of attachmentMethod is never used'
+      - linters:
+          - errcheck
+        path: _test\.go
+        source: '<-'
     paths:
       - third_party$
       - builtin$

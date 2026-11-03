@@ -25,7 +25,9 @@ export type Condition = z.infer<typeof conditionSchema>;
 
 export const workloadPlacementSchema = z.object({
   name: z.string(),
-  cityCodes: z.array(z.string()).default([]),
+  locations: z.array(z.string()).default([]),
+  /** Topology selector the placement resolves through, when it does not name locations. */
+  locationSelector: z.string().optional(),
   readyReplicas: z.number(),
   desiredReplicas: z.number(),
   currentReplicas: z.number(),
@@ -49,7 +51,7 @@ export const workloadResourceSchema = z.object({
   placements: z.array(workloadPlacementSchema).default([]),
   conditions: z.array(conditionSchema).default([]),
   runtimeType: z.string().optional(),
-  regions: z.array(z.string()).default([]),
+  locations: z.array(z.string()).default([]),
   resources: z.string().optional(),
   replicasPerRegion: z.number().optional(),
 });
@@ -89,19 +91,24 @@ export const instanceResourceSchema = z.object({
   name: z.string(),
   namespace: z.string().optional(),
   createdAt: z.coerce.date(),
-  city: z.string().optional(),
+  location: z.string().optional(),
   placement: z.string().optional(),
   instanceType: z.string().optional(),
   cpu: z.string().optional(),
   memory: z.string().optional(),
   image: z.string().optional(),
   status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
+  /** Raw `reason` off the `Available` condition (e.g. `ImageUnavailable`) — `datumctl get instances` shows this verbatim; the coarse `status` above collapses it into one of four buckets. */
+  statusReason: z.string().optional(),
+  /** Raw `message` off the `Available` condition — shown in the Instances table's Message column. */
+  statusMessage: z.string().optional(),
   externalIP: z.string().optional(),
   internalIP: z.string().optional(),
   conditions: z.array(conditionSchema).default([]),
   /** Present while the instance is gated from scheduling (e.g. awaiting quota). */
   schedulingGates: z.array(z.string()).default([]),
   suspended: z.boolean().default(false),
+  workloadName: z.string().optional(),
 });
 
 export type Instance = z.infer<typeof instanceResourceSchema>;
@@ -111,18 +118,3 @@ export const instanceListSchema = z.object({
 });
 
 export type InstanceList = z.infer<typeof instanceListSchema>;
-
-export function instanceStatusToBadgeType(
-  status: InstanceStatusValue
-): 'success' | 'warning' | 'danger' | 'muted' {
-  switch (status) {
-    case 'Available':
-      return 'success';
-    case 'Pending':
-      return 'warning';
-    case 'Failed':
-      return 'danger';
-    default:
-      return 'muted';
-  }
-}

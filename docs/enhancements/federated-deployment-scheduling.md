@@ -23,7 +23,7 @@ From a user perspective, nothing changes — you still specify city codes, and y
 - **Control Plane Cell** — The central compute operator that coordinates between Projects and the Karmada federation layer.
 - **Karmada** — An open-source multi-cluster orchestration system that distributes workloads across registered member clusters (POP Cells) and aggregates their status.
 - **Karmada API Server** — The central federation API server managed by Karmada. WorkloadDeployments are written here so Karmada can propagate them to the correct POP Cell.
-- **PropagationPolicy** — A Karmada resource that defines which clusters a resource should be sent to, based on label selectors. One is created per city code per project namespace.
+- **PropagationPolicy** — A Karmada resource that defines which clusters a resource should be sent to, based on label selectors. One is created per canonical location per project namespace.
 - **Management Cluster** — The central Kubernetes cluster that hosts shared platform infrastructure.
 - **NSO** — Network Services Operator — runs in each POP Cell to provision networking resources (NetworkBinding, SubnetClaim, Subnet) needed by Instances.
 - **Milo** — Datum's shared platform library. Provides utilities like namespace mapping and multi-tenant client strategies used across services.
@@ -78,7 +78,7 @@ that replaces the single-platform-API-server MVP architecture. This document def
 │  Karmada Federation API Server                          │
 │                                                         │
 │   WorkloadDeployment (propagated to POP cells)          │
-│   PropagationPolicy (one per city code per namespace)   │
+│   PropagationPolicy (one per location per namespace)    │
 │   Instance (written back by POP cell for visibility)    │
 │   Cluster objects (one per POP cell, labeled by city)   │
 └───────────────────┬─────────────────────────────────────┘
@@ -111,7 +111,7 @@ that replaces the single-platform-API-server MVP architecture. This document def
 | `Workload` | Project | Consumer |
 | `WorkloadDeployment` (consumer-facing) | Project | `WorkloadReconciler` (spec), `WorkloadDeploymentFederator` (status) |
 | `WorkloadDeployment` (federation intent) | Karmada API Server | `WorkloadDeploymentFederator` |
-| `PropagationPolicy` | Karmada API Server | `WorkloadDeploymentFederator` (one per city code per namespace, lazy) |
+| `PropagationPolicy` | Karmada API Server | `WorkloadDeploymentFederator` (one per location per namespace, lazy) |
 | `Instance` (write-back) | Karmada API Server | `InstanceReconciler` (POP cell) |
 | `Instance` (local execution) | POP Cell | `WorkloadDeploymentReconciler` (POP cell) |
 | `Instance` (projection) | Project | `InstanceProjector` |
@@ -138,11 +138,11 @@ sequenceDiagram
 
     Project->>CPC: WorkloadReconciler watches Workload
     CPC->>Project: query Locations for city codes
-    CPC->>Project: create WorkloadDeployment (spec only, per city)
+    CPC->>Project: create WorkloadDeployment (spec only, per location)
 
     Project->>CPC: WorkloadDeploymentFederator watches WorkloadDeployment
     CPC->>Karmada: create WorkloadDeployment (labeled with city code)
-    CPC->>Karmada: create PropagationPolicy (once per city code, lazy)
+    CPC->>Karmada: create PropagationPolicy (once per location, lazy)
 
     Karmada->>POP: propagate WorkloadDeployment
 
@@ -230,7 +230,7 @@ A new controller in the Control Plane Cell:
 
 - Watches `WorkloadDeployment` in every project (via multicluster-runtime).
 - On create/update: upserts a corresponding `WorkloadDeployment` (labeled with city code) in the Karmada API Server.
-- Creates a `PropagationPolicy` per city code per project namespace lazily on first use.
+- Creates a `PropagationPolicy` per location per project namespace lazily on first use.
 - Reads aggregated `WorkloadDeployment.status` from the Karmada API Server and writes it to the project.
 - On delete: removes the Karmada-side `WorkloadDeployment`. Removes the `PropagationPolicy` when no remaining deployment in the namespace targets that city code.
 
@@ -240,7 +240,7 @@ A new controller in the Control Plane Cell:
 - Unchanged behavior: creates `Instance`, `NetworkBinding`, `SubnetClaim` using existing stateful control logic.
 - Manages `network` scheduling gate removal once NSO signals networks are ready.
 - Updates local `WorkloadDeployment.status` with aggregate replica counts (Karmada aggregates this back natively).
-- **Remove**: `WorkloadDeployment.status.location` (location is now implicit in `spec.cityCode`).
+- **Remove**: `WorkloadDeployment.status.location` (location is explicit in `spec.locationRef`).
 
 ### `InstanceReconciler`
 
@@ -352,7 +352,7 @@ The `MappedNamespaceResourceStrategy` pattern will be promoted from NSO's `inter
 
 ### PropagationPolicy Scope
 
-One `PropagationPolicy` per city code per project namespace, using a `labelSelector` to match all `WorkloadDeployment` objects labeled with `topology.datum.net/city-code: <city>`. Created lazily on first use, deleted when no deployment in the namespace targets that city.
+One `PropagationPolicy` per canonical location per project namespace, using a `labelSelector` to match all `WorkloadDeployment` objects labeled with `topology.datum.net/location: <location>`. Created lazily on first use, deleted when no deployment in the namespace targets that location.
 
 ### NSO in POP Cells
 

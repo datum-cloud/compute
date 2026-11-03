@@ -142,7 +142,7 @@ func TestUpdateDeploymentState(t *testing.T) {
 	makeDeployment := func() computev1alpha.WorkloadDeployment {
 		var d computev1alpha.WorkloadDeployment
 		d.Spec.PlacementName = "default"
-		d.Spec.CityCode = key
+		d.Spec.LocationRef.Name = key
 		return d
 	}
 

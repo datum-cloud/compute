@@ -1,0 +1,561 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package v1alpha
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// RuntimeClassControllerName is the name of the controller that implements a
+// runtime class, as a domain-prefixed path. For example,
+// "compute.datumapis.com/unikraft-provider".
+//
+// The name identifies which controller realizes the class, not where the class
+// can run. A cell advertises the classes it can serve separately, through
+// RuntimeClassServedLabel. The two are independent: a class can have a
+// controller and no capacity anywhere, or capacity in a cell whose controller
+// does not serve the class.
+//
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=253
+// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\/[A-Za-z0-9\/\-._~%!$&'()*+,;=:]+$`
+type RuntimeClassControllerName string
+
+// RuntimeClassFeature is an optional part of the instance API that a runtime
+// class may or may not serve. Features name customer-visible capabilities
+// rather than implementation mechanisms, because the class contract publishes
+// them and rejection messages quote them back to the customer.
+//
+// The set grows only when the instance API gains a capability a class could
+// decline. Enumerating the features keeps a class from declaring one that no
+// provider can interpret.
+//
+// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;sandboxSysctls;exec;gracefulTermination
+type RuntimeClassFeature string
+
+const (
+	// RuntimeClassFeatureSandboxRuntime is the ability to run an instance
+	// shaped as a sandbox of containers.
+	RuntimeClassFeatureSandboxRuntime RuntimeClassFeature = "sandboxRuntime"
+
+	// RuntimeClassFeatureVirtualMachineRuntime is the ability to run an
+	// instance shaped as a virtual machine booting a customer-supplied image.
+	RuntimeClassFeatureVirtualMachineRuntime RuntimeClassFeature = "virtualMachineRuntime"
+
+	// RuntimeClassFeatureConfigMapVolumes is the ability to present a ConfigMap
+	// to an instance as a volume.
+	RuntimeClassFeatureConfigMapVolumes RuntimeClassFeature = "configMapVolumes"
+
+	// RuntimeClassFeatureSecretVolumes is the ability to present a Secret to an
+	// instance as a volume.
+	RuntimeClassFeatureSecretVolumes RuntimeClassFeature = "secretVolumes"
+
+	// RuntimeClassFeatureDiskVolumes is the ability to back a volume with a
+	// persistent disk. A class whose root filesystem lives in RAM typically
+	// cannot serve disk-backed volumes.
+	RuntimeClassFeatureDiskVolumes RuntimeClassFeature = "diskVolumes"
+
+	// RuntimeClassFeatureDeviceVolumeAttachments is the ability to attach a
+	// volume as a raw device. The attachment has no mount path, so the guest
+	// formats and mounts it.
+	RuntimeClassFeatureDeviceVolumeAttachments RuntimeClassFeature = "deviceVolumeAttachments"
+
+	// RuntimeClassFeatureEnvFrom is the ability to populate a container's
+	// environment from a whole ConfigMap or Secret rather than key by key.
+	RuntimeClassFeatureEnvFrom RuntimeClassFeature = "envFrom"
+
+	// RuntimeClassFeatureImagePullSecrets is the ability to authenticate to a
+	// registry with customer-supplied credentials when pulling an instance
+	// image.
+	RuntimeClassFeatureImagePullSecrets RuntimeClassFeature = "imagePullSecrets"
+
+	// RuntimeClassFeatureContainerCapabilities is the ability to grant a sandbox
+	// container Linux capabilities it requests. A class declaring it publishes
+	// which capabilities it grants in grantableCapabilities.
+	RuntimeClassFeatureContainerCapabilities RuntimeClassFeature = "containerCapabilities"
+
+	// RuntimeClassFeatureSandboxSysctls is the ability to set kernel parameters
+	// in a sandbox's own namespaces. A class declaring it publishes the exact
+	// supported name/value pairs in supportedSysctls.
+	RuntimeClassFeatureSandboxSysctls RuntimeClassFeature = "sandboxSysctls"
+
+	// RuntimeClassFeatureExec is the ability to run a command in a running
+	// instance's container through an InstanceConsoleSession, such as an
+	// interactive shell.
+	RuntimeClassFeatureExec RuntimeClassFeature = "exec"
+
+	// RuntimeClassFeatureGracefulTermination is the ability to signal an
+	// instance's processes when it stops and wait up to the instance's
+	// termination grace period for them to exit.
+	RuntimeClassFeatureGracefulTermination RuntimeClassFeature = "gracefulTermination"
+)
+
+// runtimeClassFeatureDescriptions maps each feature to its customer-facing
+// phrase. Rejection messages quote the phrase rather than the API value so the
+// message reads as product language instead of a field name.
+var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
+	RuntimeClassFeatureSandboxRuntime:          "container sandbox instances",
+	RuntimeClassFeatureVirtualMachineRuntime:   "virtual machine instances",
+	RuntimeClassFeatureConfigMapVolumes:        "ConfigMap-backed volumes",
+	RuntimeClassFeatureSecretVolumes:           "Secret-backed volumes",
+	RuntimeClassFeatureDiskVolumes:             "disk-backed volumes",
+	RuntimeClassFeatureDeviceVolumeAttachments: "volumes attached as raw devices",
+	RuntimeClassFeatureEnvFrom:                 "environment variables sourced from a whole ConfigMap or Secret",
+	RuntimeClassFeatureImagePullSecrets:        "image pull secrets",
+	RuntimeClassFeatureContainerCapabilities:   "container capability requests",
+	RuntimeClassFeatureSandboxSysctls:          "sandbox sysctls",
+	RuntimeClassFeatureExec:                    "shell sessions into running instances",
+	RuntimeClassFeatureGracefulTermination:     "termination grace periods",
+}
+
+// Description returns the customer-facing phrase for the feature. It falls back
+// to the API value so a newly added feature stays readable without a
+// description.
+func (f RuntimeClassFeature) Description() string {
+	if description, ok := runtimeClassFeatureDescriptions[f]; ok {
+		return description
+	}
+	return string(f)
+}
+
+// RuntimeClassLifecycleOperation is a lifecycle action a class can perform on a
+// running instance. These actions are not uniformly available across isolation
+// tiers, so each class states which ones it offers rather than the platform
+// implying them.
+//
+// +kubebuilder:validation:Enum=Suspend;Resume;Snapshot
+type RuntimeClassLifecycleOperation string
+
+const (
+	// RuntimeClassLifecycleSuspend stops an instance's execution while keeping
+	// it resumable.
+	RuntimeClassLifecycleSuspend RuntimeClassLifecycleOperation = "Suspend"
+
+	// RuntimeClassLifecycleResume returns a suspended instance to execution.
+	RuntimeClassLifecycleResume RuntimeClassLifecycleOperation = "Resume"
+
+	// RuntimeClassLifecycleSnapshot captures an instance's state so a later
+	// instance can start from it rather than from boot.
+	RuntimeClassLifecycleSnapshot RuntimeClassLifecycleOperation = "Snapshot"
+)
+
+// RuntimeClassNetworkAttachment is how a guest in the class takes the network
+// interface the platform gives it. The platform reads it to wire the instance;
+// it is never handed to a runtime.
+//
+// +kubebuilder:validation:Enum=Netns;Hypervisor;HypervisorDeclared
+type RuntimeClassNetworkAttachment string
+
+const (
+	// RuntimeClassNetworkAttachmentNetns places the interface in the guest's
+	// network namespace, which is what an ordinary container takes.
+	RuntimeClassNetworkAttachmentNetns RuntimeClassNetworkAttachment = "Netns"
+
+	// RuntimeClassNetworkAttachmentHypervisor hands the interface to a
+	// hypervisor as a device that the hypervisor finds from what the node
+	// publishes.
+	RuntimeClassNetworkAttachmentHypervisor RuntimeClassNetworkAttachment = "Hypervisor"
+
+	// RuntimeClassNetworkAttachmentHypervisorDeclared hands the interface to a
+	// hypervisor as a device and has the platform state that device to the
+	// hypervisor. A runtime that reads no node state needs it.
+	RuntimeClassNetworkAttachmentHypervisorDeclared RuntimeClassNetworkAttachment = "HypervisorDeclared"
+)
+
+// RuntimeClassIsolation describes what separates a workload in the class from
+// other tenants' workloads. Multi-tenant customers report this boundary to
+// their own auditors, so the API publishes it and holds it stable across
+// providers instead of leaving it to whichever runtime a cell runs.
+type RuntimeClassIsolation struct {
+	// A short, stable token for the boundary, for example "unikernel" or
+	// "virtual-machine". The values are deliberately not enumerated. The
+	// boundaries the platform offers grow with the catalog, and fixing them in
+	// the schema would make each new tier an API change.
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Required
+	Boundary string `json:"boundary"`
+
+	// A description of the boundary and what it separates, suitable for a
+	// customer to show an auditor.
+	//
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Optional
+	Description string `json:"description,omitempty"`
+}
+
+// RuntimeClassCapabilities describes what the class can serve. The features are
+// the machine-readable half: submission rejects a workload that asks for a
+// feature absent here, naming the class. The compatibility statement is the
+// half a customer reads before committing an image to the tier.
+//
+// +kubebuilder:validation:XValidation:message="grantableCapabilities requires the containerCapabilities feature",rule="!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features)"
+// +kubebuilder:validation:XValidation:message="the containerCapabilities feature requires a non-empty grantableCapabilities",rule="!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0)"
+// +kubebuilder:validation:XValidation:message="supportedSysctls requires the sandboxSysctls feature",rule="!has(self.supportedSysctls) || size(self.supportedSysctls) == 0 || (has(self.features) && 'sandboxSysctls' in self.features)"
+// +kubebuilder:validation:XValidation:message="the sandboxSysctls feature requires a non-empty supportedSysctls",rule="!has(self.features) || !('sandboxSysctls' in self.features) || (has(self.supportedSysctls) && size(self.supportedSysctls) > 0)"
+// +kubebuilder:validation:XValidation:message="the sandboxSysctls feature requires the sandboxRuntime feature",rule="!has(self.features) || !('sandboxSysctls' in self.features) || 'sandboxRuntime' in self.features"
+type RuntimeClassCapabilities struct {
+	// The optional parts of the instance API this class serves. Anything absent
+	// is unsupported, so a class that omits a feature rejects requests for it
+	// rather than serving it by accident.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:Optional
+	Features []RuntimeClassFeature `json:"features,omitempty"`
+
+	// The Linux capabilities a sandbox container in this class may add. A
+	// container requesting a capability outside this set is rejected, naming the
+	// class. The platform reads this field itself and never passes it to a
+	// runtime, and each value is drawn from the closed set of Linux capability
+	// names, which excludes ALL. The class's isolation boundary justifies what it
+	// grants: a class whose guest kernel confines the workload may grant
+	// capabilities a shared-kernel class could not.
+	//
+	// A class lists capabilities here only when it declares the
+	// containerCapabilities feature, and a class declaring that feature lists at
+	// least one.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:message="grantableCapabilities must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted",rule="self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM'])"
+	// +kubebuilder:validation:Optional
+	GrantableCapabilities []Capability `json:"grantableCapabilities,omitempty"`
+
+	// The exact Linux kernel parameters and values a sandbox in this class may
+	// request. Names are literal: entries never match prefixes or wildcards.
+	// Providers publish only parameters namespaced by the guest runtime; host
+	// kernel parameters do not belong in this list.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	SupportedSysctls []RuntimeClassSysctl `json:"supportedSysctls,omitempty"`
+
+	// What runs unmodified in this class and what does not. Customers need this
+	// statement before committing an image to the tier.
+	//
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Optional
+	Compatibility string `json:"compatibility,omitempty"`
+}
+
+// RuntimeClassSysctl is one exact kernel parameter a runtime class can apply,
+// together with the closed set of values it accepts.
+type RuntimeClassSysctl struct {
+	// The exact dotted sysctl name. Prefixes and wildcard suffixes are invalid.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$`
+	Name string `json:"name"`
+
+	// The complete set of values this class accepts for the parameter.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=set
+	AllowedValues []SysctlValue `json:"allowedValues"`
+}
+
+// SysctlValue is an exact value a sandbox may request for a kernel parameter.
+// It is deliberately opaque: the runtime class publishes the finite set that
+// has meaning for each supported name.
+//
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=128
+type SysctlValue string
+
+// RuntimeClassDefaultCapabilities are the Linux capabilities the platform grants
+// a sandbox container in the class when the container states none.
+//
+// Only additions are published. Every sandbox container drops ALL, in every
+// class, and that is not a per-class choice.
+type RuntimeClassDefaultCapabilities struct {
+	// The capabilities granted to a container that requests none. Each must also
+	// appear in grantableCapabilities, so a customer reading the class sees a
+	// default drawn from the set they may request themselves.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:message="add must name Linux capabilities, such as NET_BIND_SERVICE; ALL cannot be granted",rule="self.all(c, c in ['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_RAW', 'PERFMON', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYSLOG', 'SYS_ADMIN', 'SYS_BOOT', 'SYS_CHROOT', 'SYS_MODULE', 'SYS_NICE', 'SYS_PACCT', 'SYS_PTRACE', 'SYS_RAWIO', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'WAKE_ALARM'])"
+	// +kubebuilder:validation:Optional
+	Add []Capability `json:"add,omitempty"`
+}
+
+// RuntimeClassSecurityContext is the security configuration the platform writes
+// onto a sandbox container in the class when the customer states none.
+//
+// Every value is drawn from the same closed sets a customer may state on their
+// own container, so the class publishes a default a customer can read, compare
+// between tiers, and restate themselves.
+//
+// These are defaults, not a ceiling. Only capabilities are bounded by the class,
+// through grantableCapabilities. Whether a class should also publish a limit on
+// privilege escalation and the seccomp profile is an open question.
+type RuntimeClassSecurityContext struct {
+	// The Linux capabilities granted to a container that requests none.
+	//
+	// +kubebuilder:validation:Optional
+	Capabilities *RuntimeClassDefaultCapabilities `json:"capabilities,omitempty"`
+
+	// Whether a process in a container may gain more privileges than its parent
+	// when the container states nothing. The value is a default, not a limit: a
+	// container may state the opposite and is not refused against the class.
+	//
+	// +kubebuilder:validation:Optional
+	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
+
+	// The seccomp profile confining a container that states none.
+	//
+	// +kubebuilder:validation:Optional
+	SeccompProfile *SandboxSeccompProfile `json:"seccompProfile,omitempty"`
+}
+
+// RuntimeClassLifecycle describes what a customer can expect of an instance in
+// this class: how long it takes to start, and which operations apply to it
+// while it runs.
+type RuntimeClassLifecycle struct {
+	// The cold start a customer should plan for, measured from instance
+	// creation to the instance running. Startup time is the main difference
+	// between tiers, so the class publishes it rather than leaving customers to
+	// measure it.
+	//
+	// +kubebuilder:validation:Optional
+	TypicalStartupTime *metav1.Duration `json:"typicalStartupTime,omitempty"`
+
+	// The lifecycle operations this class offers. Declaring none is accurate
+	// for a class whose isolation boundary does not allow them.
+	//
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:Optional
+	Operations []RuntimeClassLifecycleOperation `json:"operations,omitempty"`
+
+	// Anything about startup or lifecycle a customer needs that the fields
+	// above cannot express.
+	//
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Optional
+	Description string `json:"description,omitempty"`
+}
+
+// RuntimeClassSpec is the published contract for an execution tier.
+//
+// Pricing is deliberately absent. The service catalog publishes price and the
+// billing dimensions a class is metered on, and customers are billed against
+// the catalog. Restating a price here would create a second source of truth.
+//
+// This object carries the contract published to a customer, plus the minimum
+// the platform itself needs to wire an instance of the class. Nothing else
+// belongs here.
+//
+// Opaque provider parameters remain deliberately absent. The platform reserves
+// the right to change which runtime a provider uses to keep the published
+// promise, and a pass-through slot on this object would put runtime
+// configuration one RBAC mistake away from a tenant, which is the escape path
+// this design closes. Provider configuration stays with the provider's own
+// deployment. A field the platform reads itself, drawn from a closed set of
+// values, reaches no runtime and is not such a slot.
+//
+// +kubebuilder:validation:XValidation:message="defaultSecurityContext.capabilities.add must only name capabilities listed in capabilities.grantableCapabilities",rule="!has(self.defaultSecurityContext) || !has(self.defaultSecurityContext.capabilities) || !has(self.defaultSecurityContext.capabilities.add) || self.defaultSecurityContext.capabilities.add.all(c, has(self.capabilities.grantableCapabilities) && c in self.capabilities.grantableCapabilities)"
+type RuntimeClassSpec struct {
+	// The controller that implements this class. A provider watches for classes
+	// carrying its own controller name, claims them, and reports through the
+	// Available condition whether it can honor what they declare. A class whose
+	// controller never appears stays unclaimed, which this field makes visible.
+	//
+	// The field says which provider realizes the class. It does not say where
+	// the class can run. Cells advertise that separately, and placement uses
+	// their declaration.
+	//
+	// +kubebuilder:validation:XValidation:message="controllerName is immutable",rule="self == oldSelf"
+	// +kubebuilder:validation:Required
+	ControllerName RuntimeClassControllerName `json:"controllerName"`
+
+	// The name to show a customer choosing a tier, for example "Unikernel fast
+	// path".
+	//
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Optional
+	DisplayName string `json:"displayName,omitempty"`
+
+	// What this tier is for and who should choose it.
+	//
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Optional
+	Description string `json:"description,omitempty"`
+
+	// Whether an instance that selects no class runs in this one.
+	//
+	// Admission stamps the default onto a workload and never resolves it at
+	// read time. Moving the marker changes what new workloads get and leaves
+	// running ones in the tier, cost, and startup profile they were created
+	// with. At most one class in the catalog may set it.
+	//
+	// +kubebuilder:validation:Optional
+	Default bool `json:"default,omitempty"`
+
+	// What separates a workload in this class from other tenants' workloads.
+	//
+	// +kubebuilder:validation:Required
+	Isolation RuntimeClassIsolation `json:"isolation"`
+
+	// What this class can serve, and what it cannot.
+	//
+	// +kubebuilder:validation:Required
+	Capabilities RuntimeClassCapabilities `json:"capabilities"`
+
+	// How quickly instances in this class start, and what can be done to them
+	// once they are running.
+	//
+	// +kubebuilder:validation:Optional
+	Lifecycle RuntimeClassLifecycle `json:"lifecycle,omitempty"`
+
+	// The security configuration the platform writes onto a sandbox container in
+	// this class when the customer states none. A customer reads it before
+	// choosing the class, and reads the same values back on their own workload
+	// afterwards.
+	//
+	// Publishing the default is what keeps the configuration out of the runtime's
+	// hands: admission stamps these values onto the stored workload, so the
+	// workload states what runs and a provider runs only what the workload
+	// states. A class that publishes nothing leaves a container that states
+	// nothing to the platform-wide floor, which drops every capability.
+	//
+	// Admission stamps these values when a workload is created and never
+	// revisits them, so correcting the value here moves workloads created after
+	// the change and leaves existing workloads with the configuration they were
+	// created with.
+	//
+	// The values are defaults rather than limits. A container may state
+	// something other than what the class publishes, and only capabilities are
+	// checked against the class, through grantableCapabilities.
+	//
+	// +kubebuilder:validation:Optional
+	DefaultSecurityContext *RuntimeClassSecurityContext `json:"defaultSecurityContext,omitempty"`
+
+	// How a guest in this class takes the network interface the platform gives
+	// it. The provider that publishes the class states it, because only the
+	// provider knows what its runtime expects.
+	//
+	// Leaving it empty is the right answer for any class whose guests take the
+	// interface the cell already gives them, and it is what every class
+	// published today does. An empty value asks the networking layer for
+	// nothing, so the cell's own setting continues to decide. Stating a value
+	// overrides that setting for every guest in the class, in every cell, so
+	// state one only for a class whose runtime cannot use what the cell would
+	// otherwise give it.
+	//
+	// The value is resolved when a deployment is created and then fixed for the
+	// life of each instance, so correcting it here moves new instances without
+	// disturbing running ones.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkAttachment RuntimeClassNetworkAttachment `json:"networkAttachment,omitempty"`
+}
+
+// Condition types reported on a RuntimeClass.
+const (
+	// RuntimeClassConditionAvailable reports whether the class is usable: the
+	// controller named in spec.controllerName has claimed it and can honor
+	// everything it declares. The condition stays Unknown until that controller
+	// reconciles the class, so a class that no controller implements is visibly
+	// unclaimed.
+	RuntimeClassConditionAvailable = "Available"
+)
+
+// Reasons for the Available condition. These are customer-facing: they appear
+// when a customer asks why a tier they selected is not usable.
+const (
+	// RuntimeClassReasonServed is set when the class's controller has claimed
+	// it and can serve everything the class declares.
+	//
+	// The reason is unique across every condition compute explains to
+	// customers, which the explanation catalog indexes by reason alone.
+	RuntimeClassReasonServed = "Served"
+
+	// RuntimeClassReasonPending is the starting state and means no controller
+	// has reported on this class yet. Typically the provider that implements
+	// the class is not deployed, or has not reconciled since the class was
+	// published.
+	RuntimeClassReasonPending = "Pending"
+
+	// RuntimeClassReasonUnsupportedFeature is set when the class declares a
+	// capability its controller cannot serve. The message names the features,
+	// which makes the gap visible in the catalog instead of leaving instances
+	// in the tier failing to start.
+	RuntimeClassReasonUnsupportedFeature = "UnsupportedFeature"
+
+	// RuntimeClassReasonContractNotHonored is set when the controller cannot
+	// keep some other part of the published contract, such as the isolation
+	// boundary it declares or a lifecycle operation it offers.
+	RuntimeClassReasonContractNotHonored = "ContractNotHonored"
+)
+
+// RuntimeClassStatus is what the controller implementing the class reports
+// about it. Per-location availability is not reported here. Cells advertise the
+// classes they serve, and that answer belongs with placement.
+type RuntimeClassStatus struct {
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:Optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Platform,Project"
+
+// RuntimeClass is an execution tier a workload can run in. It publishes the
+// isolation surrounding the workload, which images run unmodified, how fast
+// instances start, and which lifecycle operations the tier offers.
+//
+// Datum owns and publishes the catalog. Customers select a class by name on a
+// workload and never create one. That restriction lets the machinery behind a
+// class change without a customer-visible API change, as long as the contract
+// on this object still holds.
+//
+// The class is authoritative in the platform control plane and projected
+// read-only into project control planes, so a customer can read the contract
+// they select from without reaching the platform control plane.
+//
+// +kubebuilder:printcolumn:name="Display Name",type=string,JSONPath=`.spec.displayName`
+// +kubebuilder:printcolumn:name="Isolation",type=string,JSONPath=`.spec.isolation.boundary`
+// +kubebuilder:printcolumn:name="Default",type=boolean,JSONPath=`.spec.default`
+// +kubebuilder:printcolumn:name="Available",type=string,JSONPath=`.status.conditions[?(@.type=="Available")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Controller",type=string,JSONPath=`.spec.controllerName`,priority=1
+// +kubebuilder:printcolumn:name="Startup",type=string,JSONPath=`.spec.lifecycle.typicalStartupTime`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Available")].message`,priority=1
+type RuntimeClass struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Spec is the published contract for this execution tier.
+	Spec RuntimeClassSpec `json:"spec,omitempty"`
+
+	// Status is what the controller implementing this class reports about it.
+	//
+	// +kubebuilder:default={conditions:{{type:"Available",status:"Unknown",reason:"Pending",message:"Waiting for the class controller",lastTransitionTime:"1970-01-01T00:00:00Z"}}}
+	Status RuntimeClassStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// RuntimeClassList contains a list of RuntimeClass objects.
+type RuntimeClassList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []RuntimeClass `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&RuntimeClass{}, &RuntimeClassList{})
+}

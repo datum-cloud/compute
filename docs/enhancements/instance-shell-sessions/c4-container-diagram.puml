@@ -1,0 +1,37 @@
+@startuml c4-container-diagram
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+!include https://raw.githubusercontent.com/datum-cloud/enhancements/main/enhancements/datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+Person(user, "Compute user or AI agent", "Runs an authorized command in one of the customer's instances")
+
+Container(client, "Client", "datumctl, Cloud Portal, or API client", "Creates a session with a one-time key, connects to the cell and runs the command")
+
+System_Boundary(cell, "Compute cell") {
+    Container(instance, "Instance", "Kata VM or Unikraft unikernel", "Runs the customer's workload and the requested command")
+    Container(agent, "Shell agent", "compute", "Claims sessions, enforces limits, checks the client's key, runs commands and cleans up")
+    Container(listen, "Tunnel endpoint", "Datum Connect CLI", "Receives the encrypted connection; holds no cluster credentials")
+}
+
+System_Boundary(core, "Datum control plane") {
+    Container(api, "Project API", "Milo", "Checks the caller's permission, stores sessions and records creation in the audit log")
+    Container(fed, "Compute controllers", "compute", "Send each session to the cell running the instance and report its status back")
+}
+
+Container_Ext(relay, "Relay", "Datum iroh relay", "Forwards encrypted traffic; the user and the cell both connect outward to it")
+
+Rel_R(user, client, "")
+Rel(client, relay, "4. Connects", "QUIC")
+Rel(client, api, "1. Creates a session", "HTTPS")
+Rel_R(fed, api, "2. Watches sessions")
+Rel(fed, agent, "3. Delivers the session")
+Rel(relay, listen, "Forwards")
+Rel_L(listen, agent, "Hands over the stream")
+Rel_L(agent, instance, "5. Runs the command", "via the instance's runtime")
+
+Lay_U(api, relay)
+
+SHOW_LEGEND()
+@enduml

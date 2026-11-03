@@ -32,6 +32,8 @@ const (
 	ActionTypeDelete      ActionType = "Delete"
 	ActionTypeWait        ActionType = "Wait"
 	ActionTypePatchLabels ActionType = "PatchLabels"
+
+	ActionTypePatchTemplateHash ActionType = "PatchTemplateHash"
 )
 
 type Action struct {
@@ -120,6 +122,20 @@ func NewPatchLabelsAction(updated client.Object, base client.Object) Action {
 		fn: func(ctx context.Context, c client.Client) error {
 			if err := c.Patch(ctx, updated, patch); err != nil {
 				return fmt.Errorf("failed to patch labels on %T %s: %w", updated, updated.GetName(), err)
+			}
+			return nil
+		},
+	}
+}
+
+func NewPatchTemplateHashAction(updated client.Object, base client.Object) Action {
+	patch := client.MergeFrom(base)
+	return Action{
+		Object:     updated,
+		actionType: ActionTypePatchTemplateHash,
+		fn: func(ctx context.Context, c client.Client) error {
+			if err := c.Patch(ctx, updated, patch); err != nil {
+				return fmt.Errorf("failed to patch template hash on %T %s: %w", updated, updated.GetName(), err)
 			}
 			return nil
 		},

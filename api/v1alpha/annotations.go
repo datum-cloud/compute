@@ -74,4 +74,27 @@ const (
 	// this annotation on its local copy and sets Status.Suspended itself, which
 	// then aggregates back up to the hub normally.
 	SuspendedAnnotation = AnnotationNamespace + "/suspended"
+
+	// InstanceConsoleSessionRequesterAnnotation records who created an
+	// InstanceConsoleSession. Admission sets it from the authenticated request
+	// and overwrites any value the client supplied, so the session's start and
+	// end events can name the requester.
+	InstanceConsoleSessionRequesterAnnotation = AnnotationNamespace + "/requester"
+	// InstanceConsoleSessionAssistantProofAnnotation is a signed assertion from
+	// the compute MCP server. Admission verifies it against the authenticated
+	// requester and immutable session spec; the activity writer verifies it
+	// again before describing a command as run through the assistant.
+	InstanceConsoleSessionAssistantProofAnnotation = AnnotationNamespace + "/assistant-exec-proof"
+
+	// InstanceConsoleSessionCellAnnotation records, on a project
+	// InstanceConsoleSession and on its lifecycle events, the cell the session
+	// was delivered to. The session controller sets it at delivery, so support
+	// can go from one activity event to that cell's logs without a lookup.
+	InstanceConsoleSessionCellAnnotation = AnnotationNamespace + "/cell"
+
+	// InstanceConsoleSessionLocationAnnotation records, on a project
+	// InstanceConsoleSession and on its lifecycle events, the location of the
+	// cell the session was delivered to. The session controller sets it at
+	// delivery.
+	InstanceConsoleSessionLocationAnnotation = AnnotationNamespace + "/location"
 )

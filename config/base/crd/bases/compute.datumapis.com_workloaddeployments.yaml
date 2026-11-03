@@ -37,13 +37,8 @@ spec:
     - jsonPath: .status.updatedReplicas
       name: Up-to-date
       type: string
-    - jsonPath: .status.location.namespace
-      name: Location Namespace
-      priority: 1
-      type: string
-    - jsonPath: .status.location.name
-      name: Location Name
-      priority: 1
+    - jsonPath: .spec.locationRef.name
+      name: Location
       type: string
     name: v1alpha
     schema:
@@ -71,9 +66,28 @@ spec:
           spec:
             description: WorkloadDeploymentSpec defines the desired state of WorkloadDeployment
             properties:
-              cityCode:
-                description: deployments can be scheduled in ways other than just
-                  a city code.
+              locationRef:
+                description: The location where this deployment runs.
+                properties:
+                  name:
+                    description: Name of a datum location
+                    type: string
+                required:
+                - name
+                type: object
+              networkAttachment:
+                description: |-
+                  How a guest takes the network interface the platform gives it, resolved
+                  from the runtime class this deployment runs in.
+
+                  The class catalog is readable only where a deployment is created, so the
+                  answer is resolved once here and carried to the cell that acts on it. An
+                  empty value asks the networking layer for nothing and leaves the cell's
+                  own setting deciding, which is what every deployment does today.
+                enum:
+                - Netns
+                - Hypervisor
+                - HypervisorDeclared
                 type: string
               placementName:
                 description: The placement in the workload which is driving a deployment
@@ -457,6 +471,21 @@ spec:
                         description: The runtime type of the instance, such as a container
                           sandbox or a VM.
                         properties:
+                          class:
+                            description: |-
+                              The execution tier the instance runs in. The value names a RuntimeClass
+                              in the platform catalog, which Datum publishes and customers do not
+                              define. Publishing a new tier adds a class instead of changing this API.
+
+                              The class is independent of the runtime shape above. Either a sandbox or
+                              a virtual machine can run in any class the platform offers.
+
+                              An empty value selects the class the catalog marks as default. Admission
+                              records that choice on the workload and never resolves it again, so an
+                              existing workload keeps the tier, cost, and startup characteristics it
+                              was created with.
+                            maxLength: 253
+                            type: string
                           resources:
                             description: |-
                               Resources each instance must be allocated.
@@ -473,11 +502,15 @@ spec:
                                 description: |-
                                   Full or partial URL of the instance type resource to use for this instance.
 
-                                  For example: `datumcloud/d1-standard-2`
+                                  For example: `datumcloud-d1-standard-2`
 
                                   May be combined with `resources` to allow for custom instance types for
                                   instance families that support customization. Instance types which support
                                   customization will appear in the form `<project>/<instanceFamily>-custom`.
+
+                                  When omitted, the instance runs on the platform's default instance type,
+                                  `datumcloud-d1-standard-2`, for compatibility with workloads written
+                                  before instance types could be chosen.
                                 type: string
                               requests:
                                 additionalProperties:
@@ -489,8 +522,6 @@ spec:
                                 description: Describes adjustments to the resources
                                   defined by the instance type.
                                 type: object
-                            required:
-                            - instanceType
                             type: object
                           sandbox:
                             description: A sandbox is a managed isolated environment
@@ -558,7 +589,9 @@ spec:
                                                 description: Selects a key of a ConfigMap.
                                                 properties:
                                                   key:
-                                                    description: The key to select.
+                                                    description: |-
+                                                      The key to select from the ConfigMap's Data field.
+                                                      Keys in the BinaryData field are not currently propagated to container env vars.
                                                     type: string
                                                   name:
                                                     default: ""
@@ -744,8 +777,9 @@ spec:
                                         type: object
                                       type: array
                                     image:
-                                      description: The fully qualified container image
-                                        name.
+                                      description: |-
+                                        The container image to run. Must include a registry, e.g.
+                                        "ghcr.io/acme/api:1.4.2" rather than "acme/api:1.4.2".
                                       type: string
                                     name:
                                       description: The name of the container.
@@ -804,6 +838,75 @@ spec:
                                             amount of compute resources required.
                                           type: object
                                       type: object
+                                    securityContext:
+                                      description: Security options for the container.
+                                      properties:
+                                        allowPrivilegeEscalation:
+                                          description: |-
+                                            Whether a process in the container can gain more privileges than its
+                                            parent. Setuid binaries and file capabilities rely on it, so an image that
+                                            escalates at startup, such as one running ping or a privilege-dropping
+                                            entrypoint, needs it true.
+
+                                            Left unset, the selected runtime class's published default is written here
+                                            at admission, so the stored container states the value it runs with.
+                                          type: boolean
+                                        capabilities:
+                                          description: The Linux capabilities to grant
+                                            to or remove from the container.
+                                          properties:
+                                            add:
+                                              description: |-
+                                                The capabilities to grant to the container. Each must be one that the
+                                                selected runtime class grants. ALL is not allowed, so a container states
+                                                exactly what it needs.
+                                              items:
+                                                description: |-
+                                                  Capability is a Linux capability name without the CAP_ prefix, for example
+                                                  CHOWN or NET_BIND_SERVICE.
+                                                maxLength: 64
+                                                minLength: 1
+                                                pattern: ^[A-Z_]+$
+                                                type: string
+                                              maxItems: 64
+                                              type: array
+                                              x-kubernetes-list-type: set
+                                            drop:
+                                              description: |-
+                                                The capabilities to remove from the container. The platform already removes
+                                                every capability, so drop is accepted for compatibility with Kubernetes
+                                                manifests, for example drop: [ALL]. Naming a capability here also removes
+                                                it when the runtime class would otherwise grant it by default.
+                                              items:
+                                                description: |-
+                                                  Capability is a Linux capability name without the CAP_ prefix, for example
+                                                  CHOWN or NET_BIND_SERVICE.
+                                                maxLength: 64
+                                                minLength: 1
+                                                pattern: ^[A-Z_]+$
+                                                type: string
+                                              maxItems: 64
+                                              type: array
+                                              x-kubernetes-list-type: set
+                                          type: object
+                                        seccompProfile:
+                                          description: |-
+                                            The seccomp profile confining the container's system calls.
+
+                                            Left unset, the selected runtime class's published default is written here
+                                            at admission, so the stored container states the profile it runs with.
+                                          properties:
+                                            type:
+                                              description: The kind of seccomp profile
+                                                to apply.
+                                              enum:
+                                              - RuntimeDefault
+                                              - Unconfined
+                                              type: string
+                                          required:
+                                          - type
+                                          type: object
+                                      type: object
                                     volumeAttachments:
                                       description: A list of volumes to attach to
                                         the container.
@@ -852,9 +955,61 @@ spec:
                                   - name
                                   type: object
                                 type: array
+                              sysctls:
+                                description: |-
+                                  Linux kernel parameters to set for every container in the sandbox.
+
+                                  Sysctls apply to the sandbox's own kernel namespaces. Each exact name and
+                                  value must be published by the selected runtime class; prefixes and
+                                  wildcards are never accepted. This keeps host-level kernel configuration
+                                  outside the workload API while allowing an isolated runtime to expose a
+                                  deliberately small set of guest-kernel options.
+                                items:
+                                  description: |-
+                                    SandboxSysctl is one Linux kernel parameter requested for a sandbox. The
+                                    selected runtime class decides which exact name/value pairs it supports.
+                                  properties:
+                                    name:
+                                      description: The exact dotted sysctl name, for
+                                        example net.ipv4.ip_forward.
+                                      maxLength: 253
+                                      minLength: 1
+                                      pattern: ^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$
+                                      type: string
+                                    value:
+                                      description: |-
+                                        The value to write before the sandbox's containers start. The selected
+                                        runtime class must publish this exact value for this name.
+                                      maxLength: 128
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - name
+                                  - value
+                                  type: object
+                                maxItems: 32
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
                             required:
                             - containers
                             type: object
+                          terminationGracePeriodSeconds:
+                            description: |-
+                              How long, in seconds, the instance's processes have to exit after being
+                              asked to stop. When an instance is deleted, replaced, or suspended, each
+                              container's main process receives SIGTERM, and any process still running
+                              when the period ends is killed. Zero kills the processes immediately.
+
+                              The instance keeps its resources and addresses until it has stopped, so
+                              a longer period delays their release. A value above zero requires a
+                              runtime class that offers graceful termination. When unset, the runtime
+                              class's own default applies.
+                            format: int64
+                            maximum: 300
+                            minimum: 0
+                            type: integer
                           virtualMachine:
                             description: A virtual machine is a classical VM environment,
                               booting a full OS provided by the user via an image.
@@ -937,6 +1092,13 @@ spec:
                                     mode, like fsGroup, and the result can be other mode bits set.
                                   format: int32
                                   type: integer
+                                defaultUser:
+                                  description: |-
+                                    defaultUser is Optional: The owner UID of the created files by default.
+                                    The defaultUser field is only used as a fallback when the item-level user field is unset.
+                                    (Alpha) This field requires the AtomicWriteVolumeUserFields feature gate to be enabled.
+                                  format: int64
+                                  type: integer
                                 items:
                                   description: |-
                                     items if unspecified, each key-value pair in the Data field of the referenced
@@ -970,6 +1132,13 @@ spec:
                                           May not contain the path element '..'.
                                           May not start with the string '..'.
                                         type: string
+                                      user:
+                                        description: |-
+                                          user is Optional: The owner UID of the created file.
+                                          If specified, the item-level user field takes precedence over defaultUser.
+                                          (Alpha) This field requires the AtomicWriteVolumeUserFields feature gate to be enabled.
+                                        format: int64
+                                        type: integer
                                     required:
                                     - key
                                     - path
@@ -1115,6 +1284,13 @@ spec:
                                     mode, like fsGroup, and the result can be other mode bits set.
                                   format: int32
                                   type: integer
+                                defaultUser:
+                                  description: |-
+                                    defaultUser is Optional: The owner UID of the created files by default.
+                                    The defaultUser field is only used as a fallback when the item-level user field is unset.
+                                    (Alpha) This field requires the AtomicWriteVolumeUserFields feature gate to be enabled.
+                                  format: int64
+                                  type: integer
                                 items:
                                   description: |-
                                     items If unspecified, each key-value pair in the Data field of the referenced
@@ -1148,6 +1324,13 @@ spec:
                                           May not contain the path element '..'.
                                           May not start with the string '..'.
                                         type: string
+                                      user:
+                                        description: |-
+                                          user is Optional: The owner UID of the created file.
+                                          If specified, the item-level user field takes precedence over defaultUser.
+                                          (Alpha) This field requires the AtomicWriteVolumeUserFields feature gate to be enabled.
+                                        format: int64
+                                        type: integer
                                     required:
                                     - key
                                     - path
@@ -1192,7 +1375,7 @@ spec:
                 - uid
                 type: object
             required:
-            - cityCode
+            - locationRef
             - placementName
             - scaleSettings
             - template
@@ -1270,16 +1453,6 @@ spec:
                 description: The desired number of instances
                 format: int32
                 type: integer
-              location:
-                description: The location which the deployment has been scheduled
-                  to
-                properties:
-                  name:
-                    description: Name of a datum location
-                    type: string
-                required:
-                - name
-                type: object
               observedGeneration:
                 description: |-
                   The most recent generation observed by the deployment controller. When

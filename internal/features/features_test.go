@@ -10,7 +10,7 @@ import (
 // feature gate defaults to disabled so cells, which carry no networking CRDs, come
 // up crash-safe when the flag is not set; deployments running NSO opt in explicitly.
 func TestNetworkingIntegration_DefaultDisabled(t *testing.T) {
-	// Use a fresh gate so this test is independent of any global state mutations.
+	// Copy the gate so the test does not depend on mutations to global state.
 	gate := MutableFeatureGate.DeepCopy()
 	if gate.Enabled(NetworkingIntegration) {
 		t.Error("NetworkingIntegration default = true, want false")
@@ -39,5 +39,116 @@ func TestNetworkingIntegration_ExplicitlyEnabled(t *testing.T) {
 	}
 	if !gate.Enabled(NetworkingIntegration) {
 		t.Error("NetworkingIntegration = false after Set=true, want true")
+	}
+}
+
+// TestRuntimeClasses_DefaultDisabled verifies that the RuntimeClasses feature
+// gate defaults to disabled, so a control plane rejects an execution tier
+// selection before providers that serve the tier are deployed.
+func TestRuntimeClasses_DefaultDisabled(t *testing.T) {
+	// Copy the gate so the test does not depend on mutations to global state.
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(RuntimeClasses) {
+		t.Error("RuntimeClasses default = true, want false")
+	}
+}
+
+// TestRuntimeClasses_CanBeDisabled verifies that setting RuntimeClasses=false
+// keeps runtime class selection off.
+func TestRuntimeClasses_CanBeDisabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("RuntimeClasses=false"); err != nil {
+		t.Fatalf("Set(RuntimeClasses=false): %v", err)
+	}
+	if gate.Enabled(RuntimeClasses) {
+		t.Error("RuntimeClasses = true after Set=false, want false")
+	}
+}
+
+// TestRuntimeClasses_ExplicitlyEnabled verifies that setting
+// RuntimeClasses=true turns runtime class selection on.
+func TestRuntimeClasses_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("RuntimeClasses=true"); err != nil {
+		t.Fatalf("Set(RuntimeClasses=true): %v", err)
+	}
+	if !gate.Enabled(RuntimeClasses) {
+		t.Error("RuntimeClasses = false after Set=true, want true")
+	}
+}
+
+// TestInstanceTypes_DefaultDisabled verifies that the InstanceTypes feature
+// gate defaults to disabled, so the InstanceType controller and webhook are
+// not registered until an environment has the datum-infra provisioning
+// change in place and opts in.
+func TestInstanceTypes_DefaultDisabled(t *testing.T) {
+	// Copy the gate so the test does not depend on mutations to global state.
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(InstanceTypes) {
+		t.Error("InstanceTypes default = true, want false")
+	}
+}
+
+// TestInstanceTypes_CanBeDisabled verifies that setting InstanceTypes=false
+// keeps the controller and webhook unregistered.
+func TestInstanceTypes_CanBeDisabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InstanceTypes=false"); err != nil {
+		t.Fatalf("Set(InstanceTypes=false): %v", err)
+	}
+	if gate.Enabled(InstanceTypes) {
+		t.Error("InstanceTypes = true after Set=false, want false")
+	}
+}
+
+// TestInstanceTypes_ExplicitlyEnabled verifies that setting
+// InstanceTypes=true turns the controller and webhook on.
+func TestInstanceTypes_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InstanceTypes=true"); err != nil {
+		t.Fatalf("Set(InstanceTypes=true): %v", err)
+	}
+	if !gate.Enabled(InstanceTypes) {
+		t.Error("InstanceTypes = false after Set=true, want true")
+	}
+}
+
+// TestInstanceConsoleSessions_DefaultDisabled verifies that the
+// InstanceConsoleSessions feature gate defaults to disabled, so no environment
+// accepts a shell session before its cells run the shell agent.
+func TestInstanceConsoleSessions_DefaultDisabled(t *testing.T) {
+	// Copy the gate so the test does not depend on mutations to global state.
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(InstanceConsoleSessions) {
+		t.Error("InstanceConsoleSessions default = true, want false")
+	}
+}
+
+// TestInstanceConsoleSessions_ExplicitlyEnabled verifies that setting
+// InstanceConsoleSessions=true turns shell sessions on.
+func TestInstanceConsoleSessions_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InstanceConsoleSessions=true"); err != nil {
+		t.Fatalf("Set(InstanceConsoleSessions=true): %v", err)
+	}
+	if !gate.Enabled(InstanceConsoleSessions) {
+		t.Error("InstanceConsoleSessions = false after Set=true, want true")
+	}
+}
+
+func TestInternalDNSPublishing_DefaultDisabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(InternalDNSPublishing) {
+		t.Error("InternalDNSPublishing default = true, want false")
+	}
+}
+
+func TestInternalDNSPublishing_ExplicitlyEnabled(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if err := gate.Set("InternalDNSPublishing=true"); err != nil {
+		t.Fatalf("Set(InternalDNSPublishing=true): %v", err)
+	}
+	if !gate.Enabled(InternalDNSPublishing) {
+		t.Error("InternalDNSPublishing = false after Set=true, want true")
 	}
 }

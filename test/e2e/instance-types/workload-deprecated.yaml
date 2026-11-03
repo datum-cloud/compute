@@ -1,0 +1,26 @@
+# Scenario C: a Workload naming a tier that has transitioned to Deprecated.
+# Deprecated still admits new workloads (with a warning), and the Workload
+# controller surfaces InstanceTypeDeprecated on the Workload.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: instance-types-wl-deprecated
+spec:
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud-d1-standard-2
+        sandbox:
+          containers:
+            - name: app
+              image: docker.io/library/nginx:latest
+      networkInterfaces:
+      - network:
+          name: default
+  placements:
+  - name: default
+    locations:
+    - name: dfw
+    scaleSettings:
+      minReplicas: 1

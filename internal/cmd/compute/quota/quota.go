@@ -35,6 +35,7 @@ func Command() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "quota",
 		Short: "Show compute quota for the current project",
+		Args:  util.NoPositionalArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQuota(cmd, constrained)
 		},

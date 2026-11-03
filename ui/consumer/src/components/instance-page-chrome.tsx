@@ -1,10 +1,10 @@
 /**
- * Shared instance layout chrome: breadcrumbs, title, refresh, and tab bar.
+ * Shared instance layout chrome: breadcrumbs, title, and tab bar.
  * Used by the splat layout at `instances/:instanceName/*`; tab bodies render
  * through the parent's `<Outlet />`.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
-import { instanceStatusToBadgeType, type Instance } from '../schema';
+import { type Instance } from '../schema';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -15,24 +15,22 @@ import {
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
-import { cn } from '@datum-cloud/datum-ui/utils';
-import { HomeIcon, RefreshCwIcon } from 'lucide-react';
+import { HomeIcon } from 'lucide-react';
+import { Link } from 'react-router';
 
-/** Matches `StatusBadge` / Badge `type` solid fill tokens. */
-const BADGE_TYPE_DOT: Record<ReturnType<typeof instanceStatusToBadgeType>, string> = {
-  success: 'bg-[var(--color-badge-success)]',
-  warning: 'bg-[var(--color-badge-warning)]',
-  danger: 'bg-[var(--color-badge-danger)]',
-  muted: 'bg-[var(--color-badge-muted)]',
-};
-
-export function instanceDetailTabs(overviewHref: string, logsHref: string): PluginTab[] {
+export function instanceDetailTabs(
+  overviewHref: string,
+  metricsHref: string,
+  logsHref: string,
+  shellHref?: string
+): PluginTab[] {
   return [
     { label: 'Overview', href: overviewHref },
-    { label: 'Metrics' },
+    { label: 'Metrics', href: metricsHref },
     { label: 'Logs', href: logsHref },
+    ...(shellHref ? [{ label: 'Shell', href: shellHref }] : []),
     { label: 'Manage' },
-    { label: 'Activity' },
+    { label: 'Activity', href: `${overviewHref}/activity` },
   ];
 }
 
@@ -42,10 +40,13 @@ export function InstancePageChrome({
   instancesHref,
   overviewHref,
   logsHref,
+  metricsHref,
+  shellHref,
   titleName,
   workloadName,
   instance,
-  onRefresh,
+  locationLabel,
+  locationTooltip,
   children,
 }: {
   projectHref: string;
@@ -53,10 +54,13 @@ export function InstancePageChrome({
   instancesHref: string;
   overviewHref: string;
   logsHref: string;
+  metricsHref: string;
+  shellHref?: string;
   titleName: string;
   workloadName?: string;
   instance?: Instance | null;
-  onRefresh?: () => void;
+  locationLabel?: string;
+  locationTooltip?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -64,18 +68,22 @@ export function InstancePageChrome({
       <Breadcrumb className="min-w-0 overflow-x-auto">
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
-            <BreadcrumbLink href={projectHref}>
-              <Icon icon={HomeIcon} size={16} />
+            <BreadcrumbLink asChild>
+              <Link to={projectHref}>
+                <Icon icon={HomeIcon} size={16} />
+              </Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
-            <BreadcrumbLink href={workloadsHref}>Workloads</BreadcrumbLink>
+            <BreadcrumbLink asChild>
+              <Link to={workloadsHref}>Workloads</Link>
+            </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem className="min-w-0">
-            <BreadcrumbLink href={instancesHref} className="truncate">
-              {workloadName ?? 'Workload'}
+            <BreadcrumbLink asChild className="truncate">
+              <Link to={instancesHref}>{workloadName ?? 'Workload'}</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
@@ -86,52 +94,33 @@ export function InstancePageChrome({
       </Breadcrumb>
 
       <PageTitle
-        title={titleName}
-        titleClassName="text-primary break-all sm:break-normal"
+        title="Instance"
         className="flex-col items-start gap-3 sm:flex-row sm:items-center"
         description={
-          <span className="mt-1 flex min-h-5 items-center gap-2 text-sm">
-            {instance ? (
+          <span className="break-all">
+            {titleName}
+            {locationLabel ? (
               <>
-                <span
-                  className={cn(
-                    'size-2 shrink-0 rounded-full',
-                    BADGE_TYPE_DOT[instanceStatusToBadgeType(instance.status)]
-                  )}
-                  aria-hidden
-                />
-                <span>{instance.status}</span>
-                {instance.city ? (
-                  <>
-                    <span className="text-muted-foreground" aria-hidden>
-                      ·
-                    </span>
-                    <span className="text-muted-foreground">{instance.city}</span>
-                  </>
-                ) : null}
+                <span className="text-muted-foreground" aria-hidden>
+                  {' '}
+                  ·{' '}
+                </span>
+                <span className="text-muted-foreground" title={locationTooltip}>
+                  {locationLabel}
+                </span>
               </>
-            ) : (
+            ) : !instance ? (
               <span className="invisible" aria-hidden>
-                Pending
+                {' '}
+                · Location
               </span>
-            )}
+            ) : null}
           </span>
-        }
-        actions={
-          onRefresh ? (
-            <button
-              type="button"
-              onClick={onRefresh}
-              className="border-border hover:bg-muted inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors">
-              <Icon icon={RefreshCwIcon} size={14} />
-              Refresh
-            </button>
-          ) : undefined
         }
       />
 
       <PluginTabs
-        tabs={instanceDetailTabs(overviewHref, logsHref)}
+        tabs={instanceDetailTabs(overviewHref, metricsHref, logsHref, shellHref)}
         testId="compute-plugin-instance-tabs"
       />
 

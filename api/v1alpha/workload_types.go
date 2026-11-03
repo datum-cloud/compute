@@ -1,6 +1,7 @@
 package v1alpha
 
 import (
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	k8scorev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -130,15 +131,41 @@ type WorkloadList struct {
 	Items           []Workload `json:"items"`
 }
 
+// +kubebuilder:validation:XValidation:message="exactly one of locations, locationSelector, or cityCodes must be set",rule="(has(self.locations) ? 1 : 0) + (has(self.locationSelector) ? 1 : 0) + (has(self.cityCodes) ? 1 : 0) == 1"
 type WorkloadPlacement struct {
 	// The name of the placement
 	//
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// A list of city codes that define where the instances should be deployed.
+	// The locations where the instances should be deployed, by name. Use this
+	// to pin a placement to specific locations. Exactly one of locations or
+	// locationSelector must be set.
 	//
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	Locations []locationsv1alpha1.LocationReference `json:"locations,omitempty"`
+
+	// A selector over the topology of the locations available to the project,
+	// such as topology.datum.net/city-code or topology.datum.net/region. Every
+	// Ready location whose topology matches receives a deployment, and the set
+	// is re-evaluated as locations are added, removed, or change readiness. An
+	// empty selector is rejected rather than treated as matching every
+	// location. Exactly one of locations or locationSelector must be set.
+	//
+	// +kubebuilder:validation:Optional
+	LocationSelector *metav1.LabelSelector `json:"locationSelector,omitempty"`
+
+	// The city codes this placement was written against before placement
+	// moved to locations. This field is deprecated and kept only so workloads
+	// stored before that change keep running: admission and the workload
+	// controller rewrite it into a locationSelector on
+	// topology.datum.net/city-code, which places at every location in those
+	// cities, and clear it. New workloads set locations or locationSelector
+	// instead.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
 	CityCodes []string `json:"cityCodes,omitempty"`
 
 	// Scale settings such as minimum and maximum replica counts.
@@ -150,6 +177,10 @@ type WorkloadPlacement struct {
 type WorkloadPlacementStatus struct {
 	// The name of the placement
 	Name string `json:"name"`
+
+	// The locations the placement currently resolves to: the Ready locations
+	// it names, or every Ready location its selector matches.
+	Locations []locationsv1alpha1.LocationReference `json:"locations,omitempty"`
 
 	// Represents the observations of a placement's current state.
 	// Known condition types are: "Available", "Progressing"

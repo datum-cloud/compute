@@ -45,6 +45,7 @@ import (
 
 	karmadaclusterv1alpha1 "github.com/karmada-io/api/cluster/v1alpha1"
 	karmadapolicyv1alpha1 "github.com/karmada-io/api/policy/v1alpha1"
+	karmadaworkv1alpha2 "github.com/karmada-io/api/work/v1alpha2"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 	"go.datum.net/compute/internal/config"
 	"go.datum.net/compute/internal/controller"
@@ -52,7 +53,9 @@ import (
 	quotametrics "go.datum.net/compute/internal/quota"
 	computewebhook "go.datum.net/compute/internal/webhook"
 	computev1alphawebhooks "go.datum.net/compute/internal/webhook/v1alpha"
+	"go.datum.net/compute/pkg/instancetype"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	infrastructurev1alpha1 "go.miloapis.com/milo/pkg/apis/infrastructure/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
@@ -88,12 +91,16 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(config.AddToScheme(scheme))
+	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(resourcemanagerv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(karmadapolicyv1alpha1.Install(scheme))
 	utilruntime.Must(karmadaclusterv1alpha1.Install(scheme))
+	utilruntime.Must(karmadaworkv1alpha2.Install(scheme))
 	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
@@ -123,7 +130,8 @@ func main() {
 	var federationContext string
 	var enableManagementControllers bool
 	var enableCellControllers bool
-
+	var instanceTypeDeprecationGracePeriod time.Duration
+	var instanceTypeDefault string
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -139,12 +147,22 @@ func main() {
 		"Enable management-plane controllers (WorkloadDeploymentFederator, InstanceProjector).")
 	flag.BoolVar(&enableCellControllers, "enable-cell-controllers", false,
 		"Enable cell controllers (WorkloadDeploymentReconciler, InstanceReconciler).")
+	flag.DurationVar(&instanceTypeDeprecationGracePeriod, "instance-type-deprecation-grace-period", 60*24*time.Hour,
+		"Minimum time (e.g. 1440h) an InstanceType must remain Deprecated before it can be Disabled.")
+	flag.StringVar(&instanceTypeDefault, "instance-type-default", instancetype.D1Standard2,
+		"Instance type stamped onto a new Workload's runtime resources when it names none. "+
+			"Not a field on InstanceType: which type new workloads land on by default is an "+
+			"operator decision, not something a tier declares about itself. Empty disables "+
+			"defaulting; an omitted instanceType is still admitted and runs on the platform's "+
+			"hardcoded fallback.")
 
 	var featureGatesFlag string
 	flag.StringVar(&featureGatesFlag, "feature-gates", "",
 		"A set of key=value pairs that describe feature gates for the compute operator. "+
 			"Example: --feature-gates=NetworkingIntegration=true. "+
-			"Available features: NetworkingIntegration (default=false).")
+			"Available features: NetworkingIntegration, PodNetworkAttachment, RuntimeClasses, InstanceTypes, "+
+			"InstanceConsoleSessions, "+
+			"InternalDNSPublishing (all default=false).")
 
 	opts := zap.Options{
 		Development: true,
@@ -161,7 +179,13 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	setupLog.Info("feature gates", "NetworkingIntegration", features.FeatureGate.Enabled(features.NetworkingIntegration))
+	setupLog.Info("feature gates",
+		"NetworkingIntegration", features.FeatureGate.Enabled(features.NetworkingIntegration),
+		"RuntimeClasses", features.FeatureGate.Enabled(features.RuntimeClasses),
+		"InstanceTypes", features.FeatureGate.Enabled(features.InstanceTypes),
+		"InstanceConsoleSessions", features.FeatureGate.Enabled(features.InstanceConsoleSessions),
+		"InternalDNSPublishing", features.FeatureGate.Enabled(features.InternalDNSPublishing),
+	)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -350,6 +374,7 @@ func main() {
 	if enableManagementControllers {
 		if err = (&controller.WorkloadReconciler{
 			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+			LocationSource:    serverConfig.LocationSource,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Workload")
 			os.Exit(1)
@@ -374,6 +399,7 @@ func main() {
 		}
 		if err = (&controller.WorkloadDeploymentReconciler{
 			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+			LocationSource:    serverConfig.LocationSource,
 		}).SetupWithManager(mgr, wdOpts); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WorkloadDeployment")
 			os.Exit(1)
@@ -386,6 +412,24 @@ func main() {
 	}
 
 	if enableCellControllers {
+		if features.FeatureGate.Enabled(features.PodNetworkAttachment) {
+			if !features.FeatureGate.Enabled(features.NetworkingIntegration) {
+				setupLog.Error(nil, "Pod network attachment requires NetworkingIntegration")
+				os.Exit(1)
+			}
+			if serverConfig.WebhookServer == nil {
+				setupLog.Error(nil, "Pod primary network admission requires a cell webhook server")
+				os.Exit(1)
+			}
+			mgr.GetLocalManager().GetWebhookServer().Register(
+				computewebhook.PodNetworkWebhookPath,
+				computewebhook.NewPodNetworkAttachmentHandler(scheme),
+			)
+			if err = (&controller.PodNetworkAttachmentReconciler{}).SetupWithManager(mgr.GetLocalManager()); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "PodNetworkAttachment")
+				os.Exit(1)
+			}
+		}
 		clusterNameForProject := func(_ string) multicluster.ClusterName {
 			return multicluster.ClusterName(singleClusterName)
 		}
@@ -404,8 +448,9 @@ func main() {
 		}
 
 		instanceReconciler := &controller.InstanceReconciler{
-			FederationClient:  federationClient,
-			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
+			InternalDNSEnabled: features.FeatureGate.Enabled(features.InternalDNSPublishing),
+			FederationClient:   federationClient,
+			NetworkingEnabled:  features.FeatureGate.Enabled(features.NetworkingIntegration),
 		}
 		err = instanceReconciler.SetupWithManager(
 			mgr,
@@ -422,10 +467,52 @@ func main() {
 		}
 	}
 
+	// DNS publication is its own asynchronous management-plane controller. It is
+	// not registered at all while its default-off feature gate is disabled.
+	if features.FeatureGate.Enabled(features.InternalDNSPublishing) && enableManagementControllers {
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo {
+			setupLog.Error(nil,
+				"InternalDNSPublishing requires Milo discovery mode and management controllers")
+			os.Exit(1)
+		}
+		identityConfig, identityErr := serverConfig.Discovery.DiscoveryRestConfig()
+		if identityErr != nil {
+			setupLog.Error(identityErr, "unable to load internal DNS project discovery credentials")
+			os.Exit(1)
+		}
+		identityClient, identityErr := client.New(identityConfig, client.Options{Scheme: scheme})
+		if identityErr != nil {
+			setupLog.Error(identityErr, "unable to create internal DNS project discovery client")
+			os.Exit(1)
+		}
+		observers, observationErr := internalDNSObservationSources(serverConfig.InternalDNS)
+		if observationErr != nil {
+			setupLog.Error(observationErr, "invalid internal DNS network observation configuration")
+			os.Exit(1)
+		}
+		dnsPublisher := &controller.InternalDNSPublisherReconciler{
+			ResolveProjectIdentity: controller.InternalDNSProjectIdentityResolver(identityClient),
+			ObservationSources:     observers,
+		}
+		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSPublisher")
+			os.Exit(1)
+		}
+	}
+
+	// Instance types live in project control planes, which only the management
+	// manager engages; cells read instance types but don't maintain them.
+	if enableManagementControllers && features.FeatureGate.Enabled(features.InstanceTypes) {
+		if err = (&controller.InstanceTypeReconciler{}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InstanceType")
+			os.Exit(1)
+		}
+	}
+
 	// The fail-loud guard above ensures federationRestConfig is non-nil when
 	// management controllers are enabled; the nil check here is defensive.
 	if enableManagementControllers && federationRestConfig != nil {
-		extra, err := setupManagementControllers(mgr, federationClient)
+		extra, err := setupManagementControllers(mgr, federationClient, serverConfig, deploymentCluster)
 		if err != nil {
 			setupLog.Error(err, "unable to set up management controllers")
 			os.Exit(1)
@@ -457,8 +544,38 @@ func main() {
 	}
 
 	if serverConfig.WebhookServer != nil {
-		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(mgr); err != nil {
+		if err = computev1alphawebhooks.SetupWorkloadWebhookWithManager(
+			mgr, serverConfig.LocationSource, instanceTypeDefault,
+		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workload")
+			os.Exit(1)
+		}
+		// Guards the expected-referenced-data annotation, which authorizes what
+		// the federation engine delivers to cells. Registered wherever the
+		// webhook server runs, independently of the referenced-data gate: the
+		// resolver writes the annotation whether or not instances are gated on
+		// it.
+		if err = computev1alphawebhooks.SetupWorkloadDeploymentWebhookWithManager(
+			mgr, serverConfig.ReferencedData.ResolverUsernames,
+		); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "WorkloadDeployment")
+			os.Exit(1)
+		}
+		// Always registered, regardless of InstanceTypes: the gate is checked
+		// inside validation, which rejects every write with an explained reason
+		var projectReaders *computewebhook.ProjectReaders
+		if projectReaders, err = webhookProjectReaders(serverConfig); err != nil {
+			setupLog.Error(err, "unable to create project readers", "webhook", "InstanceType")
+			os.Exit(1)
+		}
+		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
+			mgr, projectReaders, instanceTypeDeprecationGracePeriod,
+		); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
+			os.Exit(1)
+		}
+		if err = computev1alphawebhooks.SetupInstanceConsoleSessionWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceConsoleSession")
 			os.Exit(1)
 		}
 	}
@@ -520,6 +637,23 @@ func main() {
 		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
+}
+
+// webhookProjectReaders returns uncached readers for project control planes
+// when consumer-scoped projection is configured, so admission does not wait
+// for the consumer provider to engage a newly entitled project. It returns nil
+// in every other discovery mode, where webhooks read through the engaged
+// cluster as before.
+func webhookProjectReaders(serverConfig config.WorkloadOperator) (*computewebhook.ProjectReaders, error) {
+	csp := serverConfig.Discovery.ConsumerScopedProjection
+	if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo || csp == nil {
+		return nil, nil
+	}
+	discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+	}
+	return computewebhook.NewProjectReaders(discoveryRestConfig, csp.ProviderProject, scheme)
 }
 
 func initializeClusterDiscovery(
@@ -803,6 +937,9 @@ func loadServerConfig(path string) (config.WorkloadOperator, error) {
 	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
 		return serverConfig, fmt.Errorf("unable to decode server config: %w", err)
 	}
+	if _, err := serverConfig.LocationSource.Resolve(); err != nil {
+		return serverConfig, fmt.Errorf("invalid server config: %w", err)
+	}
 	return serverConfig, nil
 }
 
@@ -813,24 +950,29 @@ func ignoreCanceled(err error) error {
 	return err
 }
 
-// setupManagementControllers wires the WorkloadDeploymentFederator and
-// InstanceProjector onto mgr. It returns any additional Runnable objects that
-// must be started alongside the main manager (the federation manager used by
-// InstanceProjector). Called only when management controllers are enabled and
-// a federation REST config is available.
-func setupManagementControllers(mgr mcmanager.Manager, federationClient client.Client) ([]manager.Runnable, error) {
-	// The federation manager provides a cached, watchable handle to the Karmada
+// setupManagementControllers wires the WorkloadDeploymentFederator,
+// InstanceProjector and, behind their feature gates, the InstanceConsoleSession
+// controller and InstanceTypeProjector onto mgr. It returns the federation
+// cluster, and any catalog cluster the InstanceTypeProjector reads from, as
+// Runnables that must be started alongside the main manager. Called only when
+// management controllers are enabled and a federation REST config is available.
+func setupManagementControllers(
+	mgr mcmanager.Manager,
+	federationClient client.Client,
+	serverConfig config.WorkloadOperator,
+	deploymentCluster cluster.Cluster,
+) ([]manager.Runnable, error) {
+	// The federation cluster provides a cached, watchable handle to the Karmada
 	// federation control plane. It backs the InstanceProjector's Instance watch
 	// and the WorkloadDeploymentFederator's downstream WorkloadDeployment status
-	// watch. A manager.Manager embeds a cluster.Cluster, so it can be passed
-	// directly anywhere a watchable federation cluster source is required.
-	federationMgr, err := manager.New(federationRestConfig, manager.Options{
-		Scheme:  scheme,
-		Cache:   cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
-		Metrics: metricsserver.Options{BindAddress: "0"},
+	// watch. Its cache runs on every replica; the controllers that consume it are
+	// registered on mgr and so run only on the elected leader.
+	federationCluster, err := cluster.New(federationRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+		o.Cache.DefaultTransform = cache.TransformStripManagedFields()
 	})
 	if err != nil {
-		return nil, fmt.Errorf("federation manager: %w", err)
+		return nil, fmt.Errorf("federation cluster: %w", err)
 	}
 
 	// The federator watches both the project WD (via the multicluster manager)
@@ -838,8 +980,10 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// aggregated downstream by Karmada is mirrored back to the project WD
 	// immediately instead of on the next informer resync.
 	federator := &controller.WorkloadDeploymentFederator{
-		FederationClient:  federationClient,
-		FederationCluster: federationMgr,
+		FederationClient:       federationClient,
+		FederationCluster:      federationCluster,
+		RuntimeClassesEnabled:  features.FeatureGate.Enabled(features.RuntimeClasses),
+		ConsoleSessionsEnabled: features.FeatureGate.Enabled(features.InstanceConsoleSessions),
 	}
 	if err := federator.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("WorkloadDeploymentFederator: %w", err)
@@ -849,13 +993,92 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 	// back by POP-cell operators to the Karmada federation control plane, and
 	// projects them into the corresponding project namespaces via the multicluster manager.
 	if err = (&controller.InstanceProjector{
-		FederationClient: federationClient,
-		MCManager:        mgr,
-	}).SetupWithManager(federationMgr); err != nil {
+		InternalDNSEnabled: features.FeatureGate.Enabled(features.InternalDNSPublishing),
+		FederationClient:   federationClient,
+		MCManager:          mgr,
+	}).SetupWithManager(mgr.GetLocalManager(), federationCluster); err != nil {
 		return nil, fmt.Errorf("InstanceProjector: %w", err)
 	}
 
-	return []manager.Runnable{federationMgr}, nil
+	if features.FeatureGate.Enabled(features.InstanceConsoleSessions) {
+		reportingInstance, err := os.Hostname()
+		if err != nil || reportingInstance == "" {
+			reportingInstance = "compute-manager"
+		}
+		if err := (&controller.InstanceConsoleSessionReconciler{
+			FederationClient:  federationClient,
+			FederationCluster: federationCluster,
+			ReportingInstance: reportingInstance,
+		}).SetupWithManager(mgr); err != nil {
+			return nil, fmt.Errorf("InstanceConsoleSession: %w", err)
+		}
+	}
+
+	runnables := []manager.Runnable{federationCluster}
+
+	// InstanceTypeProjector publishes the instance type catalog to the
+	// federation hub so a single ClusterPropagationPolicy can carry it to every
+	// cell. The InstanceTypeReconciler only maintains per-project status; the
+	// projection is what makes a type a workload can actually select on a cell.
+	if features.FeatureGate.Enabled(features.InstanceTypes) {
+		catalog, catalogCluster, extra, err := instanceTypeCatalogSource(serverConfig, deploymentCluster)
+		if err != nil {
+			return nil, fmt.Errorf("InstanceTypeProjector: %w", err)
+		}
+		if err := (&controller.InstanceTypeProjector{
+			FederationClient: federationClient,
+			Catalog:          catalog,
+		}).SetupWithManager(mgr.GetLocalManager(), catalogCluster, federationCluster); err != nil {
+			return nil, fmt.Errorf("InstanceTypeProjector: %w", err)
+		}
+		runnables = append(runnables, extra...)
+	}
+
+	return runnables, nil
+}
+
+// instanceTypeCatalogSource returns where the InstanceTypeProjector reads the
+// instance type catalog from, the cluster it is read through, and any Runnable
+// that cluster needs started.
+//
+// In milo mode the catalog is the InstanceTypes the compute ServiceConfiguration
+// provisions into every entitled project, read from the root Milo control plane
+// for the services named in discovery.consumerScopedProjection.serviceNames.
+// Reading the one declaration rather than the per-project copies keeps a single
+// writer on the hub. In single mode the one managed cluster holds the catalog
+// itself.
+func instanceTypeCatalogSource(
+	serverConfig config.WorkloadOperator,
+	deploymentCluster cluster.Cluster,
+) (controller.InstanceTypeCatalog, cluster.Cluster, []manager.Runnable, error) {
+	switch serverConfig.Discovery.Mode {
+	case multiclusterproviders.ProviderSingle:
+		// The deployment cluster is already started by cluster discovery.
+		return controller.ClusterCatalog{}, deploymentCluster, nil, nil
+
+	case multiclusterproviders.ProviderMilo:
+		csp := serverConfig.Discovery.ConsumerScopedProjection
+		if csp == nil || len(csp.ServiceNames) == 0 {
+			return nil, nil, nil, fmt.Errorf("milo mode requires discovery.consumerScopedProjection.serviceNames: " +
+				"the catalog is read from the ServiceConfiguration of those services")
+		}
+		rootRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+		}
+		rootCluster, err := cluster.New(rootRestConfig, func(o *cluster.Options) {
+			o.Scheme = scheme
+			o.Cache.DefaultTransform = cache.TransformStripManagedFields()
+		})
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("catalog cluster: %w", err)
+		}
+		return controller.ServiceConfigurationCatalog{ServiceNames: csp.ServiceNames}, rootCluster,
+			[]manager.Runnable{rootCluster}, nil
+
+	default:
+		return nil, nil, nil, fmt.Errorf("unsupported cluster discovery mode %s", serverConfig.Discovery.Mode)
+	}
 }
 
 // computeWatchProviderClaims reports whether the direct ResourceClaim watch
@@ -866,4 +1089,32 @@ func setupManagementControllers(mgr mcmanager.Manager, federationClient client.C
 // owning project's quota API) run in any mode.
 func computeWatchProviderClaims(mode multiclusterproviders.Provider) bool {
 	return mode == multiclusterproviders.ProviderMilo
+}
+
+func internalDNSObservationSources(
+	cfg config.InternalDNSConfig,
+) (map[string]controller.InternalDNSObservationSource, error) {
+	sources := make(map[string]controller.InternalDNSObservationSource, len(cfg.ObservationSources))
+	for i, source := range cfg.ObservationSources {
+		if source.Location == "" || source.KubeconfigPath == "" {
+			return nil, fmt.Errorf("internalDNS.observationSources[%d] requires location and kubeconfigPath", i)
+		}
+		if _, exists := sources[source.Location]; exists {
+			return nil, fmt.Errorf("duplicate internal DNS observation location %q", source.Location)
+		}
+		cfg, err := clientcmd.BuildConfigFromFlags("", source.KubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("load network observation credentials for %q: %w", source.Location, err)
+		}
+		cfg.Timeout = 5 * time.Second
+		reader, err := client.New(cfg, client.Options{Scheme: scheme})
+		if err != nil {
+			return nil, fmt.Errorf("create network observation client for %q: %w", source.Location, err)
+		}
+		sources[source.Location] = controller.InternalDNSObservationSource{Reader: reader}
+	}
+	if len(sources) == 0 {
+		return nil, errors.New("internalDNS.observationSources must contain at least one authenticated edge API")
+	}
+	return sources, nil
 }

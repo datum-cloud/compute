@@ -36,7 +36,7 @@ spec:
     spec:
       runtime:
         resources:
-          instanceType: datumcloud/d1-standard-2
+          instanceType: datumcloud-d1-standard-2
         sandbox:
           containers:
             - name: kong
@@ -99,14 +99,14 @@ spec:
             name: kong-gateway-config
   placements:
   - name: us
-    cityCodes:
-    - DFW
-    - DLS
+    locations:
+    - name: gcp-us-south1-a
+    - name: gcp-us-west1-a
     scaleSettings:
       minReplicas: 1
   - name: eu
-    cityCodes:
-    - LHR
+    locations:
+    - name: gcp-europe-west2-a
     scaleSettings:
       minReplicas: 1
   # Think about multiple gateways per workload?

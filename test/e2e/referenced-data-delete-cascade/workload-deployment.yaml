@@ -4,7 +4,8 @@ metadata:
   name: gc-test-wd
   # namespace injected by Chainsaw from ($namespace)
 spec:
-  cityCode: dfw
+  locationRef:
+    name: dfw
   placementName: default
   workloadRef:
     name: gc-test-workload
@@ -13,7 +14,7 @@ spec:
     spec:
       runtime:
         resources:
-          instanceType: datumcloud/d1-standard-2
+          instanceType: datumcloud-d1-standard-2
         sandbox:
           containers:
           - name: app

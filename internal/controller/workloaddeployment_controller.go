@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,7 +32,9 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.datum.net/compute/internal/locations"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	"go.datum.net/compute/internal/controller/instancecontrol"
 	instancecontrolstateful "go.datum.net/compute/internal/controller/instancecontrol/stateful"
@@ -60,6 +63,32 @@ type WorkloadDeploymentReconciler struct {
 	// When true, new Instances whose template references ConfigMaps or Secrets
 	// receive the ReferencedData scheduling gate at creation time.
 	enableReferencedDataGate bool
+
+	// LocationSource selects the API group the cell's serving location is read
+	// from. The zero value reads network services, which is what every
+	// deployment does today.
+	LocationSource locations.Source
+
+	events *lifecycleEventWriter
+}
+
+// networkAttachmentMode translates the attachment the deployment carries into
+// what the networking API calls it. The deployment holds the answer already,
+// resolved where the runtime class catalog is readable, so nothing is looked
+// up here.
+func networkAttachmentMode(
+	deployment *computev1alpha.WorkloadDeployment,
+) networkingv1alpha.NetworkInterfaceAttachmentMode {
+	switch deployment.Spec.NetworkAttachment {
+	case computev1alpha.RuntimeClassNetworkAttachmentNetns:
+		return networkingv1alpha.NetworkInterfaceAttachmentModeNetns
+	case computev1alpha.RuntimeClassNetworkAttachmentHypervisor:
+		return networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor
+	case computev1alpha.RuntimeClassNetworkAttachmentHypervisorDeclared:
+		return networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared
+	default:
+		return ""
+	}
 }
 
 func effectiveDesiredReplicas(deployment *computev1alpha.WorkloadDeployment) int32 {
@@ -80,7 +109,9 @@ func workloadDeploymentPodSelector(deployment *computev1alpha.WorkloadDeployment
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=servinglocations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=servinglocations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // The management-mode WorkloadReconciler watches Networks. Declare the grant as
@@ -138,10 +169,10 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	// Status().Update call when nothing changed (see loop-prevention comment below).
 	existingStatus := *deployment.Status.DeepCopy()
 
-	// Resolve the cell's location before instances are built: the instance
-	// control strategy stamps Instance.Spec.Location from Status.Location as it
-	// creates them, so resolving afterwards left the first generation of
-	// instances permanently without one.
+	// Verify that federation delivered this deployment to the requested location.
+	// The cell learns where it sits from a ServingLocation, which only reaches
+	// it through the networking integration. Without that integration the cell
+	// cannot contradict the placement, and instances still run.
 	var location servingLocationResult
 	if r.NetworkingEnabled {
 		location, err = r.resolveLocation(ctx, cl.GetClient())
@@ -149,12 +180,6 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			return ctrl.Result{}, fmt.Errorf("failed resolving location: %w", err)
 		}
 		location.evaluate(&deployment)
-
-		// A location the cell contradicts is never written to status: an Instance
-		// carrying the wrong location is worse than one carrying none.
-		if location.reference != nil {
-			deployment.Status.Location = location.reference
-		}
 	}
 
 	// Collect all instances for this deployment
@@ -180,17 +205,8 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 
 	logger.Info("collected instance control actions", "count", len(actions))
 
-	for _, action := range actions {
-		// We don't need to actually check this, but it'll reduce log noise.
-		if action.IsSkipped() {
-			continue
-		}
-
-		logger.Info("instance control action", "instance", action.Object.GetName(), "action", action.ActionType())
-
-		if err := action.Execute(ctx, cl.GetClient()); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed executing instance control action: %w", err)
-		}
+	if err := r.executeInstanceActions(ctx, cl, actions, desiredReplicas); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// When networking is disabled, bypass the entire network provisioning path.
@@ -198,6 +214,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	// interface claims are created. This lets Instances reach the runtime on cells
 	// where network-services-operator (VPC) is not yet available.
 	networkReadyByInstance := make(map[string]bool, len(instances.Items))
+	var waitingOnClaim bool
 	switch {
 	case !r.NetworkingEnabled:
 		for _, instance := range instances.Items {
@@ -216,7 +233,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			"reason", location.reason, "message", location.message)
 
 	default:
-		networkReadyByInstance, err = r.reconcileNetworkInterfaceClaims(ctx, cl.GetClient(), &deployment, instances.Items)
+		networkReadyByInstance, waitingOnClaim, err = r.reconcileNetworkInterfaceClaims(ctx, cl.GetClient(), &deployment, instances.Items)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed reconciling network interface claims: %w", err)
 		}
@@ -263,6 +280,8 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	deployment.Status.Selector = workloadDeploymentPodSelector(&deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
 
+	startFailure := firstStartFailure(instances.Items)
+
 	switch {
 	case quotaBlockedReplicas > 0:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
@@ -277,6 +296,13 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			Status:  metav1.ConditionFalse,
 			Reason:  computev1alpha.ReferencedDataReasonAwaitingPropagation,
 			Message: fmt.Sprintf("%d of %d desired replicas are waiting for referenced data companions", referencedDataBlockedReplicas, desiredReplicas),
+		})
+	case startFailure.count > 0:
+		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
+			Type:    computev1alpha.WorkloadDeploymentReplicasReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  startFailure.reason,
+			Message: fmt.Sprintf("%d of %d desired replicas are failing: %s", startFailure.count, desiredReplicas, startFailure.message),
 		})
 	default:
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, metav1.Condition{
@@ -296,7 +322,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			ObservedGeneration: deployment.Generation,
 		})
 	} else {
-		availCond := selectWDBlockingCondition(&deployment, networkReady, location, quotaBlockedReplicas, referencedDataBlockedReplicas, replicas, desiredReplicas)
+		availCond := selectWDBlockingCondition(&deployment, networkReady, location, quotaBlockedReplicas, referencedDataBlockedReplicas, replicas, desiredReplicas, startFailure)
 		apimeta.SetStatusCondition(&deployment.Status.Conditions, availCond)
 	}
 
@@ -311,9 +337,46 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			return ctrl.Result{}, fmt.Errorf("failed updating deployment status: %w", err)
 		}
 		logger.Info("deployment status updated")
+		r.events.recordDeploymentScaled(ctx, cl, &deployment, existingStatus)
+	}
+
+	if waitingOnClaim {
+		// A claim this deployment's instances cannot use yet may be controlled
+		// by nothing, or by something other than an Instance, and the claim watch
+		// maps neither back here when it goes. Poll until it does.
+		return ctrl.Result{RequeueAfter: networkInterfaceClaimWaitInterval}, nil
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *WorkloadDeploymentReconciler) executeInstanceActions(
+	ctx context.Context,
+	cl cluster.Cluster,
+	actions []instancecontrol.Action,
+	desiredReplicas int32,
+) error {
+	logger := log.FromContext(ctx)
+
+	for _, action := range actions {
+		// We don't need to actually check this, but it'll reduce log noise.
+		if action.IsSkipped() {
+			continue
+		}
+
+		logger.Info("instance control action", "instance", action.Object.GetName(), "action", action.ActionType())
+
+		if err := action.Execute(ctx, cl.GetClient()); err != nil {
+			if action.ActionType() == instancecontrol.ActionTypePatchTemplateHash {
+				logger.Error(err, "failed rewriting legacy template hash", "instance", action.Object.GetName())
+				continue
+			}
+			return fmt.Errorf("failed executing instance control action: %w", err)
+		}
+		r.events.recordInstanceTerminating(ctx, cl, action, desiredReplicas)
+	}
+
+	return nil
 }
 
 func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
@@ -323,16 +386,13 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 	instances []computev1alpha.Instance,
 	networkReadyByInstance map[string]bool,
 ) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas int, err error) {
-	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
+	templateHashes := instancecontrol.HashTemplate(deployment.Spec.Template)
 	for _, instance := range instances {
-		// Instances are stamped with the deployment's location as they are
-		// created, which leaves any instance that predates the cell learning its
-		// own location without one, and nothing else ever revisits it. Backfill
-		// it here. Best-effort by design: a failure is logged and the instance
-		// keeps running, because location has never gated scheduling.
-		if deployment.Status.Location != nil && instance.Spec.Location == nil {
+		// Backfill the canonical desired location on instances created before the
+		// location contract was introduced.
+		if instance.Spec.Location == nil {
 			base := instance.DeepCopy()
-			instance.Spec.Location = deployment.Status.Location
+			instance.Spec.Location = &deployment.Spec.LocationRef
 			if patchErr := c.Patch(ctx, &instance, client.MergeFrom(base)); patchErr != nil {
 				log.FromContext(ctx).Error(patchErr, "failed backfilling instance location", "instance", instance.Name)
 			}
@@ -382,7 +442,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 		// Status.Controller is a pointer the infra provider may not have populated
 		// yet; guard the deref to avoid a panic that would abort the reconcile.
 		onLatestRevision := instance.Status.Controller != nil &&
-			instance.Status.Controller.ObservedTemplateHash == templateHash
+			templateHashes.Matches(instance.Status.Controller.ObservedTemplateHash)
 		if onLatestRevision {
 			updatedReplicas++
 		}
@@ -494,6 +554,7 @@ func selectWDBlockingCondition(
 	location servingLocationResult,
 	quotaBlockedReplicas, referencedDataBlockedReplicas, replicas int,
 	desiredReplicas int32,
+	startFailure instanceStartFailure,
 ) metav1.Condition {
 	type candidate struct {
 		reason   string
@@ -561,6 +622,11 @@ func selectWDBlockingCondition(
 		}
 	}
 
+	if startFailure.count > 0 {
+		consider(startFailure.reason,
+			fmt.Sprintf("%d of %d instances are failing: %s", startFailure.count, replicas, startFailure.message))
+	}
+
 	if replicas > 0 {
 		consider(computev1alpha.WorkloadDeploymentReasonInstancesProvisioning, "Instances are being provisioned")
 	}
@@ -580,6 +646,38 @@ func selectWDBlockingCondition(
 	}
 }
 
+// instanceStartFailure is the failure of the first failing instance by name, and
+// how many instances fail for the same reason.
+type instanceStartFailure struct {
+	reason, message string
+	count           int
+}
+
+var startFailureReasons = []string{
+	computev1alpha.InstanceReadyReasonImageUnavailable,
+	computev1alpha.InstanceReadyReasonInstanceCrashing,
+	computev1alpha.InstanceReadyReasonConfigurationError,
+}
+
+func firstStartFailure(instances []computev1alpha.Instance) instanceStartFailure {
+	var failure instanceStartFailure
+	var first string
+	failing := map[string]int{}
+	for _, instance := range instances {
+		cond := apimeta.FindStatusCondition(instance.Status.Conditions, computev1alpha.InstanceAvailable)
+		if cond == nil || cond.Status == metav1.ConditionTrue || !slices.Contains(startFailureReasons, cond.Reason) {
+			continue
+		}
+		failing[cond.Reason]++
+		if first == "" || instance.Name < first {
+			first = instance.Name
+			failure.reason, failure.message = cond.Reason, cond.Message
+		}
+	}
+	failure.count = failing[failure.reason]
+	return failure
+}
+
 // wdBlockingReasonPriority returns the relative priority of a blocking reason on
 // WorkloadDeployment.Available. Higher numbers indicate causes that are more
 // actionable and should be surfaced over lower-priority transient states.
@@ -594,10 +692,11 @@ func selectWDBlockingCondition(
 //	    can act on)
 //	3 - QuotaNotGranted        (operator action may be needed)
 //	4 - ReferencedDataNotReady (AwaitingPropagation / Resolving — expected to clear)
-//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error)
+//	5 - SourceNotFound / SourceTooLarge / SourceUnauthorized (hard spec error),
+//	    ImageUnavailable / InstanceCrashing / ConfigurationError (start failure)
 //	6 - NetworkNotFound        (hard error; user action required)
 //	7 - NetworkFailedToCreate  (hard infra error)
-//	8 - CityCodeMismatch / AmbiguousServingLocation (the deployment is on a cell
+//	8 - LocationMismatch / AmbiguousServingLocation (the deployment is on a cell
 //	    that cannot serve it; nothing the user does clears it, and no other
 //	    blocker is worth reporting until it is fixed)
 func wdBlockingReasonPriority(reason string) int {
@@ -616,13 +715,17 @@ func wdBlockingReasonPriority(reason string) int {
 		return 4
 	case computev1alpha.ReferencedDataReasonSourceNotFound,
 		computev1alpha.ReferencedDataReasonSourceTooLarge,
-		computev1alpha.ReferencedDataReasonSourceUnauthorized:
+		computev1alpha.ReferencedDataReasonSourceNameTooLong,
+		computev1alpha.ReferencedDataReasonSourceUnauthorized,
+		computev1alpha.InstanceReadyReasonImageUnavailable,
+		computev1alpha.InstanceReadyReasonInstanceCrashing,
+		computev1alpha.InstanceReadyReasonConfigurationError:
 		return 5
 	case computev1alpha.WorkloadReasonNetworkNotFound:
 		return 6
 	case reasonNetworkFailedToCreate:
 		return 7
-	case computev1alpha.WorkloadDeploymentReasonCityCodeMismatch,
+	case computev1alpha.WorkloadDeploymentReasonLocationMismatch,
 		computev1alpha.WorkloadDeploymentReasonAmbiguousServingLocation:
 		return 8
 	default:
@@ -635,11 +738,11 @@ func wdBlockingReasonPriority(reason string) int {
 type servingLocationResult struct {
 	// reference is the location to stamp on the deployment and its instances. It
 	// is nil whenever the cell's answer is missing or unusable.
-	reference *networkingv1alpha.LocationReference
+	reference *locationsv1alpha1.LocationReference
 
 	// servingLocation is the single ServingLocation the cell was delivered, or
 	// nil when it was delivered none or more than one.
-	servingLocation *networkingv1alpha.ServingLocation
+	servingLocation *locations.ServingLocation
 
 	// reason and message are the Available condition the deployment should
 	// report while the location is unusable. Both are empty once it is usable.
@@ -662,14 +765,14 @@ func (r *WorkloadDeploymentReconciler) resolveLocation(
 	ctx context.Context,
 	c client.Client,
 ) (servingLocationResult, error) {
-	var servingLocations networkingv1alpha.ServingLocationList
-	if err := c.List(ctx, &servingLocations); err != nil {
-		return servingLocationResult{}, fmt.Errorf("failed to list serving locations: %w", err)
+	servingLocations, err := locations.ListServingLocations(ctx, c, r.LocationSource)
+	if err != nil {
+		return servingLocationResult{}, err
 	}
 
-	if len(servingLocations.Items) > 1 {
-		names := make([]string, 0, len(servingLocations.Items))
-		for _, servingLocation := range servingLocations.Items {
+	if len(servingLocations) > 1 {
+		names := make([]string, 0, len(servingLocations))
+		for _, servingLocation := range servingLocations {
 			names = append(names, servingLocation.Name)
 		}
 		slices.Sort(names)
@@ -682,7 +785,7 @@ func (r *WorkloadDeploymentReconciler) resolveLocation(
 		}, nil
 	}
 
-	if len(servingLocations.Items) == 0 {
+	if len(servingLocations) == 0 {
 		// Not an error: a cell that has not been identified yet still runs
 		// workloads, it just cannot tell them where they are.
 		log.FromContext(ctx).V(1).Info("cell has no serving location, waiting")
@@ -690,17 +793,17 @@ func (r *WorkloadDeploymentReconciler) resolveLocation(
 		return servingLocationResult{
 			reason: computev1alpha.WorkloadDeploymentReasonNoMatchingLocation,
 			message: fmt.Sprintf("This cell has not been told which location it serves; it needs the %s cluster label, or its location has not reached it yet",
-				networkingv1alpha.ServingLocationTopologyLabel),
+				locations.ServingLocationTopologyLabel),
 		}, nil
 	}
 
-	servingLocation := &servingLocations.Items[0]
+	servingLocation := &servingLocations[0]
 
 	// A ServingLocation takes the name of the Location it was copied from, and
 	// Location is cluster scoped, so the reference carries a name and no
 	// namespace.
 	return servingLocationResult{
-		reference:       &networkingv1alpha.LocationReference{Name: servingLocation.Name},
+		reference:       &locationsv1alpha1.LocationReference{Name: servingLocation.Name},
 		servingLocation: servingLocation,
 	}, nil
 }
@@ -714,22 +817,28 @@ func (s *servingLocationResult) evaluate(deployment *computev1alpha.WorkloadDepl
 		return
 	}
 
-	cityCode := s.servingLocation.CityCode()
-	if cityCode == deployment.Spec.CityCode {
+	locationName := s.servingLocation.Name
+	if locationName == deployment.Spec.LocationRef.Name {
 		return
 	}
 
 	s.reference = nil
-	s.reason = computev1alpha.WorkloadDeploymentReasonCityCodeMismatch
-	s.message = fmt.Sprintf("Deployment asked for city %q but this cell serves %q; it was delivered to the wrong cell",
-		deployment.Spec.CityCode, cityCode)
+	s.reason = computev1alpha.WorkloadDeploymentReasonLocationMismatch
+	s.message = fmt.Sprintf("Deployment asked for location %q but this cell serves %q; it was delivered to the wrong cell",
+		deployment.Spec.LocationRef.Name, locationName)
 	s.blocked = true
 }
+
+// networkInterfaceClaimWaitInterval is how often a deployment is reconciled
+// while an instance waits for a claim it cannot use to go away. It matches the
+// wait the Pod attachment path uses for the same condition.
+const networkInterfaceClaimWaitInterval = 5 * time.Second
 
 // reconcileNetworkInterfaceClaims ensures one NetworkInterfaceClaim exists per
 // instance interface, and reports which instances hold every address they asked
 // for. The returned map is keyed by instance name; an instance missing from it,
-// or mapped to false, is still waiting on its addresses.
+// or mapped to false, is still waiting on its addresses. waitingOnClaim reports
+// that some instance is waiting for a claim of its slot's name to go away.
 //
 // A claim names the instance slot rather than the instance object, and is owned
 // by the instance filling that slot. Deleting the instance therefore releases
@@ -740,10 +849,10 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworkInterfaceClaims(
 	c client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
 	instances []computev1alpha.Instance,
-) (map[string]bool, error) {
+) (readyByInstance map[string]bool, waitingOnClaim bool, err error) {
 	logger := log.FromContext(ctx)
 
-	readyByInstance := make(map[string]bool, len(instances))
+	readyByInstance = make(map[string]bool, len(instances))
 	for i := range instances {
 		instance := &instances[i]
 		if !instance.DeletionTimestamp.IsZero() {
@@ -752,9 +861,18 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworkInterfaceClaims(
 
 		ready := true
 		for _, networkInterface := range instance.Spec.NetworkInterfaces {
-			claim, err := r.ensureNetworkInterfaceClaim(ctx, c, deployment, instance, networkInterface)
+			claim, usable, err := r.ensureNetworkInterfaceClaim(ctx, c, deployment, instance, networkInterface)
 			if err != nil {
-				return nil, err
+				return nil, false, err
+			}
+
+			if !usable {
+				// The claim under this slot's name is not the instance's to use yet.
+				// It is being deleted, or something else holds it. Once it is gone,
+				// a later pass creates the instance's own claim.
+				ready = false
+				waitingOnClaim = true
+				continue
 			}
 
 			if !networkInterfaceClaimSatisfied(claim) {
@@ -771,11 +889,14 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworkInterfaceClaims(
 		readyByInstance[instance.Name] = ready
 	}
 
-	return readyByInstance, nil
+	return readyByInstance, waitingOnClaim, nil
 }
 
 // ensureNetworkInterfaceClaim creates the claim for one instance interface if it
-// is absent, and returns the claim either way.
+// is absent, and returns the claim either way. usable is false while a claim of
+// the slot's name exists that the instance cannot use: one being deleted, or
+// one an earlier instance in the slot still controls. The latter is deleted
+// here instead of waiting for garbage collection.
 //
 // An existing claim's spec is never updated: almost every field of it is
 // immutable, because the addresses were allocated against it. A changed
@@ -789,8 +910,8 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 	deployment *computev1alpha.WorkloadDeployment,
 	instance *computev1alpha.Instance,
 	networkInterface computev1alpha.InstanceNetworkInterface,
-) (*networkingv1alpha.NetworkInterfaceClaim, error) {
-	claim := &networkingv1alpha.NetworkInterfaceClaim{}
+) (claim *networkingv1alpha.NetworkInterfaceClaim, usable bool, err error) {
+	claim = &networkingv1alpha.NetworkInterfaceClaim{}
 	key := client.ObjectKey{
 		Namespace: deployment.Namespace,
 		Name:      networkInterfaceClaimName(instance.Name, instanceInterfaceName(networkInterface)),
@@ -798,15 +919,13 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 
 	labels := desiredNetworkInterfaceClaimLabels(deployment, instance)
 
-	err := c.Get(ctx, key, claim)
+	err = c.Get(ctx, key, claim)
 	if err == nil {
-		if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
-			return nil, err
-		}
-		return claim, nil
+		usable, err := r.useExistingNetworkInterfaceClaim(ctx, c, claim, instance, labels)
+		return claim, usable, err
 	}
 	if !apierrors.IsNotFound(err) {
-		return nil, fmt.Errorf("failed checking for existing network interface claim: %w", err)
+		return nil, false, fmt.Errorf("failed checking for existing network interface claim: %w", err)
 	}
 
 	claim = &networkingv1alpha.NetworkInterfaceClaim{
@@ -815,13 +934,13 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 			Name:      key.Name,
 			Labels:    labels,
 		},
-		Spec: desiredNetworkInterfaceClaimSpec(networkInterface),
+		Spec: desiredNetworkInterfaceClaimSpec(networkInterface, networkAttachmentMode(deployment)),
 	}
 
 	// The claim belongs to the instance, not the deployment: the instance going
 	// away is what ends the slot's hold on the interface.
 	if err := controllerutil.SetControllerReference(instance, claim, c.Scheme()); err != nil {
-		return nil, fmt.Errorf("failed to set controller on network interface claim: %w", err)
+		return nil, false, fmt.Errorf("failed to set controller on network interface claim: %w", err)
 	}
 
 	if err := c.Create(ctx, claim); err != nil {
@@ -829,19 +948,76 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 			// Lost a race with another writer, or with this controller's own stale
 			// cache. Read what is there rather than reporting a failure.
 			if getErr := c.Get(ctx, key, claim); getErr != nil {
-				return nil, fmt.Errorf("failed fetching network interface claim: %w", getErr)
+				return nil, false, fmt.Errorf("failed fetching network interface claim: %w", getErr)
 			}
-			if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
-				return nil, err
-			}
-			return claim, nil
+			usable, err := r.useExistingNetworkInterfaceClaim(ctx, c, claim, instance, labels)
+			return claim, usable, err
 		}
-		return nil, fmt.Errorf("failed creating network interface claim: %w", err)
+		return nil, false, fmt.Errorf("failed creating network interface claim: %w", err)
 	}
 
 	log.FromContext(ctx).Info("created network interface claim", "claim", claim.Name, "instance", instance.Name)
 
-	return claim, nil
+	return claim, true, nil
+}
+
+// useExistingNetworkInterfaceClaim decides whether an instance may use a claim
+// that already exists under its slot's name.
+//
+// A claim the instance controls, or that nothing controls, is used and has its
+// labels brought up to date. A claim an earlier instance in the slot controls
+// is deleted with UID and resourceVersion preconditions, so a claim recreated
+// or changed in the meantime is never removed by mistake. Waiting on garbage
+// collection instead would leave the slot on an interface that is torn down
+// the moment the claim goes. A claim being deleted, or controlled by something
+// other than an Instance, is left alone and waited on.
+func (r *WorkloadDeploymentReconciler) useExistingNetworkInterfaceClaim(
+	ctx context.Context,
+	c client.Client,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	instance *computev1alpha.Instance,
+	labels map[string]string,
+) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	switch networkInterfaceClaimHoldingFor(claim, instance) {
+	case claimHeld:
+		if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	case claimTerminating:
+		logger.V(1).Info("waiting for network interface claim to be deleted",
+			"claim", claim.Name, "instance", instance.Name)
+		return false, nil
+
+	case claimStale:
+		holder := metav1.GetControllerOf(claim)
+		uid, version := claim.UID, claim.ResourceVersion
+		err := c.Delete(ctx, claim, client.Preconditions{UID: &uid, ResourceVersion: &version})
+		switch {
+		case err == nil:
+			logger.Info("released network interface claim held by previous instance",
+				"claim", claim.Name, "instance", instance.Name, "previousInstanceUID", holder.UID)
+		case apierrors.IsNotFound(err) || apierrors.IsConflict(err):
+			// Already gone, or changed since it was read. The next pass reads it
+			// again and decides afresh.
+			logger.V(1).Info("network interface claim changed before it could be released",
+				"claim", claim.Name, "instance", instance.Name, "error", err.Error())
+		default:
+			return false, fmt.Errorf("failed releasing network interface claim %s/%s from previous instance: %w",
+				claim.Namespace, claim.Name, err)
+		}
+		return false, nil
+
+	default:
+		holder := metav1.GetControllerOf(claim)
+		logger.V(1).Info("network interface claim is controlled by another object",
+			"claim", claim.Name, "instance", instance.Name,
+			"controllerKind", holder.Kind, "controllerName", holder.Name)
+		return false, nil
+	}
 }
 
 // backfillNetworkInterfaceClaimLabels brings the labels compute owns up to date
@@ -897,6 +1073,7 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 	for _, o := range opts {
 		r.enableReferencedDataGate = o.EnableReferencedDataGate
 	}
+	r.events = newLifecycleEventWriter(workloadDeploymentLifecycleReportingController)
 	r.finalizers = finalizer.NewFinalizers()
 	if err := r.finalizers.Register(workloadControllerFinalizer, r); err != nil {
 		return fmt.Errorf("failed to register finalizer: %w", err)
@@ -919,6 +1096,15 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 	// On cells without network-services-operator these watches would log spurious
 	// errors for missing CRDs.
 	if r.NetworkingEnabled {
+		if err := locations.EnsureServingLocationKind(mgr.GetLocalManager().GetRESTMapper(), r.LocationSource); err != nil {
+			return err
+		}
+
+		servingLocationObject, err := locations.ServingLocationObject(r.LocationSource)
+		if err != nil {
+			return err
+		}
+
 		b = b.
 			// A claim becoming bound and allocated is what releases an instance's
 			// Network gate, and nothing else wakes this reconciler for it. The claim
@@ -932,8 +1118,8 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 			// A deployment on a cell that does not yet know its own location waits
 			// without any other wake-up event, and the reconciler does not poll.
 			// Watching ServingLocations re-reconciles those deployments as soon as
-			// the cell learns where it is, so Status.Location is filled in.
-			Watches(&networkingv1alpha.ServingLocation{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			// the cell learns where it is, so the deployment's location resolves.
+			Watches(servingLocationObject, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []mcreconcile.Request {
 					return enqueueWorkloadDeploymentsForServingLocation(ctx, cl.GetClient(), clusterName)
 				})

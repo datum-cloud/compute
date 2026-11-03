@@ -1,0 +1,13 @@
+apiVersion: compute.datumapis.com/v1alpha
+kind: InstanceConsoleSession
+metadata:
+  name: web-0-abcde
+  namespace: ns-aabbccdd-0000-1111-2222-333344445555
+spec:
+  instanceRef:
+    name: web-0
+    uid: 6f1c2f0e-0000-1111-2222-333344445555
+  containerName: app
+  command:
+    - sh
+  clientPublicKey: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

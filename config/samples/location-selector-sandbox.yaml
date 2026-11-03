@@ -1,0 +1,35 @@
+---
+# A placement that selects its locations by topology instead of naming them.
+# Every Ready location in the project whose city code is DFW receives a
+# deployment, and the set follows locations as they are added or removed.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: location-selector-sample
+spec:
+  template:
+    spec:
+      runtime:
+        resources:
+          instanceType: datumcloud-d1-standard-2
+        sandbox:
+          containers:
+            - name: netdata
+              image: docker.io/netdata/netdata:latest
+      networkInterfaces:
+      - network:
+          name: default
+        networkPolicy:
+          ingress:
+            - ports:
+              - port: 19999
+              from:
+                - ipBlock:
+                    cidr: 0.0.0.0/0
+  placements:
+  - name: dfw
+    locationSelector:
+      matchLabels:
+        topology.datum.net/city-code: DFW
+    scaleSettings:
+      minReplicas: 1
