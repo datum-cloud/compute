@@ -85,6 +85,14 @@ type Options struct {
 	// label.
 	PodLabels map[string]string
 
+	// NetworkHost is the name of the Node whose kernel will carry the Pod's
+	// network, for a provider that knows it before the Pod is bound. It is a
+	// host Node, never a virtual kubelet Node the Pod is bound to. BuildPod records it
+	// in computev1alpha.NetworkHostLabel, over any PodLabels value. Leave it
+	// empty when the scheduler picks the host, and call SetNetworkHost once the
+	// Pod is bound.
+	NetworkHost string
+
 	// PodAnnotations are added to the Pod, usually to carry runtime
 	// configuration a class reads from it. The platform or the provider owns
 	// these values. Do not pass tenant-supplied metadata through them, because
@@ -142,6 +150,9 @@ func BuildPod(instance *computev1alpha.Instance, opts Options) (*corev1.Pod, err
 
 	labels := IdentityLabels(instance)
 	maps.Copy(labels, opts.PodLabels)
+	if opts.NetworkHost != "" {
+		labels[computev1alpha.NetworkHostLabel] = computev1alpha.NetworkHostLabelValue(opts.NetworkHost)
+	}
 
 	annotations := make(map[string]string, len(opts.PodAnnotations))
 	maps.Copy(annotations, opts.PodAnnotations)
@@ -155,6 +166,27 @@ func BuildPod(instance *computev1alpha.Instance, opts Options) (*corev1.Pod, err
 		},
 		Spec: spec,
 	}, nil
+}
+
+// SetNetworkHost records on pod the Node whose kernel carries its network, as
+// computev1alpha.NetworkHostLabel. A provider calls it once the Pod is bound
+// and patches the Pod when it reports a change. hostNode is pod.Spec.NodeName
+// only when that Node's own kubelet runs the Pod. A provider whose Pods bind to
+// a virtual kubelet Node passes the host behind it. An empty hostNode, as on a
+// Pod not yet bound, changes nothing.
+func SetNetworkHost(pod *corev1.Pod, hostNode string) bool {
+	if hostNode == "" {
+		return false
+	}
+	value := computev1alpha.NetworkHostLabelValue(hostNode)
+	if current, ok := pod.Labels[computev1alpha.NetworkHostLabel]; ok && current == value {
+		return false
+	}
+	if pod.Labels == nil {
+		pod.Labels = map[string]string{}
+	}
+	pod.Labels[computev1alpha.NetworkHostLabel] = value
+	return true
 }
 
 // BuildPodSpec translates an instance's sandbox into a PodSpec.

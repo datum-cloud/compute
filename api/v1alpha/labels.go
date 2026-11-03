@@ -1,6 +1,13 @@
 package v1alpha
 
-import "k8s.io/apimachinery/pkg/labels"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation"
+)
 
 const (
 	LabelNamespace = "compute.datumapis.com"
@@ -117,5 +124,61 @@ func RuntimeClassServedLabel(class string) string {
 func InstanceRuntimeClassSelector(class string) labels.Selector {
 	return labels.SelectorFromSet(labels.Set{
 		RuntimeClassLabel: class,
+	})
+}
+
+// NetworkHostLabel names the Node whose kernel carries an instance Pod's
+// network. A virtual machine runtime may bind the Pod to a Node other than that
+// host: a virtual kubelet registers one Node per host and runs every guest Pod
+// bound to it on the host's network. Network consumers select an instance's
+// Pods by this label rather than inferring the host from how one runtime names
+// or addresses its Nodes.
+//
+// The provider that realizes the Pod owns the label. It sets the label when it
+// builds the Pod if it already knows the host, and otherwise as soon as the Pod
+// is bound, before anything else reconciles the Pod's network. The host is the
+// Pod's spec.nodeName only when that Node's own kubelet runs the Pod. A
+// provider whose Pods bind to a virtual kubelet Node maps that Node to its host
+// first. The value is
+// NetworkHostLabelValue of the host Node's name. A Pod never changes Nodes, so
+// an instance that moves gets a new Pod carrying its new host. A Pod without
+// the label has no known host yet.
+const NetworkHostLabel = LabelNamespace + "/network-host"
+
+// networkHostHashLength is the number of hex characters of the host name's
+// SHA-256 digest that a NetworkHostLabel value keeps when the name is too long
+// for a label value. Sixteen characters keep collisions between Node names in
+// one cluster out of practical reach.
+const networkHostHashLength = 16
+
+// NetworkHostLabelValue returns the NetworkHostLabel value for a host Node.
+// A Node name that is a valid label value is used as is. A longer name becomes
+// its leading characters joined to a hash of the whole name, and any other name
+// becomes the hash alone, so the result is always a valid label value. The
+// result is stable, so a consumer can compute the value for its own Node and
+// compare or select on it.
+func NetworkHostLabelValue(nodeName string) string {
+	if len(validation.IsValidLabelValue(nodeName)) == 0 {
+		return nodeName
+	}
+	sum := sha256.Sum256([]byte(nodeName))
+	digest := hex.EncodeToString(sum[:])[:networkHostHashLength]
+	prefix := nodeName[:min(len(nodeName), validation.LabelValueMaxLength-networkHostHashLength-1)]
+	prefix = strings.TrimRight(prefix, "-_.")
+	if value := prefix + "-" + digest; prefix != "" && len(validation.IsValidLabelValue(value)) == 0 {
+		return value
+	}
+	return digest
+}
+
+// NetworkHostSelector returns the selector for the instance Pods whose network
+// the given host Node carries. An empty name selects nothing, so a consumer
+// that cannot name its own Node claims no Pods rather than every unplaced one.
+func NetworkHostSelector(nodeName string) labels.Selector {
+	if nodeName == "" {
+		return labels.Nothing()
+	}
+	return labels.SelectorFromSet(labels.Set{
+		NetworkHostLabel: NetworkHostLabelValue(nodeName),
 	})
 }
