@@ -29,7 +29,7 @@ export function workloadDetailTabs(
 ): PluginTab[] {
   return [
     { label: 'Overview', href: overviewHref },
-    { label: 'Deployments' },
+    { label: 'Topology', href: `${overviewHref}/topology` },
     { label: 'Metrics', href: metricsHref },
     { label: 'Logs', href: logsHref },
     { label: 'Activity', href: `${overviewHref}/activity` },

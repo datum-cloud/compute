@@ -8,7 +8,10 @@ import {
   LOG_SOURCE_ALB,
   LOG_SOURCE_INSTANCE,
   LOG_SOURCE_LABEL,
+  RECENT_LOGS_LOOKBACK_MS,
+  recentLogsRange,
 } from "./o11y-logs";
+import { resolveLogTimeRange } from "@datum-cloud/datum-ui/logs";
 import type { LogEntry } from "@datum-cloud/datum-ui/logs";
 
 function entry(
@@ -116,5 +119,29 @@ describe("filterAlbLogsByUpstreamHost", () => {
       "10.0.1.4:8080",
       "ready",
     ]);
+  });
+});
+
+describe("recentLogsRange", () => {
+  const NOW = Date.parse("2026-11-02T12:00:00.000Z");
+
+  test("recentLogsRange ends at now", () => {
+    expect(recentLogsRange(NOW).to).toBe("2026-11-02T12:00:00.000Z");
+  });
+
+  test("recentLogsRange looks back RECENT_LOGS_LOOKBACK_MS", () => {
+    const range = recentLogsRange(NOW);
+    expect(Date.parse(range.to) - Date.parse(range.from)).toBe(RECENT_LOGS_LOOKBACK_MS);
+  });
+
+  test("RECENT_LOGS_LOOKBACK_MS is at least 24h", () => {
+    expect(RECENT_LOGS_LOOKBACK_MS).toBeGreaterThanOrEqual(24 * 60 * 60 * 1000);
+  });
+
+  test("live tailing keeps the same window when it slides forward", () => {
+    const later = new Date(NOW + 60_000);
+    const slid = resolveLogTimeRange(recentLogsRange(NOW), later);
+    expect(slid.to).toBe(later.toISOString());
+    expect(Date.parse(slid.to) - Date.parse(slid.from)).toBe(RECENT_LOGS_LOOKBACK_MS);
   });
 });

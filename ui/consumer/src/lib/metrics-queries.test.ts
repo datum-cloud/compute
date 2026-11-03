@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  seriesByWorkload,
   namesMatcher,
   networkInterfaceSeriesLabels,
   networkTrafficQuery,
@@ -82,5 +83,32 @@ describe('networkInterfaceSeriesLabels', () => {
     expect(networkInterfaceSeriesLabels([
       { name: 'eth0', networkInterfaceRef: 'r0' }, { name: 'eth1' },
     ])).toEqual({ r0: 'eth0' });
+  });
+});
+
+describe('seriesByWorkload', () => {
+  const point = (timestamp: number, value: number) => ({ timestamp, value, formattedTime: String(timestamp) });
+  const data = {
+    timeRange: { start: 0, end: 2 },
+    series: [
+      { name: 'a', labels: { resource_name: 'web-1' }, data: [point(1, 1), point(2, 2)] },
+      { name: 'b', labels: { resource_name: 'web-2' }, data: [point(1, 3), point(2, 4)] },
+      { name: 'c', labels: { resource_name: 'api-1' }, data: [point(2, 5)] },
+    ],
+  };
+
+  test('sums each workload\'s instances by timestamp', () => {
+    const result = seriesByWorkload(data, 'resource_name', {
+      web: ['web-1', 'web-2'],
+      api: ['api-1'],
+      idle: ['idle-1'],
+    });
+    expect(result.web.map((p) => p.value)).toEqual([4, 6]);
+    expect(result.api.map((p) => [p.timestamp, p.value])).toEqual([[2, 5]]);
+    expect(result.idle).toBeUndefined();
+  });
+
+  test('no data yields no series', () => {
+    expect(seriesByWorkload(undefined, 'resource_name', { web: ['web-1'] })).toEqual({});
   });
 });

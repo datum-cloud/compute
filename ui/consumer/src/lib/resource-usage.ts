@@ -182,3 +182,15 @@ export function memoryUsageHint(bytes: number | undefined, allocated?: number): 
   const used = bytes !== undefined && Number.isFinite(bytes) ? `${formatBytes(bytes)} ` : '';
   return `${used}of ${formatBytes(allocated)}`;
 }
+
+/**
+ * Whether the list's CPU and Memory columns have anything to show: true once
+ * any series has at least one point. A missing (still loading or errored)
+ * series counts as empty, so the columns start hidden and only appear when
+ * data is confirmed, rather than rendering and then dropping out.
+ */
+export function usageColumnsVisible(
+  series: ReadonlyArray<{ points?: readonly unknown[] } | undefined>
+): boolean {
+  return series.some((s) => (s?.points?.length ?? 0) > 0);
+}

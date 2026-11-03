@@ -15,7 +15,12 @@
  * ALB series match cloud-portal edge metrics: Envoy `gateway_name` = HTTPProxy
  * name. Those charts are workload-scoped, not per-instance.
  */
-import { isPrometheusDenied, usePrometheusLabelValues } from './prometheus';
+import {
+  isPrometheusDenied,
+  usePrometheusLabelValues,
+  type ChartDataPoint,
+  type FormattedMetricData,
+} from './prometheus';
 import type { InstanceNetworkInterface } from '../schema';
 
 export const CPU_METRIC = 'datum_compute_instance_cpu_usage_seconds_total';
@@ -181,6 +186,34 @@ export function workloadMemoryByInstanceQuery(
   const sel = scopedInstanceSelector(projectId, label, names);
   if (!sel) return undefined;
   return `sum by (${label}) (${MEMORY_METRIC}${sel})`;
+}
+
+/**
+ * Splits a per-instance result (`workloadCpuByInstanceQuery` over every
+ * workload's instances) into one summed series per workload, so a table can
+ * draw every row's sparkline from a single request. Points are summed by
+ * timestamp, which lines up because a range query samples every series at
+ * the same steps. A workload with no series in the result is left out.
+ */
+export function seriesByWorkload(
+  data: FormattedMetricData | undefined,
+  label: InstanceIdentityLabel,
+  instanceKeysByWorkload: Readonly<Record<string, readonly string[]>>
+): Record<string, ChartDataPoint[]> {
+  if (!data) return {};
+  const byInstance = new Map(data.series.map((series) => [series.labels[label], series.data]));
+  const result: Record<string, ChartDataPoint[]> = {};
+  for (const [workload, keys] of Object.entries(instanceKeysByWorkload)) {
+    const sums = new Map<number, ChartDataPoint>();
+    for (const key of keys) {
+      for (const point of byInstance.get(key) ?? []) {
+        const prev = sums.get(point.timestamp);
+        sums.set(point.timestamp, prev ? { ...prev, value: prev.value + point.value } : { ...point, labels: undefined });
+      }
+    }
+    if (sums.size > 0) result[workload] = [...sums.values()].sort((a, b) => a.timestamp - b.timestamp);
+  }
+  return result;
 }
 
 function albSelector(projectId: string, proxyId: string, extra: Record<string, string> = {}): string {
