@@ -66,7 +66,7 @@ spec:
             # presence rather than the exact list. The federator's finalizer is
             # what makes the hub copy's removal a precondition of the project
             # object going away.
-            (contains(finalizers, 'compute.datumapis.com/federator')): true
+            (finalizers != null && contains(finalizers, 'compute.datumapis.com/federator')): true
 
   - name: assert-hub-deployment-exists
     description: The owner of every hub copy for this workload.
