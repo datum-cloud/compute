@@ -202,7 +202,7 @@ require (
 	github.com/google/go-containerregistry v0.21.6
 	github.com/moby/buildkit v0.31.1
 	github.com/sirupsen/logrus v1.9.4
-	github.com/tonistiigi/fsutil v0.0.0-20260609091201-0257b3308df4
+	github.com/tonistiigi/fsutil v0.0.0-20261027232937-ca65610c2295
 	go.datum.net/datumctl v0.20.1
 	go.miloapis.com/telemetry/cli v0.5.0
 	mvdan.cc/sh/v3 v3.12.0
