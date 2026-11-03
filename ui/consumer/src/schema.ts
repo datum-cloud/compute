@@ -1,11 +1,13 @@
 /**
- * Zod schemas for the compute plugin's two resources — pure data shapes,
- * ported near-verbatim from cloud-portal PR #1315's
- * `app/resources/workloads/workload.schema.ts` and
- * `app/resources/instances/instance.schema.ts`. Combined into one file here
+ * View-model types for the compute plugin's two resources — pure data shapes,
+ * ported from cloud-portal PR #1315's `app/resources/workloads/workload.schema.ts`
+ * and `app/resources/instances/instance.schema.ts`. Combined into one file here
  * since the plugin only exposes list/detail read views for both resources.
+ *
+ * PR #1315 declared these as Zod schemas, but nothing here ever parses with
+ * them — `adapter.ts` builds every value — so they are plain types. That keeps
+ * zod out of the bundle every page loads.
  */
-import { z } from 'zod';
 
 // ── Workload ─────────────────────────────────────────────────────────────
 
@@ -16,69 +18,63 @@ import { z } from 'zod';
  */
 export type WorkloadHealth = 'Available' | 'Degraded' | 'Deploying' | 'Unavailable' | 'Unknown';
 
-const WORKLOAD_HEALTH = ['Available', 'Degraded', 'Deploying', 'Unavailable', 'Unknown'] as const;
+type ConditionStatus = 'True' | 'False' | 'Unknown';
 
-const workloadConditionSchema = z.object({
-  type: z.string(),
-  status: z.enum(['True', 'False', 'Unknown']),
-  reason: z.string().optional(),
-  message: z.string().optional(),
-  lastTransitionTime: z.string().optional(),
-  observedGeneration: z.number().optional(),
-});
+interface WorkloadCondition {
+  type: string;
+  status: ConditionStatus;
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+  observedGeneration?: number;
+}
 
-export const workloadPlacementRegionSchema = z.object({
-  name: z.string(),
-  locations: z.array(z.string()).default([]),
+export interface WorkloadPlacementRegion {
+  name: string;
+  locations: string[];
   /** Topology selector the placement resolves through, when it does not name locations. */
-  locationSelector: z.string().optional(),
-  readyReplicas: z.number(),
-  desiredReplicas: z.number(),
-  health: z.enum(WORKLOAD_HEALTH),
-});
+  locationSelector?: string;
+  readyReplicas: number;
+  desiredReplicas: number;
+  health: WorkloadHealth;
+}
 
-export type WorkloadPlacementRegion = z.infer<typeof workloadPlacementRegionSchema>;
-
-export const workloadResourceSchema = z.object({
-  uid: z.string(),
-  name: z.string(),
-  namespace: z.string().optional(),
-  resourceVersion: z.string().optional(),
-  createdAt: z.coerce.date(),
+export interface Workload {
+  uid: string;
+  name: string;
+  namespace?: string;
+  resourceVersion?: string;
+  createdAt: Date;
   /** Latest status condition transition, when present — used for “Updated … ago”. */
-  updatedAt: z.coerce.date().optional(),
-  image: z.string().optional(),
-  health: z.enum(WORKLOAD_HEALTH),
+  updatedAt?: Date;
+  image?: string;
+  health: WorkloadHealth;
   /** Programmed replicas (latest template applied) — not the same as ready. */
-  currentReplicas: z.number(),
+  currentReplicas: number;
   /** Ready-to-serve replicas — prefer this for health counts. */
-  readyReplicas: z.number(),
-  desiredReplicas: z.number(),
+  readyReplicas: number;
+  desiredReplicas: number;
   /** Placement names (legacy list consumers). */
-  placements: z.array(z.string()),
+  placements: string[];
   /** Spec + status joined for region rows on the home cards. */
-  placementRegions: z.array(workloadPlacementRegionSchema).default([]),
-  conditions: z.array(workloadConditionSchema).default([]),
+  placementRegions: WorkloadPlacementRegion[];
+  conditions: WorkloadCondition[];
   // Detail/overview fields
-  runtimeType: z.string().optional(),
-  tags: z.array(z.string()).default([]),
-  ports: z.array(z.string()).default([]),
-  locations: z.array(z.string()).default([]),
-  resources: z.string().optional(),
-  replicasPerRegion: z.number().optional(),
+  runtimeType?: string;
+  tags: string[];
+  ports: string[];
+  locations: string[];
+  resources?: string;
+  replicasPerRegion?: number;
   /** Networks the instance template attaches to (`networkInterfaces[].network.name`). */
-  networks: z.array(z.string()).default([]),
+  networks: string[];
   /** Set once `metadata.deletionTimestamp` is — the finalizer is tearing the workload down. */
-  deleting: z.boolean().default(false),
-});
+  deleting: boolean;
+}
 
-export type Workload = z.infer<typeof workloadResourceSchema>;
-
-export const workloadListSchema = z.object({
-  items: z.array(workloadResourceSchema),
-});
-
-export type WorkloadList = z.infer<typeof workloadListSchema>;
+export interface WorkloadList {
+  items: Workload[];
+}
 
 /**
  * Maps a workload health value to a `Badge` `type` prop understood by
@@ -105,73 +101,65 @@ export function workloadHealthToBadgeType(
 
 export type InstanceStatusValue = 'Available' | 'Pending' | 'Failed' | 'Unknown';
 
-const instanceConditionSchema = z.object({
-  type: z.string(),
-  status: z.enum(['True', 'False', 'Unknown']),
-  reason: z.string().optional(),
-  message: z.string().optional(),
-  lastTransitionTime: z.string().optional(),
-});
+export interface InstanceCondition {
+  type: string;
+  status: ConditionStatus;
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+}
 
-export type InstanceCondition = z.infer<typeof instanceConditionSchema>;
-
-export const instanceNetworkInterfaceSchema = z.object({
+export interface InstanceNetworkInterface {
   /** Spec interface name, for example "eth0". */
-  name: z.string(),
+  name: string;
   /** VPC network the interface attaches to (spec `network.name`). */
-  network: z.string().optional(),
+  network?: string;
   /** `status.networkInterfaces[].networkInterfaceRef.name`; the `network` label on traffic series. */
-  networkInterfaceRef: z.string().optional(),
-});
+  networkInterfaceRef?: string;
+}
 
-export type InstanceNetworkInterface = z.infer<typeof instanceNetworkInterfaceSchema>;
-
-export const instanceResourceSchema = z.object({
-  uid: z.string(),
-  name: z.string(),
-  namespace: z.string().optional(),
-  createdAt: z.coerce.date(),
-  workloadName: z.string().optional(),
-  workloadUid: z.string().optional(),
-  location: z.string().optional(),
-  placement: z.string().optional(),
-  instanceType: z.string().optional(),
+export interface Instance {
+  uid: string;
+  name: string;
+  namespace?: string;
+  createdAt: Date;
+  workloadName?: string;
+  workloadUid?: string;
+  location?: string;
+  placement?: string;
+  instanceType?: string;
   /** Allocated CPU — from requests, or resolved from instanceType catalog (e.g. "1"). */
-  cpu: z.string().optional(),
+  cpu?: string;
   /** Allocated memory — from requests, or resolved from instanceType catalog (e.g. "2Gi"). */
-  memory: z.string().optional(),
-  image: z.string().optional(),
-  ports: z.array(z.string()).default([]),
+  memory?: string;
+  image?: string;
+  ports: string[];
   /** Sandbox container names, in spec order. Empty for virtual machines. */
-  containers: z.array(z.string()).default([]),
+  containers: string[];
   /** RuntimeClass the instance names; unset selects the catalog default. */
-  runtimeClass: z.string().optional(),
-  status: z.enum(['Available', 'Pending', 'Failed', 'Unknown']),
-  externalIP: z.string().optional(),
-  internalIP: z.string().optional(),
+  runtimeClass?: string;
+  status: InstanceStatusValue;
+  externalIP?: string;
+  internalIP?: string;
   /** Host-route in-network IPs Envoy may dial (`upstream_host`), v4 and v6. */
-  internalIPs: z.array(z.string()).default([]),
+  internalIPs: string[];
   /**
    * Every in-network address the guest answers on, v4 and v6, for display.
    * Unlike `internalIPs` it keeps a delegated IPv6 block, by its base address.
    */
-  addresses: z.array(z.string()).default([]),
+  addresses: string[];
   /** Every externally reachable address, v4 and v6. */
-  externalIPs: z.array(z.string()).default([]),
+  externalIPs: string[];
   /** Private DNS names allocated in the instance's networks (`status.dns[].hostnames`). */
-  hostnames: z.array(z.string()).default([]),
+  hostnames: string[];
   /** Interfaces in spec order, each joined to its status entry by name. */
-  networkInterfaces: z.array(instanceNetworkInterfaceSchema).default([]),
-  conditions: z.array(instanceConditionSchema).default([]),
-});
+  networkInterfaces: InstanceNetworkInterface[];
+  conditions: InstanceCondition[];
+}
 
-export type Instance = z.infer<typeof instanceResourceSchema>;
-
-export const instanceListSchema = z.object({
-  items: z.array(instanceResourceSchema),
-});
-
-export type InstanceList = z.infer<typeof instanceListSchema>;
+export interface InstanceList {
+  items: Instance[];
+}
 
 /**
  * Maps an instance status value to a `Badge` `type` prop understood by
