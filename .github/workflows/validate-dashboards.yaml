@@ -48,7 +48,7 @@ jobs:
         run: go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@v0.6.0
 
       - name: Cache jsonnet vendor directories
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: observability/**/vendor
           key: jsonnet-vendor-${{ hashFiles('observability/**/jsonnetfile.lock.json') }}
