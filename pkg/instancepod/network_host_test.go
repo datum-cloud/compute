@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -51,7 +50,7 @@ func TestBuildPodWithoutNetworkHostLeavesLabelUnset(t *testing.T) {
 }
 
 func TestSetNetworkHost(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "app-0"}}
+	pod := &corev1.Pod{}
 
 	if SetNetworkHost(pod, "") {
 		t.Fatal("SetNetworkHost() with no Node reported a change")

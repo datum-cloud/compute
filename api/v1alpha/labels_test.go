@@ -10,6 +10,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
+const testShortNodeName = "node-a"
+
 func TestNetworkHostLabelValue(t *testing.T) {
 	long := "node-" + strings.Repeat("a", 80) + ".example.com"
 	longSibling := "node-" + strings.Repeat("a", 80) + ".example.org"
@@ -21,7 +23,7 @@ func TestNetworkHostLabelValue(t *testing.T) {
 		nodeName string
 		want     string
 	}{
-		{name: "short name is used as is", nodeName: "node-a", want: "node-a"},
+		{name: "short name is used as is", nodeName: testShortNodeName, want: testShortNodeName},
 		{name: "63 character name is used as is", nodeName: strings.Repeat("a", 63), want: strings.Repeat("a", 63)},
 		{name: "dotted name within the limit is used as is", nodeName: "node-a.example.com", want: "node-a.example.com"},
 	}
@@ -66,7 +68,7 @@ func TestNetworkHostLabelValue(t *testing.T) {
 }
 
 func TestNetworkHostSelector(t *testing.T) {
-	for _, nodeName := range []string{"node-a", "node-" + strings.Repeat("a", 80)} {
+	for _, nodeName := range []string{testShortNodeName, "node-" + strings.Repeat("a", 80)} {
 		selector := NetworkHostSelector(nodeName)
 		own := labels.Set{NetworkHostLabel: NetworkHostLabelValue(nodeName)}
 		other := labels.Set{NetworkHostLabel: NetworkHostLabelValue(nodeName + "-other")}
