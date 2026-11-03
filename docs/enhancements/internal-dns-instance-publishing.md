@@ -122,3 +122,22 @@ reconciliations to four and each reconciliation to ten seconds.
 This requires the generic service-owned reservation contract in dns-operator
 PR #423. Use the matching DNS, compute, and staging configuration changes when
 testing; no production migration or temporary DNS default is introduced.
+
+## Publishing from the cell
+
+A cell can publish its own instances, so its DNS region serves a new instance
+without the management plane. Set `internalDNS.localPublishing.region` on the
+cell's compute controller, and list the cell's location in the management
+controller's `internalDNS.locallyPublishedLocations`, which then withdraws
+what it published there.
+
+The cell writes each instance's contribution into its own cluster, in the
+instance's namespace, labelled `internal-dns.miloapis.com/origin: <region>`.
+The region's DNS control plane serves it at once and sends it on to the other
+regions and to the project. The project still authors each context's shared
+`compute-instances-<hash>` registration; a cell only reads its copy, and
+waits until the copy arrives. DNS copies in a cell carry the origin UID and
+generation of the project's objects, and the cell references those, so its
+contributions resolve in every region. The cell reads the project's identity
+from the `internal-dns.miloapis.com/project-uid` annotation DNS writes on the
+namespace.

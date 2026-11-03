@@ -112,6 +112,13 @@ type InternalDNSPublisherReconciler struct {
 	Now                         func() time.Time
 	ObservationSources          map[string]InternalDNSObservationSource
 	ObserveInterface            InternalDNSObserveFunc
+	// LocalRegion, on a cell, publishes into the cell's own cluster and marks
+	// every object with this region as its origin. The project authors the
+	// shared registrations, so the cell only reads them.
+	LocalRegion string
+	// SkipLocations are locations whose cells publish locally. The management
+	// publisher withdraws what it published there.
+	SkipLocations map[string]bool
 }
 
 func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -166,7 +173,7 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		Controller: ptrBool(true),
 	}
 
-	if !instance.DeletionTimestamp.IsZero() {
+	if !instance.DeletionTimestamp.IsZero() || r.SkipLocations[instance.Labels[computev1alpha.LocationLabel]] {
 		return ctrl.Result{}, r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, nil)
 	}
 
@@ -309,6 +316,9 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		internalDNSVPCUID:      string(attachment.VPCUID),
 		internalDNSManagedBy:   internalDNSManager,
 	}
+	if r.LocalRegion != "" {
+		labels[internalDNSOriginLabel] = r.LocalRegion
+	}
 	ownerName := allocatedInstanceDNSName(instance)
 	for i := range attachment.RecordSets {
 		rrset := attachment.RecordSets[i].(map[string]any)
@@ -318,9 +328,17 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		}
 	}
 
-	registration, changed, err := ensureInstanceDNSReservation(ctx, access, managed)
-	if err != nil || changed {
-		return false, err
+	var registration *unstructured.Unstructured
+	if r.LocalRegion != "" {
+		if registration, err = lookupInstanceDNSReservation(ctx, access, managed); err != nil || registration == nil {
+			return false, err
+		}
+	} else {
+		var changed bool
+		registration, changed, err = ensureInstanceDNSReservation(ctx, access, managed)
+		if err != nil || changed {
+			return false, err
+		}
 	}
 	registrationRef := objectReference(registration)
 
@@ -330,7 +348,7 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		internalDNSEligibleField:        attachment.Eligible,
 		internalDNSReasonField:          map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[attachment.Eligible],
 	}
-	_, changed, err = ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
+	_, changed, err := ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
 	return err == nil && !changed, err
 }
 
@@ -574,8 +592,10 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 		return errors.New("an internal DNS project identity resolver is required")
 	}
 	r.mgr = mgr
-	if err := (&internalDNSReservationReconciler{publisher: r}).SetupWithManager(mgr); err != nil {
-		return err
+	if r.LocalRegion == "" {
+		if err := (&internalDNSReservationReconciler{publisher: r}).SetupWithManager(mgr); err != nil {
+			return err
+		}
 	}
 	concurrency := r.MaxConcurrentReconciles
 	if concurrency <= 0 {
