@@ -84,9 +84,16 @@ func run(marker string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read own start time: %w", err)
 	}
+	// The handlers are installed before the marker exists. A signal that
+	// arrives once the marker is written must be handled: the marker is the
+	// agent's proof that cleanup is unconfirmed, so it must not outlive a
+	// reaper that never reaped its descendants.
+	signals := make(chan os.Signal, 8)
+	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	defer signal.Stop(signals)
 	// The marker is created before the command, so a failed exec is still
 	// visible to the agent's cleanup path.
-	if err := os.WriteFile(marker, []byte(fmt.Sprintf("%d %d reaper\n", os.Getpid(), start)), 0600); err != nil {
+	if err := writeMarker(marker, fmt.Sprintf("%d %d reaper\n", os.Getpid(), start)); err != nil {
 		return fmt.Errorf("write session marker: %w", err)
 	}
 	cmd := exec.Command(command[0], command[1:]...)
@@ -106,9 +113,6 @@ func run(marker string, args []string) error {
 	}
 	primary := cmd.Process.Pid
 	_ = cmd.Process.Release() // wait4 below collects the child instead.
-	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-	defer signal.Stop(signals)
 	code := 0
 	primaryExited, stopping := false, false
 	var graceDeadline time.Time
@@ -159,6 +163,24 @@ func run(marker string, args []string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// writeMarker publishes the session marker in one step, so a reader that sees
+// the marker also sees its complete contents.
+func writeMarker(marker, content string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(marker), ".shell-reaper-marker-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), marker)
 }
 
 func reapChildren(primary int) (bool, int, error) {
