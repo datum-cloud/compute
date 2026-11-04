@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { focusManager, MutationObserver, QueryClient, QueryObserver } from '@tanstack/react-query';
 import {
+  albRoutes,
   computeEntitlementQueryOptions,
   createDemoWorkloadMutationOptions,
   deleteWorkloadMutationOptions,
@@ -8,6 +9,8 @@ import {
   workloadsQueryOptions,
   type ComputeEntitlement,
   type DeleteWorkloadInput,
+  type RawHttpProxy,
+  type RawNetworkService,
 } from './api';
 
 const PROJECT_ID = 'p-1';
@@ -182,5 +185,75 @@ describe('host caches after writes', () => {
     await new MutationObserver(client, deleteWorkloadMutationOptions(PROJECT_ID)).mutate(input);
 
     expect(domainsInvalidated()).toBe(true);
+  });
+});
+
+describe('albRoutes', () => {
+  const service: RawNetworkService = {
+    metadata: { name: 'web' },
+    spec: { ports: [{ name: 'http', port: 8080, protocol: 'TCP' }] },
+  };
+  const proxy = (rules: NonNullable<RawHttpProxy['spec']>['rules']): RawHttpProxy => ({
+    metadata: { name: 'web-alb' },
+    spec: { rules },
+  });
+  const toWorkload = { networkService: { name: 'web', port: 'http' } };
+
+  test('a rule with no matches routes / to the named port', () => {
+    expect(albRoutes(proxy([{ backends: [toWorkload] }]), [service])).toEqual([
+      { paths: ['/'], narrowed: false, port: { name: 'http', number: 8080, appProtocol: undefined }, percent: undefined, sharedWith: 0 },
+    ]);
+  });
+
+  test('keeps only the rules that send traffic to this workload', () => {
+    const routes = albRoutes(
+      proxy([
+        { matches: [{ path: { type: 'PathPrefix', value: '/api' } }], backends: [toWorkload] },
+        { matches: [{ path: { type: 'PathPrefix', value: '/other' } }], backends: [{ endpoint: 'https://example.com' }] },
+      ]),
+      [service]
+    );
+    expect(routes.map((r) => r.paths)).toEqual([['/api']]);
+  });
+
+  test("a split rule gives this workload's share and how many backends share it", () => {
+    const [route] = albRoutes(
+      proxy([{ backends: [{ ...toWorkload, weight: 1 }, { endpoint: 'https://a.example', weight: 3 }] }]),
+      [service]
+    );
+    expect(route.percent).toBe(25);
+    expect(route.sharedWith).toBe(1);
+  });
+
+  test('unset weights count as 1', () => {
+    const [route] = albRoutes(proxy([{ backends: [toWorkload, { endpoint: 'https://a.example' }] }]), [service]);
+    expect(route.percent).toBe(50);
+  });
+
+  test('marks rules narrowed by headers, query or method, and regular expressions', () => {
+    const [route] = albRoutes(
+      proxy([
+        {
+          matches: [{ path: { type: 'RegularExpression', value: '/v[0-9]+' }, method: 'GET' }],
+          backends: [toWorkload],
+        },
+      ]),
+      [service]
+    );
+    expect(route.paths).toEqual(['~ /v[0-9]+']);
+    expect(route.narrowed).toBe(true);
+  });
+
+  test('a port the service does not declare keeps its name without a number', () => {
+    const [route] = albRoutes(
+      proxy([{ backends: [{ networkService: { name: 'web', port: 'grpc' } }] }]),
+      [service]
+    );
+    expect(route.port).toEqual({ name: 'grpc', number: undefined, appProtocol: undefined });
+  });
+
+  test('a proxy with no backend on this workload has no routes', () => {
+    expect(albRoutes(proxy([{ backends: [{ endpoint: 'https://a.example' }] }]), [service])).toEqual([]);
+    expect(albRoutes(proxy(undefined), [])).toEqual([]);
   });
 });

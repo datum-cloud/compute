@@ -630,17 +630,19 @@ export interface ResourceCondition {
   lastTransitionTime?: string;
 }
 
-interface RawNetworkService {
+export interface RawNetworkService {
   metadata?: { name?: string; labels?: Record<string, string> };
   spec?: {
     networkInterfaces?: {
       selector?: { matchLabels?: Record<string, string> };
     };
+    /** The ports members answer on; a backend names one of them. */
+    ports?: Array<{ name?: string; port?: number; protocol?: string; appProtocol?: string }>;
   };
   status?: { conditions?: ResourceCondition[] };
 }
 
-interface RawHttpProxy {
+export interface RawHttpProxy {
   metadata?: {
     name?: string;
     creationTimestamp?: string;
@@ -650,8 +652,18 @@ interface RawHttpProxy {
   spec?: {
     hostnames?: string[];
     rules?: Array<{
+      /** Gateway API `HTTPRouteMatch`es; any one matching selects the rule. Unset means `/`. */
+      matches?: Array<{
+        path?: { type?: string; value?: string };
+        headers?: unknown[];
+        queryParams?: unknown[];
+        method?: string;
+      }>;
       backends?: Array<{
-        networkService?: { name?: string };
+        networkService?: { name?: string; port?: string };
+        endpoint?: string;
+        /** Share of the rule's requests, relative to its other backends. Unset is 1. */
+        weight?: number;
       }>;
     }>;
   };
@@ -672,6 +684,22 @@ export interface ConnectedAlb {
   conditions: ResourceCondition[];
   /** This workload's NetworkServices the proxy backends to, with their `Ready` condition. */
   services: Array<{ name: string; ready?: ResourceCondition }>;
+  /** The proxy's rules that send traffic to this workload, in spec order. */
+  routes: AlbRoute[];
+}
+
+/** One rule of a load balancer that sends traffic to the workload. */
+export interface AlbRoute {
+  /** The paths the rule matches, as written: `/`, `/api`. */
+  paths: string[];
+  /** The rule also matches on headers, query parameters or method. */
+  narrowed: boolean;
+  /** The workload port the rule sends to, resolved from the service's named port. */
+  port?: { name: string; number?: number; appProtocol?: string };
+  /** This workload's share of the rule's requests when other backends share it, 0-100. */
+  percent?: number;
+  /** How many other backends share the rule. */
+  sharedWith: number;
 }
 
 export interface PublishedUrl {
@@ -735,6 +763,47 @@ function workloadNameForService(svc: RawNetworkService): string | undefined {
   );
 }
 
+/** A match's path as a person reads it. A regular expression is marked, since `/a.*` reads as a literal. */
+function matchPath(path: { type?: string; value?: string } | undefined): string {
+  const value = path?.value || '/';
+  return path?.type === 'RegularExpression' ? `~ ${value}` : value;
+}
+
+/**
+ * The proxy's rules that send traffic to one of `services` (the workload's own
+ * NetworkServices), each with the paths it matches, the workload port it sends
+ * to and, when the rule splits traffic with other backends, this workload's
+ * share. Weights follow the Gateway API: unset is 1.
+ */
+export function albRoutes(proxy: RawHttpProxy, services: RawNetworkService[]): AlbRoute[] {
+  const byName = new Map(services.flatMap((svc) => (svc.metadata?.name ? [[svc.metadata.name, svc] as const] : [])));
+  return (proxy.spec?.rules ?? []).flatMap((rule) => {
+    const backends = rule.backends ?? [];
+    const own = backends.filter((b) => b.networkService?.name && byName.has(b.networkService.name));
+    if (own.length === 0) return [];
+    const weight = (b: (typeof backends)[number]) => b.weight ?? 1;
+    const total = backends.reduce((sum, b) => sum + weight(b), 0);
+    const ownWeight = own.reduce((sum, b) => sum + weight(b), 0);
+    const matches = rule.matches?.length ? rule.matches : [{}];
+    const portName = own[0].networkService?.port;
+    const servicePort = portName
+      ? byName.get(own[0].networkService!.name!)?.spec?.ports?.find((p) => p.name === portName)
+      : undefined;
+    const sharedWith = backends.length - own.length;
+    return [
+      {
+        paths: [...new Set(matches.map((m) => matchPath(m.path)))],
+        narrowed: matches.some((m) => !!m.method || !!m.headers?.length || !!m.queryParams?.length),
+        port: portName
+          ? { name: portName, number: servicePort?.port, appProtocol: servicePort?.appProtocol }
+          : undefined,
+        percent: sharedWith > 0 && total > 0 ? Math.round((ownWeight / total) * 100) : undefined,
+        sharedWith,
+      },
+    ];
+  });
+}
+
 /** `services` are the workload's own NetworkServices the proxy names as backends. */
 function toConnectedAlb(proxy: RawHttpProxy, services: RawNetworkService[] = []): ConnectedAlb | null {
   const proxyName = proxy.metadata?.name ?? '';
@@ -752,6 +821,7 @@ function toConnectedAlb(proxy: RawHttpProxy, services: RawNetworkService[] = [])
       name: svc.metadata?.name ?? '',
       ready: svc.status?.conditions?.find((c) => c.type === 'Ready'),
     })),
+    routes: albRoutes(proxy, services),
   };
 }
 
