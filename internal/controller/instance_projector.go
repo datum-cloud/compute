@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -57,6 +58,12 @@ type InstanceProjector struct {
 
 	// InternalDNSEnabled isolates publication lifetime handling.
 	InternalDNSEnabled bool
+
+	// Now returns the current time. Nil means time.Now.
+	Now func() time.Time
+
+	stallsOnce   sync.Once
+	stallTracker *projectionStallTracker
 }
 
 const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
@@ -69,6 +76,14 @@ const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
 // Instance whose project cluster the multicluster provider has not engaged yet.
 const projectClusterEngageWait = 15 * time.Second
 
+// projectClusterStallBound is how long an Instance may wait for its project
+// cluster before the wait is reported. Engagement after a restart normally
+// takes a minute or two, so a longer wait means the cluster is not coming.
+const projectClusterStallBound = 10 * time.Minute
+
+// projectClusterStalledWait is the slower retry used once a wait is reported.
+const projectClusterStalledWait = time.Minute
+
 func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	err := r.reconcile(ctx, req)
 	// After a manager restart the provider engages project clusters over the
@@ -77,11 +92,34 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// reporting a reconcile error, matching the federator's not-engaged
 	// handling.
 	if errors.Is(err, multicluster.ErrClusterNotFound) {
-		log.FromContext(ctx).V(1).Info("project cluster not engaged for instance projection; retrying",
-			"instance", req.NamespacedName, "error", err)
-		return ctrl.Result{RequeueAfter: projectClusterEngageWait}, nil
+		waited := r.stalls().waiting(req.NamespacedName, r.now())
+		if waited < projectClusterStallBound {
+			log.FromContext(ctx).V(1).Info("project cluster not engaged for instance projection; retrying",
+				"instance", req.NamespacedName, "error", err)
+			return ctrl.Result{RequeueAfter: projectClusterEngageWait}, nil
+		}
+		log.FromContext(ctx).Info("instance projection is stalled waiting for its project cluster",
+			"instance", req.NamespacedName, "waited", waited.Round(time.Second).String(), "error", err)
+		return ctrl.Result{RequeueAfter: projectClusterStalledWait}, nil
 	}
+	r.stalls().done(req.NamespacedName)
 	return ctrl.Result{}, err
+}
+
+func (r *InstanceProjector) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+func (r *InstanceProjector) stalls() *projectionStallTracker {
+	r.stallsOnce.Do(func() {
+		if r.stallTracker == nil {
+			r.stallTracker = newProjectionStallTracker(projectionsStalled)
+		}
+	})
+	return r.stallTracker
 }
 
 func (r *InstanceProjector) reconcile(ctx context.Context, req ctrl.Request) error {

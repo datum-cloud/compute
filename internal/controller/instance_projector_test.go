@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -627,6 +629,52 @@ func TestInstanceProjectorRequeuesUnengagedProjectCluster(t *testing.T) {
 	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &retained))
 	assert.Contains(t, retained.Finalizers, instanceProjectionFinalizer,
 		"the write-back must keep its finalizer until the projection can be removed")
+}
+
+// TestInstanceProjectorReportsStalledProjectCluster verifies that a wait for
+// a project cluster past the bound is counted and retried more slowly, and that
+// the count clears once the Instance stops waiting.
+func TestInstanceProjectorReportsStalledProjectCluster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stalled_projections"})
+	projector := &InstanceProjector{
+		FederationClient: newKarmadaFakeClient(projTestKarmadaInstance(nil)),
+		MCManager:        &fakeMCManager{clusters: map[string]cluster.Cluster{}},
+		Now:              func() time.Time { return now },
+		stallTracker:     newProjectionStallTracker(gauge),
+	}
+
+	result, err := projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+
+	now = now.Add(projectClusterStallBound - time.Second)
+	result, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+	assert.Zero(t, testutil.ToFloat64(gauge))
+
+	now = now.Add(time.Second)
+	for range 2 {
+		result, err = projector.Reconcile(ctx, projectorRequest())
+		require.NoError(t, err)
+		assert.Equal(t, projectClusterStalledWait, result.RequeueAfter)
+		assert.Equal(t, float64(1), testutil.ToFloat64(gauge), "a repeated wait counts the Instance once")
+	}
+
+	// The write-back and its hub namespace are gone, so nothing waits anymore.
+	projector.FederationClient = newKarmadaFakeClient()
+	result, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+	assert.Zero(t, testutil.ToFloat64(gauge))
+
+	projector.FederationClient = newKarmadaFakeClient(projTestKarmadaInstance(nil))
+	result, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter, "a new wait starts over")
 }
 
 // TestInstanceProjector_SpecCopied verifies that the Instance spec is correctly

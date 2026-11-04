@@ -19,6 +19,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// Reasons on an Instance's per-network DNS Ready condition.
+const (
+	internalDNSReasonPendingPublication      = "PendingPublication"
+	internalDNSReasonObservationUnconfigured = "NetworkObservationUnconfigured"
+	internalDNSReasonObservationUnavailable  = "NetworkObservationUnavailable"
+	internalDNSReasonAddressUnavailable      = "AddressUnavailable"
+	internalDNSReasonPublicationFailed       = "PublicationFailed"
+)
+
 func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, reader client.Reader, namespace string, instance *computev1alpha.Instance, nic computev1alpha.InstanceNetworkInterface) (InternalDNSObservedInterface, error) {
 	if r.ObserveInterface != nil {
 		return r.ObserveInterface(ctx, reader, namespace, instance, nic)
@@ -33,7 +42,7 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 			result.Conditions = append([]metav1.Condition(nil), previous.Conditions...)
 		}
 	}
-	condition := metav1.Condition{Type: internalDNSConditionReady, Status: metav1.ConditionFalse, Reason: "PendingPublication", Message: "Waiting for DNS publication", ObservedGeneration: instance.Generation}
+	condition := metav1.Condition{Type: internalDNSConditionReady, Status: metav1.ConditionFalse, Reason: internalDNSReasonPendingPublication, Message: "Waiting for DNS publication", ObservedGeneration: instance.Generation}
 	resolver, err := findResolverContext(ctx, reader, namespace, identity.ProjectUID, attachment.VPCUID)
 	if err != nil {
 		return result, err
@@ -70,15 +79,15 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		}
 	}
 	if errors.Is(attachment.ObservationError, errNetworkObservationUnconfigured) {
-		condition.Reason, condition.Message = "NetworkObservationUnconfigured", "Private DNS is not available in this location"
+		condition.Reason, condition.Message = internalDNSReasonObservationUnconfigured, "Private DNS is not available in this location"
 	} else if attachment.ObservationError != nil {
 		condition.Status = metav1.ConditionUnknown
-		condition.Reason, condition.Message = "NetworkObservationUnavailable", "No current network observation is available"
+		condition.Reason, condition.Message = internalDNSReasonObservationUnavailable, "No current network observation is available"
 	} else if !attachment.Eligible {
-		condition.Reason, condition.Message = "AddressUnavailable", "No currently eligible private host address is available"
+		condition.Reason, condition.Message = internalDNSReasonAddressUnavailable, "No currently eligible private host address is available"
 	}
 	if reconcileErr != nil && attachment.ObservationError == nil {
-		condition.Reason, condition.Message = "PublicationFailed", "DNS publication could not be reconciled"
+		condition.Reason, condition.Message = internalDNSReasonPublicationFailed, "DNS publication could not be reconciled"
 	}
 	apimeta.SetStatusCondition(&result.Conditions, condition)
 	return result, nil

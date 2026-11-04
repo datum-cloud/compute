@@ -328,7 +328,7 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 		internalDNSRegistrationRefField: registrationRef,
 		internalDNSRecordSetsField:      attachment.RecordSets,
 		internalDNSEligibleField:        attachment.Eligible,
-		internalDNSReasonField:          map[bool]string{true: "AddressAllocatedAndProgrammed", false: "AddressUnavailable"}[attachment.Eligible],
+		internalDNSReasonField:          map[bool]string{true: "AddressAllocatedAndProgrammed", false: internalDNSReasonAddressUnavailable}[attachment.Eligible],
 	}
 	_, changed, err = ensureDNSObject(ctx, access, dnsContributionGVK, namespace, resourceName, labels, owner, contributionSpec)
 	return err == nil && !changed, err

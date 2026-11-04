@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -217,6 +219,45 @@ func TestPublisherReconcileRequeuesAtTheResyncInterval(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, result.RequeueAfter, internalDNSResyncInterval)
 	require.Less(t, result.RequeueAfter, internalDNSResyncInterval+internalDNSResyncInterval/2)
+}
+
+// TestPublisherReconcileRetriesUnconfiguredLocationOnTheResyncInterval checks
+// that an Instance in a location without Private DNS is reported in status and
+// retried on the normal resync schedule, not as a failure.
+func TestPublisherReconcileRetriesUnconfiguredLocationOnTheResyncInterval(t *testing.T) {
+	scheme := newTestScheme(t)
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	for _, gvk := range []schema.GroupVersionKind{dnsResolverContextGVK, dnsRegistrationGVK, dnsContributionGVK} {
+		scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+	}
+	network := &networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestNetworkName, Namespace: internalDNSTestNamespace, UID: internalDNSTestVPCUID}}
+	instance := &computev1alpha.Instance{
+		ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestNamespace, UID: internalDNSTestInstanceUID, Labels: map[string]string{computev1alpha.LocationLabel: "unserved"}},
+		Spec:       computev1alpha.InstanceSpec{NetworkInterfaces: []computev1alpha.InstanceNetworkInterface{{Network: networkingv1alpha.NetworkRef{Name: internalDNSTestNetworkName}}}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, network).WithStatusSubresource(instance).Build()
+	const project = "project"
+	r := &InternalDNSPublisherReconciler{
+		mgr:               internalDNSTestClusters{project: internalDNSTestCluster{client: cl}},
+		ProjectIdentities: map[string]InternalDNSProjectIdentity{project: {ProjectUID: internalDNSTestProjectUID}},
+	}
+
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: project, Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, result.RequeueAfter, internalDNSResyncInterval)
+	require.Less(t, result.RequeueAfter, internalDNSResyncInterval+internalDNSResyncInterval/2)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
+	require.Len(t, instance.Status.DNS, 1)
+	ready := apimeta.FindStatusCondition(instance.Status.DNS[0].Conditions, internalDNSConditionReady)
+	require.NotNil(t, ready)
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, internalDNSReasonObservationUnconfigured, ready.Reason)
+	contributions := &unstructured.UnstructuredList{}
+	contributions.SetGroupVersionKind(dnsContributionGVK.GroupVersion().WithKind(dnsContributionGVK.Kind + "List"))
+	require.NoError(t, cl.List(context.Background(), contributions))
+	require.Empty(t, contributions.Items)
 }
 
 func TestDNSPollingSpreadsReconciliation(t *testing.T) {
