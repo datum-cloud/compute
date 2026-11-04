@@ -136,12 +136,12 @@ warns and the Shell tab stays hidden. Install and run it in isolation:
 
 ```bash
 cd ui/consumer
-npm install
-npm run dev        # Vite dev server (:7778, HMR) — standalone/direct
-npm run preview    # built dist/ served (:7778) — proxy-safe
-npm run build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
-npm run typecheck  # tsc --noEmit
-npm test           # vitest unit tests
+pnpm install
+pnpm dev        # Vite dev server (:7778, HMR) — standalone/direct
+pnpm preview    # built dist/ served (:7778) — proxy-safe
+pnpm build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
+pnpm typecheck  # tsc --noEmit
+pnpm test       # vitest unit tests
 ```
 
 ### Serve `dev` or `preview`? (it matters for the portal proxy)
@@ -209,7 +209,7 @@ listed in this plugin's `shared` config resolve to the host's copy, and any
 other datum-ui subpath the plugin imports is bundled into the remote.
 
 Keep the plugin's versions of these packages at the host's resolved versions
-(cloud-portal's `package-lock.json`), not npm's latest: the host's copy is
+(cloud-portal's lockfile), not the registry's latest: the host's copy is
 what runs, so a newer local version only lets the plugin type-check against
 APIs the host doesn't have.
 
