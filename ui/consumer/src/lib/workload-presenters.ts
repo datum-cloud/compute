@@ -354,6 +354,28 @@ export function privateNameState(instance: Instance): PrivateNameState {
   };
 }
 
+/** How to reach a private workload, for its status line. */
+export type PrivateReach =
+  /** One instance with a published name: its address, ready to copy. */
+  | { kind: 'address'; address: string }
+  /** Several instances, or no published name: the network and port, without picking one. */
+  | { kind: 'network'; network?: string; port?: number };
+
+/**
+ * One address when the workload has a single instance whose name is
+ * published, since that is the one to connect to. With several instances each
+ * has its own name, so the status line names only the network and port, and
+ * the instances list carries the addresses.
+ */
+export function privateReach(workload: Workload, instances: readonly Instance[]): PrivateReach {
+  const port = workload.namedPorts[0]?.port;
+  if (instances.length === 1 && port !== undefined) {
+    const [hostname] = instances[0].hostnames;
+    if (hostname) return { kind: 'address', address: `${hostname}:${port}` };
+  }
+  return { kind: 'network', network: workload.networks[0], port };
+}
+
 function isEmptyValue(value: unknown): boolean {
   return value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0);
 }

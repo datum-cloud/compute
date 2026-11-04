@@ -17,6 +17,7 @@ import type {
   Workload,
   WorkloadHealth,
   WorkloadPlacementRegion,
+  WorkloadPort,
 } from './schema';
 
 // ── Shared ───────────────────────────────────────────────────────────────
@@ -199,6 +200,15 @@ function derivePorts(runtime?: RawRuntime): string[] {
   );
 }
 
+/** Every container port with its name, for showing what a port is for. */
+function deriveNamedPorts(runtime?: RawRuntime): WorkloadPort[] {
+  return (runtime?.sandbox?.containers ?? []).flatMap((c) =>
+    (c.ports ?? []).flatMap((p) =>
+      p.port === undefined ? [] : [{ port: p.port, protocol: p.protocol ?? 'TCP', name: p.name || undefined }]
+    )
+  );
+}
+
 /** Card chips: runtime kind + first port protocol when present. */
 function deriveTags(runtime?: RawRuntime): string[] {
   const tags: string[] = [];
@@ -349,6 +359,7 @@ export function toWorkload(raw: RawWorkload): Workload {
     runtimeType: runtime ? (runtime.sandbox ? 'Container sandbox' : 'Virtual machine') : undefined,
     tags: deriveTags(runtime),
     ports,
+    namedPorts: deriveNamedPorts(runtime),
     locations: workloadLocations(placements, raw.status?.placements ?? []),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),

@@ -39,6 +39,13 @@ export interface WorkloadPlacementRegion {
   health: WorkloadHealth;
 }
 
+/** A container port as the template declares it. */
+export interface WorkloadPort {
+  port: number;
+  protocol: string;
+  name?: string;
+}
+
 export interface Workload {
   uid: string;
   name: string;
@@ -63,6 +70,8 @@ export interface Workload {
   runtimeType?: string;
   tags: string[];
   ports: string[];
+  /** Container ports with their names, in spec order. */
+  namedPorts: WorkloadPort[];
   locations: string[];
   resources?: string;
   replicasPerRegion?: number;

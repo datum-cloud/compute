@@ -26,6 +26,7 @@ import {
 } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
 import { SectionFrame, StatusLine } from "../components/surface";
+import { CopyValue } from "../components/copy-value";
 import { WorkloadInstances } from "../components/workload-instances";
 import {
   useDeletePermissions,
@@ -43,7 +44,13 @@ import {
 } from "../lib/alb-status";
 import { WorkloadUrl } from "../components/workload-url";
 import { albOverviewHref, useWorkloadOverviewState } from "../lib/use-workload-overview-state";
-import { compactDetailRows, imageShortName, overviewStatusLine } from "../lib/workload-presenters";
+import {
+  compactDetailRows,
+  imageShortName,
+  overviewStatusLine,
+  privateReach,
+  type PrivateReach,
+} from "../lib/workload-presenters";
 import { formatLocationNames, useLocationIndex } from "../lib/locations";
 import { identityValues, useProjectResourceIdentity } from "../lib/metrics-queries";
 import type { WorkloadOutletContext } from "./workload-outlet-context";
@@ -52,7 +59,7 @@ import WorkloadLogs from "./workload-logs";
 import WorkloadMetrics from "./workload-metrics";
 import type { Workload } from "../schema";
 import { Icon } from "@datum-cloud/datum-ui/icons";
-import { GlobeIcon, MapPinIcon, NetworkIcon, PackageIcon } from "lucide-react";
+import { GlobeIcon, LockIcon, MapPinIcon, NetworkIcon, PackageIcon } from "lucide-react";
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import {
   Link,
@@ -520,6 +527,8 @@ function WorkloadOverview() {
                 href={projectId ? albOverviewHref(projectId, primaryAlb.proxyName) : undefined}
                 status={primaryAlbStatus}
               />
+            ) : !publishedLoading && !published?.proxies.length ? (
+              <PrivateReachLine reach={privateReach(workload, instances)} />
             ) : undefined
           }
         />
@@ -604,6 +613,43 @@ function AlbHostnameLink({
         </Link>
       ) : (
         <span className="flex min-w-0 items-center gap-1.5">{label}</span>
+      )}
+    </span>
+  );
+}
+
+/** Room for a full private name and port, which is longer than a hostname. */
+const PRIVATE_REACH_STYLE = { maxWidth: "min(36rem, 60vw)" } as const;
+
+/**
+ * How to reach a workload no load balancer publishes, for the status line:
+ * its one instance's address, or the network and port when it has several.
+ */
+function PrivateReachLine({ reach }: { reach: PrivateReach }) {
+  return (
+    <span
+      className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs"
+      style={PRIVATE_REACH_STYLE}
+      data-testid="compute-plugin-workload-private-reach"
+    >
+      <Icon icon={LockIcon} size={12} className="shrink-0" aria-hidden />
+      <span className="shrink-0">Private</span>
+      {reach.kind === "address" ? (
+        <CopyValue value={reach.address} className="text-foreground" />
+      ) : (
+        <span className="truncate">
+          {reach.network ? (
+            <>
+              on <span className="text-foreground font-mono">{reach.network}</span>
+            </>
+          ) : null}
+          {reach.port !== undefined ? (
+            <>
+              {reach.network ? ", " : ""}port{" "}
+              <span className="text-foreground font-mono">{reach.port}</span>
+            </>
+          ) : null}
+        </span>
       )}
     </span>
   );

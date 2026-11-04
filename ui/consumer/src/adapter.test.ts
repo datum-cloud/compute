@@ -300,3 +300,28 @@ describe("toInstance networkInterfaces", () => {
     expect(toInstance({}).networkInterfaces).toEqual([]);
   });
 });
+
+describe("toWorkload namedPorts", () => {
+  test("keeps each container port with its name, defaulting the protocol", () => {
+    const raw = rawWorkload();
+    raw.spec!.template = {
+      spec: {
+        runtime: {
+          sandbox: {
+            containers: [
+              { name: "redis", ports: [{ name: "redis", port: 6379 }, { port: 9121, protocol: "UDP" }, { name: "none" }] },
+            ],
+          },
+        },
+      },
+    };
+    expect(toWorkload(raw).namedPorts).toEqual([
+      { port: 6379, protocol: "TCP", name: "redis" },
+      { port: 9121, protocol: "UDP", name: undefined },
+    ]);
+  });
+
+  test("no runtime has no ports", () => {
+    expect(toWorkload(rawWorkload()).namedPorts).toEqual([]);
+  });
+});

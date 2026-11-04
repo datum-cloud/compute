@@ -7,6 +7,7 @@ import {
   instanceReadiness,
   instancesSectionState,
   privateNameState,
+  privateReach,
   deployStatus,
   formatElapsed,
   homeColumnWorkloads,
@@ -36,6 +37,7 @@ function workload(name: string, health: WorkloadHealth, createdAt: string): Work
     conditions: [],
     tags: [],
     ports: [],
+    namedPorts: [],
     locations: [],
     networks: [],
     deleting: false,
@@ -674,5 +676,39 @@ describe('instanceReadiness before programming', () => {
       ])
     );
     expect(result.tone).toBe('muted');
+  });
+});
+
+describe('privateReach', () => {
+  const redis = {
+    ...workload('redis', 'Available', STARTED),
+    networks: ['app-net'],
+    namedPorts: [{ port: 6379, protocol: 'TCP', name: 'redis' }],
+  };
+  const named = (name: string, hostnames: string[]) => ({ ...instance(name, [], 'Available'), hostnames });
+
+  test('one instance with a published name gives its address and port', () => {
+    expect(privateReach(redis, [named('redis-0', ['redis-0.instances.datum.internal'])])).toEqual({
+      kind: 'address',
+      address: 'redis-0.instances.datum.internal:6379',
+    });
+  });
+
+  test('several instances give the network and port, not one of them', () => {
+    const instances = [named('redis-0', ['redis-0.internal']), named('redis-1', ['redis-1.internal'])];
+    expect(privateReach(redis, instances)).toEqual({ kind: 'network', network: 'app-net', port: 6379 });
+  });
+
+  test('no published name yet falls back to the network', () => {
+    expect(privateReach(redis, [named('redis-0', [])])).toEqual({ kind: 'network', network: 'app-net', port: 6379 });
+  });
+
+  test('no port gives the network alone', () => {
+    const noPorts = { ...redis, namedPorts: [] };
+    expect(privateReach(noPorts, [named('redis-0', ['redis-0.internal'])])).toEqual({
+      kind: 'network',
+      network: 'app-net',
+      port: undefined,
+    });
   });
 });
