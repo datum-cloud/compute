@@ -28,6 +28,7 @@ import { ErrorOrRestrictedState } from "../components/states";
 import { SectionFrame, StatusLine } from "../components/surface";
 import { CopyValue } from "../components/copy-value";
 import { WorkloadInstances } from "../components/workload-instances";
+import { WorkloadLoadBalancers } from "../components/workload-load-balancers";
 import {
   useDeletePermissions,
   usePublishedUrl,
@@ -534,6 +535,14 @@ function WorkloadOverview() {
           }
         />
       </div>
+
+      <WorkloadLoadBalancers
+        projectId={projectId}
+        published={published}
+        loading={publishedLoading}
+        albStatuses={albStatuses}
+        network={workload.networks[0]}
+      />
 
       <WorkloadInstances
         instances={instances}
