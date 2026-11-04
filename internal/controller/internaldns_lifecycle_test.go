@@ -24,7 +24,13 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-const lifecycleTestProject = "project"
+const (
+	lifecycleTestProject      = "project"
+	lifecycleTestReason       = "Test"
+	lifecycleTestAddressCIDR  = internalDNSTestAddress + "/32"
+	lifecycleTestMovedAddress = "10.0.0.9"
+	lifecycleTestMovedCIDR    = lifecycleTestMovedAddress + "/32"
+)
 
 // dnsLifecycle drives the publisher through an Instance's life against a fake
 // project API. The fake has no garbage collector, so anything left behind by a
@@ -76,8 +82,8 @@ func lifecycleInstance(name string, uid types.UID, address string, reportsRuntim
 		NetworkInterfaceRef: &networkingv1alpha.LocalNetworkInterfaceRef{Name: name + "-nic"},
 		Addresses:           []computev1alpha.InstanceNetworkInterfaceAddress{{Address: address}},
 		Conditions: []metav1.Condition{
-			{Type: computev1alpha.InstanceNetworkInterfaceAllocated, Status: metav1.ConditionTrue, Reason: "Test"},
-			{Type: computev1alpha.InstanceNetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: "Test"},
+			{Type: computev1alpha.InstanceNetworkInterfaceAllocated, Status: metav1.ConditionTrue, Reason: lifecycleTestReason},
+			{Type: computev1alpha.InstanceNetworkInterfaceProgrammed, Status: metav1.ConditionTrue, Reason: lifecycleTestReason},
 		},
 	}}
 	return instance
@@ -85,9 +91,9 @@ func lifecycleInstance(name string, uid types.UID, address string, reportsRuntim
 
 func setLifecycleRunning(instance *computev1alpha.Instance, running, reportsRuntime bool) {
 	status := map[bool]metav1.ConditionStatus{true: metav1.ConditionTrue, false: metav1.ConditionFalse}[running]
-	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{Type: computev1alpha.InstanceReady, Status: status, Reason: "Test"})
+	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{Type: computev1alpha.InstanceReady, Status: status, Reason: lifecycleTestReason})
 	if reportsRuntime {
-		apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{Type: computev1alpha.InstanceRuntimeReady, Status: status, Reason: "Test"})
+		apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{Type: computev1alpha.InstanceRuntimeReady, Status: status, Reason: lifecycleTestReason})
 	}
 }
 
@@ -208,59 +214,59 @@ func TestInstanceNameLifecycle(t *testing.T) {
 		first, second      string
 		firstAnswer, moved string
 	}{
-		{name: "pod runtime on IPv4", reportsRuntime: true, first: "10.0.0.8/32", firstAnswer: "10.0.0.8", second: "10.0.0.9/32", moved: "10.0.0.9"},
+		{name: "pod runtime on IPv4", reportsRuntime: true, first: lifecycleTestAddressCIDR, firstAnswer: internalDNSTestAddress, second: lifecycleTestMovedCIDR, moved: lifecycleTestMovedAddress},
 		{name: "runtime without a runtime condition on delegated IPv6", first: "fd20::5:0:0/96", firstAnswer: "fd20::5:0:0", second: "fd20::6:0:0/96", moved: "fd20::6:0:0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newDNSLifecycle(t)
 
 			// Create: a running instance gets its name, shown in status.
-			l.create(lifecycleInstance("api", "api-1", tc.first, tc.reportsRuntime))
-			l.reconcile("api")
-			require.Equal(t, []string{tc.firstAnswer}, l.answers("api"))
-			l.requireHostname("api", true)
+			l.create(lifecycleInstance(internalDNSTestInstanceName, "api-1", tc.first, tc.reportsRuntime))
+			l.reconcile(internalDNSTestInstanceName)
+			require.Equal(t, []string{tc.firstAnswer}, l.answers(internalDNSTestInstanceName))
+			l.requireHostname(internalDNSTestInstanceName, true)
 
 			// Address change: the old address is replaced, not added to.
-			l.updateStatus("api", func(i *computev1alpha.Instance) { i.Status.NetworkInterfaces[0].Addresses[0].Address = tc.second })
-			l.reconcile("api")
-			require.Equal(t, []string{tc.moved}, l.answers("api"))
+			l.updateStatus(internalDNSTestInstanceName, func(i *computev1alpha.Instance) { i.Status.NetworkInterfaces[0].Addresses[0].Address = tc.second })
+			l.reconcile(internalDNSTestInstanceName)
+			require.Equal(t, []string{tc.moved}, l.answers(internalDNSTestInstanceName))
 
 			// Stop: the name stops answering but stays reserved, and comes back
 			// on start.
-			l.updateStatus("api", func(i *computev1alpha.Instance) { setLifecycleRunning(i, false, tc.reportsRuntime) })
-			l.reconcile("api")
-			require.Empty(t, l.answers("api"))
-			l.requireHostname("api", false)
-			l.updateStatus("api", func(i *computev1alpha.Instance) { setLifecycleRunning(i, true, tc.reportsRuntime) })
-			l.reconcile("api")
-			require.Equal(t, []string{tc.moved}, l.answers("api"))
-			l.requireHostname("api", true)
+			l.updateStatus(internalDNSTestInstanceName, func(i *computev1alpha.Instance) { setLifecycleRunning(i, false, tc.reportsRuntime) })
+			l.reconcile(internalDNSTestInstanceName)
+			require.Empty(t, l.answers(internalDNSTestInstanceName))
+			l.requireHostname(internalDNSTestInstanceName, false)
+			l.updateStatus(internalDNSTestInstanceName, func(i *computev1alpha.Instance) { setLifecycleRunning(i, true, tc.reportsRuntime) })
+			l.reconcile(internalDNSTestInstanceName)
+			require.Equal(t, []string{tc.moved}, l.answers(internalDNSTestInstanceName))
+			l.requireHostname(internalDNSTestInstanceName, true)
 
 			// Recreate: the replacement's first reconcile runs before the old
 			// Instance's deletion is ever seen, and old answers still go away.
-			l.delete("api")
-			l.create(lifecycleInstance("api", "api-2", tc.first, tc.reportsRuntime))
-			l.reconcile("api")
-			require.Equal(t, []string{tc.firstAnswer}, l.answers("api"))
+			l.delete(internalDNSTestInstanceName)
+			l.create(lifecycleInstance(internalDNSTestInstanceName, "api-2", tc.first, tc.reportsRuntime))
+			l.reconcile(internalDNSTestInstanceName)
+			require.Equal(t, []string{tc.firstAnswer}, l.answers(internalDNSTestInstanceName))
 
 			// A late write from the old lifetime cannot bring its answer back.
 			stale := l.list(dnsContributionGVK)[0].DeepCopy()
 			stale.SetName("instance-stale")
 			stale.SetUID("")
 			stale.SetResourceVersion("")
-			stale.SetLabels(map[string]string{internalDNSInstanceUID: "api-1", internalDNSInstanceNameHash: shortHash("api"), internalDNSManagedBy: internalDNSManager})
-			stale.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: "api", UID: "api-1", Controller: ptrBool(true)}})
+			stale.SetLabels(map[string]string{internalDNSInstanceUID: "api-1", internalDNSInstanceNameHash: shortHash(internalDNSTestInstanceName), internalDNSManagedBy: internalDNSManager})
+			stale.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: internalDNSTestInstanceName, UID: "api-1", Controller: ptrBool(true)}})
 			require.NoError(t, unstructured.SetNestedSlice(stale.Object, []any{map[string]any{internalDNSRecordTypeField: "A", internalDNSRecordsField: []any{map[string]any{internalDNSNameField: "api.instances", "ttl": int64(30), "a": map[string]any{internalDNSContentField: "10.9.9.9"}}}}}, internalDNSSpecField, internalDNSRecordSetsField))
 			require.NoError(t, l.client.Create(context.Background(), stale))
-			l.reconcile("api")
-			require.Equal(t, []string{tc.firstAnswer}, l.answers("api"))
+			l.reconcile(internalDNSTestInstanceName)
+			require.Equal(t, []string{tc.firstAnswer}, l.answers(internalDNSTestInstanceName))
 
 			// Rename: the old name stops answering and the new one starts.
-			l.delete("api")
+			l.delete(internalDNSTestInstanceName)
 			l.create(lifecycleInstance("web", "web-1", tc.second, tc.reportsRuntime))
-			l.reconcile("api")
+			l.reconcile(internalDNSTestInstanceName)
 			l.reconcile("web")
-			require.Empty(t, l.answers("api"))
+			require.Empty(t, l.answers(internalDNSTestInstanceName))
 			require.Equal(t, []string{tc.moved}, l.answers("web"))
 			l.requireHostname("web", true)
 
@@ -279,40 +285,40 @@ func TestInstanceNameLifecycle(t *testing.T) {
 // up after a deleted Instance only touches resources that Instance owned.
 func TestDeletedInstanceWithdrawalLeavesOtherInstancesAlone(t *testing.T) {
 	l := newDNSLifecycle(t)
-	l.create(lifecycleInstance("api", "api-1", "10.0.0.8/32", true))
-	l.create(lifecycleInstance("api-2", "api-2-1", "10.0.0.9/32", true))
-	l.reconcile("api")
+	l.create(lifecycleInstance(internalDNSTestInstanceName, "api-1", lifecycleTestAddressCIDR, true))
+	l.create(lifecycleInstance("api-2", "api-2-1", lifecycleTestMovedCIDR, true))
+	l.reconcile(internalDNSTestInstanceName)
 	l.reconcile("api-2")
 
-	l.delete("api")
-	l.reconcile("api")
-	require.Empty(t, l.answers("api"))
-	require.Equal(t, []string{"10.0.0.9"}, l.answers("api-2"))
+	l.delete(internalDNSTestInstanceName)
+	l.reconcile(internalDNSTestInstanceName)
+	require.Empty(t, l.answers(internalDNSTestInstanceName))
+	require.Equal(t, []string{lifecycleTestMovedAddress}, l.answers("api-2"))
 }
 
 // TestRecreatedInstanceWithdrawsPredecessorWhenPublicationFails checks that a
 // replacement which cannot publish yet still stops its predecessor answering.
 func TestRecreatedInstanceWithdrawsPredecessorWhenPublicationFails(t *testing.T) {
 	l := newDNSLifecycle(t)
-	l.create(lifecycleInstance("api", "api-1", "10.0.0.8/32", true))
-	l.reconcile("api")
-	require.Equal(t, []string{"10.0.0.8"}, l.answers("api"))
+	l.create(lifecycleInstance(internalDNSTestInstanceName, "api-1", lifecycleTestAddressCIDR, true))
+	l.reconcile(internalDNSTestInstanceName)
+	require.Equal(t, []string{internalDNSTestAddress}, l.answers(internalDNSTestInstanceName))
 
-	l.delete("api")
-	replacement := lifecycleInstance("api", "api-2", "10.0.0.9/32", true)
+	l.delete(internalDNSTestInstanceName)
+	replacement := lifecycleInstance(internalDNSTestInstanceName, "api-2", lifecycleTestMovedCIDR, true)
 	replacement.Spec.NetworkInterfaces[0].Network.Name = "missing"
 	l.create(replacement)
 	_, err := l.publisher.Reconcile(context.Background(), mcreconcile.Request{ClusterName: lifecycleTestProject, Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(replacement)}})
 	require.Error(t, err)
-	require.Empty(t, l.answers("api"))
+	require.Empty(t, l.answers(internalDNSTestInstanceName))
 }
 
 // TestUnservedInstanceAPIDoesNotWithdrawNames checks that a 404 because the
 // API is not serving Instances is not mistaken for a deleted Instance.
 func TestUnservedInstanceAPIDoesNotWithdrawNames(t *testing.T) {
 	l := newDNSLifecycle(t)
-	l.create(lifecycleInstance("api", "api-1", "10.0.0.8/32", true))
-	l.reconcile("api")
+	l.create(lifecycleInstance(internalDNSTestInstanceName, "api-1", lifecycleTestAddressCIDR, true))
+	l.reconcile(internalDNSTestInstanceName)
 
 	unserved := interceptor.NewClient(l.client.(client.WithWatch), interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -323,7 +329,7 @@ func TestUnservedInstanceAPIDoesNotWithdrawNames(t *testing.T) {
 		},
 	})
 	l.publisher.mgr = internalDNSTestClusters{lifecycleTestProject: internalDNSTestCluster{client: unserved}}
-	_, err := l.publisher.Reconcile(context.Background(), mcreconcile.Request{ClusterName: lifecycleTestProject, Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: internalDNSTestNamespace, Name: "api"}}})
+	_, err := l.publisher.Reconcile(context.Background(), mcreconcile.Request{ClusterName: lifecycleTestProject, Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: internalDNSTestNamespace, Name: internalDNSTestInstanceName}}})
 	require.Error(t, err)
-	require.Equal(t, []string{"10.0.0.8"}, l.answers("api"))
+	require.Equal(t, []string{internalDNSTestAddress}, l.answers(internalDNSTestInstanceName))
 }
