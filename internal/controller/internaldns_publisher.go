@@ -195,7 +195,8 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 			return ctrl.Result{}, err
 		}
 		if handed {
-			return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSResyncInterval)}, r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, nil)
+			requeue := ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSResyncInterval)}
+			return requeue, r.deletePublishedResources(ctx, access, projectNamespace, &projectInstance, nil)
 		}
 	}
 
