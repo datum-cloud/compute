@@ -417,19 +417,10 @@ export function replicasText(
     : `${workload.desiredReplicas} total`;
 }
 
-/**
- * The workload's ports with their names and who can reach them:
- * "6379/TCP (redis) · private". `exposure` is left off while unknown.
- */
-export function portsText(
-  ports: readonly WorkloadPort[],
-  exposure?: 'public' | 'private'
-): string | undefined {
+/** The workload's ports with their names: "6379/TCP (redis), 53/UDP". */
+export function portsText(ports: readonly WorkloadPort[]): string | undefined {
   if (ports.length === 0) return undefined;
-  const list = ports
-    .map((p) => (p.name ? `${p.port}/${p.protocol} (${p.name})` : `${p.port}/${p.protocol}`))
-    .join(', ');
-  return exposure ? `${list} · ${exposure}` : list;
+  return ports.map((p) => (p.name ? `${p.port}/${p.protocol} (${p.name})` : `${p.port}/${p.protocol}`)).join(', ');
 }
 
 /**

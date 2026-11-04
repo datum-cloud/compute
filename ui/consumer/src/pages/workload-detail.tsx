@@ -4,7 +4,8 @@
  * Metrics at `metrics`, Logs at `logs`, Activity at `activity`.
  *
  * Overview layout, in the project home page's style: a one-line status,
- * the instances and how to reach them, recent logs, then details.
+ * the load balancers that send traffic here, the instances and how to reach
+ * them, recent logs, then details.
  *
  * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
  * inside the plugin (that double-stacks chrome vs native pages).
@@ -13,7 +14,6 @@ import {
   DetailList,
   DETAILS_GRID_CLASS,
   OPEN_ROW_PADDING,
-  StatusBadge,
 } from "../components/detail-list";
 import { RecentInstanceLogs } from "../components/instance-logs";
 import { WorkloadPageChrome } from "../components/workload-page-chrome";
@@ -34,17 +34,9 @@ import {
   usePublishedUrl,
   useWorkload,
   useWorkloadInstances,
-  type PublishedUrl,
 } from "../lib/api";
 import { splitSlashValue } from "../lib/format";
-import {
-  albStatus,
-  albStatusDisplay,
-  workloadUrlState,
-  type AlbStatus,
-} from "../lib/alb-status";
-import { WorkloadUrl } from "../components/workload-url";
-import { albOverviewHref, useWorkloadOverviewState } from "../lib/use-workload-overview-state";
+import { useWorkloadOverviewState } from "../lib/use-workload-overview-state";
 import {
   compactDetailRows,
   imageShortName,
@@ -62,10 +54,9 @@ import WorkloadLogs from "./workload-logs";
 import WorkloadMetrics from "./workload-metrics";
 import type { Workload } from "../schema";
 import { Icon } from "@datum-cloud/datum-ui/icons";
-import { GlobeIcon, LockIcon, MapPinIcon, NetworkIcon, PackageIcon } from "lucide-react";
+import { LockIcon, MapPinIcon, NetworkIcon, PackageIcon, type LucideIcon } from "lucide-react";
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import {
-  Link,
   Outlet,
   Route,
   Routes,
@@ -78,71 +69,6 @@ import {
 const WorkloadActivity = lazy(() => import("./workload-activity"));
 // The topology canvas is the plugin's largest component; load it with its tab.
 const WorkloadTopology = lazy(() => import("./workload-topology"));
-
-function LoadBalancerValue({
-  projectId,
-  published,
-  isLoading,
-  albStatuses,
-}: {
-  projectId?: string;
-  published?: PublishedUrl | null;
-  isLoading: boolean;
-  albStatuses: Record<string, AlbStatus>;
-}) {
-  if (isLoading) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  if (!published?.proxies.length) {
-    return <span className="text-muted-foreground">Not connected</span>;
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      {published.proxies.map((alb) => {
-        const label = alb.displayName || alb.proxyName;
-        const albStatus = albStatuses[alb.proxyName];
-        const display = albStatus ? albStatusDisplay(albStatus) : undefined;
-        const badge =
-          albStatus && albStatus.phase !== "ready" && display ? (
-            <span title={albStatus.message}>
-              <StatusBadge type={display.tone}>
-                {albStatus.phase === "provisioning" ? albStatus.step : "Error"}
-              </StatusBadge>
-            </span>
-          ) : null;
-        if (!projectId) {
-          return (
-            <span
-              key={alb.proxyName}
-              className="inline-flex items-center gap-1.5 text-sm"
-            >
-              <Icon
-                icon={GlobeIcon}
-                size={14}
-                className="text-muted-foreground shrink-0"
-              />
-              {label}
-              {badge}
-            </span>
-          );
-        }
-        return (
-          <span key={alb.proxyName} className="inline-flex items-center gap-2">
-            <Link
-              to={albOverviewHref(projectId, alb.proxyName)}
-              className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline"
-            >
-              <Icon icon={GlobeIcon} size={14} className="shrink-0" />
-              {label}
-            </Link>
-            {badge}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
 
 const DETAIL_DATE_FORMAT: Intl.DateTimeFormatOptions = {
   dateStyle: "medium",
@@ -158,10 +84,6 @@ interface DetailRow {
 
 interface WorkloadDetailsProps {
   workload: Workload;
-  albStatuses: Record<string, AlbStatus>;
-  projectId?: string;
-  published?: PublishedUrl | null;
-  publishedLoading: boolean;
   locationLabel: string;
 }
 
@@ -179,16 +101,8 @@ function mono(text: string) {
  * fills row by row, so pairs read across: Runtime with Instance type, and
  * so on. The name is the page title, so it isn't repeated here.
  */
-function workloadDetailRows({
-  workload,
-  albStatuses,
-  projectId,
-  published,
-  publishedLoading,
-  locationLabel,
-}: WorkloadDetailsProps): DetailRow[] {
+function workloadDetailRows({ workload, locationLabel }: WorkloadDetailsProps): DetailRow[] {
   const { main: resourceShort } = splitSlashValue(workload.resources ?? "");
-  const exposure = publishedLoading ? undefined : published?.proxies.length ? "public" : "private";
   // The runtime class says what actually runs (`unikernel`); the runtime's
   // shape alone reads "Container sandbox" for every sandbox class.
   const runtime = workload.runtimeClass ?? workload.runtimeType;
@@ -208,7 +122,7 @@ function workloadDetailRows({
     {
       label: "Ports",
       value: workload.namedPorts,
-      content: portsText(workload.namedPorts, exposure),
+      content: portsText(workload.namedPorts),
     },
     {
       label: "Locations",
@@ -216,19 +130,6 @@ function workloadDetailRows({
       content: <span title={workload.locations.join(", ")}>{locationLabel}</span>,
     },
     { label: "Network", value: workload.networks, content: mono(workload.networks.join(", ")) },
-    {
-      label: "Load balancer",
-      // Held while loading so the row doesn't pop in after the rest.
-      value: publishedLoading ? "loading" : published?.proxies,
-      content: (
-        <LoadBalancerValue
-          projectId={projectId}
-          published={published}
-          isLoading={publishedLoading}
-          albStatuses={albStatuses}
-        />
-      ),
-    },
     {
       label: "Created",
       value: workload.createdAt,
@@ -268,7 +169,7 @@ function SummaryChip({
   children,
   title,
 }: {
-  icon: typeof GlobeIcon;
+  icon: LucideIcon;
   children: ReactNode;
   title?: string;
 }) {
@@ -373,14 +274,6 @@ function WorkloadLayoutShell({
     [instances],
   );
   const proxyId = published.data?.proxyName;
-  const headerAlb = published.data?.proxies[0];
-  const headerUrl =
-    workload && headerAlb?.hostname
-      ? workloadUrlState(
-          !workload.deleting && workload.health === "Available",
-          albStatus(headerAlb, { workloadServing: workload.health === "Available" }),
-        )
-      : undefined;
   const navigate = useNavigate();
   const permissions = useDeletePermissions(projectId);
   const deleteDialog = useDeleteWorkloadDialog();
@@ -398,25 +291,7 @@ function WorkloadLayoutShell({
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
       summary={workload ? <WorkloadSummary workload={workload} /> : undefined}
-      // Held until the workload is known too, since that decides whether it links.
-      urlLoading={published.isLoading || (isLoading && !!headerAlb?.hostname)}
       deleteLoading={(isLoading || permissions.isLoading) && !workload?.deleting}
-      visit={
-        headerAlb?.hostname && headerUrl
-          ? { href: `https://${headerAlb.hostname}`, live: headerUrl.live, status: headerUrl.status }
-          : undefined
-      }
-      url={
-        headerAlb?.hostname && headerUrl ? (
-          <WorkloadUrl
-            hostname={headerAlb.hostname}
-            customHostnames={headerAlb.customHostnames}
-            live={headerUrl.live}
-            status={headerUrl.status}
-            plain
-          />
-        ) : undefined
-      }
       onDelete={canDelete && workload ? () => deleteDialog.show(workload) : undefined}>
       <DeleteWorkloadDialog
         projectId={projectId}
@@ -522,17 +397,9 @@ function WorkloadOverview() {
           tone={status.tone}
           title={status.title}
           detail={<span title={status.detail}>{status.detail}</span>}
-          action={
-            primaryAlb?.hostname ? (
-              <AlbHostnameLink
-                hostname={primaryAlb.hostname}
-                href={projectId ? albOverviewHref(projectId, primaryAlb.proxyName) : undefined}
-                status={primaryAlbStatus}
-              />
-            ) : !publishedLoading && !published?.proxies.length ? (
-              <PrivateReachLine reach={privateReach(workload, instances)} />
-            ) : undefined
-          }
+          // The workload's own address, whether or not a load balancer sends
+          // traffic here: those are listed in their own section below.
+          action={<PrivateReachLine reach={privateReach(workload, instances)} />}
         />
       </div>
 
@@ -570,61 +437,9 @@ function WorkloadOverview() {
 
       <WorkloadDetails
         workload={workload}
-        albStatuses={albStatuses}
-        projectId={projectId}
-        published={published}
-        publishedLoading={publishedLoading}
         locationLabel={formatLocationNames(workload.locations, locationIndex)}
       />
     </>
-  );
-}
-
-/**
- * The status line's action slot doesn't shrink, so the hostname needs its
- * own cap to truncate instead of pushing the detail out on narrow screens.
- */
-const ALB_HOSTNAME_STYLE = { maxWidth: 'min(20rem, 45vw)' } as const;
-
-/** The load balancer's hostname on the status line, with its state while it isn't ready. */
-function AlbHostnameLink({
-  hostname,
-  href,
-  status,
-}: {
-  hostname: string;
-  href?: string;
-  status?: AlbStatus;
-}) {
-  const display = status ? albStatusDisplay(status) : undefined;
-  const label = (
-    <>
-      <Icon icon={GlobeIcon} size={14} className="shrink-0" aria-hidden />
-      <span className="truncate font-mono text-xs">{hostname}</span>
-    </>
-  );
-  return (
-    <span
-      className="flex min-w-0 items-center gap-2"
-      style={ALB_HOSTNAME_STYLE}
-      data-e2e="compute-workload-alb-chip">
-      {display ? (
-        <span className="text-muted-foreground hidden text-xs sm:inline" title={display.detail}>
-          {display.short}
-        </span>
-      ) : null}
-      {href ? (
-        <Link
-          to={href}
-          className="text-primary flex min-w-0 items-center gap-1.5 hover:underline"
-          title="Open load balancer"
-        >
-          {label}
-        </Link>
-      ) : (
-        <span className="flex min-w-0 items-center gap-1.5">{label}</span>
-      )}
-    </span>
   );
 }
 
@@ -632,8 +447,8 @@ function AlbHostnameLink({
 const PRIVATE_REACH_STYLE = { maxWidth: "min(36rem, 60vw)" } as const;
 
 /**
- * How to reach a workload no load balancer publishes, for the status line:
- * its one instance's address, or the network and port when it has several.
+ * How to reach the workload on its network, for the status line: its one
+ * instance's address, or the network and port when it has several.
  */
 function PrivateReachLine({ reach }: { reach: PrivateReach }) {
   return (

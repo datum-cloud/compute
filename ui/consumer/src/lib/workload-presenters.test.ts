@@ -765,17 +765,13 @@ describe('replicasText', () => {
 describe('portsText', () => {
   const redis = { port: 6379, protocol: 'TCP', name: 'redis' };
 
-  test('names each port and says who can reach them', () => {
-    expect(portsText([redis], 'private')).toBe('6379/TCP (redis) · private');
-    expect(portsText([redis, { port: 53, protocol: 'UDP' }], 'public')).toBe('6379/TCP (redis), 53/UDP · public');
-  });
-
-  test('leaves the exposure off while it is unknown', () => {
+  test('names each port', () => {
     expect(portsText([redis])).toBe('6379/TCP (redis)');
+    expect(portsText([redis, { port: 53, protocol: 'UDP' }])).toBe('6379/TCP (redis), 53/UDP');
   });
 
   test('no ports gives no text, so the row is dropped', () => {
-    expect(portsText([], 'private')).toBeUndefined();
+    expect(portsText([])).toBeUndefined();
   });
 });
 

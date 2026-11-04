@@ -3,12 +3,12 @@
  * Used by the splat layout at `:workloadName/*`.
  *
  * The title is the workload's own name, with a line under it saying what it
- * runs and where. The public URL sits on that line, so where to reach it is
- * visible from every tab rather than buried in the overview. Deleting lives
- * in a quiet menu: it is the page's rarest action, not its loudest.
+ * runs and where. No URL: a load balancer's hostname belongs to the load
+ * balancer, and the Overview lists those. Deleting lives in a quiet menu: it
+ * is the page's rarest action, not its loudest.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
-import { Button, LinkButton } from '@datum-cloud/datum-ui/button';
+import { Button } from '@datum-cloud/datum-ui/button';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -18,8 +18,6 @@ import {
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
-import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
-import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,7 +25,7 @@ import {
   DropdownMenuTrigger,
 } from '@datum-cloud/datum-ui/dropdown';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { EllipsisIcon, HomeIcon, SquareArrowOutUpRightIcon, Trash2Icon } from 'lucide-react';
+import { EllipsisIcon, HomeIcon, Trash2Icon } from 'lucide-react';
 import { Link } from 'react-router';
 
 export function workloadDetailTabs(
@@ -44,62 +42,6 @@ export function workloadDetailTabs(
   ];
 }
 
-const VISIT_ICON = <Icon icon={SquareArrowOutUpRightIcon} size={12} />;
-
-/**
- * The page's "go to my app" action, alongside the URL by the name. A real link
- * once the workload serves; disabled, with the reason on hover, while it comes
- * up; and holding its place while that's still being worked out.
- */
-function VisitButton({
-  visit,
-  loading,
-}: {
-  visit?: { href: string; live: boolean; status?: string };
-  loading: boolean;
-}) {
-  if (visit?.live) {
-    return (
-      <LinkButton
-        href={visit.href}
-        target="_blank"
-        rel="noopener noreferrer"
-        type="secondary"
-        theme="solid"
-        size="xs"
-        icon={VISIT_ICON}
-        iconPosition="right"
-        data-e2e="workload-visit">
-        Visit
-      </LinkButton>
-    );
-  }
-  if (!visit && !loading) return null;
-  const button = (
-    <Button
-      type="secondary"
-      theme="solid"
-      size="xs"
-      icon={VISIT_ICON}
-      iconPosition="right"
-      disabled
-      aria-busy={loading || undefined}
-      data-e2e="workload-visit">
-      Visit
-    </Button>
-  );
-  // A disabled button gets no pointer events, so the tooltip hangs off a wrapper.
-  return visit?.status ? (
-    <Tooltip message={visit.status}>
-      <span tabIndex={0} className="inline-flex">
-        {button}
-      </span>
-    </Tooltip>
-  ) : (
-    button
-  );
-}
-
 export function WorkloadPageChrome({
   projectHref,
   workloadsHref,
@@ -108,9 +50,6 @@ export function WorkloadPageChrome({
   logsHref,
   titleName,
   summary,
-  url,
-  urlLoading = false,
-  visit,
   onDelete,
   deleteLoading = false,
   children,
@@ -123,15 +62,6 @@ export function WorkloadPageChrome({
   titleName: string;
   /** What the workload runs and where, under its name: "Workload · redis:8.10 on app-net in us-central-1". */
   summary?: React.ReactNode;
-  /** The workload's public URL (`WorkloadUrl`), when a load balancer publishes it. */
-  url?: React.ReactNode;
-  /**
-   * Still finding out whether there is a URL: hold its place (and the Visit
-   * button's) so nothing jumps.
-   */
-  urlLoading?: boolean;
-  /** Opens the workload's URL. `live` is false until it's serving; `status` says why. */
-  visit?: { href: string; live: boolean; status?: string };
   /** Omitted when the user can't delete this workload — the button is hidden. */
   onDelete?: () => void;
   /**
@@ -174,54 +104,32 @@ export function WorkloadPageChrome({
         actionsClassName="px-0"
         // A long generated name has no spaces to wrap at.
         titleClassName="break-all"
-        description={
-          summary || url || urlLoading ? (
-            // The summary and the URL each take their own line: the summary
-            // wraps on its own, and a separator between them would be left
-            // dangling at the end of a line whenever the URL wrapped.
-            <span className="flex flex-col items-start gap-1">
-              {summary}
-              {url ??
-                (urlLoading ? (
-                  <Skeleton
-                    aria-hidden
-                    data-testid="compute-plugin-workload-url-loading"
-                    style={{ display: 'inline-block', width: '18em', maxWidth: '100%', height: '1em' }}
-                  />
-                ) : null)}
-            </span>
-          ) : undefined
-        }
+        description={summary}
         actions={
-          visit || urlLoading || onDelete || deleteLoading ? (
-            <div className="flex items-center gap-2">
-              <VisitButton visit={visit} loading={urlLoading} />
-              {onDelete || deleteLoading ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      type="quaternary"
-                      theme="outline"
-                      size="xs"
-                      aria-label="More actions"
-                      aria-busy={deleteLoading || undefined}
-                      disabled={!onDelete}
-                      icon={<Icon icon={EllipsisIcon} size={14} />}
-                      data-e2e="workload-more-actions"
-                    />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onSelect={onDelete}
-                      className="text-destructive"
-                      data-e2e="workload-delete">
-                      <Icon icon={Trash2Icon} size={14} />
-                      Delete workload
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null}
-            </div>
+          onDelete || deleteLoading ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="quaternary"
+                  theme="outline"
+                  size="xs"
+                  aria-label="More actions"
+                  aria-busy={deleteLoading || undefined}
+                  disabled={!onDelete}
+                  icon={<Icon icon={EllipsisIcon} size={14} />}
+                  data-e2e="workload-more-actions"
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={onDelete}
+                  className="text-destructive"
+                  data-e2e="workload-delete">
+                  <Icon icon={Trash2Icon} size={14} />
+                  Delete workload
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : undefined
         }
       />
