@@ -105,10 +105,44 @@ function LogsDenied({ className }: { className?: string }) {
   );
 }
 
-/** Same first-request prompt as the cloud-portal ALB overview logs card. */
-function AlbLogsEmpty({ hostname }: { hostname: string }) {
-  const command = `curl -I https://${hostname}/`;
+/** The test request to send, with a button that copies it. */
+function TestRequestCommand({ command, className }: { command: string; className?: string }) {
   const [copied, copy] = useCopyToClipboard();
+  return (
+    <div
+      className={cn(
+        'bg-muted/60 border-border flex items-center gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-left',
+        className
+      )}>
+      <code className="min-w-0 flex-1 font-mono text-xs break-all">{command}</code>
+      <button
+        type="button"
+        className="text-muted-foreground hover:text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-md"
+        aria-label="Copy test request command"
+        onClick={() => void copy(command, { withToast: true })}>
+        <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Same first-request prompt as the cloud-portal ALB overview logs card.
+ * `compact` lays it out as one notice row, for the open section on the
+ * workload Overview, where a centered block leaves a tall empty band.
+ */
+function AlbLogsEmpty({ hostname, compact = false }: { hostname: string; compact?: boolean }) {
+  const command = `curl -I https://${hostname}/`;
+
+  if (compact) {
+    return (
+      <QuietNotice
+        title="Waiting for the first request…"
+        description="Send a test request and it will appear here live."
+        action={<TestRequestCommand command={command} />}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-(--card-px) py-8 text-center">
@@ -121,16 +155,7 @@ function AlbLogsEmpty({ hostname }: { hostname: string }) {
           Send a test request and it will appear here live.
         </p>
       </div>
-      <div className="bg-muted/60 border-border flex w-full max-w-sm items-center gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-left">
-        <code className="min-w-0 flex-1 font-mono text-xs break-all">{command}</code>
-        <button
-          type="button"
-          className="text-muted-foreground hover:text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-md"
-          aria-label="Copy test request command"
-          onClick={() => void copy(command, { withToast: true })}>
-          <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
-        </button>
-      </div>
+      <TestRequestCommand command={command} className="w-full max-w-sm" />
     </div>
   );
 }
@@ -138,14 +163,17 @@ function AlbLogsEmpty({ hostname }: { hostname: string }) {
 function LogsEmpty({
   hostname,
   searched = true,
+  compact = false,
   className,
 }: {
   hostname?: string;
   /** False when there was nothing to query, so no window was searched. */
   searched?: boolean;
+  /** One row instead of a centered block (the workload Overview's open section). */
+  compact?: boolean;
   className?: string;
 }) {
-  if (hostname) return <AlbLogsEmpty hostname={hostname} />;
+  if (hostname) return <AlbLogsEmpty hostname={hostname} compact={compact} />;
   return <NoLogs description={searched ? RECENT_WINDOW_COPY : undefined} className={className} />;
 }
 
@@ -341,7 +369,7 @@ export function RecentInstanceLogs({
       Unable to load logs.
     </div>
   ) : entries.length === 0 ? (
-    <LogsEmpty hostname={albHostname} searched={searched} className={minHeight} />
+    <LogsEmpty hostname={albHostname} searched={searched} compact={bare} className={minHeight} />
   ) : (
     <ul className="divide-border divide-y">
       {entries.map((entry) => (

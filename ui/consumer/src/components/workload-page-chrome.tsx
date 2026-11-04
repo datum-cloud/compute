@@ -176,16 +176,11 @@ export function WorkloadPageChrome({
         titleClassName="break-all"
         description={
           summary || url || urlLoading ? (
-            // On a phone the URL takes its own line under the summary, so its
-            // loading placeholder sits exactly where it will land. From `sm` up
-            // they share a line, with a separator.
-            <span className="flex flex-col items-start gap-x-2 gap-y-1 sm:flex-row sm:flex-wrap sm:items-center">
+            // The summary and the URL each take their own line: the summary
+            // wraps on its own, and a separator between them would be left
+            // dangling at the end of a line whenever the URL wrapped.
+            <span className="flex flex-col items-start gap-1">
               {summary}
-              {summary && (url || urlLoading) ? (
-                <span aria-hidden className="text-muted-foreground hidden sm:inline">
-                  ·
-                </span>
-              ) : null}
               {url ??
                 (urlLoading ? (
                   <Skeleton
