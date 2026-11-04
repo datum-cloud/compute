@@ -64,10 +64,10 @@ func TestDNSReservationExistsWithoutInstancesAndSurvivesEndpointCleanup(t *testi
 	legacy := newDNSObject(dnsRegistrationGVK, resolver.GetNamespace(), "endpoint")
 	legacy.SetLabels(map[string]string{internalDNSManagedBy: internalDNSManager, internalDNSInstanceUID: string(instance.UID)})
 	require.NoError(t, cl.Create(ctx, legacy))
-	require.NoError(t, publisher.deletePublishedResources(ctx, access, resolver.GetNamespace(), instance.UID, map[string]struct{}{"endpoint": {}}))
+	require.NoError(t, publisher.deletePublishedResources(ctx, access, resolver.GetNamespace(), instance, map[string]struct{}{"endpoint": {}}))
 	require.True(t, apierrors.IsNotFound(cl.Get(ctx, client.ObjectKeyFromObject(legacy), legacy)))
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(contribution), contribution))
-	require.NoError(t, publisher.deletePublishedResources(ctx, access, resolver.GetNamespace(), instance.UID, nil))
+	require.NoError(t, publisher.deletePublishedResources(ctx, access, resolver.GetNamespace(), instance, nil))
 	require.True(t, apierrors.IsNotFound(cl.Get(ctx, client.ObjectKeyFromObject(contribution), contribution)))
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(root), root))
 	// Recreated contexts use independent policy identities, never an old root.
