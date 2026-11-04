@@ -92,17 +92,26 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// reporting a reconcile error, matching the federator's not-engaged
 	// handling.
 	if errors.Is(err, multicluster.ErrClusterNotFound) {
-		waited := r.stalls().waiting(req.NamespacedName, r.now())
+		waited, newlyStalled := r.stalls().waiting(req.NamespacedName, r.now())
 		if waited < projectClusterStallBound {
 			log.FromContext(ctx).V(1).Info("project cluster not engaged for instance projection; retrying",
 				"instance", req.NamespacedName, "error", err)
 			return ctrl.Result{RequeueAfter: projectClusterEngageWait}, nil
 		}
-		log.FromContext(ctx).Info("instance projection is stalled waiting for its project cluster",
+		// Report the stall once at the normal level; the gauge carries it after.
+		logger := log.FromContext(ctx)
+		if !newlyStalled {
+			logger = logger.V(1)
+		}
+		logger.Info("instance projection is stalled waiting for its project cluster",
 			"instance", req.NamespacedName, "waited", waited.Round(time.Second).String(), "error", err)
 		return ctrl.Result{RequeueAfter: projectClusterStalledWait}, nil
 	}
-	r.stalls().done(req.NamespacedName)
+	// Other errors retry with backoff and leave a stall's clock running; only a
+	// completed reconcile ends the wait.
+	if err == nil {
+		r.stalls().done(req.NamespacedName)
+	}
 	return ctrl.Result{}, err
 }
 

@@ -39,24 +39,26 @@ func newProjectionStallTracker(gauge prometheus.Gauge) *projectionStallTracker {
 	return &projectionStallTracker{since: map[types.NamespacedName]time.Time{}, stalled: map[types.NamespacedName]bool{}, gauge: gauge}
 }
 
-// waiting records another wait for key and returns how long it has waited.
-func (t *projectionStallTracker) waiting(key types.NamespacedName, now time.Time) time.Duration {
+// waiting records another wait for key. It returns how long key has waited
+// and whether this wait is the one that crossed projectClusterStallBound.
+func (t *projectionStallTracker) waiting(key types.NamespacedName, now time.Time) (time.Duration, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	since, ok := t.since[key]
 	if !ok {
 		t.since[key] = now
-		return 0
+		return 0, false
 	}
 	waited := now.Sub(since)
-	if waited >= projectClusterStallBound && !t.stalled[key] {
-		t.stalled[key] = true
-		t.gauge.Inc()
+	if waited < projectClusterStallBound || t.stalled[key] {
+		return waited, false
 	}
-	return waited
+	t.stalled[key] = true
+	t.gauge.Inc()
+	return waited, true
 }
 
-// done forgets key once a reconcile no longer waits for its project cluster.
+// done forgets key once a reconcile for it completes.
 func (t *projectionStallTracker) done(key types.NamespacedName) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -664,6 +664,16 @@ func TestInstanceProjectorReportsStalledProjectCluster(t *testing.T) {
 		assert.Equal(t, float64(1), testutil.ToFloat64(gauge), "a repeated wait counts the Instance once")
 	}
 
+	// A different failure retries with backoff and does not end the stall.
+	projector.FederationClient = interceptor.NewClient(newKarmadaFakeClient().(client.WithWatch), interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return apierrors.NewServiceUnavailable("federation unavailable")
+		},
+	})
+	_, err = projector.Reconcile(ctx, projectorRequest())
+	require.Error(t, err)
+	assert.Equal(t, float64(1), testutil.ToFloat64(gauge))
+
 	// The write-back and its hub namespace are gone, so nothing waits anymore.
 	projector.FederationClient = newKarmadaFakeClient()
 	result, err = projector.Reconcile(ctx, projectorRequest())
