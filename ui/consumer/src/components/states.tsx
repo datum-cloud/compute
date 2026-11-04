@@ -10,7 +10,44 @@
 import { ApiError } from '../lib/api';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { LockIcon, ServerCrashIcon } from 'lucide-react';
+import { cn } from '@datum-cloud/datum-ui/utils';
+import { LockIcon, ServerCrashIcon, type LucideIcon } from 'lucide-react';
+
+/**
+ * A quiet empty state: a small icon and a line or two, centred where the
+ * content would be. No illustration; the portal has moved away from the
+ * splash artwork.
+ */
+export function Notice({
+  icon,
+  title,
+  detail,
+  className,
+  ...rest
+}: {
+  icon: LucideIcon;
+  title: string;
+  detail?: string;
+  className?: string;
+  'data-testid'?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        'flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 px-(--card-px) py-8 text-center',
+        className
+      )}
+      {...rest}>
+      <span className="bg-muted flex size-8 items-center justify-center rounded-full">
+        <Icon icon={icon} size={15} className="text-muted-foreground" aria-hidden="true" />
+      </span>
+      <div className="flex flex-col gap-0.5">
+        <p className="text-sm font-medium">{title}</p>
+        {detail ? <p className="text-muted-foreground max-w-xs text-xs">{detail}</p> : null}
+      </div>
+    </div>
+  );
+}
 
 export function RestrictedState({ message }: { message: string }) {
   return (

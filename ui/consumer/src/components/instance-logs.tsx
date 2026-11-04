@@ -8,6 +8,7 @@
  * workload has a published HTTPProxy.
  */
 import { ApiError } from '../lib/api';
+import { Notice } from './states';
 import {
   ALB_LOGS_PREVIEW_LIMIT,
   combinedLogFacets,
@@ -27,7 +28,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@datum-cloud/datum-ui/card';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import {
   facetsFromEntries,
@@ -45,8 +45,8 @@ import {
 } from '@datum-cloud/datum-ui/logs';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { CheckIcon, CopyIcon, LogsIcon, RadioIcon } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { CheckIcon, CopyIcon, LockIcon, LogsIcon, RadioIcon, type LucideIcon } from 'lucide-react';
+import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router';
 
 const SOURCE_COLUMN: LogColumn = {
@@ -82,16 +82,32 @@ const EXPLORER_COLUMNS: readonly LogColumnSpec[] = [
 
 const ROW_LIMIT = ALB_LOGS_PREVIEW_LIMIT;
 
-const NO_LOGS_TITLE = 'No logs';
+/**
+ * The preview's window: wide enough that a quiet workload still shows its
+ * last lines. Queries run newest-first, so it shows the latest ROW_LIMIT.
+ */
+/** A blank line (a program printing an empty line) is a row with nothing in it. */
+function hasText(entry: LogEntry): boolean {
+  const parsed = parseLogLine(entry.line, entry.labels);
+  return parsed.kind === 'http' || parsed.line.trim() !== '';
+}
+
+const BARE_LOGS_STYLE = { '--card-px': '1rem' } as CSSProperties;
+
+function lastDay(): LogTimeRange {
+  return resolveLogTimeRange({ from: '', to: '', preset: 'last-24h' });
+}
+
+const NO_LOGS_TITLE = 'No logs yet';
+const NO_LOGS_DETAIL = 'Lines appear here as the instances write them.';
 const DENIED_MESSAGE = "You don't have permission to view logs.";
 
-/** Illustration empty state. `h-full` overrides EmptyContent's fixed `h-48` so it fills the card. */
 function NoLogs({ className }: { className?: string }) {
-  return (
-    <div className={cn('flex h-full min-h-0 flex-1', className)} style={{ borderRadius: 0 }}>
-      <EmptyContent title={NO_LOGS_TITLE} size="sm" variant="minimal" className="h-full w-full flex-1" />
-    </div>
-  );
+  return <Notice icon={LogsIcon} title={NO_LOGS_TITLE} detail={NO_LOGS_DETAIL} className={className} />;
+}
+
+function LogsDenied({ className }: { className?: string }) {
+  return <Notice icon={LockIcon} title="Access restricted" detail={DENIED_MESSAGE} className={className} />;
 }
 
 /** Same first-request prompt as the cloud-portal ALB overview logs card. */
@@ -223,6 +239,7 @@ export function RecentInstanceLogs({
   instanceName,
   instanceNames,
   upstreamIPs,
+  bare = false,
   className,
 }: {
   logsHref: string;
@@ -234,9 +251,14 @@ export function RecentInstanceLogs({
   instanceNames?: readonly string[];
   /** In-network IPs for the instance path; pins ALB rows to this replica. */
   upstreamIPs?: readonly string[];
+  /**
+   * An open section (a heading and the lines, no card), for a page that
+   * lays its sections out without boxes, like the workload Overview.
+   */
+  bare?: boolean;
   className?: string;
 }) {
-  const [timeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
+  const [timeRange] = useState<LogTimeRange>(lastDay);
   const names = useMemo(
     () => instanceNames ?? (instanceName ? [instanceName] : []),
     [instanceName, instanceNames]
@@ -259,9 +281,70 @@ export function RecentInstanceLogs({
 
   const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
-  const entries = (logsQuery.data ?? []).slice(0, ROW_LIMIT);
+  const entries = (logsQuery.data ?? []).filter(hasText).slice(0, ROW_LIMIT);
   const waitingForRequest =
     !!albHostname && !logsQuery.isLoading && !denied && !errorMessage && entries.length === 0;
+
+  const status = (
+    <>
+      {entries.length > 0 ? <LivePulse /> : null}
+      {waitingForRequest ? (
+        <Badge
+          type="muted"
+          theme="solid"
+          className="h-5 gap-1.5 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap">
+          <span className="bg-muted-foreground/60 size-1.5 rounded-full" aria-hidden="true" />
+          Idle
+        </Badge>
+      ) : null}
+    </>
+  );
+  const viewAll = (
+    <Link to={logsHref} className="text-primary text-xs font-medium hover:underline">
+      View all
+    </Link>
+  );
+  const body = denied ? (
+          <LogsDenied className="min-h-48 flex-1" />
+  ) : logsQuery.isLoading ? (
+    <div className="flex h-full min-h-48 items-center justify-center">
+      <SpinnerIcon size="sm" />
+    </div>
+  ) : errorMessage ? (
+    <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm">
+      Unable to load logs.
+    </div>
+  ) : entries.length === 0 ? (
+    <LogsEmpty hostname={albHostname} className="min-h-48" />
+  ) : (
+    <ul className="divide-border divide-y">
+      {entries.map((entry) => (
+        <RequestRow key={entry.id} entry={entry} logsHref={logsHref} />
+      ))}
+    </ul>
+  );
+
+  if (bare) {
+    return (
+      <section
+        aria-labelledby="compute-recent-logs-heading"
+        className={cn('flex min-w-0 flex-col gap-2', className)}
+        data-testid="compute-plugin-instance-logs">
+        <div className="flex items-center gap-2">
+          <h2 id="compute-recent-logs-heading" className="text-sm font-medium">
+            Recent logs
+          </h2>
+          <span className="text-muted-foreground text-xs">latest</span>
+          {status}
+          <span className="ml-auto">{viewAll}</span>
+        </div>
+        {/* No card sets the rows' padding here, so the box does. */}
+        <div className="max-h-80 overflow-y-auto rounded-lg border" style={BARE_LOGS_STYLE}>
+          {body}
+        </div>
+      </section>
+    );
+  }
 
   return (
     <Card
@@ -273,50 +356,13 @@ export function RecentInstanceLogs({
         <CardTitle className="flex items-center gap-2 text-sm">
           <Icon icon={LogsIcon} size={16} className="text-secondary" />
           Logs
-          {entries.length > 0 ? <LivePulse /> : null}
-          {waitingForRequest ? (
-            <Badge
-              type="muted"
-              theme="solid"
-              className="h-5 gap-1.5 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap">
-              <span className="bg-muted-foreground/60 size-1.5 rounded-full" aria-hidden="true" />
-              Idle
-            </Badge>
-          ) : null}
+          {status}
         </CardTitle>
-        <CardDescription className="text-xs">Most recent · last 30 min</CardDescription>
-        <CardAction>
-          <Link to={logsHref} className="text-primary text-xs font-medium hover:underline">
-            View all
-          </Link>
-        </CardAction>
+        <CardDescription className="text-xs">Most recent</CardDescription>
+        <CardAction>{viewAll}</CardAction>
       </CardHeader>
       <CardContent padding="none" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        {denied ? (
-          <EmptyContent
-            title="Access restricted"
-            subtitle={DENIED_MESSAGE}
-            size="sm"
-            variant="dashed"
-            className="min-h-48 flex-1"
-          />
-        ) : logsQuery.isLoading ? (
-          <div className="flex h-full min-h-48 items-center justify-center">
-            <SpinnerIcon size="sm" />
-          </div>
-        ) : errorMessage ? (
-          <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm">
-            Unable to load logs.
-          </div>
-        ) : entries.length === 0 ? (
-          <LogsEmpty hostname={albHostname} className="min-h-48" />
-        ) : (
-          <ul className="divide-border divide-y">
-            {entries.map((entry) => (
-              <RequestRow key={entry.id} entry={entry} logsHref={logsHref} />
-            ))}
-          </ul>
-        )}
+        {body}
       </CardContent>
     </Card>
   );
@@ -380,13 +426,7 @@ export function InstanceLogsExplorer({
       <div
         className={cn('flex min-h-96 flex-col', className)}
         data-testid="compute-plugin-instance-logs-explorer">
-        <EmptyContent
-          title="Access restricted"
-          subtitle={DENIED_MESSAGE}
-          size="sm"
-          variant="dashed"
-          className="min-h-96 flex-1"
-        />
+        <LogsDenied className="min-h-96 flex-1" />
       </div>
     );
   }
@@ -528,13 +568,7 @@ export function WorkloadLogsExplorer({
       <div
         className={cn('flex min-h-96 flex-col', className)}
         data-testid="compute-plugin-workload-logs-explorer">
-        <EmptyContent
-          title="Access restricted"
-          subtitle={DENIED_MESSAGE}
-          size="sm"
-          variant="dashed"
-          className="min-h-96 flex-1"
-        />
+        <LogsDenied className="min-h-96 flex-1" />
       </div>
     );
   }

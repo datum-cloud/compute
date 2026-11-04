@@ -168,3 +168,119 @@ describe("toInstance status", () => {
     expect(instance.status).toBe("Pending");
   });
 });
+
+describe("toInstance private names", () => {
+  test("reads each network's published names and whether they resolve", () => {
+    const instance = toInstance(
+      raw({
+        dns: [
+          {
+            network: { name: "app-net" },
+            hostnames: ["cache-default-us-central-1-0.instances.datum.internal"],
+            conditions: [{ type: "Ready", status: "True", reason: "Published", message: "Private name is published" }],
+          },
+        ],
+      }),
+    );
+    expect(instance.privateNames).toEqual([
+      {
+        network: "app-net",
+        hostnames: ["cache-default-us-central-1-0.instances.datum.internal"],
+        ready: true,
+        reason: "Published",
+        message: "Private name is published",
+      },
+    ]);
+  });
+
+  test("says why a name isn't available", () => {
+    const [entry] = toInstance(
+      raw({
+        dns: [
+          {
+            network: { name: "app-net" },
+            conditions: [
+              {
+                type: "Ready",
+                status: "False",
+                reason: "NetworkObservationUnconfigured",
+                message: "Private DNS is not available in this location",
+              },
+            ],
+          },
+        ],
+      }),
+    ).privateNames;
+    expect(entry.ready).toBe(false);
+    expect(entry.hostnames).toEqual([]);
+    expect(entry.message).toBe("Private DNS is not available in this location");
+  });
+
+  test("is empty before the platform reports any", () => {
+    expect(toInstance(raw({})).privateNames).toEqual([]);
+  });
+});
+
+describe("toWorkload overview fields", () => {
+  // A private Redis workload on its own network.
+  const cache: RawWorkload = {
+    metadata: { name: "cache", uid: "w-1", creationTimestamp: "2026-10-26T14:30:53Z" },
+    spec: {
+      template: {
+        spec: {
+          runtime: {
+            class: "unikernel",
+            resources: { instanceType: "datumcloud-d1-standard-2" },
+            sandbox: {
+              containers: [
+                {
+                  name: "app",
+                  image: "ghcr.io/datum-cloud/unikernel/redis:8.10",
+                  ports: [{ name: "redis", port: 6379, protocol: "TCP" }],
+                },
+              ],
+            },
+          },
+          networkInterfaces: [
+            {
+              network: { name: "app-net" },
+              networkPolicy: {
+                ingress: [
+                  {
+                    ports: [{ port: 6379, protocol: "TCP" }],
+                    from: [{ ipBlock: { cidr: "0.0.0.0/0" } }],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      placements: [
+        { name: "default", locations: [{ name: "us-central-1" }], scaleSettings: { minReplicas: 1 } },
+      ],
+    },
+  };
+
+  test("reads the runtime class, named ports, ingress and scale", () => {
+    const workload = toWorkload(cache);
+    expect(workload.runtimeClass).toBe("unikernel");
+    expect(workload.namedPorts).toEqual([{ port: 6379, protocol: "TCP", name: "redis" }]);
+    expect(workload.ingress).toEqual([{ network: "app-net", ports: ["6379/TCP"], from: ["0.0.0.0/0"] }]);
+    expect(workload.scale).toEqual({ min: 1, max: undefined });
+  });
+
+  test("leaves scale out when placements disagree", () => {
+    const workload = toWorkload({
+      ...cache,
+      spec: {
+        ...cache.spec,
+        placements: [
+          { name: "a", scaleSettings: { minReplicas: 1 } },
+          { name: "b", scaleSettings: { minReplicas: 2 } },
+        ],
+      },
+    });
+    expect(workload.scale).toBeUndefined();
+  });
+});

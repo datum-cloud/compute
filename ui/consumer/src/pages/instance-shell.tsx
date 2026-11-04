@@ -1,6 +1,7 @@
+import { Notice } from '../components/states';
+import { TerminalIcon } from 'lucide-react';
 import { InstanceShell } from '../components/instance-shell';
 import { useInstanceOutlet } from './instance-outlet-context';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { useLocation } from 'react-router';
 
 export default function InstanceShellPage() {
@@ -9,12 +10,11 @@ export default function InstanceShellPage() {
   if (shellAvailable === undefined) return null;
   if (!projectId || !shellAvailable) {
     return (
-      <EmptyContent
+      <Notice
+        icon={TerminalIcon}
         title="Shell isn't available for this instance"
-        subtitle="Opening a shell needs permission to create shell sessions and an instance whose runtime supports them."
-        size="sm"
-        variant="dashed"
-        className="min-h-48"
+        detail="Opening a shell needs permission to create shell sessions and an instance whose runtime supports them."
+        className="min-h-48 rounded-lg border"
       />
     );
   }

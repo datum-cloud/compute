@@ -87,13 +87,28 @@ interface RawWorkloadPlacementStatus {
   readyReplicas?: number;
 }
 
+interface RawNetworkPolicyPort {
+  port?: number | string;
+  protocol?: string;
+}
+
+interface RawWorkloadNetworkInterface {
+  network?: { name?: string };
+  networkPolicy?: {
+    ingress?: Array<{
+      ports?: RawNetworkPolicyPort[];
+      from?: Array<{ ipBlock?: { cidr?: string } }>;
+    }>;
+  };
+}
+
 export interface RawWorkload {
   metadata?: RawObjectMeta;
   spec?: {
     template?: {
       spec?: {
         runtime?: RawRuntime;
-        networkInterfaces?: Array<{ network?: { name?: string } }>;
+        networkInterfaces?: RawWorkloadNetworkInterface[];
       };
     };
     placements?: RawWorkloadPlacement[];
@@ -322,6 +337,38 @@ function deriveNetworks(interfaces?: Array<{ network?: { name?: string } }>): st
   return [...new Set(names)];
 }
 
+/** Every container port with its name, for showing what a port is for. */
+function deriveNamedPorts(runtime?: RawRuntime): { port: number; protocol: string; name?: string }[] {
+  return (runtime?.sandbox?.containers ?? []).flatMap((c) =>
+    (c.ports ?? []).flatMap((p) =>
+      p.port === undefined ? [] : [{ port: p.port, protocol: p.protocol ?? 'TCP', name: p.name || undefined }]
+    )
+  );
+}
+
+/** What each interface's network policy lets in: ports, and the CIDRs they're open to. */
+function deriveIngress(
+  interfaces?: RawWorkloadNetworkInterface[]
+): { network?: string; ports: string[]; from: string[] }[] {
+  return (interfaces ?? []).flatMap((iface) =>
+    (iface.networkPolicy?.ingress ?? []).map((rule) => ({
+      network: iface.network?.name,
+      ports: (rule.ports ?? []).flatMap((p) =>
+        p.port === undefined ? [] : [`${p.port}/${p.protocol ?? 'TCP'}`]
+      ),
+      from: (rule.from ?? []).flatMap((peer) => (peer.ipBlock?.cidr ? [peer.ipBlock.cidr] : [])),
+    }))
+  );
+}
+
+/** The replica bounds every placement shares, when they all agree. */
+function deriveScale(placements: RawWorkloadPlacement[]): { min?: number; max?: number } | undefined {
+  if (placements.length === 0) return undefined;
+  const [first, ...rest] = placements.map((p) => p.scaleSettings ?? {});
+  const same = rest.every((s) => s.minReplicas === first.minReplicas && s.maxReplicas === first.maxReplicas);
+  return same ? { min: first.minReplicas, max: first.maxReplicas } : undefined;
+}
+
 export function toWorkload(raw: RawWorkload): Workload {
   const conditions = raw.status?.conditions ?? [];
   const placements = raw.spec?.placements ?? [];
@@ -352,6 +399,10 @@ export function toWorkload(raw: RawWorkload): Workload {
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),
     networks: deriveNetworks(raw.spec?.template?.spec?.networkInterfaces),
+    runtimeClass: runtime?.class || undefined,
+    namedPorts: deriveNamedPorts(runtime),
+    ingress: deriveIngress(raw.spec?.template?.spec?.networkInterfaces),
+    scale: deriveScale(placements),
     deleting: !!raw.metadata?.deletionTimestamp,
     conditions: conditions.map((c) => ({
       type: c.type ?? '',
@@ -375,6 +426,12 @@ export interface RawInstance {
   spec?: { runtime?: RawRuntime };
   status?: {
     conditions?: RawCondition[];
+    /** Private name publication, one entry per attached network. */
+    dns?: Array<{
+      network?: { name?: string };
+      hostnames?: string[];
+      conditions?: RawCondition[];
+    }>;
     networkInterfaces?: {
       assignments?: { networkIP?: string; externalIP?: string };
       addresses?: { address?: string }[];
@@ -530,6 +587,16 @@ export function toInstance(raw: RawInstance): Instance {
     externalIP: assignments?.externalIP,
     internalIP: assignments?.networkIP,
     internalIPs,
+    privateNames: (raw.status?.dns ?? []).map((entry) => {
+      const ready = (entry.conditions ?? []).find((c) => c.type === 'Ready');
+      return {
+        network: entry.network?.name,
+        hostnames: entry.hostnames ?? [],
+        ready: ready?.status === 'True',
+        reason: ready?.reason,
+        message: ready?.message,
+      };
+    }),
     conditions: conditions.map((c) => ({
       type: c.type ?? '',
       status: c.status ?? 'Unknown',

@@ -15,6 +15,7 @@
  */
 import { MetricSparkline } from './metric-sparkline';
 import { SortableHeader } from './sortable-header';
+import { Notice } from './states';
 import { HealthDot, WorkloadStatusBadge } from './workload-status-badge';
 import type { LocationIndex } from '../lib/locations';
 import type { Allocation } from '../lib/resource-usage';
@@ -32,11 +33,11 @@ import {
   useDataTableRows,
   type DataTableFeatures,
 } from '@datum-cloud/datum-ui/data-table';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useCallback, useMemo, type MouseEvent } from 'react';
+import { SearchIcon } from 'lucide-react';
 import { Link } from 'react-router';
 
 type WorkloadColumn = ColumnDef<DataTableFeatures, Workload, unknown>;
@@ -68,10 +69,7 @@ function RowsContent({ onOpen }: { onOpen: (workload: Workload) => void }) {
     <div onClick={handleClick} className="[&_tbody_tr]:cursor-pointer">
       <DataTable.Content
         emptyMessage={
-          <EmptyContent
-            title="Try adjusting your search"
-            className="w-full rounded-none border-0"
-          />
+          <Notice icon={SearchIcon} title="No workloads match" detail="Try a different search." />
         }
       />
     </div>

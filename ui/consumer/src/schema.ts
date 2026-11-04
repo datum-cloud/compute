@@ -68,6 +68,24 @@ export const workloadResourceSchema = z.object({
   replicasPerRegion: z.number().optional(),
   /** Networks the instance template attaches to (`networkInterfaces[].network.name`). */
   networks: z.array(z.string()).default([]),
+  /** RuntimeClass the template names (`unikernel`, ...); unset selects the catalog default. */
+  runtimeClass: z.string().optional(),
+  /** Container ports with their names, in spec order. */
+  namedPorts: z
+    .array(z.object({ port: z.number(), protocol: z.string(), name: z.string().optional() }))
+    .default([]),
+  /** What the template's network policy lets in, per rule. */
+  ingress: z
+    .array(
+      z.object({
+        network: z.string().optional(),
+        ports: z.array(z.string()),
+        from: z.array(z.string()),
+      })
+    )
+    .default([]),
+  /** Replica bounds, when every placement shares them. */
+  scale: z.object({ min: z.number().optional(), max: z.number().optional() }).optional(),
   /** Set once `metadata.deletionTimestamp` is — the finalizer is tearing the workload down. */
   deleting: z.boolean().default(false),
 });
@@ -140,6 +158,22 @@ export const instanceResourceSchema = z.object({
   internalIP: z.string().optional(),
   /** Host-route in-network IPs Envoy may dial (`upstream_host`), v4 and v6. */
   internalIPs: z.array(z.string()).default([]),
+  /**
+   * Private DNS names, one entry per attached network, as the platform
+   * publishes them (`status.dns`). `ready` is false until the name resolves,
+   * and `message` says why, for example in a location without private DNS.
+   */
+  privateNames: z
+    .array(
+      z.object({
+        network: z.string().optional(),
+        hostnames: z.array(z.string()),
+        ready: z.boolean(),
+        reason: z.string().optional(),
+        message: z.string().optional(),
+      })
+    )
+    .default([]),
   conditions: z.array(instanceConditionSchema).default([]),
 });
 

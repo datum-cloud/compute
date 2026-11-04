@@ -15,7 +15,7 @@ import { HealthDot, WorkloadStatusBadge } from "../components/workload-status-ba
 import { WorkloadUrl } from "../components/workload-url";
 import { albStatus, workloadUrlState } from "../lib/alb-status";
 import { WorkloadListCardsSkeleton, WorkloadListTableSkeleton } from "../components/skeletons";
-import { ErrorOrRestrictedState } from "../components/states";
+import { ErrorOrRestrictedState, Notice } from "../components/states";
 import {
   useComputeEnablement,
   useCreateDemoWorkload,
@@ -59,7 +59,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@datum-cloud/datum-ui/card";
-import { EmptyContent } from "@datum-cloud/datum-ui/empty-content";
 import { PageTitle } from "@datum-cloud/datum-ui/page-title";
 import { Tabs, TabsList, TabsTrigger } from "@datum-cloud/datum-ui/tabs";
 import { toast } from "@datum-cloud/datum-ui/toast";
@@ -867,8 +866,11 @@ export default function WorkloadList() {
               />
             </Suspense>
           ) : visibleWorkloads.length === 0 ? (
-            <EmptyContent
-              title="Try adjusting your search"
+            <Notice
+              icon={SearchIcon}
+              title="No workloads match"
+              detail="Try a different search."
+              className="rounded-lg border"
               data-testid="compute-plugin-workload-grid-empty"
             />
           ) : (

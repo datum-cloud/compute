@@ -157,59 +157,68 @@ export function WorkloadListTableSkeleton({ summary = true }: { summary?: boolea
   );
 }
 
+const RECENT_LOGS_STYLE = { height: '20rem' } as const;
+
+/** A section heading's placeholder: the title, and room for a count or note. */
+function HeadingBone() {
+  return <Bone className="h-4 w-24" />;
+}
+
+/** The Overview's open layout: status line, instances, recent logs, details. */
 export function WorkloadOverviewSkeleton() {
   return (
-    <div className="flex flex-col gap-6" aria-busy="true" data-testid="compute-plugin-loading-workload-overview">
-      <Card size="sm">
-        <CardContent className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <Bone className="h-9 w-9 rounded-full" />
-            <div className="flex flex-col gap-2">
-              <Bone className="h-4 w-36" />
-              <Bone className="h-3 w-48" />
+    <div className="flex flex-col gap-10" aria-busy="true" data-testid="compute-plugin-loading-workload-overview">
+      <div className="flex items-center gap-3">
+        <Bone className="size-4 rounded-full" />
+        <Bone className="h-4 w-32" />
+        <Bone className="h-4 w-48" />
+        <Bone className="ml-auto h-4 w-40" />
+      </div>
+      <div className="flex flex-col gap-2">
+        <HeadingBone />
+        <div className="overflow-hidden rounded-lg border">
+          <div className="bg-muted/40 px-4 py-2">
+            <Bone className="h-3 w-1/3" />
+          </div>
+          {Array.from({ length: 2 }).map((_, row) => (
+            <div key={row} className="flex items-center gap-4 border-t px-4 py-3">
+              <Bone className="h-4 w-1/3" />
+              <Bone className="h-4 w-1/6" />
+              <Bone className="h-4 w-1/3" />
+              <Bone className="ml-auto h-7 w-32" />
             </div>
-          </div>
-          <div className="flex gap-2">
-            <Bone className="h-6 w-20" />
-            <Bone className="h-6 w-28" />
-          </div>
-        </CardContent>
-      </Card>
+          ))}
+        </div>
+      </div>
+      <div className="flex flex-col gap-2">
+        <HeadingBone />
+        <Bone className="w-full rounded-lg" style={RECENT_LOGS_STYLE} />
+      </div>
+      <div className="flex flex-col gap-2">
+        <HeadingBone />
+        <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
+          {Array.from({ length: 2 }).map((_, column) => (
+            <div key={column} className="flex flex-col">
+              {Array.from({ length: 4 }).map((_, row) => (
+                <div key={row} className="flex items-center justify-between border-t py-3">
+                  <Bone className="h-3 w-20" />
+                  <Bone className="h-3 w-32" />
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function WorkloadTopologySkeleton() {
+  return (
+    <div aria-busy="true" data-testid="compute-plugin-loading-workload-topology">
       <Panel style={TOPOLOGY_STYLE}>
         <Bone className="min-h-0 w-full flex-1" />
       </Panel>
-      <div style={PANEL_STYLE}>
-        <Panel style={PANEL_STYLE}>
-          <Bone className="min-h-0 w-full flex-1" />
-        </Panel>
-      </div>
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div style={PANEL_STYLE}>
-          <Panel style={PANEL_STYLE}>
-            <Bone className="min-h-0 w-full flex-1" />
-          </Panel>
-        </div>
-        <div style={PANEL_STYLE}>
-          <Panel style={PANEL_STYLE}>
-            <Bone className="h-4 w-full" />
-            <Bone className="h-4 w-full" />
-            <Bone className="h-4 w-3/4" />
-            <Bone className="h-4 w-2/3" />
-          </Panel>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Panel>
-          {Array.from({ length: 5 }).map((_, index) => (
-            <Bone key={index} className="h-4 w-full" />
-          ))}
-        </Panel>
-        <Panel>
-          {Array.from({ length: 5 }).map((_, index) => (
-            <Bone key={index} className="h-4 w-full" />
-          ))}
-        </Panel>
-      </div>
     </div>
   );
 }

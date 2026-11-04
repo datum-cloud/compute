@@ -1,5 +1,4 @@
 import { Badge } from "@datum-cloud/datum-ui/badge";
-import { Card, CardContent } from "@datum-cloud/datum-ui/card";
 import { Icon, SpinnerIcon } from "@datum-cloud/datum-ui/icons";
 import { Tooltip } from "@datum-cloud/datum-ui/tooltip";
 import {
@@ -13,7 +12,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { albStatusDisplay, type AlbStatus } from "../lib/alb-status";
 import { formatElapsed, type DeployStatus } from "../lib/workload-presenters";
-import { workloadHealthToBadgeType, type WorkloadHealth } from "../schema";
+import type { WorkloadHealth } from "../schema";
 
 function Chip({
   tone,
@@ -43,6 +42,12 @@ function Chip({
   );
 }
 
+/**
+ * The workload's state as one open line, like the project home's health
+ * line: an icon, what is happening, and the counts behind it, with how to
+ * reach the workload on the right. A published workload shows its load
+ * balancer there; one without passes `reach` (its private address).
+ */
 export function WorkloadHealthStrip({
   health,
   healthyCount,
@@ -53,6 +58,7 @@ export function WorkloadHealthStrip({
   deploy,
   failure,
   alb,
+  reach,
   now = Date.now(),
 }: {
   health: WorkloadHealth;
@@ -67,10 +73,11 @@ export function WorkloadHealthStrip({
   failure?: string;
   /** Whether the attached load balancer is serving yet. */
   alb?: AlbStatus;
+  /** Shown in place of the load balancer when none publishes the workload. */
+  reach?: ReactNode;
   /** For the deploy's elapsed time. */
   now?: number;
 }) {
-  const tone = deploy?.tone ?? workloadHealthToBadgeType(health);
   const headline: {
     icon: ReactNode;
     title: string;
@@ -84,9 +91,9 @@ export function WorkloadHealthStrip({
       const ring = `var(--color-badge-${deploy.tone})`;
       return {
         icon: deploy.inProgress ? (
-          <SpinnerIcon size="md" style={{ color: ring }} aria-hidden />
+          <SpinnerIcon size="sm" style={{ color: ring }} aria-hidden />
         ) : (
-          <Icon icon={ClockIcon} size={18} style={{ color: ring }} />
+          <Icon icon={ClockIcon} size={16} style={{ color: ring }} />
         ),
         title: deploy.title,
         detail: [
@@ -106,7 +113,7 @@ export function WorkloadHealthStrip({
         icon: (
           <Icon
             icon={TriangleAlertIcon}
-            size={18}
+            size={16}
             style={{ color: "var(--color-badge-danger)" }}
           />
         ),
@@ -121,12 +128,12 @@ export function WorkloadHealthStrip({
         icon: (
           <Icon
             icon={CircleCheckIcon}
-            size={18}
+            size={16}
             style={{ color: "var(--color-badge-success)" }}
           />
         ),
         title: "Serving normally",
-        detail: `${healthyCount}/${totalCount} instances · ${locationCount} ${locationCount === 1 ? "location" : "locations"}`,
+        detail: `${healthyCount} of ${totalCount} ${totalCount === 1 ? "instance" : "instances"} ready · ${locationCount} ${locationCount === 1 ? "location" : "locations"}`,
         ring: "var(--color-badge-success)",
       };
     }
@@ -135,7 +142,7 @@ export function WorkloadHealthStrip({
         icon: (
           <Icon
             icon={TriangleAlertIcon}
-            size={18}
+            size={16}
             style={{ color: "var(--color-badge-warning)" }}
           />
         ),
@@ -149,7 +156,7 @@ export function WorkloadHealthStrip({
         icon: (
           <Icon
             icon={TriangleAlertIcon}
-            size={18}
+            size={16}
             style={{ color: "var(--color-badge-danger)" }}
           />
         ),
@@ -165,7 +172,7 @@ export function WorkloadHealthStrip({
       icon: (
         <Icon
           icon={RadioIcon}
-          size={18}
+          size={16}
           style={{ color: "var(--color-badge-info)" }}
         />
       ),
@@ -197,53 +204,34 @@ export function WorkloadHealthStrip({
         </Link>
       </Tooltip>
     ) : (
-      <Chip tone="muted" icon={GlobeIcon}>
-        No load balancer
-      </Chip>
+      reach
     );
 
   // Only standing states get the extra line; a slow ALB says so in its chip
-  // and tooltip, so the strip keeps its height while things come up.
+  // and tooltip, so the line keeps its height while things come up.
   const note =
     headline.note ?? (alb?.phase === "error" ? `Load balancer: ${alb.message}` : undefined);
 
   return (
-    <Card size="sm" data-testid="compute-plugin-workload-health">
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            <span
-              className="flex size-9 shrink-0 items-center justify-center rounded-full"
-              // Inline: the host does not compile `bg-(--color-badge-*)/10` for every tone.
-              style={{
-                background: `color-mix(in oklab, ${headline.ring} 10%, transparent)`,
-              }}
-            >
-              {headline.icon}
-            </span>
-            <div className="flex min-w-0 flex-col">
-              <span className="truncate text-sm font-semibold" title={headline.tooltip}>
-                {headline.title}
-              </span>
-              <span className="text-muted-foreground text-xs">{headline.detail}</span>
-              {note ? (
-                <span
-                  className="text-muted-foreground text-xs"
-                  data-testid="compute-plugin-workload-health-note"
-                >
-                  {note}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-            <Chip tone={tone} icon={deploy ? ClockIcon : CircleCheckIcon}>
-              {deploy?.label ?? health}
-            </Chip>
-            {albChip}
-          </div>
+    <div className="flex min-w-0 flex-col gap-1" data-testid="compute-plugin-workload-health">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex shrink-0 items-center">{headline.icon}</span>
+          <span className="truncate text-sm font-semibold" title={headline.tooltip}>
+            {headline.title}
+          </span>
+          <span className="text-muted-foreground truncate text-sm">{headline.detail}</span>
         </div>
-      </CardContent>
-    </Card>
+        {albChip ? <div className="ml-auto flex min-w-0 items-center gap-2">{albChip}</div> : null}
+      </div>
+      {note ? (
+        <span
+          className="text-muted-foreground pl-6 text-xs"
+          data-testid="compute-plugin-workload-health-note"
+        >
+          {note}
+        </span>
+      ) : null}
+    </div>
   );
 }

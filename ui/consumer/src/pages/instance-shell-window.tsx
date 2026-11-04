@@ -1,12 +1,12 @@
 import { InstanceShell } from '../components/instance-shell';
 import { InstanceShellWindowSkeleton } from '../components/skeletons';
-import { ErrorOrRestrictedState } from '../components/states';
+import { ErrorOrRestrictedState, Notice } from '../components/states';
+import { TerminalIcon } from 'lucide-react';
 import { useInstance } from '../lib/api';
 import { instancePageView } from '../lib/instance-page-view';
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import { handoffStorage, handoffTarget, shellWindowStart } from '../lib/shell-popout';
 import { useShellAvailable } from '../lib/use-shell-available';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { useEffect } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 
@@ -103,12 +103,11 @@ export default function InstanceShellWindowPage() {
         )}
 
         {view === 'ready' && instance && shellAvailable === false && (
-          <EmptyContent
+          <Notice
+            icon={TerminalIcon}
             title="Shell isn't available for this instance"
-            subtitle="Opening a shell needs permission to create shell sessions and an instance whose runtime supports them."
-            size="sm"
-            variant="dashed"
-            className="min-h-48"
+            detail="Opening a shell needs permission to create shell sessions and an instance whose runtime supports them."
+            className="min-h-48 rounded-lg border"
           />
         )}
       </div>
