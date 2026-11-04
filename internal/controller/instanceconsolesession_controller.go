@@ -120,7 +120,7 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 
 	if !session.DeletionTimestamp.IsZero() {
 		openSessionsByKey.forget(trackingKey)
-		return r.finalize(ctx, projectClient, &session)
+		return r.finalize(ctx, req.ClusterName, projectClient, &session)
 	}
 
 	if !controllerutil.ContainsFinalizer(&session, computev1alpha.InstanceConsoleSessionFinalizer) {
@@ -179,7 +179,7 @@ func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 ) (ctrl.Result, error) {
 	claimDeadline := session.CreationTimestamp.Add(r.claimTimeout())
 
-	hubCopy, err := r.recordedHubCopy(ctx, session)
+	hubCopy, err := r.recordedHubCopy(ctx, clusterName, session)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -249,17 +249,27 @@ func (r *InstanceConsoleSessionReconciler) reconcileDelivery(
 		computev1alpha.InstanceConsoleSessionReasonUnavailable, r.unavailableMessage())
 }
 
-// recordedHubCopy returns the hub copy in the namespace recorded on the
-// session, or nil when none is recorded or the copy does not exist.
+// recordedHubCopy returns the session's hub copy, or nil when it does not
+// exist. The copy is looked for in the hub namespaces the federator labelled
+// for the session's project namespace, not in the namespace recorded on the
+// session: project users can write that record, so pointing it elsewhere
+// would hide the copy from revocation and cleanup.
 func (r *InstanceConsoleSessionReconciler) recordedHubCopy(
 	ctx context.Context,
+	clusterName multicluster.ClusterName,
 	session *computev1alpha.InstanceConsoleSession,
 ) (*computev1alpha.InstanceConsoleSession, error) {
-	hubNS := session.Annotations[computev1alpha.FederationNamespaceAnnotation]
-	if hubNS == "" {
-		return nil, nil
+	hubNamespaces, err := ownedHubNamespaces(ctx, r.FederationClient, string(clusterName), session.Namespace)
+	if err != nil {
+		return nil, err
 	}
-	return r.getHubCopy(ctx, hubNS, session)
+	for _, hubNS := range hubNamespaces {
+		hubCopy, err := r.getHubCopy(ctx, hubNS, session)
+		if err != nil || hubCopy != nil {
+			return hubCopy, err
+		}
+	}
+	return nil, nil
 }
 
 func (r *InstanceConsoleSessionReconciler) unavailableMessage() string {
@@ -346,6 +356,11 @@ func (r *InstanceConsoleSessionReconciler) buildHubCopy(
 	hubNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
 	if hubNS == "" {
 		return nil, nil, fmt.Errorf("WorkloadDeployment %s/%s has not been federated yet", deployment.Namespace, deployment.Name)
+	}
+	if owned, err := verifyFederationNamespace(ctx, r.FederationClient, hubNS, string(clusterName), deployment.Namespace); err != nil {
+		return nil, nil, err
+	} else if !owned {
+		return nil, nil, fmt.Errorf("hub namespace %q of WorkloadDeployment %s/%s does not exist", hubNS, deployment.Namespace, deployment.Name)
 	}
 
 	var hubDeployment computev1alpha.WorkloadDeployment
@@ -494,6 +509,7 @@ func (r *InstanceConsoleSessionReconciler) endSession(
 // removed hub copy can no longer report anything.
 func (r *InstanceConsoleSessionReconciler) finalize(
 	ctx context.Context,
+	clusterName multicluster.ClusterName,
 	projectClient client.Client,
 	session *computev1alpha.InstanceConsoleSession,
 ) (ctrl.Result, error) {
@@ -502,12 +518,13 @@ func (r *InstanceConsoleSessionReconciler) finalize(
 	}
 	logger := log.FromContext(ctx)
 
-	if hubNS := session.Annotations[computev1alpha.FederationNamespaceAnnotation]; hubNS != "" {
-		hubCopy, err := r.getHubCopy(ctx, hubNS, session)
+	{
+		hubCopy, err := r.recordedHubCopy(ctx, clusterName, session)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		if hubCopy != nil && hubCopy.DeletionTimestamp.IsZero() {
+			hubNS := hubCopy.Namespace
 			if err := r.copyStatus(ctx, projectClient, session, hubCopy); err != nil {
 				return ctrl.Result{}, err
 			}

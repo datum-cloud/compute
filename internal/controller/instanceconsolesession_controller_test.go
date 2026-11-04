@@ -78,7 +78,7 @@ func newSessionTestEnv(t *testing.T, projectObjs []client.Object, hubObjs []clie
 	}
 	env.hub = fake.NewClientBuilder().
 		WithScheme(newKarmadaScheme()).
-		WithObjects(hubObjs...).
+		WithObjects(append([]client.Object{testHubNamespace()}, hubObjs...)...).
 		WithStatusSubresource(&computev1alpha.InstanceConsoleSession{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceUpdate: func(ctx context.Context, c client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
@@ -279,6 +279,15 @@ func testSessionInstanceObj() *computev1alpha.Instance {
 	}
 }
 
+// testHubNamespace is the project namespace's hub namespace, labelled as the
+// federator labels it.
+func testHubNamespace() *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testKarmadaNSStr, Labels: map[string]string{
+		downstreamclient.UpstreamOwnerClusterNameLabel: EncodeClusterName(testCluster),
+		downstreamclient.UpstreamOwnerNamespaceLabel:   testProjNS,
+	}}}
+}
+
 func testFederatedProjectWD() *computev1alpha.WorkloadDeployment {
 	return testWorkloadDeployment(func(wd *computev1alpha.WorkloadDeployment) {
 		wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: testKarmadaNSStr}
@@ -309,6 +318,34 @@ func newDeliverableSessionEnv(t *testing.T, runtimeClass string) *sessionTestEnv
 		[]client.Object{testSession(), testSessionInstanceObj(), testFederatedProjectWD()},
 		[]client.Object{testHubWD(runtimeClass)},
 	)
+}
+
+// TestInstanceConsoleSessionRefusesAnotherProjectsHubNamespace asserts a
+// session is never delivered into a hub namespace that belongs to another
+// project, even when the deployment's user-writable record names it.
+func TestInstanceConsoleSessionRefusesAnotherProjectsHubNamespace(t *testing.T) {
+	const victimNS = "ns-ffffffff-0000-1111-2222-333344445555"
+	wd := testFederatedProjectWD()
+	wd.Annotations[computev1alpha.FederationNamespaceAnnotation] = victimNS
+	victimNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: victimNS, Labels: map[string]string{
+		downstreamclient.UpstreamOwnerClusterNameLabel: EncodeClusterName("another-project"),
+		downstreamclient.UpstreamOwnerNamespaceLabel:   testProjNS,
+	}}}
+	victimWD := testHubWD(testRuntimeClass)
+	victimWD.Namespace = victimNS
+	env := newSessionTestEnv(t,
+		[]client.Object{testSession(), testSessionInstanceObj(), wd},
+		[]client.Object{victimNamespace, victimWD, testCell(testMemberCluster, testFederatorLocation, testRuntimeClass)},
+	)
+
+	_, err := env.reconciler.Reconcile(context.Background(), mcreconcile.Request{
+		ClusterName: testCluster,
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testProjNS, Name: testSessionName}},
+	})
+	require.ErrorIs(t, err, errFederationNamespaceNotOwned)
+	var copies computev1alpha.InstanceConsoleSessionList
+	require.NoError(t, env.hub.List(context.Background(), &copies, client.InNamespace(victimNS)))
+	assert.Empty(t, copies.Items, "nothing may be written into another project's hub namespace")
 }
 
 func TestInstanceConsoleSessionDelivery(t *testing.T) {
@@ -905,6 +942,27 @@ func TestInstanceConsoleSessionRevokeWaitsForTheCell(t *testing.T) {
 	assert.NotContains(t, events, EventReasonCleanupUnconfirmed)
 	assert.Equal(t, computev1alpha.InstanceConsoleSessionReasonRevoked,
 		events[EventReasonSessionEnded].Annotations[sessionEventReasonAnnotation])
+}
+
+// TestInstanceConsoleSessionRevokeIgnoresARewrittenHubNamespace asserts a
+// deleted session is still revoked on its cell when its user-writable record
+// of the hub namespace has been pointed somewhere else.
+func TestInstanceConsoleSessionRevokeIgnoresARewrittenHubNamespace(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	session.Annotations[computev1alpha.FederationNamespaceAnnotation] = "ns-does-not-exist"
+	require.NoError(t, env.project.Update(context.Background(), session))
+	session = env.deleteProjectSession(t)
+
+	env.now = session.DeletionTimestamp.Add(time.Second)
+	env.reconcile(t)
+
+	hubCopy, ok := env.hubSession(t)
+	require.True(t, ok)
+	assert.True(t, revokeRequested(hubCopy), "the session is revoked in its real hub namespace")
+	_, ok = env.projectSession(t)
+	assert.True(t, ok, "the session is held until the cell confirms")
 }
 
 func TestInstanceConsoleSessionRevokeRecordsTheCellsOwnEnd(t *testing.T) {
