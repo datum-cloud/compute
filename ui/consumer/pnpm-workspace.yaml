@@ -5,6 +5,9 @@
 # the one-day release delay must not hold them back.
 minimumReleaseAgeExclude:
   - '@datum-cloud/*'
+  # Added by `pnpm import`: npm had resolved these versions while they were
+  # under a day old, and exempting them kept them. They can go once a later
+  # update moves past them.
   - '@module-federation/dts-plugin@2.9.3'
   - '@module-federation/error-codes@2.9.3'
   - '@module-federation/managers@2.9.3'
