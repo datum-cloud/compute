@@ -177,6 +177,7 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	desired := make(map[string]struct{}, len(attachments))
 	publicationStatus := make([]computev1alpha.InstanceDNSStatus, 0, len(attachments))
 	var publicationErr error
+	conflictRetry := false
 	for _, attachment := range attachments {
 		resourceName := internalDNSResourceName(projectInstance.UID, attachment.VPCUID)
 		desired[resourceName] = struct{}{}
@@ -186,7 +187,12 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		if statusErr != nil {
 			publicationErr = errors.Join(publicationErr, statusErr)
 		}
-		if err != nil {
+		if apierrors.IsConflict(err) {
+			// DNS resources can be updated by their own controllers between our
+			// read and write. Retry from a fresh object without counting normal
+			// optimistic concurrency as a controller failure.
+			conflictRetry = true
+		} else if err != nil {
 			publicationErr = errors.Join(publicationErr, err)
 		}
 	}
@@ -199,6 +205,9 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	// Every input arrives as an event: the Instance, the DNS objects it owns,
 	// and the resolver contexts in its namespace. The resync only bounds how
 	// long a missed event can leave publication stale.
+	if conflictRetry && publicationErr == nil {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 	return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSResyncInterval)}, publicationErr
 }
 

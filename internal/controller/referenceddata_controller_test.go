@@ -958,7 +958,7 @@ func TestReferencedData_AddFinalizer_ConflictRetried(t *testing.T) {
 	// Intercept the first Update call and return a conflict; let subsequent
 	// calls pass through to the real fake client so the retry succeeds.
 	var updateCalls atomic.Int32
-	wdGR := schema.GroupResource{Group: "compute.datumapis.com", Resource: "workloaddeployments"}
+	wdGR := schema.GroupResource{Group: "compute.datumapis.com", Resource: workloadDeploymentsResource}
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(srcCM, wd).
@@ -1066,7 +1066,7 @@ func TestReferencedData_RemoveFinalizer_ConflictRetried(t *testing.T) {
 
 	// Intercept the first Update during deletion and return a conflict.
 	var updateCalls atomic.Int32
-	wdGR := schema.GroupResource{Group: "compute.datumapis.com", Resource: "workloaddeployments"}
+	wdGR := schema.GroupResource{Group: "compute.datumapis.com", Resource: workloadDeploymentsResource}
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
 		WithInterceptorFuncs(interceptor.Funcs{

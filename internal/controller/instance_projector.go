@@ -69,8 +69,20 @@ const instanceProjectionFinalizer = "compute.datumapis.com/instance-projection"
 // Instance whose project cluster the multicluster provider has not engaged yet.
 const projectClusterEngageWait = 15 * time.Second
 
+// instanceProjectionDeletionWait is short because the project-side finalizers
+// normally finish promptly. Waiting is expected convergence, not a reconcile
+// failure, so it must not feed the controller error metric.
+const instanceProjectionDeletionWait = 5 * time.Second
+
+var errInstanceProjectionDeleting = errors.New("instance projection is still deleting")
+
 func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	err := r.reconcile(ctx, req)
+	if errors.Is(err, errInstanceProjectionDeleting) {
+		log.FromContext(ctx).V(1).Info("instance projection is still deleting; retrying",
+			"instance", req.NamespacedName)
+		return ctrl.Result{RequeueAfter: instanceProjectionDeletionWait}, nil
+	}
 	// After a manager restart the provider engages project clusters over the
 	// first minute or two. The projector only watches hub Instances, so no
 	// event fires when the cluster engages; retry on a timer instead of
@@ -287,7 +299,7 @@ func (r *InstanceProjector) deleteProjection(ctx context.Context, key types.Name
 		}
 		return fmt.Errorf("failed checking instance projection %s deletion in project cluster %q: %w", projectionKey, clusterName, err)
 	}
-	return fmt.Errorf("waiting for instance projection %s to be deleted in project cluster %q", projectionKey, clusterName)
+	return fmt.Errorf("%w: %s in project cluster %q", errInstanceProjectionDeleting, projectionKey, clusterName)
 }
 
 // SetupWithManager registers the InstanceProjector on mgr, which must be the

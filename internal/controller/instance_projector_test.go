@@ -579,8 +579,9 @@ func TestInstanceProjectorWaitsForProjectDeletion(t *testing.T) {
 		Build()
 	projector := newTestProjector(hubClient, projectClient)
 
-	_, err := projector.Reconcile(ctx, projectorRequest())
-	require.ErrorContains(t, err, "waiting for instance projection")
+	result, err := projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, instanceProjectionDeletionWait, result.RequeueAfter)
 	var pending computev1alpha.Instance
 	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{
 		Name: projTestInstanceName, Namespace: projTestProjNS,

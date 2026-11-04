@@ -173,7 +173,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 
 		if changed {
 			if err := cl.GetClient().Status().Update(ctx, &workload); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed updating workload status: %w", err)
+				return requeueOnConflict(fmt.Errorf("failed updating workload status: %w", err))
 			}
 		}
 
@@ -248,7 +248,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		)
 	}
 
-	return ctrl.Result{}, r.reconcileWorkloadStatus(ctx, cl.GetClient(), &workload, placementDeployments)
+	return requeueOnConflict(r.reconcileWorkloadStatus(ctx, cl.GetClient(), &workload, placementDeployments))
 }
 
 func (r *WorkloadReconciler) reconcileWorkloadStatus(
