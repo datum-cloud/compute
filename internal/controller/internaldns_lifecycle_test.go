@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -287,4 +288,42 @@ func TestDeletedInstanceWithdrawalLeavesOtherInstancesAlone(t *testing.T) {
 	l.reconcile("api")
 	require.Empty(t, l.answers("api"))
 	require.Equal(t, []string{"10.0.0.9"}, l.answers("api-2"))
+}
+
+// TestRecreatedInstanceWithdrawsPredecessorWhenPublicationFails checks that a
+// replacement which cannot publish yet still stops its predecessor answering.
+func TestRecreatedInstanceWithdrawsPredecessorWhenPublicationFails(t *testing.T) {
+	l := newDNSLifecycle(t)
+	l.create(lifecycleInstance("api", "api-1", "10.0.0.8/32", true))
+	l.reconcile("api")
+	require.Equal(t, []string{"10.0.0.8"}, l.answers("api"))
+
+	l.delete("api")
+	replacement := lifecycleInstance("api", "api-2", "10.0.0.9/32", true)
+	replacement.Spec.NetworkInterfaces[0].Network.Name = "missing"
+	l.create(replacement)
+	_, err := l.publisher.Reconcile(context.Background(), mcreconcile.Request{ClusterName: lifecycleTestProject, Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(replacement)}})
+	require.Error(t, err)
+	require.Empty(t, l.answers("api"))
+}
+
+// TestUnservedInstanceAPIDoesNotWithdrawNames checks that a 404 because the
+// API is not serving Instances is not mistaken for a deleted Instance.
+func TestUnservedInstanceAPIDoesNotWithdrawNames(t *testing.T) {
+	l := newDNSLifecycle(t)
+	l.create(lifecycleInstance("api", "api-1", "10.0.0.8/32", true))
+	l.reconcile("api")
+
+	unserved := interceptor.NewClient(l.client.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*computev1alpha.Instance); ok {
+				return apierrors.NewNotFound(schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: ""}, "")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	l.publisher.mgr = internalDNSTestClusters{lifecycleTestProject: internalDNSTestCluster{client: unserved}}
+	_, err := l.publisher.Reconcile(context.Background(), mcreconcile.Request{ClusterName: lifecycleTestProject, Request: reconcile.Request{NamespacedName: types.NamespacedName{Namespace: internalDNSTestNamespace, Name: "api"}}})
+	require.Error(t, err)
+	require.Equal(t, []string{"10.0.0.8"}, l.answers("api"))
 }
