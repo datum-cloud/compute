@@ -1,19 +1,29 @@
 /**
- * The workload Overview's Instances section: one thin row per instance, in
- * the project home page's row shape (`h-10`, `px-2`, `rounded-md`,
- * `hover:bg-accent`). Each row says whether the instance is serving and why
- * not, where it runs, how to reach it on the private network, and links to
- * its Logs, Shell and Metrics.
+ * The workload Overview's Instances section: a bordered table, one row per
+ * instance. Each row says whether the instance is serving and why not, where
+ * it runs, how to reach it on the private network, what it was given, how
+ * old it is, and links to its Logs, Shell (where the runtime has one) and
+ * Metrics.
  */
 import { formatLocationName, formatLocationTooltip, type LocationIndex } from '../lib/locations';
 import type { ApiError } from '../lib/api';
-import { instanceReadiness, instancesSectionState, privateNameState } from '../lib/workload-presenters';
+import { useShellAvailable } from '../lib/use-shell-available';
+import {
+  formatAge,
+  instanceReadiness,
+  instanceResourcesText,
+  instancesSectionState,
+  privateNameState,
+  STATUS_TONE_COLOR,
+} from '../lib/workload-presenters';
 import type { Instance } from '../schema';
+import { CopyValue } from './copy-value';
 import { InstanceRowsSkeleton } from './skeletons';
-import { QuietNotice, SectionFrame, StatusDot } from './surface';
+import { QuietNotice, SectionFrame } from './surface';
 import { LinkButton } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { ChartLineIcon, LogsIcon, SquareTerminalIcon } from 'lucide-react';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@datum-cloud/datum-ui/table';
+import { ChartLineIcon, LogsIcon, SquareTerminalIcon, type LucideIcon } from 'lucide-react';
 import { Link } from 'react-router';
 
 /** The address a person would dial first: the in-network one, else the external. */
@@ -21,114 +31,158 @@ function primaryAddress(instance: Instance): string | undefined {
   return instance.addresses[0] ?? instance.internalIP ?? instance.externalIPs[0] ?? instance.externalIP;
 }
 
-function PrivateName({ instance }: { instance: Instance }) {
+// Inline: the host compiles none of these arbitrary sizes.
+const SUBLINE_STYLE = { fontSize: '11px' } as const;
+const TABLE_STYLE = { tableLayout: 'fixed', minWidth: '48rem' } as const;
+/** Instance, region, private address, CPU and memory, age, actions. */
+const COLUMN_WIDTHS = ['26%', '12%', '30%', '11%', '6%', '15%'];
+
+/** Where to connect to an instance: its published name when it has one, its address under it. */
+function PrivateAddress({ instance }: { instance: Instance }) {
   const state = privateNameState(instance);
-  if (state.kind === 'missing') {
+  const address = primaryAddress(instance);
+  const subline = (text: string, mono: boolean) => (
+    <span
+      className={mono ? 'text-muted-foreground truncate font-mono' : 'text-muted-foreground truncate'}
+      style={SUBLINE_STYLE}
+      title={mono ? instance.addresses.join('\n') || text : text}>
+      {text}
+    </span>
+  );
+  if (state.kind === 'names') {
+    const [first, ...rest] = state.names;
     return (
-      <span className="text-muted-foreground truncate text-xs" data-testid="compute-plugin-instance-private-name">
-        {state.reason}
+      <span className="flex min-w-0 flex-col gap-0.5" data-testid="compute-plugin-instance-private-name">
+        <span className="flex min-w-0 items-center gap-1" title={state.names.join('\n')}>
+          <CopyValue value={first} />
+          {rest.length > 0 ? <span className="text-muted-foreground shrink-0 text-xs">+{rest.length}</span> : null}
+        </span>
+        {address ? subline(address, true) : null}
       </span>
     );
   }
-  const [first, ...rest] = state.names;
   return (
-    <span
-      className="truncate font-mono text-xs"
-      title={state.names.join('\n')}
-      data-testid="compute-plugin-instance-private-name">
-      {first}
-      {rest.length > 0 ? <span className="text-muted-foreground"> +{rest.length}</span> : null}
+    <span className="flex min-w-0 flex-col gap-0.5" data-testid="compute-plugin-instance-private-name">
+      {address ? <CopyValue value={address} /> : null}
+      {subline(state.reason, false)}
     </span>
   );
 }
 
-// Inline: the host stylesheet doesn't reliably compile `w-56`.
-const COLUMN_STYLE = { width: '14rem', maxWidth: '100%' } as const;
-
-const ROW_ACTIONS = [
-  { label: 'Logs', suffix: '/logs', icon: LogsIcon },
-  { label: 'Shell', suffix: '/shell', icon: SquareTerminalIcon },
-  { label: 'Metrics', suffix: '/metrics', icon: ChartLineIcon },
-] as const;
+function RowAction({ href, icon, label, instanceName }: { href: string; icon: LucideIcon; label: string; instanceName: string }) {
+  return (
+    <LinkButton
+      as={Link}
+      href={href}
+      type="quaternary"
+      theme="outline"
+      size="xs"
+      icon={<Icon icon={icon} size={12} aria-hidden />}
+      aria-label={`${label} for ${instanceName}`}
+      data-e2e={`compute-instance-${label.toLowerCase()}`}>
+      {label}
+    </LinkButton>
+  );
+}
 
 function InstanceRow({
   instance,
   href,
+  projectId,
   locationIndex,
+  now,
 }: {
   instance: Instance;
   href: string;
+  projectId?: string;
   locationIndex: LocationIndex;
+  now: number;
 }) {
   const readiness = instanceReadiness(instance);
-  const address = primaryAddress(instance);
+  // Hidden until known: a runtime without a shell (a unikernel) never gets one.
+  const shell = useShellAvailable(projectId, instance);
+  const state =
+    readiness.tone === 'ok'
+      ? undefined
+      : readiness.reason
+        ? `${readiness.label}: ${readiness.reason}`
+        : readiness.label;
   return (
-    <li
-      className="hover:bg-accent flex min-h-10 flex-wrap items-center gap-x-4 gap-y-1 rounded-md px-2 py-1"
-      data-testid="compute-plugin-instance-row">
-      <span className="flex min-w-0 shrink-0" style={COLUMN_STYLE}>
-        <StatusDot tone={readiness.tone} label={readiness.label} reason={readiness.reason} />
-      </span>
-      <Link
-        to={href}
-        className="text-foreground min-w-0 shrink-0 truncate font-mono text-sm hover:underline"
-        style={COLUMN_STYLE}>
-        {instance.name}
-      </Link>
-      <span
-        className="text-muted-foreground w-32 shrink-0 truncate text-xs"
-        title={instance.location ? formatLocationTooltip(instance.location, locationIndex) : undefined}>
-        {instance.location ? formatLocationName(instance.location, locationIndex) : 'Unknown location'}
-      </span>
-      <span className="flex min-w-0 flex-1 items-center gap-4">
-        <PrivateName instance={instance} />
-        {address ? (
-          <span className="text-muted-foreground shrink-0 font-mono text-xs" title={instance.addresses.join('\n')}>
-            {address}
-          </span>
-        ) : null}
-      </span>
-      <span className="flex shrink-0 items-center gap-1">
-        {ROW_ACTIONS.map((action) => (
-          <LinkButton
-            key={action.label}
-            as={Link}
-            href={`${href}${action.suffix}`}
-            type="quaternary"
-            theme="borderless"
-            size="xs"
-            icon={<Icon icon={action.icon} size={12} aria-hidden />}
-            aria-label={`${action.label} for ${instance.name}`}>
-            {action.label}
-          </LinkButton>
-        ))}
-      </span>
-    </li>
+    <TableRow data-testid="compute-plugin-instance-row">
+      <TableCell className="px-4 py-2.5">
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <Link to={href} className="flex min-w-0 items-center gap-2 hover:underline">
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ background: STATUS_TONE_COLOR[readiness.tone] }}
+              aria-hidden
+            />
+            <span className="truncate font-mono text-xs font-medium" title={instance.name}>
+              {instance.name}
+            </span>
+          </Link>
+          {/* The dot's meaning in words, so state isn't carried by color alone. */}
+          {state ? (
+            <span className="text-muted-foreground truncate pl-4" style={SUBLINE_STYLE} title={state}>
+              {state}
+            </span>
+          ) : (
+            <span className="sr-only">{readiness.label}</span>
+          )}
+        </span>
+      </TableCell>
+      <TableCell className="text-muted-foreground truncate text-xs">
+        <span title={instance.location ? formatLocationTooltip(instance.location, locationIndex) : undefined}>
+          {instance.location ? formatLocationName(instance.location, locationIndex) : '—'}
+        </span>
+      </TableCell>
+      <TableCell>
+        <PrivateAddress instance={instance} />
+      </TableCell>
+      <TableCell className="text-muted-foreground text-xs">{instanceResourcesText(instance) ?? '—'}</TableCell>
+      <TableCell className="text-muted-foreground font-mono text-xs" title={instance.createdAt.toLocaleString()}>
+        {formatAge(instance.createdAt, now)}
+      </TableCell>
+      <TableCell className="pr-4">
+        <span className="flex justify-end gap-1.5">
+          <RowAction href={`${href}/logs`} icon={LogsIcon} label="Logs" instanceName={instance.name} />
+          {shell ? (
+            <RowAction href={`${href}/shell`} icon={SquareTerminalIcon} label="Shell" instanceName={instance.name} />
+          ) : null}
+          <RowAction href={`${href}/metrics`} icon={ChartLineIcon} label="Metrics" instanceName={instance.name} />
+        </span>
+      </TableCell>
+    </TableRow>
   );
 }
 
 /**
- * The Instances section: rows once any instance is known, placeholder rows
- * while the query is unanswered, and a quiet notice for none or a failure.
+ * The Instances section: the table once any instance is known, placeholder
+ * rows while the query is unanswered, and a quiet notice for none or a failure.
  */
 export function WorkloadInstances({
   instances,
   loading,
   error,
+  projectId,
   locationIndex,
   instanceHref,
   deploying,
   deleting,
+  now,
 }: {
   instances: readonly Instance[];
   /** The instances query hasn't answered yet. */
   loading: boolean;
   error: ApiError | null;
+  /** Decides, with each instance's runtime, whether it offers a shell. */
+  projectId?: string;
   locationIndex: LocationIndex;
   instanceHref: (name: string) => string;
   /** Still coming up, so no instances yet is expected. */
   deploying: boolean;
   deleting: boolean;
+  now: number;
 }) {
   const state = instancesSectionState({ count: instances.length, loading, error, deploying, deleting });
   return (
@@ -142,16 +196,39 @@ export function WorkloadInstances({
       ) : state.kind === 'notice' ? (
         <QuietNotice testId="compute-plugin-instances-empty" title={state.title} description={state.description} />
       ) : (
-        <ul className="flex flex-col">
-          {instances.map((instance) => (
-            <InstanceRow
-              key={instance.uid || instance.name}
-              instance={instance}
-              href={instanceHref(instance.name)}
-              locationIndex={locationIndex}
-            />
-          ))}
-        </ul>
+        <div className="overflow-x-auto rounded-lg border">
+          <Table style={TABLE_STYLE}>
+            <colgroup>
+              {COLUMN_WIDTHS.map((width, index) => (
+                <col key={index} style={{ width }} />
+              ))}
+            </colgroup>
+            <TableHeader className="bg-muted/50">
+              <TableRow className="text-xs hover:bg-transparent">
+                <TableHead className="h-9 px-4">Instance</TableHead>
+                <TableHead className="h-9">Region</TableHead>
+                <TableHead className="h-9">Private address</TableHead>
+                <TableHead className="h-9">CPU · Mem</TableHead>
+                <TableHead className="h-9">Age</TableHead>
+                <TableHead className="h-9 pr-4">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {instances.map((instance) => (
+                <InstanceRow
+                  key={instance.uid || instance.name}
+                  instance={instance}
+                  href={instanceHref(instance.name)}
+                  projectId={projectId}
+                  locationIndex={locationIndex}
+                  now={now}
+                />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
     </SectionFrame>
   );

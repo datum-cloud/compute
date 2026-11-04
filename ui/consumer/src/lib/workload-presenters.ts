@@ -137,6 +137,26 @@ export function formatElapsed(since: Date, now: number = Date.now()): string {
 }
 
 /**
+ * How old something is, in its largest whole unit: "45s", "3m", "3h", "8d".
+ * Coarse on purpose: an age column is for telling new from old at a glance.
+ */
+export function formatAge(since: Date, now: number = Date.now()): string {
+  const secs = Math.max(0, Math.floor((now - since.getTime()) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/** What an instance was given, "1 vCPU · 2Gi", or undefined when neither is known. */
+export function instanceResourcesText(instance: Pick<Instance, 'cpu' | 'memory'>): string | undefined {
+  const parts = [instance.cpu ? `${instance.cpu} vCPU` : undefined, instance.memory].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+/**
  * Why a workload's instances won't come up, e.g. "1 instance failing:
  * Back-off pulling image". Undefined when none is failing. The first failure's
  * message stands for the rest — they usually share a cause.

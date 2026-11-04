@@ -538,10 +538,12 @@ function WorkloadOverview() {
         instances={instances}
         loading={instancesLoading}
         error={instancesError}
+        projectId={projectId}
         locationIndex={locationIndex}
         instanceHref={instanceHref}
         deploying={!!deploy}
         deleting={workload.deleting}
+        now={now}
       />
 
       <RecentInstanceLogs

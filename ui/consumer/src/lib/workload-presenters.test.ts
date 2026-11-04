@@ -9,7 +9,9 @@ import {
   privateNameState,
   privateReach,
   deployStatus,
+  formatAge,
   formatElapsed,
+  instanceResourcesText,
   homeColumnWorkloads,
   newestFirst,
   overviewHealth,
@@ -710,5 +712,33 @@ describe('privateReach', () => {
       network: 'app-net',
       port: undefined,
     });
+  });
+});
+
+describe('formatAge', () => {
+  const since = new Date(STARTED);
+  const at = (ms: number) => since.getTime() + ms;
+
+  test('reads in the largest whole unit', () => {
+    expect(formatAge(since, at(45_000))).toBe('45s');
+    expect(formatAge(since, at(3 * 60_000))).toBe('3m');
+    expect(formatAge(since, at(3 * 3_600_000 + 59 * 60_000))).toBe('3h');
+    expect(formatAge(since, at(211 * 3_600_000 + 45 * 60_000))).toBe('8d');
+  });
+
+  test('a clock behind the creation time reads as new', () => {
+    expect(formatAge(since, at(-5_000))).toBe('0s');
+  });
+});
+
+describe('instanceResourcesText', () => {
+  test('joins CPU and memory', () => {
+    expect(instanceResourcesText({ cpu: '1', memory: '2Gi' })).toBe('1 vCPU · 2Gi');
+  });
+
+  test('shows whichever is known', () => {
+    expect(instanceResourcesText({ memory: '512Mi' })).toBe('512Mi');
+    expect(instanceResourcesText({ cpu: '2' })).toBe('2 vCPU');
+    expect(instanceResourcesText({})).toBeUndefined();
   });
 });
