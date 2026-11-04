@@ -1,0 +1,17 @@
+# pnpm settings for this plugin. It is a single package with its own lockfile,
+# not a workspace member, so there is no `packages:` list.
+
+# Our own packages are published and consumed across repos on the same day, so
+# the one-day release delay must not hold them back.
+minimumReleaseAgeExclude:
+  - '@datum-cloud/*'
+
+# esbuild checks its platform binary on install. CI and the image install with
+# --ignore-scripts.
+allowBuilds:
+  esbuild: true
+  fsevents: false
+
+overrides:
+  dompurify: ^3.4.17
+  '@module-federation/dts-plugin>undici': ^7.30.1

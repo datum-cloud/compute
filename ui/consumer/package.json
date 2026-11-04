@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@11.28.9",
   "description": "Compute service Portal Plugin: workload/instance operational dashboard with workload delete, a Module Federation remote reading data exclusively through the portal's Milo control-plane proxy. Workload creation stays in datumctl (CLI-first).",
   "scripts": {
     "dev": "vite",
@@ -43,10 +44,5 @@
   },
   "engines": {
     "node": ">=26"
-  },
-  "overrides": {
-    "@module-federation/dts-plugin": {
-      "undici": "^7.30.1"
-    }
   }
 }
