@@ -193,6 +193,14 @@ function deriveReplicasPerRegion(placements: RawWorkloadPlacement[]): number | u
   return mins.every((m) => m === first) ? first : undefined;
 }
 
+/** The replica bounds every placement shares, when they all agree. */
+function deriveScale(placements: RawWorkloadPlacement[]): { min?: number; max?: number } | undefined {
+  if (placements.length === 0) return undefined;
+  const [first, ...rest] = placements.map((p) => p.scaleSettings ?? {});
+  const same = rest.every((s) => s.minReplicas === first.minReplicas && s.maxReplicas === first.maxReplicas);
+  return same ? { min: first.minReplicas, max: first.maxReplicas } : undefined;
+}
+
 function derivePorts(runtime?: RawRuntime): string[] {
   const containers = runtime?.sandbox?.containers ?? [];
   return containers.flatMap((c) =>
@@ -357,12 +365,14 @@ export function toWorkload(raw: RawWorkload): Workload {
     placements: placements.map((p) => p.name),
     placementRegions: toPlacementRegions(placements, raw.status?.placements ?? []),
     runtimeType: runtime ? (runtime.sandbox ? 'Container sandbox' : 'Virtual machine') : undefined,
+    runtimeClass: runtime?.class || undefined,
     tags: deriveTags(runtime),
     ports,
     namedPorts: deriveNamedPorts(runtime),
     locations: workloadLocations(placements, raw.status?.placements ?? []),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),
+    scale: deriveScale(placements),
     networks: deriveNetworks(raw.spec?.template?.spec?.networkInterfaces),
     deleting: !!raw.metadata?.deletionTimestamp,
     conditions: conditions.map((c) => ({

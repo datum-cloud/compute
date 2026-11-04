@@ -7,7 +7,9 @@ import {
   instanceReadiness,
   instancesSectionState,
   privateNameState,
+  portsText,
   privateReach,
+  replicasText,
   deployStatus,
   formatAge,
   formatElapsed,
@@ -740,5 +742,37 @@ describe('instanceResourcesText', () => {
     expect(instanceResourcesText({ memory: '512Mi' })).toBe('512Mi');
     expect(instanceResourcesText({ cpu: '2' })).toBe('2 vCPU');
     expect(instanceResourcesText({})).toBeUndefined();
+  });
+});
+
+describe('replicasText', () => {
+  const base = { desiredReplicas: 3 };
+
+  test('reads the shared scale bounds', () => {
+    expect(replicasText({ ...base, scale: { min: 1 } })).toBe('min 1, no max');
+    expect(replicasText({ ...base, scale: { min: 1, max: 3 } })).toBe('1 to 3');
+    expect(replicasText({ ...base, scale: { min: 2, max: 2 } })).toBe('2');
+  });
+
+  test('falls back to the per-location count, then the total', () => {
+    expect(replicasText({ ...base, scale: { max: 4 }, replicasPerRegion: 1 })).toBe('1 per location');
+    expect(replicasText(base)).toBe('3 total');
+  });
+});
+
+describe('portsText', () => {
+  const redis = { port: 6379, protocol: 'TCP', name: 'redis' };
+
+  test('names each port and says who can reach them', () => {
+    expect(portsText([redis], 'private')).toBe('6379/TCP (redis) · private');
+    expect(portsText([redis, { port: 53, protocol: 'UDP' }], 'public')).toBe('6379/TCP (redis), 53/UDP · public');
+  });
+
+  test('leaves the exposure off while it is unknown', () => {
+    expect(portsText([redis])).toBe('6379/TCP (redis)');
+  });
+
+  test('no ports gives no text, so the row is dropped', () => {
+    expect(portsText([], 'private')).toBeUndefined();
   });
 });

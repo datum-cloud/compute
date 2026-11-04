@@ -9,6 +9,7 @@ import {
   type Workload,
   type WorkloadHealth,
   type WorkloadPlacementRegion,
+  type WorkloadPort,
 } from '../schema';
 
 /**
@@ -394,6 +395,39 @@ export function privateReach(workload: Workload, instances: readonly Instance[])
     if (hostname) return { kind: 'address', address: `${hostname}:${port}` };
   }
   return { kind: 'network', network: workload.networks[0], port };
+}
+
+/**
+ * Replicas as a phrase: the scale bounds when every placement shares them
+ * ("min 1, no max", "1 to 3", "2"), else the per-location or total count.
+ */
+export function replicasText(
+  workload: Pick<Workload, 'scale' | 'replicasPerRegion' | 'desiredReplicas'>
+): string {
+  const { scale } = workload;
+  if (scale?.min !== undefined) {
+    if (scale.max === undefined) return `min ${scale.min}, no max`;
+    if (scale.max === scale.min) return String(scale.min);
+    return `${scale.min} to ${scale.max}`;
+  }
+  return workload.replicasPerRegion !== undefined
+    ? `${workload.replicasPerRegion} per location`
+    : `${workload.desiredReplicas} total`;
+}
+
+/**
+ * The workload's ports with their names and who can reach them:
+ * "6379/TCP (redis) · private". `exposure` is left off while unknown.
+ */
+export function portsText(
+  ports: readonly WorkloadPort[],
+  exposure?: 'public' | 'private'
+): string | undefined {
+  if (ports.length === 0) return undefined;
+  const list = ports
+    .map((p) => (p.name ? `${p.port}/${p.protocol} (${p.name})` : `${p.port}/${p.protocol}`))
+    .join(', ');
+  return exposure ? `${list} · ${exposure}` : list;
 }
 
 function isEmptyValue(value: unknown): boolean {

@@ -325,3 +325,35 @@ describe("toWorkload namedPorts", () => {
     expect(toWorkload(rawWorkload()).namedPorts).toEqual([]);
   });
 });
+
+describe("toWorkload runtime class and scale", () => {
+  test("a unikernel names its runtime class, though its runtime is a sandbox", () => {
+    const raw = rawWorkload();
+    raw.spec!.template = { spec: { runtime: { class: "unikernel", sandbox: { containers: [] } } } };
+    const workload = toWorkload(raw);
+    expect(workload.runtimeClass).toBe("unikernel");
+    expect(workload.runtimeType).toBe("Container sandbox");
+  });
+
+  test("an unnamed class is left unset", () => {
+    expect(toWorkload(rawWorkload()).runtimeClass).toBeUndefined();
+  });
+
+  test("scale is the bounds every placement shares", () => {
+    const raw = rawWorkload();
+    raw.spec!.placements = [
+      { name: "a", scaleSettings: { minReplicas: 1, maxReplicas: 3 } },
+      { name: "b", scaleSettings: { minReplicas: 1, maxReplicas: 3 } },
+    ];
+    expect(toWorkload(raw).scale).toEqual({ min: 1, max: 3 });
+  });
+
+  test("placements that disagree have no shared scale", () => {
+    const raw = rawWorkload();
+    raw.spec!.placements = [
+      { name: "a", scaleSettings: { minReplicas: 1 } },
+      { name: "b", scaleSettings: { minReplicas: 2 } },
+    ];
+    expect(toWorkload(raw).scale).toBeUndefined();
+  });
+});

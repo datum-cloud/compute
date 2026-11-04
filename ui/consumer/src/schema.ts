@@ -67,7 +67,10 @@ export interface Workload {
   placementRegions: WorkloadPlacementRegion[];
   conditions: WorkloadCondition[];
   // Detail/overview fields
+  /** Sandbox or virtual machine, from the runtime's shape. Not the runtime class. */
   runtimeType?: string;
+  /** RuntimeClass the template names (`unikernel`, ...); unset selects the catalog default. */
+  runtimeClass?: string;
   tags: string[];
   ports: string[];
   /** Container ports with their names, in spec order. */
@@ -75,6 +78,8 @@ export interface Workload {
   locations: string[];
   resources?: string;
   replicasPerRegion?: number;
+  /** Replica bounds, when every placement shares them. */
+  scale?: { min?: number; max?: number };
   /** Networks the instance template attaches to (`networkInterfaces[].network.name`). */
   networks: string[];
   /** Set once `metadata.deletionTimestamp` is — the finalizer is tearing the workload down. */

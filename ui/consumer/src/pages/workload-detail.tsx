@@ -48,7 +48,9 @@ import {
   compactDetailRows,
   imageShortName,
   overviewStatusLine,
+  portsText,
   privateReach,
+  replicasText,
   type PrivateReach,
 } from "../lib/workload-presenters";
 import { formatLocationNames, useLocationIndex } from "../lib/locations";
@@ -142,13 +144,8 @@ function LoadBalancerValue({
 }
 
 const DETAIL_DATE_FORMAT: Intl.DateTimeFormatOptions = {
-  day: "2-digit",
-  month: "short",
-  year: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
+  dateStyle: "medium",
+  timeStyle: "short",
 };
 
 interface DetailRow {
@@ -161,36 +158,63 @@ interface DetailRow {
 interface WorkloadDetailsProps {
   workload: Workload;
   albStatuses: Record<string, AlbStatus>;
-  healthyCount: number;
-  totalCount: number;
   projectId?: string;
   published?: PublishedUrl | null;
   publishedLoading: boolean;
   locationLabel: string;
 }
 
+/** A mono value, wrapped rather than cut so the whole of it shows. */
 function mono(text: string) {
   return (
-    <span className="block max-w-full truncate font-mono text-xs" title={text}>
+    <span className="block max-w-full font-mono text-xs break-all" title={text}>
       {text}
     </span>
   );
 }
 
-/** General and Configuration rows, in display order, before empty ones are dropped. */
+/**
+ * Detail rows, in display order, before empty ones are dropped. The grid
+ * fills row by row, so pairs read across: Runtime with Instance type, and
+ * so on. The name is the page title, so it isn't repeated here.
+ */
 function workloadDetailRows({
   workload,
   albStatuses,
-  healthyCount,
-  totalCount,
   projectId,
   published,
   publishedLoading,
   locationLabel,
 }: WorkloadDetailsProps): DetailRow[] {
   const { main: resourceShort } = splitSlashValue(workload.resources ?? "");
+  const exposure = publishedLoading ? undefined : published?.proxies.length ? "public" : "private";
+  // The runtime class says what actually runs (`unikernel`); the runtime's
+  // shape alone reads "Container sandbox" for every sandbox class.
+  const runtime = workload.runtimeClass ?? workload.runtimeType;
   return [
-    { label: "Resource name", value: workload.name, content: mono(workload.name) },
+    {
+      label: "Runtime",
+      value: runtime,
+      content: workload.runtimeClass ? mono(workload.runtimeClass) : runtime,
+    },
+    {
+      label: "Instance type",
+      value: resourceShort || workload.resources,
+      content: resourceShort || workload.resources,
+    },
+    { label: "Image", value: workload.image, content: workload.image ? mono(workload.image) : null },
+    { label: "Replicas", value: true, content: replicasText(workload) },
+    {
+      label: "Ports",
+      value: workload.namedPorts,
+      content: portsText(workload.namedPorts, exposure),
+    },
+    {
+      label: "Locations",
+      value: workload.locations,
+      content: <span title={workload.locations.join(", ")}>{locationLabel}</span>,
+    },
+    { label: "Network", value: workload.networks, content: mono(workload.networks.join(", ")) },
     {
       label: "Load balancer",
       // Held while loading so the row doesn't pop in after the rest.
@@ -204,39 +228,16 @@ function workloadDetailRows({
         />
       ),
     },
-    { label: "Instances", value: totalCount, content: `${healthyCount}/${totalCount}` },
     {
       label: "Created",
       value: workload.createdAt,
-      content: workload.createdAt.toLocaleDateString("en-GB", DETAIL_DATE_FORMAT),
+      content: workload.createdAt.toLocaleString(undefined, DETAIL_DATE_FORMAT),
     },
-    { label: "Runtime", value: workload.runtimeType, content: workload.runtimeType },
-    { label: "Image", value: workload.image, content: workload.image ? mono(workload.image) : null },
-    {
-      label: "Resources",
-      value: resourceShort || workload.resources,
-      content: resourceShort || workload.resources,
-    },
-    {
-      label: "Replicas",
-      value: workload.desiredReplicas,
-      content:
-        workload.replicasPerRegion !== undefined
-          ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
-          : `${workload.desiredReplicas} total`,
-    },
-    {
-      label: "Locations",
-      value: workload.locations,
-      content: <span title={workload.locations.join(", ")}>{locationLabel}</span>,
-    },
-    { label: "Networks", value: workload.networks, content: mono(workload.networks.join(", ")) },
-    { label: "Ports", value: workload.ports, content: mono(workload.ports.join(", ")) },
   ];
 }
 
 /**
- * General and Configuration merged into one two-column list. Rows with no
+ * The workload's details in one two-column list. Rows with no
  * value are left out rather than shown as "Coming soon" or a dash, and the
  * grid fills row by row so dropped rows leave no holes.
  */
@@ -561,8 +562,6 @@ function WorkloadOverview() {
       <WorkloadDetails
         workload={workload}
         albStatuses={albStatuses}
-        healthyCount={healthyCount}
-        totalCount={totalCount}
         projectId={projectId}
         published={published}
         publishedLoading={publishedLoading}
