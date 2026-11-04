@@ -208,7 +208,12 @@ function LivePulse() {
   );
 }
 
-function RequestRow({ entry, logsHref }: { entry: LogEntry; logsHref: string }) {
+/**
+ * One recent line. `albName` names the load balancer an access log came
+ * through, in place of the request's host: on the workload Overview the host
+ * is the load balancer's hostname, which isn't the workload's.
+ */
+function RequestRow({ entry, logsHref, albName }: { entry: LogEntry; logsHref: string; albName?: string }) {
   const parsed = parseLogLine(entry.line, entry.labels);
   const host = logRequestHost(entry.labels);
 
@@ -246,7 +251,13 @@ function RequestRow({ entry, logsHref }: { entry: LogEntry; logsHref: string }) 
         <span className="min-w-0 flex-1 truncate font-mono text-xs" title={parsed.path}>
           {parsed.path}
         </span>
-        {host ? (
+        {albName && entry.labels.source === LOG_SOURCE_ALB ? (
+          <span
+            className="bg-muted text-muted-foreground hidden max-w-40 shrink-0 truncate rounded px-1.5 py-0.5 text-xs lg:inline"
+            title={host ? `${albName} · ${host}` : albName}>
+            via {albName}
+          </span>
+        ) : host ? (
           <span className="text-muted-foreground hidden max-w-40 shrink-0 truncate text-xs lg:inline">
             {host}
           </span>
@@ -274,6 +285,8 @@ interface RecentInstanceLogsProps {
   proxyId?: string;
   /** Set when a load balancer is attached. Empty results then show the curl prompt. */
   albHostname?: string;
+  /** The queried load balancer's name, to tag its access logs "via <name>" instead of their host. */
+  albName?: string;
   instanceName?: string;
   instanceNames?: readonly string[];
   /** In-network IPs for the instance path; pins ALB rows to this replica. */
@@ -295,6 +308,7 @@ export function RecentInstanceLogs({
   projectId,
   proxyId,
   albHostname,
+  albName,
   instanceName,
   instanceNames,
   upstreamIPs,
@@ -373,7 +387,7 @@ export function RecentInstanceLogs({
   ) : (
     <ul className="divide-border divide-y">
       {entries.map((entry) => (
-        <RequestRow key={entry.id} entry={entry} logsHref={logsHref} />
+        <RequestRow key={entry.id} entry={entry} logsHref={logsHref} albName={albName} />
       ))}
     </ul>
   );

@@ -429,6 +429,7 @@ function WorkloadOverview() {
         projectId={projectId}
         proxyId={proxyId}
         albHostname={published?.hostname}
+        albName={published ? published.displayName || published.proxyName : undefined}
         instanceNames={instanceNames}
         // Without a load balancer the query waits on instance names; until
         // they arrive it would otherwise read as "No logs".
