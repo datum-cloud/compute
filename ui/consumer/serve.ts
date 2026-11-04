@@ -6,8 +6,9 @@
  * by the Deployment.
  *
  * Node runs this file directly by stripping its types. Content types match
- * what Bun.file reported, which this server replaced; it is the same server
- * as network-services-operator's consumer plugin.
+ * what Bun.file reported, which this server replaced. It started as the same
+ * server as network-services-operator's consumer plugin and adds conditional
+ * requests (ETag / 304).
  */
 import { createReadStream, readFileSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
@@ -52,6 +53,22 @@ function notFound(res: ServerResponse): void {
   res.end("Not Found");
 }
 
+/** RFC 9110 §13.2.2: If-None-Match wins; If-Modified-Since applies only without it. */
+function isNotModified(req: IncomingMessage, etag: string, mtime: Date): boolean {
+  const ifNoneMatch = req.headers["if-none-match"];
+  if (ifNoneMatch !== undefined) {
+    const opaque = (tag: string) => tag.trim().replace(/^W\//, "");
+    return ifNoneMatch.split(",").some((tag) => tag.trim() === "*" || opaque(tag) === opaque(etag));
+  }
+  const ifModifiedSince = req.headers["if-modified-since"];
+  if (ifModifiedSince === undefined) {
+    return false;
+  }
+  const since = Date.parse(ifModifiedSince);
+  // HTTP dates have one-second resolution.
+  return !Number.isNaN(since) && Math.floor(mtime.getTime() / 1000) * 1000 <= since;
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const { pathname } = new URL(req.url ?? "/", "https://localhost");
   const filePath = resolve(join(DIST_DIR, pathname));
@@ -72,10 +89,25 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
+  // The portal's asset proxy serves fixed-name entry points (remoteEntry.js,
+  // the manifests) as `no-cache` and forwards the browser's validators, so a
+  // validator here lets every page load revalidate them with a 304 instead of
+  // downloading them again. Every replica runs the same image, so size and
+  // mtime agree across replicas.
+  const etag = `W/"${info.size.toString(16)}-${Math.trunc(info.mtimeMs).toString(16)}"`;
+  const lastModified = info.mtime.toUTCString();
+  const validators = { etag, "last-modified": lastModified };
+  if ((req.method === "GET" || req.method === "HEAD") && isNotModified(req, etag, info.mtime)) {
+    res.writeHead(304, validators);
+    res.end();
+    return;
+  }
+
   res.writeHead(200, {
     "content-type":
       MIME_TYPES[extname(realFilePath).toLowerCase()] ?? "application/octet-stream",
     "content-length": info.size,
+    ...validators,
   });
   if (req.method === "HEAD") {
     res.end();

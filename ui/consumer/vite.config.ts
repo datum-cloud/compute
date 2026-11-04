@@ -98,8 +98,11 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    // Keep the plugin readable when inspecting the built bundle.
-    minify: false,
+    // Minified: the portal downloads and parses every page's chunks on first
+    // visit, and minifying cuts the bundle from ~6.0MB to ~2.5MB (~1.3MB to
+    // ~0.8MB gzipped). Source maps keep it readable in devtools; the browser
+    // fetches them only when devtools is open.
+    sourcemap: true,
   },
   experimental: {
     renderBuiltUrl(_filename, { hostType }) {

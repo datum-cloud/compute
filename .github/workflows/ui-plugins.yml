@@ -1,0 +1,63 @@
+name: UI Plugins
+
+# Typechecks and unit-tests the portal plugins under ui/. Each is its own npm
+# project with its own lockfile, so this runs per plugin. Their images are
+# built by publish.yaml, which never ran either check.
+#
+# No Go toolchain: the consumer plugin's shell wasm client is optional at build
+# time and the tests don't load it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ui/**'
+      - '.github/workflows/ui-plugins.yml'
+  pull_request:
+    paths:
+      - 'ui/**'
+      - '.github/workflows/ui-plugins.yml'
+
+concurrency:
+  group: ui-plugins-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.plugin }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin: consumer
+            test: true
+          # ui/provider has no tests yet.
+          - plugin: provider
+            test: false
+    defaults:
+      run:
+        working-directory: ui/${{ matrix.plugin }}
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ui/${{ matrix.plugin }}/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/${{ matrix.plugin }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        if: matrix.test
+        run: npm test
