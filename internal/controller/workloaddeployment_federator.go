@@ -269,14 +269,47 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
 
 	if deployment.Spec.LocationRef.Name == "" {
-		return finalizer.Result{}, r.cleanupLegacyPropagationPolicies(ctx, downstreamNS, legacyCity)
+		if err := r.cleanupLegacyPropagationPolicies(ctx, downstreamNS, legacyCity); err != nil {
+			return finalizer.Result{}, err
+		}
+		return finalizer.Result{}, r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name)
 	}
 
+	// The PropagationPolicy carries the deletion to the cells, so it stays
+	// until the hub deployment is gone.
+	if err := r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name); err != nil {
+		return finalizer.Result{}, err
+	}
 	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.LocationRef.Name, r.propagationRuntimeClass(deployment)); err != nil {
 		return finalizer.Result{}, err
 	}
 
 	return finalizer.Result{}, nil
+}
+
+// waitForDownstreamRemoval holds the project deployment until its hub copy and
+// the Instances written back for it are gone. The project control plane is
+// only reclaimed once nothing is left in it, so holding the deployment keeps
+// the project, and the project API that downstream cleanup reports to, alive
+// until that cleanup finishes. The hub deployment watch requeues this when the
+// copy goes; the write-back Instances are retried with backoff.
+func (r *WorkloadDeploymentFederator) waitForDownstreamRemoval(ctx context.Context, downstreamNS, name string) error {
+	var hub computev1alpha.WorkloadDeployment
+	err := r.FederationClient.Get(ctx, client.ObjectKey{Namespace: downstreamNS, Name: name}, &hub)
+	if err == nil {
+		return fmt.Errorf("waiting for downstream deployment %s/%s to be removed", downstreamNS, name)
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check downstream deployment %s/%s removal: %w", downstreamNS, name, err)
+	}
+	var instances computev1alpha.InstanceList
+	if err := r.FederationClient.List(ctx, &instances, client.InNamespace(downstreamNS), client.MatchingLabels{computev1alpha.WorkloadDeploymentNameLabel: name}); err != nil {
+		return fmt.Errorf("failed to list downstream instances of %s/%s: %w", downstreamNS, name, err)
+	}
+	if len(instances.Items) > 0 {
+		return fmt.Errorf("waiting for %d downstream instances of %s/%s to be removed", len(instances.Items), downstreamNS, name)
+	}
+	return nil
 }
 
 // cleanupLegacyPropagationPolicies removes the PropagationPolicies a
