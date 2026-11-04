@@ -77,7 +77,8 @@ parts that depended on portal internals:
 | `runDetailLoader`/`runListLoader` server-side RBAC gate | Client-side catch of a non-ok/403 `fetch()` response → inline restricted state |
 | `paths.config.ts` + `getPathWithParams` | `useParams()` / `useLocation()` / `useNavigate()` from the shared `react-router` singleton |
 
-`workload.schema.ts`/`instance.schema.ts` (combined into `src/schema.ts`),
+`workload.schema.ts`/`instance.schema.ts` (combined into `src/schema.ts`, as
+plain types rather than Zod schemas),
 `workload.adapter.ts`/`instance.adapter.ts` (combined into `src/adapter.ts`),
 `cli-section.tsx`, and `compute.helper.ts` (as `src/lib/format.ts`) ported
 over near-verbatim — they were already free of portal internals (aside from
@@ -135,12 +136,12 @@ warns and the Shell tab stays hidden. Install and run it in isolation:
 
 ```bash
 cd ui/consumer
-npm install
-npm run dev        # Vite dev server (:7778, HMR) — standalone/direct
-npm run preview    # built dist/ served (:7778) — proxy-safe
-npm run build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
-npm run typecheck  # tsc --noEmit
-npm test           # vitest unit tests
+pnpm install
+pnpm dev        # Vite dev server (:7778, HMR) — standalone/direct
+pnpm preview    # built dist/ served (:7778) — proxy-safe
+pnpm build      # static dist/ (remoteEntry.js + plugin-manifest.json + chunks)
+pnpm typecheck  # tsc --noEmit
+pnpm test       # vitest unit tests
 ```
 
 ### Serve `dev` or `preview`? (it matters for the portal proxy)
@@ -202,8 +203,15 @@ Three things stay in lockstep, same as the sample plugin:
 
 The host provides `react`, `react-dom`, `react-router`, and
 `@tanstack/react-query` as shared singletons (host's exact instances — see
-`vite.config.ts`). This plugin bundles its own copy of `@datum-cloud/datum-ui`
-(not shared as a singleton in v1), so its CSS ships with the bundle.
+`vite.config.ts`). It also shares a curated set of `@datum-cloud/datum-ui`
+subpaths (cloud-portal's `federation-host.ts`, `DATUM_UI_SHARED`); the ones
+listed in this plugin's `shared` config resolve to the host's copy, and any
+other datum-ui subpath the plugin imports is bundled into the remote.
+
+Keep the plugin's versions of these packages at the host's resolved versions
+(cloud-portal's lockfile), not the registry's latest: the host's copy is
+what runs, so a newer local version only lets the plugin type-check against
+APIs the host doesn't have.
 
 ## Network interface traffic
 
@@ -224,29 +232,31 @@ values of `network` on the receive metric. If no value matches the instance's
 interfaces, the page keeps showing "Not collected yet". The charts appear
 when series exist for the instance's interfaces.
 
+## Serving
+
+`vite build` minifies and emits source maps; the browser fetches a map only
+when devtools is open. `serve.ts` sends a weak `ETag` and `Last-Modified` and
+answers conditional requests with `304`. The portal's asset proxy serves
+`remoteEntry.js` and the manifests as `no-cache`, so every page load
+revalidates them; hashed chunks under `assets/` are cached for a year.
+
 ## File layout
 
 ```
 ui/consumer/
   vite.config.ts          MF container "workload.compute.datumapis.com"
+  serve.ts                static HTTPS server for dist/ (the image's entrypoint)
   public/plugin-manifest.json
   src/
-    lib/api.ts             fetch wrappers + useQuery hooks (workloads/instances/HTTPProxy)
-    lib/prometheus.ts       queryapi metric queries + useQuery hooks
-    lib/prometheus-format.ts  Prometheus results → chart series / card values
-    lib/o11y-logs.ts        Loki query_range + ALB LogQL
+    schema.ts             view-model types for Workload / Instance
+    adapter.ts            raw K8s JSON → view models
+    pages/                exposed pages and the tabs they nest
+    cards/                project-home column
+    components/           shared UI (tables, topology, charts, shell, dialogs)
+    lib/api.ts            fetch wrappers + useQuery hooks (workloads/instances/HTTPProxy)
+    lib/prometheus*.ts    queryapi metric queries and result formatting
     lib/metrics-queries.ts  PromQL builders + instance identity discovery
-    lib/network-interface-metrics.ts  probe for network interface metric labels
-    lib/format.ts           formatUptime / splitSlashValue (ported as-is)
-    schema.ts                Zod schemas for Workload / Instance
-    adapter.ts                raw K8s JSON → schema mappers
-    components/cli-section.tsx   CommandBlock / SectionCard / CliBanner
-    components/states.tsx    Loading / Error / Restricted state components
-    pages/workload-list.tsx
-    pages/workload-detail.tsx
-    pages/instance-detail.tsx
-    pages/instance-overview.tsx
-    pages/instance-logs.tsx
-    pages/instance-metrics.tsx
-    main.tsx                 standalone preview harness only
+    lib/o11y-logs.ts      Loki query_range + ALB LogQL
+    lib/console-client/   shell Web Worker and wasm client adapter
+    main.tsx              standalone preview harness only
 ```

@@ -774,6 +774,69 @@ func TestWorkloadDeploymentFederator_FinalizeIsSelfContained(t *testing.T) {
 	assert.True(t, apierrors.IsNotFound(err), "the hub deployment must be removed")
 }
 
+// TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval asserts
+// the project deployment, and so the project, is held until the Instances
+// written back for it are gone. Write-backs are deleted by the finalizer
+// itself, including copies no hub deployment owns, and the hold retries on a
+// short timer instead of failing the reconcile.
+func TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: testKarmadaNSStr}
+	hubWD := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testWDName,
+			Namespace: testKarmadaNSStr,
+			Labels:    map[string]string{locationLabel: testFederatorLocation},
+		},
+		Spec: wd.Spec,
+	}
+	// An ownerless write-back, which garbage collection never removes, still
+	// held by the projector's finalizer.
+	writeBack := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
+		Name:       testWDName + "-0",
+		Namespace:  testKarmadaNSStr,
+		Labels:     map[string]string{computev1alpha.WorkloadDeploymentNameLabel: testWDName},
+		Finalizers: []string{instanceProjectionFinalizer},
+	}}
+	other := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
+		Name:      "unrelated-0",
+		Namespace: testKarmadaNSStr,
+		Labels:    map[string]string{computev1alpha.WorkloadDeploymentNameLabel: "unrelated"},
+	}}
+	policy := &karmadapolicyv1alpha1.PropagationPolicy{ObjectMeta: metav1.ObjectMeta{
+		Name:      propagationPolicyNameFor(testFederatorLocation, ""),
+		Namespace: testKarmadaNSStr,
+	}}
+	projectClient := newProjectFakeClient(wd)
+	karmadaClient := newKarmadaFakeClient(hubWD, writeBack, other, policy)
+	r := newTestFederator(projectClient, karmadaClient)
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	exists := func(obj client.Object) bool {
+		return karmadaClient.Get(ctx, client.ObjectKeyFromObject(obj), obj.DeepCopyObject().(client.Object)) == nil
+	}
+
+	_, err := r.Finalize(ctx, wd)
+	require.ErrorIs(t, err, errDownstreamRemovalPending)
+	assert.False(t, exists(hubWD))
+	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(writeBack), writeBack))
+	assert.False(t, writeBack.DeletionTimestamp.IsZero(), "the finalizer deletes write-backs itself")
+	assert.True(t, exists(other), "another deployment's instances are left alone")
+	assert.True(t, exists(policy), "the policy stays while the deployment is held")
+
+	// Reconcile turns the hold into a short requeue, not an error.
+	result, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.Equal(t, downstreamRemovalPollInterval, result.RequeueAfter)
+
+	writeBack.Finalizers = nil
+	require.NoError(t, karmadaClient.Update(ctx, writeBack))
+	_, err = r.Finalize(ctx, wd)
+	require.NoError(t, err)
+	assert.False(t, exists(policy), "the unused policy is removed once the hub is clean")
+}
+
 // TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable asserts the
 // finalizer is held, not released, when neither the record nor live resolution
 // can name the hub namespace. Releasing here would strand the hub deployment.

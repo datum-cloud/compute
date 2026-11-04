@@ -36,25 +36,31 @@ RUN --mount=type=bind,target=/src \
 
 FROM node:26.13.0-alpine3.24@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS build
 WORKDIR /app
-COPY ui/consumer/package.json ui/consumer/package-lock.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund
+# Node 26 ships no corepack, so install the pnpm that package.json's
+# packageManager pins; it stays in this stage only.
+COPY ui/consumer/package.json ui/consumer/pnpm-lock.yaml ui/consumer/pnpm-workspace.yaml ./
+RUN npm install -g "$(node -p 'require("./package.json").packageManager')" --no-audit --no-fund && \
+  pnpm install --frozen-lockfile --ignore-scripts
 COPY ui/consumer/ .
 COPY --from=console-wasm /out/ /console-wasm/
 ENV CONSOLE_WASM_DIR=/console-wasm
-RUN npm run build
+# The Sentry token is a BuildKit secret (publish-docker's build-secrets), so it
+# never lands in a layer, the image history or the exported build cache. When
+# absent the file is missing, the variable is empty and the upload is skipped.
+RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN,required=false \
+  SENTRY_AUTH_TOKEN="$(cat /run/secrets/SENTRY_AUTH_TOKEN 2>/dev/null)" pnpm build
 
 FROM node:26.13.0-alpine3.24@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
 # Node keeps its own copy of the CA roots apart from Alpine's bundle. Fail the
 # build if either still trusts the compromised eMudhra root (emSign ECC Root
-# CA - G3), which Bun's built-in roots kept until 1.4.4 with no way to drop it.
+# CA - G3).
 RUN apk add --no-cache --upgrade 'ca-certificates>=20261020-r0'
 RUN ! grep -q MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQG /etc/ssl/certs/ca-certificates.crt
 RUN node -e 'const { rootCertificates } = require("node:tls"); const { X509Certificate } = require("node:crypto"); const compromised = rootCertificates.some((pem) => new X509Certificate(pem).subject.split("\n").includes("CN=emSign ECC Root CA - G3")); if (compromised) { console.error("refusing to build: Node trusts emSign ECC Root CA - G3"); process.exit(1); }'
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY ui/consumer/serve.ts ./
-# uid/gid 1000, as the Bun image's bun user was and the Deployment's
-# securityContext expects.
+# uid/gid 1000, as the Deployment's securityContext expects.
 USER 1000:1000
 EXPOSE 8443
 CMD ["node", "serve.ts"]

@@ -4,9 +4,11 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -134,6 +136,12 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	}
 
 	finalizationResult, err := r.finalizers.Finalize(ctx, &deployment)
+	if errors.Is(err, errDownstreamRemovalPending) {
+		// Not a failure: retry on a short timer rather than the error backoff,
+		// which grows to minutes and would hold project deletion that long.
+		logger.V(1).Info("waiting for downstream cleanup before releasing deployment", "reason", err.Error())
+		return ctrl.Result{RequeueAfter: downstreamRemovalPollInterval}, nil
+	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
@@ -269,14 +277,64 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
 
 	if deployment.Spec.LocationRef.Name == "" {
-		return finalizer.Result{}, r.cleanupLegacyPropagationPolicies(ctx, downstreamNS, legacyCity)
+		if err := r.cleanupLegacyPropagationPolicies(ctx, downstreamNS, legacyCity); err != nil {
+			return finalizer.Result{}, err
+		}
+		return finalizer.Result{}, r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name)
 	}
 
+	// An unused policy is only recognisable once the hub deployment is gone.
+	if err := r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name); err != nil {
+		return finalizer.Result{}, err
+	}
 	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.LocationRef.Name, r.propagationRuntimeClass(deployment)); err != nil {
 		return finalizer.Result{}, err
 	}
 
 	return finalizer.Result{}, nil
+}
+
+// errDownstreamRemovalPending marks a finalization that is waiting for hub
+// objects to go away.
+var errDownstreamRemovalPending = errors.New("downstream removal pending")
+
+// downstreamRemovalPollInterval is how often a held deployment rechecks the hub.
+const downstreamRemovalPollInterval = 5 * time.Second
+
+// waitForDownstreamRemoval holds the project deployment until its hub copy and
+// the Instances written back for it are gone. The project control plane is
+// only reclaimed once nothing is left in it, so holding the deployment keeps
+// the project, and the project API the Instance projector removes projections
+// from, alive until the hub is clean. The write-backs are deleted here rather
+// than left to garbage collection, which never reaches copies written before
+// the hub deployment owned them.
+func (r *WorkloadDeploymentFederator) waitForDownstreamRemoval(ctx context.Context, downstreamNS, name string) error {
+	var hub computev1alpha.WorkloadDeployment
+	err := r.FederationClient.Get(ctx, client.ObjectKey{Namespace: downstreamNS, Name: name}, &hub)
+	if err == nil {
+		return fmt.Errorf("%w: downstream deployment %s/%s still exists", errDownstreamRemovalPending, downstreamNS, name)
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check downstream deployment %s/%s removal: %w", downstreamNS, name, err)
+	}
+	selector := client.MatchingLabels{computev1alpha.WorkloadDeploymentNameLabel: name}
+	var instances computev1alpha.InstanceList
+	if err := r.FederationClient.List(ctx, &instances, client.InNamespace(downstreamNS), selector); err != nil {
+		return fmt.Errorf("failed to list downstream instances of %s/%s: %w", downstreamNS, name, err)
+	}
+	if len(instances.Items) == 0 {
+		return nil
+	}
+	for i := range instances.Items {
+		instance := &instances.Items[i]
+		if !instance.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.FederationClient.Delete(ctx, instance); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to delete downstream instance %s/%s: %w", downstreamNS, instance.Name, err)
+		}
+	}
+	return fmt.Errorf("%w: %d downstream instances of %s/%s still exist", errDownstreamRemovalPending, len(instances.Items), downstreamNS, name)
 }
 
 // cleanupLegacyPropagationPolicies removes the PropagationPolicies a

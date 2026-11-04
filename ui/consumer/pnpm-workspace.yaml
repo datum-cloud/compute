@@ -1,0 +1,31 @@
+# pnpm settings for this plugin. It is a single package with its own lockfile,
+# not a workspace member, so there is no `packages:` list.
+
+# Our own packages are published and consumed across repos on the same day, so
+# the one-day release delay must not hold them back.
+minimumReleaseAgeExclude:
+  - '@datum-cloud/*'
+  # Added by `pnpm import`: npm had resolved these versions while they were
+  # under a day old, and exempting them kept them. They can go once a later
+  # update moves past them.
+  - '@module-federation/dts-plugin@2.9.3'
+  - '@module-federation/error-codes@2.9.3'
+  - '@module-federation/managers@2.9.3'
+  - '@module-federation/runtime-core@2.9.3'
+  - '@module-federation/runtime@2.9.3'
+  - '@module-federation/sdk@2.9.3'
+  - '@module-federation/third-party-dts-extractor@2.9.3'
+  - '@module-federation/vite@1.23.9'
+  - '@tanstack/react-virtual@3.14.26'
+  - '@tanstack/virtual-core@3.19.11'
+  - lucide-react@1.67.0
+
+# esbuild and @sentry/cli check their platform binaries on install. CI and the
+# image install with --ignore-scripts.
+allowBuilds:
+  '@sentry/cli': true
+  esbuild: true
+  fsevents: false
+
+overrides:
+  '@module-federation/dts-plugin>undici': ^7.30.1
