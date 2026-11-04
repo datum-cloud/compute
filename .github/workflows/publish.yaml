@@ -30,7 +30,12 @@ jobs:
       image-name: compute-consumer-ui-plugin
       context: .
       dockerfile-path: ui/consumer/Dockerfile
-    secrets: inherit
+    # The Sentry token goes in as a BuildKit secret only. `secrets: inherit`
+    # would also pass it to publish-docker's SENTRY_AUTH_TOKEN, which it
+    # forwards as a build-arg, and build-args persist in the exported cache.
+    secrets:
+      build-secrets: |
+        "SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}"
 
   # Deployed as a Component (config/components/provider-ui-plugin) folded
   # into compute-manager's own kustomize bundle/Flux Kustomization — same
