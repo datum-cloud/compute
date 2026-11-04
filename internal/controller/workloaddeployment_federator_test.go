@@ -761,7 +761,7 @@ func TestWorkloadDeploymentFederator_FinalizeIsSelfContained(t *testing.T) {
 
 	// The project namespace is deliberately absent: live resolution would fail.
 	projectClient := newProjectFakeClient(wd)
-	karmadaClient := newKarmadaFakeClient(hubWD)
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), hubWD)
 	r := newTestFederator(projectClient, karmadaClient)
 
 	ctx := mccontext.WithCluster(context.Background(), testCluster)
@@ -810,7 +810,7 @@ func TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval(t *testin
 		Namespace: testKarmadaNSStr,
 	}}
 	projectClient := newProjectFakeClient(wd)
-	karmadaClient := newKarmadaFakeClient(hubWD, writeBack, other, policy)
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), hubWD, writeBack, other, policy)
 	r := newTestFederator(projectClient, karmadaClient)
 	ctx := mccontext.WithCluster(context.Background(), testCluster)
 	exists := func(obj client.Object) bool {
@@ -835,6 +835,39 @@ func TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval(t *testin
 	_, err = r.Finalize(ctx, wd)
 	require.NoError(t, err)
 	assert.False(t, exists(policy), "the unused policy is removed once the hub is clean")
+}
+
+// TestWorkloadDeploymentFederator_FinalizeIgnoresAnotherProjectsNamespace
+// asserts a recorded hub namespace is used only when it belongs to the
+// deployment's own project namespace. Project users can write the record, so a
+// record naming another project's hub namespace must never lead finalization
+// to delete anything there.
+func TestWorkloadDeploymentFederator_FinalizeIgnoresAnotherProjectsNamespace(t *testing.T) {
+	t.Parallel()
+
+	const victimNS = "ns-ffffffff-0000-1111-2222-333344445555"
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: victimNS}
+	victimNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: victimNS, Labels: map[string]string{
+		downstreamclient.UpstreamOwnerClusterNameLabel: EncodeClusterName("another-project"),
+		downstreamclient.UpstreamOwnerNamespaceLabel:   testProjNS,
+	}}}
+	victim := &computev1alpha.WorkloadDeployment{ObjectMeta: metav1.ObjectMeta{Name: testWDName, Namespace: victimNS}}
+	victimInstance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
+		Name: testWDName + "-0", Namespace: victimNS,
+		Labels: map[string]string{computev1alpha.WorkloadDeploymentNameLabel: testWDName},
+	}}
+	own := &computev1alpha.WorkloadDeployment{ObjectMeta: metav1.ObjectMeta{Name: testWDName, Namespace: testKarmadaNSStr}}
+	projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), victimNamespace, victim, victimInstance, own)
+	r := newTestFederator(projectClient, karmadaClient)
+
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	_, err := r.Finalize(ctx, wd)
+	require.NoError(t, err)
+	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(victim), victim), "another project's hub deployment must survive")
+	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(victimInstance), victimInstance), "another project's instances must survive")
+	assert.True(t, apierrors.IsNotFound(karmadaClient.Get(ctx, client.ObjectKeyFromObject(own), own)), "the deployment's own hub copy is removed")
 }
 
 // TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable asserts the

@@ -347,6 +347,11 @@ func (r *InstanceConsoleSessionReconciler) buildHubCopy(
 	if hubNS == "" {
 		return nil, nil, fmt.Errorf("WorkloadDeployment %s/%s has not been federated yet", deployment.Namespace, deployment.Name)
 	}
+	if owned, err := verifyFederationNamespace(ctx, r.FederationClient, hubNS, string(clusterName), deployment.Namespace); err != nil {
+		return nil, nil, err
+	} else if !owned {
+		return nil, nil, fmt.Errorf("hub namespace %q of WorkloadDeployment %s/%s does not exist", hubNS, deployment.Namespace, deployment.Name)
+	}
 
 	var hubDeployment computev1alpha.WorkloadDeployment
 	if err := r.FederationClient.Get(ctx, types.NamespacedName{Namespace: hubNS, Name: deploymentName}, &hubDeployment); err != nil {

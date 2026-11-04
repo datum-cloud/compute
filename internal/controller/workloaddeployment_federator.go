@@ -243,6 +243,21 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	// every attempt and strand the hub deployment, which is the root of the hub
 	// ownership tree. The recorded value removes that dependency.
 	downstreamNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
+	if downstreamNS != "" {
+		owned, err := verifyFederationNamespace(ctx, r.FederationClient, downstreamNS, string(clusterName), deployment.Namespace)
+		switch {
+		case errors.Is(err, errFederationNamespaceNotOwned):
+			// The record names another project's namespace, so ignore it and
+			// resolve this deployment's own hub namespace instead.
+			logger.Info("ignoring a recorded hub namespace that belongs to another project", "recorded", downstreamNS)
+			downstreamNS = ""
+		case err != nil:
+			return finalizer.Result{}, err
+		case !owned:
+			// The hub namespace is gone, and everything in it with it.
+			return finalizer.Result{}, nil
+		}
+	}
 	if downstreamNS == "" {
 		// Federated before the annotation existed, so fall back to live
 		// resolution and accept the dependency this branch exists to avoid.
