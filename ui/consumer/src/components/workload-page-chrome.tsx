@@ -2,8 +2,10 @@
  * Shared workload layout chrome: breadcrumbs, title, and tab bar.
  * Used by the splat layout at `:workloadName/*`.
  *
- * The workload's public URL sits beside its name, so where to reach it is
- * visible from every tab rather than buried in the overview.
+ * The title is the workload's own name, with a line under it saying what it
+ * runs and where. The public URL sits on that line, so where to reach it is
+ * visible from every tab rather than buried in the overview. Deleting lives
+ * in a quiet menu: it is the page's rarest action, not its loudest.
  */
 import { PluginTabs, type PluginTab } from './plugin-tabs';
 import { Button, LinkButton } from '@datum-cloud/datum-ui/button';
@@ -18,8 +20,14 @@ import {
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@datum-cloud/datum-ui/dropdown';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { HomeIcon, SquareArrowOutUpRightIcon, Trash2Icon } from 'lucide-react';
+import { EllipsisIcon, HomeIcon, SquareArrowOutUpRightIcon, Trash2Icon } from 'lucide-react';
 import { Link } from 'react-router';
 
 export function workloadDetailTabs(
@@ -99,6 +107,7 @@ export function WorkloadPageChrome({
   metricsHref,
   logsHref,
   titleName,
+  summary,
   url,
   urlLoading = false,
   visit,
@@ -112,6 +121,8 @@ export function WorkloadPageChrome({
   metricsHref: string;
   logsHref: string;
   titleName: string;
+  /** What the workload runs and where, under its name: "Workload · redis:8.10 on app-net in us-central-1". */
+  summary?: React.ReactNode;
   /** The workload's public URL (`WorkloadUrl`), when a load balancer publishes it. */
   url?: React.ReactNode;
   /**
@@ -155,51 +166,65 @@ export function WorkloadPageChrome({
       </Breadcrumb>
 
       <PageTitle
-        title="Workload"
+        title={titleName}
         className="flex-col items-start gap-3 sm:flex-row sm:items-center"
         // PageTitle pads its actions (`pl-2`) to space them from an inline title.
         // Stacked on a phone that just indents them; `gap-3` above already
         // spaces the two side by side. (`px-0` because `pl-0` isn't compiled.)
         actionsClassName="px-0"
+        // A long generated name has no spaces to wrap at.
+        titleClassName="break-all"
         description={
-          url || urlLoading ? (
-            // On a phone the URL always takes its own line under the name, so its
+          summary || url || urlLoading ? (
+            // On a phone the URL takes its own line under the summary, so its
             // loading placeholder sits exactly where it will land. From `sm` up
             // they share a line, with a separator.
             <span className="flex flex-col items-start gap-x-2 gap-y-1 sm:flex-row sm:flex-wrap sm:items-center">
-              <span style={{ overflowWrap: 'anywhere' }}>{titleName}</span>
-              <span aria-hidden className="text-muted-foreground hidden sm:inline">
-                ·
-              </span>
-              {url ?? (
-                <Skeleton
-                  aria-hidden
-                  data-testid="compute-plugin-workload-url-loading"
-                  style={{ display: 'inline-block', width: '18em', maxWidth: '100%', height: '1em' }}
-                />
-              )}
+              {summary}
+              {summary && (url || urlLoading) ? (
+                <span aria-hidden className="text-muted-foreground hidden sm:inline">
+                  ·
+                </span>
+              ) : null}
+              {url ??
+                (urlLoading ? (
+                  <Skeleton
+                    aria-hidden
+                    data-testid="compute-plugin-workload-url-loading"
+                    style={{ display: 'inline-block', width: '18em', maxWidth: '100%', height: '1em' }}
+                  />
+                ) : null)}
             </span>
-          ) : (
-            titleName
-          )
+          ) : undefined
         }
-        descriptionClassName={url || urlLoading ? undefined : 'break-all'}
         actions={
           visit || urlLoading || onDelete || deleteLoading ? (
             <div className="flex items-center gap-2">
               <VisitButton visit={visit} loading={urlLoading} />
               {onDelete || deleteLoading ? (
-                <Button
-                  type="danger"
-                  theme="outline"
-                  size="xs"
-                  icon={<Icon icon={Trash2Icon} size={12} />}
-                  onClick={onDelete}
-                  disabled={!onDelete}
-                  aria-busy={deleteLoading || undefined}
-                  data-e2e="workload-delete">
-                  Delete
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="quaternary"
+                      theme="outline"
+                      size="xs"
+                      aria-label="More actions"
+                      aria-busy={deleteLoading || undefined}
+                      disabled={!onDelete}
+                      icon={<Icon icon={EllipsisIcon} size={14} />}
+                      data-e2e="workload-more-actions"
+                    />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={onDelete}
+                      className="text-destructive"
+                      data-e2e="workload-delete">
+                      <Icon icon={Trash2Icon} size={14} />
+                      Delete workload
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : null}
             </div>
           ) : undefined

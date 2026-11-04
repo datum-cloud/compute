@@ -43,7 +43,7 @@ import {
 } from "../lib/alb-status";
 import { WorkloadUrl } from "../components/workload-url";
 import { albOverviewHref, useWorkloadOverviewState } from "../lib/use-workload-overview-state";
-import { compactDetailRows, overviewStatusLine } from "../lib/workload-presenters";
+import { compactDetailRows, imageShortName, overviewStatusLine } from "../lib/workload-presenters";
 import { formatLocationNames, useLocationIndex } from "../lib/locations";
 import { identityValues, useProjectResourceIdentity } from "../lib/metrics-queries";
 import type { WorkloadOutletContext } from "./workload-outlet-context";
@@ -52,7 +52,7 @@ import WorkloadLogs from "./workload-logs";
 import WorkloadMetrics from "./workload-metrics";
 import type { Workload } from "../schema";
 import { Icon } from "@datum-cloud/datum-ui/icons";
-import { GlobeIcon } from "lucide-react";
+import { GlobeIcon, MapPinIcon, NetworkIcon, PackageIcon } from "lucide-react";
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import {
   Link,
@@ -250,6 +250,71 @@ function WorkloadDetails(props: WorkloadDetailsProps) {
   );
 }
 
+/** Inline: the host compiles no `text-[11px]`. */
+const CHIP_TEXT_STYLE = { fontSize: "11px" } as const;
+
+/** A small inline value: an icon and a mono label. */
+function SummaryChip({
+  icon,
+  children,
+  title,
+}: {
+  icon: typeof GlobeIcon;
+  children: ReactNode;
+  title?: string;
+}) {
+  return (
+    <span
+      className="bg-muted inline-flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5"
+      title={title}
+    >
+      <Icon icon={icon} size={11} className="text-muted-foreground shrink-0" aria-hidden />
+      <span className="truncate font-mono font-medium" style={CHIP_TEXT_STYLE}>
+        {children}
+      </span>
+    </span>
+  );
+}
+
+/** "Workload · redis:8.10 on app-net in us-central-1", under the workload's name. */
+function WorkloadSummary({ workload }: { workload: Workload }) {
+  const image = imageShortName(workload.image);
+  const [network] = workload.networks;
+  const [location, ...more] = workload.locations;
+  return (
+    <span
+      className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-1.5 text-sm"
+      data-testid="compute-plugin-workload-summary"
+    >
+      Workload
+      {image ? (
+        <>
+          <span aria-hidden>·</span>
+          <SummaryChip icon={PackageIcon} title={workload.image}>
+            {image}
+          </SummaryChip>
+        </>
+      ) : null}
+      {network ? (
+        <>
+          on
+          <SummaryChip icon={NetworkIcon} title={workload.networks.join(", ")}>
+            {workload.networks.length > 1 ? `${network} +${workload.networks.length - 1}` : network}
+          </SummaryChip>
+        </>
+      ) : null}
+      {location ? (
+        <>
+          in
+          <SummaryChip icon={MapPinIcon} title={workload.locations.join(", ")}>
+            {more.length ? `${location} +${more.length}` : location}
+          </SummaryChip>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
 function WorkloadLayoutShell({
   projectHref,
   workloadsHref,
@@ -323,6 +388,7 @@ function WorkloadLayoutShell({
       metricsHref={metricsHref}
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
+      summary={workload ? <WorkloadSummary workload={workload} /> : undefined}
       // Held until the workload is known too, since that decides whether it links.
       urlLoading={published.isLoading || (isLoading && !!headerAlb?.hostname)}
       deleteLoading={(isLoading || permissions.isLoading) && !workload?.deleting}
