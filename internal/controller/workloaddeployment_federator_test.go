@@ -775,59 +775,66 @@ func TestWorkloadDeploymentFederator_FinalizeIsSelfContained(t *testing.T) {
 }
 
 // TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval asserts
-// the project deployment, and so the project, is held until its hub copy and
-// the Instances written back for it are gone, and that the PropagationPolicy
-// that carries the deletion to the cells stays until then.
+// the project deployment, and so the project, is held until the Instances
+// written back for it are gone. Write-backs are deleted by the finalizer
+// itself, including copies no hub deployment owns, and the hold retries on a
+// short timer instead of failing the reconcile.
 func TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval(t *testing.T) {
 	t.Parallel()
 
 	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
 	wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: testKarmadaNSStr}
-	// Karmada keeps a deleted hub deployment until the cells have removed it.
 	hubWD := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       testWDName,
-			Namespace:  testKarmadaNSStr,
-			Labels:     map[string]string{locationLabel: testFederatorLocation},
-			Finalizers: []string{"karmada.io/test"},
+			Name:      testWDName,
+			Namespace: testKarmadaNSStr,
+			Labels:    map[string]string{locationLabel: testFederatorLocation},
 		},
 		Spec: wd.Spec,
 	}
+	// An ownerless write-back, which garbage collection never removes, still
+	// held by the projector's finalizer.
 	writeBack := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
 		Name:       testWDName + "-0",
 		Namespace:  testKarmadaNSStr,
 		Labels:     map[string]string{computev1alpha.WorkloadDeploymentNameLabel: testWDName},
 		Finalizers: []string{instanceProjectionFinalizer},
 	}}
+	other := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
+		Name:      "unrelated-0",
+		Namespace: testKarmadaNSStr,
+		Labels:    map[string]string{computev1alpha.WorkloadDeploymentNameLabel: "unrelated"},
+	}}
 	policy := &karmadapolicyv1alpha1.PropagationPolicy{ObjectMeta: metav1.ObjectMeta{
 		Name:      propagationPolicyNameFor(testFederatorLocation, ""),
 		Namespace: testKarmadaNSStr,
 	}}
 	projectClient := newProjectFakeClient(wd)
-	karmadaClient := newKarmadaFakeClient(hubWD, writeBack, policy)
+	karmadaClient := newKarmadaFakeClient(hubWD, writeBack, other, policy)
 	r := newTestFederator(projectClient, karmadaClient)
 	ctx := mccontext.WithCluster(context.Background(), testCluster)
-	policyExists := func() bool {
-		return karmadaClient.Get(ctx, client.ObjectKeyFromObject(policy), &karmadapolicyv1alpha1.PropagationPolicy{}) == nil
+	exists := func(obj client.Object) bool {
+		return karmadaClient.Get(ctx, client.ObjectKeyFromObject(obj), obj.DeepCopyObject().(client.Object)) == nil
 	}
 
 	_, err := r.Finalize(ctx, wd)
-	require.ErrorContains(t, err, "waiting for downstream deployment")
-	assert.True(t, policyExists(), "the policy must stay while the hub deployment is removed")
-
-	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(hubWD), hubWD))
-	hubWD.Finalizers = nil
-	require.NoError(t, karmadaClient.Update(ctx, hubWD))
-	_, err = r.Finalize(ctx, wd)
-	require.ErrorContains(t, err, "waiting for 1 downstream instances")
-
-	require.NoError(t, karmadaClient.Delete(ctx, writeBack))
+	require.ErrorIs(t, err, errDownstreamRemovalPending)
+	assert.False(t, exists(hubWD))
 	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(writeBack), writeBack))
+	assert.False(t, writeBack.DeletionTimestamp.IsZero(), "the finalizer deletes write-backs itself")
+	assert.True(t, exists(other), "another deployment's instances are left alone")
+	assert.True(t, exists(policy), "the policy stays while the deployment is held")
+
+	// Reconcile turns the hold into a short requeue, not an error.
+	result, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.Equal(t, downstreamRemovalPollInterval, result.RequeueAfter)
+
 	writeBack.Finalizers = nil
 	require.NoError(t, karmadaClient.Update(ctx, writeBack))
 	_, err = r.Finalize(ctx, wd)
 	require.NoError(t, err)
-	assert.False(t, policyExists(), "the unused policy is removed once the hub is clean")
+	assert.False(t, exists(policy), "the unused policy is removed once the hub is clean")
 }
 
 // TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable asserts the
