@@ -34,8 +34,11 @@ function primaryAddress(instance: Instance): string | undefined {
 // Inline: the host compiles none of these arbitrary sizes.
 const SUBLINE_STYLE = { fontSize: '11px' } as const;
 const TABLE_STYLE = { tableLayout: 'fixed', minWidth: '48rem' } as const;
-/** Instance, region, private address, CPU and memory, age, actions. */
-const COLUMN_WIDTHS = ['26%', '12%', '30%', '11%', '6%', '15%'];
+/**
+ * Instance, region, private address, CPU and memory, age. Actions take what
+ * is left, so a third button (Shell) has room.
+ */
+const COLUMN_WIDTHS = ['29%', '10%', '30%', '10%', '5%', undefined];
 
 /** Where to connect to an instance: its published name when it has one, its address under it. */
 function PrivateAddress({ instance }: { instance: Instance }) {
@@ -111,13 +114,15 @@ function InstanceRow({
     <TableRow data-testid="compute-plugin-instance-row">
       <TableCell className="px-4 py-2.5">
         <span className="flex min-w-0 flex-col gap-0.5">
-          <Link to={href} className="flex min-w-0 items-center gap-2 hover:underline">
+          <Link to={href} className="flex min-w-0 items-start gap-2 hover:underline">
             <span
               className="size-2 shrink-0 rounded-full"
-              style={{ background: STATUS_TONE_COLOR[readiness.tone] }}
+              // Centered on the first line (`text-xs`, 1rem) of a name that may wrap.
+              style={{ background: STATUS_TONE_COLOR[readiness.tone], marginTop: '0.25rem' }}
               aria-hidden
             />
-            <span className="truncate font-mono text-xs font-medium" title={instance.name}>
+            {/* Wrapped rather than cut: the name is how a person finds this instance elsewhere. */}
+            <span className="min-w-0 font-mono text-xs font-medium break-all whitespace-normal">
               {instance.name}
             </span>
           </Link>
