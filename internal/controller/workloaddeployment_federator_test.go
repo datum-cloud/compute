@@ -38,6 +38,8 @@ const (
 	testFederatorLocation = "us-west-2"
 )
 
+const workloadDeploymentsResource = "workloaddeployments"
+
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
 // testProjectNamespace returns a corev1.Namespace for the project cluster with a
@@ -571,7 +573,7 @@ func TestWorkloadDeploymentFederator_FinalizationUpdateRaces(t *testing.T) {
 		{
 			name: "conflict is retried without an error",
 			updateError: apierrors.NewConflict(
-				schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "workloaddeployments"},
+				schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: workloadDeploymentsResource},
 				testWDName,
 				assert.AnError,
 			),
@@ -580,7 +582,7 @@ func TestWorkloadDeploymentFederator_FinalizationUpdateRaces(t *testing.T) {
 		{
 			name: "not found means finalization completed",
 			updateError: apierrors.NewNotFound(
-				schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "workloaddeployments"},
+				schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: workloadDeploymentsResource},
 				testWDName,
 			),
 		},
