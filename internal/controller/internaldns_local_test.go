@@ -19,6 +19,11 @@ import (
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
 
+const (
+	localTestRegion  = "us-east-1"
+	localTestNetwork = "app"
+)
+
 func localDNSScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -61,7 +66,7 @@ func TestLocalPublisherWritesIntoTheCellWithItsRegion(t *testing.T) {
 	copyOf(registration, "reg-uid")
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, registration).Build()
 	access := InternalDNSProjectAccess{Reader: originUIDReader{cl}, Writer: cl}
-	r := &InternalDNSPublisherReconciler{LocalRegion: "us-east-1"}
+	r := &InternalDNSPublisherReconciler{LocalRegion: localTestRegion}
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestNamespace, UID: internalDNSTestInstanceUID}}
 	owner := metav1.OwnerReference{APIVersion: computev1alpha.GroupVersion.String(), Kind: internalDNSInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}
 	attachment := instanceDNSAttachment{VPCUID: internalDNSTestVPCUID, Eligible: true, RecordSets: []any{map[string]any{internalDNSRecordsField: []any{map[string]any{}}}}}
@@ -72,7 +77,7 @@ func TestLocalPublisherWritesIntoTheCellWithItsRegion(t *testing.T) {
 
 	contribution := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "web-contribution")
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(contribution), contribution))
-	assert.Equal(t, "us-east-1", contribution.GetLabels()[internalDNSOriginLabel])
+	assert.Equal(t, localTestRegion, contribution.GetLabels()[internalDNSOriginLabel])
 	uid, _, _ := unstructured.NestedString(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, internalDNSUIDField)
 	assert.Equal(t, "reg-uid", uid, "the contribution must reference the project's registration UID")
 	generation, _, _ := unstructured.NestedInt64(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField, "generation")
@@ -89,7 +94,7 @@ func TestLocalPublisherWaitsForTheProjectsReservation(t *testing.T) {
 	s := localDNSScheme(t)
 	resolver := copyOf(resolverContextObject("ctx", internalDNSTestProjectUID, internalDNSTestVPCUID, true), "ctx-uid")
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver).Build()
-	r := &InternalDNSPublisherReconciler{LocalRegion: "us-east-1"}
+	r := &InternalDNSPublisherReconciler{LocalRegion: localTestRegion}
 	instance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: internalDNSTestInstanceName, Namespace: internalDNSTestNamespace, UID: internalDNSTestInstanceUID}}
 	ready, err := r.reconcileAttachment(ctx, InternalDNSProjectAccess{Reader: originUIDReader{cl}, Writer: cl}, InternalDNSProjectIdentity{ProjectUID: internalDNSTestProjectUID}, internalDNSTestNamespace, instance, metav1.OwnerReference{}, instanceDNSAttachment{VPCUID: internalDNSTestVPCUID}, "web-contribution")
 	require.NoError(t, err)
@@ -108,12 +113,12 @@ func TestCellResolvesTheNetworkFromItsContext(t *testing.T) {
 	nc.SetGroupVersionKind(networkContextGVK)
 	nc.SetNamespace(internalDNSTestNamespace)
 	nc.SetName("app-us-east-1")
-	nc.SetLabels(map[string]string{networkNameLabel: "app", networkLocationLabel: "us-east-1", networkUIDLabel: "project-network-uid"})
+	nc.SetLabels(map[string]string{networkNameLabel: localTestNetwork, networkLocationLabel: localTestRegion, networkUIDLabel: "project-network-uid"})
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(nc).Build()
-	uid, err := cellNetworkUID("us-east-1")(context.Background(), cl, internalDNSTestNamespace, "app")
+	uid, err := cellNetworkUID(localTestRegion)(context.Background(), cl, internalDNSTestNamespace, localTestNetwork)
 	require.NoError(t, err)
 	assert.Equal(t, types.UID("project-network-uid"), uid)
-	_, err = cellNetworkUID("us-east-1")(context.Background(), cl, internalDNSTestNamespace, "other")
+	_, err = cellNetworkUID(localTestRegion)(context.Background(), cl, internalDNSTestNamespace, "other")
 	assert.Error(t, err)
 }
 
@@ -141,7 +146,7 @@ func TestManagementHandsAnInstanceToItsCellOnlyOnceTheCellPublished(t *testing.T
 	require.NoError(t, err)
 	assert.False(t, handed)
 	fromCell := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "from-cell")
-	fromCell.SetLabels(map[string]string{internalDNSInstanceUID: "cell-uid", internalDNSOriginLabel: "us-east-1"})
+	fromCell.SetLabels(map[string]string{internalDNSInstanceUID: "cell-uid", internalDNSOriginLabel: localTestRegion})
 	require.NoError(t, cl.Create(ctx, fromCell))
 	handed, err = cellPublished(ctx, cl, internalDNSTestNamespace, "cell-uid")
 	require.NoError(t, err)

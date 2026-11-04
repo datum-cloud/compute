@@ -24,6 +24,8 @@ const (
 	// publishing locally marks its objects with its region, and the region's
 	// DNS control plane sends them on to the other regions and the project.
 	internalDNSOriginLabel = "internal-dns.miloapis.com/origin"
+	// internalDNSOriginProject is the origin of objects the project wrote.
+	internalDNSOriginProject = labelProject
 	// internalDNSOriginUIDAnnotation and internalDNSOriginGenerationAnnotation
 	// are the UID and generation an object has where it was written. DNS
 	// copies in a cell carry them, and references use them.
@@ -61,7 +63,7 @@ func (r originUIDReader) List(ctx context.Context, list client.ObjectList, opts 
 // withOriginUID translates only the project's copies, never an object the
 // cell wrote itself, so updates of the cell's own objects keep their UID.
 func withOriginUID(obj client.Object) {
-	if _, dns := obj.(*unstructured.Unstructured); !dns || obj.GetLabels()[internalDNSOriginLabel] != "project" {
+	if _, dns := obj.(*unstructured.Unstructured); !dns || obj.GetLabels()[internalDNSOriginLabel] != internalDNSOriginProject {
 		return
 	}
 	if uid := obj.GetAnnotations()[internalDNSOriginUIDAnnotation]; uid != "" {
@@ -150,7 +152,7 @@ func cellPublished(ctx context.Context, reader client.Reader, namespace, sourceU
 		return false, err
 	}
 	for _, item := range list.Items {
-		if origin := item.GetLabels()[internalDNSOriginLabel]; origin != "" && origin != "project" {
+		if origin := item.GetLabels()[internalDNSOriginLabel]; origin != "" && origin != internalDNSOriginProject {
 			return true, nil
 		}
 	}
@@ -171,7 +173,7 @@ func lookupInstanceDNSReservation(ctx context.Context, access InternalDNSProject
 	// Only a copy of the project's registration can be referenced from every
 	// region; wait for one that carries the project's identity.
 	annotations := registration.GetAnnotations()
-	if registration.GetLabels()[internalDNSOriginLabel] != "project" || annotations[internalDNSOriginUIDAnnotation] == "" || annotations[internalDNSOriginGenerationAnnotation] == "" {
+	if registration.GetLabels()[internalDNSOriginLabel] != internalDNSOriginProject || annotations[internalDNSOriginUIDAnnotation] == "" || annotations[internalDNSOriginGenerationAnnotation] == "" {
 		return nil, nil
 	}
 	return registration, nil
