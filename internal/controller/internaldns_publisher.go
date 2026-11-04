@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontroller "sigs.k8s.io/multicluster-runtime/pkg/controller"
@@ -53,6 +54,7 @@ const (
 	internalDNSGroup                   = "dns.networking.miloapis.com"
 	internalDNSVersion                 = "v1alpha1"
 	internalDNSInstanceUID             = "internal-dns.compute.datumapis.com/instance-uid"
+	internalDNSInstanceNameHash        = "internal-dns.compute.datumapis.com/instance-name-hash"
 	internalDNSVPCUID                  = "internal-dns.compute.datumapis.com/vpc-uid"
 	internalDNSManagedBy               = "internal-dns.compute.datumapis.com/managed-by"
 	internalDNSManager                 = "compute-instance-publisher"
@@ -125,7 +127,10 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 
 	var instance computev1alpha.Instance
 	if err := providerCluster.GetAPIReader().Get(ctx, req.NamespacedName, &instance); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if instanceNotFound(err, req.Name) {
+			return ctrl.Result{}, r.withdrawDeletedInstance(ctx, req, providerCluster)
+		}
+		return ctrl.Result{}, err
 	}
 
 	projectID, err := r.projectID(ctx, req.ClusterName, &instance)
@@ -158,6 +163,12 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	if projectInstance.UID != instance.UID {
 		return ctrl.Result{}, fmt.Errorf("refusing DNS publication from Instance copy UID %q for current project Instance UID %q", instance.UID, projectInstance.UID)
 	}
+	// Withdraw an earlier Instance of the same name first, so a failure later
+	// in this pass cannot leave the replacement answering with its
+	// predecessor's address. The resync retries a failed sweep.
+	if err := deletePredecessorDNSResources(ctx, access, projectNamespace, &projectInstance); err != nil {
+		log.FromContext(ctx).Error(err, "withdrawing DNS records of an earlier instance with the same name", "instance", req.NamespacedName)
+	}
 	owner := metav1.OwnerReference{
 		APIVersion: computev1alpha.GroupVersion.String(),
 		Kind:       internalDNSInstanceKind,
@@ -167,7 +178,7 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	}
 
 	if !instance.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, nil)
+		return ctrl.Result{}, r.deletePublishedResources(ctx, access, projectNamespace, &projectInstance, nil)
 	}
 
 	attachments, err := instanceDNSAttachments(ctx, access.Reader, projectNamespace, &projectInstance, r.observeInterface)
@@ -193,7 +204,7 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 	if err := r.reportPublication(ctx, access.Writer, access.Reader, &projectInstance, publicationStatus); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, desired); err != nil {
+	if err := r.deletePublishedResources(ctx, access, projectNamespace, &projectInstance, desired); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Every input arrives as an event: the Instance, the DNS objects it owns,
@@ -305,9 +316,10 @@ func (r *InternalDNSPublisherReconciler) reconcileAttachment(ctx context.Context
 	}
 
 	labels := map[string]string{
-		internalDNSInstanceUID: string(instance.UID),
-		internalDNSVPCUID:      string(attachment.VPCUID),
-		internalDNSManagedBy:   internalDNSManager,
+		internalDNSInstanceUID:      string(instance.UID),
+		internalDNSInstanceNameHash: shortHash(instance.Name),
+		internalDNSVPCUID:           string(attachment.VPCUID),
+		internalDNSManagedBy:        internalDNSManager,
 	}
 	ownerName := allocatedInstanceDNSName(instance)
 	for i := range attachment.RecordSets {
@@ -444,8 +456,65 @@ func authorityReferencesChanged(gvk schema.GroupVersionKind, current, desired ma
 	return false
 }
 
-func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, instanceUID types.UID, keep map[string]struct{}) error {
-	selector := client.MatchingLabels{internalDNSInstanceUID: string(instanceUID), internalDNSManagedBy: internalDNSManager}
+// deletePublishedResources removes the instance's resources that are not in
+// keep, and every resource left by an earlier Instance of the same name.
+func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, instance *computev1alpha.Instance, keep map[string]struct{}) error {
+	if err := deleteInstanceDNSResources(ctx, access, namespace, client.MatchingLabels{internalDNSInstanceUID: string(instance.UID), internalDNSManagedBy: internalDNSManager}, func(item *unstructured.Unstructured) bool {
+		_, retained := keep[item.GetName()]
+		return !retained || item.GetKind() == dnsRegistrationGVK.Kind
+	}); err != nil {
+		return err
+	}
+	return deletePredecessorDNSResources(ctx, access, namespace, instance)
+}
+
+// deletePredecessorDNSResources removes resources left by an earlier Instance
+// with this Instance's name. A recreated Instance must not serve its
+// predecessor's addresses while those resources wait for garbage collection.
+// Resources written before the name label existed still wait for it.
+func deletePredecessorDNSResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, instance *computev1alpha.Instance) error {
+	return deleteInstanceDNSResources(ctx, access, namespace, client.MatchingLabels{internalDNSInstanceNameHash: shortHash(instance.Name), internalDNSManagedBy: internalDNSManager}, func(item *unstructured.Unstructured) bool {
+		return item.GetLabels()[internalDNSInstanceUID] != string(instance.UID) && ownedByInstanceNamed(item, instance.Name)
+	})
+}
+
+// withdrawDeletedInstance removes the resources of an Instance that no longer
+// exists, so a deleted or renamed Instance stops answering without waiting for
+// garbage collection. It only runs where the Instance is read from the project
+// API itself; otherwise garbage collection of the owned resources does this.
+func (r *InternalDNSPublisherReconciler) withdrawDeletedInstance(ctx context.Context, req mcreconcile.Request, providerCluster cluster.Cluster) error {
+	if r.ProjectIDForInstance != nil || r.ProjectNamespaceForInstance != nil {
+		return nil
+	}
+	access, err := r.projectAccess(ctx, string(req.ClusterName), providerCluster)
+	if err != nil {
+		return err
+	}
+	// Keep the resources of an Instance created under this name since the read
+	// above, in case another writer is reconciling it.
+	var current computev1alpha.Instance
+	if err := access.Reader.Get(ctx, req.NamespacedName, &current); err == nil {
+		return deletePredecessorDNSResources(ctx, access, req.Namespace, &current)
+	} else if !instanceNotFound(err, req.Name) {
+		return err
+	}
+	return deleteInstanceDNSResources(ctx, access, req.Namespace, client.MatchingLabels{internalDNSInstanceNameHash: shortHash(req.Name), internalDNSManagedBy: internalDNSManager}, func(item *unstructured.Unstructured) bool {
+		return ownedByInstanceNamed(item, req.Name)
+	})
+}
+
+// instanceNotFound reports whether err says the named Instance does not exist,
+// as opposed to the API not serving Instances at all, which also returns 404.
+func instanceNotFound(err error, name string) bool {
+	var status apierrors.APIStatus
+	if !apierrors.IsNotFound(err) || !errors.As(err, &status) {
+		return false
+	}
+	details := status.Status().Details
+	return details != nil && details.Kind == "instances" && details.Name == name
+}
+
+func deleteInstanceDNSResources(ctx context.Context, access InternalDNSProjectAccess, namespace string, selector client.MatchingLabels, shouldDelete func(*unstructured.Unstructured) bool) error {
 	for _, gvk := range []schema.GroupVersionKind{dnsContributionGVK, dnsRegistrationGVK} {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
@@ -454,16 +523,25 @@ func (r *InternalDNSPublisherReconciler) deletePublishedResources(ctx context.Co
 		}
 		for i := range list.Items {
 			item := &list.Items[i]
-			if _, retained := keep[item.GetName()]; retained && gvk != dnsRegistrationGVK {
+			item.SetGroupVersionKind(gvk)
+			if !shouldDelete(item) {
 				continue
 			}
-			if err := access.Writer.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
+			if err := access.Writer.Delete(ctx, item, client.Preconditions{UID: ptrUID(item.GetUID())}); client.IgnoreNotFound(err) != nil && !apierrors.IsConflict(err) {
 				return fmt.Errorf("delete stale %s %s/%s: %w", gvk.Kind, namespace, item.GetName(), err)
 			}
 		}
 	}
 	return nil
 }
+
+// ownedByInstanceNamed reports whether an Instance named name controls obj.
+func ownedByInstanceNamed(obj metav1.Object, name string) bool {
+	ref := metav1.GetControllerOf(obj)
+	return ref != nil && ref.APIVersion == computev1alpha.GroupVersion.String() && ref.Kind == internalDNSInstanceKind && ref.Name == name
+}
+
+func ptrUID(uid types.UID) *types.UID { return &uid }
 
 func newDNSObject(gvk schema.GroupVersionKind, namespace, name string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
