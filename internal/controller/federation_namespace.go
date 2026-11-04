@@ -36,3 +36,22 @@ func verifyFederationNamespace(ctx context.Context, hub client.Reader, hubNS, cl
 	}
 	return true, nil
 }
+
+// ownedHubNamespaces lists the hub namespaces of upstreamNamespace in the
+// project clusterName, found by the owner labels the federator writes. It
+// usually returns one; a project namespace that was deleted and recreated
+// under the same name can leave an earlier one behind.
+func ownedHubNamespaces(ctx context.Context, hub client.Reader, clusterName, upstreamNamespace string) ([]string, error) {
+	var namespaces corev1.NamespaceList
+	if err := hub.List(ctx, &namespaces, client.MatchingLabels{
+		downstreamclient.UpstreamOwnerClusterNameLabel: EncodeClusterName(clusterName),
+		downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamNamespace,
+	}); err != nil {
+		return nil, fmt.Errorf("failed listing hub namespaces of %s/%s: %w", clusterName, upstreamNamespace, err)
+	}
+	names := make([]string, 0, len(namespaces.Items))
+	for _, namespace := range namespaces.Items {
+		names = append(names, namespace.Name)
+	}
+	return names, nil
+}

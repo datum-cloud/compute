@@ -870,6 +870,24 @@ func TestWorkloadDeploymentFederator_FinalizeIgnoresAnotherProjectsNamespace(t *
 	assert.True(t, apierrors.IsNotFound(karmadaClient.Get(ctx, client.ObjectKeyFromObject(own), own)), "the deployment's own hub copy is removed")
 }
 
+// TestWorkloadDeploymentFederator_FinalizeIgnoresAMissingRecordedNamespace
+// asserts a record naming a hub namespace that does not exist cannot skip
+// cleanup of the deployment's real hub copy.
+func TestWorkloadDeploymentFederator_FinalizeIgnoresAMissingRecordedNamespace(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: "ns-does-not-exist"}
+	own := &computev1alpha.WorkloadDeployment{ObjectMeta: metav1.ObjectMeta{Name: testWDName, Namespace: testKarmadaNSStr}}
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), own)
+	r := newTestFederator(newProjectFakeClient(wd), karmadaClient)
+
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	_, err := r.Finalize(ctx, wd)
+	require.NoError(t, err)
+	assert.True(t, apierrors.IsNotFound(karmadaClient.Get(ctx, client.ObjectKeyFromObject(own), own)), "the real hub copy is removed")
+}
+
 // TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable asserts the
 // finalizer is held, not released, when neither the record nor live resolution
 // can name the hub namespace. Releasing here would strand the hub deployment.

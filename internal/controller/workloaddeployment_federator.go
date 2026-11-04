@@ -222,10 +222,6 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 // namespace, deletes the PropagationPolicy as well.
 func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	deployment := obj.(*computev1alpha.WorkloadDeployment)
-	logger := log.FromContext(ctx).WithValues(
-		"deployment", deployment.Name,
-		"namespace", deployment.Namespace,
-	)
 
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
@@ -237,37 +233,44 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 		return finalizer.Result{}, err
 	}
 
-	// Prefer the namespace recorded on the object itself. Live resolution reads
-	// the project namespace, an object this controller neither owns nor keeps
-	// alive. If that namespace were removed first, finalization would fail on
-	// every attempt and strand the hub deployment, which is the root of the hub
-	// ownership tree. The recorded value removes that dependency.
-	downstreamNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
-	if downstreamNS != "" {
-		owned, err := verifyFederationNamespace(ctx, r.FederationClient, downstreamNS, string(clusterName), deployment.Namespace)
-		switch {
-		case errors.Is(err, errFederationNamespaceNotOwned):
-			// The record names another project's namespace, so ignore it and
-			// resolve this deployment's own hub namespace instead.
-			logger.Info("ignoring a recorded hub namespace that belongs to another project", "recorded", downstreamNS)
-			downstreamNS = ""
-		case err != nil:
-			return finalizer.Result{}, err
-		case !owned:
-			// The hub namespace is gone, and everything in it with it.
-			return finalizer.Result{}, nil
-		}
+	// Find the hub namespaces by the owner labels the federator writes, not by
+	// the namespace recorded on the deployment: project users can write that
+	// record, so it could name another project's namespace, or one that does
+	// not exist and so would skip cleanup. The labels also work once the
+	// project namespace is gone. Every match is cleaned up, which covers one
+	// left behind by an earlier project namespace of the same name.
+	hubNamespaces, err := ownedHubNamespaces(ctx, r.FederationClient, string(clusterName), deployment.Namespace)
+	if err != nil {
+		return finalizer.Result{}, err
 	}
-	if downstreamNS == "" {
-		// Federated before the annotation existed, so fall back to live
-		// resolution and accept the dependency this branch exists to avoid.
+	if len(hubNamespaces) == 0 {
+		// No labelled hub namespace, so fall back to live resolution, which
+		// fails while the project namespace cannot be read.
 		strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.FederationClient)
-		downstreamNS, err = strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
+		downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 		if err != nil {
 			return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)
 		}
+		hubNamespaces = []string{downstreamNS}
 	}
+	var pending error
+	for _, downstreamNS := range hubNamespaces {
+		err := r.finalizeInHubNamespace(ctx, deployment, downstreamNS)
+		if errors.Is(err, errDownstreamRemovalPending) {
+			pending = err
+			continue
+		}
+		if err != nil {
+			return finalizer.Result{}, err
+		}
+	}
+	return finalizer.Result{}, pending
+}
 
+// finalizeInHubNamespace removes the deployment's hub copy from downstreamNS
+// and waits for it and its write-backs to go.
+func (r *WorkloadDeploymentFederator) finalizeInHubNamespace(ctx context.Context, deployment *computev1alpha.WorkloadDeployment, downstreamNS string) error {
+	logger := log.FromContext(ctx).WithValues("deployment", deployment.Name, "namespace", deployment.Namespace)
 	kd := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deployment.Name,
@@ -281,32 +284,32 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	legacyCity := ""
 	if deployment.Spec.LocationRef.Name == "" {
 		if err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(kd), kd); client.IgnoreNotFound(err) != nil {
-			return finalizer.Result{}, fmt.Errorf("failed to read downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
+			return fmt.Errorf("failed to read downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
 		}
 		legacyCity = kd.Labels[locationsv1alpha1.TopologyCityCodeKey]
 	}
 
 	if err := r.FederationClient.Delete(ctx, kd); client.IgnoreNotFound(err) != nil {
-		return finalizer.Result{}, fmt.Errorf("failed to delete downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
+		return fmt.Errorf("failed to delete downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
 	}
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
 
 	if deployment.Spec.LocationRef.Name == "" {
 		if err := r.cleanupLegacyPropagationPolicies(ctx, downstreamNS, legacyCity); err != nil {
-			return finalizer.Result{}, err
+			return err
 		}
-		return finalizer.Result{}, r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name)
+		return r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name)
 	}
 
 	// An unused policy is only recognisable once the hub deployment is gone.
 	if err := r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name); err != nil {
-		return finalizer.Result{}, err
+		return err
 	}
 	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.LocationRef.Name, r.propagationRuntimeClass(deployment)); err != nil {
-		return finalizer.Result{}, err
+		return err
 	}
 
-	return finalizer.Result{}, nil
+	return nil
 }
 
 // errDownstreamRemovalPending marks a finalization that is waiting for hub

@@ -944,6 +944,27 @@ func TestInstanceConsoleSessionRevokeWaitsForTheCell(t *testing.T) {
 		events[EventReasonSessionEnded].Annotations[sessionEventReasonAnnotation])
 }
 
+// TestInstanceConsoleSessionRevokeIgnoresARewrittenHubNamespace asserts a
+// deleted session is still revoked on its cell when its user-writable record
+// of the hub namespace has been pointed somewhere else.
+func TestInstanceConsoleSessionRevokeIgnoresARewrittenHubNamespace(t *testing.T) {
+	env := newClaimedSessionEnv(t)
+	session, ok := env.projectSession(t)
+	require.True(t, ok)
+	session.Annotations[computev1alpha.FederationNamespaceAnnotation] = "ns-does-not-exist"
+	require.NoError(t, env.project.Update(context.Background(), session))
+	session = env.deleteProjectSession(t)
+
+	env.now = session.DeletionTimestamp.Add(time.Second)
+	env.reconcile(t)
+
+	hubCopy, ok := env.hubSession(t)
+	require.True(t, ok)
+	assert.True(t, revokeRequested(hubCopy), "the session is revoked in its real hub namespace")
+	_, ok = env.projectSession(t)
+	assert.True(t, ok, "the session is held until the cell confirms")
+}
+
 func TestInstanceConsoleSessionRevokeRecordsTheCellsOwnEnd(t *testing.T) {
 	env := newClaimedSessionEnv(t)
 	env.deleteProjectSession(t)
