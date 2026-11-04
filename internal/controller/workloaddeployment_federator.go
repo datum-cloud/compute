@@ -139,7 +139,14 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	}
 	if finalizationResult.Updated {
 		if err = cl.GetClient().Update(ctx, &deployment); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
+			// Removing the last finalizer may make the object disappear before the
+			// update response is observed. A concurrent writer is also expected to
+			// win occasionally; retry that from a fresh read without recording a
+			// controller failure.
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
+			return requeueOnConflict(fmt.Errorf("failed to update based on finalization result: %w", err))
 		}
 		return ctrl.Result{}, nil
 	}

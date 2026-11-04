@@ -184,7 +184,7 @@ func TestReportPublicationRetriesConcurrentRuntimeStatus(t *testing.T) {
 	require.Equal(t, metav1.ConditionTrue, instance.Status.Conditions[0].Status)
 }
 
-func TestReportPublicationRejectsChangedInstance(t *testing.T) {
+func TestReportPublicationIgnoresChangedInstance(t *testing.T) {
 	for _, changedUID := range []bool{false, true} {
 		s := runtime.NewScheme()
 		require.NoError(t, computev1alpha.AddToScheme(s))
@@ -197,7 +197,7 @@ func TestReportPublicationRejectsChangedInstance(t *testing.T) {
 		}
 		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(latest).WithStatusSubresource(latest).Build()
 		err := (&InternalDNSPublisherReconciler{}).reportPublication(context.Background(), cl, cl, original, []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "private"}}})
-		require.Error(t, err)
+		require.NoError(t, err)
 		require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(latest), latest))
 		require.Empty(t, latest.Status.DNS)
 	}

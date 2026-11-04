@@ -13,9 +13,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -556,6 +558,47 @@ func TestWorkloadDeploymentFederator_Finalization(t *testing.T) {
 				types.NamespacedName{Name: testWDName, Namespace: testProjNS}, &updatedWD)
 			assert.True(t, apierrors.IsNotFound(err),
 				"project WD should be gone after finalizer removal (DeletionTimestamp + empty Finalizers = GC)")
+		})
+	}
+}
+
+func TestWorkloadDeploymentFederator_FinalizationUpdateRaces(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		updateError error
+		wantRequeue time.Duration
+	}{
+		{
+			name: "conflict is retried without an error",
+			updateError: apierrors.NewConflict(
+				schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "workloaddeployments"},
+				testWDName,
+				assert.AnError,
+			),
+			wantRequeue: time.Second,
+		},
+		{
+			name: "not found means finalization completed",
+			updateError: apierrors.NewNotFound(
+				schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "workloaddeployments"},
+				testWDName,
+			),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+			wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: testKarmadaNSStr}
+			base := newProjectFakeClient(testProjectNamespace(), wd)
+			projectClient := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+				Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+					return tc.updateError
+				},
+			})
+			r := newTestFederator(projectClient, newKarmadaFakeClient())
+
+			result, err := r.Reconcile(context.Background(), reconcileRequest())
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantRequeue, result.RequeueAfter)
 		})
 	}
 }

@@ -14,7 +14,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -118,7 +117,10 @@ func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, 
 			return client.IgnoreNotFound(err)
 		}
 		if latest.UID != instance.UID || latest.Generation != instance.Generation {
-			return apierrors.NewConflict(schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "instances"}, instance.Name, fmt.Errorf("instance changed during DNS publication"))
+			// Publication was computed for an older object. Its update event will
+			// schedule a fresh reconcile; quietly abandon the stale status rather
+			// than exhausting RetryOnConflict with an error it cannot resolve.
+			return nil
 		}
 		if reflect.DeepEqual(latest.Status.DNS, status) {
 			return nil
