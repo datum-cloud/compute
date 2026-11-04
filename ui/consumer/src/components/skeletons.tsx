@@ -210,7 +210,7 @@ function SectionHeaderBone({ action = false }: { action?: boolean }) {
 
 /**
  * Matches `WorkloadOverview`: status line (`h-9`), Instances rows (`h-10`),
- * Recent logs (its loading block is `min-h-48`), and the two-column Details.
+ * Recent logs (its loading block is `min-h-10`), and the two-column Details.
  */
 export function WorkloadOverviewSkeleton() {
   return (
@@ -225,7 +225,7 @@ export function WorkloadOverviewSkeleton() {
       </div>
       <div className="flex flex-col gap-2">
         <SectionHeaderBone action />
-        <Bone className="min-h-48 w-full rounded-md" />
+        <Bone className="min-h-10 w-full rounded-md" />
       </div>
       <div className="flex flex-col gap-2">
         <SectionHeaderBone />

@@ -149,6 +149,12 @@ function LogsEmpty({
   return <NoLogs description={searched ? RECENT_WINDOW_COPY : undefined} className={className} />;
 }
 
+/** A blank line (a program printing an empty line) is a row with nothing in it. */
+function hasText(entry: LogEntry): boolean {
+  const parsed = parseLogLine(entry.line, entry.labels);
+  return parsed.kind === 'http' || parsed.line.trim() !== '';
+}
+
 function isLogsDenied(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 401 || error.status === 403);
 }
@@ -294,7 +300,7 @@ export function RecentInstanceLogs({
   const loading = waiting || logsQuery.isLoading;
   const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
-  const entries = (logsQuery.data ?? []).slice(0, ROW_LIMIT);
+  const entries = (logsQuery.data ?? []).filter(hasText).slice(0, ROW_LIMIT);
   const waitingForRequest =
     !!albHostname && !loading && !denied && !errorMessage && entries.length === 0;
 
@@ -317,18 +323,25 @@ export function RecentInstanceLogs({
       View all
     </Link>
   );
+  // The card holds its height so the Overview grid stays even. Open on the
+  // workload Overview, the states take only the room their notice needs.
+  const minHeight = bare ? 'min-h-10' : 'min-h-48';
   const body = denied ? (
-    <LogsDenied className="min-h-48" />
+    <LogsDenied className={minHeight} />
   ) : loading ? (
-    <div className="flex h-full min-h-48 items-center justify-center">
+    <div className={cn('flex h-full items-center justify-center', minHeight)}>
       <SpinnerIcon size="sm" />
     </div>
   ) : errorMessage ? (
-    <div className="text-muted-foreground flex h-full min-h-48 items-center justify-center px-(--card-px) text-center text-sm">
+    <div
+      className={cn(
+        'text-muted-foreground flex h-full items-center justify-center px-(--card-px) text-center text-sm',
+        minHeight
+      )}>
       Unable to load logs.
     </div>
   ) : entries.length === 0 ? (
-    <LogsEmpty hostname={albHostname} searched={searched} className="min-h-48" />
+    <LogsEmpty hostname={albHostname} searched={searched} className={minHeight} />
   ) : (
     <ul className="divide-border divide-y">
       {entries.map((entry) => (
