@@ -490,12 +490,37 @@ func main() {
 			setupLog.Error(observationErr, "invalid internal DNS network observation configuration")
 			os.Exit(1)
 		}
+		skip := map[string]bool{}
+		for _, location := range serverConfig.InternalDNS.LocallyPublishedLocations {
+			skip[location] = true
+		}
 		dnsPublisher := &controller.InternalDNSPublisherReconciler{
 			ResolveProjectIdentity: controller.InternalDNSProjectIdentityResolver(identityClient),
 			ObservationSources:     observers,
+			SkipLocations:          skip,
 		}
 		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSPublisher")
+			os.Exit(1)
+		}
+	}
+
+	// A cell that publishes locally writes its instances' names into its own
+	// cluster, where its region's DNS control plane serves them at once.
+	localDNS := serverConfig.InternalDNS.LocalPublishing
+	if features.FeatureGate.Enabled(features.InternalDNSPublishing) && enableCellControllers && localDNS != nil {
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderSingle || localDNS.Region == "" {
+			setupLog.Error(nil, "internalDNS.localPublishing needs a region and single discovery mode on the cell")
+			os.Exit(1)
+		}
+		localPublisher := &controller.InternalDNSPublisherReconciler{
+			LocalRegion:            serverConfig.InternalDNS.LocalPublishing.Region,
+			ProjectAccess:          controller.LocalInternalDNSAccess,
+			ProjectIDForInstance:   controller.LocalInternalDNSProjectID,
+			ResolveProjectIdentity: controller.LocalInternalDNSProjectIdentity(mgr.GetLocalManager().GetAPIReader()),
+		}
+		if err = localPublisher.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSLocalPublisher")
 			os.Exit(1)
 		}
 	}

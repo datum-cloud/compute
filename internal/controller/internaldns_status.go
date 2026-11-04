@@ -23,7 +23,12 @@ func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, r
 	if r.ObserveInterface != nil {
 		return r.ObserveInterface(ctx, reader, namespace, instance, nic)
 	}
-	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]])
+	source := r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]]
+	if r.LocalRegion != "" {
+		// A cell publishing locally serves every instance it runs.
+		source = InternalDNSObservationSource{Reader: reader}
+	}
+	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, source)
 }
 
 func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, observed bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
