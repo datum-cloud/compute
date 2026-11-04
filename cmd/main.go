@@ -508,6 +508,10 @@ func main() {
 	// A cell that publishes locally writes its instances' names into its own
 	// cluster, where its region's DNS control plane serves them at once.
 	if features.FeatureGate.Enabled(features.InternalDNSPublishing) && enableCellControllers && serverConfig.InternalDNS.LocalPublishing != nil {
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderSingle || serverConfig.InternalDNS.LocalPublishing.Region == "" {
+			setupLog.Error(nil, "internalDNS.localPublishing needs a region and single discovery mode on the cell")
+			os.Exit(1)
+		}
 		localPublisher := &controller.InternalDNSPublisherReconciler{
 			LocalRegion:            serverConfig.InternalDNS.LocalPublishing.Region,
 			ProjectAccess:          controller.LocalInternalDNSAccess,

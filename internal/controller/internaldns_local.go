@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -57,8 +58,10 @@ func (r originUIDReader) List(ctx context.Context, list client.ObjectList, opts 
 	})
 }
 
+// withOriginUID translates only the project's copies, never an object the
+// cell wrote itself, so updates of the cell's own objects keep their UID.
 func withOriginUID(obj client.Object) {
-	if _, dns := obj.(*unstructured.Unstructured); !dns {
+	if _, dns := obj.(*unstructured.Unstructured); !dns || obj.GetLabels()[internalDNSOriginLabel] != "project" {
 		return
 	}
 	if uid := obj.GetAnnotations()[internalDNSOriginUIDAnnotation]; uid != "" {
@@ -98,6 +101,62 @@ func LocalInternalDNSProjectIdentity(reader client.Reader) func(context.Context,
 	}
 }
 
+var networkContextGVK = schema.GroupVersionKind{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "NetworkContext"}
+
+const (
+	networkNameLabel     = "networking.datumapis.com/network"
+	networkUIDLabel      = "networking.datumapis.com/network-uid"
+	networkLocationLabel = "networking.datumapis.com/location"
+)
+
+// cellNetworkUID resolves a network's project UID in a cell, which holds the
+// network's NetworkContext for its location rather than the Network itself.
+func cellNetworkUID(location string) vpcUIDFunc {
+	return func(ctx context.Context, reader client.Reader, namespace, network string) (types.UID, error) {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(networkContextGVK.GroupVersion().WithKind(networkContextGVK.Kind + "List"))
+		selector := client.MatchingLabels{networkNameLabel: network}
+		if location != "" {
+			selector[networkLocationLabel] = location
+		}
+		if err := reader.List(ctx, list, client.InNamespace(namespace), selector); err != nil {
+			return "", fmt.Errorf("resolve VPC %s/%s in the cell: %w", namespace, network, err)
+		}
+		var uid string
+		for _, item := range list.Items {
+			if v := item.GetLabels()[networkUIDLabel]; v != "" {
+				if uid != "" && uid != v {
+					return "", fmt.Errorf("network contexts for %s/%s disagree on the network UID", namespace, network)
+				}
+				uid = v
+			}
+		}
+		if uid == "" {
+			return "", fmt.Errorf("no network context for %s/%s in this cell names its network UID", namespace, network)
+		}
+		return types.UID(uid), nil
+	}
+}
+
+// cellPublished reports whether a cell's own contribution for the instance
+// whose cell copy has sourceUID has reached the project.
+func cellPublished(ctx context.Context, reader client.Reader, namespace, sourceUID string) (bool, error) {
+	if sourceUID == "" {
+		return false, nil
+	}
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(dnsContributionGVK.GroupVersion().WithKind(dnsContributionGVK.Kind + "List"))
+	if err := reader.List(ctx, list, client.InNamespace(namespace), client.MatchingLabels{internalDNSInstanceUID: sourceUID}); err != nil {
+		return false, err
+	}
+	for _, item := range list.Items {
+		if origin := item.GetLabels()[internalDNSOriginLabel]; origin != "" && origin != "project" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // lookupInstanceDNSReservation finds the shared registration the project
 // authors for a context. A cell never creates it: the copy arrives from the
 // project, without owner references.
@@ -108,6 +167,12 @@ func lookupInstanceDNSReservation(ctx context.Context, access InternalDNSProject
 	}
 	if registration.GetLabels()[internalDNSManagedBy] != internalDNSManager || !registration.GetDeletionTimestamp().IsZero() {
 		return nil, fmt.Errorf("registration %s/%s is not the project's instance reservation", registration.GetNamespace(), registration.GetName())
+	}
+	// Only a copy of the project's registration can be referenced from every
+	// region; wait for one that carries the project's identity.
+	annotations := registration.GetAnnotations()
+	if registration.GetLabels()[internalDNSOriginLabel] != "project" || annotations[internalDNSOriginUIDAnnotation] == "" || annotations[internalDNSOriginGenerationAnnotation] == "" {
+		return nil, nil
 	}
 	return registration, nil
 }

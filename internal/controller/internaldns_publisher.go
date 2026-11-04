@@ -173,11 +173,26 @@ func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcre
 		Controller: ptrBool(true),
 	}
 
-	if !instance.DeletionTimestamp.IsZero() || r.SkipLocations[instance.Labels[computev1alpha.LocationLabel]] {
+	if !instance.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, nil)
 	}
+	if r.SkipLocations[instance.Labels[computev1alpha.LocationLabel]] {
+		// Hand the instance to its cell only once the cell's own publication
+		// has reached the project, so there is no gap.
+		handed, err := cellPublished(ctx, access.Reader, projectNamespace, projectInstance.Labels[computev1alpha.InstanceSourceUIDLabel])
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if handed {
+			return ctrl.Result{RequeueAfter: internalDNSPollInterval(internalDNSResyncInterval)}, r.deletePublishedResources(ctx, access, projectNamespace, projectInstance.UID, nil)
+		}
+	}
 
-	attachments, err := instanceDNSAttachments(ctx, access.Reader, projectNamespace, &projectInstance, r.observeInterface)
+	vpcUID := vpcUIDFunc(projectNetworkUID)
+	if r.LocalRegion != "" {
+		vpcUID = cellNetworkUID(instance.Labels[computev1alpha.LocationLabel])
+	}
+	attachments, err := instanceDNSAttachmentsWith(ctx, access.Reader, projectNamespace, &projectInstance, r.observeInterface, vpcUID)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -217,24 +232,40 @@ type instanceDNSAttachment struct {
 	ObservationError error
 }
 
+// vpcUIDFunc resolves the project UID of the network an interface attaches to.
+type vpcUIDFunc func(ctx context.Context, reader client.Reader, namespace, network string) (types.UID, error)
+
+// projectNetworkUID reads the network from the project API.
+func projectNetworkUID(ctx context.Context, reader client.Reader, namespace, name string) (types.UID, error) {
+	var network networkingv1alpha.Network
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &network); err != nil {
+		return "", fmt.Errorf("resolve VPC %s/%s for instance DNS: %w", namespace, name, err)
+	}
+	if network.UID == "" {
+		return "", fmt.Errorf("network %s/%s has no API-assigned UID", namespace, name)
+	}
+	return network.UID, nil
+}
+
 func instanceDNSAttachments(ctx context.Context, reader client.Reader, projectNamespace string, instance *computev1alpha.Instance, observe InternalDNSObserveFunc) ([]instanceDNSAttachment, error) {
+	return instanceDNSAttachmentsWith(ctx, reader, projectNamespace, instance, observe, projectNetworkUID)
+}
+
+func instanceDNSAttachmentsWith(ctx context.Context, reader client.Reader, projectNamespace string, instance *computev1alpha.Instance, observe InternalDNSObserveFunc, vpcUID vpcUIDFunc) ([]instanceDNSAttachment, error) {
 	byVPC := map[types.UID]*instanceDNSAttachment{}
 	for _, nic := range instance.Spec.NetworkInterfaces {
 		namespace := nic.Network.Namespace
 		if namespace == "" {
 			namespace = projectNamespace
 		}
-		var network networkingv1alpha.Network
-		if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: nic.Network.Name}, &network); err != nil {
-			return nil, fmt.Errorf("resolve VPC %s/%s for instance DNS: %w", namespace, nic.Network.Name, err)
+		uid, err := vpcUID(ctx, reader, namespace, nic.Network.Name)
+		if err != nil {
+			return nil, err
 		}
-		if network.UID == "" {
-			return nil, fmt.Errorf("network %s/%s has no API-assigned UID", namespace, nic.Network.Name)
-		}
-		attachment := byVPC[network.UID]
+		attachment := byVPC[uid]
 		if attachment == nil {
-			attachment = &instanceDNSAttachment{VPCUID: network.UID, Network: networkingv1alpha.NetworkRef{Name: network.Name, Namespace: namespace}, RecordSets: []any{}}
-			byVPC[network.UID] = attachment
+			attachment = &instanceDNSAttachment{VPCUID: uid, Network: networkingv1alpha.NetworkRef{Name: nic.Network.Name, Namespace: namespace}, RecordSets: []any{}}
+			byVPC[uid] = attachment
 		}
 
 		if observe == nil {
@@ -601,13 +632,27 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 	if concurrency <= 0 {
 		concurrency = defaultDNSConcurrency
 	}
+	name := "internal-dns-instance-publisher"
+	if r.LocalRegion != "" {
+		name = "internal-dns-local-instance-publisher"
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
-		Named("internal-dns-instance-publisher").
+		Named(name).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(newDNSObject(dnsRegistrationGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(newDNSObject(dnsContributionGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
 		Watches(newDNSObject(dnsResolverContextGVK, "", ""), func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
+			})
+		}, mcbuilder.WithEngageWithLocalCluster(false)).
+		// A cell's registration copy has no owner, so its arrival is watched
+		// by namespace.
+		Watches(newDNSObject(dnsRegistrationGVK, "", ""), func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				if r.LocalRegion == "" {
+					return nil
+				}
 				return enqueueInstancesInNamespace(ctx, cl.GetClient(), string(clusterName), obj.GetNamespace())
 			})
 		}, mcbuilder.WithEngageWithLocalCluster(false)).

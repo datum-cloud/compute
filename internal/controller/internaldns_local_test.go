@@ -41,6 +41,12 @@ func copyOf(obj *unstructured.Unstructured, origin string) *unstructured.Unstruc
 		_ = unstructured.SetNestedSlice(obj.Object, conditions, internalDNSStatusField, internalDNSConditionsField)
 	}
 	obj.SetUID(types.UID("local-" + origin))
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[internalDNSOriginLabel] = "project"
+	obj.SetLabels(labels)
 	obj.SetAnnotations(map[string]string{internalDNSOriginUIDAnnotation: origin, internalDNSOriginGenerationAnnotation: "7"})
 	return obj
 }
@@ -92,4 +98,52 @@ func TestLocalPublisherWaitsForTheProjectsReservation(t *testing.T) {
 	contributions.SetGroupVersionKind(dnsContributionGVK.GroupVersion().WithKind("DNSRecordContributionList"))
 	require.NoError(t, cl.List(ctx, contributions))
 	assert.Empty(t, contributions.Items)
+}
+
+func TestCellResolvesTheNetworkFromItsContext(t *testing.T) {
+	s := localDNSScheme(t)
+	s.AddKnownTypeWithName(networkContextGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(networkContextGVK.GroupVersion().WithKind("NetworkContextList"), &unstructured.UnstructuredList{})
+	nc := &unstructured.Unstructured{}
+	nc.SetGroupVersionKind(networkContextGVK)
+	nc.SetNamespace(internalDNSTestNamespace)
+	nc.SetName("app-us-east-1")
+	nc.SetLabels(map[string]string{networkNameLabel: "app", networkLocationLabel: "us-east-1", networkUIDLabel: "project-network-uid"})
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(nc).Build()
+	uid, err := cellNetworkUID("us-east-1")(context.Background(), cl, internalDNSTestNamespace, "app")
+	require.NoError(t, err)
+	assert.Equal(t, types.UID("project-network-uid"), uid)
+	_, err = cellNetworkUID("us-east-1")(context.Background(), cl, internalDNSTestNamespace, "other")
+	assert.Error(t, err)
+}
+
+func TestLocalPublisherWaitsForAProjectCopyOfTheReservation(t *testing.T) {
+	ctx := context.Background()
+	s := localDNSScheme(t)
+	resolver := copyOf(resolverContextObject("ctx", internalDNSTestProjectUID, internalDNSTestVPCUID, true), "ctx-uid")
+	local := newDNSObject(dnsRegistrationGVK, internalDNSTestNamespace, "compute-instances-"+shortHash("ctx-uid"))
+	local.SetLabels(map[string]string{internalDNSManagedBy: internalDNSManager})
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, local).Build()
+	got, err := lookupInstanceDNSReservation(ctx, InternalDNSProjectAccess{Reader: originUIDReader{cl}, Writer: cl}, func() *unstructured.Unstructured {
+		r := resolver.DeepCopy()
+		withOriginUID(r)
+		return r
+	}())
+	require.NoError(t, err)
+	assert.Nil(t, got, "a registration that is not the project's copy must not be referenced")
+}
+
+func TestManagementHandsAnInstanceToItsCellOnlyOnceTheCellPublished(t *testing.T) {
+	ctx := context.Background()
+	s := localDNSScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(s).Build()
+	handed, err := cellPublished(ctx, cl, internalDNSTestNamespace, "cell-uid")
+	require.NoError(t, err)
+	assert.False(t, handed)
+	fromCell := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "from-cell")
+	fromCell.SetLabels(map[string]string{internalDNSInstanceUID: "cell-uid", internalDNSOriginLabel: "us-east-1"})
+	require.NoError(t, cl.Create(ctx, fromCell))
+	handed, err = cellPublished(ctx, cl, internalDNSTestNamespace, "cell-uid")
+	require.NoError(t, err)
+	assert.True(t, handed)
 }
