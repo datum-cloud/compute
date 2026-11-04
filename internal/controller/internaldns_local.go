@@ -141,7 +141,7 @@ func cellNetworkUID(location string) vpcUIDFunc {
 }
 
 // cellPublished reports whether a cell's own contribution for the instance
-// whose cell copy has sourceUID has reached the project.
+// whose cell copy has sourceUID has reached the project, and answers there.
 func cellPublished(ctx context.Context, reader client.Reader, namespace, sourceUID string) (bool, error) {
 	if sourceUID == "" {
 		return false, nil
@@ -151,8 +151,15 @@ func cellPublished(ctx context.Context, reader client.Reader, namespace, sourceU
 	if err := reader.List(ctx, list, client.InNamespace(namespace), client.MatchingLabels{internalDNSInstanceUID: sourceUID}); err != nil {
 		return false, err
 	}
-	for _, item := range list.Items {
-		if origin := item.GetLabels()[internalDNSOriginLabel]; origin != "" && origin != internalDNSOriginProject {
+	for i := range list.Items {
+		item := &list.Items[i]
+		if origin := item.GetLabels()[internalDNSOriginLabel]; origin == "" || origin == internalDNSOriginProject {
+			continue
+		}
+		// Hand over only to a name that answers: an eligible contribution
+		// DNS has accepted at its current generation.
+		eligible, _, _ := unstructured.NestedBool(item.Object, internalDNSSpecField, internalDNSEligibleField)
+		if eligible && unstructuredConditionCurrent(item, internalDNSConditionAccepted) {
 			return true, nil
 		}
 	}

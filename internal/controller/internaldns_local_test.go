@@ -147,7 +147,17 @@ func TestManagementHandsAnInstanceToItsCellOnlyOnceTheCellPublished(t *testing.T
 	assert.False(t, handed)
 	fromCell := newDNSObject(dnsContributionGVK, internalDNSTestNamespace, "from-cell")
 	fromCell.SetLabels(map[string]string{internalDNSInstanceUID: "cell-uid", internalDNSOriginLabel: localTestRegion})
+	fromCell.SetGeneration(1)
+	fromCell.Object[internalDNSSpecField] = map[string]any{internalDNSEligibleField: false}
 	require.NoError(t, cl.Create(ctx, fromCell))
+	handed, err = cellPublished(ctx, cl, internalDNSTestNamespace, "cell-uid")
+	require.NoError(t, err)
+	assert.False(t, handed, "an ineligible cell contribution must not take over a name that answers")
+
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(fromCell), fromCell))
+	fromCell.Object[internalDNSSpecField] = map[string]any{internalDNSEligibleField: true}
+	fromCell.Object[internalDNSStatusField] = map[string]any{internalDNSConditionsField: []any{map[string]any{internalDNSConditionTypeField: internalDNSConditionAccepted, internalDNSStatusField: "True", internalDNSObservedGenerationField: fromCell.GetGeneration()}}}
+	require.NoError(t, cl.Update(ctx, fromCell))
 	handed, err = cellPublished(ctx, cl, internalDNSTestNamespace, "cell-uid")
 	require.NoError(t, err)
 	assert.True(t, handed)
