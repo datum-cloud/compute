@@ -262,6 +262,15 @@ spec:
                         description: Controller contains settings driven by the controller
                           managing the instance.
                         properties:
+                          runtimeRevision:
+                            description: |-
+                              RuntimeRevision changes only when an intentional runtime update is requested.
+                              Unlike TemplateHash, rewriting a comparison format must not change it.
+                              Zero identifies the runtime of an Instance created before revision tracking.
+                              Providers must report the revision actually running, not echo this field.
+                            format: int64
+                            minimum: 0
+                            type: integer
                           schedulingGates:
                             description: |-
                               SchedulingGates is a list of gates that must be satisfied before the

@@ -287,6 +287,14 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 		Controller: &computev1alpha.InstanceControllerStatus{ObservedTemplateHash: instancecontrol.LegacyComputeHash(deployment.Spec.Template)},
 	}
 
+	// A provider that only echoes the new hash has not applied the new runtime.
+	instanceOldRuntime := wdControllerTestInstance("instance-old-runtime")
+	instanceOldRuntime.Spec.Controller = &computev1alpha.InstanceController{TemplateHash: templateHash, RuntimeRevision: 1}
+	instanceOldRuntime.Status = computev1alpha.InstanceStatus{
+		Conditions: []metav1.Condition{{Type: computev1alpha.InstanceProgrammed, Status: metav1.ConditionTrue}},
+		Controller: &computev1alpha.InstanceControllerStatus{ObservedTemplateHash: templateHash},
+	}
+
 	// Quota-blocked: QuotaGranted=False as the instance quota controller writes it.
 	instanceQuotaBlocked := wdControllerTestInstance("instance-quota-blocked")
 	instanceQuotaBlocked.Status = computev1alpha.InstanceStatus{
@@ -312,7 +320,7 @@ func TestReconcileInstanceGates_ReplicaCounting(t *testing.T) {
 
 	cl := newProjectFakeClient()
 	r := &WorkloadDeploymentReconciler{}
-	instances := []computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceLegacyHash, instanceQuotaBlocked, instanceImageUnavailable, instanceCrashing}
+	instances := []computev1alpha.Instance{instanceUpdatedReady, instanceStale, instanceUpdatedPending, instanceLegacyHash, instanceOldRuntime, instanceQuotaBlocked, instanceImageUnavailable, instanceCrashing}
 
 	currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, _, err := r.reconcileInstanceGates(
 		context.Background(),

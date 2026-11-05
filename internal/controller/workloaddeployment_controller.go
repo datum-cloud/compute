@@ -63,6 +63,7 @@ type WorkloadDeploymentReconciler struct {
 	// When true, new Instances whose template references ConfigMaps or Secrets
 	// receive the ReferencedData scheduling gate at creation time.
 	enableReferencedDataGate bool
+	preserveInstances        bool
 
 	// LocationSource selects the API group the cell's serving location is read
 	// from. The zero value reads network services, which is what every
@@ -196,6 +197,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	instanceControl := instancecontrolstateful.NewWithOptions(instancecontrolstateful.Options{
 		NetworkingEnabled:        r.NetworkingEnabled,
 		EnableReferencedDataGate: r.enableReferencedDataGate,
+		PreserveInstances:        r.preserveInstances,
 	})
 
 	actions, err := instanceControl.GetActions(ctx, cl.GetScheme(), &deployment, desiredReplicas, instances.Items)
@@ -442,7 +444,8 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 		// Status.Controller is a pointer the infra provider may not have populated
 		// yet; guard the deref to avoid a panic that would abort the reconcile.
 		onLatestRevision := instance.Status.Controller != nil &&
-			templateHashes.Matches(instance.Status.Controller.ObservedTemplateHash)
+			templateHashes.Matches(instance.Status.Controller.ObservedTemplateHash) &&
+			(instance.Spec.Controller == nil || instance.Status.Controller.ObservedRuntimeRevision == instance.Spec.Controller.RuntimeRevision)
 		if onLatestRevision {
 			updatedReplicas++
 		}
@@ -1065,6 +1068,8 @@ func (r *WorkloadDeploymentReconciler) Finalize(_ context.Context, _ client.Obje
 type WorkloadDeploymentReconcilerOptions struct {
 	// EnableReferencedDataGate mirrors FeatureFlagsConfig.EnableReferencedDataGate.
 	EnableReferencedDataGate bool
+	// PreserveInstances requires revision-aware runtime providers in every cell.
+	PreserveInstances bool
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -1072,6 +1077,7 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 	r.mgr = mgr
 	for _, o := range opts {
 		r.enableReferencedDataGate = o.EnableReferencedDataGate
+		r.preserveInstances = o.PreserveInstances
 	}
 	r.events = newLifecycleEventWriter(workloadDeploymentLifecycleReportingController)
 	r.finalizers = finalizer.NewFinalizers()
