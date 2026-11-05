@@ -1159,3 +1159,46 @@ func TestValidateWorkloadUpdate_UnchangedImage(t *testing.T) {
 		cmpErrs(t, wantErrs, errs)
 	})
 }
+
+// Exercise both customer admission paths, not just the HPA metric translation.
+func TestValidateWorkloadAutoscalingResources(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&networkingv1alpha.Network{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testDefaultNamespace, Name: testDefaultNamespace},
+	}).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if sar, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+				sar.GenerateName = sarGenerateName
+				sar.Status.Allowed = true
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	}).Build()
+	cases := map[string][]k8scorev1.ResourceName{
+		"CPU":            {k8scorev1.ResourceCPU},
+		"memory":         {k8scorev1.ResourceMemory},
+		"CPU and memory": {k8scorev1.ResourceCPU, k8scorev1.ResourceMemory},
+	}
+	for name, resources := range cases {
+		t.Run(name, func(t *testing.T) {
+			oldWorkload := MakeSandboxWorkload("autoscaled")
+			w := oldWorkload.DeepCopy()
+			w.Spec.Placements[0].ScaleSettings.MaxReplicas = proto.Int32(5)
+			for _, name := range resources {
+				w.Spec.Placements[0].ScaleSettings.Metrics = append(w.Spec.Placements[0].ScaleSettings.Metrics, computev1alpha.MetricSpec{
+					Resource: &computev1alpha.ResourceMetricSource{Name: name, Target: computev1alpha.MetricTarget{AverageUtilization: proto.Int32(70)}},
+				})
+			}
+			opts := WorkloadValidationOptions{Client: c, Context: context.Background(), Workload: w, ValidLocations: []string{testCityCodeDFW}}
+			if errs := ValidateWorkloadCreate(w, opts); len(errs) != 0 {
+				t.Errorf("create: %v", errs)
+			}
+			if errs := ValidateWorkloadUpdate(w, oldWorkload, opts); len(errs) != 0 {
+				t.Errorf("update: %v", errs)
+			}
+		})
+	}
+}
