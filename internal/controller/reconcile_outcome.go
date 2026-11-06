@@ -31,6 +31,9 @@ const conflictRetryDelay = time.Second
 const (
 	retryReasonConflict       = "conflict"
 	retryReasonRemovalPending = "removal_pending"
+
+	labelController = "controller"
+	labelReason     = "reason"
 )
 
 // routineRetries counts the reconciles settleRoutineErrors retried instead of
@@ -41,7 +44,7 @@ var routineRetries = prometheus.NewCounterVec(
 		Name:      "reconcile_routine_retries_total",
 		Help:      "Reconciles retried on a timer instead of failing, by controller and reason (conflict, removal_pending).",
 	},
-	[]string{"controller", "reason"},
+	[]string{labelController, labelReason},
 )
 
 func init() {
@@ -60,11 +63,11 @@ func settleRoutineErrors(ctx context.Context, controller string, result ctrl.Res
 	switch {
 	case everyError(err, apierrors.IsConflict):
 		routineRetries.WithLabelValues(controller, retryReasonConflict).Inc()
-		logger.V(1).Info("write lost to a newer version; retrying", "reason", err.Error())
+		logger.V(1).Info("write lost to a newer version; retrying", labelReason, err.Error())
 		return ctrl.Result{RequeueAfter: conflictRetryDelay}, nil
 	case everyError(err, isRoutine):
 		routineRetries.WithLabelValues(controller, retryReasonRemovalPending).Inc()
-		logger.V(1).Info("waiting for removal; retrying", "reason", err.Error())
+		logger.V(1).Info("waiting for removal; retrying", labelReason, err.Error())
 		return ctrl.Result{RequeueAfter: removalPollInterval}, nil
 	}
 	return result, err
