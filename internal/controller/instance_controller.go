@@ -238,7 +238,8 @@ type InstanceReconciler struct {
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 //nolint:gocyclo // conditions are reconciled, persisted, then returned as errors; the ordered pipeline is inherently branchy
-func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
+func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func(ctx context.Context) { out, err = settleRoutineErrors(ctx, "instance", out, err) }(ctx)
 	logger := log.FromContext(ctx)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -262,7 +263,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
 	if finalizationResult.Updated {
-		if err = cl.GetClient().Update(ctx, &instance); err != nil {
+		if err = cl.GetClient().Update(ctx, &instance); client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
 		}
 		return ctrl.Result{}, nil
@@ -1233,7 +1234,7 @@ func (r *InstanceReconciler) Finalize(ctx context.Context, obj client.Object) (f
 		}
 		return finalizer.Result{}, fmt.Errorf("failed checking downstream write-back deletion: %w", err)
 	}
-	return finalizer.Result{}, fmt.Errorf("waiting for downstream write-back instance %s/%s to be deleted", instance.Namespace, instance.Name)
+	return finalizer.Result{}, fmt.Errorf("%w: downstream write-back instance %s/%s", errRemovalPending, instance.Namespace, instance.Name)
 }
 
 // writeBackToUpstream copies the Instance spec and status to the upstream

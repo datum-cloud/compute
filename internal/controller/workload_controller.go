@@ -76,7 +76,8 @@ type WorkloadReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 
-func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func(ctx context.Context) { out, err = settleRoutineErrors(ctx, "workload", out, err) }(ctx)
 	logger := log.FromContext(ctx)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -106,7 +107,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		}
 	}
 	if finalizationResult.Updated {
-		if err = cl.GetClient().Update(ctx, &workload); err != nil {
+		if err = cl.GetClient().Update(ctx, &workload); client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
 		}
 		return ctrl.Result{}, nil

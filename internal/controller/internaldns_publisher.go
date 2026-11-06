@@ -123,7 +123,8 @@ type InternalDNSPublisherReconciler struct {
 	SkipLocations map[string]bool
 }
 
-func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func(ctx context.Context) { out, err = settleRoutineErrors(ctx, r.controllerName(), out, err) }(ctx)
 	ctx, cancel := context.WithTimeout(ctx, internalDNSAPITimeout)
 	defer cancel()
 
@@ -711,12 +712,8 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 	if concurrency <= 0 {
 		concurrency = defaultDNSConcurrency
 	}
-	name := "internal-dns-instance-publisher"
-	if r.LocalRegion != "" {
-		name = "internal-dns-local-instance-publisher"
-	}
 	return mcbuilder.ControllerManagedBy(mgr).
-		Named(name).
+		Named(r.controllerName()).
 		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(newDNSObject(dnsRegistrationGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(newDNSObject(dnsContributionGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
@@ -742,4 +739,11 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 // internalDNSPollInterval spreads resyncs so they do not arrive together.
 func internalDNSPollInterval(base time.Duration) time.Duration {
 	return base + time.Duration(rand.Int64N(int64(base/2)))
+}
+
+func (r *InternalDNSPublisherReconciler) controllerName() string {
+	if r.LocalRegion != "" {
+		return "internal-dns-local-instance-publisher"
+	}
+	return "internal-dns-instance-publisher"
 }
