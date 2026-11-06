@@ -29,3 +29,5 @@ allowBuilds:
 
 overrides:
   '@module-federation/dts-plugin>undici': ^7.30.1
+  minimatch: 11.0.4
+  glob: 14.0.3
