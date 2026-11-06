@@ -2,6 +2,8 @@
  * Display helpers shared by the workloads card grid and table views.
  */
 import { instanceFailure, QUOTA_REASONS } from '../adapter';
+import type { AlbRoute } from './api';
+import type { AlbStatus } from './alb-status';
 import { formatLocationNames, formatLocationSelector, type LocationIndex } from './locations';
 import {
   workloadHealthToBadgeType,
@@ -356,6 +358,24 @@ export function privateNameState(instance: Instance): PrivateNameState {
         ? 'No private name published on this network'
         : 'Assigned once the instance is running',
   };
+}
+
+/**
+ * A load balancer row's state on the workload Overview: "Ready",
+ * "Provisioning · issuing TLS certificate" (amber once it is taking longer
+ * than usual), or the error.
+ */
+export function albRowState(status: AlbStatus | undefined): { tone: StatusTone; label: string } {
+  if (!status || status.phase === 'ready') return { tone: 'ok', label: 'Ready' };
+  if (status.phase === 'error') return { tone: 'error', label: status.message || 'Error' };
+  const step = status.step.charAt(0).toLowerCase() + status.step.slice(1);
+  return { tone: status.stalled ? 'warn' : 'muted', label: `Provisioning · ${step}` };
+}
+
+/** The workload port a route sends to: ":8080 (http)", or "port http" when the number isn't known. */
+export function routePortText(port: AlbRoute['port']): string | undefined {
+  if (!port) return undefined;
+  return port.number !== undefined ? `:${port.number} (${port.name})` : `port ${port.name}`;
 }
 
 function isEmptyValue(value: unknown): boolean {

@@ -63,6 +63,8 @@ export interface Workload {
   runtimeType?: string;
   tags: string[];
   ports: string[];
+  /** The containers' named ports, which a NetworkService can expose to a load balancer. */
+  namedPorts: Array<{ name: string; port: number; protocol: string }>;
   locations: string[];
   resources?: string;
   replicasPerRegion?: number;

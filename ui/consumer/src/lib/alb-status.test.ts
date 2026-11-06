@@ -27,6 +27,7 @@ function alb(conditions: ResourceCondition[], services = [serviceReady]): Connec
     createdAt: new Date(T0),
     conditions,
     services,
+    routes: [],
   };
 }
 

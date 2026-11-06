@@ -9,7 +9,6 @@
  * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
  * inside the plugin (that double-stacks chrome vs native pages).
  */
-import { StatusBadge } from "../components/detail-list";
 import { ResourceActivity } from "../components/resource-activity";
 import { WorkloadOverviewCard } from "../components/workload-overview-card";
 import { WorkloadPageChrome } from "../components/workload-page-chrome";
@@ -23,23 +22,16 @@ import {
 import { ErrorOrRestrictedState } from "../components/states";
 import { SectionFrame } from "../components/surface";
 import { WorkloadInstances } from "../components/workload-instances";
+import { WorkloadLoadBalancers } from "../components/workload-load-balancers";
 import {
   useDeletePermissions,
   usePublishedUrl,
   useWorkload,
   useWorkloadDeployments,
   useWorkloadInstances,
-  type PublishedUrl,
 } from "../lib/api";
 import { splitSlashValue } from "../lib/format";
-import {
-  albStatus,
-  albStatusDisplay,
-  workloadUrlState,
-  type AlbStatus,
-} from "../lib/alb-status";
-import { WorkloadUrl } from "../components/workload-url";
-import { albOverviewHref, useWorkloadOverviewState } from "../lib/use-workload-overview-state";
+import { useWorkloadOverviewState } from "../lib/use-workload-overview-state";
 import {
   compactDetailRows,
   firstCrash,
@@ -59,7 +51,7 @@ import WorkloadLogs from "./workload-logs";
 import WorkloadMetrics from "./workload-metrics";
 import type { Instance, Workload } from "../schema";
 import { Icon } from "@datum-cloud/datum-ui/icons";
-import { GlobeIcon, SettingsIcon } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import {
   Link,
@@ -75,71 +67,6 @@ import {
 const WorkloadActivity = lazy(() => import("./workload-activity"));
 // The topology canvas is the plugin's largest component; load it with its tab.
 const WorkloadTopology = lazy(() => import("./workload-topology"));
-
-function LoadBalancerValue({
-  projectId,
-  published,
-  isLoading,
-  albStatuses,
-}: {
-  projectId?: string;
-  published?: PublishedUrl | null;
-  isLoading: boolean;
-  albStatuses: Record<string, AlbStatus>;
-}) {
-  if (isLoading) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  if (!published?.proxies.length) {
-    return <span className="text-muted-foreground">Not connected</span>;
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      {published.proxies.map((alb) => {
-        const label = alb.displayName || alb.proxyName;
-        const albStatus = albStatuses[alb.proxyName];
-        const display = albStatus ? albStatusDisplay(albStatus) : undefined;
-        const badge =
-          albStatus && albStatus.phase !== "ready" && display ? (
-            <span title={albStatus.message}>
-              <StatusBadge type={display.tone}>
-                {albStatus.phase === "provisioning" ? albStatus.step : "Error"}
-              </StatusBadge>
-            </span>
-          ) : null;
-        if (!projectId) {
-          return (
-            <span
-              key={alb.proxyName}
-              className="inline-flex items-center gap-1.5 text-sm"
-            >
-              <Icon
-                icon={GlobeIcon}
-                size={14}
-                className="text-muted-foreground shrink-0"
-              />
-              {label}
-              {badge}
-            </span>
-          );
-        }
-        return (
-          <span key={alb.proxyName} className="inline-flex items-center gap-2">
-            <Link
-              to={albOverviewHref(projectId, alb.proxyName)}
-              className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline"
-            >
-              <Icon icon={GlobeIcon} size={14} className="shrink-0" />
-              {label}
-            </Link>
-            {badge}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
 
 const DETAIL_DATE_FORMAT: Intl.DateTimeFormatOptions = {
   day: "2-digit",
@@ -161,10 +88,6 @@ interface DetailRow {
 interface WorkloadDetailsProps {
   workload: Workload;
   instances: readonly Instance[];
-  albStatuses: Record<string, AlbStatus>;
-  projectId?: string;
-  published?: PublishedUrl | null;
-  publishedLoading: boolean;
   locationLabel: string;
 }
 
@@ -192,10 +115,6 @@ function instanceSize(instances: readonly Instance[]): string | undefined {
 function workloadDetailRows({
   workload,
   instances,
-  albStatuses,
-  projectId,
-  published,
-  publishedLoading,
   locationLabel,
 }: WorkloadDetailsProps): DetailRow[] {
   const { main: resourceShort } = splitSlashValue(workload.resources ?? "");
@@ -222,19 +141,6 @@ function workloadDetailRows({
       content: <span title={workload.locations.join(", ")}>{locationLabel}</span>,
     },
     { label: "Ports", value: workload.ports, content: mono(workload.ports.join(", ")) },
-    {
-      label: "Load balancer",
-      // Held while loading so the row doesn't pop in after the rest.
-      value: publishedLoading ? "loading" : published?.proxies,
-      content: (
-        <LoadBalancerValue
-          projectId={projectId}
-          published={published}
-          isLoading={publishedLoading}
-          albStatuses={albStatuses}
-        />
-      ),
-    },
     { label: "Networks", value: workload.networks, content: mono(workload.networks.join(", ")) },
     { label: "Runtime", value: workload.runtimeType, content: workload.runtimeType },
     {
@@ -330,14 +236,6 @@ function WorkloadLayoutShell({
     [instances],
   );
   const proxyId = published.data?.proxyName;
-  const headerAlb = published.data?.proxies[0];
-  const headerUrl =
-    workload && headerAlb?.hostname
-      ? workloadUrlState(
-          !workload.deleting && workload.health === "Available",
-          albStatus(headerAlb, { workloadServing: workload.health === "Available" }),
-        )
-      : undefined;
   const navigate = useNavigate();
   const permissions = useDeletePermissions(projectId);
   const deleteDialog = useDeleteWorkloadDialog();
@@ -354,25 +252,6 @@ function WorkloadLayoutShell({
       metricsHref={metricsHref}
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
-      // Held until the workload is known too, since that decides whether it links.
-      urlLoading={published.isLoading || (isLoading && !!headerAlb?.hostname)}
-      deleteLoading={(isLoading || permissions.isLoading) && !workload?.deleting}
-      visit={
-        headerAlb?.hostname && headerUrl
-          ? { href: `https://${headerAlb.hostname}`, live: headerUrl.live, status: headerUrl.status }
-          : undefined
-      }
-      url={
-        headerAlb?.hostname && headerUrl ? (
-          <WorkloadUrl
-            hostname={headerAlb.hostname}
-            customHostnames={headerAlb.customHostnames}
-            live={headerUrl.live}
-            status={headerUrl.status}
-            plain
-          />
-        ) : undefined
-      }
       onDelete={canDelete && workload ? () => deleteDialog.show(workload) : undefined}>
       <DeleteWorkloadDialog
         projectId={projectId}
@@ -431,9 +310,9 @@ function WorkloadLayoutShell({
 }
 
 /**
- * Overview: a summary card (status, endpoint, crash or deploy progress, the
- * last hour's stats), the instances table, then what changed recently beside
- * the workload's configuration.
+ * Overview: a summary card (status, crash or deploy progress, the
+ * last hour's stats), the instances table, the load balancers that reach it,
+ * then what changed recently beside the workload's configuration.
  */
 /** When an instance's failure was reported, for the end of the "so far" line. */
 function failedAt(instance: Instance | undefined): Date | undefined {
@@ -456,6 +335,7 @@ export function WorkloadOverview() {
     publishedLoading,
     locationIndex,
     identityLabel,
+    identityLoading,
     identityDenied,
     metricKeys,
     overviewHref,
@@ -515,15 +395,6 @@ export function WorkloadOverview() {
         timeline={timeline}
         problem={state?.problem}
         problemActions={problemActions}
-        endpoint={
-          primaryAlb?.hostname
-            ? {
-                hostname: primaryAlb.hostname,
-                albHref: projectId ? albOverviewHref(projectId, primaryAlb.proxyName) : undefined,
-                albStatus: primaryAlbStatus,
-              }
-            : undefined
-        }
         image={workload.image}
         updatedAt={workload.updatedAt ?? workload.createdAt}
         now={now}
@@ -547,6 +418,9 @@ export function WorkloadOverview() {
         metricsDenied={identityDenied}
         proxyId={proxyId}
         allocation={allocation}
+        instancesLoading={instancesLoading}
+        identityLoading={identityLoading}
+        publishedLoading={publishedLoading}
       />
 
       <WorkloadInstances
@@ -560,6 +434,15 @@ export function WorkloadOverview() {
         deleting={workload.deleting}
         projectId={projectId}
         metricsDenied={identityDenied}
+      />
+
+      <WorkloadLoadBalancers
+        projectId={projectId}
+        published={published}
+        loading={publishedLoading}
+        albStatuses={albStatuses}
+        network={workload.networks[0]}
+        workload={workload}
       />
 
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
@@ -583,10 +466,6 @@ export function WorkloadOverview() {
         <WorkloadDetails
           workload={workload}
           instances={instances}
-          albStatuses={albStatuses}
-          projectId={projectId}
-          published={published}
-          publishedLoading={publishedLoading}
           locationLabel={formatLocationNames(workload.locations, locationIndex)}
         />
       </div>

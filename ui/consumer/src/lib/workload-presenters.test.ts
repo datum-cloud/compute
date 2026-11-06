@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
+  albRowState,
+  routePortText,
   compactDetailRows,
   crashDetail,
   crashDetailText,
@@ -829,5 +831,38 @@ describe('instanceProblem', () => {
     );
     expect(p).toMatchObject({ tone: 'warn', title: 'The app keeps crashing', message: 'Killed, usually out of memory (exit 137) · 3 restarts', showLogs: true });
     expect(p?.hints[0]).toContain('out of memory');
+  });
+});
+
+describe('albRowState', () => {
+  test('ready, or nothing to judge, reads Ready', () => {
+    expect(albRowState({ phase: 'ready' })).toEqual({ tone: 'ok', label: 'Ready' });
+    expect(albRowState(undefined)).toEqual({ tone: 'ok', label: 'Ready' });
+  });
+
+  test('provisioning names the step, amber once it is slow', () => {
+    expect(albRowState({ phase: 'provisioning', step: 'Issuing TLS certificate', stalled: false })).toEqual({
+      tone: 'muted',
+      label: 'Provisioning · issuing TLS certificate',
+    });
+    expect(albRowState({ phase: 'provisioning', step: 'Issuing TLS certificate', stalled: true }).tone).toBe('warn');
+  });
+
+  test('an error carries its message', () => {
+    expect(albRowState({ phase: 'error', message: 'Certificate rejected' })).toEqual({
+      tone: 'error',
+      label: 'Certificate rejected',
+    });
+  });
+});
+
+describe('routePortText', () => {
+  test('number and name when the service declares the port', () => {
+    expect(routePortText({ name: 'http', number: 8080 })).toBe(':8080 (http)');
+  });
+
+  test('name alone when it does not', () => {
+    expect(routePortText({ name: 'grpc' })).toBe('port grpc');
+    expect(routePortText(undefined)).toBeUndefined();
   });
 });

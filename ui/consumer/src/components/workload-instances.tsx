@@ -21,7 +21,7 @@ import type { Instance } from '../schema';
 import { StatusBadge } from './detail-list';
 import { MetricSparkline } from './metric-sparkline';
 import { useOverviewRange } from './overview-range';
-import { InstanceRowsSkeleton } from './skeletons';
+import { InstanceTableSkeleton } from './skeletons';
 import { QuietNotice } from './surface';
 import { LinkButton } from '@datum-cloud/datum-ui/button';
 import { Badge } from '@datum-cloud/datum-ui/badge';
@@ -215,9 +215,7 @@ export function WorkloadInstances({
         </CardTitle>
       </CardHeader>
       {state.kind === 'loading' ? (
-        <div className="px-2 py-2">
-          <InstanceRowsSkeleton />
-        </div>
+        <InstanceTableSkeleton />
       ) : state.kind === 'notice' ? (
         <div className="px-4 py-4">
           <QuietNotice testId="compute-plugin-instances-empty" title={state.title} description={state.description} />

@@ -1,7 +1,7 @@
 /**
  * The workload Overview's summary card, in the shape of the ALB overview's
- * health strip: a tinted status ring, a headline and detail, the public
- * endpoint, and when the workload last changed. Below that, either a crash
+ * health strip: a tinted status ring, a headline and detail, and when the
+ * workload last changed. Hostnames live in the Load balancers card. Below that, either a crash
  * band (only while an instance is crashing), the deploy steps (while the
  * workload first comes up), or the last hour's stats.
  *
@@ -10,7 +10,6 @@
  */
 import { MetricSparkline } from './metric-sparkline';
 import { useOverviewRange } from './overview-range';
-import { albStatusDisplay, type AlbStatus } from '../lib/alb-status';
 import { formatKpiValue } from './metric-area-chart';
 import {
   albRpsQuery,
@@ -41,19 +40,14 @@ import {
 } from '../lib/workload-presenters';
 import type { Instance } from '../schema';
 import { Card } from '@datum-cloud/datum-ui/card';
-import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
+import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
-import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
-import { cn } from '@datum-cloud/datum-ui/utils';
 import {
-  CheckIcon,
   CircleCheckIcon,
   HourglassIcon,
   InfoIcon,
   CircleIcon,
   CircleXIcon,
-  CopyIcon,
-  GlobeIcon,
   LogsIcon,
   TriangleAlertIcon,
 } from 'lucide-react';
@@ -87,57 +81,6 @@ function StatusRing({ tone, phase }: { tone: StatusTone; phase?: DeployPhase }) 
       style={{ background: tint(color, 14), color }}
       aria-hidden>
       {phase === 'deploying' ? <SpinnerIcon size="sm" /> : <Icon icon={ring?.icon ?? TONE_ICON[tone]} size={18} />}
-    </span>
-  );
-}
-
-export interface OverviewEndpoint {
-  hostname: string;
-  /** The load balancer's page in the portal. */
-  albHref?: string;
-  albStatus?: AlbStatus;
-}
-
-function Endpoint({ endpoint }: { endpoint: OverviewEndpoint }) {
-  const [copied, copy] = useCopyToClipboard();
-  const display = endpoint.albStatus ? albStatusDisplay(endpoint.albStatus) : undefined;
-  const ready = !display;
-  return (
-    <span className="flex min-w-0 items-center gap-2 pt-1" data-e2e="compute-workload-alb-chip">
-      <Icon
-        icon={GlobeIcon}
-        size={14}
-        className={cn('shrink-0', ready ? 'text-primary' : 'text-muted-foreground')}
-        aria-hidden
-      />
-      <a
-        href={`https://${endpoint.hostname}`}
-        target="_blank"
-        rel="noreferrer"
-        className={cn(
-          'min-w-0 truncate font-mono text-xs hover:underline',
-          ready ? 'text-primary' : 'text-muted-foreground'
-        )}>
-        https://{endpoint.hostname}
-      </a>
-      <Tooltip message={copied ? 'Copied' : 'Copy URL'}>
-        <button
-          type="button"
-          className="text-muted-foreground hover:text-foreground inline-flex shrink-0 cursor-pointer"
-          aria-label={copied ? 'Copied' : 'Copy URL'}
-          onClick={() => void copy(`https://${endpoint.hostname}`, { withToast: true })}>
-          <Icon icon={copied ? CheckIcon : CopyIcon} size={13} aria-hidden />
-        </button>
-      </Tooltip>
-      {display ? (
-        <span className="text-muted-foreground truncate text-xs" title={display.detail}>
-          · {display.short === 'Error' ? 'load balancer error' : 'not serving yet'}
-        </span>
-      ) : endpoint.albHref ? (
-        <Link to={endpoint.albHref} className="text-muted-foreground hidden shrink-0 text-xs hover:underline sm:inline-flex">
-          · load balancer
-        </Link>
-      ) : null}
     </span>
   );
 }
@@ -363,25 +306,44 @@ function addSeries(
   return [...sums.values()].sort((x, y) => x.timestamp - y.timestamp);
 }
 
+/**
+ * One stat: label and hint, the value, then its sparkline (or instance
+ * squares). `loading` holds each line's place with a bone the same height, so
+ * nothing reads as zero before the numbers arrive and nothing moves when they do.
+ */
 function StatCell({
   label,
   hint,
   value,
+  loading = false,
   children,
 }: {
   label: string;
   hint?: string;
   value: ReactNode;
+  loading?: boolean;
   children?: ReactNode;
 }) {
   return (
-    <div className="bg-card flex min-w-0 flex-1 flex-col gap-1.5 px-4 py-3">
+    <div className="bg-card flex min-w-0 flex-1 flex-col gap-1.5 px-4 py-3" aria-busy={loading || undefined}>
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-muted-foreground text-xs">{label}</span>
-        {hint ? <span className="text-muted-foreground truncate text-xs opacity-80">{hint}</span> : null}
+        {loading && hint ? (
+          <span className="flex h-4 items-center">
+            <Skeleton className="h-3 w-16" />
+          </span>
+        ) : hint ? (
+          <span className="text-muted-foreground truncate text-xs opacity-80">{hint}</span>
+        ) : null}
       </span>
-      <span className="text-lg font-semibold tabular-nums">{value}</span>
-      {children}
+      {loading ? (
+        <span className="flex h-7 items-center">
+          <Skeleton className="h-5 w-14" />
+        </span>
+      ) : (
+        <span className="text-lg font-semibold tabular-nums">{value}</span>
+      )}
+      {loading ? <Skeleton className="h-8 w-full" /> : children}
     </div>
   );
 }
@@ -395,6 +357,9 @@ function Stats({
   proxyId,
   allocation,
   totalCount,
+  instancesLoading,
+  identityLoading,
+  publishedLoading,
 }: {
   projectId?: string;
   instances: readonly Instance[];
@@ -404,6 +369,9 @@ function Stats({
   proxyId?: string;
   allocation: Allocation;
   totalCount: number;
+  instancesLoading: boolean;
+  identityLoading: boolean;
+  publishedLoading: boolean;
 }) {
   const range = useOverviewRange('1h');
   const enabled = !!projectId && !!identityLabel && metricKeys.length > 0 && !metricsDenied;
@@ -439,7 +407,16 @@ function Stats({
   const rxNow = lastValue(rxPoints);
   const txNow = lastValue(txPoints);
   const ioPoints = useMemo(() => addSeries(rxPoints, txPoints), [rxPoints, txPoints]);
-  const showNetwork = !!network.receiveTotalQuery || network.isLoading;
+  // Each stat's queries wait on the instances and the metrics label, so it is
+  // loading until those are in and its own query has answered.
+  const metricsPending = !metricsDenied && (instancesLoading || identityLoading);
+  const cpuLoading = !cpuPoints && (metricsPending || cpu.isLoading);
+  const memoryLoading = !memoryPoints && (metricsPending || memory.isLoading);
+  const networkLoading =
+    !metricsDenied && !rxPoints && !txPoints && (instancesLoading || network.isLoading || rx.isLoading || tx.isLoading);
+  const rpsLoading = !metricsDenied && !rpsPoints && (publishedLoading || rps.isLoading);
+  const showNetwork = !!network.receiveTotalQuery || networkLoading;
+  const showRequests = !!proxyId || (publishedLoading && !metricsDenied);
 
   const readiness = useMemo(() => instances.map((instance) => instanceReadiness(instance)), [instances]);
   const ready = readiness.filter((r) => r.tone === 'ok').length;
@@ -467,7 +444,8 @@ function Stats({
       <StatCell
         label="Instances"
         hint={notReady > 0 ? `${notReady} not ready` : undefined}
-        value={`${ready} / ${totalCount}`}>
+        value={`${ready} / ${totalCount}`}
+        loading={instancesLoading && instances.length === 0}>
         <span className="flex h-8 items-center gap-1.5" aria-hidden>
           {readiness.slice(0, 24).map((r, index) => (
             <span
@@ -478,13 +456,18 @@ function Stats({
           ))}
         </span>
       </StatCell>
-      <StatCell label="CPU" hint={cpuUsageHint(cpuNow, allocation.cores)} value={formatCpuUsage(cpuNow, allocation.cores)}>
+      <StatCell
+        label="CPU"
+        hint={cpuUsageHint(cpuNow, allocation.cores)}
+        value={formatCpuUsage(cpuNow, allocation.cores)}
+        loading={cpuLoading}>
         {spark(cpuPoints, cpu.isLoading, undefined, 'cores', allocation.cores)}
       </StatCell>
       <StatCell
         label="Memory"
         hint={memoryUsageHint(memoryNow, allocation.memoryBytes)}
-        value={formatMemoryUsage(memoryNow, allocation.memoryBytes)}>
+        value={formatMemoryUsage(memoryNow, allocation.memoryBytes)}
+        loading={memoryLoading}>
         {spark(memoryPoints, memory.isLoading, 'var(--color-chart-1)', 'bytes', allocation.memoryBytes)}
       </StatCell>
       {showNetwork ? (
@@ -495,12 +478,17 @@ function Stats({
               ? `${formatKpiValue(rxNow, 'bitsPerSecond')} in · ${formatKpiValue(txNow, 'bitsPerSecond')} out`
               : 'in + out'
           }
-          value={formatKpiValue(rxNow === undefined && txNow === undefined ? undefined : (rxNow ?? 0) + (txNow ?? 0), 'bitsPerSecond')}>
+          value={formatKpiValue(rxNow === undefined && txNow === undefined ? undefined : (rxNow ?? 0) + (txNow ?? 0), 'bitsPerSecond')}
+          loading={networkLoading}>
           {spark(ioPoints, rx.isLoading || tx.isLoading || network.isLoading, 'var(--color-chart-3)', 'bitsPerSecond', undefined, true)}
         </StatCell>
       ) : null}
-      {proxyId ? (
-        <StatCell label="Requests" hint="per second" value={formatKpiValue(rpsNow, 'requestsPerSecond')}>
+      {showRequests ? (
+        <StatCell
+          label="Requests"
+          hint="per second"
+          value={formatKpiValue(rpsNow, 'requestsPerSecond')}
+          loading={rpsLoading}>
           {spark(rpsPoints, rps.isLoading, INFO_COLOR, 'requestsPerSecond', undefined, true)}
         </StatCell>
       ) : null}
@@ -517,7 +505,6 @@ export interface WorkloadOverviewCardProps {
   /** Stalled and failed: what is wrong. */
   problem?: InstanceProblem;
   problemActions?: OverviewAction[];
-  endpoint?: OverviewEndpoint;
   image?: string;
   updatedAt: Date;
   now: number;
@@ -530,10 +517,14 @@ export interface WorkloadOverviewCardProps {
   metricsDenied: boolean;
   proxyId?: string;
   allocation: Allocation;
+  /** Still loading: the stats hold their places rather than read as zero. */
+  instancesLoading: boolean;
+  identityLoading: boolean;
+  publishedLoading: boolean;
 }
 
 export function WorkloadOverviewCard(props: WorkloadOverviewCardProps) {
-  const { status, phase, endpoint, image, updatedAt, now, crash } = props;
+  const { status, phase, image, updatedAt, now, crash } = props;
   const attention = status.tone === 'warn' || status.tone === 'error';
   const short = imageShortName(image);
   return (
@@ -551,7 +542,6 @@ export function WorkloadOverviewCard(props: WorkloadOverviewCardProps) {
             <span className="text-muted-foreground text-sm" title={status.detail}>
               {status.detail}
             </span>
-            {endpoint ? <Endpoint endpoint={endpoint} /> : null}
           </div>
         </div>
         <div className="flex shrink-0 flex-col gap-0.5">
@@ -582,6 +572,9 @@ export function WorkloadOverviewCard(props: WorkloadOverviewCardProps) {
           proxyId={props.proxyId}
           allocation={props.allocation}
           totalCount={props.totalCount}
+          instancesLoading={props.instancesLoading}
+          identityLoading={props.identityLoading}
+          publishedLoading={props.publishedLoading}
         />
       )}
     </Card>
