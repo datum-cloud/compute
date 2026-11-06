@@ -81,7 +81,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			"instance", req.NamespacedName, "error", err)
 		return ctrl.Result{RequeueAfter: projectClusterEngageWait}, nil
 	}
-	return settleRoutineErrors(ctx, ctrl.Result{}, err)
+	return settleRoutineErrors(ctx, "instance-projector", ctrl.Result{}, err)
 }
 
 func (r *InstanceProjector) reconcile(ctx context.Context, req ctrl.Request) error {

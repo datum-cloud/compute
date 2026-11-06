@@ -239,7 +239,7 @@ type InstanceReconciler struct {
 
 //nolint:gocyclo // conditions are reconciled, persisted, then returned as errors; the ordered pipeline is inherently branchy
 func (r *InstanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
-	defer func() { out, err = settleRoutineErrors(ctx, out, err) }()
+	defer func(ctx context.Context) { out, err = settleRoutineErrors(ctx, "instance", out, err) }(ctx)
 	logger := log.FromContext(ctx)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)

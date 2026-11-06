@@ -77,7 +77,7 @@ type WorkloadReconciler struct {
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
-	defer func() { out, err = settleRoutineErrors(ctx, out, err) }()
+	defer func(ctx context.Context) { out, err = settleRoutineErrors(ctx, "workload", out, err) }(ctx)
 	logger := log.FromContext(ctx)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)

@@ -108,7 +108,9 @@ type WorkloadDeploymentFederator struct {
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
-	defer func() { out, err = settleRoutineErrors(ctx, out, err) }()
+	defer func(ctx context.Context) {
+		out, err = settleRoutineErrors(ctx, "workload-deployment-federator", out, err)
+	}(ctx)
 	logger := log.FromContext(ctx)
 
 	// An empty cluster name resolves to the local host management cluster, which

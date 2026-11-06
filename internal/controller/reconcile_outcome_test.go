@@ -42,12 +42,15 @@ func TestSettleRoutineErrors(t *testing.T) {
 		{name: "aggregated conflicts retry soon", err: kerrors.NewAggregate([]error{conflict, conflict}), wantResult: ctrl.Result{RequeueAfter: conflictRetryDelay}},
 		{name: "real failure alongside a conflict is reported", err: kerrors.NewAggregate([]error{conflict, failure}), wantErr: failure},
 		{name: "real failure joined with a pending removal is reported", err: errors.Join(pending, failure), wantErr: failure},
+		{name: "conflict and pending removal poll for removal", err: kerrors.NewAggregate([]error{conflict, pending}), wantResult: ctrl.Result{RequeueAfter: removalPollInterval}},
+		{name: "real failure beside a nested aggregate is reported", err: errors.Join(kerrors.NewAggregate([]error{conflict}), failure), wantErr: failure},
+		{name: "real failure wrapped beside an aggregate is reported", err: fmt.Errorf("%w; %w", kerrors.NewAggregate([]error{pending}), failure), wantErr: failure},
 		{name: "not found is not swallowed", err: apierrors.NewNotFound(gr, "w"), wantErr: apierrors.NewNotFound(gr, "w")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := settleRoutineErrors(context.Background(), tt.in, tt.err)
+			result, err := settleRoutineErrors(context.Background(), "test", tt.in, tt.err)
 			if tt.wantErr == nil {
 				require.NoError(t, err)
 				assert.Equal(t, tt.wantResult, result)
