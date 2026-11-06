@@ -15,6 +15,8 @@ export function ResourceActivity({
   filter,
   liveNameMatch,
   resourceLinkResolver,
+  bare = false,
+  pageSize = 30,
 }: {
   projectId?: string;
   /** CEL that scopes the feed to this resource (see `lib/activity.ts`). */
@@ -28,6 +30,9 @@ export function ResourceActivity({
    */
   liveNameMatch: string;
   resourceLinkResolver: ResourceLinkResolver;
+  /** Render the feed alone, for a parent that frames it (the Overview). */
+  bare?: boolean;
+  pageSize?: number;
 }) {
   const client = useActivityClient(projectId);
   // A new object resets the feed's filter state, so keep it stable.
@@ -42,23 +47,27 @@ export function ResourceActivity({
   );
 
   if (!client) return null;
+  const feed = (
+    <ActivityFeed
+      client={client}
+      initialFilters={initialFilters}
+      resourceLinkResolver={resourceLinkResolver}
+      // Every row is in this project; the project badge would only repeat it.
+      tenantRenderer={() => null}
+      hiddenFilters={['resourceKinds', 'apiGroups', 'resourceName', 'resourceNamespaces']}
+      variant="timeline"
+      compact
+      enableStreaming
+      infiniteScroll={false}
+      // The Overview shows the latest few; filtering is the Activity tab's job.
+      showFilters={!bare}
+      pageSize={pageSize}
+    />
+  );
+  if (bare) return <div data-testid="compute-plugin-activity">{feed}</div>;
   return (
     <Card size="sm" className="w-full overflow-hidden" data-testid="compute-plugin-activity">
-      <CardContent>
-        <ActivityFeed
-          client={client}
-          initialFilters={initialFilters}
-          resourceLinkResolver={resourceLinkResolver}
-          // Every row is in this project; the project badge would only repeat it.
-          tenantRenderer={() => null}
-          hiddenFilters={['resourceKinds', 'apiGroups', 'resourceName', 'resourceNamespaces']}
-          variant="timeline"
-          compact
-          enableStreaming
-          infiniteScroll={false}
-          pageSize={30}
-        />
-      </CardContent>
+      <CardContent>{feed}</CardContent>
     </Card>
   );
 }

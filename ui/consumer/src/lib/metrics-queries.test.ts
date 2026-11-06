@@ -4,6 +4,8 @@ import {
   namesMatcher,
   networkInterfaceSeriesLabels,
   networkTrafficQuery,
+  networkTrafficTotalQuery,
+  networkThroughputQuery,
   networkTrafficSeriesMatch,
   networkInterfaceRefs,
 } from './metrics-queries';
@@ -110,5 +112,25 @@ describe('seriesByWorkload', () => {
 
   test('no data yields no series', () => {
     expect(seriesByWorkload(undefined, 'resource_name', { web: ['web-1'] })).toEqual({});
+  });
+});
+
+describe('networkTrafficTotalQuery', () => {
+  test('sums every interface into one series', () => {
+    expect(networkTrafficTotalQuery('proj', 'default', ifaces, 'receive')).toBe(
+      'sum(rate(datum_vpc_interface_receive_bytes_total{resourcemanager_datumapis_com_project_name="proj",resource_namespace="default",network=~"web-0-eth0|web-0-eth1"}[5m])) * 8'
+    );
+  });
+  test('has no query without refs or a namespace', () => {
+    expect(networkTrafficTotalQuery('proj', 'default', [], 'transmit')).toBeUndefined();
+    expect(networkTrafficTotalQuery('proj', undefined, ifaces, 'transmit')).toBeUndefined();
+  });
+});
+
+describe('networkThroughputQuery', () => {
+  test('adds receive and transmit per interface', () => {
+    expect(networkThroughputQuery('proj', 'default', [ifaces[0]])).toBe(
+      'sum by (network) (rate({__name__=~"datum_vpc_interface_receive_bytes_total|datum_vpc_interface_transmit_bytes_total",resourcemanager_datumapis_com_project_name="proj",resource_namespace="default",network="web-0-eth0"}[5m])) * 8'
+    );
   });
 });

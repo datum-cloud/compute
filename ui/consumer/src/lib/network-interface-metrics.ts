@@ -6,11 +6,14 @@
 import { useMemo } from 'react';
 import {
   networkInterfaceRefs,
+  networkTrafficTotalQuery,
+  networkThroughputQuery,
   networkInterfaceSeriesLabels,
   networkTrafficQuery,
   networkTrafficSeriesMatch,
 } from './metrics-queries';
 import { isPrometheusDenied, usePrometheusLabelValues } from './prometheus';
+import { shortInstanceLabels } from './series-view';
 import type { Instance, InstanceNetworkInterface } from '../schema';
 
 export interface NetworkInterfaceMetricsState {
@@ -93,4 +96,73 @@ export function useNetworkInterfaceMetrics(
       }),
     [projectId, namespace, interfaces, probedNetworks, probeDenied, probeError, probeLoading]
   );
+}
+
+/**
+ * Series labels for a workload's interfaces: the instance's short label
+ * ("us-east-1-0"), plus the interface name when an instance has several.
+ */
+export function workloadInterfaceSeriesLabels(instances: readonly Instance[]): Record<string, string> {
+  const short = shortInstanceLabels(instances.map((instance) => instance.name));
+  const labels: Record<string, string> = {};
+  for (const instance of instances) {
+    const refs = instance.networkInterfaces.filter((i) => i.networkInterfaceRef);
+    for (const iface of refs) {
+      const base = short[instance.name] ?? instance.name;
+      labels[iface.networkInterfaceRef as string] = refs.length > 1 ? `${base} · ${iface.name}` : base;
+    }
+  }
+  return labels;
+}
+
+export interface WorkloadNetworkMetricsState extends NetworkInterfaceMetricsState {
+  /** Every interface summed, for a single headline series. */
+  receiveTotalQuery: string | undefined;
+  transmitTotalQuery: string | undefined;
+  /** In and out together, one series per interface. */
+  throughputQuery: string | undefined;
+  /** Each instance's interface refs, to fold interface series into instance rows. */
+  refsByInstance: Record<string, string[]>;
+}
+
+/**
+ * Network traffic across a workload's instances: the instance hook's probe
+ * and queries over every instance's interfaces, with per-instance series
+ * labels and summed totals.
+ */
+export function useWorkloadNetworkMetrics(
+  projectId: string | undefined,
+  instances: readonly Instance[]
+): WorkloadNetworkMetricsState {
+  const interfaces = useMemo(() => instances.flatMap((instance) => instance.networkInterfaces), [instances]);
+  const namespace = instances.find((instance) => instance.namespace)?.namespace;
+  const match = projectId ? networkTrafficSeriesMatch(projectId, namespace, interfaces) : undefined;
+  const enabled = !!projectId && networkInterfaceRefs(interfaces).length > 0;
+  const probe = usePrometheusLabelValues(projectId, 'network', match, { enabled });
+  const probeDenied = isPrometheusDenied(probe.error);
+  const probeError = probe.error ?? undefined;
+  const probeLoading = enabled && probe.isLoading;
+  const probedNetworks = probe.data;
+  return useMemo(() => {
+    const state = resolveNetworkInterfaceMetrics({
+      projectId,
+      namespace,
+      interfaces,
+      probedNetworks,
+      probeDenied,
+      probeError,
+      probeLoading,
+    });
+    const live = projectId && !state.unavailable && !state.isDenied;
+    return {
+      ...state,
+      seriesLabels: workloadInterfaceSeriesLabels(instances),
+      receiveTotalQuery: live ? networkTrafficTotalQuery(projectId, namespace, interfaces, 'receive') : undefined,
+      transmitTotalQuery: live ? networkTrafficTotalQuery(projectId, namespace, interfaces, 'transmit') : undefined,
+      throughputQuery: live ? networkThroughputQuery(projectId, namespace, interfaces) : undefined,
+      refsByInstance: Object.fromEntries(
+        instances.map((instance) => [instance.name, networkInterfaceRefs(instance.networkInterfaces)])
+      ),
+    };
+  }, [projectId, namespace, interfaces, instances, probedNetworks, probeDenied, probeError, probeLoading]);
 }

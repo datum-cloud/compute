@@ -5,7 +5,6 @@
  * Panel heights that the host stylesheet does not compile (`27rem`, `32rem`,
  * chart `224px`) are inline styles, matching the live pages.
  */
-import { DetailList, DETAILS_GRID_CLASS, OPEN_ROW_PADDING } from './detail-list';
 import { Card, CardContent, CardHeader } from '@datum-cloud/datum-ui/card';
 import { STRIP_GAP } from './stat-strip';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
@@ -215,31 +214,40 @@ function SectionHeaderBone({ action = false }: { action?: boolean }) {
 export function WorkloadOverviewSkeleton() {
   return (
     <div className="flex flex-col gap-6" aria-busy="true" data-testid="compute-plugin-loading-workload-overview">
-      <div className="flex h-9 items-center gap-3 px-1">
-        <Bone className="size-4 shrink-0 rounded-full" />
-        <Bone className="h-3 w-48" />
-      </div>
-      <div className="flex flex-col gap-2">
-        <SectionHeaderBone />
-        <InstanceRowsSkeleton />
-      </div>
-      <div className="flex flex-col gap-2">
-        <SectionHeaderBone action />
-        <Bone className="min-h-48 w-full rounded-md" />
-      </div>
-      <div className="flex flex-col gap-2">
-        <SectionHeaderBone />
-        {/* The real rows, with bones for text, so heights and dividers match at every width. */}
-        <div style={OPEN_ROW_PADDING}>
-          <DetailList
-            className={DETAILS_GRID_CLASS}
-            itemClassName="py-2"
-            items={Array.from({ length: 6 }, () => ({
-              label: <Bone className="h-3 w-24" />,
-              content: <Bone className="h-3 w-32" />,
-            }))}
-          />
+      <Card size="sm" sectioned className="overflow-hidden">
+        <div className="flex items-start gap-3 px-4 py-4">
+          <Bone className="size-9 shrink-0 rounded-full" />
+          <div className="flex flex-1 flex-col gap-2">
+            <Bone className="h-4 w-40" />
+            <Bone className="h-3 w-64" />
+          </div>
         </div>
+        <div className="grid grid-cols-2 gap-4 border-t px-4 py-4 sm:flex">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index} className="flex flex-1 flex-col gap-2">
+              <Bone className="h-3 w-16" />
+              <Bone className="h-5 w-12" />
+              <Bone className="h-6 w-full" />
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Panel>
+        <InstanceRowsSkeleton />
+      </Panel>
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <div className="flex flex-col gap-2">
+          <SectionHeaderBone action />
+          <Bone className="min-h-48 w-full rounded-md" />
+        </div>
+        <Panel>
+          {Array.from({ length: 6 }, (_, index) => (
+            <div key={index} className="flex gap-4">
+              <Bone className="h-3 w-24" />
+              <Bone className="h-3 w-32" />
+            </div>
+          ))}
+        </Panel>
       </div>
     </div>
   );

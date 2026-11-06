@@ -98,6 +98,34 @@ export function networkTrafficQuery(
   return `sum by (network) (rate(${metric}{${labels}}[5m])) * 8`;
 }
 
+/**
+ * bits/s summed over every interface, one series. The workload Overview's
+ * Network stat passes every instance's interfaces; the series carry no
+ * workload label, so only instances that exist now are counted.
+ */
+export function networkTrafficTotalQuery(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[],
+  direction: TrafficDirection
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  const metric = direction === 'receive' ? VPC_INTERFACE_RECEIVE_METRIC : VPC_INTERFACE_TRANSMIT_METRIC;
+  return `sum(rate(${metric}{${labels}}[5m])) * 8`;
+}
+
+/** bits/s in and out together, per interface (`network` label). */
+export function networkThroughputQuery(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[]
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  return `sum by (network) (rate({__name__=~"${VPC_INTERFACE_RECEIVE_METRIC}|${VPC_INTERFACE_TRANSMIT_METRIC}",${labels}}[5m])) * 8`;
+}
+
 /** Instant selector used to probe whether the metric exists for this instance. */
 export function networkTrafficSeriesMatch(
   projectId: string,
@@ -197,7 +225,7 @@ export function workloadMemoryByInstanceQuery(
  */
 export function seriesByWorkload(
   data: FormattedMetricData | undefined,
-  label: InstanceIdentityLabel,
+  label: string,
   instanceKeysByWorkload: Readonly<Record<string, readonly string[]>>
 ): Record<string, ChartDataPoint[]> {
   if (!data) return {};

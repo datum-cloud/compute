@@ -276,6 +276,7 @@ export function WorkloadTable({
                   format="cores"
                   allocated={allocationByWorkload[row.original.name]?.cores}
                   compact
+                  hideValue
                 />
               ),
             },
@@ -292,6 +293,7 @@ export function WorkloadTable({
                   allocated={allocationByWorkload[row.original.name]?.memoryBytes}
                   color="var(--color-chart-1)"
                   compact
+                  hideValue
                 />
               ),
             },

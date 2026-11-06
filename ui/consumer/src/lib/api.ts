@@ -19,10 +19,11 @@
  *  - Client-side 403 handling instead of PR #1315's server-loader RBAC gate
  *    (`runDetailLoader`, portal-internal) — see `ApiError` below.
  */
+import { workloadSettling } from './workload-settling';
 import { toInstance, toInstanceList, toWorkload, toWorkloadList, INSTANCE_LABELS } from '../adapter';
 import { anyAlbProvisioning } from './alb-status';
 import type { RawInstance, RawInstanceList, RawWorkload, RawWorkloadList } from '../adapter';
-import type { Instance, Workload } from '../schema';
+import type { Instance, InstanceCondition, Workload } from '../schema';
 import { useEffect } from 'react';
 import {
   mutationOptions,
@@ -84,6 +85,7 @@ export function getProjectScopedBase(projectId: string): string {
 // in the compute repo.
 const WORKLOADS_PATH = '/apis/compute.datumapis.com/v1alpha/namespaces/default/workloads';
 const INSTANCES_PATH = '/apis/compute.datumapis.com/v1alpha/namespaces/default/instances';
+const WORKLOAD_DEPLOYMENTS_PATH = '/apis/compute.datumapis.com/v1alpha/namespaces/default/workloaddeployments';
 
 async function proxyFetch<T>(projectId: string, path: string): Promise<T> {
   const url = `${getProjectScopedBase(projectId)}${path}`;
@@ -530,10 +532,10 @@ export function useWorkload(
     enabled: !!projectId && !!name,
     queryFn: () => fetchWorkload(projectId as string, name as string),
     ...POLLED_QUERY,
+    // Fast while deploying, and while instances are still coming up after
+    // the workload reports Available (a placement exists seconds before they serve).
     refetchInterval: (query) =>
-      query.state.data?.health === 'Deploying' && !query.state.data.deleting
-        ? DEPLOYING_REFETCH_INTERVAL_MS
-        : REFETCH_INTERVAL_MS,
+      query.state.data && workloadSettling(query.state.data) ? DEPLOYING_REFETCH_INTERVAL_MS : REFETCH_INTERVAL_MS,
   });
 }
 
@@ -605,6 +607,53 @@ export function useInstance(
     enabled: !!projectId && !!instanceName,
     queryFn: () => fetchInstance(projectId as string, instanceName as string),
     ...POLLED_QUERY,
+  });
+}
+
+// ── Workload deployments ─────────────────────────────────────────────────
+
+/** One WorkloadDeployment (a placement in one location), reduced to what explains a stalled deploy. */
+export interface WorkloadDeploymentSummary {
+  name: string;
+  location?: string;
+  conditions: InstanceCondition[];
+}
+
+interface RawWorkloadDeploymentList {
+  items?: Array<{
+    metadata?: { name?: string; labels?: Record<string, string> };
+    status?: { conditions?: InstanceCondition[] };
+  }>;
+}
+
+async function fetchWorkloadDeployments(projectId: string, workloadUid: string): Promise<WorkloadDeploymentSummary[]> {
+  const query = new URLSearchParams({ labelSelector: `compute.datumapis.com/workload-uid=${workloadUid}` });
+  const body = await proxyFetch<RawWorkloadDeploymentList>(projectId, `${WORKLOAD_DEPLOYMENTS_PATH}?${query.toString()}`);
+  return (body.items ?? []).map((item) => ({
+    name: item.metadata?.name ?? '',
+    location: item.metadata?.labels?.['compute.datumapis.com/location'],
+    conditions: item.status?.conditions ?? [],
+  }));
+}
+
+/**
+ * A workload's deployments, read only while it is still coming up: some
+ * causes of a stalled deploy (a missing Secret, say) are reported only here,
+ * not on the Workload or its instances.
+ */
+export function useWorkloadDeployments(
+  projectId: string | undefined,
+  workloadUid: string | undefined,
+  enabled: boolean
+): UseQueryResult<WorkloadDeploymentSummary[], ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'workload-deployments', projectId, workloadUid],
+    enabled: enabled && !!projectId && !!workloadUid,
+    queryFn: () => fetchWorkloadDeployments(projectId as string, workloadUid as string),
+    ...POLLED_QUERY,
+    refetchInterval: DEPLOYING_REFETCH_INTERVAL_MS,
+    // A missing permission or an older API just means no extra detail.
+    retry: false,
   });
 }
 

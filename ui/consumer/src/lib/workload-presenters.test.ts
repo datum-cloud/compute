@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'vitest';
 import {
   compactDetailRows,
+  crashDetail,
+  crashDetailText,
+  firstCrash,
+  formatAgo,
+  instanceNameParts,
+  instanceProblem,
+  instancesStarting,
   DEPLOY_STALLED_AFTER_MS,
   HEALTH_DOT_COLOR,
   STATUS_TONE_COLOR,
@@ -21,6 +28,7 @@ import {
   workloadStatusTone,
 } from './workload-presenters';
 import type { Instance, Workload, WorkloadHealth } from '../schema';
+import { SETTLING_WINDOW_MS, workloadSettling } from './workload-settling';
 
 function workload(name: string, health: WorkloadHealth, createdAt: string): Workload {
   return {
@@ -674,5 +682,152 @@ describe('instanceReadiness before programming', () => {
       ])
     );
     expect(result.tone).toBe('muted');
+  });
+});
+
+describe('formatAgo', () => {
+  const now = new Date('2026-11-06T12:00:00Z').getTime();
+  test.each([
+    [2_000, 'just now'],
+    [45_000, '45s ago'],
+    [12 * 60_000, '12m ago'],
+    [3 * 3_600_000, '3h ago'],
+    [47 * 3_600_000, '47h ago'],
+    [4 * 86_400_000, '4d ago'],
+  ])('%i ms ago reads %s', (ago, text) => {
+    expect(formatAgo(new Date(now - ago), now)).toBe(text);
+  });
+});
+
+describe('instanceNameParts', () => {
+  test('splits off the workload name', () => {
+    expect(instanceNameParts('web-default-us-east-1-0', 'web')).toEqual({ prefix: 'web-', rest: 'default-us-east-1-0' });
+  });
+  test('keeps names that do not start with the workload name whole', () => {
+    expect(instanceNameParts('other-0', 'web')).toEqual({ prefix: '', rest: 'other-0' });
+    expect(instanceNameParts('web-', 'web')).toEqual({ prefix: '', rest: 'web-' });
+  });
+});
+
+describe('crashDetail', () => {
+  test('reads exit code and restarts from the runtime message', () => {
+    expect(crashDetail('Container "app" exited with code 137 and has restarted 3 times')).toEqual({
+      exitCode: 137,
+      restarts: 3,
+    });
+  });
+  test('reads restarts alone', () => {
+    expect(crashDetail('Container "app" keeps exiting and has restarted 1 time')).toEqual({ restarts: 1 });
+  });
+  test('is undefined for other messages', () => {
+    expect(crashDetail('Back-off restarting failed container')).toBeUndefined();
+    expect(crashDetail(undefined)).toBeUndefined();
+  });
+  test('describes exit 137 as out of memory', () => {
+    expect(crashDetailText({ exitCode: 137, restarts: 3 })).toBe('Killed, usually out of memory (exit 137) · 3 restarts');
+    expect(crashDetailText({ exitCode: 1, restarts: 1 })).toBe('Exited with code 1 · 1 restart');
+  });
+});
+
+describe('firstCrash', () => {
+  test('finds the first instance whose runtime is crashing', () => {
+    const healthy = instance('a', [{ type: 'Ready', status: 'True' }], 'Available');
+    const crash = instance('b', [
+      { type: 'RuntimeReady', status: 'False', reason: 'InstanceCrashing', message: 'Container "app" exited with code 2 and has restarted 5 times' },
+    ]);
+    expect(firstCrash([healthy, crash])).toEqual({ instance: crash, detail: { exitCode: 2, restarts: 5 } });
+    expect(firstCrash([healthy])).toBeUndefined();
+  });
+});
+
+
+describe('overviewStatusLine, partial failure', () => {
+  test('is degraded while some instances still serve', () => {
+    const line = overviewStatusLine({
+      health: 'Unavailable',
+      deleting: false,
+      healthyCount: 2,
+      totalCount: 3,
+      locationCount: 3,
+      failure: '1 instance failing: Back-off',
+    });
+    expect(line).toEqual({ tone: 'warn', title: 'Degraded', detail: '2/3 instances available · 1 instance failing: Back-off' });
+  });
+});
+
+describe('starting instances', () => {
+  const booting = () =>
+    instance('b', [
+      { type: 'Programmed', status: 'True' },
+      { type: 'Ready', status: 'False', reason: 'Provisioning' },
+    ]);
+  const running = () => instance('a', [{ type: 'Ready', status: 'True' }], 'Available');
+
+  test('a placed instance that is still provisioning reads as starting, not amber', () => {
+    expect(instanceReadiness(booting())).toEqual({ tone: 'muted', label: 'Starting', reason: 'Booting' });
+  });
+  test('instancesStarting is true while any instance boots and none has failed', () => {
+    expect(instancesStarting([running(), booting()])).toBe(true);
+    expect(instancesStarting([running()])).toBe(false);
+    expect(instancesStarting([])).toBe(false);
+    expect(instancesStarting([booting(), crashing('c')])).toBe(false);
+  });
+});
+
+describe('workloadSettling', () => {
+  const now = new Date('2026-11-06T12:00:00Z').getTime();
+  const at = (ago: number) => new Date(now - ago);
+  test('is true while deploying', () => {
+    expect(workloadSettling({ ...workload('w', 'Deploying', '2026-11-06T11:00:00Z') }, now)).toBe(true);
+  });
+  test('stays true after Available until replicas are ready, within the window', () => {
+    const w = { ...workload('w', 'Available', '2026-11-06T11:00:00Z'), readyReplicas: 0, updatedAt: at(5_000) };
+    expect(workloadSettling(w, now)).toBe(true);
+    expect(workloadSettling({ ...w, updatedAt: at(SETTLING_WINDOW_MS + 1) }, now)).toBe(false);
+    expect(workloadSettling({ ...w, readyReplicas: 1 }, now)).toBe(false);
+  });
+  test('is false while deleting', () => {
+    expect(workloadSettling({ ...workload('w', 'Deploying', '2026-11-06T11:00:00Z'), deleting: true }, now)).toBe(false);
+  });
+});
+
+describe('instanceProblem', () => {
+  const withImage = (i: Instance, image: string): Instance => ({ ...i, image });
+  test('is undefined for a healthy or starting instance', () => {
+    expect(instanceProblem(instance('a', [{ type: 'Ready', status: 'True' }], 'Available'))).toBeUndefined();
+    expect(instanceProblem(instance('b', [{ type: 'Ready', status: 'False', reason: 'Provisioning' }]))).toBeUndefined();
+  });
+  test('explains an image that cannot be pulled anonymously from Docker Hub', () => {
+    const p = instanceProblem(
+      withImage(
+        instance('c', [
+          { type: 'Programmed', status: 'False', reason: 'ImageUnavailable', message: 'Image "docker.io/library/busybox:1.37" for container "app" could not be pulled anonymously' },
+        ]),
+        'docker.io/library/busybox:1.37'
+      )
+    );
+    expect(p?.title).toBe("The image can't be pulled");
+    expect(p?.tone).toBe('error');
+    expect(p?.showLogs).toBe(false);
+    expect(p?.hints).toHaveLength(3);
+    expect(p?.hints[0]).toContain('docker.io/library/busybox:1.37');
+  });
+  test('leaves out the Docker Hub hint for other registries', () => {
+    const p = instanceProblem(
+      withImage(
+        instance('d', [{ type: 'Ready', status: 'False', reason: 'ImageUnavailable', message: 'could not be pulled anonymously' }]),
+        'ghcr.io/acme/app:1'
+      )
+    );
+    expect(p?.hints).toHaveLength(2);
+  });
+  test('turns a crash message into exit code, restarts and a memory hint', () => {
+    const p = instanceProblem(
+      instance('e', [
+        { type: 'RuntimeReady', status: 'False', reason: 'InstanceCrashing', message: 'Container "app" exited with code 137 and has restarted 3 times' },
+      ])
+    );
+    expect(p).toMatchObject({ tone: 'warn', title: 'The app keeps crashing', message: 'Killed, usually out of memory (exit 137) · 3 restarts', showLogs: true });
+    expect(p?.hints[0]).toContain('out of memory');
   });
 });

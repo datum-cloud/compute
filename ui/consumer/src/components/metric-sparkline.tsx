@@ -28,6 +28,7 @@ export function MetricSparkline({
   denied = false,
   allocated,
   series,
+  hideValue = false,
 }: {
   /** Project whose metrics to read. */
   projectId: string | undefined;
@@ -52,6 +53,8 @@ export function MetricSparkline({
    * in one request). When given, `query` is ignored and nothing is fetched.
    */
   series?: readonly ChartDataPoint[];
+  /** Draw the spark alone, for callers that show the value themselves. */
+  hideValue?: boolean;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const provided = series !== undefined;
@@ -154,6 +157,7 @@ export function MetricSparkline({
         )}
       </div>
       <span
+        hidden={hideValue}
         className="text-muted-foreground shrink-0 text-xs tabular-nums"
         title={allocated && last !== undefined && Number.isFinite(last) ? rawTitle(last * allocated, allocated, format) : undefined}>
         {formatKpiValue(Number.isFinite(last) ? last : undefined, allocated ? 'percent' : format)}
