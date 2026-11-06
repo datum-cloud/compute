@@ -28,6 +28,19 @@ type imagePlatformsFunc func(ctx context.Context, image string) ([]string, error
 // the client cannot list, a class it does not list, or an image the
 // registry will not show from this machine all let the deploy proceed.
 func checkImageRuntime(ctx context.Context, c client.Client, image, class string, platforms imagePlatformsFunc) error {
+	return checkImageRuntimeIn(ctx, c, image, class, platforms, flagClassHint)
+}
+
+// classHint tells the user how to select a runtime class where they deploy.
+type classHint func(class string) string
+
+func flagClassHint(class string) string { return "--runtime-class=" + class }
+
+func manifestClassHint(class string) string {
+	return "spec.template.spec.runtime.class: " + class + " in the manifest"
+}
+
+func checkImageRuntimeIn(ctx context.Context, c client.Client, image, class string, platforms imagePlatformsFunc, hint classHint) error {
 	var classes computev1alpha.RuntimeClassList
 	if err := c.List(ctx, &classes); err != nil {
 		return nil
@@ -52,18 +65,55 @@ func checkImageRuntime(ctx context.Context, c client.Client, image, class string
 			"  datumctl compute deploy ... --image <ref>\n",
 			image, strings.Join(got, ", "), selected.Name)
 		if alt := classWithBoundary(classes.Items, func(b string) bool { return b != isolationUnikernel }); alt != "" {
-			msg += fmt.Sprintf("or run it as a container with --runtime-class=%s", alt)
+			msg += "or run it as a container with " + hint(alt)
 		}
 		return fmt.Errorf("%s", strings.TrimSpace(msg))
 	case !unikernel && !hasContainer:
 		msg := fmt.Sprintf("image %q is a Compute image (%s), which the %q runtime class cannot run as a container.",
 			image, strings.Join(got, ", "), selected.Name)
 		if alt := classWithBoundary(classes.Items, func(b string) bool { return b == isolationUnikernel }); alt != "" {
-			msg += fmt.Sprintf("\n\nDeploy it with --runtime-class=%s", alt)
+			msg += "\n\nDeploy it with " + hint(alt)
 		}
 		return fmt.Errorf("%s", msg)
 	}
 	return nil
+}
+
+// checkManifestImages runs checkImageRuntime on every container a manifest
+// declares, in the class the workload will run in: the manifest's, else the
+// existing workload's, else the catalog default.
+func checkManifestImages(ctx context.Context, c client.Client, manifest, existing *computev1alpha.Workload, platforms imagePlatformsFunc) error {
+	sandbox := manifest.Spec.Template.Spec.Runtime.Sandbox
+	if sandbox == nil {
+		return nil
+	}
+	class := manifest.Spec.Template.Spec.Runtime.Class
+	if class == "" && existing != nil {
+		class = existing.Spec.Template.Spec.Runtime.Class
+	}
+	for _, container := range sandbox.Containers {
+		if err := checkImageRuntimeIn(ctx, c, container.Image, class, platforms, manifestClassHint); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// planRuntimeClass names the class a deploy writes for its plan. A new
+// workload with no class gets the catalog default, so the user sees the tier
+// before applying. An existing workload with no class predates runtime
+// classes and is left unnamed.
+func planRuntimeClass(ctx context.Context, c client.Client, class string, creating bool) string {
+	if class != "" || !creating {
+		return class
+	}
+	var classes computev1alpha.RuntimeClassList
+	if err := c.List(ctx, &classes); err == nil {
+		if selected := selectRuntimeClass(classes.Items, ""); selected != nil {
+			return selected.Name + " (platform default)"
+		}
+	}
+	return "platform default"
 }
 
 // selectRuntimeClass returns the class named, or the catalog default when

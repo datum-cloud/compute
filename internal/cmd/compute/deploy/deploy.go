@@ -139,10 +139,13 @@ publishes the workload. Later deploys keep it on until --http2=false.
 
 Use --runtime-class to choose the tier the workload's Instances run in, such as
 general-purpose or unikernel. A new workload without --runtime-class runs in
-the platform default. A workload keeps its runtime class for its whole life:
-omitting --runtime-class on an existing workload keeps its class, and naming a
-different one is refused. To change tiers, destroy the workload and deploy it
-again, or deploy under a new name.
+the class the platform marks as its default, which the plan names before
+anything is written. A unikernel class boots only Compute images built with
+'datumctl compute build'; run a standard container image with
+--runtime-class=general-purpose. A workload keeps its runtime class for its
+whole life: omitting --runtime-class on an existing workload keeps its class,
+and naming a different one is refused. To change tiers, destroy the workload
+and deploy it again, or deploy under a new name.
 
 Use --network to choose the network a new workload's Instances attach to. A
 new workload without --network attaches to the network named "default". If the
@@ -226,7 +229,7 @@ routine image bump changes nothing else. Remove one explicitly with a trailing
 	cmd.Flags().StringVar(&opts.build, "build", "", "Build and push the image from this directory before deploying (default \".\" if given with no value)")
 	cmd.Flags().Lookup("build").NoOptDefVal = "."
 	cmd.Flags().StringVar(&opts.instanceType, "instance-type", "datumcloud-d1-standard-2", "Instance type (e.g. datumcloud-d1-standard-2)")
-	cmd.Flags().StringVar(&opts.runtimeClass, "runtime-class", "", "Runtime class the workload's Instances run in (e.g. general-purpose, unikernel); defaults to the platform default and cannot be changed after the workload is created")
+	cmd.Flags().StringVar(&opts.runtimeClass, "runtime-class", "", "Runtime class the workload's Instances run in (e.g. general-purpose, unikernel); defaults to the class the platform marks as default, which the plan names, and cannot be changed after the workload is created")
 	cmd.Flags().StringVar(&opts.network, "network", "", "Network a new workload's Instances attach to (default \"default\"); cannot be changed after the workload is created")
 	cmd.Flags().StringSliceVar(&opts.locations, "location", nil, "One or more locations to deploy to (e.g. us-east-1,eu-west-1)")
 	cmd.Flags().StringVar(&opts.locationSelector, "location-selector", "", "Select every location whose topology matches a label selector (e.g. 'topology.datum.net/city-code=DFW' or 'topology.datum.net/region in (us-east-1,eu-west-1)')")
@@ -610,8 +613,8 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 
 	fmt.Fprintln(out, planLine(`Placement "default"`,
 		fmt.Sprintf("%s, %s", describePlacementLocations(placement), util.FormatScaleSettings(scaleSettings))))
-	if runtimeClass != "" {
-		fmt.Fprintln(out, planLine("Runtime class", runtimeClass))
+	if class := planRuntimeClass(ctx, c, runtimeClass, creating); class != "" {
+		fmt.Fprintln(out, planLine("Runtime class", class))
 	}
 	fmt.Fprintln(out, planLine("Network", strings.Join(networks, ", ")))
 	for _, line := range planConfigLines(config) {
@@ -1168,6 +1171,14 @@ func deployFromFile(cmd *cobra.Command, opts *options) error {
 		} else {
 			return fmt.Errorf("getting workload: %w", err)
 		}
+	}
+
+	var current *computev1alpha.Workload
+	if !creating {
+		current = &existing
+	}
+	if err := checkManifestImages(ctx, c, &workload, current, build.ImagePlatforms); err != nil {
+		return err
 	}
 
 	var diffLines []string
