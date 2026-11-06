@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -108,7 +107,8 @@ type WorkloadDeploymentFederator struct {
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
-func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func() { out, err = settleRoutineErrors(ctx, out, err) }()
 	logger := log.FromContext(ctx)
 
 	// An empty cluster name resolves to the local host management cluster, which
@@ -136,17 +136,11 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 	}
 
 	finalizationResult, err := r.finalizers.Finalize(ctx, &deployment)
-	if errors.Is(err, errDownstreamRemovalPending) {
-		// Not a failure: retry on a short timer rather than the error backoff,
-		// which grows to minutes and would hold project deletion that long.
-		logger.V(1).Info("waiting for downstream cleanup before releasing deployment", "reason", err.Error())
-		return ctrl.Result{RequeueAfter: downstreamRemovalPollInterval}, nil
-	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
 	if finalizationResult.Updated {
-		if err = cl.GetClient().Update(ctx, &deployment); err != nil {
+		if err = cl.GetClient().Update(ctx, &deployment); client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
 		}
 		return ctrl.Result{}, nil
@@ -256,7 +250,7 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	var pending error
 	for _, downstreamNS := range hubNamespaces {
 		err := r.finalizeInHubNamespace(ctx, deployment, downstreamNS)
-		if errors.Is(err, errDownstreamRemovalPending) {
+		if errors.Is(err, errRemovalPending) {
 			pending = err
 			continue
 		}
@@ -312,13 +306,6 @@ func (r *WorkloadDeploymentFederator) finalizeInHubNamespace(ctx context.Context
 	return nil
 }
 
-// errDownstreamRemovalPending marks a finalization that is waiting for hub
-// objects to go away.
-var errDownstreamRemovalPending = errors.New("downstream removal pending")
-
-// downstreamRemovalPollInterval is how often a held deployment rechecks the hub.
-const downstreamRemovalPollInterval = 5 * time.Second
-
 // waitForDownstreamRemoval holds the project deployment until its hub copy and
 // the Instances written back for it are gone. The project control plane is
 // only reclaimed once nothing is left in it, so holding the deployment keeps
@@ -330,7 +317,7 @@ func (r *WorkloadDeploymentFederator) waitForDownstreamRemoval(ctx context.Conte
 	var hub computev1alpha.WorkloadDeployment
 	err := r.FederationClient.Get(ctx, client.ObjectKey{Namespace: downstreamNS, Name: name}, &hub)
 	if err == nil {
-		return fmt.Errorf("%w: downstream deployment %s/%s still exists", errDownstreamRemovalPending, downstreamNS, name)
+		return fmt.Errorf("%w: downstream deployment %s/%s still exists", errRemovalPending, downstreamNS, name)
 	}
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("failed to check downstream deployment %s/%s removal: %w", downstreamNS, name, err)
@@ -352,7 +339,7 @@ func (r *WorkloadDeploymentFederator) waitForDownstreamRemoval(ctx context.Conte
 			return fmt.Errorf("failed to delete downstream instance %s/%s: %w", downstreamNS, instance.Name, err)
 		}
 	}
-	return fmt.Errorf("%w: %d downstream instances of %s/%s still exist", errDownstreamRemovalPending, len(instances.Items), downstreamNS, name)
+	return fmt.Errorf("%w: %d downstream instances of %s/%s still exist", errRemovalPending, len(instances.Items), downstreamNS, name)
 }
 
 // cleanupLegacyPropagationPolicies removes the PropagationPolicies a

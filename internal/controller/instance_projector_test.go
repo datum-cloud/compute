@@ -542,7 +542,7 @@ func TestInstanceProjectionDeletedBeforeCellInstanceFinalizes(t *testing.T) {
 	cellReconciler := &InstanceReconciler{FederationClient: hubClient}
 
 	_, err := cellReconciler.Finalize(ctx, writeBack)
-	require.ErrorContains(t, err, "waiting for downstream write-back")
+	require.ErrorIs(t, err, errRemovalPending)
 	var terminating computev1alpha.Instance
 	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &terminating))
 	require.NotNil(t, terminating.DeletionTimestamp)
@@ -579,8 +579,9 @@ func TestInstanceProjectorWaitsForProjectDeletion(t *testing.T) {
 		Build()
 	projector := newTestProjector(hubClient, projectClient)
 
-	_, err := projector.Reconcile(ctx, projectorRequest())
-	require.ErrorContains(t, err, "waiting for instance projection")
+	result, err := projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err, "waiting on project deletion is not a reconcile error")
+	require.Equal(t, removalPollInterval, result.RequeueAfter)
 	var pending computev1alpha.Instance
 	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{
 		Name: projTestInstanceName, Namespace: projTestProjNS,
@@ -682,8 +683,8 @@ func TestInstanceProjectorReplacesDifferentSourceLifetime(t *testing.T) {
 	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
 	r.InternalDNSEnabled = true
 	result, err := r.Reconcile(context.Background(), projectorRequest())
-	require.ErrorContains(t, err, "waiting for DNS projection lifetime replacement")
-	require.Zero(t, result.RequeueAfter)
+	require.NoError(t, err)
+	require.Equal(t, removalPollInterval, result.RequeueAfter)
 	require.True(t, apierrors.IsNotFound(cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection)))
 	_, err = r.Reconcile(context.Background(), projectorRequest())
 	require.NoError(t, err)

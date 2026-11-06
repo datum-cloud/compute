@@ -118,7 +118,8 @@ func workloadDeploymentPodSelector(deployment *computev1alpha.WorkloadDeployment
 // a marker so regenerating the role keeps it.
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 
-func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func() { out, err = settleRoutineErrors(ctx, out, err) }()
 	logger := log.FromContext(ctx)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -141,7 +142,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
 	if finalizationResult.Updated {
-		if err = cl.GetClient().Update(ctx, &deployment); err != nil {
+		if err = cl.GetClient().Update(ctx, &deployment); client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
 		}
 		// The finalizer-add Update is metadata-only and may be filtered by event

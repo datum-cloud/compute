@@ -81,7 +81,7 @@ func (r *InstanceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			"instance", req.NamespacedName, "error", err)
 		return ctrl.Result{RequeueAfter: projectClusterEngageWait}, nil
 	}
-	return ctrl.Result{}, err
+	return settleRoutineErrors(ctx, ctrl.Result{}, err)
 }
 
 func (r *InstanceProjector) reconcile(ctx context.Context, req ctrl.Request) error {
@@ -287,7 +287,7 @@ func (r *InstanceProjector) deleteProjection(ctx context.Context, key types.Name
 		}
 		return fmt.Errorf("failed checking instance projection %s deletion in project cluster %q: %w", projectionKey, clusterName, err)
 	}
-	return fmt.Errorf("waiting for instance projection %s to be deleted in project cluster %q", projectionKey, clusterName)
+	return fmt.Errorf("%w: instance projection %s in project cluster %q", errRemovalPending, projectionKey, clusterName)
 }
 
 // SetupWithManager registers the InstanceProjector on mgr, which must be the
@@ -319,6 +319,5 @@ func reconcileDNSProjectionLifetime(ctx context.Context, reader client.Reader, w
 			return err
 		}
 	}
-	// Returning an error uses the controller's exponential retry backoff.
-	return fmt.Errorf("waiting for DNS projection lifetime replacement")
+	return fmt.Errorf("%w: DNS projection lifetime replacement", errRemovalPending)
 }

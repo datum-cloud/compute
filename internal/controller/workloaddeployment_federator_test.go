@@ -818,7 +818,7 @@ func TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval(t *testin
 	}
 
 	_, err := r.Finalize(ctx, wd)
-	require.ErrorIs(t, err, errDownstreamRemovalPending)
+	require.ErrorIs(t, err, errRemovalPending)
 	assert.False(t, exists(hubWD))
 	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(writeBack), writeBack))
 	assert.False(t, writeBack.DeletionTimestamp.IsZero(), "the finalizer deletes write-backs itself")
@@ -828,7 +828,7 @@ func TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval(t *testin
 	// Reconcile turns the hold into a short requeue, not an error.
 	result, err := r.Reconcile(context.Background(), reconcileRequest())
 	require.NoError(t, err)
-	assert.Equal(t, downstreamRemovalPollInterval, result.RequeueAfter)
+	assert.Equal(t, removalPollInterval, result.RequeueAfter)
 
 	writeBack.Finalizers = nil
 	require.NoError(t, karmadaClient.Update(ctx, writeBack))

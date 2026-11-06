@@ -123,7 +123,8 @@ type InternalDNSPublisherReconciler struct {
 	SkipLocations map[string]bool
 }
 
-func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *InternalDNSPublisherReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func() { out, err = settleRoutineErrors(ctx, out, err) }()
 	ctx, cancel := context.WithTimeout(ctx, internalDNSAPITimeout)
 	defer cancel()
 
