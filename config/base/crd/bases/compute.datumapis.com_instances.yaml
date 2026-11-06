@@ -1020,7 +1020,12 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     disk:
-                      description: A persistent disk backed volume.
+                      description: |-
+                        A persistent disk backed volume.
+
+                        Only a runtime class that lists `diskVolumes` in
+                        `spec.capabilities.features` serves a disk volume. Admission rejects a
+                        disk volume for any other class.
                       properties:
                         deviceName:
                           description: |-

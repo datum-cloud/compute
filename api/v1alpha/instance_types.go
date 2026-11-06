@@ -727,6 +727,10 @@ type InstanceVolume struct {
 
 type VolumeSource struct {
 	// A persistent disk backed volume.
+	//
+	// Only a runtime class that lists `diskVolumes` in
+	// `spec.capabilities.features` serves a disk volume. Admission rejects a
+	// disk volume for any other class.
 	Disk *DiskTemplateVolumeSource `json:"disk,omitempty"`
 
 	// A configMap that should populate this volume
