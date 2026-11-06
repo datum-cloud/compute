@@ -398,11 +398,26 @@ tasks:
         done
       # Wait on the control-plane deployments regardless of how the install above
       # exited, so a timed-out Helm run still converges before we build the
-      # kubeconfig and register cells.
+      # kubeconfig and register cells. Available alone is not enough: the leader-
+      # election, etcd and API-server probe tuning above rewrites pod templates,
+      # and a Deployment reports Available from its OLD pod for as long as the
+      # rollout runs. Without waiting for the rollout, a cell is registered and
+      # its secret patched (a step with no retry) while the API server is still
+      # restarting, and provisioning fails on a dropped NodePort connection
+      # ("connection reset by peer" / API-discovery "EOF").
       - |
         kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
           -n karmada-system wait --for=condition=Available deploy --all --timeout=10m
-        echo "Karmada control plane is Available"
+        for d in $(kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            -n karmada-system get deploy -o jsonpath='{.items[*].metadata.name}'); do
+          kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+            -n karmada-system rollout status deploy/"$d" --timeout=5m
+        done
+        # The etcd StatefulSet is rolled too (its pod template is patched and
+        # etcd-0 is deleted above); the API server cannot serve until it is back.
+        kubectl --kubeconfig={{.KUBECONFIG_DIR}}/control-plane.yaml \
+          -n karmada-system rollout status statefulset/etcd --timeout=5m
+        echo "Karmada control plane is Available and rolled out"
       - task: _e2e:karmada:build-kubeconfig
 
   _e2e:karmada:disable-leader-election:
