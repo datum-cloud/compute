@@ -57,7 +57,7 @@ import {
   LogsIcon,
   TriangleAlertIcon,
 } from 'lucide-react';
-import { useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Link } from 'react-router';
 
 const INFO_COLOR = 'var(--color-badge-info)';
@@ -65,8 +65,6 @@ const INFO_COLOR = 'var(--color-badge-info)';
 /** Text blocks keep this much width and push their neighbours onto the next line instead. */
 const WRAP_BASIS = { flexBasis: '18rem' } as const;
 
-// Inline: cloud-portal compiles no `h-1`.
-const BAR_STYLE = { height: 4 } as const;
 
 /** A tone's color at a low opacity, for the ring and the attention band. */
 function tint(color: string, percent: number): string {
@@ -193,12 +191,39 @@ const PHASE_RING: Record<DeployPhase, { color: string; icon?: typeof CircleCheck
 };
 
 /** While deploying: a slow pulse instead of fake progress, and what to expect. */
+/**
+ * An indeterminate bar sliding across the card. Animated with the Web
+ * Animations API because the host compiles no keyframes the plugin could use;
+ * it stays still for people who ask for reduced motion.
+ */
+function SlidingBar() {
+  const bar = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const el = bar.current;
+    if (!el || typeof el.animate !== 'function') return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const animation = el.animate([{ transform: 'translateX(-100%)' }, { transform: 'translateX(300%)' }], {
+      duration: 1600,
+      easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+      iterations: Infinity,
+    });
+    return () => animation.cancel();
+  }, []);
+  return (
+    <span className="relative block overflow-hidden" style={{ height: 2, background: tint(INFO_COLOR, 12) }} aria-hidden>
+      <span
+        ref={bar}
+        className="absolute inset-y-0 left-0 w-1/3 rounded-full"
+        style={{ background: `linear-gradient(90deg, transparent, ${INFO_COLOR}, transparent)` }}
+      />
+    </span>
+  );
+}
+
 function DeployingNote() {
   return (
     <>
-      <span className="relative block overflow-hidden" style={{ ...BAR_STYLE, height: 2, background: tint(INFO_COLOR, 12) }} aria-hidden>
-        <span className="absolute inset-y-0 left-0 w-1/3 animate-pulse" style={{ background: tint(INFO_COLOR, 70) }} />
-      </span>
+      <SlidingBar />
       <p className="text-muted-foreground flex items-center gap-2 px-4 py-3 text-xs" data-testid="compute-plugin-workload-deploying">
         <Icon icon={InfoIcon} size={14} className="shrink-0" aria-hidden />
         Most deploys finish in under a minute. CPU, memory and network appear once an instance is ready.
