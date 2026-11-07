@@ -192,6 +192,15 @@ function deriveReplicasPerRegion(placements: RawWorkloadPlacement[]): number | u
   return mins.every((m) => m === first) ? first : undefined;
 }
 
+function deriveNamedPorts(runtime?: RawRuntime): Workload['namedPorts'] {
+  const containers = runtime?.sandbox?.containers ?? [];
+  return containers.flatMap((c) =>
+    (c.ports ?? []).flatMap((p) =>
+      p.name && p.port !== undefined ? [{ name: p.name, port: p.port, protocol: p.protocol ?? 'TCP' }] : []
+    )
+  );
+}
+
 function derivePorts(runtime?: RawRuntime): string[] {
   const containers = runtime?.sandbox?.containers ?? [];
   return containers.flatMap((c) =>
@@ -349,6 +358,7 @@ export function toWorkload(raw: RawWorkload): Workload {
     runtimeType: runtime ? (runtime.sandbox ? 'Container sandbox' : 'Virtual machine') : undefined,
     tags: deriveTags(runtime),
     ports,
+    namedPorts: deriveNamedPorts(runtime),
     locations: workloadLocations(placements, raw.status?.placements ?? []),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),

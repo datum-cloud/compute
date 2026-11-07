@@ -2,6 +2,8 @@
  * Display helpers shared by the workloads card grid and table views.
  */
 import { instanceFailure, QUOTA_REASONS } from '../adapter';
+import type { AlbRoute } from './api';
+import type { AlbStatus } from './alb-status';
 import { formatLocationNames, formatLocationSelector, type LocationIndex } from './locations';
 import {
   workloadHealthToBadgeType,
@@ -310,6 +312,10 @@ export function instanceReadiness(instance: Instance): InstanceReadiness {
   if (instance.status === 'Available' && ready?.status !== 'False') {
     return { tone: 'ok', label: 'Running' };
   }
+  // Placed and booting: still on its way up, not a problem yet.
+  if (programmed?.status === 'True' && ready?.status === 'False' && ready.reason === 'Provisioning') {
+    return { tone: 'muted', label: 'Starting', reason: 'Booting' };
+  }
   if (programmed?.status === 'True' && ready?.status !== 'True') {
     const unrecoverable = UNRECOVERABLE_READY_REASONS.has(ready?.reason ?? '');
     const base: InstanceReadiness = unrecoverable
@@ -352,6 +358,24 @@ export function privateNameState(instance: Instance): PrivateNameState {
         ? 'No private name published on this network'
         : 'Assigned once the instance is running',
   };
+}
+
+/**
+ * A load balancer row's state on the workload Overview: "Ready",
+ * "Provisioning · issuing TLS certificate" (amber once it is taking longer
+ * than usual), or the error.
+ */
+export function albRowState(status: AlbStatus | undefined): { tone: StatusTone; label: string } {
+  if (!status || status.phase === 'ready') return { tone: 'ok', label: 'Ready' };
+  if (status.phase === 'error') return { tone: 'error', label: status.message || 'Error' };
+  const step = status.step.charAt(0).toLowerCase() + status.step.slice(1);
+  return { tone: status.stalled ? 'warn' : 'muted', label: `Provisioning · ${step}` };
+}
+
+/** The workload port a route sends to: ":8080 (http)", or "port http" when the number isn't known. */
+export function routePortText(port: AlbRoute['port']): string | undefined {
+  if (!port) return undefined;
+  return port.number !== undefined ? `:${port.number} (${port.name})` : `port ${port.name}`;
 }
 
 function isEmptyValue(value: unknown): boolean {
@@ -487,6 +511,8 @@ export function overviewStatusLine(input: OverviewStatusInput): OverviewStatus {
     ].join(' · ');
     return { tone: deploy.tone === 'warning' ? 'warn' : 'muted', title: deploy.title, detail };
   }
+  // Some instances still serve: a partial failure is degraded, not down.
+  if (failure && healthyCount > 0) return { tone: 'warn', title: 'Degraded', detail: `${available} · ${failure}` };
   if (failure) return { tone: 'error', title: 'Unavailable', detail: `${failure} · ${available}` };
   if (health === 'Unavailable') {
     return { tone: 'error', title: 'Unavailable', detail: totalCount === 0 ? 'No running instances' : available };
@@ -566,4 +592,155 @@ export function matchesWorkloadSearch(
     .join(' ')
     .toLowerCase()
     .includes(needle);
+}
+
+/** "just now", "45s ago", "12m ago", "3h ago", "4d ago". */
+export function formatAgo(since: Date, now: number = Date.now()): string {
+  const secs = Math.max(0, Math.floor((now - since.getTime()) / 1000));
+  if (secs < 5) return 'just now';
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** An instance name split so the part after the workload name can be emphasised. */
+export interface InstanceNameParts {
+  /** The workload name and its trailing hyphen, or empty when it doesn't lead. */
+  prefix: string;
+  rest: string;
+}
+
+export function instanceNameParts(instanceName: string, workloadName: string): InstanceNameParts {
+  const prefix = `${workloadName}-`;
+  return workloadName && instanceName.startsWith(prefix) && instanceName.length > prefix.length
+    ? { prefix, rest: instanceName.slice(prefix.length) }
+    : { prefix: '', rest: instanceName };
+}
+
+/** What a crash message says about the last exit, until the API reports it as fields. */
+export interface CrashDetail {
+  exitCode?: number;
+  restarts?: number;
+}
+
+/**
+ * Reads the exit code and restart count out of a `RuntimeReady` crash message
+ * ("Container "app" exited with code 137 and has restarted 3 times"). The
+ * instance status has no fields for them yet (datum-cloud/compute#626).
+ */
+export function crashDetail(message: string | undefined): CrashDetail | undefined {
+  if (!message) return undefined;
+  const exit = /exited with code (\d+)/.exec(message);
+  const restarts = /restarted (\d+) times?/.exec(message);
+  if (!exit && !restarts) return undefined;
+  const detail: CrashDetail = {};
+  if (exit) detail.exitCode = Number(exit[1]);
+  if (restarts) detail.restarts = Number(restarts[1]);
+  return detail;
+}
+
+/** "Killed, usually out of memory (exit 137) · 3 restarts". */
+export function crashDetailText(detail: CrashDetail): string {
+  const parts: string[] = [];
+  if (detail.exitCode === 137) parts.push('Killed, usually out of memory (exit 137)');
+  else if (detail.exitCode !== undefined) parts.push(`Exited with code ${detail.exitCode}`);
+  if (detail.restarts !== undefined) parts.push(plural(detail.restarts, 'restart', 'restarts'));
+  return parts.join(' · ');
+}
+
+/** The crash detail of the first crashing instance, with the instance it came from. */
+export function firstCrash(
+  instances: readonly Instance[]
+): { instance: Instance; detail: CrashDetail } | undefined {
+  for (const instance of instances) {
+    const failing = instance.conditions.find(
+      (c) => (c.type === 'RuntimeReady' || c.type === 'Ready') && c.status === 'False' && c.reason === 'InstanceCrashing'
+    );
+    const detail = crashDetail(failing?.message);
+    if (detail) return { instance, detail };
+  }
+  return undefined;
+}
+
+/**
+ * Instances still on their way up: none has failed, and at least one is
+ * starting. The workload reports Available as soon as a placement exists,
+ * seconds before its instances serve, so the Overview keeps showing deploy
+ * progress until this is false.
+ */
+export function instancesStarting(instances: readonly Instance[]): boolean {
+  if (instances.length === 0) return false;
+  const readiness = instances.map((instance) => instanceReadiness(instance));
+  if (readiness.some((r) => r.tone === 'error' || r.tone === 'warn')) return false;
+  return readiness.some((r) => r.tone === 'muted');
+}
+
+/** What is wrong with an instance, in plain words, and what to try. */
+export interface InstanceProblem {
+  tone: 'error' | 'warn';
+  title: string;
+  /** The platform's own message, shown as reported. */
+  message?: string;
+  hints: string[];
+  /** The logs are likely to say more (the app ran at least once). */
+  showLogs: boolean;
+}
+
+/**
+ * The instance's failure, explained: from its `Ready`/`Programmed` failure
+ * reason, or a crash reported by `RuntimeReady`. Undefined while healthy or
+ * still starting.
+ */
+export function instanceProblem(instance: Instance): InstanceProblem | undefined {
+  const crash = instance.conditions.find(
+    (c) => (c.type === 'RuntimeReady' || c.type === 'Ready') && c.status === 'False' && c.reason === 'InstanceCrashing'
+  );
+  const failure = crash ?? instanceFailure(instance.conditions);
+  if (!failure) return undefined;
+  const message = failure.message || undefined;
+
+  switch (failure.reason) {
+    case 'ImageUnavailable': {
+      const image = instance.image ?? 'the image';
+      const anonymous = /anonymous/i.test(message ?? '');
+      const dockerHub = /^(docker\.io\/|index\.docker\.io\/|[^./]+(:|$)|[^./]+\/[^./]+(:|$))/.test(instance.image ?? '');
+      const hints = [`Check that ${image} exists and its tag is spelled correctly.`];
+      hints.push(
+        anonymous
+          ? 'It was pulled without credentials. A private image needs registry credentials (imagePullSecrets) on the workload.'
+          : 'If the image is private, add registry credentials (imagePullSecrets) to the workload.'
+      );
+      if (dockerHub && anonymous) {
+        hints.push('Docker Hub can refuse anonymous pulls when it rate-limits. Retry later, or use the same image from another registry.');
+      }
+      return { tone: 'error', title: "The image can't be pulled", message, hints, showLogs: false };
+    }
+    case 'InstanceCrashing': {
+      const detail = crashDetail(message);
+      const hints = ['Check the logs for the error just before each exit.'];
+      if (detail?.exitCode === 137) {
+        hints.unshift('Exit 137 usually means it ran out of memory. Try a larger instance type, or lower the app’s memory use.');
+      }
+      return {
+        tone: 'warn',
+        title: 'The app keeps crashing',
+        message: detail ? crashDetailText(detail) : message,
+        hints,
+        showLogs: true,
+      };
+    }
+    case 'ConfigurationError':
+      return {
+        tone: 'error',
+        title: 'The configuration was rejected',
+        message,
+        hints: ['Fix the field the message names in the workload spec, then redeploy.'],
+        showLogs: false,
+      };
+    default:
+      return { tone: 'error', title: 'The instance failed', message, hints: [], showLogs: true };
+  }
 }

@@ -5,10 +5,13 @@
  * Panel heights that the host stylesheet does not compile (`27rem`, `32rem`,
  * chart `224px`) are inline styles, matching the live pages.
  */
-import { DetailList, DETAILS_GRID_CLASS, OPEN_ROW_PADDING } from './detail-list';
 import { Card, CardContent, CardHeader } from '@datum-cloud/datum-ui/card';
 import { STRIP_GAP } from './stat-strip';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
+import { cn } from '@datum-cloud/datum-ui/utils';
+import { Icon } from '@datum-cloud/datum-ui/icons';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@datum-cloud/datum-ui/table';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { CSSProperties } from 'react';
 
 const PANEL_STYLE = { height: '27rem' } as const;
@@ -17,15 +20,16 @@ const CHART_STYLE = { height: 224 } as const;
 const TOPOLOGY_STYLE = { height: '28rem' } as const;
 
 /**
- * The list table's columns before usage data arrives. CPU and Memory only
- * appear once a row has data, so the skeleton leaves them out.
+ * The list table's columns before usage data arrives, each with a bone the
+ * width of what it usually holds. CPU and Memory only appear once a row has
+ * data, so the skeleton leaves them out.
  */
-const TABLE_COLUMNS = ['Name', 'Status', 'Network', 'Locations'] as const;
-
-/** Same thin line the live table draws (`TABLE_STYLES` in workload-table). */
-const ROW_LINE_STYLE = {
-  borderBottom: '1px solid color-mix(in oklab, var(--border) 60%, transparent)',
-} as const;
+const TABLE_COLUMNS = [
+  { title: 'Name', bones: ['h-4 w-32'] },
+  { title: 'Status', bones: ['size-2 rounded-full', 'h-4 w-20'] },
+  { title: 'Network', bones: ['h-4 w-16'] },
+  { title: 'Locations', bones: ['size-1.5 rounded-full', 'h-4 w-40'] },
+] as const;
 
 function Bone({ className, style }: { className?: string; style?: CSSProperties }) {
   return <Skeleton className={className} style={style} />;
@@ -148,10 +152,21 @@ export function WorkloadListCardsSkeleton() {
   );
 }
 
+/** The sort chevrons `SortableHeader` draws, at rest. */
+function SortChevrons() {
+  return (
+    <div className="flex flex-col" aria-hidden>
+      <Icon icon={ChevronUp} size={10} className="text-foreground -mb-0.5 stroke-2 opacity-25" />
+      <Icon icon={ChevronDown} size={10} className="text-foreground -mt-0.5 stroke-2 opacity-25" />
+    </div>
+  );
+}
+
 /**
- * Open table like the live one: plain muted header, `h-10` rows, thin lines.
- * `summary={false}` is the in-page fallback, where the strip and toolbar are
- * already on screen.
+ * The live table's shell (`WorkloadTable`: datum-ui's DataTable markup in a
+ * rounded, bordered panel, with sortable headers) and placeholder rows in it, so the
+ * swap to real rows doesn't move anything. `summary={false}` is the in-page
+ * fallback, where the strip and toolbar are already on screen.
  */
 export function WorkloadListTableSkeleton({ summary = true }: { summary?: boolean }) {
   return (
@@ -162,39 +177,130 @@ export function WorkloadListTableSkeleton({ summary = true }: { summary?: boolea
           <ToolbarSkeleton />
         </>
       ) : null}
-      <div>
-        <div className="flex h-10 items-center gap-4 px-2" style={ROW_LINE_STYLE}>
-          {TABLE_COLUMNS.map((column) => (
-            <span key={column} className="text-muted-foreground min-w-0 flex-1 truncate text-xs font-medium">
-              {column}
-            </span>
-          ))}
+      <div className="overflow-hidden rounded-lg border">
+        {/* DataTable's class and slots: the host styles its tables by these. */}
+        <div className="datum-ui-data-table" data-slot="dt" style={{ overflowX: 'auto' }}>
+          <Table data-slot="dt-table">
+            <TableHeader data-slot="dt-header">
+              <TableRow data-slot="dt-header-row">
+                {TABLE_COLUMNS.map((column) => (
+                  <TableHead key={column.title} data-slot="dt-header-cell">
+                    <div className="flex h-full items-center justify-between gap-1">
+                      <span>{column.title}</span>
+                      <SortChevrons />
+                    </div>
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody data-slot="dt-body">
+              {Array.from({ length: 6 }).map((_, row) => (
+                <TableRow key={row} data-slot="dt-row">
+                  {TABLE_COLUMNS.map((column) => (
+                    <TableCell key={column.title} data-slot="dt-cell">
+                      <span className="flex h-5 items-center gap-2">
+                        {column.bones.map((bone) => (
+                          <Bone key={bone} className={bone} />
+                        ))}
+                      </span>
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </div>
-        {Array.from({ length: 6 }).map((_, row) => (
-          <div key={row} className="flex h-10 items-center gap-4 px-2" style={ROW_LINE_STYLE}>
-            {TABLE_COLUMNS.map((column) => (
-              <Bone key={column} className="h-4 min-w-0 flex-1" />
-            ))}
-          </div>
-        ))}
       </div>
     </div>
   );
 }
 
-/** Placeholder instance rows, the same `h-10` as `WorkloadInstances` rows. */
-export function InstanceRowsSkeleton({ rows = 2 }: { rows?: number }) {
+// Column heads as the Instances and Load balancers cards set them.
+const CARD_HEAD = 'text-muted-foreground text-3xs h-9 font-semibold uppercase';
+
+interface CardColumn {
+  title: string;
+  /** Bone classes, side by side in the cell. */
+  bones: readonly string[];
+  /** Hidden below `md`, as the live column is. */
+  wide?: boolean;
+}
+
+/** The Instances card's columns, before network data adds its sparkline column. */
+const INSTANCE_COLUMNS: readonly CardColumn[] = [
+  { title: 'Instance', bones: ['h-4 w-48'] },
+  { title: 'Location', bones: ['h-4 w-20'], wide: true },
+  { title: 'State', bones: ['h-4 w-14 rounded-sm'] },
+  { title: 'Address', bones: ['h-4 w-32'], wide: true },
+  { title: '', bones: ['size-6 rounded-md', 'size-6 rounded-md', 'size-6 rounded-md'] },
+];
+
+const LOAD_BALANCER_COLUMNS: readonly CardColumn[] = [
+  { title: 'Load balancer', bones: ['h-4 w-28'] },
+  { title: 'State', bones: ['h-4 w-14 rounded-sm'] },
+  { title: 'Hostname', bones: ['h-4 w-56'], wide: true },
+  { title: 'Routes', bones: ['h-4 w-32'] },
+  { title: '', bones: ['size-6 rounded-md'] },
+];
+
+/**
+ * A card's table while its rows load: the live table's header and cell
+ * padding, with bones where the values go, so the rows land without a jump.
+ */
+function CardTableSkeleton({ columns, rows }: { columns: readonly CardColumn[]; rows: number }) {
+  const edge = (index: number) =>
+    index === 0 ? 'pl-(--card-px)' : index === columns.length - 1 ? 'pr-(--card-px)' : undefined;
   return (
-    <div className="flex flex-col" aria-hidden>
-      {Array.from({ length: rows }).map((_, index) => (
-        <div key={index} className="flex h-10 items-center gap-4 px-2">
-          <Bone className="size-2 shrink-0 rounded-full" />
-          <Bone className="h-3 w-40" />
-          <Bone className="h-3 w-24" />
-          <Bone className="h-3 flex-1" />
-        </div>
-      ))}
-    </div>
+    <Table aria-hidden>
+      <TableHeader className="bg-muted/40">
+        <TableRow className="hover:bg-transparent">
+          {columns.map((column, index) => (
+            <TableHead
+              key={index}
+              className={cn(CARD_HEAD, edge(index), column.wide && 'hidden md:table-cell')}>
+              {column.title}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {Array.from({ length: rows }, (_, row) => (
+          <TableRow key={row} className="hover:bg-transparent">
+            {columns.map((column, index) => (
+              <TableCell key={index} className={cn(edge(index), column.wide && 'hidden md:table-cell')}>
+                <span className={cn('flex h-6 items-center gap-1', index === columns.length - 1 && 'justify-end')}>
+                  {column.bones.map((bone, i) => (
+                    <Bone key={i} className={bone} />
+                  ))}
+                </span>
+              </TableCell>
+            ))}
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+/** The Instances card's table while instances load. */
+export function InstanceTableSkeleton({ rows = 2 }: { rows?: number }) {
+  return <CardTableSkeleton columns={INSTANCE_COLUMNS} rows={rows} />;
+}
+
+/** The Load balancers card's table while the lookup runs. */
+export function LoadBalancerTableSkeleton() {
+  return <CardTableSkeleton columns={LOAD_BALANCER_COLUMNS} rows={1} />;
+}
+
+/** A sectioned card's bordered header: icon and title. */
+function CardHeaderBone() {
+  return (
+    <CardHeader size="sm" bordered>
+      <span className="flex items-center gap-2">
+        <Bone className="size-4 rounded" />
+        <Bone className="h-4 w-28" />
+      </span>
+    </CardHeader>
   );
 }
 
@@ -215,31 +321,51 @@ function SectionHeaderBone({ action = false }: { action?: boolean }) {
 export function WorkloadOverviewSkeleton() {
   return (
     <div className="flex flex-col gap-6" aria-busy="true" data-testid="compute-plugin-loading-workload-overview">
-      <div className="flex h-9 items-center gap-3 px-1">
-        <Bone className="size-4 shrink-0 rounded-full" />
-        <Bone className="h-3 w-48" />
-      </div>
-      <div className="flex flex-col gap-2">
-        <SectionHeaderBone />
-        <InstanceRowsSkeleton />
-      </div>
-      <div className="flex flex-col gap-2">
-        <SectionHeaderBone action />
-        <Bone className="min-h-48 w-full rounded-md" />
-      </div>
-      <div className="flex flex-col gap-2">
-        <SectionHeaderBone />
-        {/* The real rows, with bones for text, so heights and dividers match at every width. */}
-        <div style={OPEN_ROW_PADDING}>
-          <DetailList
-            className={DETAILS_GRID_CLASS}
-            itemClassName="py-2"
-            items={Array.from({ length: 6 }, () => ({
-              label: <Bone className="h-3 w-24" />,
-              content: <Bone className="h-3 w-32" />,
-            }))}
-          />
+      <Card size="sm" sectioned className="overflow-hidden">
+        <div className="flex items-start gap-3 px-4 py-4">
+          <Bone className="size-9 shrink-0 rounded-full" />
+          <div className="flex flex-1 flex-col gap-2">
+            <Bone className="h-4 w-40" />
+            <Bone className="h-3 w-64" />
+          </div>
         </div>
+        {/* The stats strip's cells (`StatCell` while loading): label and hint, value, sparkline. */}
+        <div className="bg-border grid grid-cols-2 gap-px border-t sm:flex">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index} className="bg-card flex min-w-0 flex-1 flex-col gap-1.5 px-4 py-3">
+              <span className="flex h-4 items-center justify-between gap-2">
+                <Bone className="h-3 w-14" />
+                <Bone className="h-3 w-16" />
+              </span>
+              <span className="flex h-7 items-center">
+                <Bone className="h-5 w-14" />
+              </span>
+              <Bone className="h-8 w-full" />
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Card sectioned size="sm" className="overflow-hidden">
+        <CardHeaderBone />
+        <InstanceTableSkeleton />
+      </Card>
+      <Card sectioned size="sm" className="overflow-hidden">
+        <CardHeaderBone />
+        <LoadBalancerTableSkeleton />
+      </Card>
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <div className="flex flex-col gap-2">
+          <SectionHeaderBone action />
+          <Bone className="min-h-48 w-full rounded-md" />
+        </div>
+        <Panel>
+          {Array.from({ length: 6 }, (_, index) => (
+            <div key={index} className="flex gap-4">
+              <Bone className="h-3 w-24" />
+              <Bone className="h-3 w-32" />
+            </div>
+          ))}
+        </Panel>
       </div>
     </div>
   );

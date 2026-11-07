@@ -5,8 +5,15 @@
  * topology and instance rows link to.
  */
 import { albStatus, anyAlbProvisioning, type AlbStatus } from './alb-status';
+import { DEPLOYED_FOR_MS, instancesReadyAt } from './deploy-presenters';
 import { useNow } from './use-now';
-import { deployStatus, overviewHealth, type DeployStatus, type StatusDisplay } from './workload-presenters';
+import {
+  deployStatus,
+  instancesStarting,
+  overviewHealth,
+  type DeployStatus,
+  type StatusDisplay,
+} from './workload-presenters';
 import type { WorkloadOutletContext } from '../pages/workload-outlet-context';
 import { workloadHealthToBadgeType, type WorkloadHealth } from '../schema';
 import { useCallback, useMemo } from 'react';
@@ -71,7 +78,11 @@ export function useWorkloadOverviewState({
 
   const { health, failure, instancesFailing } = overviewHealth(workload, instances);
   const albs = published?.proxies;
-  const now = useNow(health === 'Deploying' || (!!albs && anyAlbProvisioning(albs)));
+  const readyAt = instancesReadyAt(instances);
+  const justDeployed = !!readyAt && Date.now() - readyAt.getTime() < DEPLOYED_FOR_MS;
+  const now = useNow(
+    health === 'Deploying' || instancesStarting(instances) || justDeployed || (!!albs && anyAlbProvisioning(albs))
+  );
   const deploy = instancesFailing ? undefined : deployStatus(workload, now);
   const albStatuses = useMemo(
     () =>

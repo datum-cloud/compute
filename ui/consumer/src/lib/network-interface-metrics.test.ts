@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
-import { resolveNetworkInterfaceMetrics } from './network-interface-metrics';
+import { resolveNetworkInterfaceMetrics, workloadInterfaceSeriesLabels } from './network-interface-metrics';
+import type { Instance } from '../schema';
 
 const ifaces = [{ name: 'eth0', network: 'default', networkInterfaceRef: 'web-0-eth0' }];
 
@@ -136,5 +137,21 @@ describe('resolveNetworkInterfaceMetrics', () => {
     expect(s.unavailable).toBe(true);
     expect(s.receiveQuery).toBeUndefined();
     expect(s.transmitQuery).toBeUndefined();
+  });
+});
+
+describe('workloadInterfaceSeriesLabels', () => {
+  const inst = (name: string, refs: string[]) =>
+    ({
+      name,
+      networkInterfaces: refs.map((ref, i) => ({ name: `eth${i}`, networkInterfaceRef: ref })),
+    }) as unknown as Instance;
+  test('labels each interface with its instance, and the interface when there are several', () => {
+    expect(
+      workloadInterfaceSeriesLabels([
+        inst('web-default-us-east-1-0', ['a-eth0']),
+        inst('web-default-eu-west-1-0', ['b-eth0', 'b-eth1']),
+      ])
+    ).toEqual({ 'a-eth0': 'us-east-1-0', 'b-eth0': 'eu-west-1-0 · eth0', 'b-eth1': 'eu-west-1-0 · eth1' });
   });
 });

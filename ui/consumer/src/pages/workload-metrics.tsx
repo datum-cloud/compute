@@ -19,6 +19,7 @@ import {
   memoryUsageHint,
 } from '../lib/resource-usage';
 import { useInstanceFilters } from '../lib/instance-filters';
+import { useWorkloadNetworkMetrics } from '../lib/network-interface-metrics';
 import {
   albErrorRateQuery,
   albP99Query,
@@ -87,6 +88,7 @@ export default function WorkloadMetrics() {
   const coresTotal = allocatedTotal(coresByInstance, filters.matching);
   const memoryTotal = allocatedTotal(memoryByInstance, filters.matching);
   const noMatch = filters.isFiltered && filters.matching.length === 0;
+  const network = useWorkloadNetworkMetrics(projectId, filters.matching);
   const scopeHint = filters.isFiltered
     ? `${filters.matching.length} of ${instances.length} instances`
     : undefined;
@@ -215,16 +217,36 @@ export default function WorkloadMetrics() {
         />
       </div>
 
-      <MetricAreaChart
-        projectId={projectId}
-        title="Network I/O"
-        query={undefined}
-        timeRange={range.timeRange}
-        format="bytesPerSecond"
-        enabled={false}
-        unavailable
-        unavailableLabel={NETWORK_IO_UNAVAILABLE}
-      />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network in"
+          query={network.receiveQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={network.seriesLabels}
+          pending={network.isLoading}
+          denied={network.isDenied}
+          error={network.error}
+          unavailable={noMatch || network.unavailable}
+          unavailableLabel={noMatch ? NO_MATCHING_INSTANCES : NETWORK_IO_UNAVAILABLE}
+          maxSeries={filters.instancesPicked ? undefined : MAX_INSTANCE_SERIES}
+        />
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network out"
+          query={network.transmitQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={network.seriesLabels}
+          pending={network.isLoading}
+          denied={network.isDenied}
+          error={network.error}
+          unavailable={noMatch || network.unavailable}
+          unavailableLabel={noMatch ? NO_MATCHING_INSTANCES : NETWORK_IO_UNAVAILABLE}
+          maxSeries={filters.instancesPicked ? undefined : MAX_INSTANCE_SERIES}
+        />
+      </div>
 
       {proxyId ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

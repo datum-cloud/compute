@@ -2,7 +2,6 @@
  * Instance Overview tab body. Mounted under {@link ./instance-detail.tsx}'s
  * layout shell via `<Outlet />` — chrome stays mounted across tab changes.
  */
-import { instanceFailure } from '../adapter';
 import { CommandBlock } from '../components/cli-section';
 import { DetailList, StatusBadge } from '../components/detail-list';
 import { RecentInstanceLogs } from '../components/instance-logs';
@@ -20,7 +19,8 @@ import {
 import { formatLocationName, formatLocationTooltip, useLocationIndex } from '../lib/locations';
 import { cpuUsageQuery, memoryUsageQuery, useInstanceMetricIdentity } from '../lib/metrics-queries';
 import { lastThirtyMinutesRange, usePrometheusCard, type PrometheusTimeRange } from '../lib/prometheus';
-import { instanceStatusLabel } from '../lib/workload-presenters';
+import { instanceProblem, instanceStatusLabel } from '../lib/workload-presenters';
+import { InstanceProblemCallout } from '../components/instance-problem';
 import { instanceStatusToBadgeType, type Instance } from '../schema';
 import {
   Card,
@@ -137,19 +137,10 @@ function SizeValue({ instance }: { instance: Instance }) {
   );
 }
 
-/** Badge, plus what's wrong when the instance is failing. */
+/** The status badge. What's wrong, when anything is, is in the problem callout above the cards. */
 function StatusValue({ instance }: { instance: Instance }) {
-  const failure = instanceFailure(instance.conditions);
-
   return (
-    <span className="flex min-w-0 flex-col gap-1">
-      <StatusBadge type={instanceStatusToBadgeType(instance.status)}>
-        {instanceStatusLabel(instance)}
-      </StatusBadge>
-      {failure?.message ? (
-        <span className="text-muted-foreground text-xs">{failure.message}</span>
-      ) : null}
-    </span>
+    <StatusBadge type={instanceStatusToBadgeType(instance.status)}>{instanceStatusLabel(instance)}</StatusBadge>
   );
 }
 
@@ -466,9 +457,11 @@ export default function InstanceOverview() {
     albLoading,
   } = useInstanceOutlet();
   const locationIndex = useLocationIndex(projectId);
+  const problem = instanceProblem(instance);
 
   return (
     <>
+      {problem ? <InstanceProblemCallout problem={problem} logsHref={logsHref} /> : null}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <GeneralCard
           instance={instance}

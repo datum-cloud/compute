@@ -9,13 +9,8 @@
  * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
  * inside the plugin (that double-stacks chrome vs native pages).
  */
-import {
-  DetailList,
-  DETAILS_GRID_CLASS,
-  OPEN_ROW_PADDING,
-  StatusBadge,
-} from "../components/detail-list";
-import { RecentInstanceLogs } from "../components/instance-logs";
+import { ResourceActivity } from "../components/resource-activity";
+import { WorkloadOverviewCard } from "../components/workload-overview-card";
 import { WorkloadPageChrome } from "../components/workload-page-chrome";
 import { DeleteWorkloadDialog, useDeleteWorkloadDialog } from "../components/delete-workload-dialog";
 import {
@@ -25,34 +20,38 @@ import {
   WorkloadTopologySkeleton,
 } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
-import { SectionFrame, StatusLine } from "../components/surface";
+import { SectionFrame } from "../components/surface";
 import { WorkloadInstances } from "../components/workload-instances";
+import { WorkloadLoadBalancers } from "../components/workload-load-balancers";
 import {
   useDeletePermissions,
   usePublishedUrl,
   useWorkload,
+  useWorkloadDeployments,
   useWorkloadInstances,
-  type PublishedUrl,
 } from "../lib/api";
 import { splitSlashValue } from "../lib/format";
+import { useWorkloadOverviewState } from "../lib/use-workload-overview-state";
 import {
-  albStatus,
-  albStatusDisplay,
-  workloadUrlState,
-  type AlbStatus,
-} from "../lib/alb-status";
-import { WorkloadUrl } from "../components/workload-url";
-import { albOverviewHref, useWorkloadOverviewState } from "../lib/use-workload-overview-state";
-import { compactDetailRows, overviewStatusLine } from "../lib/workload-presenters";
-import { formatLocationNames, useLocationIndex } from "../lib/locations";
+  compactDetailRows,
+  firstCrash,
+  instancesStarting,
+  overviewStatusLine,
+} from "../lib/workload-presenters";
+import { deployHeadline, deployState, deployTimeline } from "../lib/deploy-presenters";
+import { formatLocationName, formatLocationNames, useLocationIndex } from "../lib/locations";
+import { computeResourceLinkResolver, workloadActivityFilter } from "../lib/activity";
+import { workloadSettling } from "../lib/workload-settling";
+import { allocationOf, formatBytes, parseCpuCores, parseMemoryBytes } from "../lib/resource-usage";
+import { Card, CardHeader, CardTitle } from "@datum-cloud/datum-ui/card";
 import { identityValues, useProjectResourceIdentity } from "../lib/metrics-queries";
 import type { WorkloadOutletContext } from "./workload-outlet-context";
 import { useWorkloadOutlet } from "./workload-outlet-context";
 import WorkloadLogs from "./workload-logs";
 import WorkloadMetrics from "./workload-metrics";
-import type { Workload } from "../schema";
+import type { Instance, Workload } from "../schema";
 import { Icon } from "@datum-cloud/datum-ui/icons";
-import { GlobeIcon } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import {
   Link,
@@ -68,71 +67,6 @@ import {
 const WorkloadActivity = lazy(() => import("./workload-activity"));
 // The topology canvas is the plugin's largest component; load it with its tab.
 const WorkloadTopology = lazy(() => import("./workload-topology"));
-
-function LoadBalancerValue({
-  projectId,
-  published,
-  isLoading,
-  albStatuses,
-}: {
-  projectId?: string;
-  published?: PublishedUrl | null;
-  isLoading: boolean;
-  albStatuses: Record<string, AlbStatus>;
-}) {
-  if (isLoading) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  if (!published?.proxies.length) {
-    return <span className="text-muted-foreground">Not connected</span>;
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      {published.proxies.map((alb) => {
-        const label = alb.displayName || alb.proxyName;
-        const albStatus = albStatuses[alb.proxyName];
-        const display = albStatus ? albStatusDisplay(albStatus) : undefined;
-        const badge =
-          albStatus && albStatus.phase !== "ready" && display ? (
-            <span title={albStatus.message}>
-              <StatusBadge type={display.tone}>
-                {albStatus.phase === "provisioning" ? albStatus.step : "Error"}
-              </StatusBadge>
-            </span>
-          ) : null;
-        if (!projectId) {
-          return (
-            <span
-              key={alb.proxyName}
-              className="inline-flex items-center gap-1.5 text-sm"
-            >
-              <Icon
-                icon={GlobeIcon}
-                size={14}
-                className="text-muted-foreground shrink-0"
-              />
-              {label}
-              {badge}
-            </span>
-          );
-        }
-        return (
-          <span key={alb.proxyName} className="inline-flex items-center gap-2">
-            <Link
-              to={albOverviewHref(projectId, alb.proxyName)}
-              className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline"
-            >
-              <Icon icon={GlobeIcon} size={14} className="shrink-0" />
-              {label}
-            </Link>
-            {badge}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
 
 const DETAIL_DATE_FORMAT: Intl.DateTimeFormatOptions = {
   day: "2-digit",
@@ -153,12 +87,7 @@ interface DetailRow {
 
 interface WorkloadDetailsProps {
   workload: Workload;
-  albStatuses: Record<string, AlbStatus>;
-  healthyCount: number;
-  totalCount: number;
-  projectId?: string;
-  published?: PublishedUrl | null;
-  publishedLoading: boolean;
+  instances: readonly Instance[];
   locationLabel: string;
 }
 
@@ -170,52 +99,40 @@ function mono(text: string) {
   );
 }
 
-/** General and Configuration rows, in display order, before empty ones are dropped. */
+/** "2 vCPU · 4 GB" from the first instance's allocation, when it is known. */
+function instanceSize(instances: readonly Instance[]): string | undefined {
+  const first = instances[0];
+  const cores = parseCpuCores(first?.cpu);
+  const memory = parseMemoryBytes(first?.memory);
+  const parts = [
+    cores !== undefined ? `${cores} vCPU` : undefined,
+    memory !== undefined ? formatBytes(memory) : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/** Configuration rows, in display order, before empty ones are dropped. */
 function workloadDetailRows({
   workload,
-  albStatuses,
-  healthyCount,
-  totalCount,
-  projectId,
-  published,
-  publishedLoading,
+  instances,
   locationLabel,
 }: WorkloadDetailsProps): DetailRow[] {
   const { main: resourceShort } = splitSlashValue(workload.resources ?? "");
+  const size = instanceSize(instances);
+  const type = resourceShort || workload.resources;
   return [
-    { label: "Resource name", value: workload.name, content: mono(workload.name) },
-    {
-      label: "Load balancer",
-      // Held while loading so the row doesn't pop in after the rest.
-      value: publishedLoading ? "loading" : published?.proxies,
-      content: (
-        <LoadBalancerValue
-          projectId={projectId}
-          published={published}
-          isLoading={publishedLoading}
-          albStatuses={albStatuses}
-        />
-      ),
-    },
-    { label: "Instances", value: totalCount, content: `${healthyCount}/${totalCount}` },
-    {
-      label: "Created",
-      value: workload.createdAt,
-      content: workload.createdAt.toLocaleDateString("en-GB", DETAIL_DATE_FORMAT),
-    },
-    { label: "Runtime", value: workload.runtimeType, content: workload.runtimeType },
     { label: "Image", value: workload.image, content: workload.image ? mono(workload.image) : null },
     {
-      label: "Resources",
-      value: resourceShort || workload.resources,
-      content: resourceShort || workload.resources,
+      label: "Instance type",
+      value: type ?? size,
+      content: [type, size].filter(Boolean).join(" · "),
     },
     {
       label: "Replicas",
       value: workload.desiredReplicas,
       content:
         workload.replicasPerRegion !== undefined
-          ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
+          ? `${workload.replicasPerRegion} per location · ${workload.desiredReplicas} total`
           : `${workload.desiredReplicas} total`,
     },
     {
@@ -223,30 +140,49 @@ function workloadDetailRows({
       value: workload.locations,
       content: <span title={workload.locations.join(", ")}>{locationLabel}</span>,
     },
-    { label: "Networks", value: workload.networks, content: mono(workload.networks.join(", ")) },
     { label: "Ports", value: workload.ports, content: mono(workload.ports.join(", ")) },
+    { label: "Networks", value: workload.networks, content: mono(workload.networks.join(", ")) },
+    { label: "Runtime", value: workload.runtimeType, content: workload.runtimeType },
+    {
+      label: "Created",
+      value: workload.createdAt,
+      content: workload.createdAt.toLocaleDateString("en-GB", DETAIL_DATE_FORMAT),
+    },
   ];
 }
 
+// Inline: the host compiles no fixed label width.
+const DETAIL_LABEL_STYLE = { width: "8rem" } as const;
+
 /**
- * General and Configuration merged into one two-column list. Rows with no
- * value are left out rather than shown as "Coming soon" or a dash, and the
- * grid fills row by row so dropped rows leave no holes.
+ * What the workload is, in its own card. Rows with no value are left out
+ * rather than shown as a dash; live state (instances, health) stays in the
+ * cards above.
  */
 function WorkloadDetails(props: WorkloadDetailsProps) {
   const rows = compactDetailRows(workloadDetailRows(props));
 
   return (
-    <SectionFrame title="Details" testId="compute-plugin-workload-details">
-      <div style={OPEN_ROW_PADDING}>
-        <DetailList
-          className={DETAILS_GRID_CLASS}
-          itemClassName="py-2"
-          labelClassName="text-muted-foreground font-normal"
-          items={rows.map((row) => ({ label: row.label, content: row.content }))}
-        />
-      </div>
-    </SectionFrame>
+    <Card sectioned size="sm" className="overflow-hidden" data-testid="compute-plugin-workload-details">
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={SettingsIcon} size={16} className="text-secondary" aria-hidden />
+          Configuration
+        </CardTitle>
+      </CardHeader>
+      <dl className="flex flex-col">
+        {rows.map((row, index) => (
+          <div
+            key={row.label}
+            className={index === 0 ? "flex gap-4 px-4 py-2.5" : "flex gap-4 border-t px-4 py-2.5"}>
+            <dt className="text-muted-foreground shrink-0 text-sm" style={DETAIL_LABEL_STYLE}>
+              {row.label}
+            </dt>
+            <dd className="min-w-0 flex-1 text-sm">{row.content}</dd>
+          </div>
+        ))}
+      </dl>
+    </Card>
   );
 }
 
@@ -284,7 +220,8 @@ function WorkloadLayoutShell({
   } = useWorkloadInstances(
     projectId,
     workloadName,
-    workload?.health === "Deploying",
+    // Fast while instances are still coming up, not only while deploying.
+    workload ? workloadSettling(workload) : false,
   );
   const published = usePublishedUrl(projectId, workloadName);
   const locationIndex = useLocationIndex(projectId);
@@ -299,14 +236,6 @@ function WorkloadLayoutShell({
     [instances],
   );
   const proxyId = published.data?.proxyName;
-  const headerAlb = published.data?.proxies[0];
-  const headerUrl =
-    workload && headerAlb?.hostname
-      ? workloadUrlState(
-          !workload.deleting && workload.health === "Available",
-          albStatus(headerAlb, { workloadServing: workload.health === "Available" }),
-        )
-      : undefined;
   const navigate = useNavigate();
   const permissions = useDeletePermissions(projectId);
   const deleteDialog = useDeleteWorkloadDialog();
@@ -323,25 +252,6 @@ function WorkloadLayoutShell({
       metricsHref={metricsHref}
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
-      // Held until the workload is known too, since that decides whether it links.
-      urlLoading={published.isLoading || (isLoading && !!headerAlb?.hostname)}
-      deleteLoading={(isLoading || permissions.isLoading) && !workload?.deleting}
-      visit={
-        headerAlb?.hostname && headerUrl
-          ? { href: `https://${headerAlb.hostname}`, live: headerUrl.live, status: headerUrl.status }
-          : undefined
-      }
-      url={
-        headerAlb?.hostname && headerUrl ? (
-          <WorkloadUrl
-            hostname={headerAlb.hostname}
-            customHostnames={headerAlb.customHostnames}
-            live={headerUrl.live}
-            status={headerUrl.status}
-            plain
-          />
-        ) : undefined
-      }
       onDelete={canDelete && workload ? () => deleteDialog.show(workload) : undefined}>
       <DeleteWorkloadDialog
         projectId={projectId}
@@ -399,7 +309,20 @@ function WorkloadLayoutShell({
   );
 }
 
-function WorkloadOverview() {
+/**
+ * Overview: a summary card (status, crash or deploy progress, the
+ * last hour's stats), the instances table, the load balancers that reach it,
+ * then what changed recently beside the workload's configuration.
+ */
+/** When an instance's failure was reported, for the end of the "so far" line. */
+function failedAt(instance: Instance | undefined): Date | undefined {
+  const condition = instance?.conditions.find(
+    (c) => (c.type === "Ready" || c.type === "Programmed") && c.status === "False" && c.lastTransitionTime,
+  );
+  return condition?.lastTransitionTime ? new Date(condition.lastTransitionTime) : undefined;
+}
+
+export function WorkloadOverview() {
   const context = useWorkloadOutlet();
   const {
     workload,
@@ -411,55 +334,97 @@ function WorkloadOverview() {
     published,
     publishedLoading,
     locationIndex,
-    instanceNames,
+    identityLabel,
+    identityLoading,
+    identityDenied,
+    metricKeys,
     overviewHref,
   } = context;
-  const {
-    health,
-    failure,
-    deploy,
-    albStatuses,
-    now,
-    healthyCount,
-    totalCount,
-    instanceHref,
-  } = useWorkloadOverviewState(context);
+  const { health, failure, deploy, albStatuses, now, healthyCount, totalCount, instanceHref } =
+    useWorkloadOverviewState(context);
 
   const primaryAlb = published?.proxies[0];
   const primaryAlbStatus = primaryAlb ? albStatuses[primaryAlb.proxyName] : undefined;
-  const logsHref = `${overviewHref}/logs`;
-  const status = overviewStatusLine({
-    health,
-    deleting: workload.deleting,
-    deploy,
-    failure,
-    albError: primaryAlbStatus?.phase === "error" ? primaryAlbStatus.message : undefined,
-    healthyCount,
-    totalCount,
-    locationCount: workload.locations.length,
-    now,
-  });
+  // While a deploy is under way, stuck, failed or just finished, the card
+  // says so instead of showing (empty) stats.
+  const coming = !!deploy || (!workload.deleting && instancesStarting(instances));
+  const { data: deployments = [] } = useWorkloadDeployments(projectId, workload.uid, coming);
+  const state = deployState({ workload, instances, deploy, deployments, healthyCount, now });
+  const status = state
+    ? deployHeadline(state, { healthy: healthyCount, total: totalCount, locations: workload.locations.length }, now)
+    : overviewStatusLine({
+        health,
+        deleting: workload.deleting,
+        deploy,
+        failure,
+        albError: primaryAlbStatus?.phase === "error" ? primaryAlbStatus.message : undefined,
+        healthyCount,
+        totalCount,
+        locationCount: workload.locations.length,
+        now,
+      });
+  const timeline = state
+    ? deployTimeline(
+        workload,
+        instances,
+        state.phase === "failed" && state.problem
+          ? { label: state.problem.title, at: failedAt(state.failedInstance) ?? new Date(now), state: "failed" }
+          : state.phase === "stalled" && state.stuckOn
+            ? { label: state.stuckOn, at: state.since, state: "waiting" }
+            : undefined,
+      )
+    : undefined;
+  const problemActions =
+    state?.phase === "failed" && state.failedInstance
+      ? [{ label: "View instance", href: instanceHref(state.failedInstance.name), primary: true }]
+      : state?.phase === "stalled" && state.problem?.title === "Waiting for quota" && projectId
+        ? [{ label: "View usage", href: `/project/${projectId}/usage` }]
+        : [];
+  const crash = useMemo(() => firstCrash(instances), [instances]);
+  const allocation = useMemo(() => allocationOf(instances), [instances]);
+  const resolver = useMemo(
+    () => computeResourceLinkResolver(workload.name, overviewHref),
+    [workload.name, overviewHref],
+  );
 
   return (
     <>
-      <div data-testid="compute-plugin-workload-health">
-        <StatusLine
-          tone={status.tone}
-          title={status.title}
-          detail={<span title={status.detail}>{status.detail}</span>}
-          action={
-            primaryAlb?.hostname ? (
-              <AlbHostnameLink
-                hostname={primaryAlb.hostname}
-                href={projectId ? albOverviewHref(projectId, primaryAlb.proxyName) : undefined}
-                status={primaryAlbStatus}
-              />
-            ) : undefined
-          }
-        />
-      </div>
+      <WorkloadOverviewCard
+        status={status}
+        phase={state?.phase}
+        timeline={timeline}
+        problem={state?.problem}
+        problemActions={problemActions}
+        image={workload.image}
+        updatedAt={workload.updatedAt ?? workload.createdAt}
+        now={now}
+        crash={
+          crash
+            ? {
+                ...crash,
+                locationLabel: crash.instance.location
+                  ? formatLocationName(crash.instance.location, locationIndex)
+                  : "an unknown location",
+                instanceHref: instanceHref(crash.instance.name),
+                logsHref: `${instanceHref(crash.instance.name)}/logs`,
+              }
+            : undefined
+        }
+        projectId={projectId}
+        instances={instances}
+        totalCount={totalCount}
+        identityLabel={identityLabel}
+        metricKeys={metricKeys}
+        metricsDenied={identityDenied}
+        proxyId={proxyId}
+        allocation={allocation}
+        instancesLoading={instancesLoading}
+        identityLoading={identityLoading}
+        publishedLoading={publishedLoading}
+      />
 
       <WorkloadInstances
+        workloadName={workload.name}
         instances={instances}
         loading={instancesLoading}
         error={instancesError}
@@ -467,79 +432,44 @@ function WorkloadOverview() {
         instanceHref={instanceHref}
         deploying={!!deploy}
         deleting={workload.deleting}
-      />
-
-      <RecentInstanceLogs
-        bare
-        logsHref={logsHref}
         projectId={projectId}
-        proxyId={proxyId}
-        albHostname={published?.hostname}
-        instanceNames={instanceNames}
-        // Without a load balancer the query waits on instance names; until
-        // they arrive it would otherwise read as "No logs".
-        waiting={instancesLoading && !proxyId}
+        metricsDenied={identityDenied}
       />
 
-      <WorkloadDetails
-        workload={workload}
-        albStatuses={albStatuses}
-        healthyCount={healthyCount}
-        totalCount={totalCount}
+      <WorkloadLoadBalancers
         projectId={projectId}
         published={published}
-        publishedLoading={publishedLoading}
-        locationLabel={formatLocationNames(workload.locations, locationIndex)}
+        loading={publishedLoading}
+        albStatuses={albStatuses}
+        network={workload.networks[0]}
+        workload={workload}
       />
-    </>
-  );
-}
 
-/**
- * The status line's action slot doesn't shrink, so the hostname needs its
- * own cap to truncate instead of pushing the detail out on narrow screens.
- */
-const ALB_HOSTNAME_STYLE = { maxWidth: 'min(20rem, 45vw)' } as const;
-
-/** The load balancer's hostname on the status line, with its state while it isn't ready. */
-function AlbHostnameLink({
-  hostname,
-  href,
-  status,
-}: {
-  hostname: string;
-  href?: string;
-  status?: AlbStatus;
-}) {
-  const display = status ? albStatusDisplay(status) : undefined;
-  const label = (
-    <>
-      <Icon icon={GlobeIcon} size={14} className="shrink-0" aria-hidden />
-      <span className="truncate font-mono text-xs">{hostname}</span>
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <SectionFrame
+          title="What changed"
+          action={
+            <Link to={`${overviewHref}/activity`} className="text-primary text-sm hover:underline">
+              All activity
+            </Link>
+          }
+          testId="compute-plugin-workload-recent-activity">
+          <ResourceActivity
+            projectId={projectId}
+            filter={workloadActivityFilter(workload.name)}
+            liveNameMatch={workload.name}
+            resourceLinkResolver={resolver}
+            bare
+            pageSize={6}
+          />
+        </SectionFrame>
+        <WorkloadDetails
+          workload={workload}
+          instances={instances}
+          locationLabel={formatLocationNames(workload.locations, locationIndex)}
+        />
+      </div>
     </>
-  );
-  return (
-    <span
-      className="flex min-w-0 items-center gap-2"
-      style={ALB_HOSTNAME_STYLE}
-      data-e2e="compute-workload-alb-chip">
-      {display ? (
-        <span className="text-muted-foreground hidden text-xs sm:inline" title={display.detail}>
-          {display.short}
-        </span>
-      ) : null}
-      {href ? (
-        <Link
-          to={href}
-          className="text-primary flex min-w-0 items-center gap-1.5 hover:underline"
-          title="Open load balancer"
-        >
-          {label}
-        </Link>
-      ) : (
-        <span className="flex min-w-0 items-center gap-1.5">{label}</span>
-      )}
-    </span>
   );
 }
 

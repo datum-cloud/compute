@@ -46,7 +46,7 @@ export function DetailList({
   );
 }
 
-/** Compact status badge matching portal `BadgeStatus` sizing. */
+/** Compact status badge, styled like cloud-portal's `BadgeStatus` (whose classes the host compiles). */
 export function StatusBadge({
   type,
   children,
@@ -59,7 +59,7 @@ export function StatusBadge({
       <Badge
         type={type}
         theme="light"
-        className="text-xs flex cursor-default items-center gap-1.5 px-1 py-0.5 font-medium">
+        className="text-5xs flex cursor-default items-center gap-1.5 px-1 py-0.5 font-bold tracking-[0.03em] uppercase">
         {children}
       </Badge>
     </div>
