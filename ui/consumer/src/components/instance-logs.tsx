@@ -8,6 +8,7 @@
  * workload has a published HTTPProxy.
  */
 import { ApiError } from '../lib/api';
+import { useComputeLogsUrlState } from '../lib/logs-url-state';
 import {
   ALB_LOGS_PREVIEW_LIMIT,
   combinedLogFacets,
@@ -17,6 +18,8 @@ import {
   recentLogsRange,
   useInstanceLogs,
   useWorkloadLogs,
+  instanceUpstreamIPs,
+  useWindowLogFacets,
 } from '../lib/o11y-logs';
 import { Badge } from '@datum-cloud/datum-ui/badge';
 import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
@@ -32,11 +35,9 @@ import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import {
   facetsFromEntries,
   httpStatusBadgeType,
-  lastThirtyMinutes,
   logRequestHost,
   Logs,
   parseLogLine,
-  resolveLogTimeRange,
   type LogColumn,
   type LogColumnSpec,
   type LogEntry,
@@ -46,7 +47,7 @@ import {
 import { cn } from '@datum-cloud/datum-ui/utils';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { CheckIcon, CopyIcon, LogsIcon, RadioIcon } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { OPEN_ROW_PADDING } from './detail-list';
 import { QuietNotice, SectionFrame } from './surface';
@@ -394,16 +395,9 @@ export function InstanceLogsExplorer({
   upstreamIPs?: readonly string[];
   className?: string;
 }) {
-  const [filters, setFilters] = useState<LogFilters>({});
-  const [search, setSearch] = useState('');
-  const [live, setLive] = useState(false);
-  const [timeRange, setTimeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
-
-  const handleRefresh = useCallback(() => {
-    setTimeRange((current) =>
-      current.preset ? resolveLogTimeRange(current) : lastThirtyMinutes()
-    );
-  }, []);
+  // Time range, filters, search, live and the open row live in the URL.
+  const logsState = useComputeLogsUrlState();
+  const { timeRange, filters, search, live, refreshWindow } = logsState;
 
   const logsQuery = useInstanceLogs(projectId, proxyId, instanceName, {
     timeRange,
@@ -418,7 +412,21 @@ export function InstanceLogsExplorer({
     () => filterCombinedLogs(logsQuery.data ?? [], filters),
     [logsQuery.data, filters]
   );
-  const facets = useMemo(() => combinedLogFacets(logsQuery.data ?? []), [logsQuery.data]);
+  // Every option in the window, whatever is ticked. Until those load, fall
+  // back to facets built from the fetched rows.
+  const ips = useMemo(() => instanceUpstreamIPs({ internalIPs: upstreamIPs }), [upstreamIPs]);
+  const instanceNames = useMemo(() => (instanceName ? [instanceName] : []), [instanceName]);
+  const windowFacets = useWindowLogFacets(projectId, {
+    proxyId: ips.length > 0 ? proxyId : undefined,
+    upstreamIPs: ips,
+    instanceNames,
+    filters,
+    search,
+    timeRange,
+    live,
+  });
+  const rowFacets = useMemo(() => combinedLogFacets(logsQuery.data ?? []), [logsQuery.data]);
+  const facets = windowFacets ?? rowFacets;
 
   const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
@@ -447,25 +455,20 @@ export function InstanceLogsExplorer({
     <Card
       size="sm"
       sectioned
-      className={cn('flex min-h-96 flex-col overflow-hidden', className)}
+      className={cn('flex min-h-96 flex-1 flex-col overflow-hidden', className)}
       style={{ minHeight: '32rem' }}
       data-testid="compute-plugin-instance-logs-explorer">
       <CardContent padding="none" className="flex min-h-0 flex-1 flex-col">
         <Logs.Root
           entries={visibleEntries}
           facets={facets}
+          {...logsState}
           timeRange={timeRange}
-          filters={filters}
-          search={search}
-          live={live}
           isLoading={logsQuery.isLoading}
+          isFetching={logsQuery.isFetching}
           error={errorMessage}
           columns={[...EXPLORER_COLUMNS]}
-          onTimeRangeChange={setTimeRange}
-          onFiltersChange={setFilters}
-          onSearchChange={setSearch}
-          onLiveChange={setLive}
-          onRefresh={handleRefresh}
+          onRefresh={refreshWindow}
           className="bg-card flex min-h-0 flex-1 flex-col">
           {/* Same class string as the portal's AlbLogsExplorer so the filters bar matches. */}
           <Logs.Explorer className="bg-card **:data-[slot=logs-filters]:bg-card min-h-0 flex-1" />
@@ -523,16 +526,9 @@ export function WorkloadLogsExplorer({
   instanceNames: readonly string[];
   className?: string;
 }) {
-  const [filters, setFilters] = useState<LogFilters>({});
-  const [search, setSearch] = useState('');
-  const [live, setLive] = useState(false);
-  const [timeRange, setTimeRange] = useState<LogTimeRange>(() => lastThirtyMinutes());
-
-  const handleRefresh = useCallback(() => {
-    setTimeRange((current) =>
-      current.preset ? resolveLogTimeRange(current) : lastThirtyMinutes()
-    );
-  }, []);
+  // Time range, filters, search, live and the open row live in the URL.
+  const logsState = useComputeLogsUrlState();
+  const { timeRange, filters, search, live, refreshWindow } = logsState;
 
   const queryFilters = useMemo(() => {
     if (!filters[COMPUTE_LOG_INSTANCE_LABEL]) return filters;
@@ -553,7 +549,18 @@ export function WorkloadLogsExplorer({
     () => filterWorkloadExplorerLogs(logsQuery.data ?? [], filters),
     [logsQuery.data, filters]
   );
-  const facets = useMemo(() => {
+  // Every option in the window, whatever is ticked, with every instance
+  // listed. Until those load, fall back to facets built from the fetched rows.
+  const windowFacets = useWindowLogFacets(projectId, {
+    proxyId,
+    instanceNames,
+    instanceFacet: true,
+    filters,
+    search,
+    timeRange,
+    live,
+  });
+  const rowFacets = useMemo(() => {
     const entries = logsQuery.data ?? [];
     const instance = facetsFromEntries(entries, [COMPUTE_LOG_INSTANCE_LABEL]).map((facet) => ({
       ...facet,
@@ -561,6 +568,7 @@ export function WorkloadLogsExplorer({
     }));
     return [...combinedLogFacets(entries), ...instance];
   }, [logsQuery.data]);
+  const facets = windowFacets ?? rowFacets;
 
   const denied = isLogsDenied(logsQuery.error);
   const errorMessage = logsQuery.error && !denied ? logsQuery.error.message : undefined;
@@ -589,25 +597,20 @@ export function WorkloadLogsExplorer({
     <Card
       size="sm"
       sectioned
-      className={cn('flex min-h-96 flex-col overflow-hidden', className)}
+      className={cn('flex min-h-96 flex-1 flex-col overflow-hidden', className)}
       style={{ minHeight: '32rem' }}
       data-testid="compute-plugin-workload-logs-explorer">
       <CardContent padding="none" className="flex min-h-0 flex-1 flex-col">
         <Logs.Root
           entries={visibleEntries}
           facets={facets}
+          {...logsState}
           timeRange={timeRange}
-          filters={filters}
-          search={search}
-          live={live}
           isLoading={logsQuery.isLoading}
+          isFetching={logsQuery.isFetching}
           error={errorMessage}
           columns={[...WORKLOAD_EXPLORER_COLUMNS]}
-          onTimeRangeChange={setTimeRange}
-          onFiltersChange={setFilters}
-          onSearchChange={setSearch}
-          onLiveChange={setLive}
-          onRefresh={handleRefresh}
+          onRefresh={refreshWindow}
           className="bg-card flex min-h-0 flex-1 flex-col">
           <Logs.Explorer className="bg-card **:data-[slot=logs-filters]:bg-card min-h-0 flex-1" />
         </Logs.Root>

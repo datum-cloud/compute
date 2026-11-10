@@ -10,8 +10,14 @@
  */
 import { hostRouteIP } from "../adapter";
 import { ApiError, PLUGIN_ID, getProjectScopedBase } from "./api";
-import { useMemo } from "react";
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useCallback, useMemo } from "react";
+import {
+  keepPreviousData,
+  useQueries,
+  useQuery,
+  type Query,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import {
   buildLogQL,
   facetsFromEntries,
@@ -26,6 +32,12 @@ import {
   type LogTimeRange,
   type LokiQueryRangeResponse,
 } from "@datum-cloud/datum-ui/logs";
+
+export const O11Y_LOGS_LABEL_VALUES_PATH =
+  "/apis/o11y.miloapis.com/v1alpha1/logs/loki/api/v1/label/{name}/values";
+
+/** Instant queries; queryapi answers `sum by (...) (count_over_time(...))` here. */
+export const O11Y_LOGS_QUERY_PATH = "/apis/o11y.miloapis.com/v1alpha1/logs/loki/api/v1/query";
 
 export const O11Y_LOGS_QUERY_RANGE_PATH =
   "/apis/o11y.miloapis.com/v1alpha1/logs/loki/api/v1/query_range";
@@ -73,6 +85,15 @@ const ALB_LOG_LABELS = [
 
 const ALB_LOG_LABEL_SET = new Set<string>(ALB_LOG_LABELS);
 
+/** Labels the Host column reads, in the order it prefers them. */
+const ALB_HOST_SOURCE_LABELS = ["host", "requested_server_name", "x_forwarded_host", "authority"] as const;
+
+/**
+ * Host labels whose values list Host's options. A row's `x_forwarded_host` or
+ * `authority` is rarely its host, and Host's counts add any that are.
+ */
+const ALB_HOST_OPTION_LABELS = ["host", "requested_server_name"] as const;
+
 const CLIENT_HOST_FILTERS = [
   "host",
   "authority",
@@ -82,6 +103,9 @@ const CLIENT_HOST_FILTERS = [
 ] as const;
 
 export const ALB_LOG_FACET_NAMES = ["method", "response_code", "host"] as const;
+
+/** ALB facets that are stream labels, so LogQL can filter on them. */
+const ALB_SERVER_FILTER_LABELS = ["method", "response_code"] as const;
 
 export const ALB_LOG_FACET_LABELS: Record<
   (typeof ALB_LOG_FACET_NAMES)[number],
@@ -127,16 +151,15 @@ export function albLogMatchers(
   _proxyId: string,
   extraFilters: LogFilters = {},
 ): LogFilters {
-  const {
-    resource_name: _ignoredResource,
-    route_name: _ignoredRoute,
-    host: _ignoredHost,
-    authority: _ignoredAuthority,
-    requested_server_name: _ignoredSni,
-    x_forwarded_host: _ignoredXfh,
-    ...rest
-  } = extraFilters;
-  return rest;
+  // Only real ALB stream labels go to the server. Host is resolved from
+  // several labels in the browser, and Source and Severity don't exist on
+  // access logs, so sending them would match no ALB rows at all.
+  const matchers: LogFilters = {};
+  for (const label of ALB_SERVER_FILTER_LABELS) {
+    const values = extraFilters[label];
+    if (values?.length) matchers[label] = values;
+  }
+  return matchers;
 }
 
 /** Host-route IPs an ALB may dial for this instance. */
@@ -303,21 +326,19 @@ export function mergeLogEntries(
     });
 }
 
+/**
+ * The row's host, as the Host column shows it: the first host label set, so
+ * the filter and facet match what each row displays. `authority` comes last
+ * because the proxy rewrites it to the backend's name (e.g. httpbin.org).
+ * An array so callers can treat "no host" as empty.
+ */
 export function albHostValues(labels: Record<string, string>): string[] {
-  const seen = new Set<string>();
-  const values: string[] = [];
-  for (const raw of [
-    labels.host,
-    labels.requested_server_name,
-    labels.x_forwarded_host,
-    labels.authority,
-  ]) {
-    const host = raw?.trim();
-    if (!host || seen.has(host)) continue;
-    seen.add(host);
-    values.push(host);
+  for (const label of ALB_HOST_SOURCE_LABELS) {
+    const host = labels[label]?.trim();
+    // Envoy writes "-" for a header it didn't get; that's not a host.
+    if (host && host !== "-") return [host];
   }
-  return values;
+  return [];
 }
 
 export function filterAlbLogsByHost(
@@ -336,26 +357,54 @@ export function filterAlbLogsByHost(
   );
 }
 
+/** True when any facet that only ALB rows carry is ticked. */
+function hasHttpFilter(filters: LogFilters): boolean {
+  return (
+    (filters.method?.length ?? 0) > 0 ||
+    (filters.response_code?.length ?? 0) > 0 ||
+    CLIENT_HOST_FILTERS.some((key) => (filters[key]?.length ?? 0) > 0)
+  );
+}
+
 /**
- * Host / HTTP facets apply to ALB rows only. Instance stdout stays visible
- * unless those facets (or an explicit Source=ALB filter) hide it.
+ * Which sources can still show rows under `filters`, so a hook can skip the
+ * other query. Source picks them directly; HTTP facets only match ALB rows,
+ * and Severity only matches instance stdout.
+ */
+export function logSourcesWanted(filters: LogFilters = {}): {
+  alb: boolean;
+  instance: boolean;
+} {
+  const sources = filters[LOG_SOURCE_LABEL] ?? [];
+  const picked = (source: string) => sources.length === 0 || sources.includes(source);
+  return {
+    alb: picked(LOG_SOURCE_ALB) && (filters.severity?.length ?? 0) === 0,
+    instance: picked(LOG_SOURCE_INSTANCE) && !hasHttpFilter(filters),
+  };
+}
+
+/**
+ * Host / HTTP facets apply to ALB rows only, and Severity to instance stdout
+ * only, so ticking one hides the other source. Source filters by the label
+ * each row is tagged with when it's fetched.
  */
 export function filterCombinedLogs(
   entries: readonly LogEntry[],
   filters: LogFilters = {},
 ): LogEntry[] {
-  const httpPinned =
-    (filters.method?.length ?? 0) > 0 ||
-    (filters.response_code?.length ?? 0) > 0 ||
-    CLIENT_HOST_FILTERS.some((key) => (filters[key]?.length ?? 0) > 0);
-
   let result = [...entries];
-  if (httpPinned) {
+  if (hasHttpFilter(filters)) {
     result = result.filter(
       (entry) => entry.labels[LOG_SOURCE_LABEL] === LOG_SOURCE_ALB,
     );
   }
   result = filterAlbLogsByHost(result, filters);
+  const severities = filters.severity;
+  if (severities?.length) {
+    result = result.filter((entry) =>
+      severities.includes(entry.labels.severity ?? ""),
+    );
+  }
   const sources = filters[LOG_SOURCE_LABEL];
   if (sources?.length) {
     result = result.filter((entry) =>
@@ -452,6 +501,80 @@ async function queryComputeRange(params: {
   return queryRange(params, toComputeLogEntries);
 }
 
+/** Every logs key is `[PLUGIN_ID, "o11y-logs", kind, projectId, scope, ...]`. */
+const KEY_PROJECT_INDEX = 3;
+
+/**
+ * `keepPreviousData`, but only within one project and scope (load balancer,
+ * instance set or scope query). A filter, search or range change keeps the
+ * old rows and options on screen until the new ones arrive, while switching
+ * workload or instance never shows another one's logs.
+ */
+export function keepPreviousInScope<T>(projectId: string | undefined, scope: string | undefined) {
+  return (previous: T | undefined, previousQuery?: Query<T, ApiError, T, readonly unknown[]>) => {
+    const key = previousQuery?.queryKey;
+    return key?.[KEY_PROJECT_INDEX] === projectId && key?.[KEY_PROJECT_INDEX + 1] === scope
+      ? keepPreviousData(previous)
+      : undefined;
+  };
+}
+
+/**
+ * Facet options don't depend on exact timestamps, so a preset window keys by
+ * its name: a filter click re-resolves "last 30m" to now, and keying by the
+ * timestamps would refetch every facet on every click.
+ */
+export function facetWindowKey(timeRange: LogTimeRange, live: boolean): string {
+  if (live) return `live:${timeRange.preset ?? "last-30m"}`;
+  return timeRange.preset ? `preset:${timeRange.preset}` : `${timeRange.from}/${timeRange.to}`;
+}
+
+function windowFor(timeRange: LogTimeRange, live: boolean): LogTimeRange {
+  if (live) return resolveLogTimeRange(timeRange.preset ? timeRange : lastThirtyMinutes());
+  return timeRange.preset ? resolveLogTimeRange(timeRange) : timeRange;
+}
+
+async function labelValues(params: {
+  projectId: string;
+  name: string;
+  query: string;
+  start: string;
+  end: string;
+}): Promise<string[]> {
+  const search = new URLSearchParams({ query: params.query, start: params.start, end: params.end });
+  const path = O11Y_LOGS_LABEL_VALUES_PATH.replace("{name}", encodeURIComponent(params.name));
+  const res = await fetch(`${getProjectScopedBase(params.projectId)}${path}?${search.toString()}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new ApiError(res.status, `Label values failed (${res.status})`);
+  const body = (await res.json()) as { status?: string; data?: string[]; error?: string };
+  if (body.status === "error") throw new ApiError(400, body.error || "Label values failed");
+  return body.data ?? [];
+}
+
+async function countByLabels(params: {
+  projectId: string;
+  query: string;
+  time: string;
+}): Promise<LogLabelCount[]> {
+  const search = new URLSearchParams({ query: params.query, time: params.time });
+  const res = await fetch(`${getProjectScopedBase(params.projectId)}${O11Y_LOGS_QUERY_PATH}?${search.toString()}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new ApiError(res.status, `Log counts failed (${res.status})`);
+  const body = (await res.json()) as {
+    status?: string;
+    data?: { result?: Array<{ metric?: Record<string, string>; value?: [number, string] }> };
+    error?: string;
+  };
+  if (body.status === "error") throw new ApiError(400, body.error || "Log counts failed");
+  return (body.data?.result ?? []).flatMap((sample) => {
+    const count = Number(sample.value?.[1]);
+    if (!Number.isFinite(count) || count <= 0) return [];
+    return [{ labels: { ...sample.metric }, count }];
+  });
+}
+
 export interface UseAlbLogsOptions {
   timeRange: LogTimeRange;
   filters?: LogFilters;
@@ -510,6 +633,7 @@ export function useAlbLogs(
       );
     },
     select: (entries) => filterEntries(entries, {}, search),
+    placeholderData: keepPreviousInScope<LogEntry[]>(projectId, proxyId),
     refetchInterval: live ? ALB_LOGS_LIVE_POLL_MS : false,
     staleTime: live ? 0 : 15_000,
     retry: logsRetry,
@@ -547,6 +671,7 @@ function useComputeLogsQuery(
         limit,
       });
     },
+    placeholderData: keepPreviousInScope<LogEntry[]>(projectId, query),
     refetchInterval: live ? ALB_LOGS_LIVE_POLL_MS : false,
     staleTime: live ? 0 : 15_000,
     retry: logsRetry,
@@ -567,7 +692,10 @@ function useComputeLogs(
 
 export interface UseInstanceLogsResult {
   data: LogEntry[];
+  /** First load only: earlier rows stay on screen for later requests. */
   isLoading: boolean;
+  /** A request is in flight, including while earlier rows are still showing. */
+  isFetching: boolean;
   error: ApiError | null;
 }
 
@@ -583,8 +711,9 @@ export function useWorkloadLogs(
 ): UseInstanceLogsResult {
   const { search, enabled = true, ...rest } = options;
   const computeQuery = buildComputeLogQLMany(instanceNames);
-  const albEnabled = enabled && !!proxyId;
-  const computeEnabled = enabled && !!computeQuery;
+  const wanted = logSourcesWanted(rest.filters);
+  const albEnabled = enabled && wanted.alb && !!proxyId;
+  const computeEnabled = enabled && wanted.instance && !!computeQuery;
 
   const alb = useAlbLogs(projectId, proxyId, { ...rest, search: undefined, enabled: albEnabled });
   const compute = useComputeLogsQuery(projectId, computeQuery, {
@@ -609,6 +738,8 @@ export function useWorkloadLogs(
     data,
     isLoading:
       (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
+    isFetching:
+      (albEnabled && alb.isFetching) || (computeEnabled && compute.isFetching),
     error,
   };
 }
@@ -629,8 +760,9 @@ export function useInstanceLogs(
     () => instanceUpstreamIPs({ internalIPs: upstreamIPs }),
     [upstreamIPs],
   );
-  const albEnabled = enabled && !!proxyId && ips.length > 0;
-  const computeEnabled = enabled && !!instanceName;
+  const wanted = logSourcesWanted(rest.filters);
+  const albEnabled = enabled && wanted.alb && !!proxyId && ips.length > 0;
+  const computeEnabled = enabled && wanted.instance && !!instanceName;
 
   const alb = useAlbLogs(projectId, proxyId, {
     ...rest,
@@ -664,7 +796,457 @@ export function useInstanceLogs(
     data,
     isLoading:
       (albEnabled && alb.isLoading) || (computeEnabled && compute.isLoading),
+    isFetching:
+      (albEnabled && alb.isFetching) || (computeEnabled && compute.isFetching),
     // Prefer stdout when ALB fails; only surface an error when nothing loaded.
     error,
   };
+}
+
+/** Labels the Host facet merges, in the order `albHostValues` reads them. */
+
+const SEVERITY_ORDER = ["ERROR", "FATAL", "WARN", "WARNING", "INFO", "DEBUG", "TRACE"];
+
+function severityRank(value: string): number {
+  const index = SEVERITY_ORDER.indexOf(value.toUpperCase());
+  return index === -1 ? SEVERITY_ORDER.length : index;
+}
+
+function uniqueSorted(values: Iterable<string>, compare?: (a: string, b: string) => number): string[] {
+  const seen = new Set<string>();
+  for (const raw of values) {
+    const value = raw.trim();
+    // Envoy writes "-" for a header it didn't get; that's not a value.
+    if (value && value !== "-") seen.add(value);
+  }
+  return [...seen].sort(compare ?? ((a, b) => a.localeCompare(b, undefined, { numeric: true })));
+}
+
+interface FacetRequest {
+  name: string;
+  query: string;
+}
+
+/** One group from a `sum by (...) (count_over_time(...))` vector. */
+export interface LogLabelCount {
+  labels: Record<string, string>;
+  count: number;
+}
+
+export interface WindowFacetsConfig {
+  /** ALB access logs are in scope (proxy attached, and for an instance, its upstream IPs known). */
+  alb: boolean;
+  /** Instance stdout is in scope. */
+  instances: boolean;
+  /** Offered as the Instance facet on the workload page; omit on an instance page. */
+  instanceNames?: readonly string[];
+}
+
+/** Lines per option value, keyed by facet name. A facet left out shows no counts. */
+export type WindowFacetCounts = Partial<Record<string, ReadonlyMap<string, number>>>;
+
+/**
+ * Builds the explorer's facets from `/label/{name}/values` for the whole
+ * window: Source, Severity, Method, Status code, Host and (workload) Instance.
+ * A facet in `counts` gives every option a count (0 when nothing matches the
+ * other filters). Exported for tests.
+ */
+export function computeFacetsFromLabelValues(
+  config: WindowFacetsConfig,
+  values: Readonly<Record<string, readonly string[] | undefined>>,
+  counts: WindowFacetCounts = {},
+): LogFacet[] {
+  const facets: LogFacet[] = [];
+  const push = (name: string, label: string, options: readonly string[]) => {
+    const counted = counts[name];
+    facets.push({
+      name,
+      label,
+      options: options.map((value) => (counted ? { value, count: counted.get(value) ?? 0 } : { value })),
+    });
+  };
+  // A counted value can land between the two requests; list it rather than drop it.
+  const withCounted = (name: string, listed: Iterable<string>) => [...listed, ...(counts[name]?.keys() ?? [])];
+
+  const sources = [
+    ...(config.alb ? [LOG_SOURCE_ALB] : []),
+    ...(config.instances ? [LOG_SOURCE_INSTANCE] : []),
+  ];
+  if (sources.length > 0) push(LOG_SOURCE_LABEL, "Source", sources);
+  const severity = uniqueSorted(
+    withCounted("severity", values.severity ?? []),
+    (a, b) => severityRank(a) - severityRank(b) || a.localeCompare(b),
+  );
+  if (severity.length > 0) push("severity", "Severity", severity);
+  for (const name of ["method", "response_code"] as const) {
+    const options = uniqueSorted(withCounted(name, values[name] ?? []));
+    if (options.length > 0) push(name, ALB_LOG_FACET_LABELS[name], options);
+  }
+  // With counts, Host's resolved hosts are exact, so list just those and
+  // `host` itself; without, SNI fills in for rows with no Host header.
+  const hostLabels = counts.host ? ["host"] : ALB_HOST_OPTION_LABELS;
+  const hosts = uniqueSorted(withCounted("host", hostLabels.flatMap((label) => values[label] ?? [])));
+  if (hosts.length > 0) push("host", ALB_LOG_FACET_LABELS.host, hosts);
+  const instances = uniqueSorted(config.instanceNames ?? []);
+  if (instances.length > 0) push(COMPUTE_LOG_INSTANCE_LABEL, "Instance", instances);
+  return facets;
+}
+
+/**
+ * The count queries behind the facet counts. Each counts lines in the window
+ * per value of its facet, applying every other ticked facet but not its own,
+ * so ticking GET still shows how many POSTs there are. Fixed slots so each
+ * can be its own useQuery.
+ */
+export const WINDOW_COUNT_SLOTS = [
+  "albMethod",
+  "albStatus",
+  "albHost",
+  "stdoutSeverity",
+  "stdoutInstance",
+  "stdoutTotal",
+] as const;
+export type WindowCountSlot = (typeof WINDOW_COUNT_SLOTS)[number];
+
+export interface WindowCountScope {
+  /** Set when ALB access logs are in scope. */
+  proxyId?: string;
+  upstreamIPs?: readonly string[];
+  /** Instances whose stdout is in scope. */
+  instanceNames: readonly string[];
+  /** The Instance facet is shown (workload page). */
+  instanceFacet?: boolean;
+}
+
+const active = (filters: LogFilters, name: string) => (filters[name]?.length ?? 0) > 0;
+
+/**
+ * Which rows can show under `filters`, mirroring `filterCombinedLogs` and the
+ * workload Instance filter: HTTP facets match ALB rows only, Severity and
+ * Instance match stdout only, and Source picks one.
+ */
+function windowRowState(scope: WindowCountScope, filters: LogFilters) {
+  const sources = filters[LOG_SOURCE_LABEL] ?? [];
+  const sourceAllows = (source: string) => sources.length === 0 || sources.includes(source);
+  const hostFiltered = CLIENT_HOST_FILTERS.some((key) => active(filters, key));
+  const httpFiltered = hostFiltered || active(filters, "method") || active(filters, "response_code");
+  const stdoutFiltered = active(filters, "severity") || active(filters, COMPUTE_LOG_INSTANCE_LABEL);
+  const alb = !!scope.proxyId;
+  const stdout = scope.instanceNames.length > 0;
+  // `…Rows`: rows could show, Source aside. `…Shown`: they do.
+  const albRows = alb && !stdoutFiltered;
+  const stdoutRows = stdout && !httpFiltered;
+  return {
+    hostFiltered,
+    alb,
+    stdout,
+    albRows,
+    stdoutRows,
+    albShown: albRows && sourceAllows(LOG_SOURCE_ALB),
+    stdoutShown: stdoutRows && sourceAllows(LOG_SOURCE_INSTANCE),
+  };
+}
+
+function withLabelMatcher(selector: string, label: string, values: readonly string[] | undefined): string {
+  if (!values?.length) return selector;
+  const matcher =
+    values.length === 1
+      ? `${label}="${escapeLogQLQuoted(values[0])}"`
+      : `${label}=~"${values.map(escapeLogQLRegexp).join("|")}"`;
+  return `${selector.slice(0, -1)}, ${matcher}}`;
+}
+
+function countQuery(by: readonly string[], selector: string, seconds: number): string {
+  const range = `[${Math.max(1, Math.ceil(seconds))}s]`;
+  const inner = `count_over_time(${selector} ${range})`;
+  return by.length > 0 ? `sum by (${by.join(", ")}) (${inner})` : `sum(${inner})`;
+}
+
+/**
+ * The query for each count slot, or null when it isn't needed: the server
+ * can't count it like the table (search is applied in the browser, and so is
+ * Host), or no row it counts could show. Exported for tests.
+ */
+export function windowCountQueries(
+  scope: WindowCountScope,
+  filters: LogFilters,
+  search: string,
+  seconds: number,
+): Record<WindowCountSlot, string | null> {
+  const none: Record<WindowCountSlot, string | null> = {
+    albMethod: null,
+    albStatus: null,
+    albHost: null,
+    stdoutSeverity: null,
+    stdoutInstance: null,
+    stdoutTotal: null,
+  };
+  if (search.trim()) return none;
+  const state = windowRowState(scope, filters);
+  const albSelector = (without?: string) => {
+    const rest = { ...filters };
+    if (without) delete rest[without];
+    return buildAlbLogQL(scope.proxyId as string, rest, scope.upstreamIPs);
+  };
+  const picked = filters[COMPUTE_LOG_INSTANCE_LABEL] ?? [];
+  const stdoutSelector = (instances: readonly string[]) =>
+    buildComputeLogQLMany(instances.length > 0 ? instances : scope.instanceNames);
+  const severities = filters.severity;
+
+  return {
+    albMethod:
+      state.albShown && !state.hostFiltered ? countQuery(["method"], albSelector("method"), seconds) : null,
+    albStatus:
+      state.albShown && !state.hostFiltered
+        ? countQuery(["response_code"], albSelector("response_code"), seconds)
+        : null,
+    // Also gives the Source facet its ALB total, so it runs whatever Source says.
+    albHost: state.albRows ? countQuery(ALB_HOST_SOURCE_LABELS, albSelector(), seconds) : null,
+    stdoutSeverity: state.stdoutShown ? countQuery(["severity"], stdoutSelector(picked), seconds) : null,
+    stdoutInstance:
+      state.stdoutShown && scope.instanceFacet
+        ? countQuery(
+            [COMPUTE_LOG_INSTANCE_LABEL],
+            withLabelMatcher(stdoutSelector([]), "severity", severities),
+            seconds,
+          )
+        : null,
+    stdoutTotal:
+      state.stdoutRows && !state.hostFiltered
+        ? countQuery([], withLabelMatcher(stdoutSelector(picked), "severity", severities), seconds)
+        : null,
+  };
+}
+
+function groupCounts(groups: readonly LogLabelCount[], valuesOf: (labels: Record<string, string>) => string[]) {
+  const counts = new Map<string, number>();
+  for (const { labels, count } of groups) {
+    for (const raw of valuesOf(labels)) {
+      const value = raw.trim();
+      if (!value || value === "-") continue;
+      counts.set(value, (counts.get(value) ?? 0) + count);
+    }
+  }
+  return counts;
+}
+
+const total = (groups: readonly LogLabelCount[]) => groups.reduce((sum, group) => sum + group.count, 0);
+
+/**
+ * Facet counts from the count slots' results. A slot missing from `results`
+ * failed, and the facets it feeds show no counts; a facet whose rows can't
+ * show under the other filters gets zeros. Exported for tests.
+ */
+export function windowFacetCounts(
+  scope: WindowCountScope,
+  filters: LogFilters,
+  search: string,
+  results: Partial<Record<WindowCountSlot, readonly LogLabelCount[]>>,
+): WindowFacetCounts {
+  if (search.trim()) return {};
+  const state = windowRowState(scope, filters);
+  const counts: Record<string, Map<string, number>> = {};
+  const set = (name: string, shown: boolean, groups: readonly LogLabelCount[] | undefined, valuesOf: (labels: Record<string, string>) => string[]) => {
+    if (!shown) counts[name] = new Map();
+    else if (groups) counts[name] = groupCounts(groups, valuesOf);
+  };
+
+  if (state.alb) {
+    if (!state.hostFiltered) {
+      set("method", state.albShown, results.albMethod, (labels) => [labels.method ?? ""]);
+      set("response_code", state.albShown, results.albStatus, (labels) => [labels.response_code ?? ""]);
+    }
+    // Each group counts under the host its rows show, as the Host filter matches.
+    set("host", state.albShown, results.albHost, albHostValues);
+  }
+  if (state.stdout) {
+    set("severity", state.stdoutShown, results.stdoutSeverity, (labels) => [labels.severity ?? ""]);
+    if (scope.instanceFacet) {
+      set(COMPUTE_LOG_INSTANCE_LABEL, state.stdoutShown, results.stdoutInstance, (labels) => [
+        labels[COMPUTE_LOG_INSTANCE_LABEL] ?? "",
+      ]);
+    }
+  }
+  if (!state.hostFiltered) {
+    const source = new Map<string, number>();
+    let complete = true;
+    if (state.alb) {
+      if (!state.albRows) source.set(LOG_SOURCE_ALB, 0);
+      else if (results.albHost) source.set(LOG_SOURCE_ALB, total(results.albHost));
+      else complete = false;
+    }
+    if (state.stdout) {
+      if (!state.stdoutRows) source.set(LOG_SOURCE_INSTANCE, 0);
+      else if (results.stdoutTotal) source.set(LOG_SOURCE_INSTANCE, total(results.stdoutTotal));
+      else complete = false;
+    }
+    if (complete && source.size > 0) counts[LOG_SOURCE_LABEL] = source;
+  }
+  return counts;
+}
+
+/**
+ * Facets for the whole window, independent of what is ticked: label values
+ * scoped to the load balancer (and instance upstreams) for the HTTP facets,
+ * and to the instances' stdout for severity, so ticking a value never removes
+ * the other options. Counts come from `windowCountQueries`.
+ *
+ * Returns `null` until the options and counts have loaded, or if an options
+ * request failed, so the caller can fall back to facets built from the
+ * fetched rows. A failed count only leaves its facets without counts.
+ */
+export function useWindowLogFacets(
+  projectId: string | undefined,
+  options: {
+    proxyId?: string;
+    upstreamIPs?: readonly string[];
+    instanceNames: readonly string[];
+    /** Offer an Instance facet listing `instanceNames` (workload page). */
+    instanceFacet?: boolean;
+    filters?: LogFilters;
+    search?: string;
+    timeRange: LogTimeRange;
+    live?: boolean;
+    enabled?: boolean;
+  },
+): LogFacet[] | null {
+  const {
+    proxyId,
+    upstreamIPs,
+    instanceNames,
+    instanceFacet = false,
+    filters = EMPTY_FILTERS,
+    search = "",
+    timeRange,
+    live = false,
+    enabled = true,
+  } = options;
+  const albQuery = proxyId ? buildAlbLogQL(proxyId, undefined, upstreamIPs) : "";
+  const computeQuery = buildComputeLogQLMany(instanceNames);
+  const windowKey = facetWindowKey(timeRange, live);
+  const isEnabled = enabled && !!projectId;
+
+  const requests = useMemo<FacetRequest[]>(
+    () => [
+      ...(albQuery
+        ? ["method", "response_code", ...ALB_HOST_OPTION_LABELS].map((name) => ({ name, query: albQuery }))
+        : []),
+      ...(computeQuery ? [{ name: "severity", query: computeQuery }] : []),
+    ],
+    [albQuery, computeQuery],
+  );
+
+  const combine = useCallback(
+    (results: ReadonlyArray<{ isSuccess: boolean; data?: string[] }>): Record<string, string[]> | null => {
+      if (!results.every((result) => result.isSuccess)) return null;
+      const values: Record<string, string[]> = {};
+      requests.forEach((request, index) => {
+        values[request.name] = [...(values[request.name] ?? []), ...(results[index]?.data ?? [])];
+      });
+      return values;
+    },
+    [requests],
+  );
+
+  const values = useQueries({
+    queries: requests.map((request) => ({
+      queryKey: [PLUGIN_ID, "o11y-logs", "label-values", projectId, request.query, request.name, windowKey],
+      queryFn: () => {
+        const range = windowFor(timeRange, live);
+        return labelValues({
+          projectId: projectId as string,
+          name: request.name,
+          query: request.query,
+          start: range.from,
+          end: range.to,
+        });
+      },
+      enabled: isEnabled,
+      // Options change slowly; live mode refreshes them less often than rows.
+      refetchInterval: live ? ALB_LOGS_LIVE_POLL_MS * 6 : (false as const),
+      staleTime: 60_000,
+      retry: logsRetry,
+    })),
+    combine,
+  });
+
+  const scope = useMemo<WindowCountScope>(
+    () => ({ proxyId: albQuery ? proxyId : undefined, upstreamIPs, instanceNames, instanceFacet }),
+    // Arrays may be rebuilt each render; their contents are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [albQuery, computeQuery, instanceFacet],
+  );
+  const window = windowFor(timeRange, live);
+  const seconds = (Date.parse(window.to) - Date.parse(window.from)) / 1000;
+  const queries = windowCountQueries(scope, filters, search, seconds);
+  const countScope = `${albQuery}|${computeQuery}`;
+  const countOptions = { projectId, countScope, windowKey, timeRange, live, enabled: isEnabled };
+
+  // One useQuery per slot rather than more useQueries entries: a filter click
+  // changes these keys, and only a useQuery keeps its previous counts on
+  // screen while the new ones load (useQueries starts a fresh observer).
+  const albMethod = useCountSlot(queries.albMethod, countOptions);
+  const albStatus = useCountSlot(queries.albStatus, countOptions);
+  const albHost = useCountSlot(queries.albHost, countOptions);
+  const stdoutSeverity = useCountSlot(queries.stdoutSeverity, countOptions);
+  const stdoutInstance = useCountSlot(queries.stdoutInstance, countOptions);
+  const stdoutTotal = useCountSlot(queries.stdoutTotal, countOptions);
+
+  return useMemo(() => {
+    if (!values) return null;
+    const slots = { albMethod, albStatus, albHost, stdoutSeverity, stdoutInstance, stdoutTotal };
+    const results: Partial<Record<WindowCountSlot, readonly LogLabelCount[]>> = {};
+    for (const slot of WINDOW_COUNT_SLOTS) {
+      const count = slots[slot];
+      if (!count.needed) continue;
+      if (count.data) results[slot] = count.data;
+      // First load: wait for counts rather than show options that gain
+      // numbers a moment later. A failed count just leaves them off.
+      else if (!count.isError) return null;
+    }
+    return computeFacetsFromLabelValues(
+      {
+        alb: !!scope.proxyId,
+        instances: scope.instanceNames.length > 0,
+        instanceNames: instanceFacet ? scope.instanceNames : undefined,
+      },
+      values,
+      windowFacetCounts(scope, filters, search, results),
+    );
+  }, [values, albMethod, albStatus, albHost, stdoutSeverity, stdoutInstance, stdoutTotal, scope, instanceFacet, filters, search]);
+}
+
+const EMPTY_FILTERS: LogFilters = {};
+
+function useCountSlot(
+  query: string | null,
+  options: {
+    projectId: string | undefined;
+    countScope: string;
+    windowKey: string;
+    timeRange: LogTimeRange;
+    live: boolean;
+    enabled: boolean;
+  },
+) {
+  const { projectId, countScope, windowKey, timeRange, live, enabled } = options;
+  const result = useQuery({
+    queryKey: [PLUGIN_ID, "o11y-logs", "label-counts", projectId, countScope, query, windowKey],
+    queryFn: () =>
+      countByLabels({
+        projectId: projectId as string,
+        query: query as string,
+        time: windowFor(timeRange, live).to,
+      }),
+    placeholderData: keepPreviousInScope<LogLabelCount[]>(projectId, countScope),
+    enabled: enabled && !!query,
+    refetchInterval: live ? ALB_LOGS_LIVE_POLL_MS * 6 : false,
+    staleTime: 30_000,
+    retry: logsRetry,
+  });
+  const needed = !!query;
+  return useMemo(
+    () => ({ needed, data: needed ? result.data : undefined, isError: result.isError }),
+    [needed, result.data, result.isError],
+  );
 }
