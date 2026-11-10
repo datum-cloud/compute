@@ -15,9 +15,10 @@ import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { CSSProperties } from 'react';
 
 const PANEL_STYLE = { height: '27rem' } as const;
-const EXPLORER_STYLE = { height: '32rem' } as const;
+const EXPLORER_STYLE = { flex: '1 1 auto', minHeight: '32rem' } as const;
 const CHART_STYLE = { height: 224 } as const;
-const TOPOLOGY_STYLE = { height: '28rem' } as const;
+// Topology and the log explorers fill the page, so their skeletons do too.
+const TOPOLOGY_STYLE = { flex: '1 0 auto', minHeight: 'calc(28rem + 3rem)' } as const;
 
 /**
  * The list table's columns before usage data arrives, each with a bone the
@@ -374,7 +375,7 @@ export function WorkloadOverviewSkeleton() {
 /** Matches the Topology tab: one diagram panel. */
 export function WorkloadTopologySkeleton() {
   return (
-    <div aria-busy="true" data-testid="compute-plugin-loading-workload-topology">
+    <div aria-busy="true" data-testid="compute-plugin-loading-workload-topology" className="flex flex-1 flex-col">
       <Panel style={TOPOLOGY_STYLE}>
         <Bone className="min-h-0 w-full flex-1" />
       </Panel>

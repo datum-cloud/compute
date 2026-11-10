@@ -64,7 +64,7 @@ export function InstancePageChrome({
   children: React.ReactNode;
 }) {
   return (
-    <div data-testid="compute-plugin-instance-detail" className="flex min-w-0 flex-col gap-6">
+    <div data-testid="compute-plugin-instance-detail" className="flex min-w-0 flex-1 flex-col gap-6">
       <Breadcrumb className="min-w-0 overflow-x-auto">
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
