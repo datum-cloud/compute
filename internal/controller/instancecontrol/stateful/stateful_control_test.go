@@ -20,6 +20,8 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
+const testImageUpdate = "test-image-update"
+
 var (
 	scheme = runtime.NewScheme()
 )
@@ -101,7 +103,7 @@ func TestUpdateWithAllReadyInstances(t *testing.T) {
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 1))
 
-	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "test-image-update"
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageUpdate
 
 	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
@@ -813,4 +815,119 @@ func getInstanceTemplate(name string, ordinal int) *v1alpha.Instance {
 	}
 
 	return instance
+}
+
+func getParallelWorkloadDeployment(minReplicas int32) *v1alpha.WorkloadDeployment {
+	deployment := getWorkloadDeployment("test-deploy", minReplicas)
+	deployment.Spec.ScaleSettings.InstanceManagementPolicy = v1alpha.ParallelInstanceManagementPolicyType
+	return deployment
+}
+
+func TestParallel_FreshDeploymentCreatesAllInstances(t *testing.T) {
+	control := NewWithOptions(Options{})
+	deployment := getParallelWorkloadDeployment(3)
+
+	actions, err := control.GetActions(context.Background(), scheme, deployment, 3, nil)
+
+	require.NoError(t, err)
+	require.Len(t, actions, 3)
+	for i, action := range actions {
+		assert.Equal(t, fmt.Sprintf("test-deploy-%d", i), action.Object.GetName())
+		assert.Equal(t, instancecontrol.ActionTypeCreate, action.ActionType())
+		assert.False(t, action.IsSkipped())
+	}
+}
+
+func TestParallel_ScaleUpDoesNotWaitOnNotReadyInstance(t *testing.T) {
+	control := NewWithOptions(Options{})
+	deployment := getParallelWorkloadDeployment(3)
+
+	notReady := getInstanceForDeployment(deployment, 0)
+	apimeta.SetStatusCondition(&notReady.Status.Conditions, metav1.Condition{
+		Type:   v1alpha.InstanceReady,
+		Status: metav1.ConditionFalse,
+	})
+
+	actions, err := control.GetActions(context.Background(), scheme, deployment, 3, []v1alpha.Instance{*notReady})
+
+	require.NoError(t, err)
+	created := map[string]bool{}
+	for _, action := range actions {
+		if action.ActionType() == instancecontrol.ActionTypeCreate {
+			assert.False(t, action.IsSkipped(), action.Object.GetName())
+			created[action.Object.GetName()] = true
+		}
+	}
+	assert.Equal(t, map[string]bool{"test-deploy-1": true, "test-deploy-2": true}, created)
+}
+
+func TestParallel_ScaleDownDeletesAllExtraInstances(t *testing.T) {
+	control := NewWithOptions(Options{})
+	deployment := getParallelWorkloadDeployment(1)
+
+	current := []v1alpha.Instance{
+		*getInstanceForDeployment(deployment, 0),
+		*getInstanceForDeployment(deployment, 1),
+		*getInstanceForDeployment(deployment, 2),
+	}
+
+	actions, err := control.GetActions(context.Background(), scheme, deployment, 1, current)
+
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+	for _, action := range actions {
+		assert.Equal(t, instancecontrol.ActionTypeDelete, action.ActionType())
+		assert.False(t, action.IsSkipped(), action.Object.GetName())
+	}
+}
+
+func TestParallel_TemplateChangeReplacesOneInstanceAtATime(t *testing.T) {
+	control := NewWithOptions(Options{})
+	deployment := getParallelWorkloadDeployment(2)
+
+	current := []v1alpha.Instance{
+		*getInstanceForDeployment(deployment, 0),
+		*getInstanceForDeployment(deployment, 1),
+	}
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageUpdate
+
+	actions, err := control.GetActions(context.Background(), scheme, deployment, 2, current)
+
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+	assert.Equal(t, "test-deploy-1", actions[0].Object.GetName())
+	assert.Equal(t, instancecontrol.ActionTypeDelete, actions[0].ActionType())
+	assert.False(t, actions[0].IsSkipped())
+	assert.Equal(t, "test-deploy-0", actions[1].Object.GetName())
+	assert.True(t, actions[1].IsSkipped())
+}
+
+func TestParallel_TemplateChangeHeldWhileInstanceIsReplaced(t *testing.T) {
+	control := NewWithOptions(Options{})
+	deployment := getParallelWorkloadDeployment(2)
+
+	current := []v1alpha.Instance{*getInstanceForDeployment(deployment, 0)}
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageUpdate
+
+	actions, err := control.GetActions(context.Background(), scheme, deployment, 2, current)
+
+	require.NoError(t, err)
+	for _, action := range actions {
+		switch action.ActionType() {
+		case instancecontrol.ActionTypeCreate:
+			assert.False(t, action.IsSkipped(), action.Object.GetName())
+		case instancecontrol.ActionTypeDelete:
+			assert.True(t, action.IsSkipped(), action.Object.GetName())
+		}
+	}
+}
+
+func TestUnsupportedInstanceManagementPolicyReturnsError(t *testing.T) {
+	control := NewWithOptions(Options{})
+	deployment := getWorkloadDeployment("test-deploy", 1)
+	deployment.Spec.ScaleSettings.InstanceManagementPolicy = "Bogus"
+
+	_, err := control.GetActions(context.Background(), scheme, deployment, 1, nil)
+
+	assert.ErrorContains(t, err, "Bogus")
 }

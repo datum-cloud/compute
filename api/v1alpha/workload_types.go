@@ -229,7 +229,13 @@ type HorizontalScaleSettings struct {
 	// Controls how instances are managed during scale up and down, as well as
 	// during maintenance events.
 	//
+	// OrderedReady creates and deletes instances one at a time, waiting for
+	// each to become ready before moving to the next. Parallel creates and
+	// deletes instances all at once without waiting on readiness. Both replace
+	// instances on a template change one at a time.
+	//
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=OrderedReady;Parallel
 	// +kubebuilder:default=OrderedReady
 	InstanceManagementPolicy InstanceManagementPolicyType `json:"instanceManagementPolicy,omitempty"`
 }
@@ -238,7 +244,7 @@ type InstanceManagementPolicyType string
 
 const (
 	OrderedReadyInstanceManagementPolicyType InstanceManagementPolicyType = "OrderedReady"
-	// ParallelInstanceManagementPolicyType     InstanceManagementPolicyType = "Parallel"
+	ParallelInstanceManagementPolicyType     InstanceManagementPolicyType = "Parallel"
 )
 
 type MetricSpec struct {
