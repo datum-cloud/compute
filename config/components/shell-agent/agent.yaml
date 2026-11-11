@@ -56,7 +56,7 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
             - --target=$(POD_NAME).exec-agent.$(POD_NAMESPACE).svc.cluster.local:7777
-            - --managed-by=kata-provider
+            - --managed-by=kata-provider,infra-provider-unikraft
             - --endpoint-pod-prefix=exec-endpoint
             - --drain-timeout=30s
             - --feature-gates=$(FEATURE_GATES)
