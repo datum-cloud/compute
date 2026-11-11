@@ -3,12 +3,15 @@ package restart
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
@@ -57,7 +60,6 @@ func runRestart(cmd *cobra.Command, args []string, location string) error {
 	out := cmd.OutOrStdout()
 
 	if location == "" {
-		// Restart all placements by annotating the workload template.
 		if workload.Spec.Template.Annotations == nil {
 			workload.Spec.Template.Annotations = make(map[string]string)
 		}
@@ -74,7 +76,23 @@ func runRestart(cmd *cobra.Command, args []string, location string) error {
 		return nil
 	}
 
-	// Restart only deployments in the given location.
+	if err := restartLocation(ctx, c, &workload, location, restartedAt); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out,
+		"Restarting workload %q in %s — rolling restart initiated.\nRun 'datumctl compute rollout %s' to watch progress.\n",
+		workloadName, location, workloadName,
+	)
+	return nil
+}
+
+func restartLocation(ctx context.Context, c client.Client, workload *computev1alpha.Workload, location, restartedAt string) error {
+	annotation := computev1alpha.LocationRestartAnnotationPrefix + location
+	if errs := validation.IsQualifiedName(annotation); len(errs) > 0 {
+		return fmt.Errorf("location %q cannot be restarted on its own: %s", location, strings.Join(errs, "; "))
+	}
+
 	selector := labels.SelectorFromSet(labels.Set{
 		computev1alpha.WorkloadUIDLabel: string(workload.UID),
 	})
@@ -86,31 +104,20 @@ func runRestart(cmd *cobra.Command, args []string, location string) error {
 		return fmt.Errorf("listing deployments: %w", err)
 	}
 
-	var matched []computev1alpha.WorkloadDeployment
-	for _, d := range deployList.Items {
-		if d.Spec.LocationRef.Name == location {
-			matched = append(matched, d)
-		}
+	if !slices.ContainsFunc(deployList.Items, func(d computev1alpha.WorkloadDeployment) bool {
+		return d.Spec.LocationRef.Name == location
+	}) {
+		return fmt.Errorf("no deployment found for workload %q in location %q", workload.Name, location)
 	}
 
-	if len(matched) == 0 {
-		return fmt.Errorf("no deployment found for workload %q in location %q", workloadName, location)
+	if workload.Annotations == nil {
+		workload.Annotations = make(map[string]string)
+	}
+	workload.Annotations[annotation] = restartedAt
+
+	if err := c.Update(ctx, workload); err != nil {
+		return fmt.Errorf("updating workload: %w", err)
 	}
 
-	for i := range matched {
-		if matched[i].Spec.Template.Annotations == nil {
-			matched[i].Spec.Template.Annotations = make(map[string]string)
-		}
-		matched[i].Spec.Template.Annotations[computev1alpha.RestartedAtAnnotation] = restartedAt
-
-		if err := c.Update(ctx, &matched[i]); err != nil {
-			return fmt.Errorf("updating deployment in %s: %w", location, err)
-		}
-	}
-
-	fmt.Fprintf(out,
-		"Restarting workload %q in %s — rolling restart initiated.\nRun 'datumctl compute rollout %s' to watch progress.\n",
-		workloadName, location, workloadName,
-	)
 	return nil
 }

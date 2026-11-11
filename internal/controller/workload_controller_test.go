@@ -809,3 +809,59 @@ func TestGetDeploymentsForWorkload_RequiresComputeAvailability(t *testing.T) {
 		assert.Equal(t, testLocationName, deployment.Spec.LocationRef.Name)
 	}
 }
+
+func TestGetDeploymentsForWorkload_LocationRestartReachesOnlyThatLocation(t *testing.T) {
+	t.Parallel()
+
+	const otherLocation = "ord"
+	const restartedAt = "2026-01-02T15:04:05Z"
+
+	workload := &computev1alpha.Workload{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rdTestWorkloadName,
+			Namespace: testDefaultNamespace,
+			UID:       types.UID("workload-uid"),
+			Annotations: map[string]string{
+				computev1alpha.LocationRestartAnnotationPrefix + testLocationName: restartedAt,
+			},
+		},
+		Spec: computev1alpha.WorkloadSpec{
+			Placements: []computev1alpha.WorkloadPlacement{
+				{
+					Name: testDefaultPlacement,
+					Locations: []locationsv1alpha1.LocationReference{
+						{Name: testLocationName},
+						{Name: otherLocation},
+					},
+					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+				},
+			},
+		},
+	}
+
+	s := newNetworkingScheme()
+	require.NoError(t, locationsv1alpha1.AddToScheme(s))
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(
+			newLocationsServiceLocation(testLocationName, "DFW"),
+			newLocationsServiceLocation(otherLocation, "ORD"),
+			newTestComputeAvailability(testLocationName),
+			newTestComputeAvailability(otherLocation),
+		).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, _, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Len(t, desired, 2)
+
+	byLocation := map[string]computev1alpha.WorkloadDeployment{}
+	for _, d := range desired {
+		byLocation[d.Spec.LocationRef.Name] = d
+	}
+	assert.Equal(t, restartedAt, byLocation[testLocationName].Spec.Template.Annotations[computev1alpha.LocationRestartedAtAnnotation])
+	assert.NotContains(t, byLocation[otherLocation].Spec.Template.Annotations, computev1alpha.LocationRestartedAtAnnotation)
+	assert.Empty(t, workload.Spec.Template.Annotations, "the workload's own template must not change")
+}
