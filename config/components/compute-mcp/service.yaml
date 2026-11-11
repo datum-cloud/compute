@@ -1,7 +1,9 @@
 # Cluster-internal only: the assistant reaches /mcp over this Service's DNS
-# name, and no Gateway or HTTPRoute fronts it. Unlike the UI plugins there is no
-# https:// requirement forcing a cert-manager CSI volume here, so the pod serves
-# plain HTTP and the mesh/network layer owns transport security.
+# name, and no Gateway or HTTPRoute fronts it. The pod serves https on this
+# port with a certificate for this Service's names, because the assistant sends
+# the caller's bearer token here and will not send one over plain http. The
+# port is still named `http`; renaming it would break whatever selects it by
+# name.
 apiVersion: v1
 kind: Service
 metadata:
