@@ -110,12 +110,13 @@ func restartLocation(ctx context.Context, c client.Client, workload *computev1al
 		return fmt.Errorf("no deployment found for workload %q in location %q", workload.Name, location)
 	}
 
+	base := workload.DeepCopy()
 	if workload.Annotations == nil {
 		workload.Annotations = make(map[string]string)
 	}
 	workload.Annotations[annotation] = restartedAt
 
-	if err := c.Update(ctx, workload); err != nil {
+	if err := c.Patch(ctx, workload, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("updating workload: %w", err)
 	}
 

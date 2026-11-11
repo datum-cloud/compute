@@ -865,3 +865,47 @@ func TestGetDeploymentsForWorkload_LocationRestartReachesOnlyThatLocation(t *tes
 	assert.NotContains(t, byLocation[otherLocation].Spec.Template.Annotations, computev1alpha.LocationRestartedAtAnnotation)
 	assert.Empty(t, workload.Spec.Template.Annotations, "the workload's own template must not change")
 }
+
+func TestGetDeploymentsForWorkload_LocationRestartForUnplacedLocationIgnored(t *testing.T) {
+	t.Parallel()
+
+	workload := &computev1alpha.Workload{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rdTestWorkloadName,
+			Namespace: testDefaultNamespace,
+			UID:       types.UID("workload-uid"),
+			Annotations: map[string]string{
+				computev1alpha.LocationRestartAnnotationPrefix + "ord": "2026-01-02T15:04:05Z",
+			},
+		},
+		Spec: computev1alpha.WorkloadSpec{
+			Placements: []computev1alpha.WorkloadPlacement{
+				{
+					Name:          testDefaultPlacement,
+					Locations:     []locationsv1alpha1.LocationReference{{Name: testLocationName}},
+					ScaleSettings: computev1alpha.HorizontalScaleSettings{MinReplicas: 1},
+				},
+			},
+		},
+	}
+
+	s := newNetworkingScheme()
+	require.NoError(t, locationsv1alpha1.AddToScheme(s))
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(
+			newLocationsServiceLocation(testLocationName, "DFW"),
+			newLocationsServiceLocation("ord", "ORD"),
+			newTestComputeAvailability(testLocationName),
+			newTestComputeAvailability("ord"),
+		).
+		WithIndex(&computev1alpha.WorkloadDeployment{}, deploymentWorkloadUIDIndex, deploymentWorkloadUIDIndexFunc).
+		Build()
+	r := &WorkloadReconciler{}
+
+	desired, _, err := r.getDeploymentsForWorkload(context.Background(), cl, workload)
+	require.NoError(t, err)
+	require.Len(t, desired, 1)
+	assert.Equal(t, testLocationName, desired[0].Spec.LocationRef.Name)
+	assert.NotContains(t, desired[0].Spec.Template.Annotations, computev1alpha.LocationRestartedAtAnnotation)
+}

@@ -31,6 +31,11 @@ const (
 	// location only, so a restart there needs only permission to update the
 	// Workload. Deployments are owned by the workload controller, and a direct
 	// edit to their template is overwritten on its next reconcile.
+	//
+	// The annotation is left in place after the restart, since a value that
+	// does not change does not roll again. Removing it changes the template of
+	// that location's deployments, which rolls the location once more. An
+	// annotation naming a location the workload does not place in is ignored.
 	LocationRestartAnnotationPrefix = "location-restart." + AnnotationNamespace + "/"
 
 	// LocationRestartedAtAnnotation is set by the workload controller on the

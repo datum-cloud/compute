@@ -100,3 +100,21 @@ func TestRestartLocation_UnknownLocation(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(workload), &got))
 	assert.Empty(t, got.Annotations)
 }
+
+func TestRestartLocation_SurvivesConcurrentWorkloadEdit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	c, workload := newFixture(t)
+
+	var concurrent computev1alpha.Workload
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(workload), &concurrent))
+	concurrent.Labels = map[string]string{"edited": "true"}
+	require.NoError(t, c.Update(ctx, &concurrent))
+
+	require.NoError(t, restartLocation(ctx, c, workload, testLocation, testRestartedAt))
+
+	var got computev1alpha.Workload
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(workload), &got))
+	assert.Equal(t, testRestartedAt, got.Annotations[computev1alpha.LocationRestartAnnotationPrefix+testLocation])
+	assert.Equal(t, "true", got.Labels["edited"])
+}
