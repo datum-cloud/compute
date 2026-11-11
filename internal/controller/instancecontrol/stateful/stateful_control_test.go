@@ -20,6 +20,8 @@ import (
 	"go.datum.net/compute/internal/controller/instancecontrol"
 )
 
+const testImageUpdate = "test-image-update"
+
 var (
 	scheme = runtime.NewScheme()
 )
@@ -101,7 +103,7 @@ func TestUpdateWithAllReadyInstances(t *testing.T) {
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 0))
 	currentInstances = append(currentInstances, *getInstanceForDeployment(deployment, 1))
 
-	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "test-image-update"
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageUpdate
 
 	actions, err := control.GetActions(ctx, scheme, deployment, deployment.Spec.ScaleSettings.MinReplicas, currentInstances)
 
@@ -815,15 +817,15 @@ func getInstanceTemplate(name string, ordinal int) *v1alpha.Instance {
 	return instance
 }
 
-func getParallelWorkloadDeployment(name string, minReplicas int32) *v1alpha.WorkloadDeployment {
-	deployment := getWorkloadDeployment(name, minReplicas)
+func getParallelWorkloadDeployment(minReplicas int32) *v1alpha.WorkloadDeployment {
+	deployment := getWorkloadDeployment("test-deploy", minReplicas)
 	deployment.Spec.ScaleSettings.InstanceManagementPolicy = v1alpha.ParallelInstanceManagementPolicyType
 	return deployment
 }
 
 func TestParallel_FreshDeploymentCreatesAllInstances(t *testing.T) {
 	control := NewWithOptions(Options{})
-	deployment := getParallelWorkloadDeployment("test-deploy", 3)
+	deployment := getParallelWorkloadDeployment(3)
 
 	actions, err := control.GetActions(context.Background(), scheme, deployment, 3, nil)
 
@@ -838,7 +840,7 @@ func TestParallel_FreshDeploymentCreatesAllInstances(t *testing.T) {
 
 func TestParallel_ScaleUpDoesNotWaitOnNotReadyInstance(t *testing.T) {
 	control := NewWithOptions(Options{})
-	deployment := getParallelWorkloadDeployment("test-deploy", 3)
+	deployment := getParallelWorkloadDeployment(3)
 
 	notReady := getInstanceForDeployment(deployment, 0)
 	apimeta.SetStatusCondition(&notReady.Status.Conditions, metav1.Condition{
@@ -861,7 +863,7 @@ func TestParallel_ScaleUpDoesNotWaitOnNotReadyInstance(t *testing.T) {
 
 func TestParallel_ScaleDownDeletesAllExtraInstances(t *testing.T) {
 	control := NewWithOptions(Options{})
-	deployment := getParallelWorkloadDeployment("test-deploy", 1)
+	deployment := getParallelWorkloadDeployment(1)
 
 	current := []v1alpha.Instance{
 		*getInstanceForDeployment(deployment, 0),
@@ -881,13 +883,13 @@ func TestParallel_ScaleDownDeletesAllExtraInstances(t *testing.T) {
 
 func TestParallel_TemplateChangeReplacesOneInstanceAtATime(t *testing.T) {
 	control := NewWithOptions(Options{})
-	deployment := getParallelWorkloadDeployment("test-deploy", 2)
+	deployment := getParallelWorkloadDeployment(2)
 
 	current := []v1alpha.Instance{
 		*getInstanceForDeployment(deployment, 0),
 		*getInstanceForDeployment(deployment, 1),
 	}
-	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "test-image-update"
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageUpdate
 
 	actions, err := control.GetActions(context.Background(), scheme, deployment, 2, current)
 
@@ -902,10 +904,10 @@ func TestParallel_TemplateChangeReplacesOneInstanceAtATime(t *testing.T) {
 
 func TestParallel_TemplateChangeHeldWhileInstanceIsReplaced(t *testing.T) {
 	control := NewWithOptions(Options{})
-	deployment := getParallelWorkloadDeployment("test-deploy", 2)
+	deployment := getParallelWorkloadDeployment(2)
 
 	current := []v1alpha.Instance{*getInstanceForDeployment(deployment, 0)}
-	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = "test-image-update"
+	deployment.Spec.Template.Spec.Runtime.Sandbox.Containers[0].Image = testImageUpdate
 
 	actions, err := control.GetActions(context.Background(), scheme, deployment, 2, current)
 

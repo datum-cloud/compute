@@ -208,9 +208,24 @@ func (c *statefulControl) GetActions(
 	slices.SortFunc(recreateActions, descendingOrdinal)
 	slices.SortFunc(deleteActions, descendingOrdinal)
 
-	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions)+len(patchTemplateHashActions))
+	actions, err := orderRolloutActions(deployment.Spec.ScaleSettings.InstanceManagementPolicy, createActions, waitActions, recreateActions, deleteActions)
+	if err != nil {
+		return nil, err
+	}
 
-	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
+	actions = append(actions, patchLabelActions...)
+	actions = append(actions, patchTemplateHashActions...)
+
+	return actions, nil
+}
+
+func orderRolloutActions(
+	policy v1alpha.InstanceManagementPolicyType,
+	createActions, waitActions, recreateActions, deleteActions []instancecontrol.Action,
+) ([]instancecontrol.Action, error) {
+	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions))
+
+	switch policy {
 	case v1alpha.OrderedReadyInstanceManagementPolicyType, "":
 
 		// Add create and wait actions, and sort by ordinal. This allows us to wait
@@ -249,11 +264,8 @@ func (c *statefulControl) GetActions(
 		actions = append(actions, recreateActions...)
 
 	default:
-		return nil, fmt.Errorf("unsupported instance management policy %q", deployment.Spec.ScaleSettings.InstanceManagementPolicy)
+		return nil, fmt.Errorf("unsupported instance management policy %q", policy)
 	}
-
-	actions = append(actions, patchLabelActions...)
-	actions = append(actions, patchTemplateHashActions...)
 
 	return actions, nil
 }
