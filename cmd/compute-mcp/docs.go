@@ -34,7 +34,7 @@ type document struct {
 	contentType string
 }
 
-// knowledgeHandler serves compute's knowledge and skills over plain HTTP.
+// knowledgeHandler serves compute's knowledge and skills to plain GET requests.
 //
 // Routing is an exact-match lookup in a table enumerated at startup, never a
 // path join against a directory, so "..", an absolute path, or an escaped

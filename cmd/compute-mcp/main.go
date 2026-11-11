@@ -8,6 +8,11 @@
 //	GET  /runbooks/<name>.md    Skills: triage procedures
 //	GET  /healthz               liveness
 //
+// Served over https when given a certificate (--tls-cert-file, --tls-key-file),
+// which is how it is deployed: a caller sends a bearer token to /mcp and the
+// assistant will not send one over plain http. Without a certificate it serves
+// plain http, for local development.
+//
 // One process, because compute's capability document names all of those URLs.
 // Only /mcp takes a credential; see docs.go for why the documents do not.
 //
@@ -25,7 +30,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -88,16 +92,28 @@ func init() {
 }
 
 func main() {
-	var addr string
+	var (
+		addr  string
+		files tlsFiles
+	)
 
 	flag.StringVar(&addr, "addr", envOr("COMPUTE_MCP_ADDR", ":8080"),
 		"address to serve MCP on")
+	flag.StringVar(&files.certFile, "tls-cert-file", os.Getenv("COMPUTE_MCP_TLS_CERT_FILE"),
+		"serving certificate; set with --tls-key-file to serve https instead of http")
+	flag.StringVar(&files.keyFile, "tls-key-file", os.Getenv("COMPUTE_MCP_TLS_KEY_FILE"),
+		"key for --tls-cert-file")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if err := files.validate(); err != nil {
+		setupLog.Error(err, "refusing to start")
+		os.Exit(1)
+	}
 
 	// GetConfig resolves the --kubeconfig flag that controller-runtime
 	// registers, then KUBECONFIG, then in-cluster config, then ~/.kube/config.
@@ -113,7 +129,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := run(addr, baseConfig); err != nil {
+	if err := run(ctrl.SetupSignalHandler(), addr, files, baseConfig); err != nil {
 		setupLog.Error(err, "server failed")
 		os.Exit(1)
 	}
@@ -161,7 +177,7 @@ func sameEndpoint(a, b string) bool {
 	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
 }
 
-func run(addr string, baseConfig *rest.Config) error {
+func run(ctx context.Context, addr string, files tlsFiles, baseConfig *rest.Config) error {
 	exec, err := newExecRuntime()
 	if err != nil {
 		return err
@@ -217,17 +233,13 @@ func run(addr string, baseConfig *rest.Config) error {
 		_, _ = fmt.Fprintln(w, "ok")
 	})
 
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: readHeaderTimeout,
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", addr, err)
 	}
 
-	setupLog.Info("listening", "addr", addr, "mcp", "/mcp", "docs", docs.paths())
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("serving on %s: %w", addr, err)
-	}
-	return nil
+	setupLog.Info("listening", "scheme", files.scheme(), "addr", addr, "mcp", "/mcp", "docs", docs.paths())
+	return serve(ctx, ln, mux, files)
 }
 
 // depsFromRequest returns a DepsFor that resolves the caller's identity and
