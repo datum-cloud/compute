@@ -2,7 +2,7 @@ module go.datum.net/compute
 
 go 1.26.4
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/KimMachineGun/automemlimit v0.7.5
