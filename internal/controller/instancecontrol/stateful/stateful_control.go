@@ -211,7 +211,7 @@ func (c *statefulControl) GetActions(
 	actions := make([]instancecontrol.Action, 0, len(createActions)+len(waitActions)+len(recreateActions)+len(deleteActions)+len(patchLabelActions)+len(patchTemplateHashActions))
 
 	switch deployment.Spec.ScaleSettings.InstanceManagementPolicy {
-	case v1alpha.OrderedReadyInstanceManagementPolicyType:
+	case v1alpha.OrderedReadyInstanceManagementPolicyType, "":
 
 		// Add create and wait actions, and sort by ordinal. This allows us to wait
 		// for instances to be processed in the correct order.
@@ -233,6 +233,23 @@ func (c *statefulControl) GetActions(
 			}
 		}
 
+	case v1alpha.ParallelInstanceManagementPolicyType:
+		slices.SortFunc(createActions, ascendingOrdinal)
+		slices.SortFunc(waitActions, ascendingOrdinal)
+
+		actions = append(actions, createActions...)
+		actions = append(actions, deleteActions...)
+		actions = append(actions, waitActions...)
+
+		for i := range recreateActions {
+			if i > 0 || len(createActions) > 0 || len(waitActions) > 0 {
+				recreateActions[i].SkipExecution()
+			}
+		}
+		actions = append(actions, recreateActions...)
+
+	default:
+		return nil, fmt.Errorf("unsupported instance management policy %q", deployment.Spec.ScaleSettings.InstanceManagementPolicy)
 	}
 
 	actions = append(actions, patchLabelActions...)
