@@ -675,6 +675,12 @@ func (r *WorkloadReconciler) getDeploymentsForWorkload(
 						if template.Spec.Runtime.Resources.InstanceType == "" {
 							template.Spec.Runtime.Resources.InstanceType = instancetype.D1Standard2
 						}
+						if restartedAt, ok := workload.Annotations[computev1alpha.LocationRestartAnnotationPrefix+locationName]; ok {
+							if template.Annotations == nil {
+								template.Annotations = map[string]string{}
+							}
+							template.Annotations[computev1alpha.LocationRestartedAtAnnotation] = restartedAt
+						}
 						return template
 					}(),
 					ScaleSettings: placement.ScaleSettings,

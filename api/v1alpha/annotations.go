@@ -20,6 +20,26 @@ const (
 	// template hash and triggers the existing ordered in-place roll.
 	RestartedAtAnnotation = AnnotationNamespace + "/restartedAt"
 
+	// LocationRestartAnnotationPrefix prefixes a Workload annotation that asks
+	// for a rolling restart of the workload at one location. The annotation
+	// name after the prefix is the location name and the value is an RFC3339
+	// timestamp, for example
+	// location-restart.compute.datumapis.com/us-east-1: 2026-01-02T15:04:05Z.
+	//
+	// The workload controller copies the value into
+	// LocationRestartedAtAnnotation on the template of the deployments at that
+	// location only, so a restart there needs only permission to update the
+	// Workload. Deployments are owned by the workload controller, and a direct
+	// edit to their template is overwritten on its next reconcile.
+	LocationRestartAnnotationPrefix = "location-restart." + AnnotationNamespace + "/"
+
+	// LocationRestartedAtAnnotation is set by the workload controller on the
+	// template of a WorkloadDeployment from the Workload's
+	// LocationRestartAnnotationPrefix annotation for its location. Like
+	// RestartedAtAnnotation, it is part of the template hash and triggers the
+	// ordered in-place roll.
+	LocationRestartedAtAnnotation = AnnotationNamespace + "/locationRestartedAt"
+
 	// ReferencedDataGateStartAnnotation is stamped on an Instance by the cell
 	// InstanceReconciler the first time it observes the ReferencedData scheduling
 	// gate. Its value is an RFC3339 timestamp. Used to compute gate-wait duration
