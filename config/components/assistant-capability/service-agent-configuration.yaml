@@ -30,7 +30,7 @@ spec:
     sources:
       - type: LLMDocs
         title: Compute resource model and condition semantics
-        url: http://compute-mcp.compute-system.svc.cluster.local:8080/llms-full.txt
+        url: https://compute-mcp.compute-system.svc.cluster.local:8080/llms-full.txt
     # Short explanations of compute's main resources, so basic questions can be
     # answered without fetching anything.
     concepts:
@@ -57,7 +57,7 @@ spec:
         # Production needs this changed to the AI gateway address. Going direct
         # there means the call is not billed, does not carry the customer's
         # identity, and will simply be refused.
-        endpoint: http://compute-mcp.compute-system.svc.cluster.local:8080/mcp
+        endpoint: https://compute-mcp.compute-system.svc.cluster.local:8080/mcp
         toolSelector:
           # The approved list. Anything not named here is never offered to the
           # assistant, even if compute-mcp serves it.
@@ -80,25 +80,25 @@ spec:
   skills:
     - name: workload-not-available
       description: Triage a compute Workload that is not available, from symptom to root cause and owner
-      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-not-available.md
+      source: https://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-not-available.md
     - name: quota-triage
       description: Distinguish QuotaExceeded, QuotaNoBudget, PendingEvaluation and quota backend faults, and act on each
-      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/quota-triage.md
+      source: https://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/quota-triage.md
     - name: instance-not-ready
       description: Diagnose ImageUnavailable, InstanceCrashing, ConfigurationError and stuck Provisioning on compute Instances
-      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/instance-not-ready.md
+      source: https://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/instance-not-ready.md
     - name: referenced-data-triage
       description: 'Resolve ReferencedDataReady failures: missing, unauthorized, or oversized ConfigMaps and Secrets'
-      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/referenced-data-triage.md
+      source: https://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/referenced-data-triage.md
     - name: placement-triage
       description: Handle NoMatchingLocation, AmbiguousServingLocation and CityCodeMismatch — all platform faults
-      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/placement-triage.md
+      source: https://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/placement-triage.md
     - name: stalled-transient
       description: Recognize a provider job wedged in transient and act on the stalled actionability state rather than waiting it out
-      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/stalled-transient.md
+      source: https://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/stalled-transient.md
     - name: workload-create
       description: 'Deploy something new: prerequisites, the choices that are final at create, and render, plan, show, confirm, then apply'
-      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-create.md
+      source: https://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-create.md
 
   authority:
     # Reads run as the person asking, so this grants no access they do not
