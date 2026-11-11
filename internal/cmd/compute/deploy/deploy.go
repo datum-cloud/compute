@@ -163,7 +163,8 @@ template, so setting or removing one replaces the workload's instances.
 
 All of these carry forward. A deploy that does not mention a variable, an
 import, a mount, or a label keeps the one the workload already has, so a
-routine image bump changes nothing else. Remove one explicitly with a trailing
+routine image bump changes nothing else. Image pull secrets and sysctls set
+by a manifest carry forward too. Remove one explicitly with a trailing
 "-": --env KEY-, --env-from-secret NAME-, --configmap NAME-, --label key-.`,
 		Args: cobra.MaximumNArgs(1),
 		Example: `  # Deploy with flags
@@ -599,10 +600,8 @@ func deployFromFlags(cmd *cobra.Command, workloadName string, opts *options) err
 					Resources: computev1alpha.InstanceRuntimeResources{
 						InstanceType: inputs.instanceType,
 					},
-					Sandbox: &computev1alpha.SandboxRuntime{
-						Containers: []computev1alpha.SandboxContainer{container},
-					},
-					Class: runtimeClass,
+					Sandbox: sandboxRuntime(&workload, creating, container),
+					Class:   runtimeClass,
 				},
 				NetworkInterfaces: networkInterfaces,
 				Volumes:           config.volumes,
@@ -1041,6 +1040,21 @@ func resolveRuntimeClass(existing *computev1alpha.Workload, creating bool, reque
 		"workload %q runs in runtime class %q and cannot move to %q, because a workload's runtime class cannot be changed after it is created. "+
 			"To change it, delete the workload with 'datumctl compute destroy %s' and deploy it again, or deploy under a new name",
 		existing.Name, current, requested, existing.Name)
+}
+
+// sandboxRuntime returns the sandbox a flag-driven deploy writes: the one
+// container the flags describe, plus the existing workload's image pull
+// secrets and sysctls. No flag sets those, so rewriting the sandbox without
+// them would silently drop them and leave a private image unpullable.
+func sandboxRuntime(existing *computev1alpha.Workload, creating bool, container computev1alpha.SandboxContainer) *computev1alpha.SandboxRuntime {
+	sandbox := &computev1alpha.SandboxRuntime{
+		Containers: []computev1alpha.SandboxContainer{container},
+	}
+	if current := existing.Spec.Template.Spec.Runtime.Sandbox; !creating && current != nil {
+		sandbox.ImagePullSecrets = current.ImagePullSecrets
+		sandbox.Sysctls = current.Sysctls
+	}
+	return sandbox
 }
 
 // resolveNetworkInterfaces returns the network interfaces a flag-driven deploy
