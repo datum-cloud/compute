@@ -3,8 +3,20 @@
 package watch
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
 )
@@ -178,4 +190,52 @@ func TestUpdateDeploymentState(t *testing.T) {
 			t.Errorf("states[key].phase = %q, want %q", states[key].phase, phaseUpdating)
 		}
 	})
+}
+
+func TestRolloutStopsWhenCredentialsAreRefused(t *testing.T) {
+	pollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { pollInterval = 2 * time.Second })
+
+	scheme := runtime.NewScheme()
+	if err := computev1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		refuse error
+	}{
+		{"token expired", k8serrors.NewUnauthorized("jwt token is not active")},
+		{"access revoked", k8serrors.NewForbidden(schema.GroupResource{Resource: "workloaddeployments"}, "", errors.New("denied"))},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var lists int
+			c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					lists++
+					if lists == 1 {
+						return c.List(ctx, list, opts...)
+					}
+					return tc.refuse
+				},
+			}).Build()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			var out bytes.Buffer
+			err := Rollout(ctx, c, &out, "p", types.UID("uid"))
+			if ctx.Err() != nil {
+				t.Fatal("watch kept polling after the credentials were refused")
+			}
+			if err == nil || !strings.Contains(err.Error(), "datumctl login") {
+				t.Fatalf("Rollout() error = %v, want one telling the user to sign in again", err)
+			}
+			if lists != 2 {
+				t.Errorf("List called %d times, want 2", lists)
+			}
+		})
+	}
 }
