@@ -2,22 +2,15 @@ name: Test Alerts
 
 # Runs every alert-rule test under test/alerts/ against the VMRule it extracts,
 # so a change to an alert's expression or labels cannot merge untested.
+#
+# It runs on every pull request, with no paths filter, so that it can be a
+# required check: a required check that a paths filter skips stays pending.
 
 on:
   pull_request:
-    paths:
-      - '.github/workflows/test-alerts.yaml'
-      - 'config/components/alerts/**'
-      - 'test/alerts/**'
-      - 'Taskfile.yaml'
   push:
     branches:
       - main
-    paths:
-      - '.github/workflows/test-alerts.yaml'
-      - 'config/components/alerts/**'
-      - 'test/alerts/**'
-      - 'Taskfile.yaml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
