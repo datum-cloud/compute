@@ -105,6 +105,22 @@ tasks:
       - task: overview-dashboard:build
 
   # ════════════════════════════════════════════════════════════════════════
+  #  Alert rules
+  # ════════════════════════════════════════════════════════════════════════
+
+  test:alerts:
+    desc: "Run every alert-rule test under test/alerts/ (needs yq and promtool)"
+    cmds:
+      # Every test runs, so one run reports every failing rule.
+      - |
+        failed=0
+        for t in test/alerts/test-*.sh; do
+          echo "== $t"
+          bash "$t" || failed=1
+        done
+        exit $failed
+
+  # ════════════════════════════════════════════════════════════════════════
   #  e2e environment lifecycle
   # ════════════════════════════════════════════════════════════════════════
 
