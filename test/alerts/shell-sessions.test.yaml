@@ -1,0 +1,16 @@
+# Run with test/alerts/test-shell-sessions.sh (requires yq and promtool).
+rule_files:
+- shell-sessions.rules.yaml
+evaluation_interval: 1m
+tests:
+- name: A session ending Unavailable pages compute and its team, build, as the platform's catalog names them
+  interval: 1m
+  input_series:
+  - series: compute_shell_sessions_ended_total{location="us-east-1",reason="Unavailable"}
+    values: 0+1x30
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeShellSessionsUnavailable",alertstate="firing"}
+    eval_time: 25m
+    exp_samples:
+    - labels: ALERTS{alertname="ComputeShellSessionsUnavailable",alertstate="firing",location="us-east-1",reason="Unavailable",severity="critical",service="compute",namespace="compute-system",team="build"}
+      value: 1

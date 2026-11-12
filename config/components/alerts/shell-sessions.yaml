@@ -32,9 +32,9 @@ spec:
           for: 10m
           labels:
             severity: critical
-            service: compute-shell-sessions
+            service: compute
             namespace: compute-system
-            team: compute
+            team: build
           annotations:
             summary: Shell sessions in {{ $labels.location }} are ending with {{ $labels.reason }}
             description: |
@@ -59,9 +59,9 @@ spec:
           for: 5m
           labels:
             severity: warning
-            service: compute-shell-sessions
+            service: compute
             namespace: compute-system
-            team: compute
+            team: build
           annotations:
             summary: Shell agent {{ $labels.agent }} on cell {{ $labels.cell }} cannot reach its endpoint
             description: |
@@ -77,9 +77,9 @@ spec:
           for: 5m
           labels:
             severity: critical
-            service: compute-shell-sessions
+            service: compute
             namespace: compute-system
-            team: compute
+            team: build
           annotations:
             summary: No shell agent on cell {{ $labels.cell }} can reach its endpoint
             description: |
@@ -102,9 +102,9 @@ spec:
           for: 15m
           labels:
             severity: warning
-            service: compute-shell-sessions
+            service: compute
             namespace: compute-system
-            team: compute
+            team: build
           annotations:
             summary: Shell sessions in {{ $labels.location }} take {{ $value | humanizeDuration }} to connect (p95)
             description: |
@@ -125,9 +125,9 @@ spec:
             sum by (cell) (increase(compute_shell_agent_cleanup_unconfirmed_total[1h])) > 0
           labels:
             severity: warning
-            service: compute-shell-sessions
+            service: compute
             namespace: compute-system
-            team: compute
+            team: build
           annotations:
             summary: Cell {{ $labels.cell }} did not confirm cleanup for {{ $value | humanize }} shell sessions
             description: |
@@ -155,9 +155,9 @@ spec:
           for: 10m
           labels:
             severity: warning
-            service: compute-shell-sessions
+            service: compute
             namespace: compute-system
-            team: compute
+            team: build
           annotations:
             summary: Shell session creation in {{ $labels.location }} is far above its weekly baseline
             description: |
