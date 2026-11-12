@@ -96,6 +96,9 @@ func pickContainer(inst *computev1alpha.Instance, name string) (string, error) {
 // either off for the project, which has no allowance for them, or all in use.
 // Reading the allowance needs list on the project's AllowanceBuckets.
 func createError(ctx context.Context, c client.Client, err error) error {
+	if detail, ok := terminalRefusal(err); ok {
+		return fmt.Errorf("%s. Run the command without -t", detail)
+	}
 	if !k8serrors.IsForbidden(err) || !strings.Contains(err.Error(), "reached your quota") {
 		return fmt.Errorf("creating session: %w", err)
 	}
@@ -108,6 +111,21 @@ func createError(ctx context.Context, c client.Client, err error) error {
 	default:
 		return errTooManySessions
 	}
+}
+
+// terminalRefusal returns admission's reason when it forbade the session's
+// terminal, which the -t flag asks for.
+func terminalRefusal(err error) (string, bool) {
+	var status k8serrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Details == nil {
+		return "", false
+	}
+	for _, cause := range status.Status().Details.Causes {
+		if cause.Field == "spec.terminal" && cause.Type == metav1.CauseTypeForbidden {
+			return strings.TrimPrefix(cause.Message, "Forbidden: "), true
+		}
+	}
+	return "", false
 }
 
 // waitReady watches the session until the platform says where to connect, or
