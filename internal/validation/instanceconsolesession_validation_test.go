@@ -20,6 +20,7 @@ const (
 	sessionAdmissionInstanceName = "web-0"
 	sessionAdmissionContainer    = "app"
 	sessionAdmissionRefField     = "spec.instanceRef"
+	sessionAdmissionExecOnly     = "exec-only"
 )
 
 func sessionAdmissionInstance(mutate ...func(*computev1alpha.Instance)) *computev1alpha.Instance {
@@ -57,6 +58,16 @@ func sessionAdmissionCatalog() runtimeclass.Catalog {
 			ObjectMeta: metav1.ObjectMeta{Name: "general-purpose"},
 			Spec: computev1alpha.RuntimeClassSpec{
 				Default: true,
+				Capabilities: computev1alpha.RuntimeClassCapabilities{
+					Features: []computev1alpha.RuntimeClassFeature{
+						runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureExec, runtimeclass.FeatureExecTerminal,
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: sessionAdmissionExecOnly},
+			Spec: computev1alpha.RuntimeClassSpec{
 				Capabilities: computev1alpha.RuntimeClassCapabilities{
 					Features: []computev1alpha.RuntimeClassFeature{runtimeclass.FeatureSandboxRuntime, runtimeclass.FeatureExec},
 				},
@@ -156,6 +167,31 @@ func TestValidateInstanceConsoleSessionCreate(t *testing.T) {
 			wantType:  field.ErrorTypeForbidden,
 			wantField: sessionAdmissionRefField,
 			wantMsg:   `the "unikernel" runtime class does not support shell sessions`,
+		},
+		{
+			name: "a terminal session in a class with terminals is admitted",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Spec.Terminal = true
+			},
+			instance: sessionAdmissionInstance(),
+		},
+		{
+			name: "a terminal session in a class without terminals is refused",
+			session: func(s *computev1alpha.InstanceConsoleSession) {
+				s.Spec.Terminal = true
+			},
+			instance: sessionAdmissionInstance(func(i *computev1alpha.Instance) {
+				i.Spec.Runtime.Class = sessionAdmissionExecOnly
+			}),
+			wantType:  field.ErrorTypeForbidden,
+			wantField: "spec.terminal",
+			wantMsg:   `the "exec-only" runtime class does not support interactive terminals in shell sessions`,
+		},
+		{
+			name: "a session without a terminal in a class without terminals is admitted",
+			instance: sessionAdmissionInstance(func(i *computev1alpha.Instance) {
+				i.Spec.Runtime.Class = sessionAdmissionExecOnly
+			}),
 		},
 		{
 			name: "a class missing from the catalog is refused",

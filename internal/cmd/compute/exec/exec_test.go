@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -237,6 +238,7 @@ func TestExitFor(t *testing.T) {
 
 func TestCreateError(t *testing.T) {
 	gr := schema.GroupResource{Group: "compute.datumapis.com", Resource: "instanceconsolesessions"}
+	gk := schema.GroupKind{Group: "compute.datumapis.com", Kind: "InstanceConsoleSession"}
 	quota := k8serrors.NewForbidden(gr, "", errors.New(
 		"You've reached your quota for this resource type (need 1, 0 available). Delete unused resources to free up capacity, or contact support to request a higher limit."))
 
@@ -254,6 +256,16 @@ func TestCreateError(t *testing.T) {
 			want: "shell sessions aren't enabled for this project, or too many are open in it"},
 		{name: "not a quota denial", err: k8serrors.NewForbidden(gr, "", errors.New("user cannot create instanceconsolesessions")),
 			c: newFakeClient(t), want: "user cannot create", contains: true},
+		{name: "no terminals", err: k8serrors.NewInvalid(gk, "", field.ErrorList{
+			field.Forbidden(field.NewPath("spec", "terminal"), `the "unikernel" runtime class does not support interactive terminals in shell sessions`),
+		}), c: newFakeClient(t),
+			want: `the "unikernel" runtime class does not support interactive terminals in shell sessions. Run the command without -t`},
+		{name: "another terminal error", err: k8serrors.NewInvalid(gk, "", field.ErrorList{
+			field.Invalid(field.NewPath("spec", "terminal"), true, "a terminal requires stdin"),
+		}), c: newFakeClient(t), want: "a terminal requires stdin", contains: true},
+		{name: "another refused field", err: k8serrors.NewInvalid(gk, "", field.ErrorList{
+			field.Forbidden(field.NewPath("spec", "instanceRef"), "does not support shell sessions"),
+		}), c: newFakeClient(t), want: "does not support shell sessions", contains: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

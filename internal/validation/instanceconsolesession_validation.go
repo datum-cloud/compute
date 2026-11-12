@@ -59,7 +59,7 @@ func ValidateInstanceConsoleSessionCreate(
 
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, validateSessionContainer(session.Spec.ContainerName, instance, specPath.Child("containerName"))...)
-	allErrs = append(allErrs, validateSessionRuntimeClass(instance, opts.RuntimeClasses, refPath)...)
+	allErrs = append(allErrs, validateSessionRuntimeClass(session, instance, opts.RuntimeClasses, refPath, specPath.Child("terminal"))...)
 	return allErrs
 }
 
@@ -80,7 +80,12 @@ func validateSessionContainer(containerName string, instance *computev1alpha.Ins
 	return field.ErrorList{field.NotSupported(fldPath, containerName, names)}
 }
 
-func validateSessionRuntimeClass(instance *computev1alpha.Instance, catalog runtimeclass.Catalog, fldPath *field.Path) field.ErrorList {
+func validateSessionRuntimeClass(
+	session *computev1alpha.InstanceConsoleSession,
+	instance *computev1alpha.Instance,
+	catalog runtimeclass.Catalog,
+	fldPath, terminalPath *field.Path,
+) field.ErrorList {
 	className := instance.Spec.Runtime.Class
 	if className == "" {
 		className = instance.Labels[computev1alpha.RuntimeClassLabel]
@@ -98,6 +103,11 @@ func validateSessionRuntimeClass(instance *computev1alpha.Instance, catalog runt
 	if class == nil || !capabilities.Supports(runtimeclass.FeatureExec) {
 		return field.ErrorList{field.Forbidden(fldPath, fmt.Sprintf(
 			"%s does not support shell sessions", capabilities.ClassDescription()))}
+	}
+	if session.Spec.Terminal && !capabilities.Supports(runtimeclass.FeatureExecTerminal) {
+		return field.ErrorList{field.Forbidden(terminalPath, fmt.Sprintf(
+			"%s does not support %s",
+			capabilities.ClassDescription(), runtimeclass.FeatureExecTerminal.Description()))}
 	}
 	return nil
 }

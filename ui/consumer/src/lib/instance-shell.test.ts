@@ -12,7 +12,14 @@ const classes: RuntimeClassSummary[] = toRuntimeClasses({
   items: [
     {
       metadata: { name: 'general-purpose' },
-      spec: { default: true, capabilities: { features: ['sandboxRuntime', 'exec'] } },
+      spec: {
+        default: true,
+        capabilities: { features: ['sandboxRuntime', 'exec', 'execTerminal'] },
+      },
+    },
+    {
+      metadata: { name: 'exec-only' },
+      spec: { capabilities: { features: ['sandboxRuntime', 'exec'] } },
     },
     {
       metadata: { name: 'unikernel' },
@@ -44,7 +51,7 @@ describe('canShowShell', () => {
     containers: ['app'],
   };
 
-  test('shows with permission, an allowance, an exec class and a container', () => {
+  test('shows with permission, an allowance, a class with terminals and a container', () => {
     expect(canShowShell(shown)).toBe(true);
   });
 
@@ -63,6 +70,12 @@ describe('canShowShell', () => {
   test('hides when the runtime class lacks exec', () => {
     expect(
       canShowShell({ ...shown, runtimeClass: resolveRuntimeClass('unikernel', classes) })
+    ).toBe(false);
+  });
+
+  test('hides when the runtime class has exec but no terminals', () => {
+    expect(
+      canShowShell({ ...shown, runtimeClass: resolveRuntimeClass('exec-only', classes) })
     ).toBe(false);
   });
 
