@@ -116,6 +116,7 @@ spec:
                       - containerCapabilities
                       - sandboxSysctls
                       - exec
+                      - execTerminal
                       - gracefulTermination
                       type: string
                     maxItems: 32
@@ -221,6 +222,9 @@ spec:
                     feature
                   rule: '!has(self.features) || !(''sandboxSysctls'' in self.features)
                     || ''sandboxRuntime'' in self.features'
+                - message: the execTerminal feature requires the exec feature
+                  rule: '!has(self.features) || !(''execTerminal'' in self.features)
+                    || ''exec'' in self.features'
               controllerName:
                 description: |-
                   The controller that implements this class. A provider watches for classes

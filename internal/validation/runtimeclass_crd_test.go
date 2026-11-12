@@ -196,6 +196,21 @@ func TestRuntimeClassCRD(t *testing.T) {
 			"the sandboxSysctls feature requires the sandboxRuntime feature")
 	})
 
+	t.Run("the terminal feature requires exec", func(t *testing.T) {
+		class := newCatalogEntry("terminal-without-exec")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureExecTerminal)
+		require.ErrorContains(t, c.Create(ctx, class),
+			"the execTerminal feature requires the exec feature")
+	})
+
+	t.Run("a class may declare terminals with exec", func(t *testing.T) {
+		class := newCatalogEntry("terminal-with-exec")
+		class.Spec.Capabilities.Features = append(class.Spec.Capabilities.Features,
+			computev1alpha.RuntimeClassFeatureExec, computev1alpha.RuntimeClassFeatureExecTerminal)
+		require.NoError(t, c.Create(ctx, class))
+	})
+
 	for i, invalid := range []string{
 		"net..ipv4.forwarding",
 		"net.ipv4.forwarding.",
