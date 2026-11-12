@@ -42,6 +42,7 @@ const (
 	FeatureContainerCapabilities   = computev1alpha.RuntimeClassFeatureContainerCapabilities
 	FeatureSandboxSysctls          = computev1alpha.RuntimeClassFeatureSandboxSysctls
 	FeatureExec                    = computev1alpha.RuntimeClassFeatureExec
+	FeatureExecTerminal            = computev1alpha.RuntimeClassFeatureExecTerminal
 	FeatureGracefulTermination     = computev1alpha.RuntimeClassFeatureGracefulTermination
 )
 
