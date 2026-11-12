@@ -1,0 +1,59 @@
+name: Test Alerts
+
+# Runs every alert-rule test under test/alerts/ against the VMRule it extracts,
+# so a change to an alert's expression or labels cannot merge untested.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-alerts.yaml'
+      - 'config/components/alerts/**'
+      - 'test/alerts/**'
+      - 'Taskfile.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/test-alerts.yaml'
+      - 'config/components/alerts/**'
+      - 'test/alerts/**'
+      - 'Taskfile.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test-alerts:
+    runs-on: ubuntu-latest
+    env:
+      PROMETHEUS_VERSION: 3.16.0
+      PROMETHEUS_SHA256: 68727009472a2c02e1ff7f062fd5b3e637285bffc8fc2d340c76fb449d6e0f34
+      YQ_VERSION: v4.54.3
+      YQ_SHA256: 129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: arduino/setup-task@v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+
+      # Pinned and checksummed, so the result does not move with the runner image.
+      - name: Install promtool and yq
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/prometheus.tar.gz" \
+            "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          echo "${PROMETHEUS_SHA256}  $RUNNER_TEMP/prometheus.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/prometheus.tar.gz" -C "$RUNNER_TEMP" --strip-components=1 \
+            "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          install -m 0755 "$RUNNER_TEMP/promtool" "$RUNNER_TEMP/bin/promtool"
+          curl -fsSL -o "$RUNNER_TEMP/bin/yq" \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  $RUNNER_TEMP/bin/yq" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/bin/yq"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run the alert-rule tests
+        run: task test:alerts
