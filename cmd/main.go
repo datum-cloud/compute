@@ -396,6 +396,7 @@ func main() {
 	if enableCellControllers {
 		wdOpts := controller.WorkloadDeploymentReconcilerOptions{
 			EnableReferencedDataGate: serverConfig.FeatureFlags.EnableReferencedDataGate,
+			PreserveInstances:        features.FeatureGate.Enabled(features.InstanceRuntimeUpdates),
 		}
 		if err = (&controller.WorkloadDeploymentReconciler{
 			NetworkingEnabled: features.FeatureGate.Enabled(features.NetworkingIntegration),
