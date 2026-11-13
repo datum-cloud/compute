@@ -1091,7 +1091,9 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(wdReferencedDataChangedPredicate()),
 		).
-		Owns(&computev1alpha.Instance{})
+		// An Instance is written many times while it starts and stops. Only the
+		// changes this reconciler reads wake it.
+		Owns(&computev1alpha.Instance{}, mcbuilder.WithPredicates(instanceChangedForDeployment()))
 
 	// Only watch networking resources when the networking integration is enabled.
 	// On cells without network-services-operator these watches would log spurious
@@ -1115,7 +1117,7 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
 					return enqueueWorkloadDeploymentForClaim(ctx, cl.GetClient(), clusterName, o)
 				})
-			}).
+			}, mcbuilder.WithPredicates(networkInterfaceClaimChangedForDeployment())).
 			// A deployment on a cell that does not yet know its own location waits
 			// without any other wake-up event, and the reconciler does not poll.
 			// Watching ServingLocations re-reconciles those deployments as soon as
