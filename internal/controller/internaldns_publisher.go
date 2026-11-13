@@ -714,7 +714,12 @@ func (r *InternalDNSPublisherReconciler) SetupWithManager(mgr mcmanager.Manager)
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named(r.controllerName()).
-		For(&computev1alpha.Instance{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		// Only Instance changes that affect publication wake it; the resync
+		// still bounds how long a missed change can leave it stale.
+		For(&computev1alpha.Instance{},
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(instanceChangedForDNSPublication()),
+		).
 		Owns(newDNSObject(dnsRegistrationGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
 		Owns(newDNSObject(dnsContributionGVK, "", ""), mcbuilder.WithEngageWithLocalCluster(false)).
 		Watches(newDNSObject(dnsResolverContextGVK, "", ""), func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
