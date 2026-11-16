@@ -221,8 +221,13 @@ func (p *progress) check(ctx context.Context, c client.Client, workloadName stri
 		return nil, false, nil
 	}
 
-	if info.Backends.Healthy > 0 {
-		p.line("Backends", fmt.Sprintf("%d healthy across %s", info.Backends.Healthy, strings.Join(servingCities(info), ", ")))
+	// Report the backends stage whenever a NetworkService backs the URL, even
+	// with nothing healthy yet. A redeploy of an already-live URL can return on
+	// the first poll, before the new instance registers, so the healthy count
+	// can be zero here. The line still belongs in the output, which a caller
+	// such as a rollout gate reads.
+	if info.Service != nil {
+		p.line("Backends", backendsStage(info))
 	}
 	if info.EdgeProgrammed {
 		p.line("Edge", "programmed")
@@ -239,6 +244,18 @@ func (p *progress) check(ctx context.Context, c client.Client, workloadName stri
 		p.blocking(info)
 	}
 	return nil, false, nil
+}
+
+// backendsStage renders the backends progress value: how many members are
+// healthy and the cities taking traffic. The cities are dropped when the
+// platform has reported no location yet, so the value never ends in a bare
+// "across".
+func backendsStage(info *Info) string {
+	stage := fmt.Sprintf("%d healthy", info.Backends.Healthy)
+	if cities := servingCities(info); len(cities) > 0 {
+		stage += " across " + strings.Join(cities, ", ")
+	}
+	return stage
 }
 
 // line prints one progress row, skipping rows already printed with the same
