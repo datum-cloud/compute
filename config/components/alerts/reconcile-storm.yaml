@@ -40,7 +40,7 @@ spec:
           for: 15m
           labels:
             severity: warning
-            service: compute-controllers
+            service: compute
             namespace: compute-system
             team: build
           annotations:
