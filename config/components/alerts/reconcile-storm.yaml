@@ -42,7 +42,7 @@ spec:
             severity: warning
             service: compute-controllers
             namespace: compute-system
-            team: compute
+            team: build
           annotations:
             summary: Compute {{ $labels.controller }} controller in {{ $labels.cluster }} is reconciling in a hot loop
             description: |
