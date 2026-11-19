@@ -14,7 +14,7 @@ importers:
     dependencies:
       '@datum-cloud/datum-ui':
         specifier: ^3.8.0
-        version: 3.8.0(@monaco-editor/react@4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-table@9.2.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-virtual@3.14.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.163(zod@4.6.7))(date-fns-tz@3.2.0(date-fns@4.4.0))(date-fns@4.4.0)(js-yaml@5.4.2)(lucide-react@1.31.0(react@19.2.8))(monaco-editor@0.55.1)(motion@13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(nuqs@2.10.1(react-router@7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8))(react-day-picker@10.0.1(@types/react@19.2.18)(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(recharts@3.10.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react-is@19.3.0)(react@19.2.8)(redux@5.0.1))(sonner@2.0.8(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(zod@4.6.7)
+        version: 3.8.0(@monaco-editor/react@4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-table@9.2.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-virtual@3.14.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.163(zod@4.6.7))(date-fns-tz@3.2.0(date-fns@4.4.0))(date-fns@4.4.0)(js-yaml@5.4.2)(lucide-react@1.31.0(react@19.2.8))(monaco-editor@0.55.1)(motion@13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(nuqs@2.10.1(react-router@7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8))(react-day-picker@10.0.1(@types/react@19.2.18)(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(recharts@3.10.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react-is@19.3.0)(react@19.2.8)(redux@5.0.1))(sonner@2.0.8(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(zod@4.6.7)
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -47,7 +47,7 @@ importers:
         version: 13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       nuqs:
         specifier: ^2.4.3
-        version: 2.10.1(react-router@7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
+        version: 2.10.1(react-router@7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -58,8 +58,8 @@ importers:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
       react-router:
-        specifier: 7.18.2
-        version: 7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 7.18.5
+        version: 7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       recharts:
         specifier: ^3.10.1
         version: 3.10.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react-is@19.3.0)(react@19.2.8)(redux@5.0.1)
@@ -1855,8 +1855,8 @@ packages:
       '@types/react':
         optional: true
 
-  react-router@7.18.2:
-    resolution: {integrity: sha512-aUVMjFm3GAPTTZL7oYr5E7ETiqfQCHRLH+B+5afnICvf0r7kkK4eR6SMuwbSTJw/7t+12khT/Kahij49fqOCIg==}
+  react-router@7.18.5:
+    resolution: {integrity: sha512-dTgvcXDOrLPrlLHrcZAqWveiK1hMSqN+rGAJzegP8HtmNkfRxOoshGWBNX3ZJ0cZjOHkRdlUJtaIhZMLLyGyPw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       react: '>=18'
@@ -2287,7 +2287,7 @@ snapshots:
     dependencies:
       ai: 7.0.163(zod@4.6.7)
 
-  '@datum-cloud/datum-ui@3.8.0(@monaco-editor/react@4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-table@9.2.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-virtual@3.14.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.163(zod@4.6.7))(date-fns-tz@3.2.0(date-fns@4.4.0))(date-fns@4.4.0)(js-yaml@5.4.2)(lucide-react@1.31.0(react@19.2.8))(monaco-editor@0.55.1)(motion@13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(nuqs@2.10.1(react-router@7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8))(react-day-picker@10.0.1(@types/react@19.2.18)(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(recharts@3.10.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react-is@19.3.0)(react@19.2.8)(redux@5.0.1))(sonner@2.0.8(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(zod@4.6.7)':
+  '@datum-cloud/datum-ui@3.8.0(@monaco-editor/react@4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-table@9.2.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@tanstack/react-virtual@3.14.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.163(zod@4.6.7))(date-fns-tz@3.2.0(date-fns@4.4.0))(date-fns@4.4.0)(js-yaml@5.4.2)(lucide-react@1.31.0(react@19.2.8))(monaco-editor@0.55.1)(motion@13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(nuqs@2.10.1(react-router@7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8))(react-day-picker@10.0.1(@types/react@19.2.18)(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(recharts@3.10.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react-is@19.3.0)(react@19.2.8)(redux@5.0.1))(sonner@2.0.8(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(zod@4.6.7)':
     dependencies:
       '@datum-cloud/datum-ui-assistant-core': 0.1.0(ai@7.0.163(zod@4.6.7))
       '@radix-ui/react-avatar': 1.2.6(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -2325,7 +2325,7 @@ snapshots:
       date-fns-tz: 3.2.0(date-fns@4.4.0)
       js-yaml: 5.4.2
       monaco-editor: 0.55.1
-      nuqs: 2.10.1(react-router@7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
+      nuqs: 2.10.1(react-router@7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
       react-day-picker: 10.0.1(@types/react@19.2.18)(react@19.2.8)
       recharts: 3.10.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react-is@19.3.0)(react@19.2.8)(redux@5.0.1)
       sonner: 2.0.8(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -3550,12 +3550,12 @@ snapshots:
 
   node-releases@2.0.53: {}
 
-  nuqs@2.10.1(react-router@7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8):
+  nuqs@2.10.1(react-router@7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8):
     dependencies:
       '@standard-schema/spec': 1.1.0
       react: 19.2.8
     optionalDependencies:
-      react-router: 7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react-router: 7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
 
   parse5@8.0.1:
     dependencies:
@@ -3618,7 +3618,7 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.18
 
-  react-router@7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  react-router@7.18.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       cookie: 1.1.1
       react: 19.2.8
