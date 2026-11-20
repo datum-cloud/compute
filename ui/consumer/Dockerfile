@@ -34,7 +34,7 @@ RUN --mount=type=bind,target=/src \
       CONSOLE_WASM_EXEC=/out/console-session-wasm_exec.js; \
   fi
 
-FROM node:26.13.0-alpine3.24@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS build
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS build
 WORKDIR /app
 # Node 26 ships no corepack, so install the pnpm that package.json's
 # packageManager pins; it stays in this stage only.
@@ -50,7 +50,7 @@ ENV CONSOLE_WASM_DIR=/console-wasm
 RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN,required=false \
   SENTRY_AUTH_TOKEN="$(cat /run/secrets/SENTRY_AUTH_TOKEN 2>/dev/null)" pnpm build
 
-FROM node:26.13.0-alpine3.24@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5
 # Node keeps its own copy of the CA roots apart from Alpine's bundle. Fail the
 # build if either still trusts the compromised eMudhra root (emSign ECC Root
 # CA - G3).
