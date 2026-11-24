@@ -542,7 +542,7 @@ func TestInstanceProjectionDeletedBeforeCellInstanceFinalizes(t *testing.T) {
 	cellReconciler := &InstanceReconciler{FederationClient: hubClient}
 
 	_, err := cellReconciler.Finalize(ctx, writeBack)
-	require.ErrorContains(t, err, "waiting for downstream write-back")
+	require.ErrorIs(t, err, errRemovalPending)
 	var terminating computev1alpha.Instance
 	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &terminating))
 	require.NotNil(t, terminating.DeletionTimestamp)
@@ -579,8 +579,9 @@ func TestInstanceProjectorWaitsForProjectDeletion(t *testing.T) {
 		Build()
 	projector := newTestProjector(hubClient, projectClient)
 
-	_, err := projector.Reconcile(ctx, projectorRequest())
-	require.ErrorContains(t, err, "waiting for instance projection")
+	result, err := projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err, "waiting on project deletion is not a reconcile error")
+	require.Equal(t, removalPollInterval, result.RequeueAfter)
 	var pending computev1alpha.Instance
 	require.NoError(t, projectClient.Get(ctx, types.NamespacedName{
 		Name: projTestInstanceName, Namespace: projTestProjNS,
@@ -596,6 +597,37 @@ func TestInstanceProjectorWaitsForProjectDeletion(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, apierrors.IsNotFound(hubClient.Get(ctx, projectorRequest().NamespacedName, &retained)),
 		"write-back should disappear only after the project Instance does")
+}
+
+// TestInstanceProjectorRequeuesUnengagedProjectCluster verifies that an
+// Instance whose project cluster is not engaged yet is retried on a timer
+// rather than reported as a reconcile error.
+func TestInstanceProjectorRequeuesUnengagedProjectCluster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	hubClient := newKarmadaFakeClient(projTestKarmadaInstance(nil))
+	projector := &InstanceProjector{
+		FederationClient: hubClient,
+		MCManager:        &fakeMCManager{clusters: map[string]cluster.Cluster{}},
+	}
+
+	result, err := projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+
+	writeBack := projTestKarmadaInstance(nil)
+	writeBack.Finalizers = []string{instanceProjectionFinalizer}
+	now := metav1.Now()
+	writeBack.DeletionTimestamp = &now
+	hubClient = newKarmadaFakeClient(writeBack)
+	projector.FederationClient = hubClient
+	result, err = projector.Reconcile(ctx, projectorRequest())
+	require.NoError(t, err)
+	assert.Equal(t, projectClusterEngageWait, result.RequeueAfter)
+	var retained computev1alpha.Instance
+	require.NoError(t, hubClient.Get(ctx, projectorRequest().NamespacedName, &retained))
+	assert.Contains(t, retained.Finalizers, instanceProjectionFinalizer,
+		"the write-back must keep its finalizer until the projection can be removed")
 }
 
 // TestInstanceProjector_SpecCopied verifies that the Instance spec is correctly
@@ -634,7 +666,7 @@ func TestInstanceProjectorPreservesProjectDNSStatus(t *testing.T) {
 	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
 	upstream.Status.DNS = []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "untrusted-edge-network", Namespace: "edge"}}}
 	network := networkingv1alpha.NetworkRef{Name: "project-network", Namespace: projTestProjNS}
-	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{Network: network, Hostnames: []string{"web.datum.internal"}}}}}
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}, Status: computev1alpha.InstanceStatus{DNS: []computev1alpha.InstanceDNSStatus{{Network: network, Hostnames: []string{"web.instances.datum.internal"}}}}}
 	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(&computev1alpha.Instance{}).Build()
 	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
 	r.InternalDNSEnabled = true
@@ -651,8 +683,8 @@ func TestInstanceProjectorReplacesDifferentSourceLifetime(t *testing.T) {
 	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
 	r.InternalDNSEnabled = true
 	result, err := r.Reconcile(context.Background(), projectorRequest())
-	require.ErrorContains(t, err, "waiting for DNS projection lifetime replacement")
-	require.Zero(t, result.RequeueAfter)
+	require.NoError(t, err)
+	require.Equal(t, removalPollInterval, result.RequeueAfter)
 	require.True(t, apierrors.IsNotFound(cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection)))
 	_, err = r.Reconcile(context.Background(), projectorRequest())
 	require.NoError(t, err)
@@ -884,4 +916,38 @@ func TestInstanceProjectorDNSDisabledPreservesProjectionLifetime(t *testing.T) {
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
 	require.Equal(t, types.UID("existing-projection"), projection.UID)
 	require.True(t, projection.DeletionTimestamp.IsZero())
+}
+
+func TestReconcileDNSProjectionLifetimeLeavesProjectionUntouched(t *testing.T) {
+	existing := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}}
+	cl := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(existing).Build()
+	source := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS}}
+	require.NoError(t, reconcileDNSProjectionLifetime(context.Background(), cl, cl, projection, source))
+	require.Empty(t, projection.ResourceVersion)
+	require.Empty(t, projection.Labels)
+}
+
+func TestInstanceProjectorRetriesConcurrentDNSPublication(t *testing.T) {
+	upstream := projTestKarmadaInstance(map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID})
+	projection := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{Name: projTestInstanceName, Namespace: projTestProjNS, Labels: map[string]string{computev1alpha.InstanceSourceUIDLabel: internalDNSTestEdgeUID}}}
+	base := fake.NewClientBuilder().WithScheme(newProjectScheme()).WithObjects(projTestWorkloadDeployment(), projection).WithStatusSubresource(projection).Build()
+	writes := 0
+	cl := interceptor.NewClient(base, interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+		writes++
+		if writes == 1 {
+			current := &computev1alpha.Instance{}
+			require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(projection), current))
+			current.Status.DNS = []computev1alpha.InstanceDNSStatus{{Network: networkingv1alpha.NetworkRef{Name: "concurrent-publication"}}}
+			require.NoError(t, base.Status().Update(ctx, current))
+		}
+		return cl.SubResource(sub).Update(ctx, obj, opts...)
+	}})
+	r := newTestProjector(newKarmadaFakeClient(upstream), cl)
+	r.InternalDNSEnabled = true
+	_, err := r.Reconcile(context.Background(), projectorRequest())
+	require.NoError(t, err)
+	require.Equal(t, 2, writes)
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(projection), projection))
+	require.Equal(t, "concurrent-publication", projection.Status.DNS[0].Network.Name)
 }

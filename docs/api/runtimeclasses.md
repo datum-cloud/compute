@@ -104,7 +104,7 @@ Spec is the published contract for this execution tier.
         <td>
           What this class can serve, and what it cannot.<br/>
           <br/>
-            <i>Validations</i>:<li>!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features): grantableCapabilities requires the containerCapabilities feature</li><li>!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0): the containerCapabilities feature requires a non-empty grantableCapabilities</li><li>!has(self.supportedSysctls) || size(self.supportedSysctls) == 0 || (has(self.features) && 'sandboxSysctls' in self.features): supportedSysctls requires the sandboxSysctls feature</li><li>!has(self.features) || !('sandboxSysctls' in self.features) || (has(self.supportedSysctls) && size(self.supportedSysctls) > 0): the sandboxSysctls feature requires a non-empty supportedSysctls</li><li>!has(self.features) || !('sandboxSysctls' in self.features) || 'sandboxRuntime' in self.features: the sandboxSysctls feature requires the sandboxRuntime feature</li>
+            <i>Validations</i>:<li>!has(self.grantableCapabilities) || size(self.grantableCapabilities) == 0 || (has(self.features) && 'containerCapabilities' in self.features): grantableCapabilities requires the containerCapabilities feature</li><li>!has(self.features) || !('containerCapabilities' in self.features) || (has(self.grantableCapabilities) && size(self.grantableCapabilities) > 0): the containerCapabilities feature requires a non-empty grantableCapabilities</li><li>!has(self.supportedSysctls) || size(self.supportedSysctls) == 0 || (has(self.features) && 'sandboxSysctls' in self.features): supportedSysctls requires the sandboxSysctls feature</li><li>!has(self.features) || !('sandboxSysctls' in self.features) || (has(self.supportedSysctls) && size(self.supportedSysctls) > 0): the sandboxSysctls feature requires a non-empty supportedSysctls</li><li>!has(self.features) || !('sandboxSysctls' in self.features) || 'sandboxRuntime' in self.features: the sandboxSysctls feature requires the sandboxRuntime feature</li><li>!has(self.features) || !('execTerminal' in self.features) || 'exec' in self.features: the execTerminal feature requires the exec feature</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -249,7 +249,7 @@ statement before committing an image to the tier.<br/>
 is unsupported, so a class that omits a feature rejects requests for it
 rather than serving it by accident.<br/>
           <br/>
-            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets, containerCapabilities, sandboxSysctls, exec, gracefulTermination<br/>
+            <i>Enum</i>: sandboxRuntime, virtualMachineRuntime, configMapVolumes, secretVolumes, diskVolumes, deviceVolumeAttachments, envFrom, imagePullSecrets, containerCapabilities, sandboxSysctls, exec, execTerminal, gracefulTermination<br/>
         </td>
         <td>false</td>
       </tr><tr>

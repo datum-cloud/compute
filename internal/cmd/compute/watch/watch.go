@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +25,8 @@ const (
 	phaseBlocked  deploymentPhase = "Blocked"
 )
 
+var pollInterval = 2 * time.Second
+
 type deploymentState struct {
 	placement    string
 	location     string
@@ -36,7 +39,8 @@ type deploymentState struct {
 
 // Rollout polls WorkloadDeployment objects for the given workload UID, printing
 // per-location progress rows as state changes. It returns when all deployments
-// reach Done, or when ctx is cancelled (Ctrl-C detach).
+// reach Done, when ctx is cancelled (Ctrl-C detach), or when the platform
+// refuses the credentials.
 func Rollout(ctx context.Context, c client.Client, out io.Writer, project string, workloadUID types.UID) error {
 	start := time.Now()
 
@@ -48,7 +52,7 @@ func Rollout(ctx context.Context, c client.Client, out io.Writer, project string
 	headerPrinted := false
 	states := map[string]*deploymentState{}
 
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -67,7 +71,10 @@ func Rollout(ctx context.Context, c client.Client, out io.Writer, project string
 				if ctx.Err() != nil {
 					return nil
 				}
-				// Transient error — keep polling.
+				if k8serrors.IsUnauthorized(err) || k8serrors.IsForbidden(err) {
+					_ = tw.Flush()
+					return fmt.Errorf("stopped watching the rollout, which continues in the background: %w — run 'datumctl login' to refresh your credentials", err)
+				}
 				continue
 			}
 

@@ -206,6 +206,7 @@ func (a *Agent) runSession(ctx context.Context, w http.ResponseWriter, r *http.R
 func (a *Agent) watchExit(ctx context.Context, held *slot, uid string, limit time.Duration, exited chan<- int32) {
 	out, code, err := run(ctx, a.exec, held.pod, held.container,
 		exitWatchCommand(held.markerDir, uid, int(limit.Seconds())))
+	a.recordExec(execPurposeExitWatch, code, err)
 	if err == nil && code == exitWatchNoSleep {
 		out, err = a.pollExit(ctx, held, uid)
 		code = 0
@@ -229,7 +230,7 @@ func (a *Agent) pollExit(ctx context.Context, held *slot, uid string) (string, e
 			return "", ctx.Err()
 		case <-ticker.C:
 		}
-		out, code, err := a.run(ctx, held.pod, held.container, exitCheckCommand(held.markerDir, uid))
+		out, code, err := a.run(ctx, execPurposeExitCheck, held.pod, held.container, exitCheckCommand(held.markerDir, uid))
 		if err == nil && code == 0 {
 			return out, nil
 		}

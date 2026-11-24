@@ -16,7 +16,7 @@ import (
 const PodNetworkWebhookPath = "/mutate-v1-pod-primary-network"
 
 // PodNetworkAttachmentHandler installs the gate only at Pod CREATE admission.
-// The webhook configuration's objectSelector limits calls to opted-in Pods.
+// The webhook configuration's objectSelectors limit calls to opted-in Pods.
 type PodNetworkAttachmentHandler struct {
 	Decoder admission.Decoder
 }
@@ -26,17 +26,23 @@ func (h *PodNetworkAttachmentHandler) Handle(_ context.Context, req admission.Re
 	if err := h.Decoder.Decode(req, &pod); err != nil {
 		return admission.Errored(400, err)
 	}
-	if pod.Labels[controller.PodPrimaryNetworkEnabledLabel] != controller.PodPrimaryNetworkEnabledValue {
-		return admission.Allowed("Pod did not request a primary VPC network")
+	interfaces, err := controller.PodNetworkInterfaces(&pod)
+	if err != nil {
+		return admission.Denied(err.Error())
 	}
-	if pod.Annotations[controller.PodPrimaryNetworkAnnotation] == "" {
-		return admission.Denied("primary VPC network label requires a network name annotation")
+	if len(interfaces) == 0 {
+		return admission.Allowed("Pod did not request a VPC network")
 	}
 	if pod.Spec.HostNetwork {
-		return admission.Denied("primary VPC network is incompatible with hostNetwork")
+		return admission.Denied("VPC network interfaces are incompatible with hostNetwork")
 	}
-	if pod.Annotations[controller.MultusDefaultNetworkAnnotation] != "" {
-		return admission.Denied("primary VPC network Pods cannot specify another Multus default network")
+	for _, iface := range interfaces {
+		if iface.Primary() && pod.Annotations[controller.MultusDefaultNetworkAnnotation] != "" {
+			return admission.Denied("primary VPC network Pods cannot specify another Multus default network")
+		}
+		if !iface.Primary() && pod.Annotations[controller.MultusNetworksAnnotation] != "" {
+			return admission.Denied("Pods with secondary VPC interfaces cannot specify their own Multus networks")
+		}
 	}
 	if !hasSchedulingGate(&pod, controller.PodNetworkSchedulingGate) {
 		pod.Spec.SchedulingGates = append(pod.Spec.SchedulingGates, corev1.PodSchedulingGate{Name: controller.PodNetworkSchedulingGate})

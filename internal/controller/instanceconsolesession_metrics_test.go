@@ -24,6 +24,7 @@ func resetSessionMetrics() {
 	sessionsEnded.Reset()
 	sessionConnectSeconds.Reset()
 	sessionDurationSeconds.Reset()
+	activityEvents.Reset()
 	openSessionsByKey.reset()
 }
 
@@ -82,6 +83,12 @@ func TestInstanceConsoleSessionMetricsFollowTheLifecycle(t *testing.T) {
 	assert.Equal(t, testMemberCluster, ended.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation])
 	assert.Equal(t, testFederatorLocation, ended.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation])
 	assert.Equal(t, "1m0s", ended.Annotations[sessionEventDurationAnnotation])
+
+	for _, event := range []string{EventReasonSessionStarted, EventReasonSessionEnded} {
+		assert.Equal(t, 1.0, testutil.ToFloat64(activityEvents.WithLabelValues(event, activityEventRecorded)),
+			"%s is recorded once however often the session reconciles", event)
+	}
+	assert.Equal(t, 2, testutil.CollectAndCount(activityEvents), "no attempt failed or was retried")
 }
 
 func TestInstanceConsoleSessionMetricsForASessionDeletedBeforeItStarted(t *testing.T) {

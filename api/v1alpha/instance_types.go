@@ -727,6 +727,10 @@ type InstanceVolume struct {
 
 type VolumeSource struct {
 	// A persistent disk backed volume.
+	//
+	// Only a runtime class that lists `diskVolumes` in
+	// `spec.capabilities.features` serves a disk volume. Admission rejects a
+	// disk volume for any other class.
 	Disk *DiskTemplateVolumeSource `json:"disk,omitempty"`
 
 	// A configMap that should populate this volume
@@ -881,6 +885,12 @@ const (
 	// InstanceQuotaGranted indicates whether quota has been allocated for the instance
 	InstanceQuotaGranted = "QuotaGranted"
 
+	// InstanceRuntimeReady reports the health of the instance's running process,
+	// as observed on its runtime Pod. Unlike Available, it is revisited for the
+	// instance's whole life, so an instance that crashes after starting stops
+	// being Ready.
+	InstanceRuntimeReady = "RuntimeReady"
+
 	// ReferencedDataReady indicates whether all ConfigMaps and Secrets referenced
 	// by the workload template have been resolved and delivered to the cell.
 	// This condition is set on both WorkloadDeployment (resolver view) and
@@ -1015,6 +1025,28 @@ const (
 
 	// InstanceAvailableReasonAvailable indicates that the instance is available
 	InstanceAvailableReasonAvailable = "Available"
+
+	// InstanceRuntimeReadyReasonReady indicates the runtime Pod is running and
+	// ready.
+	InstanceRuntimeReadyReasonReady = "RuntimeReady"
+
+	// InstanceRuntimeReadyReasonNotObserved indicates no runtime Pod for the
+	// instance has been observed.
+	InstanceRuntimeReadyReasonNotObserved = "RuntimeNotObserved"
+
+	// InstanceRuntimeReadyReasonNotReady indicates the runtime Pod is running but
+	// not ready, for example because its node stopped reporting or a readiness
+	// probe is failing.
+	InstanceRuntimeReadyReasonNotReady = "RuntimeNotReady"
+
+	// InstanceRuntimeReadyReasonExited indicates the runtime Pod has stopped for
+	// good and will not be restarted.
+	InstanceRuntimeReadyReasonExited = "RuntimeExited"
+
+	// InstanceReadyReasonNetworkInterfaceNotProgrammed indicates the data plane
+	// has stopped carrying one of the instance's interfaces, so nothing can
+	// reach the instance over that network.
+	InstanceReadyReasonNetworkInterfaceNotProgrammed = "NetworkInterfaceNotProgrammed"
 
 	// InstanceReadyReasonSuspended indicates the instance is intentionally
 	// stopped due to project suspension. Its placement, disk, and quota

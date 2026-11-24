@@ -53,6 +53,8 @@ spec:
             - /compute-mcp
           args:
             - --addr=:8080
+            - --tls-cert-file=/etc/compute-mcp/tls/tls.crt
+            - --tls-key-file=/etc/compute-mcp/tls/tls.key
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -66,10 +68,16 @@ spec:
                   name: compute-assistant-exec-key
                   key: key
                   optional: true
+          # The port keeps its number and its name although it now carries
+          # https: NetworkPolicies select it by number and the Service by name.
           ports:
             - containerPort: 8080
               name: http
               protocol: TCP
+          volumeMounts:
+            - name: compute-mcp-certs
+              mountPath: /etc/compute-mcp/tls
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -87,18 +95,39 @@ spec:
             httpGet:
               path: /healthz
               port: http
-              scheme: HTTP
+              scheme: HTTPS
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
-              scheme: HTTP
+              scheme: HTTPS
             initialDelaySeconds: 5
             periodSeconds: 10
       # No writable volume: the binary is static, the docs it serves are
       # compiled in, and nothing here writes to disk.
+      volumes:
+        # The serving certificate. The assistant sends the caller's bearer token
+        # to /mcp and refuses to do so over plain http, and it trusts this
+        # issuer. The driver renews the files in place and the server reloads
+        # them without a restart.
+        #
+        # dns-names must cover the host in the capability documents' URLs
+        # (config/components/assistant-capability), so they follow the Service
+        # name and the namespace this component is deployed to.
+        - name: compute-mcp-certs
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-name: datum-control-plane
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/common-name: compute-mcp
+              csi.cert-manager.io/dns-names: compute-mcp,compute-mcp.compute-system.svc,compute-mcp.compute-system.svc.cluster.local
+              csi.cert-manager.io/key-usages: digital signature,key encipherment,server auth
+              # The container's group, so the non-root process can read the key.
+              csi.cert-manager.io/fs-group: "65532"
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       terminationGracePeriodSeconds: 30

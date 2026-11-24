@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -20,7 +23,12 @@ func (r *InternalDNSPublisherReconciler) observeInterface(ctx context.Context, r
 	if r.ObserveInterface != nil {
 		return r.ObserveInterface(ctx, reader, namespace, instance, nic)
 	}
-	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]])
+	source := r.ObservationSources[instance.Labels[computev1alpha.LocationLabel]]
+	if r.LocalRegion != "" {
+		// A cell publishing locally serves every instance it runs.
+		source = InternalDNSObservationSource{Reader: reader}
+	}
+	return ObserveInternalDNSInterface(ctx, reader, namespace, instance, nic, source)
 }
 
 func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, resourceName string, observed bool, reconcileErr error) (computev1alpha.InstanceDNSStatus, error) {
@@ -31,37 +39,44 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 		}
 	}
 	condition := metav1.Condition{Type: internalDNSConditionReady, Status: metav1.ConditionFalse, Reason: "PendingPublication", Message: "Waiting for DNS publication", ObservedGeneration: instance.Generation}
-	registration := newDNSObject(dnsRegistrationGVK, namespace, resourceName)
-	err := reader.Get(ctx, client.ObjectKeyFromObject(registration), registration)
+	resolver, err := findResolverContext(ctx, reader, namespace, identity.ProjectUID, attachment.VPCUID)
+	if err != nil {
+		return result, err
+	}
+	registrationName := resourceName
+	if resolver != nil {
+		registrationName = instanceDNSReservationName(resolver)
+	}
+	registration := newDNSObject(dnsRegistrationGVK, namespace, registrationName)
+	err = reader.Get(ctx, client.ObjectKeyFromObject(registration), registration)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return result, err
 	}
 	if err == nil {
 		canonical, _, _ := unstructured.NestedString(registration.Object, internalDNSStatusField, "canonicalFQDN")
 		canonical = strings.TrimSuffix(strings.ToLower(canonical), ".")
-		matches, err := publicationMatchesContext(ctx, reader, identity, namespace, instance, attachment, registration, canonical)
+		matches, err := publicationMatchesContext(ctx, reader, identity, namespace, attachment, registration, canonical)
 		if err != nil {
 			return result, err
 		}
 		if matches {
-			result.Hostnames = []string{canonical}
+			result.Hostnames = []string{allocatedInstanceDNSName(instance) + "." + strings.TrimPrefix(canonical, instanceDNSScope+".")}
 		}
-		conditions, _, _ := unstructured.NestedSlice(registration.Object, internalDNSStatusField, internalDNSConditionsField)
-		for _, value := range conditions {
-			accepted, ok := value.(map[string]any)
-			if ok && accepted[internalDNSConditionTypeField] == internalDNSConditionAccepted && accepted[internalDNSStatusField] == string(metav1.ConditionFalse) && accepted[internalDNSObservedGenerationField] == registration.GetGeneration() && accepted[internalDNSReasonField] == internalDNSNameConflict {
-				condition.Reason, condition.Message = internalDNSNameConflict, "Another resource already owns this DNS name"
-			}
+		if registrationHasNameConflict(registration) {
+			condition.Reason, condition.Message = internalDNSNameConflict, "Another resource already owns this DNS name"
 		}
 		contribution := newDNSObject(dnsContributionGVK, namespace, resourceName)
 		if err := reader.Get(ctx, client.ObjectKeyFromObject(contribution), contribution); err != nil && !apierrors.IsNotFound(err) {
 			return result, err
 		}
-		if observed && len(result.Hostnames) > 0 && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
+		contributionRegistration, _, _ := unstructured.NestedMap(contribution.Object, internalDNSSpecField, internalDNSRegistrationRefField)
+		if observed && len(result.Hostnames) > 0 && reflect.DeepEqual(contributionRegistration, objectReference(registration)) && unstructuredConditionCurrent(registration, internalDNSConditionAccepted) && unstructuredConditionCurrent(registration, internalDNSConditionPublished) && unstructuredConditionCurrent(contribution, internalDNSConditionPublished) && attachment.Eligible && attachment.ObservationError == nil {
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, internalDNSConditionPublished, "Private name is published"
 		}
 	}
-	if attachment.ObservationError != nil {
+	if errors.Is(attachment.ObservationError, errNetworkObservationUnconfigured) {
+		condition.Reason, condition.Message = "NetworkObservationUnconfigured", "Private DNS is not available in this location"
+	} else if attachment.ObservationError != nil {
 		condition.Status = metav1.ConditionUnknown
 		condition.Reason, condition.Message = "NetworkObservationUnavailable", "No current network observation is available"
 	} else if !attachment.Eligible {
@@ -74,7 +89,18 @@ func (r *InternalDNSPublisherReconciler) publicationStatus(ctx context.Context, 
 	return result, nil
 }
 
-func publicationMatchesContext(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, instance *computev1alpha.Instance, attachment instanceDNSAttachment, registration *unstructured.Unstructured, canonical string) (bool, error) {
+func registrationHasNameConflict(registration *unstructured.Unstructured) bool {
+	conditions, _, _ := unstructured.NestedSlice(registration.Object, internalDNSStatusField, internalDNSConditionsField)
+	for _, value := range conditions {
+		accepted, ok := value.(map[string]any)
+		if ok && accepted[internalDNSConditionTypeField] == internalDNSConditionAccepted && accepted[internalDNSStatusField] == string(metav1.ConditionFalse) && accepted[internalDNSObservedGenerationField] == registration.GetGeneration() && accepted[internalDNSReasonField] == internalDNSNameConflict {
+			return true
+		}
+	}
+	return false
+}
+
+func publicationMatchesContext(ctx context.Context, reader client.Reader, identity InternalDNSProjectIdentity, namespace string, attachment instanceDNSAttachment, registration *unstructured.Unstructured, canonical string) (bool, error) {
 	resolver, err := findResolverContext(ctx, reader, namespace, identity.ProjectUID, attachment.VPCUID)
 	if err != nil || resolver == nil {
 		return false, err
@@ -84,17 +110,29 @@ func publicationMatchesContext(ctx context.Context, reader client.Reader, identi
 		return false, err
 	}
 	registeredZone, _, _ := unstructured.NestedMap(registration.Object, internalDNSSpecField, internalDNSZoneRefField)
-	return canonical == allocatedInstanceDNSName(instance)+"."+suffix && referenceName(registeredZone) == referenceName(zone), nil
+	return canonical == instanceDNSScope+"."+suffix && referenceName(registeredZone) == referenceName(zone), nil
 }
 
-func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {
+func (r *InternalDNSPublisherReconciler) reportPublication(ctx context.Context, writer client.Client, reader client.Reader, instance *computev1alpha.Instance, status []computev1alpha.InstanceDNSStatus) error {
 	if reflect.DeepEqual(instance.Status.DNS, status) {
 		return nil
 	}
-	base := instance.DeepCopy()
-	instance.Status.DNS = status
-	if err := writer.Status().Patch(ctx, instance, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		return fmt.Errorf("report Instance DNS publication: %w", err)
-	}
-	return nil
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &computev1alpha.Instance{}
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(instance), latest); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if latest.UID != instance.UID || latest.Generation != instance.Generation {
+			return apierrors.NewConflict(schema.GroupResource{Group: computev1alpha.GroupVersion.Group, Resource: "instances"}, instance.Name, fmt.Errorf("instance changed during DNS publication"))
+		}
+		if reflect.DeepEqual(latest.Status.DNS, status) {
+			return nil
+		}
+		base := latest.DeepCopy()
+		latest.Status.DNS = status
+		if err := writer.Status().Patch(ctx, latest, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("report Instance DNS publication: %w", err)
+		}
+		return nil
+	})
 }

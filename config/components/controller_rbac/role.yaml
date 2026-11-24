@@ -7,15 +7,6 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
-  - patch
-- apiGroups:
-  - ""
-  resources:
   - configmaps
   - secrets
   verbs:
@@ -33,6 +24,15 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - patch
   - watch
 - apiGroups:
   - autoscaling

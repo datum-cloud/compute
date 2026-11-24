@@ -19,6 +19,7 @@ import {
   memoryUsageHint,
 } from '../lib/resource-usage';
 import { useInstanceFilters } from '../lib/instance-filters';
+import { useWorkloadNetworkMetrics } from '../lib/network-interface-metrics';
 import {
   albErrorRateQuery,
   albP99Query,
@@ -32,7 +33,6 @@ import {
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
 import { MAX_INSTANCE_SERIES, shortInstanceLabels } from '../lib/series-view';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { useMemo } from 'react';
 
 const NOT_CONNECTED = 'Not connected';
@@ -47,8 +47,13 @@ function resourceHint(hint: string, allocated: number | undefined, scope: string
   return allocated || !scope ? hint : `${hint} · ${scope}`;
 }
 
-function useKpi(query: string | undefined, format: MetricFormat, enabled: boolean) {
-  return usePrometheusCard(query, format, { enabled: enabled && !!query });
+function useKpi(
+  projectId: string | undefined,
+  query: string | undefined,
+  format: MetricFormat,
+  enabled: boolean
+) {
+  return usePrometheusCard(projectId, query, format, { enabled: enabled && !!query });
 }
 
 export default function WorkloadMetrics() {
@@ -83,6 +88,7 @@ export default function WorkloadMetrics() {
   const coresTotal = allocatedTotal(coresByInstance, filters.matching);
   const memoryTotal = allocatedTotal(memoryByInstance, filters.matching);
   const noMatch = filters.isFiltered && filters.matching.length === 0;
+  const network = useWorkloadNetworkMetrics(projectId, filters.matching);
   const scopeHint = filters.isFiltered
     ? `${filters.matching.length} of ${instances.length} instances`
     : undefined;
@@ -109,11 +115,11 @@ export default function WorkloadMetrics() {
   const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
 
-  const cpuCard = useKpi(cpuSumQuery, 'number', chartsEnabled);
-  const memoryCard = useKpi(memorySumQuery, 'bytes', chartsEnabled);
-  const rpsCard = useKpi(rpsQuery, 'requestsPerSecond', !!proxyId);
-  const p99Card = useKpi(p99Query, 'milliseconds-auto', !!proxyId);
-  const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
+  const cpuCard = useKpi(projectId, cpuSumQuery, 'number', chartsEnabled);
+  const memoryCard = useKpi(projectId, memorySumQuery, 'bytes', chartsEnabled);
+  const rpsCard = useKpi(projectId, rpsQuery, 'requestsPerSecond', !!proxyId);
+  const p99Card = useKpi(projectId, p99Query, 'milliseconds-auto', !!proxyId);
+  const errorCard = useKpi(projectId, errorQuery, 'percent', !!proxyId);
 
   return (
     <div className="flex flex-col gap-6" data-testid="compute-plugin-workload-metrics-page">
@@ -126,62 +132,59 @@ export default function WorkloadMetrics() {
         }
       />
 
-      <Card size="sm" sectioned className="w-full overflow-hidden">
-        <CardContent>
-          <MetricsKpiRow>
+      <MetricsKpiRow>
+        <MetricsKpiCell
+          label="CPU"
+          value={
+            noMatch
+              ? '—'
+              : identityLoading
+                ? 'Loading…'
+                : formatCpuUsage(cpuCard.data?.value, coresTotal)
+          }
+          hint={resourceHint(cpuUsageHint(cpuCard.data?.value, coresTotal), coresTotal, scopeHint)}
+        />
+        <MetricsKpiCell
+          label="Memory"
+          value={
+            noMatch
+              ? '—'
+              : identityLoading
+                ? 'Loading…'
+                : formatMemoryUsage(memoryCard.data?.value, memoryTotal)
+          }
+          hint={resourceHint(memoryUsageHint(memoryCard.data?.value, memoryTotal), memoryTotal, scopeHint)}
+        />
+        {proxyId ? (
+          <>
             <MetricsKpiCell
-              label="CPU"
-              value={
-                noMatch
-                  ? '—'
-                  : identityLoading
-                    ? 'Loading…'
-                    : formatCpuUsage(cpuCard.data?.value, coresTotal)
-              }
-              hint={resourceHint(cpuUsageHint(cpuCard.data?.value, coresTotal), coresTotal, scopeHint)}
+              label="Requests"
+              value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
+              hint="load balancer"
             />
             <MetricsKpiCell
-              label="Memory"
-              value={
-                noMatch
-                  ? '—'
-                  : identityLoading
-                    ? 'Loading…'
-                    : formatMemoryUsage(memoryCard.data?.value, memoryTotal)
-              }
-              hint={resourceHint(memoryUsageHint(memoryCard.data?.value, memoryTotal), memoryTotal, scopeHint)}
+              label="p99"
+              value={formatCardValue(p99Card.data, 'milliseconds-auto')}
+              hint="load balancer"
             />
-            {proxyId ? (
-              <>
-                <MetricsKpiCell
-                  label="Requests"
-                  value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="p99"
-                  value={formatCardValue(p99Card.data, 'milliseconds-auto')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="Errors"
-                  value={formatCardValue(errorCard.data, 'percent')}
-                  hint="load balancer"
-                />
-              </>
-            ) : (
-              <>
-                <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
-              </>
-            )}
-          </MetricsKpiRow>
-        </CardContent>
-      </Card>
+            <MetricsKpiCell
+              label="Errors"
+              value={formatCardValue(errorCard.data, 'percent')}
+              hint="load balancer"
+            />
+          </>
+        ) : (
+          <>
+            <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
+          </>
+        )}
+      </MetricsKpiRow>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MetricAreaChart
+          projectId={projectId}
           title="CPU"
           query={cpuByInstanceQuery}
           timeRange={range.timeRange}
@@ -197,6 +200,7 @@ export default function WorkloadMetrics() {
           seriesLabels={seriesLabels}
         />
         <MetricAreaChart
+          projectId={projectId}
           title="Memory"
           query={memoryByInstanceQuery}
           timeRange={range.timeRange}
@@ -213,19 +217,41 @@ export default function WorkloadMetrics() {
         />
       </div>
 
-      <MetricAreaChart
-        title="Network I/O"
-        query={undefined}
-        timeRange={range.timeRange}
-        format="bytesPerSecond"
-        enabled={false}
-        unavailable
-        unavailableLabel={NETWORK_IO_UNAVAILABLE}
-      />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network in"
+          query={network.receiveQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={network.seriesLabels}
+          pending={network.isLoading}
+          denied={network.isDenied}
+          error={network.error}
+          unavailable={noMatch || network.unavailable}
+          unavailableLabel={noMatch ? NO_MATCHING_INSTANCES : NETWORK_IO_UNAVAILABLE}
+          maxSeries={filters.instancesPicked ? undefined : MAX_INSTANCE_SERIES}
+        />
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network out"
+          query={network.transmitQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={network.seriesLabels}
+          pending={network.isLoading}
+          denied={network.isDenied}
+          error={network.error}
+          unavailable={noMatch || network.unavailable}
+          unavailableLabel={noMatch ? NO_MATCHING_INSTANCES : NETWORK_IO_UNAVAILABLE}
+          maxSeries={filters.instancesPicked ? undefined : MAX_INSTANCE_SERIES}
+        />
+      </div>
 
       {proxyId ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <MetricAreaChart
+            projectId={projectId}
             title="Requests"
             query={rpsQuery}
             timeRange={range.timeRange}
@@ -233,6 +259,7 @@ export default function WorkloadMetrics() {
             color="var(--color-chart-2)"
           />
           <MetricAreaChart
+            projectId={projectId}
             title="Latency p99"
             query={p99Query}
             timeRange={range.timeRange}
@@ -240,6 +267,7 @@ export default function WorkloadMetrics() {
             color="var(--color-chart-1)"
           />
           <MetricAreaChart
+            projectId={projectId}
             title="Error rate"
             query={errorQuery}
             timeRange={range.timeRange}

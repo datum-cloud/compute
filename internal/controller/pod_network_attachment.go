@@ -4,13 +4,20 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/netip"
+	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -21,103 +28,224 @@ import (
 )
 
 const (
-	PodPrimaryNetworkEnabledLabel  = "compute.datumapis.com/primary-network-enabled"
-	PodPrimaryNetworkEnabledValue  = "true"
-	PodPrimaryNetworkAnnotation    = "compute.datumapis.com/primary-network"
-	PodNetworkSchedulingGate       = "compute.datumapis.com/network-prepared"
-	MultusDefaultNetworkAnnotation = "v1.multus-cni.io/default-network"
+	PodPrimaryNetworkEnabledLabel    = "compute.datumapis.com/primary-network-enabled"
+	PodPrimaryNetworkEnabledValue    = "true"
+	PodPrimaryNetworkAnnotation      = "compute.datumapis.com/primary-network"
+	PodNetworkInterfacesEnabledLabel = "compute.datumapis.com/network-interfaces-enabled"
+	PodNetworkInterfacesAnnotation   = "compute.datumapis.com/network-interfaces"
+	PodNetworkSchedulingGate         = "compute.datumapis.com/network-prepared"
+	MultusDefaultNetworkAnnotation   = "v1.multus-cni.io/default-network"
+	MultusNetworksAnnotation         = "k8s.v1.cni.cncf.io/networks"
+
+	podInterfaceAddressAnnotationPrefix = "compute.datumapis.com/address-"
+	maxPodNetworkInterfaces             = 4
+	vpcAttachmentKind                   = "VPCAttachment"
+	podKind                             = "Pod"
+	statefulSetKind                     = "StatefulSet"
 )
 
+// PodNetworkInterface is one entry of the network interfaces annotation.
+type PodNetworkInterface struct {
+	// Network names the network in the Pod's namespace.
+	Network string `json:"network"`
+	// Interface is the device name inside the Pod. eth0 replaces the Pod's
+	// primary network; any other name is added beside it.
+	Interface string `json:"interface,omitempty"`
+	// ClaimName fixes the claim's name. A replacement Pod naming the same claim
+	// binds the same interface, so a Retain claim keeps its addresses.
+	ClaimName string `json:"claimName,omitempty"`
+	// ReclaimPolicy is copied to the claim. Retain needs a stable claim name.
+	ReclaimPolicy networkingv1alpha.NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
+}
+
+func (i PodNetworkInterface) Primary() bool { return i.Interface == defaultInterfaceName }
+
+// PodNetworkInterfaces returns the interfaces an opted-in Pod asks for, with
+// defaults applied, or nil when the Pod has not opted in.
+func PodNetworkInterfaces(pod *corev1.Pod) ([]PodNetworkInterface, error) {
+	legacy := pod.Labels[PodPrimaryNetworkEnabledLabel] == PodPrimaryNetworkEnabledValue
+	listed := pod.Labels[PodNetworkInterfacesEnabledLabel] == PodPrimaryNetworkEnabledValue
+	switch {
+	case legacy && listed:
+		return nil, errors.New("pod cannot use both the primary network and network interfaces opt-in labels")
+	case legacy:
+		network := pod.Annotations[PodPrimaryNetworkAnnotation]
+		if network == "" {
+			return nil, errors.New("primary VPC network label requires a network name annotation")
+		}
+		return []PodNetworkInterface{{
+			Network:       network,
+			Interface:     defaultInterfaceName,
+			ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+		}}, nil
+	case !listed:
+		return nil, nil
+	}
+
+	raw := pod.Annotations[PodNetworkInterfacesAnnotation]
+	if raw == "" {
+		return nil, fmt.Errorf("network interfaces label requires the %s annotation", PodNetworkInterfacesAnnotation)
+	}
+	var interfaces []PodNetworkInterface
+	if err := json.Unmarshal([]byte(raw), &interfaces); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", PodNetworkInterfacesAnnotation, err)
+	}
+	if len(interfaces) == 0 || len(interfaces) > maxPodNetworkInterfaces {
+		return nil, fmt.Errorf("%s must list between 1 and %d interfaces", PodNetworkInterfacesAnnotation, maxPodNetworkInterfaces)
+	}
+	interfaceNames := map[string]bool{}
+	claimNames := map[string]bool{}
+	for i := range interfaces {
+		entry := &interfaces[i]
+		if err := defaultAndValidatePodNetworkInterface(pod, entry); err != nil {
+			return nil, err
+		}
+		if interfaceNames[entry.Interface] {
+			return nil, fmt.Errorf("interface %s is listed more than once", entry.Interface)
+		}
+		interfaceNames[entry.Interface] = true
+		claimName := podNetworkInterfaceClaimName(pod, *entry)
+		if claimNames[claimName] {
+			return nil, fmt.Errorf("claim %s is used by more than one interface", claimName)
+		}
+		claimNames[claimName] = true
+	}
+	return interfaces, nil
+}
+
+func defaultAndValidatePodNetworkInterface(pod *corev1.Pod, entry *PodNetworkInterface) error {
+	if entry.Interface == "" {
+		entry.Interface = defaultInterfaceName
+	}
+	if entry.ReclaimPolicy == "" {
+		entry.ReclaimPolicy = networkingv1alpha.NetworkInterfaceReclaimPolicyDelete
+	}
+	if entry.Network == "" {
+		return fmt.Errorf("interface %s does not name a network", entry.Interface)
+	}
+	if len(entry.Interface) > 15 || len(validation.IsDNS1123Label(entry.Interface)) > 0 {
+		return fmt.Errorf("interface name %q is not a valid device name", entry.Interface)
+	}
+	switch entry.ReclaimPolicy {
+	case networkingv1alpha.NetworkInterfaceReclaimPolicyDelete, networkingv1alpha.NetworkInterfaceReclaimPolicyRetain:
+	default:
+		return fmt.Errorf("interface %s has unknown reclaim policy %q", entry.Interface, entry.ReclaimPolicy)
+	}
+	if entry.ClaimName != "" {
+		if errs := validation.IsDNS1123Subdomain(entry.ClaimName); len(errs) > 0 {
+			return fmt.Errorf("interface %s claim name %q is invalid: %s", entry.Interface, entry.ClaimName, strings.Join(errs, "; "))
+		}
+	}
+	if entry.ReclaimPolicy == networkingv1alpha.NetworkInterfaceReclaimPolicyRetain && entry.ClaimName == "" && !ownedByStatefulSet(pod) {
+		// A UID-named claim is never asked for again, so its retained address
+		// would stay reserved with nothing to reclaim it.
+		return fmt.Errorf("interface %s uses Retain and needs a claimName unless a StatefulSet owns the Pod", entry.Interface)
+	}
+	return nil
+}
+
+func ownedByStatefulSet(pod *corev1.Pod) bool {
+	owner := metav1.GetControllerOf(pod)
+	return owner != nil && owner.Kind == statefulSetKind && owner.APIVersion == appsv1.SchemeGroupVersion.String()
+}
+
+// podNetworkInterfaceClaimName names the claim after the slot the Pod fills
+// when it has one, so a replacement Pod finds the same claim name.
+func podNetworkInterfaceClaimName(pod *corev1.Pod, entry PodNetworkInterface) string {
+	switch {
+	case entry.ClaimName != "":
+		return entry.ClaimName
+	case ownedByStatefulSet(pod):
+		return networkInterfaceClaimName(pod.Name, entry.Interface)
+	default:
+		return "pod-" + string(pod.UID) + "-" + entry.Interface
+	}
+}
+
+// PodInterfaceAddressAnnotation is where compute publishes an interface's
+// primary address, without its prefix length, for the downward API.
+func PodInterfaceAddressAnnotation(interfaceName string) string {
+	return podInterfaceAddressAnnotationPrefix + interfaceName
+}
+
 // PodNetworkAttachmentReconciler attaches opted-in native Pods, including
-// DaemonSet Pods, to a network before the scheduler is allowed to bind them.
+// DaemonSet Pods, to networks before the scheduler is allowed to bind them.
 // It runs only against the cell cluster, not project control planes.
 type PodNetworkAttachmentReconciler struct {
 	client.Client
+	recorder events.EventRecorder
+}
+
+type preparedPodInterface struct {
+	entry      PodNetworkInterface
+	definition string
+	address    string
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var pod corev1.Pod
 	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if pod.Labels[PodPrimaryNetworkEnabledLabel] != PodPrimaryNetworkEnabledValue || pod.Annotations[PodPrimaryNetworkAnnotation] == "" || !pod.DeletionTimestamp.IsZero() {
+	if !pod.DeletionTimestamp.IsZero() || !hasPodNetworkGate(&pod) || pod.UID == "" {
+		// Never change a running Pod's network annotations. Admission must
+		// have installed the gate before this controller can act.
 		return ctrl.Result{}, nil
 	}
-	if !hasPodNetworkGate(&pod) {
-		// Never change a running Pod's network annotation. Admission must have
-		// installed the gate before this controller can act.
+	entries, err := PodNetworkInterfaces(&pod)
+	if err != nil {
+		r.event(&pod, corev1.EventTypeWarning, "InvalidNetworkInterfaces", err.Error())
 		return ctrl.Result{}, nil
 	}
-	if pod.UID == "" {
+	if len(entries) == 0 {
 		return ctrl.Result{}, nil
 	}
 
-	claimName := podNetworkClaimName(pod.UID)
-	var claim networkingv1alpha.NetworkInterfaceClaim
-	key := types.NamespacedName{Namespace: pod.Namespace, Name: claimName}
-	if err := r.Get(ctx, key, &claim); apierrors.IsNotFound(err) {
-		claim = networkingv1alpha.NetworkInterfaceClaim{
-			ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: claimName},
-			Spec: networkingv1alpha.NetworkInterfaceClaimSpec{
-				Network:        networkingv1alpha.LocalNetworkRef{Name: pod.Annotations[PodPrimaryNetworkAnnotation]},
-				InterfaceName:  defaultInterfaceName,
-				AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
-			},
+	prepared := make([]preparedPodInterface, 0, len(entries))
+	for _, entry := range entries {
+		ready, result, err := r.prepareInterface(ctx, &pod, entry)
+		if err != nil || ready == nil {
+			return result, err
 		}
-		if err := controllerutil.SetControllerReference(&pod, &claim, r.Scheme()); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.Create(ctx, &claim); err != nil && !apierrors.IsAlreadyExists(err) {
-			return ctrl.Result{}, fmt.Errorf("create Pod network claim: %w", err)
-		}
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	} else if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !metav1.IsControlledBy(&claim, &pod) || claim.Spec.Network.Name != pod.Annotations[PodPrimaryNetworkAnnotation] {
-		return ctrl.Result{}, fmt.Errorf("network claim %s is not owned by Pod %s or requests a different network", claim.Name, pod.Name)
-	}
-	if !networkInterfaceClaimSatisfied(&claim) || claim.Status.NetworkInterfaceRef == nil {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	var networkInterface networkingv1alpha.NetworkInterface
-	if err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: claim.Status.NetworkInterfaceRef.Name}, &networkInterface); err != nil {
-		if apierrors.IsNotFound(err) {
-			// The claim status can arrive before the interface appears in this
-			// controller's cache. There is no interface watch to wake this Pod.
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-		return ctrl.Result{}, err
-	}
-	// Cloud currently names the prepared NAD after the VPCAttachment. Keep
-	// the readiness check tied to the provider-published attachment ref;
-	// a future provider-neutral NAD ref should replace this name contract.
-	ref := networkInterface.Status.AttachmentRef
-	if ref == nil || ref.Name == "" || ref.Kind != "VPCAttachment" || ref.APIGroup != "cloud.datumapis.com" {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		prepared = append(prepared, *ready)
 	}
 
 	before := pod.DeepCopy()
 	if pod.Annotations == nil {
 		pod.Annotations = map[string]string{}
 	}
-	// Explicit namespace/name works even when the NAD and Multus namespace
-	// differ. The named NAD is unique to this Pod's UID-backed claim.
-	defaultNetwork := pod.Namespace + "/" + ref.Name
-	if existing := pod.Annotations[MultusDefaultNetworkAnnotation]; existing != "" && existing != defaultNetwork {
-		return ctrl.Result{}, fmt.Errorf("pod %s already specifies a different Multus default network", pod.Name)
+	var secondary []string
+	changed := false
+	for _, ready := range prepared {
+		if ready.entry.Primary() {
+			if existing := pod.Annotations[MultusDefaultNetworkAnnotation]; existing != "" && existing != ready.definition {
+				return ctrl.Result{}, fmt.Errorf("pod %s already specifies a different Multus default network", pod.Name)
+			}
+			changed = setAnnotation(&pod, MultusDefaultNetworkAnnotation, ready.definition) || changed
+		} else {
+			secondary = append(secondary, ready.definition+"@"+ready.entry.Interface)
+		}
+		if ready.address != "" {
+			changed = setAnnotation(&pod, PodInterfaceAddressAnnotation(ready.entry.Interface), ready.address) || changed
+		}
 	}
-	// Persist the annotation while the Pod is still gated, then remove the gate
-	// in a separate API write so the scheduler cannot bind it between steps.
-	if pod.Annotations[MultusDefaultNetworkAnnotation] != defaultNetwork {
-		pod.Annotations[MultusDefaultNetworkAnnotation] = defaultNetwork
+	if len(secondary) > 0 {
+		networks := strings.Join(secondary, ",")
+		if existing := pod.Annotations[MultusNetworksAnnotation]; existing != "" && existing != networks {
+			return ctrl.Result{}, fmt.Errorf("pod %s already specifies different Multus networks", pod.Name)
+		}
+		changed = setAnnotation(&pod, MultusNetworksAnnotation, networks) || changed
+	}
+	// Persist the annotations while the Pod is still gated, then remove the
+	// gate in a separate API write so the scheduler cannot bind it between steps.
+	if changed {
 		if err := r.Patch(ctx, &pod, client.MergeFrom(before)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("set Pod default network: %w", err)
+			return ctrl.Result{}, fmt.Errorf("set Pod networks: %w", err)
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
@@ -134,7 +262,200 @@ func (r *PodNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 	return ctrl.Result{}, nil
 }
 
-func podNetworkClaimName(uid types.UID) string { return "pod-" + string(uid) + "-eth0" }
+// prepareInterface returns the interface once its claim is prepared, or a
+// result to wait with while it is not.
+func (r *PodNetworkAttachmentReconciler) prepareInterface(ctx context.Context, pod *corev1.Pod, entry PodNetworkInterface) (*preparedPodInterface, ctrl.Result, error) {
+	wait := ctrl.Result{RequeueAfter: 5 * time.Second}
+	claimName := podNetworkInterfaceClaimName(pod, entry)
+	var claim networkingv1alpha.NetworkInterfaceClaim
+	key := types.NamespacedName{Namespace: pod.Namespace, Name: claimName}
+	if err := r.Get(ctx, key, &claim); apierrors.IsNotFound(err) {
+		claim = networkingv1alpha.NetworkInterfaceClaim{
+			ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: claimName, Labels: podClaimLabels(pod)},
+			Spec: networkingv1alpha.NetworkInterfaceClaimSpec{
+				Network:        networkingv1alpha.LocalNetworkRef{Name: entry.Network},
+				InterfaceName:  entry.Interface,
+				AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
+				ReclaimPolicy:  entry.ReclaimPolicy,
+			},
+		}
+		if err := controllerutil.SetControllerReference(pod, &claim, r.Scheme()); err != nil {
+			return nil, ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, &claim); err != nil && !apierrors.IsAlreadyExists(err) {
+			return nil, ctrl.Result{}, fmt.Errorf("create Pod network claim: %w", err)
+		}
+		return nil, ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	} else if err != nil {
+		return nil, ctrl.Result{}, err
+	}
+
+	if !claim.DeletionTimestamp.IsZero() {
+		// The previous Pod's claim is still going away. Its name is the lock
+		// that keeps two Pods from holding one interface.
+		return nil, wait, nil
+	}
+	// A claim another Pod holds is released or waited on whatever it asks for,
+	// so a changed template cannot strand the replacement behind a finished Pod.
+	if holder := metav1.GetControllerOf(&claim); holder != nil && !metav1.IsControlledBy(&claim, pod) {
+		result, err := r.claimHeldElsewhere(ctx, pod, &claim)
+		return nil, result, err
+	}
+	if !podClaimMatches(&claim, entry) {
+		message := fmt.Sprintf("network claim %s asks for a different network, interface, attachment mode, or reclaim policy", claim.Name)
+		r.event(pod, corev1.EventTypeWarning, "NetworkClaimMismatch", message)
+		return nil, ctrl.Result{}, errors.New(message)
+	}
+	if !metav1.IsControlledBy(&claim, pod) {
+		result, err := r.claimHeldElsewhere(ctx, pod, &claim)
+		return nil, result, err
+	}
+	if !networkInterfaceClaimSatisfied(&claim) || claim.Status.NetworkInterfaceRef == nil {
+		return nil, wait, nil
+	}
+
+	var networkInterface networkingv1alpha.NetworkInterface
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: claim.Status.NetworkInterfaceRef.Name}, &networkInterface); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The claim status can arrive before the interface appears in this
+			// controller's cache. There is no interface watch to wake this Pod.
+			return nil, wait, nil
+		}
+		return nil, ctrl.Result{}, err
+	}
+	// The provider names the prepared NAD after the VPCAttachment. Keep the
+	// readiness check tied to the provider-published attachment ref; a future
+	// provider-neutral NAD ref should replace this name contract.
+	ref := networkInterface.Status.AttachmentRef
+	if ref == nil || ref.Name == "" || ref.Kind != vpcAttachmentKind ||
+		(ref.APIGroup != "cloud.datumapis.com" && ref.APIGroup != "galactic.datumapis.com") {
+		return nil, wait, nil
+	}
+	// The named NAD is unique to this claim, and namespace/name works even
+	// when the NAD and Multus namespaces differ.
+	return &preparedPodInterface{
+		entry:      entry,
+		definition: pod.Namespace + "/" + ref.Name,
+		address:    primaryClaimAddress(&claim),
+	}, ctrl.Result{}, nil
+}
+
+// claimHeldElsewhere decides what a Pod does about a claim of its name that it
+// does not control: adopt it when nothing controls it, release it when its Pod
+// holder is gone or finished, and otherwise wait for the holder to go away.
+func (r *PodNetworkAttachmentReconciler) claimHeldElsewhere(ctx context.Context, pod *corev1.Pod, claim *networkingv1alpha.NetworkInterfaceClaim) (ctrl.Result, error) {
+	holder := metav1.GetControllerOf(claim)
+	if holder == nil {
+		if err := controllerutil.SetControllerReference(pod, claim, r.Scheme()); err != nil {
+			return ctrl.Result{}, err
+		}
+		if claim.Labels == nil {
+			claim.Labels = map[string]string{}
+		}
+		for key, value := range podClaimLabels(pod) {
+			claim.Labels[key] = value
+		}
+		if err := r.Update(ctx, claim); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adopt network claim %s: %w", claim.Name, err)
+		}
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	if holder.Kind != podKind || holder.APIVersion != "v1" {
+		message := fmt.Sprintf("network claim %s belongs to %s %s", claim.Name, holder.Kind, holder.Name)
+		r.event(pod, corev1.EventTypeWarning, "NetworkClaimInUse", message)
+		return ctrl.Result{}, errors.New(message)
+	}
+
+	var holderPod corev1.Pod
+	err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: holder.Name}, &holderPod)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	finished := holderPod.Status.Phase == corev1.PodFailed || holderPod.Status.Phase == corev1.PodSucceeded
+	if apierrors.IsNotFound(err) || holderPod.UID != holder.UID || finished {
+		// An evicted or failed Pod object can linger long after its sandbox is
+		// gone, and garbage collection keeps its claim until then. Deleting the
+		// claim releases the interface; Retain keeps its addresses for this Pod.
+		uid, version := claim.UID, claim.ResourceVersion
+		if err := r.Delete(ctx, claim, client.Preconditions{UID: &uid, ResourceVersion: &version}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			return ctrl.Result{}, fmt.Errorf("release network claim %s from finished Pod %s: %w", claim.Name, holder.Name, err)
+		}
+		r.event(pod, corev1.EventTypeNormal, "NetworkClaimReleased",
+			fmt.Sprintf("released network claim %s from finished Pod %s", claim.Name, holder.Name))
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	r.event(pod, corev1.EventTypeNormal, "WaitingForNetworkClaim",
+		fmt.Sprintf("waiting for Pod %s to release network claim %s", holder.Name, claim.Name))
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+func (r *PodNetworkAttachmentReconciler) event(pod *corev1.Pod, eventType, reason, message string) {
+	if r.recorder == nil {
+		return
+	}
+	r.recorder.Eventf(pod, nil, eventType, reason, "AttachNetwork", "%s", message)
+}
+
+func podClaimMatches(claim *networkingv1alpha.NetworkInterfaceClaim, entry PodNetworkInterface) bool {
+	interfaceName := claim.Spec.InterfaceName
+	if interfaceName == "" {
+		interfaceName = defaultInterfaceName
+	}
+	policy := claim.Spec.ReclaimPolicy
+	if policy == "" {
+		policy = networkingv1alpha.NetworkInterfaceReclaimPolicyDelete
+	}
+	mode := claim.Spec.AttachmentMode
+	if mode == "" {
+		mode = networkingv1alpha.NetworkInterfaceAttachmentModeNetns
+	}
+	return claim.Spec.Network.Name == entry.Network && interfaceName == entry.Interface &&
+		policy == entry.ReclaimPolicy && mode == networkingv1alpha.NetworkInterfaceAttachmentModeNetns
+}
+
+// podClaimLabels copies the Pod's compute labels, which NSO carries on to the
+// bound interface where network services select their members.
+func podClaimLabels(pod *corev1.Pod) map[string]string {
+	labels := map[string]string{}
+	for key, value := range pod.Labels {
+		if !strings.HasPrefix(key, "compute.datumapis.com/") ||
+			key == PodPrimaryNetworkEnabledLabel || key == PodNetworkInterfacesEnabledLabel {
+			continue
+		}
+		labels[key] = value
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	return labels
+}
+
+// primaryClaimAddress is the claim's primary address without its prefix length.
+// For a delegated IPv6 block that is the block's first address.
+func primaryClaimAddress(claim *networkingv1alpha.NetworkInterfaceClaim) string {
+	if len(claim.Status.Addresses) == 0 {
+		return ""
+	}
+	address := claim.Status.Addresses[0].Address
+	for _, candidate := range claim.Status.Addresses {
+		if candidate.Primary {
+			address = candidate.Address
+			break
+		}
+	}
+	if prefix, err := netip.ParsePrefix(address); err == nil {
+		return prefix.Addr().String()
+	}
+	return address
+}
+
+func setAnnotation(pod *corev1.Pod, key, value string) bool {
+	if pod.Annotations[key] == value {
+		return false
+	}
+	pod.Annotations[key] = value
+	return true
+}
 
 func hasPodNetworkGate(pod *corev1.Pod) bool {
 	for _, gate := range pod.Spec.SchedulingGates {
@@ -147,11 +468,12 @@ func hasPodNetworkGate(pod *corev1.Pod) bool {
 
 func (r *PodNetworkAttachmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Client = mgr.GetClient()
+	r.recorder = mgr.GetEventRecorder("pod-network-attachment")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
 		Watches(&networkingv1alpha.NetworkInterfaceClaim{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
 			for _, owner := range obj.GetOwnerReferences() {
-				if owner.Kind == "Pod" && owner.APIVersion == "v1" {
+				if owner.Kind == podKind && owner.APIVersion == "v1" {
 					return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: owner.Name}}}
 				}
 			}

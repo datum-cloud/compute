@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -219,7 +220,7 @@ func TestWrapperRecordsItsSession(t *testing.T) {
 	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, ".datum-exec-uid")
-	args := wrappedCommand(dir, "uid", []string{"sh", "-c", `cat; read -r l < /proc/$$/stat; set -- ${l##*)}; echo "$4"`}, false, false)
+	args := legacyWrappedCommand(dir, "uid", []string{"sh", "-c", `cat; read -r l < /proc/$$/stat; set -- ${l##*)}; echo "$4"`}, false, false)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdin = strings.NewReader("must not be read\n")
 	out, err := cmd.Output()
@@ -249,7 +250,7 @@ func TestWrapperRecordsItsSession(t *testing.T) {
 // script then stops the job.
 func TestExitWatchReportsTheCommandWhileABackgroundJobHoldsItsOutput(t *testing.T) {
 	dir := t.TempDir()
-	args := wrappedCommand(dir, "uid", []string{"sh", "-c", "sleep 30 & exit 3"}, true, false)
+	args := legacyWrappedCommand(dir, "uid", []string{"sh", "-c", "sleep 30 & exit 3"}, true, false)
 	wrapper := exec.Command(args[0], args[1:]...)
 	wrapper.Stdout = &strings.Builder{}
 	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -296,6 +297,17 @@ func TestExitWatchReportsTheCommandWhileABackgroundJobHoldsItsOutput(t *testing.
 	}
 }
 
+// Kept for compatibility tests: the cleanup script still supports sessions
+// created before Pods carried the native supervisor.
+func legacyWrappedCommand(dir, uid string, command []string, stdin, tty bool) []string {
+	mode := "-"
+	if !stdin && !tty {
+		mode = nullStdin
+	}
+	return append([]string{"sh", "-c", wrapperScript, "sh", wrapperScript,
+		markerPath(dir, uid), exitPath(dir, uid), mode, "0"}, command...)
+}
+
 func TestExitWatchGivesUpOnceTheSessionIsStopped(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(markerPath(dir, "uid"), []byte("1 1 session\n"), 0o644); err != nil {
@@ -322,6 +334,108 @@ func TestExitWatchGivesUpOnceTheSessionIsStopped(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		_ = cmd.Process.Kill()
 		t.Fatal("the exit watch outlived its session")
+	}
+}
+
+// A one-off command can finish, and its session be cleaned up, before the
+// exit watch starts. The watch then sees neither file and must not wait out
+// its whole limit.
+func TestExitWatchGivesUpWhenTheSessionEndedBeforeItStarted(t *testing.T) {
+	dir := t.TempDir()
+	watch := exitWatchCommand(dir, "uid", 30)
+	watch[len(watch)-1] = "1"
+	cmd := exec.Command(watch[0], watch[1:]...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+			t.Fatalf("exit watch ended with %v, want exit 2", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the exit watch outlived a session that had already ended")
+	}
+}
+
+func TestExitWatchWaitsForAMarkerWithinItsStartWindow(t *testing.T) {
+	dir := t.TempDir()
+	watch := exitWatchCommand(dir, "uid", 30)
+	cmd := exec.Command(watch[0], watch[1:]...)
+	var out strings.Builder
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	time.Sleep(1500 * time.Millisecond)
+	if err := os.WriteFile(markerPath(dir, "uid"), []byte("1 1 reaper\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exitPath(dir, "uid"), []byte("4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil || strings.TrimSpace(out.String()) != "4" {
+			t.Fatalf("exit watch = %q, %v; want the command's exit code 4", out.String(), err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the exit watch missed the command's exit")
+	}
+}
+
+func TestKillScriptRemovesTheExitFileOnceTheReaperStops(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reaper    string
+		wantExit  int
+		wantFiles bool
+	}{
+		{name: "stopped", reaper: `rm -f "$2"; echo 143 > "$EXIT"`, wantExit: 0},
+		{name: "not confirmed", reaper: `exit 125`, wantExit: 125, wantFiles: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fake := filepath.Join(dir, "shell-reaper")
+			if err := os.WriteFile(fake, []byte("#!/bin/sh\n"+tc.reaper+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(markerPath(dir, "uid"), []byte("1 1 reaper\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := killCommand(dir, "uid", 1)
+			args[2] = strings.ReplaceAll(args[2], reaperPath, fake)
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Env = append(os.Environ(), "EXIT="+exitPath(dir, "uid"))
+			err := cmd.Run()
+			code := 0
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				code = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if code != tc.wantExit {
+				t.Fatalf("kill script exited %d, want %d", code, tc.wantExit)
+			}
+			_, markerErr := os.Stat(markerPath(dir, "uid"))
+			if tc.wantFiles && markerErr != nil {
+				t.Fatalf("marker removed although the stop was not confirmed")
+			}
+			_, exitFileErr := os.Stat(exitPath(dir, "uid"))
+			if !tc.wantFiles && exitFileErr == nil {
+				t.Fatalf("exit file left behind after the session stopped")
+			}
+		})
 	}
 }
 
@@ -359,5 +473,59 @@ func TestExitCheckWorksWithoutSleep(t *testing.T) {
 	}
 	if out, code := runScript(exitCheckCommand(dir, "uid")); code != 0 || strings.TrimSpace(out) != "7" {
 		t.Fatalf("exit check = %q, %d; want 7", out, code)
+	}
+}
+
+func TestFindMarkersReportsOnlyTheSessionsAskedFor(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{testEndedUID, "bogus-1", "bogus-2"} {
+		if err := os.WriteFile(markerPath(dir, uid), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := findMarkersCommand(dir+"/", []string{testEndedUID, "uid-missing"})
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(out)); !slices.Equal(got, []string{testEndedUID}) {
+		t.Fatalf("found %v, want only uid-ended", got)
+	}
+}
+
+func TestLaunchFallsBackToTheWrapperWithoutTheReaper(t *testing.T) {
+	if _, err := os.Stat(reaperPath); err == nil {
+		t.Skip("this host carries the subreaper")
+	}
+	dir := t.TempDir()
+	args := wrappedCommand(dir, "uid", []string{"sh", "-c", "exit 7"}, false, false)
+	err := exec.Command(args[0], args[1:]...).Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
+		t.Fatalf("launch ended with %v, want exit 7", err)
+	}
+	if got, err := os.ReadFile(exitPath(dir, "uid")); err != nil || strings.TrimSpace(string(got)) != "7" {
+		t.Fatalf("exit file = %q, %v; want 7", got, err)
+	}
+	if got, err := os.ReadFile(markerPath(dir, "uid")); err != nil || strings.Contains(string(got), "reaper") {
+		t.Fatalf("marker = %q, %v; want a legacy marker", got, err)
+	}
+}
+
+func TestLaunchUsesTheReaperWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "shell-reaper")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := wrappedCommand(dir, "uid", []string{"ls", "-l"}, false, false)
+	args[2] = strings.ReplaceAll(args[2], reaperPath, fake)
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("run %s %s 5 %s ls -l", markerPath(dir, "uid"), exitPath(dir, "uid"), nullStdin)
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Fatalf("reaper called with %q, want %q", got, want)
 	}
 }

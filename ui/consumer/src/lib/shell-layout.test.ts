@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import {
   MIN_TERMINAL_HEIGHT,
   TERMINAL_HEIGHT,

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 )
 
 const testImageRef = "ghcr.io/acme/api:latest"
@@ -65,7 +67,53 @@ func TestInspectReadsBuildOutputs(t *testing.T) {
 			if got.IndexDigest != wantDigest.String() {
 				t.Errorf("digest = %s, want %s (the digest a push would report)", got.IndexDigest, wantDigest)
 			}
-			if got.SelectedPlatform != "kraftcloud/x86_64" || !got.RootFS.Found || len(got.Issues) > 0 {
+			if got.SelectedPlatform != "datum/x86_64" || !got.RootFS.Found || len(got.Issues) > 0 {
+				t.Errorf("unexpected inspection: %+v", got)
+			}
+		})
+	}
+}
+
+func TestInspectSelectsPreferredPlatform(t *testing.T) {
+	img := testComputeImage(t)
+	kraftcloud := v1.Platform{OS: "kraftcloud", Architecture: computePlatformArch}
+	tests := []struct {
+		name       string
+		platforms  []v1.Platform
+		want       string
+		wantIssues bool
+	}{
+		{
+			name:      "image built before the switch to datum",
+			platforms: []v1.Platform{kraftcloud},
+			want:      kraftcloud.String(),
+		},
+		{
+			name:      "datum preferred over kraftcloud",
+			platforms: []v1.Platform{kraftcloud, {OS: "datum", Architecture: computePlatformArch}},
+			want:      "datum/x86_64",
+		},
+		{
+			name:       "wrong architecture",
+			platforms:  []v1.Platform{{OS: kraftcloud.OS, Architecture: "arm64"}},
+			want:       kraftcloud.OS + "/arm64",
+			wantIssues: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adds := make([]mutate.IndexAddendum, 0, len(tt.platforms))
+			for _, platform := range tt.platforms {
+				adds = append(adds, mutate.IndexAddendum{
+					Add:        img,
+					Descriptor: v1.Descriptor{Platform: &platform},
+				})
+			}
+			got := imageInspection{}
+			if err := inspectIndex(&got, mutate.AppendManifests(empty.Index, adds...)); err != nil {
+				t.Fatal(err)
+			}
+			if got.SelectedPlatform != tt.want || (len(got.Issues) > 0) != tt.wantIssues {
 				t.Errorf("unexpected inspection: %+v", got)
 			}
 		})

@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -106,7 +107,10 @@ type WorkloadDeploymentFederator struct {
 // +kubebuilder:rbac:groups=compute.datumapis.com,resources=workloaddeployments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
-func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func(ctx context.Context) {
+		out, err = settleRoutineErrors(ctx, "workload-deployment-federator", out, err)
+	}(ctx)
 	logger := log.FromContext(ctx)
 
 	// An empty cluster name resolves to the local host management cluster, which
@@ -138,7 +142,7 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
 	if finalizationResult.Updated {
-		if err = cl.GetClient().Update(ctx, &deployment); err != nil {
+		if err = cl.GetClient().Update(ctx, &deployment); client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
 		}
 		return ctrl.Result{}, nil
@@ -214,10 +218,6 @@ func (r *WorkloadDeploymentFederator) Reconcile(ctx context.Context, req mcrecon
 // namespace, deletes the PropagationPolicy as well.
 func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	deployment := obj.(*computev1alpha.WorkloadDeployment)
-	logger := log.FromContext(ctx).WithValues(
-		"deployment", deployment.Name,
-		"namespace", deployment.Namespace,
-	)
 
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
@@ -229,22 +229,44 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 		return finalizer.Result{}, err
 	}
 
-	// Prefer the namespace recorded on the object itself. Live resolution reads
-	// the project namespace, an object this controller neither owns nor keeps
-	// alive. If that namespace were removed first, finalization would fail on
-	// every attempt and strand the hub deployment, which is the root of the hub
-	// ownership tree. The recorded value removes that dependency.
-	downstreamNS := deployment.Annotations[computev1alpha.FederationNamespaceAnnotation]
-	if downstreamNS == "" {
-		// Federated before the annotation existed, so fall back to live
-		// resolution and accept the dependency this branch exists to avoid.
+	// Find the hub namespaces by the owner labels the federator writes, not by
+	// the namespace recorded on the deployment: project users can write that
+	// record, so it could name another project's namespace, or one that does
+	// not exist and so would skip cleanup. The labels also work once the
+	// project namespace is gone. Every match is cleaned up, which covers one
+	// left behind by an earlier project namespace of the same name.
+	hubNamespaces, err := ownedHubNamespaces(ctx, r.FederationClient, string(clusterName), deployment.Namespace)
+	if err != nil {
+		return finalizer.Result{}, err
+	}
+	if len(hubNamespaces) == 0 {
+		// No labelled hub namespace, so fall back to live resolution, which
+		// fails while the project namespace cannot be read.
 		strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), cl.GetClient(), r.FederationClient)
-		downstreamNS, err = strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
+		downstreamNS, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, deployment.Namespace)
 		if err != nil {
 			return finalizer.Result{}, fmt.Errorf("failed to determine downstream namespace during finalization: %w", err)
 		}
+		hubNamespaces = []string{downstreamNS}
 	}
+	var pending error
+	for _, downstreamNS := range hubNamespaces {
+		err := r.finalizeInHubNamespace(ctx, deployment, downstreamNS)
+		if errors.Is(err, errRemovalPending) {
+			pending = err
+			continue
+		}
+		if err != nil {
+			return finalizer.Result{}, err
+		}
+	}
+	return finalizer.Result{}, pending
+}
 
+// finalizeInHubNamespace removes the deployment's hub copy from downstreamNS
+// and waits for it and its write-backs to go.
+func (r *WorkloadDeploymentFederator) finalizeInHubNamespace(ctx context.Context, deployment *computev1alpha.WorkloadDeployment, downstreamNS string) error {
+	logger := log.FromContext(ctx).WithValues("deployment", deployment.Name, "namespace", deployment.Namespace)
 	kd := &computev1alpha.WorkloadDeployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deployment.Name,
@@ -258,25 +280,68 @@ func (r *WorkloadDeploymentFederator) Finalize(ctx context.Context, obj client.O
 	legacyCity := ""
 	if deployment.Spec.LocationRef.Name == "" {
 		if err := r.FederationClient.Get(ctx, client.ObjectKeyFromObject(kd), kd); client.IgnoreNotFound(err) != nil {
-			return finalizer.Result{}, fmt.Errorf("failed to read downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
+			return fmt.Errorf("failed to read downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
 		}
 		legacyCity = kd.Labels[locationsv1alpha1.TopologyCityCodeKey]
 	}
 
 	if err := r.FederationClient.Delete(ctx, kd); client.IgnoreNotFound(err) != nil {
-		return finalizer.Result{}, fmt.Errorf("failed to delete downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
+		return fmt.Errorf("failed to delete downstream deployment %s/%s: %w", downstreamNS, deployment.Name, err)
 	}
 	logger.Info("deleted downstream WorkloadDeployment", "downstreamNamespace", downstreamNS)
 
 	if deployment.Spec.LocationRef.Name == "" {
-		return finalizer.Result{}, r.cleanupLegacyPropagationPolicies(ctx, downstreamNS, legacyCity)
+		if err := r.cleanupLegacyPropagationPolicies(ctx, downstreamNS, legacyCity); err != nil {
+			return err
+		}
+		return r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name)
 	}
 
+	// An unused policy is only recognisable once the hub deployment is gone.
+	if err := r.waitForDownstreamRemoval(ctx, downstreamNS, deployment.Name); err != nil {
+		return err
+	}
 	if err := r.cleanupPropagationPolicyIfUnused(ctx, downstreamNS, deployment.Spec.LocationRef.Name, r.propagationRuntimeClass(deployment)); err != nil {
-		return finalizer.Result{}, err
+		return err
 	}
 
-	return finalizer.Result{}, nil
+	return nil
+}
+
+// waitForDownstreamRemoval holds the project deployment until its hub copy and
+// the Instances written back for it are gone. The project control plane is
+// only reclaimed once nothing is left in it, so holding the deployment keeps
+// the project, and the project API the Instance projector removes projections
+// from, alive until the hub is clean. The write-backs are deleted here rather
+// than left to garbage collection, which never reaches copies written before
+// the hub deployment owned them.
+func (r *WorkloadDeploymentFederator) waitForDownstreamRemoval(ctx context.Context, downstreamNS, name string) error {
+	var hub computev1alpha.WorkloadDeployment
+	err := r.FederationClient.Get(ctx, client.ObjectKey{Namespace: downstreamNS, Name: name}, &hub)
+	if err == nil {
+		return fmt.Errorf("%w: downstream deployment %s/%s still exists", errRemovalPending, downstreamNS, name)
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check downstream deployment %s/%s removal: %w", downstreamNS, name, err)
+	}
+	selector := client.MatchingLabels{computev1alpha.WorkloadDeploymentNameLabel: name}
+	var instances computev1alpha.InstanceList
+	if err := r.FederationClient.List(ctx, &instances, client.InNamespace(downstreamNS), selector); err != nil {
+		return fmt.Errorf("failed to list downstream instances of %s/%s: %w", downstreamNS, name, err)
+	}
+	if len(instances.Items) == 0 {
+		return nil
+	}
+	for i := range instances.Items {
+		instance := &instances.Items[i]
+		if !instance.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.FederationClient.Delete(ctx, instance); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to delete downstream instance %s/%s: %w", downstreamNS, instance.Name, err)
+		}
+	}
+	return fmt.Errorf("%w: %d downstream instances of %s/%s still exist", errRemovalPending, len(instances.Items), downstreamNS, name)
 }
 
 // cleanupLegacyPropagationPolicies removes the PropagationPolicies a
@@ -942,6 +1007,7 @@ func (r *WorkloadDeploymentFederator) SetupWithManager(mgr mcmanager.Manager) er
 			r.FederationCluster,
 			&networkingv1alpha.NetworkBinding{},
 			preserveOnBinding,
+			networkBindingChanged(),
 		))
 	}
 

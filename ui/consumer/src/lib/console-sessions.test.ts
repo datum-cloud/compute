@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'vitest';
 import {
   createErrorMessage,
   createSession,
@@ -84,9 +84,9 @@ describe('describeEnding', () => {
       reason: 'NoShell',
       message: 'The container has no shell (sh).',
     });
-    expect(message).toStartWith(
-      "This container has no shell (sh), so a shell session can't start."
-    );
+    expect(
+      message.startsWith("This container has no shell (sh), so a shell session can't start.")
+    ).toBe(true);
     expect(message).toMatch(/no command can run/);
   });
 

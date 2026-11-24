@@ -3,6 +3,7 @@ import {
   isPrometheusDenied,
   transformForRecharts,
   usePrometheusChart,
+  type ChartDataPoint,
   type PrometheusTimeRange,
 } from '../lib/prometheus';
 import type { Allocation } from '../lib/resource-usage';
@@ -13,6 +14,7 @@ import { Area, AreaChart, YAxis } from 'recharts';
 
 /** Compact last-hour sparkline plus current value — table cells and list cards. */
 export function MetricSparkline({
+  projectId,
   query,
   timeRange,
   format,
@@ -25,7 +27,11 @@ export function MetricSparkline({
   pending = false,
   denied = false,
   allocated,
+  series,
+  hideValue = false,
 }: {
+  /** Project whose metrics to read. */
+  projectId: string | undefined;
   query?: string;
   timeRange: PrometheusTimeRange;
   /** Format of the raw values; shown when `allocated` is unknown. */
@@ -42,20 +48,34 @@ export function MetricSparkline({
   denied?: boolean;
   /** When set, plot usage as a percentage of it; the raw figure moves to the value's hover title. */
   allocated?: number;
+  /**
+   * Points already fetched by the caller (the workloads table reads every row
+   * in one request). When given, `query` is ignored and nothing is fetched.
+   */
+  series?: readonly ChartDataPoint[];
+  /** Draw the spark alone, for callers that show the value themselves. */
+  hideValue?: boolean;
 }) {
   const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const chart = usePrometheusChart(query, timeRange, { enabled: !!query && !denied });
+  const provided = series !== undefined;
+  const chart = usePrometheusChart(projectId, provided ? undefined : query, timeRange, {
+    enabled: !provided && !!query && !denied,
+  });
 
-  const dataKey = chart.data?.series[0]?.name || 'value';
+  const dataKey = provided ? 'value' : chart.data?.series[0]?.name || 'value';
   const rows = useMemo(() => {
-    if (!chart.data || chart.error) return [];
-    return transformForRecharts(chart.data)
+    const source: Array<Record<string, number | string>> = provided
+      ? series.map((point) => ({ timestamp: point.timestamp, time: point.formattedTime, value: point.value }))
+      : chart.data && !chart.error
+        ? transformForRecharts(chart.data)
+        : [];
+    return source
       .filter((row) => {
         const v = row[dataKey];
         return typeof v === 'number' && Number.isFinite(v);
       })
       .map((row) => (allocated ? { ...row, [dataKey]: Number(row[dataKey]) / allocated } : row));
-  }, [chart.data, chart.error, dataKey, allocated]);
+  }, [provided, series, chart.data, chart.error, dataKey, allocated]);
 
   const max = rows.reduce((m, row) => Math.max(m, Number(row[dataKey])), 0);
   const last = rows.length > 0 ? Number(rows[rows.length - 1]?.[dataKey]) : undefined;
@@ -82,14 +102,14 @@ export function MetricSparkline({
       </span>
     );
   }
-  if (pending || chart.isLoading) {
+  if (pending || (!provided && chart.isLoading)) {
     return labeled(
       <div className={cn('flex items-center justify-center', sparkClass)} style={sparkStyle}>
         <SpinnerIcon size="sm" />
       </div>
     );
   }
-  if (!query) {
+  if (!provided && !query) {
     return labeled(
       <span className="text-muted-foreground text-xs" title={emptyTitle}>
         —
@@ -108,35 +128,36 @@ export function MetricSparkline({
           </div>
         ) : (
           <div className="absolute inset-0">
-          <AreaChart
-            data={rows}
-            responsive
-            width="100%"
-            height={sparkHeight}
-            margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-            <defs>
-              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity={0.3} />
-                <stop offset="100%" stopColor={color} stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <YAxis hide domain={[0, yMax]} />
-            <Area
-              type="monotone"
-              dataKey={dataKey}
-              stroke={color}
-              strokeWidth={1.5}
-              fill={`url(#${gradientId})`}
-              fillOpacity={1}
-              dot={false}
-              activeDot={false}
-              isAnimationActive={false}
-            />
-          </AreaChart>
+            <AreaChart
+              data={rows}
+              responsive
+              width="100%"
+              height={sparkHeight}
+              margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
+              <defs>
+                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={color} stopOpacity={0.3} />
+                  <stop offset="100%" stopColor={color} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <YAxis hide domain={[0, yMax]} />
+              <Area
+                type="monotone"
+                dataKey={dataKey}
+                stroke={color}
+                strokeWidth={1.5}
+                fill={`url(#${gradientId})`}
+                fillOpacity={1}
+                dot={false}
+                activeDot={false}
+                isAnimationActive={false}
+              />
+            </AreaChart>
           </div>
         )}
       </div>
       <span
+        hidden={hideValue}
         className="text-muted-foreground shrink-0 text-xs tabular-nums"
         title={allocated && last !== undefined && Number.isFinite(last) ? rawTitle(last * allocated, allocated, format) : undefined}>
         {formatKpiValue(Number.isFinite(last) ? last : undefined, allocated ? 'percent' : format)}
@@ -152,6 +173,7 @@ function rawTitle(used: number, allocated: number, format: ChartFormat): string 
 }
 
 export function CpuMemorySparks({
+  projectId,
   cpuQuery,
   memoryQuery,
   timeRange,
@@ -161,6 +183,8 @@ export function CpuMemorySparks({
   denied = false,
   allocation,
 }: {
+  /** Project whose metrics to read. */
+  projectId: string | undefined;
   cpuQuery?: string;
   memoryQuery?: string;
   timeRange: PrometheusTimeRange;
@@ -187,6 +211,7 @@ export function CpuMemorySparks({
   return (
     <div className={cn('flex flex-col', compact ? 'gap-1 py-0.5' : 'gap-2')}>
       <MetricSparkline
+        projectId={projectId}
         query={cpuQuery}
         timeRange={timeRange}
         format="cores"
@@ -197,6 +222,7 @@ export function CpuMemorySparks({
         pending={pending}
       />
       <MetricSparkline
+        projectId={projectId}
         query={memoryQuery}
         timeRange={timeRange}
         format="bytes"

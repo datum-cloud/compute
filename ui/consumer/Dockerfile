@@ -1,6 +1,6 @@
 # Builds the compute workloads portal plugin (Vite + Module Federation) and
-# serves the built output as static files via Bun's own server (serve.ts) —
-# no nginx. The portal's asset proxy fetches plugin-manifest.json,
+# serves the built output as static files via Node's own https server
+# (serve.ts) — no nginx. The portal's asset proxy fetches plugin-manifest.json,
 # remoteEntry.js, and page chunks directly from here — see README.md for why
 # `build`'s output (not `dev`) is what must be served.
 #
@@ -21,7 +21,7 @@
 # plugin, and the Go sources are bind-mounted rather than copied, so no source
 # file lands in a cached layer.
 
-FROM --platform=$BUILDPLATFORM golang:1.26 AS console-wasm
+FROM --platform=$BUILDPLATFORM golang:1.27 AS console-wasm
 WORKDIR /workspace
 COPY go.mod go.sum Makefile ./
 RUN go mod download
@@ -34,19 +34,33 @@ RUN --mount=type=bind,target=/src \
       CONSOLE_WASM_EXEC=/out/console-session-wasm_exec.js; \
   fi
 
-FROM oven/bun:1 AS build
+FROM node:26.13.0-alpine3.24@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS build
 WORKDIR /app
-COPY ui/consumer/package.json ui/consumer/bun.lock ./
-RUN bun install --frozen-lockfile
+# Node 26 ships no corepack, so install the pnpm that package.json's
+# packageManager pins; it stays in this stage only.
+COPY ui/consumer/package.json ui/consumer/pnpm-lock.yaml ui/consumer/pnpm-workspace.yaml ./
+RUN npm install -g "$(node -p 'require("./package.json").packageManager')" --no-audit --no-fund && \
+  pnpm install --frozen-lockfile --ignore-scripts
 COPY ui/consumer/ .
 COPY --from=console-wasm /out/ /console-wasm/
 ENV CONSOLE_WASM_DIR=/console-wasm
-RUN bun run build
+# The Sentry token is a BuildKit secret (publish-docker's build-secrets), so it
+# never lands in a layer, the image history or the exported build cache. When
+# absent the file is missing, the variable is empty and the upload is skipped.
+RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN,required=false \
+  SENTRY_AUTH_TOKEN="$(cat /run/secrets/SENTRY_AUTH_TOKEN 2>/dev/null)" pnpm build
 
-FROM oven/bun:1-slim
+FROM node:26.13.0-alpine3.24@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216
+# Node keeps its own copy of the CA roots apart from Alpine's bundle. Fail the
+# build if either still trusts the compromised eMudhra root (emSign ECC Root
+# CA - G3).
+RUN apk add --no-cache --upgrade 'ca-certificates>=20261020-r0'
+RUN ! grep -q MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQG /etc/ssl/certs/ca-certificates.crt
+RUN node -e 'const { rootCertificates } = require("node:tls"); const { X509Certificate } = require("node:crypto"); const compromised = rootCertificates.some((pem) => new X509Certificate(pem).subject.split("\n").includes("CN=emSign ECC Root CA - G3")); if (compromised) { console.error("refusing to build: Node trusts emSign ECC Root CA - G3"); process.exit(1); }'
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY ui/consumer/serve.ts ./
-USER bun
+# uid/gid 1000, as the Deployment's securityContext expects.
+USER 1000:1000
 EXPOSE 8443
-CMD ["bun", "run", "serve.ts"]
+CMD ["node", "serve.ts"]

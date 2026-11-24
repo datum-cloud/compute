@@ -38,6 +38,11 @@ import (
 // instance with an unrecognized instance type still boots with usable memory.
 const FallbackMemoryMiB int64 = 1024
 
+const (
+	shellHelperPath = "/run/datum-shell"
+	shellHelperName = "datum-shell-helper"
+)
+
 // ErrNotSandbox reports an instance this package cannot translate. Only a
 // sandbox of containers maps onto a Pod. The provider realizes a virtual
 // machine instance itself.
@@ -62,6 +67,12 @@ type Options struct {
 	// instead of being dropped from the Pod.
 	Capabilities runtimeclass.Capabilities
 
+	// ShellReaperImage is the compute release image containing /shell-reaper.
+	// Providers set this only after the cell shell agent supports the reaper.
+	// An empty value keeps existing Pods unchanged; the agent refuses shell
+	// sessions on those Pods rather than running without safe cleanup.
+	ShellReaperImage string
+
 	// NodeSelector targets the nodes that can run this class.
 	NodeSelector map[string]string
 
@@ -73,6 +84,14 @@ type Options struct {
 	// precedence on a key conflict, so a provider can override a platform
 	// label.
 	PodLabels map[string]string
+
+	// NetworkHost is the name of the Node whose kernel will carry the Pod's
+	// network, for a provider that knows it before the Pod is bound. It is a
+	// host Node, never a virtual kubelet Node the Pod is bound to. BuildPod records it
+	// in computev1alpha.NetworkHostLabel, over any PodLabels value. Leave it
+	// empty when the scheduler picks the host, and call SetNetworkHost once the
+	// Pod is bound.
+	NetworkHost string
 
 	// PodAnnotations are added to the Pod, usually to carry runtime
 	// configuration a class reads from it. The platform or the provider owns
@@ -131,6 +150,9 @@ func BuildPod(instance *computev1alpha.Instance, opts Options) (*corev1.Pod, err
 
 	labels := IdentityLabels(instance)
 	maps.Copy(labels, opts.PodLabels)
+	if opts.NetworkHost != "" {
+		labels[computev1alpha.NetworkHostLabel] = computev1alpha.NetworkHostLabelValue(opts.NetworkHost)
+	}
 
 	annotations := make(map[string]string, len(opts.PodAnnotations))
 	maps.Copy(annotations, opts.PodAnnotations)
@@ -144,6 +166,27 @@ func BuildPod(instance *computev1alpha.Instance, opts Options) (*corev1.Pod, err
 		},
 		Spec: spec,
 	}, nil
+}
+
+// SetNetworkHost records on pod the Node whose kernel carries its network, as
+// computev1alpha.NetworkHostLabel. A provider calls it once the Pod is bound
+// and patches the Pod when it reports a change. hostNode is pod.Spec.NodeName
+// only when that Node's own kubelet runs the Pod. A provider whose Pods bind to
+// a virtual kubelet Node passes the host behind it. An empty hostNode, as on a
+// Pod not yet bound, changes nothing.
+func SetNetworkHost(pod *corev1.Pod, hostNode string) bool {
+	if hostNode == "" {
+		return false
+	}
+	value := computev1alpha.NetworkHostLabelValue(hostNode)
+	if current, ok := pod.Labels[computev1alpha.NetworkHostLabel]; ok && current == value {
+		return false
+	}
+	if pod.Labels == nil {
+		pod.Labels = map[string]string{}
+	}
+	pod.Labels[computev1alpha.NetworkHostLabel] = value
+	return true
 }
 
 // BuildPodSpec translates an instance's sandbox into a PodSpec.
@@ -168,8 +211,18 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 	}
 
 	containers := make([]corev1.Container, 0, len(instance.Spec.Runtime.Sandbox.Containers))
+	withReaper := opts.ShellReaperImage != "" && opts.Capabilities.Supports(runtimeclass.FeatureExec)
 	for i := range instance.Spec.Runtime.Sandbox.Containers {
 		container := &instance.Spec.Runtime.Sandbox.Containers[i]
+		mounts := buildVolumeMounts(container)
+		if withReaper {
+			for _, mount := range mounts {
+				if mount.MountPath == shellHelperPath || strings.HasPrefix(mount.MountPath, shellHelperPath+"/") {
+					return corev1.PodSpec{}, fmt.Errorf("container %q mounts the reserved shell helper path", container.Name)
+				}
+			}
+			mounts = append(mounts, corev1.VolumeMount{Name: shellHelperName, MountPath: shellHelperPath, ReadOnly: true})
+		}
 		containers = append(containers, corev1.Container{
 			Name:            container.Name,
 			Image:           container.Image,
@@ -179,7 +232,7 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 			EnvFrom:         buildEnvFrom(container),
 			Ports:           buildPorts(container),
 			Resources:       ContainerResources(instance, container, opts.DefaultMemoryMiB),
-			VolumeMounts:    buildVolumeMounts(container),
+			VolumeMounts:    mounts,
 			SecurityContext: buildSecurityContext(container),
 		})
 	}
@@ -194,8 +247,39 @@ func BuildPodSpec(instance *computev1alpha.Instance, opts Options) (corev1.PodSp
 		podSecurityContext = &corev1.PodSecurityContext{Sysctls: sysctls}
 	}
 
+	var initContainers []corev1.Container
+	if withReaper {
+		for _, volume := range volumes {
+			if volume.Name == shellHelperName {
+				return corev1.PodSpec{}, fmt.Errorf("volume name %q is reserved for the shell helper", volume.Name)
+			}
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         shellHelperName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		initContainers = []corev1.Container{{
+			Name: "datum-shell-install", Image: opts.ShellReaperImage,
+			Command:      []string{"/shell-reaper", "install", shellHelperPath + "/shell-reaper"},
+			VolumeMounts: []corev1.VolumeMount{{Name: shellHelperName, MountPath: shellHelperPath}},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				ReadOnlyRootFilesystem:   ptr.To(true),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+			},
+		}}
+	}
 	return corev1.PodSpec{
 		Containers:       containers,
+		InitContainers:   initContainers,
 		Volumes:          volumes,
 		ImagePullSecrets: imagePullSecrets,
 		SecurityContext:  podSecurityContext,

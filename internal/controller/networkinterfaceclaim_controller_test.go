@@ -134,7 +134,7 @@ func TestReconcileNetworkInterfaceClaims_CreatesClaimPerInterface(t *testing.T) 
 		Build()
 
 	r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-	ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+	ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 		[]computev1alpha.Instance{*instance})
 	require.NoError(t, err)
 	assert.False(t, ready[instance.Name],
@@ -210,7 +210,7 @@ func TestReconcileNetworkInterfaceClaims_ReadinessPerInstance(t *testing.T) {
 		Build()
 
 	r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-	ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+	ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 		[]computev1alpha.Instance{*allocated, *pending})
 	require.NoError(t, err)
 
@@ -484,7 +484,7 @@ func TestNetworkGateReleasesWhileProgrammedIsNotTrue(t *testing.T) {
 				Build()
 
 			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-			ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+			ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 				[]computev1alpha.Instance{*instance})
 			require.NoError(t, err)
 			require.True(t, ready[instance.Name],
@@ -561,7 +561,7 @@ func TestNetworkGateHeldUntilPrepared(t *testing.T) {
 				Build()
 
 			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-			ready, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+			ready, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 				[]computev1alpha.Instance{*instance})
 			require.NoError(t, err)
 			assert.False(t, ready[instance.Name],
@@ -743,7 +743,7 @@ func TestReconcileNetworkInterfaceClaims_Labels(t *testing.T) {
 			cl := builder.Build()
 
 			r := &WorkloadDeploymentReconciler{NetworkingEnabled: true}
-			_, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
+			_, _, err := r.reconcileNetworkInterfaceClaims(context.Background(), cl, deployment,
 				[]computev1alpha.Instance{*instance})
 			require.NoError(t, err)
 

@@ -208,15 +208,21 @@ func (e *ExecFailedError) Error() string {
 }
 
 // run runs a command in a pod to completion, giving up after the agent's exec
-// timeout.
-func (a *Agent) run(ctx context.Context, pod types.NamespacedName, container string, command []string) (string, int, error) {
+// timeout, and counts it under purpose.
+func (a *Agent) run(ctx context.Context, purpose string, pod types.NamespacedName, container string, command []string) (string, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.cfg.ExecTimeout)
 	defer cancel()
-	return run(ctx, a.exec, pod, container, command)
+	out, code, err := run(ctx, a.exec, pod, container, command)
+	a.recordExec(purpose, code, err)
+	return out, code, err
 }
 
+// maxRunOutput bounds what run keeps of a command's output. The commands it
+// runs print a few lines, but they run in a container its user controls.
+const maxRunOutput = 64 << 10
+
 // run runs a command to completion without stdin and returns its combined
-// output and exit code.
+// output, up to maxRunOutput bytes, and exit code.
 func run(ctx context.Context, exec Executor, pod types.NamespacedName, container string, command []string) (string, int, error) {
 	_, conn, reader, err := exec.Open(ctx, pod, ExecOptions{Container: container, Command: command}, nil)
 	if err != nil {
@@ -251,7 +257,9 @@ func run(ctx context.Context, exec Executor, pod types.NamespacedName, container
 		}
 		switch channel {
 		case channelStdout, channelStderr:
-			out.Write(f.payload)
+			if room := maxRunOutput - out.Len(); room > 0 {
+				out.Write(f.payload[:min(len(f.payload), room)])
+			}
 		case channelStatus:
 			status = append(status, f.payload...)
 		}

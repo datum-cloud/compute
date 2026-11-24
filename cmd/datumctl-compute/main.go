@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/go-logr/logr"
 	"go.datum.net/datumctl/plugin"
 	"go.miloapis.com/service-catalog/pkg/activation"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"go.datum.net/compute/internal/cmd/compute"
 	"go.datum.net/compute/internal/cmd/compute/util"
@@ -16,6 +18,8 @@ import (
 var version = "dev"
 
 func main() {
+	ctrllog.SetLogger(logr.Discard())
+
 	plugin.ServeManifest(plugin.Manifest{
 		Name:          "compute",
 		Version:       version,

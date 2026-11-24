@@ -1,2 +1,6 @@
 # Build team owns all files in this repository.
 * @datum-cloud/build
+
+# Billing team co-owns service prices; build stays an owner because they price
+# meters this repo publishes.
+/config/components/service-catalog-*/service-pricing.yaml @datum-cloud/billing @datum-cloud/build

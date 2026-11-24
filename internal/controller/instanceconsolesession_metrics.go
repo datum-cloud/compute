@@ -97,6 +97,22 @@ var (
 		[]string{labelLocation, "reason"},
 	)
 
+	// activityEvents counts attempts to record a session's lifecycle events
+	// in its project's activity. A session should see each event recorded
+	// exactly once; recorded_after_retry means an earlier attempt wrote the
+	// event but may not have marked it, so the activity log can hold a
+	// duplicate.
+	activityEvents = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metricsNamespace,
+			Subsystem: sessionMetricsSubsystem,
+			Name:      "activity_events_total",
+			Help: "Attempts to record shell session activity events, by event (SessionStarted, SessionEnded) " +
+				"and result (recorded, recorded_after_retry, claim_failed, write_failed, mark_failed).",
+		},
+		[]string{"event", "result"},
+	)
+
 	// openSessionsByKey backs sessionsOpen.
 	openSessionsByKey = newOpenSessionTracker()
 )
@@ -108,8 +124,19 @@ func init() {
 		sessionsEnded,
 		sessionConnectSeconds,
 		sessionDurationSeconds,
+		activityEvents,
 	)
 }
+
+// Results of an attempt to record a session's activity event, the values of
+// the result label on activityEvents.
+const (
+	activityEventRecorded           = "recorded"
+	activityEventRecordedAfterRetry = "recorded_after_retry"
+	activityEventClaimFailed        = "claim_failed"
+	activityEventWriteFailed        = "write_failed"
+	activityEventMarkFailed         = "mark_failed"
+)
 
 // sessionPlacement is where a session was delivered: the location and the
 // cell, as recorded on the session at delivery.

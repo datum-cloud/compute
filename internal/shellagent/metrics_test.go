@@ -134,3 +134,49 @@ func TestCleanupUnconfirmedMetricCountsFailedStops(t *testing.T) {
 		t.Fatalf("unconfirmed = %v, want still 1 after a confirmed stop", got)
 	}
 }
+
+func TestSweepMetricsCountItsWork(t *testing.T) {
+	agentExecs.Reset()
+	agentSweepSeconds.Reset()
+	agentOrphansReaped.Reset()
+	h := newHarness(t)
+	a := h.agent(labeled)
+	h.session("ended", testEndedUID)
+	ended := h.cellSession("ended")
+	setReady(ended, metav1.ConditionFalse, computev1alpha.InstanceConsoleSessionReasonCompleted, "done")
+	if err := h.cell.Status().Update(h.ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+	orphan := &slot{
+		sessionUID: testOrphanUID,
+		session:    types.NamespacedName{Namespace: testNamespace, Name: "gone"},
+		pod:        types.NamespacedName{Namespace: testNamespace, Name: testInstance},
+		podUID:     testPodUID,
+		container:  testContainer,
+		markerDir:  testMarkerDir,
+	}
+	if err := h.cell.Create(h.ctx, orphan.leaseFor(testAgentNamespace, "slot-orphan-0")); err != nil {
+		t.Fatal(err)
+	}
+	h.exec.markers = "uid-gone\nuid-ended\n"
+
+	if err := a.sweep(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := testutil.ToFloat64(agentOrphansReaped.WithLabelValues(testCell, orphanSourceSlot)); got != 1 {
+		t.Fatalf("reaped from a slot = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(agentOrphansReaped.WithLabelValues(testCell, orphanSourceMarker)); got != 1 {
+		t.Fatalf("reaped from a marker = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(agentExecs.WithLabelValues(testCell, execPurposeStop, execResultOK)); got != 2 {
+		t.Fatalf("stop execs = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(agentExecs.WithLabelValues(testCell, execPurposeMarkerCheck, execResultOK)); got != 1 {
+		t.Fatalf("marker check execs = %v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(agentSweepSeconds); got != 1 {
+		t.Fatalf("sweep duration series = %v, want 1", got)
+	}
+}

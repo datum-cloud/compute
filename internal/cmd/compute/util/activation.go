@@ -2,10 +2,12 @@ package util
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 	"go.datum.net/datumctl/plugin"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"go.miloapis.com/service-catalog/pkg/activation"
 	"k8s.io/client-go/rest"
 )
@@ -14,6 +16,13 @@ import (
 // service-activation preflight. The access verbs carry it so a user can inspect
 // or request access without first being gated on that same access.
 const gateSkipAnnotation = "compute.datumapis.com/skip-activation-gate"
+
+// gateCheckOnlyAnnotation marks a command (and its subtree) whose preflight
+// only checks access. These commands act on things that already exist, so a
+// project without Compute is a mistake to report, not a reason to enable it.
+const gateCheckOnlyAnnotation = "compute.datumapis.com/activation-check-only"
+
+const annotationTrue = "true"
 
 // ComputeServiceName is the canonical catalog name of the compute service. The
 // activation SDK builds its user-facing commands from this name, for example
@@ -76,7 +85,7 @@ func MarkGateExempt(cmd *cobra.Command) {
 	if cmd.Annotations == nil {
 		cmd.Annotations = map[string]string{}
 	}
-	cmd.Annotations[gateSkipAnnotation] = "true"
+	cmd.Annotations[gateSkipAnnotation] = annotationTrue
 }
 
 // RunActivationGate runs the compute activation preflight for the given command.
@@ -95,6 +104,9 @@ func RunActivationGate(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	if GateCheckOnly(cmd) {
+		return checkActivation(cmd.Context(), service, ec, ActivationIO(cmd), project, plugin.Context().APIHost)
+	}
 	gate := activation.Gate{
 		Service: service,
 		Client:  ec,
@@ -102,6 +114,64 @@ func RunActivationGate(cmd *cobra.Command) error {
 		Project: project,
 	}
 	return gate.Run(cmd.Context())
+}
+
+// checkActivation lets a command run only when the project already has
+// Compute. It never requests access: a project without it fails with the
+// environment named, so a typo or the wrong sign-in is easy to spot. Every
+// other state gets the SDK's own copy, through a client that cannot create.
+func checkActivation(ctx context.Context, service activation.ServiceInfo, ec activation.EntitlementClient, io activation.IOStreams, project, apiHost string) error {
+	state, _, err := activation.Observe(ctx, ec, service)
+	if err != nil {
+		return fmt.Errorf("checking compute access: %w", err)
+	}
+	switch state {
+	case activation.StateActive:
+		return nil
+	case activation.StateNotRequested:
+		_, _ = fmt.Fprintf(io.Err, "Error: Compute isn't turned on for project %q on %s.\n\n", project, apiHost)
+		_, _ = fmt.Fprintln(io.Err, "Check the project name and which environment you're signed in to.")
+		_, _ = fmt.Fprintln(io.Err, "To turn Compute on for this project, run: datumctl compute access request")
+		return &activation.Error{Code: activation.ExitNotEnabled, State: state, Message: "service not enabled"}
+	}
+	gate := activation.Gate{
+		Service: service,
+		Client:  readOnlyEntitlements{ec},
+		IO:      io,
+		Project: project,
+	}
+	return gate.Run(ctx)
+}
+
+type readOnlyEntitlements struct {
+	activation.EntitlementClient
+}
+
+func (readOnlyEntitlements) Create(context.Context, *servicesv1alpha1.ServiceEntitlement) error {
+	return errors.New("this command does not request compute access")
+}
+
+func (readOnlyEntitlements) Delete(context.Context, *servicesv1alpha1.ServiceEntitlement) error {
+	return errors.New("this command does not change compute access")
+}
+
+// MarkGateCheckOnly tags a command so the activation preflight only checks
+// access and never requests it.
+func MarkGateCheckOnly(cmd *cobra.Command) {
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[gateCheckOnlyAnnotation] = annotationTrue
+}
+
+// GateCheckOnly reports whether the command or a parent is tagged check-only.
+func GateCheckOnly(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Annotations[gateCheckOnlyAnnotation] == annotationTrue {
+			return true
+		}
+	}
+	return false
 }
 
 // GateExempt reports whether the activation preflight should skip this command:
@@ -116,7 +186,7 @@ func GateExempt(cmd *cobra.Command) bool {
 		if c.Name() == "completion" {
 			return true
 		}
-		if c.Annotations[gateSkipAnnotation] == "true" {
+		if c.Annotations[gateSkipAnnotation] == annotationTrue {
 			return true
 		}
 	}

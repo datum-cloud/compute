@@ -761,7 +761,7 @@ func TestWorkloadDeploymentFederator_FinalizeIsSelfContained(t *testing.T) {
 
 	// The project namespace is deliberately absent: live resolution would fail.
 	projectClient := newProjectFakeClient(wd)
-	karmadaClient := newKarmadaFakeClient(hubWD)
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), hubWD)
 	r := newTestFederator(projectClient, karmadaClient)
 
 	ctx := mccontext.WithCluster(context.Background(), testCluster)
@@ -772,6 +772,120 @@ func TestWorkloadDeploymentFederator_FinalizeIsSelfContained(t *testing.T) {
 	var gone computev1alpha.WorkloadDeployment
 	err = karmadaClient.Get(ctx, types.NamespacedName{Namespace: testKarmadaNSStr, Name: testWDName}, &gone)
 	assert.True(t, apierrors.IsNotFound(err), "the hub deployment must be removed")
+}
+
+// TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval asserts
+// the project deployment, and so the project, is held until the Instances
+// written back for it are gone. Write-backs are deleted by the finalizer
+// itself, including copies no hub deployment owns, and the hold retries on a
+// short timer instead of failing the reconcile.
+func TestWorkloadDeploymentFederator_FinalizeWaitsForDownstreamRemoval(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: testKarmadaNSStr}
+	hubWD := &computev1alpha.WorkloadDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testWDName,
+			Namespace: testKarmadaNSStr,
+			Labels:    map[string]string{locationLabel: testFederatorLocation},
+		},
+		Spec: wd.Spec,
+	}
+	// An ownerless write-back, which garbage collection never removes, still
+	// held by the projector's finalizer.
+	writeBack := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
+		Name:       testWDName + "-0",
+		Namespace:  testKarmadaNSStr,
+		Labels:     map[string]string{computev1alpha.WorkloadDeploymentNameLabel: testWDName},
+		Finalizers: []string{instanceProjectionFinalizer},
+	}}
+	other := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
+		Name:      "unrelated-0",
+		Namespace: testKarmadaNSStr,
+		Labels:    map[string]string{computev1alpha.WorkloadDeploymentNameLabel: "unrelated"},
+	}}
+	policy := &karmadapolicyv1alpha1.PropagationPolicy{ObjectMeta: metav1.ObjectMeta{
+		Name:      propagationPolicyNameFor(testFederatorLocation, ""),
+		Namespace: testKarmadaNSStr,
+	}}
+	projectClient := newProjectFakeClient(wd)
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), hubWD, writeBack, other, policy)
+	r := newTestFederator(projectClient, karmadaClient)
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	exists := func(obj client.Object) bool {
+		return karmadaClient.Get(ctx, client.ObjectKeyFromObject(obj), obj.DeepCopyObject().(client.Object)) == nil
+	}
+
+	_, err := r.Finalize(ctx, wd)
+	require.ErrorIs(t, err, errRemovalPending)
+	assert.False(t, exists(hubWD))
+	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(writeBack), writeBack))
+	assert.False(t, writeBack.DeletionTimestamp.IsZero(), "the finalizer deletes write-backs itself")
+	assert.True(t, exists(other), "another deployment's instances are left alone")
+	assert.True(t, exists(policy), "the policy stays while the deployment is held")
+
+	// Reconcile turns the hold into a short requeue, not an error.
+	result, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.Equal(t, removalPollInterval, result.RequeueAfter)
+
+	writeBack.Finalizers = nil
+	require.NoError(t, karmadaClient.Update(ctx, writeBack))
+	_, err = r.Finalize(ctx, wd)
+	require.NoError(t, err)
+	assert.False(t, exists(policy), "the unused policy is removed once the hub is clean")
+}
+
+// TestWorkloadDeploymentFederator_FinalizeIgnoresAnotherProjectsNamespace
+// asserts a recorded hub namespace is used only when it belongs to the
+// deployment's own project namespace. Project users can write the record, so a
+// record naming another project's hub namespace must never lead finalization
+// to delete anything there.
+func TestWorkloadDeploymentFederator_FinalizeIgnoresAnotherProjectsNamespace(t *testing.T) {
+	t.Parallel()
+
+	const victimNS = "ns-ffffffff-0000-1111-2222-333344445555"
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: victimNS}
+	victimNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: victimNS, Labels: map[string]string{
+		downstreamclient.UpstreamOwnerClusterNameLabel: EncodeClusterName("another-project"),
+		downstreamclient.UpstreamOwnerNamespaceLabel:   testProjNS,
+	}}}
+	victim := &computev1alpha.WorkloadDeployment{ObjectMeta: metav1.ObjectMeta{Name: testWDName, Namespace: victimNS}}
+	victimInstance := &computev1alpha.Instance{ObjectMeta: metav1.ObjectMeta{
+		Name: testWDName + "-0", Namespace: victimNS,
+		Labels: map[string]string{computev1alpha.WorkloadDeploymentNameLabel: testWDName},
+	}}
+	own := &computev1alpha.WorkloadDeployment{ObjectMeta: metav1.ObjectMeta{Name: testWDName, Namespace: testKarmadaNSStr}}
+	projectClient := newProjectFakeClient(testProjectNamespace(), wd)
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), victimNamespace, victim, victimInstance, own)
+	r := newTestFederator(projectClient, karmadaClient)
+
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	_, err := r.Finalize(ctx, wd)
+	require.NoError(t, err)
+	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(victim), victim), "another project's hub deployment must survive")
+	require.NoError(t, karmadaClient.Get(ctx, client.ObjectKeyFromObject(victimInstance), victimInstance), "another project's instances must survive")
+	assert.True(t, apierrors.IsNotFound(karmadaClient.Get(ctx, client.ObjectKeyFromObject(own), own)), "the deployment's own hub copy is removed")
+}
+
+// TestWorkloadDeploymentFederator_FinalizeIgnoresAMissingRecordedNamespace
+// asserts a record naming a hub namespace that does not exist cannot skip
+// cleanup of the deployment's real hub copy.
+func TestWorkloadDeploymentFederator_FinalizeIgnoresAMissingRecordedNamespace(t *testing.T) {
+	t.Parallel()
+
+	wd := testWorkloadDeployment(withFinalizer, withDeletionTimestamp)
+	wd.Annotations = map[string]string{computev1alpha.FederationNamespaceAnnotation: "ns-does-not-exist"}
+	own := &computev1alpha.WorkloadDeployment{ObjectMeta: metav1.ObjectMeta{Name: testWDName, Namespace: testKarmadaNSStr}}
+	karmadaClient := newKarmadaFakeClient(testHubNamespace(), own)
+	r := newTestFederator(newProjectFakeClient(wd), karmadaClient)
+
+	ctx := mccontext.WithCluster(context.Background(), testCluster)
+	_, err := r.Finalize(ctx, wd)
+	require.NoError(t, err)
+	assert.True(t, apierrors.IsNotFound(karmadaClient.Get(ctx, client.ObjectKeyFromObject(own), own)), "the real hub copy is removed")
 }
 
 // TestWorkloadDeploymentFederator_FinalizeHoldsWhenUnresolvable asserts the

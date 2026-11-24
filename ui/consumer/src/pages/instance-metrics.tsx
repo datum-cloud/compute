@@ -1,6 +1,7 @@
 /**
- * Instance Metrics tab: CPU/memory always, plus ALB traffic when the workload
- * is published on a URL. Charts query the portal VictoriaMetrics endpoint.
+ * Instance Metrics tab: CPU, memory, and network in/out always, plus ALB
+ * traffic when the workload is published on a URL. Charts query the project's
+ * queryapi through the portal's control-plane proxy (see lib/prometheus.ts).
  */
 import { MetricAreaChart, formatCardValue } from '../components/metric-area-chart';
 import { MetricsKpiCell, MetricsKpiRow } from '../components/metrics-kpis';
@@ -23,15 +24,20 @@ import {
   parseMemoryBytes,
 } from '../lib/resource-usage';
 import { useMetricsTimeRange } from '../lib/metrics-time-range';
+import { useNetworkInterfaceMetrics } from '../lib/network-interface-metrics';
 import { usePrometheusCard, type MetricFormat } from '../lib/prometheus';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { useMemo } from 'react';
 
 const NOT_CONNECTED = 'Not connected';
 const NETWORK_IO_UNAVAILABLE = 'Not collected yet';
 
-function useKpi(query: string | undefined, format: MetricFormat, enabled: boolean) {
-  return usePrometheusCard(query, format, { enabled: enabled && !!query });
+function useKpi(
+  projectId: string | undefined,
+  query: string | undefined,
+  format: MetricFormat,
+  enabled: boolean
+) {
+  return usePrometheusCard(projectId, query, format, { enabled: enabled && !!query });
 }
 
 export default function InstanceMetrics() {
@@ -39,6 +45,7 @@ export default function InstanceMetrics() {
   const range = useMetricsTimeRange();
   const { identity, isLoading: identityLoading, isDenied: identityDenied } =
     useInstanceMetricIdentity(projectId, instance);
+  const net = useNetworkInterfaceMetrics(projectId, instance);
 
   // Percent needs the instance's size; fall back to cores when it is unknown.
   const allocatedCores = parseCpuCores(instance.cpu);
@@ -58,11 +65,11 @@ export default function InstanceMetrics() {
   const p99Query = projectId && proxyId ? albP99Query(projectId, proxyId) : undefined;
   const errorQuery = projectId && proxyId ? albErrorRateQuery(projectId, proxyId) : undefined;
 
-  const cpuCard = useKpi(cpuQuery, 'number', !identityLoading);
-  const memoryCard = useKpi(memoryQuery, 'bytes', !identityLoading);
-  const rpsCard = useKpi(rpsQuery, 'requestsPerSecond', !!proxyId);
-  const p99Card = useKpi(p99Query, 'milliseconds-auto', !!proxyId);
-  const errorCard = useKpi(errorQuery, 'percent', !!proxyId);
+  const cpuCard = useKpi(projectId, cpuQuery, 'number', !identityLoading);
+  const memoryCard = useKpi(projectId, memoryQuery, 'bytes', !identityLoading);
+  const rpsCard = useKpi(projectId, rpsQuery, 'requestsPerSecond', !!proxyId);
+  const p99Card = useKpi(projectId, p99Query, 'milliseconds-auto', !!proxyId);
+  const errorCard = useKpi(projectId, errorQuery, 'percent', !!proxyId);
 
   const chartsEnabled = !identityLoading && !identityDenied && !!identity;
 
@@ -70,50 +77,47 @@ export default function InstanceMetrics() {
     <div className="flex flex-col gap-6" data-testid="compute-plugin-instance-metrics-page">
       <MetricsTimeRangeToolbar range={range} />
 
-      <Card size="sm" sectioned className="w-full overflow-hidden">
-        <CardContent>
-          <MetricsKpiRow>
+      <MetricsKpiRow>
+        <MetricsKpiCell
+          label="CPU"
+          value={identityLoading ? 'Loading…' : formatCpuUsage(cpuCard.data?.value, allocatedCores)}
+          hint={cpuUsageHint(cpuCard.data?.value, allocatedCores)}
+        />
+        <MetricsKpiCell
+          label="Memory"
+          value={identityLoading ? 'Loading…' : formatMemoryUsage(memoryCard.data?.value, allocatedMemory)}
+          hint={memoryUsageHint(memoryCard.data?.value, allocatedMemory)}
+        />
+        {proxyId ? (
+          <>
             <MetricsKpiCell
-              label="CPU"
-              value={identityLoading ? 'Loading…' : formatCpuUsage(cpuCard.data?.value, allocatedCores)}
-              hint={cpuUsageHint(cpuCard.data?.value, allocatedCores)}
+              label="Requests"
+              value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
+              hint="load balancer"
             />
             <MetricsKpiCell
-              label="Memory"
-              value={identityLoading ? 'Loading…' : formatMemoryUsage(memoryCard.data?.value, allocatedMemory)}
-              hint={memoryUsageHint(memoryCard.data?.value, allocatedMemory)}
+              label="p99"
+              value={formatCardValue(p99Card.data, 'milliseconds-auto')}
+              hint="load balancer"
             />
-            {proxyId ? (
-              <>
-                <MetricsKpiCell
-                  label="Requests"
-                  value={formatCardValue(rpsCard.data, 'requestsPerSecond')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="p99"
-                  value={formatCardValue(p99Card.data, 'milliseconds-auto')}
-                  hint="load balancer"
-                />
-                <MetricsKpiCell
-                  label="Errors"
-                  value={formatCardValue(errorCard.data, 'percent')}
-                  hint="load balancer"
-                />
-              </>
-            ) : (
-              <>
-                <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
-                <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
-              </>
-            )}
-          </MetricsKpiRow>
-        </CardContent>
-      </Card>
+            <MetricsKpiCell
+              label="Errors"
+              value={formatCardValue(errorCard.data, 'percent')}
+              hint="load balancer"
+            />
+          </>
+        ) : (
+          <>
+            <MetricsKpiCell label="Requests" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="p99" value={NOT_CONNECTED} />
+            <MetricsKpiCell label="Errors" value={NOT_CONNECTED} />
+          </>
+        )}
+      </MetricsKpiRow>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MetricAreaChart
+          projectId={projectId}
           title="CPU"
           query={cpuQuery}
           timeRange={range.timeRange}
@@ -125,6 +129,7 @@ export default function InstanceMetrics() {
           denied={identityDenied}
         />
         <MetricAreaChart
+          projectId={projectId}
           title="Memory"
           query={memoryQuery}
           timeRange={range.timeRange}
@@ -137,19 +142,39 @@ export default function InstanceMetrics() {
         />
       </div>
 
-      <MetricAreaChart
-        title="Network I/O"
-        query={undefined}
-        timeRange={range.timeRange}
-        format="bytesPerSecond"
-        enabled={false}
-        unavailable
-        unavailableLabel={NETWORK_IO_UNAVAILABLE}
-      />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network in"
+          query={net.receiveQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={net.seriesLabels}
+          pending={net.isLoading}
+          denied={net.isDenied}
+          error={net.error}
+          unavailable={net.unavailable}
+          unavailableLabel={NETWORK_IO_UNAVAILABLE}
+        />
+        <MetricAreaChart
+          projectId={projectId}
+          title="Network out"
+          query={net.transmitQuery}
+          timeRange={range.timeRange}
+          format="bitsPerSecond"
+          seriesLabels={net.seriesLabels}
+          pending={net.isLoading}
+          denied={net.isDenied}
+          error={net.error}
+          unavailable={net.unavailable}
+          unavailableLabel={NETWORK_IO_UNAVAILABLE}
+        />
+      </div>
 
       {proxyId ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <MetricAreaChart
+            projectId={projectId}
             title="Requests"
             query={rpsQuery}
             timeRange={range.timeRange}
@@ -157,6 +182,7 @@ export default function InstanceMetrics() {
             color="var(--color-chart-2)"
           />
           <MetricAreaChart
+            projectId={projectId}
             title="Latency p99"
             query={p99Query}
             timeRange={range.timeRange}
@@ -164,6 +190,7 @@ export default function InstanceMetrics() {
             color="var(--color-chart-1)"
           />
           <MetricAreaChart
+            projectId={projectId}
             title="Error rate"
             query={errorQuery}
             timeRange={range.timeRange}

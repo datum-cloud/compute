@@ -6,7 +6,14 @@
  * still coming up gets a spinner and "Deploying" rather than reading as
  * unavailable, turning to a warning once it is blocked or slow.
  */
-import { deployStatus, HEALTH_DOT_CLASS, statusLabel, type DeployStatus } from '../lib/workload-presenters';
+import { StatusDot } from './surface/status-dot';
+import {
+  deployStatus,
+  HEALTH_DOT_COLOR,
+  statusLabel,
+  workloadStatusTone,
+  type DeployStatus,
+} from '../lib/workload-presenters';
 import { useNow } from '../lib/use-now';
 import { workloadHealthToBadgeType, type Workload, type WorkloadHealth } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
@@ -14,8 +21,9 @@ import { SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
 
 /**
- * Status dot. Deploying tones are inline: the host compiles no `bg-blue-*`
- * class to rely on.
+ * Status dot, colored with datum-ui's badge tokens (`HEALTH_DOT_COLOR`).
+ * With a `label` it is an image named by it (a bare span can't carry an
+ * accessible name); without one it is decorative.
  */
 export function HealthDot({
   health,
@@ -32,8 +40,9 @@ export function HealthDot({
   const tone = deploy?.tone ?? (health === 'Deploying' ? 'info' : undefined);
   return (
     <span
-      className={cn('shrink-0 rounded-full', className, !tone && HEALTH_DOT_CLASS[health])}
-      style={tone ? { background: `var(--color-badge-${tone})` } : undefined}
+      className={cn('shrink-0 rounded-full', className)}
+      style={{ background: tone ? `var(--color-badge-${tone})` : HEALTH_DOT_COLOR[health] }}
+      role={label ? 'img' : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
     />
@@ -90,6 +99,27 @@ export function WorkloadStatusBadge({
       <Badge type={workloadHealthToBadgeType(workload.health)} theme="light" className={BADGE_CLASS}>
         {label}
       </Badge>
+    </span>
+  );
+}
+
+/**
+ * The list's status: a dot and muted sentence-case text (`workloadStatusTone`)
+ * in place of the uppercase badge. Re-reads the clock while deploying so a
+ * slow deploy turns amber without waiting for a refetch; the controller's
+ * message, when there is one, is the hover title.
+ */
+export function WorkloadStatusDot({ workload, className }: { workload: Workload; className?: string }) {
+  const deploying = workload.health === 'Deploying' && !workload.deleting;
+  const now = useNow(deploying, 5_000);
+  const { tone, label, reason } = workloadStatusTone(workload, now);
+  const deploy = deploying ? deployStatus(workload, now) : undefined;
+  return (
+    <span
+      className={cn('flex min-w-0', className)}
+      title={deploy?.message}
+      data-e2e={workload.deleting ? 'workload-status-deleting' : deploy ? 'workload-status-deploying' : undefined}>
+      <StatusDot tone={tone} label={label} reason={reason} />
     </span>
   );
 }

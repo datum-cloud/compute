@@ -11,12 +11,12 @@ controller re-reconciles the same objects in a self-perpetuating loop. Nothing
 about the objects is actually changing; the controller keeps waking itself (or a
 peer controller) up and doing no useful work.
 
-The alert is **per controller** and evaluates across every controller
+The alert is **per cluster and controller** and evaluates across every controller
 `compute-manager` reports — management-plane controllers (`workload`,
 `referenced-data`, `workload-deployment-federator`, `instance-projector`, ...)
 and cell-side controllers (`instance`, `workloaddeployment`, quota, ...) alike,
-including any controller added later. **The firing `controller` / `name` label
-tells you which controller is storming and therefore where to look.**
+including any controller added later. **The firing `cluster` and `controller` / `name` labels
+tell you which cluster and controller are storming and therefore where to look.**
 
 Each reconcile **succeeds**, so error-based alerting stays silent. The tell is a
 high reconcile rate while the workqueue stays mostly drained (low average depth) and
@@ -40,7 +40,9 @@ All queries run against the platform metrics store (`vmcluster-metrics`, e.g. vi
 the staging Grafana / vmselect). The compute controller metrics are scraped from
 `compute-system/compute-metrics` by the platform vmagent, so `job="compute-metrics"`
 scopes every query to `compute-manager`. Filter on the firing `controller` label
-to focus on the storming controller.
+and `cluster` to focus on the storming controller in that cluster.
+Rates and queue depth are aggregated within a cluster, so activity in separate
+cells cannot combine to cross the threshold or dilute another cell’s backlog.
 
 1. **Reconcile rate by controller** — should be small for a handful of idle
    objects; during a storm the offending controller sits in the
@@ -48,7 +50,7 @@ to focus on the storming controller.
 
    ```promql
    sort_desc(
-     sum by (controller) (
+     sum by (cluster, controller) (
        rate(controller_runtime_reconcile_total{job="compute-metrics"}[5m])
      ) * 60
    )
@@ -61,13 +63,13 @@ to focus on the storming controller.
    ```promql
    # adds per minute (tracks the reconcile rate during a storm)
    sort_desc(
-     sum by (name) (
+     sum by (cluster, name) (
        rate(workqueue_adds_total{job="compute-metrics"}[5m])
      ) * 60
    )
 
    # average depth stays low; brief spikes do not invalidate the signal
-   avg by (name) (avg_over_time(workqueue_depth{job="compute-metrics"}[5m]))
+   avg by (cluster, name) (avg_over_time(workqueue_depth{job="compute-metrics"}[5m]))
    ```
 
 3. **Object count is tiny and stable** — confirms the rate is not just real work
@@ -82,7 +84,7 @@ to focus on the storming controller.
    rely on this to detect the loop:
 
    ```promql
-   sum by (controller) (
+   sum by (cluster, controller) (
      rate(controller_runtime_reconcile_errors_total{job="compute-metrics"}[5m])
    )
    ```

@@ -11,7 +11,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.28.0
     with:
       image-name: compute
       platforms: linux/amd64,linux/arm64
@@ -25,12 +25,17 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.28.0
     with:
       image-name: compute-consumer-ui-plugin
       context: .
       dockerfile-path: ui/consumer/Dockerfile
-    secrets: inherit
+    # The Sentry token goes in as a BuildKit secret only. `secrets: inherit`
+    # would also pass it to publish-docker's SENTRY_AUTH_TOKEN, which it
+    # forwards as a build-arg, and build-args persist in the exported cache.
+    secrets:
+      build-secrets: |
+        "SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}"
 
   # Deployed as a Component (config/components/provider-ui-plugin) folded
   # into compute-manager's own kustomize bundle/Flux Kustomization — same
@@ -41,7 +46,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.28.0
     with:
       image-name: compute-provider-ui-plugin
       context: ui/provider
@@ -70,7 +75,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.21.0
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.28.0
     with:
       bundle-name: ghcr.io/datum-cloud/compute-kustomize
       bundle-path: config

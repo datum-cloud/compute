@@ -12,6 +12,7 @@
  */
 import type {
   Instance,
+  InstanceNetworkInterface,
   InstanceStatusValue,
   Workload,
   WorkloadHealth,
@@ -191,6 +192,15 @@ function deriveReplicasPerRegion(placements: RawWorkloadPlacement[]): number | u
   return mins.every((m) => m === first) ? first : undefined;
 }
 
+function deriveNamedPorts(runtime?: RawRuntime): Workload['namedPorts'] {
+  const containers = runtime?.sandbox?.containers ?? [];
+  return containers.flatMap((c) =>
+    (c.ports ?? []).flatMap((p) =>
+      p.name && p.port !== undefined ? [{ name: p.name, port: p.port, protocol: p.protocol ?? 'TCP' }] : []
+    )
+  );
+}
+
 function derivePorts(runtime?: RawRuntime): string[] {
   const containers = runtime?.sandbox?.containers ?? [];
   return containers.flatMap((c) =>
@@ -348,6 +358,7 @@ export function toWorkload(raw: RawWorkload): Workload {
     runtimeType: runtime ? (runtime.sandbox ? 'Container sandbox' : 'Virtual machine') : undefined,
     tags: deriveTags(runtime),
     ports,
+    namedPorts: deriveNamedPorts(runtime),
     locations: workloadLocations(placements, raw.status?.placements ?? []),
     resources: deriveResources(runtime),
     replicasPerRegion: deriveReplicasPerRegion(placements),
@@ -372,13 +383,20 @@ export function toWorkloadList(items: RawWorkload[]): Workload[] {
 
 export interface RawInstance {
   metadata?: RawObjectMeta;
-  spec?: { runtime?: RawRuntime };
+  spec?: {
+    runtime?: RawRuntime;
+    networkInterfaces?: { name?: string; network?: { name?: string } }[];
+  };
   status?: {
     conditions?: RawCondition[];
     networkInterfaces?: {
+      name?: string;
+      networkInterfaceRef?: { name?: string };
       assignments?: { networkIP?: string; externalIP?: string };
       addresses?: { address?: string }[];
+      externalAddresses?: { address?: string }[];
     }[];
+    dns?: { hostnames?: string[] }[];
   };
 }
 
@@ -498,6 +516,63 @@ export function collectInstanceInternalIPs(raw: RawInstance): string[] {
   return ips;
 }
 
+/**
+ * The address the guest answers on: a host route bare, and a delegated IPv6
+ * block by the address it is written with, which is how the guest is
+ * configured and what private DNS publishes (`fd20::5:0:0/96` → `fd20::5:0:0`,
+ * see `internal/controller/internaldns_observation.go`). IPv4 blocks have no
+ * such address and are skipped.
+ */
+export function guestAddress(address?: string): string | undefined {
+  const host = hostRouteIP(address);
+  if (host) return host;
+  const ip = address?.trim().split("/")[0];
+  return ip && ip.includes(":") && isBareIP(ip) ? ip : undefined;
+}
+
+/** Every in-network address the instance answers on, for display. */
+export function collectInstanceAddresses(raw: RawInstance): string[] {
+  const ips = (raw.status?.networkInterfaces ?? []).flatMap((iface) => [
+    ...(iface.addresses ?? []).map((address) => guestAddress(address.address)),
+    guestAddress(iface.assignments?.networkIP),
+  ]);
+  return [...new Set(ips.filter((ip): ip is string => !!ip))];
+}
+
+/** Addresses reachable from outside the network, across every interface. */
+export function collectInstanceExternalIPs(raw: RawInstance): string[] {
+  const ips = (raw.status?.networkInterfaces ?? []).flatMap((iface) => [
+    ...(iface.externalAddresses ?? []).map((address) => address.address?.trim()),
+    iface.assignments?.externalIP?.trim(),
+  ]);
+  return [...new Set(ips.filter((ip): ip is string => !!ip))];
+}
+
+/** Private DNS names allocated for the instance, across every network. */
+export function collectInstanceHostnames(raw: RawInstance): string[] {
+  const names = (raw.status?.dns ?? []).flatMap((entry) => entry.hostnames ?? []);
+  return [...new Set(names.filter(Boolean))];
+}
+
+/** API default for an interface that does not name itself; the controller uses the same. */
+const DEFAULT_INTERFACE_NAME = 'eth0';
+
+/**
+ * Interfaces in spec order, each joined to its status entry by name. The
+ * status `networkInterfaceRef` is unset until the interface is realized.
+ */
+export function collectInstanceNetworkInterfaces(raw: RawInstance): InstanceNetworkInterface[] {
+  const status = raw.status?.networkInterfaces ?? [];
+  return (raw.spec?.networkInterfaces ?? []).map((iface) => {
+    const name = iface.name || DEFAULT_INTERFACE_NAME;
+    return {
+      name,
+      network: iface.network?.name,
+      networkInterfaceRef: status.find((s) => s.name === name)?.networkInterfaceRef?.name,
+    };
+  });
+}
+
 export function toInstance(raw: RawInstance): Instance {
   const labels = raw.metadata?.labels ?? {};
   const assignments = raw.status?.networkInterfaces?.[0]?.assignments;
@@ -530,6 +605,10 @@ export function toInstance(raw: RawInstance): Instance {
     externalIP: assignments?.externalIP,
     internalIP: assignments?.networkIP,
     internalIPs,
+    addresses: collectInstanceAddresses(raw),
+    externalIPs: collectInstanceExternalIPs(raw),
+    hostnames: collectInstanceHostnames(raw),
+    networkInterfaces: collectInstanceNetworkInterfaces(raw),
     conditions: conditions.map((c) => ({
       type: c.type ?? '',
       status: c.status ?? 'Unknown',

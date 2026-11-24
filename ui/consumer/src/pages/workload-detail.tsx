@@ -1,104 +1,58 @@
 /**
  * `portal.page/project` extension at `:workloadName/*`, exposed as
- * `WorkloadDetail`. Overview is the index; Metrics lives at `metrics`,
- * Logs at `logs`.
+ * `WorkloadDetail`. Overview is the index; Topology lives at `topology`,
+ * Metrics at `metrics`, Logs at `logs`, Activity at `activity`.
  *
- * Layout: health strip, topology, full-width logs, then live traffic and
- * instances. General/Configuration stay below.
+ * Overview layout, in the project home page's style: a one-line status,
+ * the instances and how to reach them, recent logs, then details.
  *
  * Breadcrumbs are left to the host `ContentWrapper` — do not re-render them
  * inside the plugin (that double-stacks chrome vs native pages).
  */
-import { DetailList, StatusBadge } from "../components/detail-list";
-import { WorkloadHealthStrip } from "../components/health-strip";
-import { RecentInstanceLogs } from "../components/instance-logs";
-import { MetricAreaChart } from "../components/metric-area-chart";
-import { TopologyCard } from "../components/topology-card";
+import { ResourceActivity } from "../components/resource-activity";
+import { WorkloadOverviewCard } from "../components/workload-overview-card";
 import { WorkloadPageChrome } from "../components/workload-page-chrome";
 import { DeleteWorkloadDialog, useDeleteWorkloadDialog } from "../components/delete-workload-dialog";
-import {
-  DEFAULT_OVERVIEW_RANGE,
-  OVERVIEW_RANGE_OPTIONS,
-  useOverviewRange,
-  type OverviewRange,
-  type OverviewRangeValue,
-} from "../components/overview-range";
 import {
   InstanceLogsSkeleton,
   WorkloadMetricsSkeleton,
   WorkloadOverviewSkeleton,
+  WorkloadTopologySkeleton,
 } from "../components/skeletons";
 import { ErrorOrRestrictedState } from "../components/states";
+import { SectionFrame } from "../components/surface";
+import { WorkloadInstances } from "../components/workload-instances";
+import { WorkloadLoadBalancers } from "../components/workload-load-balancers";
 import {
   useDeletePermissions,
   usePublishedUrl,
   useWorkload,
+  useWorkloadDeployments,
   useWorkloadInstances,
-  type PublishedUrl,
 } from "../lib/api";
 import { splitSlashValue } from "../lib/format";
+import { useWorkloadOverviewState } from "../lib/use-workload-overview-state";
 import {
-  albStatus,
-  anyAlbProvisioning,
-  albStatusDisplay,
-  workloadUrlState,
-  type AlbStatus,
-} from "../lib/alb-status";
-import { WorkloadUrl } from "../components/workload-url";
-import { useNow } from "../lib/use-now";
-import {
-  deployStatus,
-  instanceFailureSummary,
-  instanceStatusLabel,
-  type StatusDisplay,
+  compactDetailRows,
+  firstCrash,
+  instancesStarting,
+  overviewStatusLine,
 } from "../lib/workload-presenters";
-import {
-  formatLocationName,
-  formatLocationNames,
-  formatLocationTooltip,
-  useLocationIndex,
-  type LocationIndex,
-} from "../lib/locations";
-import {
-  albRpsQuery,
-  identityValues,
-  useProjectResourceIdentity,
-} from "../lib/metrics-queries";
+import { deployHeadline, deployState, deployTimeline } from "../lib/deploy-presenters";
+import { formatLocationName, formatLocationNames, useLocationIndex } from "../lib/locations";
+import { computeResourceLinkResolver, workloadActivityFilter } from "../lib/activity";
+import { workloadSettling } from "../lib/workload-settling";
+import { allocationOf, formatBytes, parseCpuCores, parseMemoryBytes } from "../lib/resource-usage";
+import { Card, CardHeader, CardTitle } from "@datum-cloud/datum-ui/card";
+import { identityValues, useProjectResourceIdentity } from "../lib/metrics-queries";
 import type { WorkloadOutletContext } from "./workload-outlet-context";
 import { useWorkloadOutlet } from "./workload-outlet-context";
 import WorkloadLogs from "./workload-logs";
 import WorkloadMetrics from "./workload-metrics";
-import {
-  instanceStatusToBadgeType,
-  workloadHealthToBadgeType,
-  type Instance,
-  type Workload,
-} from "../schema";
-import { Badge } from "@datum-cloud/datum-ui/badge";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@datum-cloud/datum-ui/card";
-import { Icon, SpinnerIcon } from "@datum-cloud/datum-ui/icons";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@datum-cloud/datum-ui/select";
-import {
-  ActivityIcon,
-  ArrowRightIcon,
-  GlobeIcon,
-  HistoryIcon,
-  Settings2Icon,
-  SquareLibraryIcon,
-} from "lucide-react";
-import { lazy, Suspense, useCallback, useMemo, useState } from "react";
+import type { Instance, Workload } from "../schema";
+import { Icon } from "@datum-cloud/datum-ui/icons";
+import { SettingsIcon } from "lucide-react";
+import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import {
   Link,
   Outlet,
@@ -111,403 +65,123 @@ import {
 
 // activity-ui is sizeable; load it only when the tab is opened.
 const WorkloadActivity = lazy(() => import("./workload-activity"));
+// The topology canvas is the plugin's largest component; load it with its tab.
+const WorkloadTopology = lazy(() => import("./workload-topology"));
 
-const COMING_SOON = "Coming soon";
-// Inline rather than `h-[27rem]`: the host only compiles that class because its
-// own ALB overview happens to use it today.
-const PANEL_STYLE = { height: "27rem" } as const;
+const DETAIL_DATE_FORMAT: Intl.DateTimeFormatOptions = {
+  day: "2-digit",
+  month: "short",
+  year: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+};
 
-function albOverviewHref(projectId: string, proxyName: string): string {
-  return `/project/${projectId}/alb/${proxyName}/overview`;
+interface DetailRow {
+  label: string;
+  /** Raw value; rows without one are dropped (`compactDetailRows`). */
+  value: unknown;
+  content: ReactNode;
 }
 
-function albMetricsHref(projectId: string, proxyName: string): string {
-  return `/project/${projectId}/alb/${proxyName}/metrics`;
-}
-
-function LoadBalancerValue({
-  projectId,
-  published,
-  isLoading,
-  albStatuses,
-}: {
-  projectId?: string;
-  published?: PublishedUrl | null;
-  isLoading: boolean;
-  albStatuses: Record<string, AlbStatus>;
-}) {
-  if (isLoading) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  if (!published?.proxies.length) {
-    return <span className="text-muted-foreground">Not connected</span>;
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      {published.proxies.map((alb) => {
-        const label = alb.displayName || alb.proxyName;
-        const albStatus = albStatuses[alb.proxyName];
-        const display = albStatus ? albStatusDisplay(albStatus) : undefined;
-        const badge =
-          albStatus && albStatus.phase !== "ready" && display ? (
-            <span title={albStatus.message}>
-              <StatusBadge type={display.tone}>
-                {albStatus.phase === "provisioning" ? albStatus.step : "Error"}
-              </StatusBadge>
-            </span>
-          ) : null;
-        if (!projectId) {
-          return (
-            <span
-              key={alb.proxyName}
-              className="inline-flex items-center gap-1.5 text-sm"
-            >
-              <Icon
-                icon={GlobeIcon}
-                size={14}
-                className="text-muted-foreground shrink-0"
-              />
-              {label}
-              {badge}
-            </span>
-          );
-        }
-        return (
-          <span key={alb.proxyName} className="inline-flex items-center gap-2">
-            <Link
-              to={albOverviewHref(projectId, alb.proxyName)}
-              className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline"
-            >
-              <Icon icon={GlobeIcon} size={14} className="shrink-0" />
-              {label}
-            </Link>
-            {badge}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
-function GeneralCard({
-  workload,
-  status,
-  albStatuses,
-  healthyCount,
-  totalCount,
-  projectId,
-  published,
-  publishedLoading,
-}: {
+interface WorkloadDetailsProps {
   workload: Workload;
-  status: StatusDisplay;
-  albStatuses: Record<string, AlbStatus>;
-  healthyCount: number;
-  totalCount: number;
-  projectId?: string;
-  published?: PublishedUrl | null;
-  publishedLoading: boolean;
-}) {
-  return (
-    <Card
-      size="sm"
-      sectioned
-      className="h-full w-full overflow-hidden"
-      data-testid="compute-plugin-workload-general"
-    >
-      <CardHeader size="sm" bordered>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <Icon icon={SquareLibraryIcon} size={16} className="text-secondary" />
-          General
-        </CardTitle>
-      </CardHeader>
-      <CardContent padding="none">
-        <DetailList
-          items={[
-            {
-              label: "Status",
-              content: (
-                <StatusBadge type={status.tone}>{status.label}</StatusBadge>
-              ),
-            },
-            {
-              label: "Resource Name",
-              content: (
-                <span className="font-mono text-sm">{workload.name}</span>
-              ),
-            },
-            {
-              label: "Load balancer",
-              content: (
-                <LoadBalancerValue
-                  projectId={projectId}
-                  published={published}
-                  isLoading={publishedLoading}
-                  albStatuses={albStatuses}
-                />
-              ),
-            },
-            {
-              label: "Instances",
-              content: `${healthyCount}/${totalCount}`,
-            },
-            {
-              label: "Created At",
-              content: workload.createdAt.toLocaleDateString("en-GB", {
-                day: "2-digit",
-                month: "short",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false,
-              }),
-            },
-          ]}
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function ConfigurationCard({
-  workload,
-  locationLabel,
-}: {
-  workload: Workload;
+  instances: readonly Instance[];
   locationLabel: string;
-}) {
+}
+
+function mono(text: string) {
+  return (
+    <span className="block max-w-full truncate font-mono text-xs" title={text}>
+      {text}
+    </span>
+  );
+}
+
+/** "2 vCPU · 4 GB" from the first instance's allocation, when it is known. */
+function instanceSize(instances: readonly Instance[]): string | undefined {
+  const first = instances[0];
+  const cores = parseCpuCores(first?.cpu);
+  const memory = parseMemoryBytes(first?.memory);
+  const parts = [
+    cores !== undefined ? `${cores} vCPU` : undefined,
+    memory !== undefined ? formatBytes(memory) : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/** Configuration rows, in display order, before empty ones are dropped. */
+function workloadDetailRows({
+  workload,
+  instances,
+  locationLabel,
+}: WorkloadDetailsProps): DetailRow[] {
   const { main: resourceShort } = splitSlashValue(workload.resources ?? "");
+  const size = instanceSize(instances);
+  const type = resourceShort || workload.resources;
+  return [
+    { label: "Image", value: workload.image, content: workload.image ? mono(workload.image) : null },
+    {
+      label: "Instance type",
+      value: type ?? size,
+      content: [type, size].filter(Boolean).join(" · "),
+    },
+    {
+      label: "Replicas",
+      value: workload.desiredReplicas,
+      content:
+        workload.replicasPerRegion !== undefined
+          ? `${workload.replicasPerRegion} per location · ${workload.desiredReplicas} total`
+          : `${workload.desiredReplicas} total`,
+    },
+    {
+      label: "Locations",
+      value: workload.locations,
+      content: <span title={workload.locations.join(", ")}>{locationLabel}</span>,
+    },
+    { label: "Ports", value: workload.ports, content: mono(workload.ports.join(", ")) },
+    { label: "Networks", value: workload.networks, content: mono(workload.networks.join(", ")) },
+    { label: "Runtime", value: workload.runtimeType, content: workload.runtimeType },
+    {
+      label: "Created",
+      value: workload.createdAt,
+      content: workload.createdAt.toLocaleDateString("en-GB", DETAIL_DATE_FORMAT),
+    },
+  ];
+}
+
+// Inline: the host compiles no fixed label width.
+const DETAIL_LABEL_STYLE = { width: "8rem" } as const;
+
+/**
+ * What the workload is, in its own card. Rows with no value are left out
+ * rather than shown as a dash; live state (instances, health) stays in the
+ * cards above.
+ */
+function WorkloadDetails(props: WorkloadDetailsProps) {
+  const rows = compactDetailRows(workloadDetailRows(props));
 
   return (
-    <Card
-      size="sm"
-      sectioned
-      className="h-full w-full overflow-hidden"
-      data-testid="compute-plugin-workload-configuration"
-    >
+    <Card sectioned size="sm" className="overflow-hidden" data-testid="compute-plugin-workload-details">
       <CardHeader size="sm" bordered>
         <CardTitle className="flex items-center gap-2 text-sm">
-          <Icon icon={Settings2Icon} size={16} className="text-secondary" />
+          <Icon icon={SettingsIcon} size={16} className="text-secondary" aria-hidden />
           Configuration
         </CardTitle>
       </CardHeader>
-      <CardContent padding="none">
-        <DetailList
-          items={[
-            {
-              label: "Runtime",
-              content: workload.runtimeType ?? (
-                <span className="text-muted-foreground">{COMING_SOON}</span>
-              ),
-            },
-            {
-              label: "Image",
-              content: workload.image ? (
-                <span
-                  className="block max-w-full truncate font-mono text-xs"
-                  title={workload.image}
-                >
-                  {workload.image}
-                </span>
-              ) : (
-                <span className="text-muted-foreground">{COMING_SOON}</span>
-              ),
-            },
-            {
-              label: "Resources",
-              content: resourceShort || workload.resources || (
-                <span className="text-muted-foreground">{COMING_SOON}</span>
-              ),
-            },
-            {
-              label: "Replicas",
-              content:
-                workload.replicasPerRegion !== undefined
-                  ? `${workload.replicasPerRegion}/location · ${workload.desiredReplicas} total`
-                  : `${workload.desiredReplicas} total`,
-            },
-            {
-              label: "Locations",
-              content:
-                workload.locations.length > 0 ? (
-                  <span title={workload.locations.join(", ")}>
-                    {locationLabel}
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground">—</span>
-                ),
-            },
-          ]}
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function LiveTrafficCard({
-  projectId,
-  proxyId,
-  range,
-  onRangeChange,
-}: {
-  projectId?: string;
-  proxyId?: string;
-  range: OverviewRange;
-  onRangeChange: (value: OverviewRangeValue) => void;
-}) {
-  const rpsQuery =
-    projectId && proxyId ? albRpsQuery(projectId, proxyId) : undefined;
-
-  return (
-    <Card size="sm" sectioned className="flex h-full flex-col overflow-hidden">
-      <CardHeader size="sm" bordered>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <Icon icon={ActivityIcon} size={16} className="text-secondary" />
-          Live traffic
-        </CardTitle>
-        <CardAction>
-          <Select
-            value={range.value}
-            onValueChange={(value) =>
-              onRangeChange(value as OverviewRangeValue)
-            }
-          >
-            <SelectTrigger
-              className="bg-card h-8 w-auto gap-2 text-xs"
-              aria-label="Live traffic time range"
-              data-e2e="compute-overview-range"
-              data-testid="compute-plugin-overview-range"
-            >
-              <Icon
-                icon={HistoryIcon}
-                size={14}
-                className="text-muted-foreground"
-              />
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent align="end">
-              {OVERVIEW_RANGE_OPTIONS.map((option) => (
-                <SelectItem
-                  key={option.value}
-                  value={option.value}
-                  className="text-xs"
-                >
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="relative flex min-h-0 flex-1 flex-col">
-        {rpsQuery ? (
-          <MetricAreaChart
-            title="Requests"
-            query={rpsQuery}
-            timeRange={range.timeRange}
-            format="requestsPerSecond"
-            enabled
-            embedded
-            fill
-          />
-        ) : (
-          <p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">
-            Not connected
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function InstancesPanel({
-  instances,
-  locationIndex,
-  deploying,
-  onOpen,
-}: {
-  instances: Instance[];
-  locationIndex: LocationIndex;
-  /** The workload is still coming up, so no instances yet is expected. */
-  deploying: boolean;
-  onOpen: (name: string) => void;
-}) {
-  return (
-    <Card size="sm" sectioned className="flex h-full flex-col overflow-hidden">
-      <CardHeader size="sm" bordered>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <Icon icon={SquareLibraryIcon} size={16} className="text-secondary" />
-          Instances
-        </CardTitle>
-        <CardAction>
-          <span className="text-muted-foreground text-xs tabular-nums">
-            {instances.length}
-          </span>
-        </CardAction>
-      </CardHeader>
-      <CardContent padding="none" className="min-h-0 flex-1 overflow-y-auto">
-        {instances.length === 0 && deploying ? (
-          <p
-            className="text-muted-foreground flex items-center gap-2 px-4 py-6 text-sm"
-            data-testid="compute-plugin-instances-deploying"
-          >
-            <SpinnerIcon size="xs" aria-hidden />
-            Instances are being created…
-          </p>
-        ) : instances.length === 0 ? (
-          <p className="text-muted-foreground px-4 py-6 text-sm">
-            No running instances
-          </p>
-        ) : (
-          <ul className="divide-border divide-y">
-            {instances.map((instance) => (
-              <li key={instance.uid || instance.name}>
-                <button
-                  type="button"
-                  className="hover:bg-muted/40 flex w-full items-center gap-3 px-4 py-3 text-left"
-                  onClick={() => onOpen(instance.name)}
-                  data-testid="compute-plugin-instance-card"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-mono text-sm">
-                      {instance.name}
-                    </span>
-                    <span
-                      className="text-muted-foreground text-xs"
-                      title={
-                        instance.location
-                          ? formatLocationTooltip(
-                              instance.location,
-                              locationIndex,
-                            )
-                          : undefined
-                      }
-                    >
-                      {instance.location
-                        ? formatLocationName(instance.location, locationIndex)
-                        : "Unknown location"}
-                    </span>
-                  </span>
-                  <Badge
-                    type={instanceStatusToBadgeType(instance.status)}
-                    theme="light"
-                    className="w-fit shrink-0"
-                  >
-                    {instanceStatusLabel(instance)}
-                  </Badge>
-                  <Icon
-                    icon={ArrowRightIcon}
-                    size={14}
-                    className="text-muted-foreground shrink-0"
-                  />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
+      <dl className="flex flex-col">
+        {rows.map((row, index) => (
+          <div
+            key={row.label}
+            className={index === 0 ? "flex gap-4 px-4 py-2.5" : "flex gap-4 border-t px-4 py-2.5"}>
+            <dt className="text-muted-foreground shrink-0 text-sm" style={DETAIL_LABEL_STYLE}>
+              {row.label}
+            </dt>
+            <dd className="min-w-0 flex-1 text-sm">{row.content}</dd>
+          </div>
+        ))}
+      </dl>
     </Card>
   );
 }
@@ -528,6 +202,7 @@ function WorkloadLayoutShell({
   titleName: string;
 }) {
   const { pathname } = useLocation();
+  const onTab = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const { projectId, workloadName } = useParams<{
     projectId: string;
     workloadName: string;
@@ -538,10 +213,15 @@ function WorkloadLayoutShell({
     error,
     refetch,
   } = useWorkload(projectId, workloadName);
-  const { data: instances = [] } = useWorkloadInstances(
+  const {
+    data: instances = [],
+    isLoading: instancesLoading,
+    error: instancesError,
+  } = useWorkloadInstances(
     projectId,
     workloadName,
-    workload?.health === "Deploying",
+    // Fast while instances are still coming up, not only while deploying.
+    workload ? workloadSettling(workload) : false,
   );
   const published = usePublishedUrl(projectId, workloadName);
   const locationIndex = useLocationIndex(projectId);
@@ -556,14 +236,6 @@ function WorkloadLayoutShell({
     [instances],
   );
   const proxyId = published.data?.proxyName;
-  const headerAlb = published.data?.proxies[0];
-  const headerUrl =
-    workload && headerAlb?.hostname
-      ? workloadUrlState(
-          !workload.deleting && workload.health === "Available",
-          albStatus(headerAlb, { workloadServing: workload.health === "Available" }),
-        )
-      : undefined;
   const navigate = useNavigate();
   const permissions = useDeletePermissions(projectId);
   const deleteDialog = useDeleteWorkloadDialog();
@@ -580,25 +252,6 @@ function WorkloadLayoutShell({
       metricsHref={metricsHref}
       logsHref={logsHref}
       titleName={workload?.name ?? titleName}
-      // Held until the workload is known too, since that decides whether it links.
-      urlLoading={published.isLoading || (isLoading && !!headerAlb?.hostname)}
-      deleteLoading={(isLoading || permissions.isLoading) && !workload?.deleting}
-      visit={
-        headerAlb?.hostname && headerUrl
-          ? { href: `https://${headerAlb.hostname}`, live: headerUrl.live, status: headerUrl.status }
-          : undefined
-      }
-      url={
-        headerAlb?.hostname && headerUrl ? (
-          <WorkloadUrl
-            hostname={headerAlb.hostname}
-            customHostnames={headerAlb.customHostnames}
-            live={headerUrl.live}
-            status={headerUrl.status}
-            plain
-          />
-        ) : undefined
-      }
       onDelete={canDelete && workload ? () => deleteDialog.show(workload) : undefined}>
       <DeleteWorkloadDialog
         projectId={projectId}
@@ -610,10 +263,12 @@ function WorkloadLayoutShell({
       />
 
       {isLoading &&
-        (pathname === logsHref || pathname.startsWith(`${logsHref}/`) ? (
+        (onTab(logsHref) ? (
           <InstanceLogsSkeleton />
-        ) : pathname === metricsHref || pathname.startsWith(`${metricsHref}/`) ? (
+        ) : onTab(metricsHref) ? (
           <WorkloadMetricsSkeleton />
+        ) : onTab(`${overviewHref}/topology`) ? (
+          <WorkloadTopologySkeleton />
         ) : (
           <WorkloadOverviewSkeleton />
         ))}
@@ -632,6 +287,8 @@ function WorkloadLayoutShell({
             {
               workload,
               instances,
+              instancesLoading,
+              instancesError,
               projectId,
               proxyId,
               published: published.data,
@@ -652,159 +309,163 @@ function WorkloadLayoutShell({
   );
 }
 
-function WorkloadOverview() {
+/**
+ * Overview: a summary card (status, crash or deploy progress, the
+ * last hour's stats), the instances table, the load balancers that reach it,
+ * then what changed recently beside the workload's configuration.
+ */
+/** When an instance's failure was reported, for the end of the "so far" line. */
+function failedAt(instance: Instance | undefined): Date | undefined {
+  const condition = instance?.conditions.find(
+    (c) => (c.type === "Ready" || c.type === "Programmed") && c.status === "False" && c.lastTransitionTime,
+  );
+  return condition?.lastTransitionTime ? new Date(condition.lastTransitionTime) : undefined;
+}
+
+export function WorkloadOverview() {
+  const context = useWorkloadOutlet();
   const {
     workload,
     instances,
+    instancesLoading,
+    instancesError,
     projectId,
     proxyId,
     published,
     publishedLoading,
     locationIndex,
-    instanceNames,
+    identityLabel,
+    identityLoading,
+    identityDenied,
+    metricKeys,
     overviewHref,
-  } = useWorkloadOutlet();
-  const navigate = useNavigate();
-  const [rangeValue, setRangeValue] = useState<OverviewRangeValue>(
-    DEFAULT_OVERVIEW_RANGE,
-  );
-  const range = useOverviewRange(rangeValue);
+  } = context;
+  const { health, failure, deploy, albStatuses, now, healthyCount, totalCount, instanceHref } =
+    useWorkloadOverviewState(context);
 
-  const albLabel = published?.displayName || published?.proxyName;
   const primaryAlb = published?.proxies[0];
-  const instanceHref = useCallback(
-    (name: string) => `${overviewHref}/instances/${name}`,
-    [overviewHref],
+  const primaryAlbStatus = primaryAlb ? albStatuses[primaryAlb.proxyName] : undefined;
+  // While a deploy is under way, stuck, failed or just finished, the card
+  // says so instead of showing (empty) stats.
+  const coming = !!deploy || (!workload.deleting && instancesStarting(instances));
+  const { data: deployments = [] } = useWorkloadDeployments(projectId, workload.uid, coming);
+  const state = deployState({ workload, instances, deploy, deployments, healthyCount, now });
+  const status = state
+    ? deployHeadline(state, { healthy: healthyCount, total: totalCount, locations: workload.locations.length }, now)
+    : overviewStatusLine({
+        health,
+        deleting: workload.deleting,
+        deploy,
+        failure,
+        albError: primaryAlbStatus?.phase === "error" ? primaryAlbStatus.message : undefined,
+        healthyCount,
+        totalCount,
+        locationCount: workload.locations.length,
+        now,
+      });
+  const timeline = state
+    ? deployTimeline(
+        workload,
+        instances,
+        state.phase === "failed" && state.problem
+          ? { label: state.problem.title, at: failedAt(state.failedInstance) ?? new Date(now), state: "failed" }
+          : state.phase === "stalled" && state.stuckOn
+            ? { label: state.stuckOn, at: state.since, state: "waiting" }
+            : undefined,
+      )
+    : undefined;
+  const problemActions =
+    state?.phase === "failed" && state.failedInstance
+      ? [{ label: "View instance", href: instanceHref(state.failedInstance.name), primary: true }]
+      : state?.phase === "stalled" && state.problem?.title === "Waiting for quota" && projectId
+        ? [{ label: "View usage", href: `/project/${projectId}/usage` }]
+        : [];
+  const crash = useMemo(() => firstCrash(instances), [instances]);
+  const allocation = useMemo(() => allocationOf(instances), [instances]);
+  const resolver = useMemo(
+    () => computeResourceLinkResolver(workload.name, overviewHref),
+    [workload.name, overviewHref],
   );
-  const instanceMetricsHref = useCallback(
-    (name: string) => `${overviewHref}/instances/${name}/metrics`,
-    [overviewHref],
-  );
-  const albHrefFor = useMemo(
-    () =>
-      projectId
-        ? (proxyName: string) => albOverviewHref(projectId, proxyName)
-        : undefined,
-    [projectId],
-  );
-  const albMetricsHrefFor = useMemo(
-    () =>
-      projectId
-        ? (proxyName: string) => albMetricsHref(projectId, proxyName)
-        : undefined,
-    [projectId],
-  );
-  const logsHref = `${overviewHref}/logs`;
-  const healthyCount = instances.length
-    ? instances.filter((i) => i.status === "Available").length
-    : workload.readyReplicas;
-  const totalCount = instances.length || workload.desiredReplicas;
-
-  // A crash loop or bad image still reads as provisioning at the workload
-  // level; only the instances say otherwise.
-  const instanceFailure =
-    workload.health !== "Available" && !workload.deleting
-      ? instanceFailureSummary(instances)
-      : undefined;
-  const health = instanceFailure ? "Unavailable" : workload.health;
-  // Otherwise an unavailable workload explains itself through its condition.
-  const failure =
-    instanceFailure ??
-    (health === "Unavailable"
-      ? workload.conditions.find((c) => c.type === "Available")?.message
-      : undefined);
-  const albs = published?.proxies;
-  const now = useNow(
-    health === "Deploying" || (!!albs && anyAlbProvisioning(albs)),
-  );
-  const deploy = instanceFailure ? undefined : deployStatus(workload, now);
-  const albStatuses = useMemo(
-    () =>
-      Object.fromEntries(
-        (albs ?? []).map((alb) => [
-          alb.proxyName,
-          albStatus(alb, { workloadServing: workload.health === "Available", now }),
-        ]),
-      ),
-    [albs, workload.health, now],
-  );
-  const status: StatusDisplay = deploy
-    ? { tone: deploy.tone, label: deploy.label }
-    : { tone: workloadHealthToBadgeType(health), label: health };
 
   return (
     <>
-      <WorkloadHealthStrip
-        health={health}
-        deploy={deploy}
-        failure={failure}
-        alb={primaryAlb ? albStatuses[primaryAlb.proxyName] : undefined}
+      <WorkloadOverviewCard
+        status={status}
+        phase={state?.phase}
+        timeline={timeline}
+        problem={state?.problem}
+        problemActions={problemActions}
+        image={workload.image}
+        updatedAt={workload.updatedAt ?? workload.createdAt}
         now={now}
-        healthyCount={healthyCount}
-        totalCount={totalCount}
-        locationCount={workload.locations.length}
-        albHref={
-          projectId && proxyId ? albOverviewHref(projectId, proxyId) : undefined
+        crash={
+          crash
+            ? {
+                ...crash,
+                locationLabel: crash.instance.location
+                  ? formatLocationName(crash.instance.location, locationIndex)
+                  : "an unknown location",
+                instanceHref: instanceHref(crash.instance.name),
+                logsHref: `${instanceHref(crash.instance.name)}/logs`,
+              }
+            : undefined
         }
-        albLabel={albLabel}
+        projectId={projectId}
+        instances={instances}
+        totalCount={totalCount}
+        identityLabel={identityLabel}
+        metricKeys={metricKeys}
+        metricsDenied={identityDenied}
+        proxyId={proxyId}
+        allocation={allocation}
+        instancesLoading={instancesLoading}
+        identityLoading={identityLoading}
+        publishedLoading={publishedLoading}
       />
 
-      <TopologyCard
-        projectId={projectId}
-        workload={workload}
-        status={status}
-        albStatuses={albStatuses}
+      <WorkloadInstances
+        workloadName={workload.name}
         instances={instances}
-        albs={published?.proxies ?? []}
+        loading={instancesLoading}
+        error={instancesError}
         locationIndex={locationIndex}
         instanceHref={instanceHref}
-        instanceMetricsHref={instanceMetricsHref}
-        albHref={albHrefFor}
-        albMetricsHref={albMetricsHrefFor}
+        deploying={!!deploy}
+        deleting={workload.deleting}
+        projectId={projectId}
+        metricsDenied={identityDenied}
       />
 
-      <div style={PANEL_STYLE}>
-        <RecentInstanceLogs
-          logsHref={logsHref}
-          projectId={projectId}
-          proxyId={proxyId}
-          albHostname={published?.hostname}
-          instanceNames={instanceNames}
-        />
-      </div>
+      <WorkloadLoadBalancers
+        projectId={projectId}
+        published={published}
+        loading={publishedLoading}
+        albStatuses={albStatuses}
+        network={workload.networks[0]}
+        workload={workload}
+      />
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div style={PANEL_STYLE}>
-          <LiveTrafficCard
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <SectionFrame
+          title="What changed"
+          action={
+            <Link to={`${overviewHref}/activity`} className="text-primary text-sm hover:underline">
+              All activity
+            </Link>
+          }
+          testId="compute-plugin-workload-recent-activity">
+          <ResourceActivity
             projectId={projectId}
-            proxyId={proxyId}
-            range={range}
-            onRangeChange={setRangeValue}
+            filter={workloadActivityFilter(workload.name)}
+            liveNameMatch={workload.name}
+            resourceLinkResolver={resolver}
+            bare
+            pageSize={6}
           />
-        </div>
-        <div style={PANEL_STYLE}>
-          <InstancesPanel
-            instances={instances}
-            locationIndex={locationIndex}
-            deploying={!!deploy}
-            onOpen={(name) => navigate(instanceHref(name))}
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <GeneralCard
+        </SectionFrame>
+        <WorkloadDetails
           workload={workload}
-          status={status}
-          albStatuses={albStatuses}
-          healthyCount={healthyCount}
-          totalCount={totalCount}
-          projectId={projectId}
-          published={published}
-          publishedLoading={publishedLoading}
-        />
-        <ConfigurationCard
-          workload={workload}
+          instances={instances}
           locationLabel={formatLocationNames(workload.locations, locationIndex)}
         />
       </div>
@@ -820,7 +481,7 @@ export default function WorkloadDetail() {
   const location = useLocation();
 
   const path = location.pathname.replace(/\/$/, "");
-  const overviewHref = path.replace(/\/(logs|metrics|activity)$/, "");
+  const overviewHref = path.replace(/\/(logs|metrics|activity|topology)$/, "");
   const logsHref = `${overviewHref}/logs`;
   const metricsHref = `${overviewHref}/metrics`;
   const workloadsHref = overviewHref.replace(/\/[^/]+$/, "");
@@ -842,6 +503,14 @@ export default function WorkloadDetail() {
         }
       >
         <Route index element={<WorkloadOverview />} />
+        <Route
+          path="topology"
+          element={
+            <Suspense fallback={<WorkloadTopologySkeleton />}>
+              <WorkloadTopology />
+            </Suspense>
+          }
+        />
         <Route path="metrics" element={<WorkloadMetrics />} />
         <Route path="logs" element={<WorkloadLogs />} />
         <Route

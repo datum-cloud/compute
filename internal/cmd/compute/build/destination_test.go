@@ -311,8 +311,8 @@ func TestAssembleImageUsesComputeIndexAndInitrdAnnotation(t *testing.T) {
 		t.Fatalf("expected one index manifest, got %d", len(idxManifest.Manifests))
 	}
 	platform := idxManifest.Manifests[0].Platform
-	if platform == nil || platform.OS != "kraftcloud" || platform.Architecture != "x86_64" {
-		t.Fatalf("expected kraftcloud/x86_64 platform, got %#v", platform)
+	if platform == nil || platform.OS != "datum" || platform.Architecture != "x86_64" {
+		t.Fatalf("expected datum/x86_64 platform, got %#v", platform)
 	}
 }
 

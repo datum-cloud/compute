@@ -1,4 +1,6 @@
-export const EXEC_FEATURE = 'exec';
+// The portal only opens shells with a terminal, so it needs a class that
+// serves terminals, not just exec.
+export const TERMINAL_FEATURE = 'execTerminal';
 
 export interface RuntimeClassSummary {
   name: string;
@@ -46,7 +48,7 @@ export function canShowShell({
     clientBundled &&
     canCreateSessions &&
     sessionAllowance !== 0 &&
-    !!runtimeClass?.features.includes(EXEC_FEATURE) &&
+    !!runtimeClass?.features.includes(TERMINAL_FEATURE) &&
     containers.length > 0
   );
 }

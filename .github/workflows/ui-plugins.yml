@@ -1,0 +1,70 @@
+name: UI Plugins
+
+# Typechecks and unit-tests the portal plugins under ui/. Each is its own pnpm
+# project with its own lockfile, so this runs per plugin. Their images are
+# built by publish.yaml, which never ran either check.
+#
+# No Go toolchain: the consumer plugin's shell wasm client is optional at build
+# time and the tests don't load it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ui/**'
+      - '.github/workflows/ui-plugins.yml'
+  pull_request:
+    paths:
+      - 'ui/**'
+      - '.github/workflows/ui-plugins.yml'
+
+concurrency:
+  group: ui-plugins-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.plugin }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin: consumer
+            test: true
+          # ui/provider has no tests yet.
+          - plugin: provider
+            test: false
+    defaults:
+      run:
+        working-directory: ui/${{ matrix.plugin }}
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v7
+
+      # Installs the version the plugin's packageManager pins. There is no
+      # package.json at the repository root, so point at the plugin's.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: ui/${{ matrix.plugin }}/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ui/${{ matrix.plugin }}/.nvmrc
+          cache: pnpm
+          cache-dependency-path: ui/${{ matrix.plugin }}/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        if: matrix.test
+        run: pnpm test

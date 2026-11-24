@@ -54,6 +54,18 @@ inside a customer's Instance.
    session and look for the orphaned command, or check the container's
    process list from the cell.
 
+5. **Is the sweep catching up.** Each agent sweeps for leftover session
+   processes every minute. The *Cleanup sweep* row of the Instance Shell
+   Sessions dashboard shows it, or query:
+
+   ```promql
+   sum by (cell, source) (increase(compute_shell_agent_orphans_reaped_total[1h]))
+   sum by (cell) (increase(compute_shell_agent_sweep_errors_total[1h]))
+   ```
+
+   A rising reaped count means the sweep is stopping what the session's own
+   cleanup missed. Sweep errors mean it is not running at all.
+
 ## Known causes
 
 - **Agent restarted between the end and the confirmation.** The surviving

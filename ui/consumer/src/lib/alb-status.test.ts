@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { albStatus, albStatusDisplay, anyAlbProvisioning, workloadUrlState } from './alb-status';
 import type { ConnectedAlb, ResourceCondition } from './api';
 
@@ -27,6 +27,7 @@ function alb(conditions: ResourceCondition[], services = [serviceReady]): Connec
     createdAt: new Date(T0),
     conditions,
     services,
+    routes: [],
   };
 }
 

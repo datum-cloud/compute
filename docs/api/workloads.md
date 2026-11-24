@@ -188,11 +188,17 @@ Scale settings such as minimum and maximum replica counts.
     </thead>
     <tbody><tr>
         <td><b>instanceManagementPolicy</b></td>
-        <td>string</td>
+        <td>enum</td>
         <td>
           Controls how instances are managed during scale up and down, as well as
-during maintenance events.<br/>
+during maintenance events.
+
+OrderedReady creates and deletes instances one at a time, waiting for
+each to become ready before moving to the next. Parallel creates and
+deletes instances all at once without waiting on readiness. Both replace
+instances on a template change one at a time.<br/>
           <br/>
+            <i>Enum</i>: OrderedReady, Parallel<br/>
             <i>Default</i>: OrderedReady<br/>
         </td>
         <td>true</td>

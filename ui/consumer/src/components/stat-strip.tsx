@@ -1,34 +1,65 @@
 /**
- * Shared horizontal stat strip (a divided row of label/value pairs) used as
- * the "fleet bar" on both the workload list and workload detail pages.
- *
- * Matches the workloads mockup: equal-width columns in one row. On narrow
- * viewports the strip scrolls horizontally instead of reflowing into a grid.
+ * Compact stat strip: one row of small muted labels over values, with no box
+ * around it, in the type scale the project home page uses. Wraps on narrow
+ * viewports instead of scrolling.
  */
+import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { cn } from '@datum-cloud/datum-ui/utils';
+import type { ReactNode } from 'react';
+import { Link } from 'react-router';
+
+/** Shown in place of a value that is loading, errored or empty. */
+export const STAT_PLACEHOLDER = '—';
+
+/**
+ * Inline because the host compiles no `gap-x-8` / `gap-y-3`, and a missing
+ * utility fails silently (see ui/CLAUDE.md): the stats would run together.
+ */
+export const STRIP_GAP = { columnGap: '2rem', rowGap: '0.75rem' } as const;
 
 export interface Stat {
   label: string;
-  value: string;
+  value: ReactNode;
+  /** Makes the value a link, e.g. to the filtered list. */
+  href?: string;
   className?: string;
 }
 
-export function StatStrip({ stats, testId }: { stats: Stat[]; testId?: string }) {
+export interface StatStripProps {
+  items: Stat[];
+  isLoading?: boolean;
+  testId?: string;
+  className?: string;
+}
+
+export function StatStrip({ items, isLoading = false, testId, className }: StatStripProps) {
   return (
-    <div
-      className="min-w-0 overflow-x-auto"
-      style={{ overscrollBehaviorX: 'contain' }}
+    <dl
+      className={cn('flex flex-wrap items-start px-1', className)}
+      style={STRIP_GAP}
+      aria-busy={isLoading}
       data-testid={testId}>
-      <div className="divide-card-border border-card-border bg-card flex min-w-[40rem] divide-x rounded-xl border sm:min-w-0">
-        {stats.map((s) => (
-          <div key={s.label} className="flex min-w-0 flex-1 flex-col gap-1 px-5 py-3.5">
-            <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-              {s.label}
-            </span>
-            <span className={cn('text-lg font-semibold', s.className)}>{s.value}</span>
+      {items.map((s) => {
+        const empty = s.value === undefined || s.value === null || s.value === '';
+        return (
+          <div key={s.label} className="flex min-w-0 flex-col gap-0.5">
+            <dt className="text-muted-foreground text-xs">{s.label}</dt>
+            <dd className={cn('text-sm font-medium tabular-nums', s.className)}>
+              {isLoading ? (
+                <Skeleton className="mt-1 h-3 w-10 rounded" />
+              ) : empty ? (
+                <span className="text-muted-foreground">{STAT_PLACEHOLDER}</span>
+              ) : s.href ? (
+                <Link to={s.href} className="hover:underline">
+                  {s.value}
+                </Link>
+              ) : (
+                s.value
+              )}
+            </dd>
           </div>
-        ))}
-      </div>
-    </div>
+        );
+      })}
+    </dl>
   );
 }

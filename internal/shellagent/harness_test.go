@@ -44,6 +44,10 @@ const (
 	testSession        = "s1"
 	testUID            = "uid-1"
 	testEndpointPod    = "exec-endpoint-0"
+	testMarkerDir      = "/tmp"
+	testEndedUID       = "uid-ended"
+	testOrphanUID      = "uid-gone"
+	testPodUID         = "pod-uid"
 )
 
 // clock is a settable time source shared by the agents in a test.
@@ -99,7 +103,7 @@ func newHarness(t *testing.T) *harness {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            testInstance,
 			Namespace:       testNamespace,
-			UID:             "pod-uid",
+			UID:             testPodUID,
 			Labels:          map[string]string{managedByLabel: "kata-provider"},
 			OwnerReferences: []metav1.OwnerReference{owner},
 		},
@@ -249,7 +253,7 @@ type fakeAPIServer struct {
 }
 
 func newFakeAPIServer() *fakeAPIServer {
-	return &fakeAPIServer{probeDir: "/tmp"}
+	return &fakeAPIServer{probeDir: testMarkerDir}
 }
 
 func (f *fakeAPIServer) ran(script string) int {
@@ -310,7 +314,7 @@ func (f *fakeAPIServer) answer(conn net.Conn, command []string) {
 			writeServerFrame(conn, channelStdout, []byte(probeDir+"\n"))
 		}
 		writeExitStatus(conn, probeExit)
-	case listMarkersScript:
+	case findMarkersScript:
 		writeServerFrame(conn, channelStdout, []byte(markers))
 		writeExitStatus(conn, 0)
 	case exitWatchScript:

@@ -490,12 +490,37 @@ func main() {
 			setupLog.Error(observationErr, "invalid internal DNS network observation configuration")
 			os.Exit(1)
 		}
+		skip := map[string]bool{}
+		for _, location := range serverConfig.InternalDNS.LocallyPublishedLocations {
+			skip[location] = true
+		}
 		dnsPublisher := &controller.InternalDNSPublisherReconciler{
 			ResolveProjectIdentity: controller.InternalDNSProjectIdentityResolver(identityClient),
 			ObservationSources:     observers,
+			SkipLocations:          skip,
 		}
 		if err = dnsPublisher.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSPublisher")
+			os.Exit(1)
+		}
+	}
+
+	// A cell that publishes locally writes its instances' names into its own
+	// cluster, where its region's DNS control plane serves them at once.
+	localDNS := serverConfig.InternalDNS.LocalPublishing
+	if features.FeatureGate.Enabled(features.InternalDNSPublishing) && enableCellControllers && localDNS != nil {
+		if serverConfig.Discovery.Mode != multiclusterproviders.ProviderSingle || localDNS.Region == "" {
+			setupLog.Error(nil, "internalDNS.localPublishing needs a region and single discovery mode on the cell")
+			os.Exit(1)
+		}
+		localPublisher := &controller.InternalDNSPublisherReconciler{
+			LocalRegion:            serverConfig.InternalDNS.LocalPublishing.Region,
+			ProjectAccess:          controller.LocalInternalDNSAccess,
+			ProjectIDForInstance:   controller.LocalInternalDNSProjectID,
+			ResolveProjectIdentity: controller.LocalInternalDNSProjectIdentity(mgr.GetLocalManager().GetAPIReader()),
+		}
+		if err = localPublisher.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "InternalDNSLocalPublisher")
 			os.Exit(1)
 		}
 	}
@@ -563,8 +588,13 @@ func main() {
 		}
 		// Always registered, regardless of InstanceTypes: the gate is checked
 		// inside validation, which rejects every write with an explained reason
+		var projectReaders *computewebhook.ProjectReaders
+		if projectReaders, err = webhookProjectReaders(serverConfig); err != nil {
+			setupLog.Error(err, "unable to create project readers", "webhook", "InstanceType")
+			os.Exit(1)
+		}
 		if err = computev1alphawebhooks.SetupInstanceTypeWebhookWithManager(
-			mgr, instanceTypeDeprecationGracePeriod,
+			mgr, projectReaders, instanceTypeDeprecationGracePeriod,
 		); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InstanceType")
 			os.Exit(1)
@@ -632,6 +662,23 @@ func main() {
 		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
+}
+
+// webhookProjectReaders returns uncached readers for project control planes
+// when consumer-scoped projection is configured, so admission does not wait
+// for the consumer provider to engage a newly entitled project. It returns nil
+// in every other discovery mode, where webhooks read through the engaged
+// cluster as before.
+func webhookProjectReaders(serverConfig config.WorkloadOperator) (*computewebhook.ProjectReaders, error) {
+	csp := serverConfig.Discovery.ConsumerScopedProjection
+	if serverConfig.Discovery.Mode != multiclusterproviders.ProviderMilo || csp == nil {
+		return nil, nil
+	}
+	discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+	}
+	return computewebhook.NewProjectReaders(discoveryRestConfig, csp.ProviderProject, scheme)
 }
 
 func initializeClusterDiscovery(

@@ -111,7 +111,10 @@ const COMPACT_LAYOUT = { columns: 1, limit: 3 } as const;
  * the page scrolls as usual and the canvas never traps a touch.
  */
 const COMPACT_BREAKPOINT = 560;
-/** Fixed frame height outside compact mode. Inline: the host does not compile `h-[28rem]`. */
+/**
+ * Smallest frame outside compact mode. The frame otherwise grows to fill the
+ * space its card gives it. Inline: the host does not compile `min-h-[28rem]`.
+ */
 const FRAME_HEIGHT = '28rem';
 /** Compact top inset, clearing the corner chips. */
 const COMPACT_TOP = 52;
@@ -555,6 +558,8 @@ export function TopologyCanvas({
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [compact, setCompact] = useState(false);
   const [compactHeight, setCompactHeight] = useState(0);
+  // Set once someone pans or zooms, so a resize doesn't throw their view away.
+  const touchedRef = useRef(false);
   viewRef.current = view;
 
   useLayoutEffect(() => {
@@ -659,10 +664,19 @@ export function TopologyCanvas({
     const world = worldRef.current;
     if (!viewport || !world) return;
     if (!compact) {
-      const next = fitView(viewport, world);
-      viewRef.current = next;
-      setView(next);
-      return;
+      // The frame fills its card, so its size follows the window. Refit as it
+      // changes until someone pans or zooms; Reset view refits on demand.
+      touchedRef.current = false;
+      const fit = () => {
+        if (touchedRef.current) return;
+        const next = fitView(viewport, world);
+        viewRef.current = next;
+        setView(next);
+      };
+      fit();
+      const observer = new ResizeObserver(fit);
+      observer.observe(viewport);
+      return () => observer.disconnect();
     }
     // Compact: track the tree's size, since the frame grows with it.
     const apply = () => {
@@ -695,6 +709,7 @@ export function TopologyCanvas({
         event.clientY - rect.top,
         current.scale * Math.exp(-event.deltaY * 0.01)
       );
+      touchedRef.current = true;
       viewRef.current = next;
       setView(next);
     };
@@ -721,6 +736,7 @@ export function TopologyCanvas({
           x: origin.x + move.clientX - startX,
           y: origin.y + move.clientY - startY,
         };
+        touchedRef.current = true;
         viewRef.current = next;
         setView(next);
       };
@@ -749,6 +765,7 @@ export function TopologyCanvas({
       viewport.clientHeight / 2,
       viewRef.current.scale * factor
     );
+    touchedRef.current = true;
     viewRef.current = next;
     setView(next);
   };
@@ -758,6 +775,7 @@ export function TopologyCanvas({
     const world = worldRef.current;
     if (!viewport || !world) return;
     const next = fitView(viewport, world);
+    touchedRef.current = false;
     viewRef.current = next;
     setView(next);
   };
@@ -767,7 +785,11 @@ export function TopologyCanvas({
       ref={viewportRef}
       data-testid="compute-plugin-topology-canvas"
       className={`cpt-root${panning ? ' cpt-panning' : ''}${compact ? ' cpt-compact' : ''}`}
-      style={{ position: 'relative', height: compact ? compactHeight || FRAME_HEIGHT : FRAME_HEIGHT }}
+      style={
+        compact
+          ? { position: 'relative', height: compactHeight || FRAME_HEIGHT }
+          : { position: 'relative', flex: '1 1 auto', minHeight: FRAME_HEIGHT }
+      }
       aria-label={
         compact
           ? 'Topology diagram.'

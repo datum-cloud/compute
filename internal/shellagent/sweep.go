@@ -4,6 +4,7 @@ package shellagent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,6 +66,10 @@ func (a *Agent) RunSweeper(ctx context.Context) error {
 	}
 }
 
+// maxMarkerChecks bounds the session UIDs one marker check passes, since each
+// becomes a query parameter of the exec request.
+const maxMarkerChecks = 64
+
 type markerPlace struct {
 	pod       types.NamespacedName
 	podUID    types.UID
@@ -74,11 +79,16 @@ type markerPlace struct {
 
 // sweep stops processes left behind by sessions that no longer exist or have
 // ended, and frees their slots. Slots name the containers sessions ran in, and
-// each of those containers is searched for marker files of other sessions.
+// each of those containers is checked for marker files of the instance's other
+// sessions. The instance's user can write marker files too, so the sweep acts
+// only on markers of sessions the cell knows, never on every file it finds.
 func (a *Agent) sweep(ctx context.Context) error {
+	start := time.Now()
+	defer func() { agentSweepSeconds.WithLabelValues(a.cfg.Cell).Observe(time.Since(start).Seconds()) }()
 	var leases coordinationv1.LeaseList
 	if err := a.cell.List(ctx, &leases, client.InNamespace(a.cfg.Namespace),
 		client.MatchingLabels{componentLabel: slotComponent}); err != nil {
+		agentSweepErrors.WithLabelValues(a.cfg.Cell).Inc()
 		return err
 	}
 	places := map[markerPlace]struct{}{}
@@ -100,6 +110,7 @@ func (a *Agent) sweep(ctx context.Context) error {
 			continue
 		}
 		if reaped {
+			a.recordOrphanReaped(orphanSourceSlot)
 			if err := a.markStopped(ctx, s.session, s.sessionUID); err != nil {
 				log.FromContext(ctx).Error(err, "record stopped session", "session", s.sessionUID)
 			}
@@ -120,24 +131,58 @@ func (a *Agent) sweepContainer(ctx context.Context, place markerPlace) {
 	if status := containerStatus(&pod, place.container); status == nil || status.State.Running == nil {
 		return
 	}
-	out, code, err := a.run(ctx, place.pod, place.container, listMarkersCommand(place.dir))
-	if err != nil || code != 0 {
-		logger.Info("could not list session markers", "exitCode", code, "error", err)
+	candidates, err := a.markerCandidates(ctx, place.pod)
+	if err != nil {
+		logger.Error(err, "list sessions of the instance")
 		return
 	}
-	for _, uid := range strings.Fields(out) {
-		if a.isLive(uid) {
-			continue
+	if len(candidates) == 0 {
+		return
+	}
+	found := map[string]struct{}{}
+	for batch := range slices.Chunk(candidates, maxMarkerChecks) {
+		out, code, err := a.run(ctx, execPurposeMarkerCheck, place.pod, place.container, findMarkersCommand(place.dir, batch))
+		if err != nil || code != 0 {
+			logger.Info("could not look for session markers", "exitCode", code, "error", err)
+			return
 		}
+		for _, uid := range strings.Fields(out) {
+			if slices.Contains(batch, uid) {
+				found[uid] = struct{}{}
+			}
+		}
+	}
+	for uid := range found {
 		state, err := a.sessionState(ctx, uid)
 		if err != nil || state != sessionEnded {
 			continue
 		}
 		grace := int(a.cfg.KillGrace.Seconds())
-		if _, code, err := a.run(ctx, place.pod, place.container, killCommand(place.dir, uid, grace)); err != nil || code != 0 {
+		if _, code, err := a.run(ctx, execPurposeStop, place.pod, place.container, killCommand(place.dir, uid, grace)); err != nil || code != 0 {
 			logger.Info("could not stop orphaned session processes", "session", uid, "exitCode", code, "error", err)
 			continue
 		}
+		a.recordOrphanReaped(orphanSourceMarker)
 		logger.Info("stopped orphaned session processes", "session", uid)
 	}
+}
+
+// markerCandidates returns the UIDs of an instance's sessions that this agent
+// is not serving. Their number is bounded by the sessions the instance's
+// project may hold, not by what the instance writes.
+func (a *Agent) markerCandidates(ctx context.Context, pod types.NamespacedName) ([]string, error) {
+	var sessions computev1alpha.InstanceConsoleSessionList
+	if err := a.sessions.List(ctx, &sessions, client.InNamespace(pod.Namespace),
+		client.MatchingLabels{computev1alpha.InstanceConsoleSessionInstanceNameLabel: pod.Name}); err != nil {
+		return nil, err
+	}
+	var uids []string
+	for i := range sessions.Items {
+		uid := sessionUID(&sessions.Items[i])
+		if uid == "" || a.isLive(uid) || slices.Contains(uids, uid) {
+			continue
+		}
+		uids = append(uids, uid)
+	}
+	return uids, nil
 }

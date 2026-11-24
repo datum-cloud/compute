@@ -19,10 +19,11 @@
  *  - Client-side 403 handling instead of PR #1315's server-loader RBAC gate
  *    (`runDetailLoader`, portal-internal) — see `ApiError` below.
  */
+import { workloadSettling } from './workload-settling';
 import { toInstance, toInstanceList, toWorkload, toWorkloadList, INSTANCE_LABELS } from '../adapter';
 import { anyAlbProvisioning } from './alb-status';
 import type { RawInstance, RawInstanceList, RawWorkload, RawWorkloadList } from '../adapter';
-import type { Instance, Workload } from '../schema';
+import type { Instance, InstanceCondition, Workload } from '../schema';
 import { useEffect } from 'react';
 import {
   mutationOptions,
@@ -84,6 +85,7 @@ export function getProjectScopedBase(projectId: string): string {
 // in the compute repo.
 const WORKLOADS_PATH = '/apis/compute.datumapis.com/v1alpha/namespaces/default/workloads';
 const INSTANCES_PATH = '/apis/compute.datumapis.com/v1alpha/namespaces/default/instances';
+const WORKLOAD_DEPLOYMENTS_PATH = '/apis/compute.datumapis.com/v1alpha/namespaces/default/workloaddeployments';
 
 async function proxyFetch<T>(projectId: string, path: string): Promise<T> {
   const url = `${getProjectScopedBase(projectId)}${path}`;
@@ -530,10 +532,10 @@ export function useWorkload(
     enabled: !!projectId && !!name,
     queryFn: () => fetchWorkload(projectId as string, name as string),
     ...POLLED_QUERY,
+    // Fast while deploying, and while instances are still coming up after
+    // the workload reports Available (a placement exists seconds before they serve).
     refetchInterval: (query) =>
-      query.state.data?.health === 'Deploying' && !query.state.data.deleting
-        ? DEPLOYING_REFETCH_INTERVAL_MS
-        : REFETCH_INTERVAL_MS,
+      query.state.data && workloadSettling(query.state.data) ? DEPLOYING_REFETCH_INTERVAL_MS : REFETCH_INTERVAL_MS,
   });
 }
 
@@ -608,6 +610,53 @@ export function useInstance(
   });
 }
 
+// ── Workload deployments ─────────────────────────────────────────────────
+
+/** One WorkloadDeployment (a placement in one location), reduced to what explains a stalled deploy. */
+export interface WorkloadDeploymentSummary {
+  name: string;
+  location?: string;
+  conditions: InstanceCondition[];
+}
+
+interface RawWorkloadDeploymentList {
+  items?: Array<{
+    metadata?: { name?: string; labels?: Record<string, string> };
+    status?: { conditions?: InstanceCondition[] };
+  }>;
+}
+
+async function fetchWorkloadDeployments(projectId: string, workloadUid: string): Promise<WorkloadDeploymentSummary[]> {
+  const query = new URLSearchParams({ labelSelector: `compute.datumapis.com/workload-uid=${workloadUid}` });
+  const body = await proxyFetch<RawWorkloadDeploymentList>(projectId, `${WORKLOAD_DEPLOYMENTS_PATH}?${query.toString()}`);
+  return (body.items ?? []).map((item) => ({
+    name: item.metadata?.name ?? '',
+    location: item.metadata?.labels?.['compute.datumapis.com/location'],
+    conditions: item.status?.conditions ?? [],
+  }));
+}
+
+/**
+ * A workload's deployments, read only while it is still coming up: some
+ * causes of a stalled deploy (a missing Secret, say) are reported only here,
+ * not on the Workload or its instances.
+ */
+export function useWorkloadDeployments(
+  projectId: string | undefined,
+  workloadUid: string | undefined,
+  enabled: boolean
+): UseQueryResult<WorkloadDeploymentSummary[], ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'workload-deployments', projectId, workloadUid],
+    enabled: enabled && !!projectId && !!workloadUid,
+    queryFn: () => fetchWorkloadDeployments(projectId as string, workloadUid as string),
+    ...POLLED_QUERY,
+    refetchInterval: DEPLOYING_REFETCH_INTERVAL_MS,
+    // A missing permission or an older API just means no extra detail.
+    retry: false,
+  });
+}
+
 // ── Connected ALB (HTTPProxy via NetworkService) ─────────────────────────
 //
 // A workload is on a public URL when an HTTPProxy (ALB) names a NetworkService
@@ -630,17 +679,19 @@ export interface ResourceCondition {
   lastTransitionTime?: string;
 }
 
-interface RawNetworkService {
+export interface RawNetworkService {
   metadata?: { name?: string; labels?: Record<string, string> };
   spec?: {
     networkInterfaces?: {
       selector?: { matchLabels?: Record<string, string> };
     };
+    /** The ports members answer on; a backend names one of them. */
+    ports?: Array<{ name?: string; port?: number; protocol?: string; appProtocol?: string }>;
   };
   status?: { conditions?: ResourceCondition[] };
 }
 
-interface RawHttpProxy {
+export interface RawHttpProxy {
   metadata?: {
     name?: string;
     creationTimestamp?: string;
@@ -650,8 +701,18 @@ interface RawHttpProxy {
   spec?: {
     hostnames?: string[];
     rules?: Array<{
+      /** Gateway API `HTTPRouteMatch`es; any one matching selects the rule. Unset means `/`. */
+      matches?: Array<{
+        path?: { type?: string; value?: string };
+        headers?: unknown[];
+        queryParams?: unknown[];
+        method?: string;
+      }>;
       backends?: Array<{
-        networkService?: { name?: string };
+        networkService?: { name?: string; port?: string };
+        endpoint?: string;
+        /** Share of the rule's requests, relative to its other backends. Unset is 1. */
+        weight?: number;
       }>;
     }>;
   };
@@ -672,6 +733,22 @@ export interface ConnectedAlb {
   conditions: ResourceCondition[];
   /** This workload's NetworkServices the proxy backends to, with their `Ready` condition. */
   services: Array<{ name: string; ready?: ResourceCondition }>;
+  /** The proxy's rules that send traffic to this workload, in spec order. */
+  routes: AlbRoute[];
+}
+
+/** One rule of a load balancer that sends traffic to the workload. */
+export interface AlbRoute {
+  /** The paths the rule matches, as written: `/`, `/api`. */
+  paths: string[];
+  /** The rule also matches on headers, query parameters or method. */
+  narrowed: boolean;
+  /** The workload port the rule sends to, resolved from the service's named port. */
+  port?: { name: string; number?: number; appProtocol?: string };
+  /** This workload's share of the rule's requests when other backends share it, 0-100. */
+  percent?: number;
+  /** How many other backends share the rule. */
+  sharedWith: number;
 }
 
 export interface PublishedUrl {
@@ -735,6 +812,47 @@ function workloadNameForService(svc: RawNetworkService): string | undefined {
   );
 }
 
+/** A match's path as a person reads it. A regular expression is marked, since `/a.*` reads as a literal. */
+function matchPath(path: { type?: string; value?: string } | undefined): string {
+  const value = path?.value || '/';
+  return path?.type === 'RegularExpression' ? `~ ${value}` : value;
+}
+
+/**
+ * The proxy's rules that send traffic to one of `services` (the workload's own
+ * NetworkServices), each with the paths it matches, the workload port it sends
+ * to and, when the rule splits traffic with other backends, this workload's
+ * share. Weights follow the Gateway API: unset is 1.
+ */
+export function albRoutes(proxy: RawHttpProxy, services: RawNetworkService[]): AlbRoute[] {
+  const byName = new Map(services.flatMap((svc) => (svc.metadata?.name ? [[svc.metadata.name, svc] as const] : [])));
+  return (proxy.spec?.rules ?? []).flatMap((rule) => {
+    const backends = rule.backends ?? [];
+    const own = backends.filter((b) => b.networkService?.name && byName.has(b.networkService.name));
+    if (own.length === 0) return [];
+    const weight = (b: (typeof backends)[number]) => b.weight ?? 1;
+    const total = backends.reduce((sum, b) => sum + weight(b), 0);
+    const ownWeight = own.reduce((sum, b) => sum + weight(b), 0);
+    const matches = rule.matches?.length ? rule.matches : [{}];
+    const portName = own[0].networkService?.port;
+    const servicePort = portName
+      ? byName.get(own[0].networkService!.name!)?.spec?.ports?.find((p) => p.name === portName)
+      : undefined;
+    const sharedWith = backends.length - own.length;
+    return [
+      {
+        paths: [...new Set(matches.map((m) => matchPath(m.path)))],
+        narrowed: matches.some((m) => !!m.method || !!m.headers?.length || !!m.queryParams?.length),
+        port: portName
+          ? { name: portName, number: servicePort?.port, appProtocol: servicePort?.appProtocol }
+          : undefined,
+        percent: sharedWith > 0 && total > 0 ? Math.round((ownWeight / total) * 100) : undefined,
+        sharedWith,
+      },
+    ];
+  });
+}
+
 /** `services` are the workload's own NetworkServices the proxy names as backends. */
 function toConnectedAlb(proxy: RawHttpProxy, services: RawNetworkService[] = []): ConnectedAlb | null {
   const proxyName = proxy.metadata?.name ?? '';
@@ -752,6 +870,7 @@ function toConnectedAlb(proxy: RawHttpProxy, services: RawNetworkService[] = [])
       name: svc.metadata?.name ?? '',
       ready: svc.status?.conditions?.find((c) => c.type === 'Ready'),
     })),
+    routes: albRoutes(proxy, services),
   };
 }
 
@@ -1021,6 +1140,86 @@ export function useDeletePermissions(
   });
   // Pending (including disabled) reads as loading so nothing flashes in and out.
   return { ...(query.data ?? NO_DELETE_PERMISSIONS), isLoading: query.isPending };
+}
+
+// ── Load balancer backend ────────────────────────────────────────────────
+
+/**
+ * A port name a NetworkService (and a load balancer backend naming it) will
+ * accept: a DNS label. Mirrors the CLI's `url.PortName`. Undefined when
+ * nothing usable is left.
+ */
+export function servicePortName(name: string): string | undefined {
+  const cleaned = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 63)
+    .replace(/-+$/, '');
+  return cleaned || undefined;
+}
+
+/**
+ * The NetworkService that lets a load balancer reach `workload`: the same
+ * object `datumctl compute url` makes (named for the workload, labelled with
+ * its name and UID, selecting its instances), exposing each named TCP port.
+ * Undefined when the workload has no named TCP port to expose.
+ */
+export function workloadServicePayload(workload: Workload) {
+  const seen = new Set<string>();
+  const ports = workload.namedPorts.flatMap((p) => {
+    const name = servicePortName(p.name);
+    if (!name || seen.has(name) || p.protocol.toUpperCase() !== 'TCP') return [];
+    seen.add(name);
+    return [{ name, port: p.port, protocol: 'TCP' }];
+  });
+  if (ports.length === 0) return undefined;
+  return {
+    apiVersion: 'networking.datumapis.com/v1alpha',
+    kind: 'NetworkService',
+    metadata: {
+      name: workload.name,
+      namespace: 'default',
+      labels: {
+        [INSTANCE_LABELS.workloadName]: workload.name,
+        'compute.datumapis.com/workload-uid': workload.uid,
+      },
+      ownerReferences: [
+        {
+          apiVersion: 'compute.datumapis.com/v1alpha',
+          kind: 'Workload',
+          name: workload.name,
+          uid: workload.uid,
+          controller: false,
+          blockOwnerDeletion: false,
+        },
+      ],
+    },
+    spec: {
+      networkInterfaces: { selector: { matchLabels: { [INSTANCE_LABELS.workloadName]: workload.name } } },
+      ports,
+    },
+  };
+}
+
+/**
+ * Make sure a load balancer can pick `workload` as its backend: creates its
+ * NetworkService unless one already selects it. A 409 means one with its name
+ * exists already, which is as good.
+ */
+export async function ensureWorkloadService(projectId: string, workload: Workload): Promise<void> {
+  const services = await listOrUnavailable<RawNetworkService>(projectId, NETWORKSERVICES_PATH);
+  if (services?.some((svc) => workloadNameForService(svc) === workload.name)) return;
+  const payload = workloadServicePayload(workload);
+  if (!payload) return;
+  const res = await fetch(`${getProjectScopedBase(projectId)}${NETWORKSERVICES_PATH}`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new ApiError(res.status, `Request failed (${res.status}): ${NETWORKSERVICES_PATH}`);
+  }
 }
 
 // ── Delete mutation ──────────────────────────────────────────────────────

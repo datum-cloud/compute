@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -117,7 +118,8 @@ func workloadDeploymentPodSelector(deployment *computev1alpha.WorkloadDeployment
 // a marker so regenerating the role keeps it.
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 
-func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (out ctrl.Result, err error) {
+	defer func(ctx context.Context) { out, err = settleRoutineErrors(ctx, "workloaddeployment", out, err) }(ctx)
 	logger := log.FromContext(ctx)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -140,7 +142,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 	}
 	if finalizationResult.Updated {
-		if err = cl.GetClient().Update(ctx, &deployment); err != nil {
+		if err = cl.GetClient().Update(ctx, &deployment); client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to update based on finalization result: %w", err)
 		}
 		// The finalizer-add Update is metadata-only and may be filtered by event
@@ -204,18 +206,8 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 
 	logger.Info("collected instance control actions", "count", len(actions))
 
-	for _, action := range actions {
-		// We don't need to actually check this, but it'll reduce log noise.
-		if action.IsSkipped() {
-			continue
-		}
-
-		logger.Info("instance control action", "instance", action.Object.GetName(), "action", action.ActionType())
-
-		if err := action.Execute(ctx, cl.GetClient()); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed executing instance control action: %w", err)
-		}
-		r.events.recordInstanceTerminating(ctx, cl, action, desiredReplicas)
+	if err := r.executeInstanceActions(ctx, cl, actions, desiredReplicas); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// When networking is disabled, bypass the entire network provisioning path.
@@ -223,6 +215,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 	// interface claims are created. This lets Instances reach the runtime on cells
 	// where network-services-operator (VPC) is not yet available.
 	networkReadyByInstance := make(map[string]bool, len(instances.Items))
+	var waitingOnClaim bool
 	switch {
 	case !r.NetworkingEnabled:
 		for _, instance := range instances.Items {
@@ -241,7 +234,7 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 			"reason", location.reason, "message", location.message)
 
 	default:
-		networkReadyByInstance, err = r.reconcileNetworkInterfaceClaims(ctx, cl.GetClient(), &deployment, instances.Items)
+		networkReadyByInstance, waitingOnClaim, err = r.reconcileNetworkInterfaceClaims(ctx, cl.GetClient(), &deployment, instances.Items)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed reconciling network interface claims: %w", err)
 		}
@@ -348,7 +341,43 @@ func (r *WorkloadDeploymentReconciler) Reconcile(ctx context.Context, req mcreco
 		r.events.recordDeploymentScaled(ctx, cl, &deployment, existingStatus)
 	}
 
+	if waitingOnClaim {
+		// A claim this deployment's instances cannot use yet may be controlled
+		// by nothing, or by something other than an Instance, and the claim watch
+		// maps neither back here when it goes. Poll until it does.
+		return ctrl.Result{RequeueAfter: networkInterfaceClaimWaitInterval}, nil
+	}
+
 	return ctrl.Result{}, nil
+}
+
+func (r *WorkloadDeploymentReconciler) executeInstanceActions(
+	ctx context.Context,
+	cl cluster.Cluster,
+	actions []instancecontrol.Action,
+	desiredReplicas int32,
+) error {
+	logger := log.FromContext(ctx)
+
+	for _, action := range actions {
+		// We don't need to actually check this, but it'll reduce log noise.
+		if action.IsSkipped() {
+			continue
+		}
+
+		logger.Info("instance control action", "instance", action.Object.GetName(), "action", action.ActionType())
+
+		if err := action.Execute(ctx, cl.GetClient()); err != nil {
+			if action.ActionType() == instancecontrol.ActionTypePatchTemplateHash {
+				logger.Error(err, "failed rewriting legacy template hash", "instance", action.Object.GetName())
+				continue
+			}
+			return fmt.Errorf("failed executing instance control action: %w", err)
+		}
+		r.events.recordInstanceTerminating(ctx, cl, action, desiredReplicas)
+	}
+
+	return nil
 }
 
 func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
@@ -358,7 +387,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 	instances []computev1alpha.Instance,
 	networkReadyByInstance map[string]bool,
 ) (currentReplicas, updatedReplicas, readyReplicas, quotaBlockedReplicas, referencedDataBlockedReplicas int, err error) {
-	templateHash := instancecontrol.ComputeHash(deployment.Spec.Template)
+	templateHashes := instancecontrol.HashTemplate(deployment.Spec.Template)
 	for _, instance := range instances {
 		// Backfill the canonical desired location on instances created before the
 		// location contract was introduced.
@@ -414,7 +443,7 @@ func (r *WorkloadDeploymentReconciler) reconcileInstanceGates(
 		// Status.Controller is a pointer the infra provider may not have populated
 		// yet; guard the deref to avoid a panic that would abort the reconcile.
 		onLatestRevision := instance.Status.Controller != nil &&
-			instance.Status.Controller.ObservedTemplateHash == templateHash
+			templateHashes.Matches(instance.Status.Controller.ObservedTemplateHash)
 		if onLatestRevision {
 			updatedReplicas++
 		}
@@ -801,10 +830,16 @@ func (s *servingLocationResult) evaluate(deployment *computev1alpha.WorkloadDepl
 	s.blocked = true
 }
 
+// networkInterfaceClaimWaitInterval is how often a deployment is reconciled
+// while an instance waits for a claim it cannot use to go away. It matches the
+// wait the Pod attachment path uses for the same condition.
+const networkInterfaceClaimWaitInterval = 5 * time.Second
+
 // reconcileNetworkInterfaceClaims ensures one NetworkInterfaceClaim exists per
 // instance interface, and reports which instances hold every address they asked
 // for. The returned map is keyed by instance name; an instance missing from it,
-// or mapped to false, is still waiting on its addresses.
+// or mapped to false, is still waiting on its addresses. waitingOnClaim reports
+// that some instance is waiting for a claim of its slot's name to go away.
 //
 // A claim names the instance slot rather than the instance object, and is owned
 // by the instance filling that slot. Deleting the instance therefore releases
@@ -815,10 +850,10 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworkInterfaceClaims(
 	c client.Client,
 	deployment *computev1alpha.WorkloadDeployment,
 	instances []computev1alpha.Instance,
-) (map[string]bool, error) {
+) (readyByInstance map[string]bool, waitingOnClaim bool, err error) {
 	logger := log.FromContext(ctx)
 
-	readyByInstance := make(map[string]bool, len(instances))
+	readyByInstance = make(map[string]bool, len(instances))
 	for i := range instances {
 		instance := &instances[i]
 		if !instance.DeletionTimestamp.IsZero() {
@@ -827,9 +862,18 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworkInterfaceClaims(
 
 		ready := true
 		for _, networkInterface := range instance.Spec.NetworkInterfaces {
-			claim, err := r.ensureNetworkInterfaceClaim(ctx, c, deployment, instance, networkInterface)
+			claim, usable, err := r.ensureNetworkInterfaceClaim(ctx, c, deployment, instance, networkInterface)
 			if err != nil {
-				return nil, err
+				return nil, false, err
+			}
+
+			if !usable {
+				// The claim under this slot's name is not the instance's to use yet.
+				// It is being deleted, or something else holds it. Once it is gone,
+				// a later pass creates the instance's own claim.
+				ready = false
+				waitingOnClaim = true
+				continue
 			}
 
 			if !networkInterfaceClaimSatisfied(claim) {
@@ -846,11 +890,14 @@ func (r *WorkloadDeploymentReconciler) reconcileNetworkInterfaceClaims(
 		readyByInstance[instance.Name] = ready
 	}
 
-	return readyByInstance, nil
+	return readyByInstance, waitingOnClaim, nil
 }
 
 // ensureNetworkInterfaceClaim creates the claim for one instance interface if it
-// is absent, and returns the claim either way.
+// is absent, and returns the claim either way. usable is false while a claim of
+// the slot's name exists that the instance cannot use: one being deleted, or
+// one an earlier instance in the slot still controls. The latter is deleted
+// here instead of waiting for garbage collection.
 //
 // An existing claim's spec is never updated: almost every field of it is
 // immutable, because the addresses were allocated against it. A changed
@@ -864,8 +911,8 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 	deployment *computev1alpha.WorkloadDeployment,
 	instance *computev1alpha.Instance,
 	networkInterface computev1alpha.InstanceNetworkInterface,
-) (*networkingv1alpha.NetworkInterfaceClaim, error) {
-	claim := &networkingv1alpha.NetworkInterfaceClaim{}
+) (claim *networkingv1alpha.NetworkInterfaceClaim, usable bool, err error) {
+	claim = &networkingv1alpha.NetworkInterfaceClaim{}
 	key := client.ObjectKey{
 		Namespace: deployment.Namespace,
 		Name:      networkInterfaceClaimName(instance.Name, instanceInterfaceName(networkInterface)),
@@ -873,15 +920,13 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 
 	labels := desiredNetworkInterfaceClaimLabels(deployment, instance)
 
-	err := c.Get(ctx, key, claim)
+	err = c.Get(ctx, key, claim)
 	if err == nil {
-		if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
-			return nil, err
-		}
-		return claim, nil
+		usable, err := r.useExistingNetworkInterfaceClaim(ctx, c, claim, instance, labels)
+		return claim, usable, err
 	}
 	if !apierrors.IsNotFound(err) {
-		return nil, fmt.Errorf("failed checking for existing network interface claim: %w", err)
+		return nil, false, fmt.Errorf("failed checking for existing network interface claim: %w", err)
 	}
 
 	claim = &networkingv1alpha.NetworkInterfaceClaim{
@@ -896,7 +941,7 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 	// The claim belongs to the instance, not the deployment: the instance going
 	// away is what ends the slot's hold on the interface.
 	if err := controllerutil.SetControllerReference(instance, claim, c.Scheme()); err != nil {
-		return nil, fmt.Errorf("failed to set controller on network interface claim: %w", err)
+		return nil, false, fmt.Errorf("failed to set controller on network interface claim: %w", err)
 	}
 
 	if err := c.Create(ctx, claim); err != nil {
@@ -904,19 +949,76 @@ func (r *WorkloadDeploymentReconciler) ensureNetworkInterfaceClaim(
 			// Lost a race with another writer, or with this controller's own stale
 			// cache. Read what is there rather than reporting a failure.
 			if getErr := c.Get(ctx, key, claim); getErr != nil {
-				return nil, fmt.Errorf("failed fetching network interface claim: %w", getErr)
+				return nil, false, fmt.Errorf("failed fetching network interface claim: %w", getErr)
 			}
-			if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
-				return nil, err
-			}
-			return claim, nil
+			usable, err := r.useExistingNetworkInterfaceClaim(ctx, c, claim, instance, labels)
+			return claim, usable, err
 		}
-		return nil, fmt.Errorf("failed creating network interface claim: %w", err)
+		return nil, false, fmt.Errorf("failed creating network interface claim: %w", err)
 	}
 
 	log.FromContext(ctx).Info("created network interface claim", "claim", claim.Name, "instance", instance.Name)
 
-	return claim, nil
+	return claim, true, nil
+}
+
+// useExistingNetworkInterfaceClaim decides whether an instance may use a claim
+// that already exists under its slot's name.
+//
+// A claim the instance controls, or that nothing controls, is used and has its
+// labels brought up to date. A claim an earlier instance in the slot controls
+// is deleted with UID and resourceVersion preconditions, so a claim recreated
+// or changed in the meantime is never removed by mistake. Waiting on garbage
+// collection instead would leave the slot on an interface that is torn down
+// the moment the claim goes. A claim being deleted, or controlled by something
+// other than an Instance, is left alone and waited on.
+func (r *WorkloadDeploymentReconciler) useExistingNetworkInterfaceClaim(
+	ctx context.Context,
+	c client.Client,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	instance *computev1alpha.Instance,
+	labels map[string]string,
+) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	switch networkInterfaceClaimHoldingFor(claim, instance) {
+	case claimHeld:
+		if err := r.backfillNetworkInterfaceClaimLabels(ctx, c, claim, labels); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	case claimTerminating:
+		logger.V(1).Info("waiting for network interface claim to be deleted",
+			"claim", claim.Name, "instance", instance.Name)
+		return false, nil
+
+	case claimStale:
+		holder := metav1.GetControllerOf(claim)
+		uid, version := claim.UID, claim.ResourceVersion
+		err := c.Delete(ctx, claim, client.Preconditions{UID: &uid, ResourceVersion: &version})
+		switch {
+		case err == nil:
+			logger.Info("released network interface claim held by previous instance",
+				"claim", claim.Name, "instance", instance.Name, "previousInstanceUID", holder.UID)
+		case apierrors.IsNotFound(err) || apierrors.IsConflict(err):
+			// Already gone, or changed since it was read. The next pass reads it
+			// again and decides afresh.
+			logger.V(1).Info("network interface claim changed before it could be released",
+				"claim", claim.Name, "instance", instance.Name, "error", err.Error())
+		default:
+			return false, fmt.Errorf("failed releasing network interface claim %s/%s from previous instance: %w",
+				claim.Namespace, claim.Name, err)
+		}
+		return false, nil
+
+	default:
+		holder := metav1.GetControllerOf(claim)
+		logger.V(1).Info("network interface claim is controlled by another object",
+			"claim", claim.Name, "instance", instance.Name,
+			"controllerKind", holder.Kind, "controllerName", holder.Name)
+		return false, nil
+	}
 }
 
 // backfillNetworkInterfaceClaimLabels brings the labels compute owns up to date
@@ -989,7 +1091,9 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(wdReferencedDataChangedPredicate()),
 		).
-		Owns(&computev1alpha.Instance{})
+		// An Instance is written many times while it starts and stops. Only the
+		// changes this reconciler reads wake it.
+		Owns(&computev1alpha.Instance{}, mcbuilder.WithPredicates(instanceChangedForDeployment()))
 
 	// Only watch networking resources when the networking integration is enabled.
 	// On cells without network-services-operator these watches would log spurious
@@ -1013,7 +1117,7 @@ func (r *WorkloadDeploymentReconciler) SetupWithManager(mgr mcmanager.Manager, o
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []mcreconcile.Request {
 					return enqueueWorkloadDeploymentForClaim(ctx, cl.GetClient(), clusterName, o)
 				})
-			}).
+			}, mcbuilder.WithPredicates(networkInterfaceClaimChangedForDeployment())).
 			// A deployment on a cell that does not yet know its own location waits
 			// without any other wake-up event, and the reconciler does not poll.
 			// Watching ServingLocations re-reconciles those deployments as soon as

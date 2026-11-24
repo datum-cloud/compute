@@ -30,7 +30,7 @@ type RuntimeClassControllerName string
 // decline. Enumerating the features keeps a class from declaring one that no
 // provider can interpret.
 //
-// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;sandboxSysctls;exec;gracefulTermination
+// +kubebuilder:validation:Enum=sandboxRuntime;virtualMachineRuntime;configMapVolumes;secretVolumes;diskVolumes;deviceVolumeAttachments;envFrom;imagePullSecrets;containerCapabilities;sandboxSysctls;exec;execTerminal;gracefulTermination
 type RuntimeClassFeature string
 
 const (
@@ -80,9 +80,12 @@ const (
 	RuntimeClassFeatureSandboxSysctls RuntimeClassFeature = "sandboxSysctls"
 
 	// RuntimeClassFeatureExec is the ability to run a command in a running
-	// instance's container through an InstanceConsoleSession, such as an
-	// interactive shell.
+	// instance's container through an InstanceConsoleSession.
 	RuntimeClassFeatureExec RuntimeClassFeature = "exec"
+
+	// RuntimeClassFeatureExecTerminal is the ability to give a shell session's
+	// command an interactive terminal. A class declaring it also declares exec.
+	RuntimeClassFeatureExecTerminal RuntimeClassFeature = "execTerminal"
 
 	// RuntimeClassFeatureGracefulTermination is the ability to signal an
 	// instance's processes when it stops and wait up to the instance's
@@ -105,6 +108,7 @@ var runtimeClassFeatureDescriptions = map[RuntimeClassFeature]string{
 	RuntimeClassFeatureContainerCapabilities:   "container capability requests",
 	RuntimeClassFeatureSandboxSysctls:          "sandbox sysctls",
 	RuntimeClassFeatureExec:                    "shell sessions into running instances",
+	RuntimeClassFeatureExecTerminal:            "interactive terminals in shell sessions",
 	RuntimeClassFeatureGracefulTermination:     "termination grace periods",
 }
 
@@ -195,6 +199,7 @@ type RuntimeClassIsolation struct {
 // +kubebuilder:validation:XValidation:message="supportedSysctls requires the sandboxSysctls feature",rule="!has(self.supportedSysctls) || size(self.supportedSysctls) == 0 || (has(self.features) && 'sandboxSysctls' in self.features)"
 // +kubebuilder:validation:XValidation:message="the sandboxSysctls feature requires a non-empty supportedSysctls",rule="!has(self.features) || !('sandboxSysctls' in self.features) || (has(self.supportedSysctls) && size(self.supportedSysctls) > 0)"
 // +kubebuilder:validation:XValidation:message="the sandboxSysctls feature requires the sandboxRuntime feature",rule="!has(self.features) || !('sandboxSysctls' in self.features) || 'sandboxRuntime' in self.features"
+// +kubebuilder:validation:XValidation:message="the execTerminal feature requires the exec feature",rule="!has(self.features) || !('execTerminal' in self.features) || 'exec' in self.features"
 type RuntimeClassCapabilities struct {
 	// The optional parts of the instance API this class serves. Anything absent
 	// is unsupported, so a class that omits a feature rejects requests for it

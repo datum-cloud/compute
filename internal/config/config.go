@@ -59,6 +59,24 @@ type InternalDNSConfig struct {
 	// ObservationSources selects authenticated edge APIs for live interface and
 	// node observations. Credentials must have read-only observation permissions.
 	ObservationSources []InternalDNSObservationSource `json:"observationSources,omitempty"`
+
+	// LocalPublishing, on a cell, publishes the cell's instances into the
+	// cell's own cluster, so the cell's region serves them without the
+	// management plane. The region's DNS control plane sends them on to the
+	// other regions and to the project.
+	LocalPublishing *InternalDNSLocalPublishing `json:"localPublishing,omitempty"`
+
+	// LocallyPublishedLocations are the locations whose cells publish their
+	// own instances. The management publisher withdraws what it published
+	// for instances there and leaves them to the cell.
+	LocallyPublishedLocations []string `json:"locallyPublishedLocations,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type InternalDNSLocalPublishing struct {
+	// Region is the DNS region this cell belongs to. Every name the cell
+	// publishes carries it as its origin.
+	Region string `json:"region"`
 }
 
 // +k8s:deepcopy-gen=true

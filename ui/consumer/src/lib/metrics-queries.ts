@@ -15,7 +15,13 @@
  * ALB series match cloud-portal edge metrics: Envoy `gateway_name` = HTTPProxy
  * name. Those charts are workload-scoped, not per-instance.
  */
-import { isPrometheusDenied, usePrometheusLabelValues } from './prometheus';
+import {
+  isPrometheusDenied,
+  usePrometheusLabelValues,
+  type ChartDataPoint,
+  type FormattedMetricData,
+} from './prometheus';
+import type { InstanceNetworkInterface } from '../schema';
 
 export const CPU_METRIC = 'datum_compute_instance_cpu_usage_seconds_total';
 export const MEMORY_METRIC = 'datum_compute_instance_memory_working_set_bytes';
@@ -44,8 +50,9 @@ function escapePromQL(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/** Regex-escape a literal, then escape it again for the quoted string it sits in. */
 function escapePromQLRegexp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escapePromQL(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 }
 
 export function namesMatcher(label: string, names: readonly string[]): string | undefined {
@@ -53,6 +60,93 @@ export function namesMatcher(label: string, names: readonly string[]): string | 
   if (unique.length === 0) return undefined;
   if (unique.length === 1) return `${label}="${escapePromQL(unique[0])}"`;
   return `${label}=~"${unique.map(escapePromQLRegexp).join('|')}"`;
+}
+
+export const VPC_INTERFACE_RECEIVE_METRIC = 'datum_vpc_interface_receive_bytes_total';
+export const VPC_INTERFACE_TRANSMIT_METRIC = 'datum_vpc_interface_transmit_bytes_total';
+
+export type TrafficDirection = 'receive' | 'transmit';
+
+/** Interfaces that have a ref, which is what the `network` label carries. */
+export function networkInterfaceRefs(interfaces: readonly InstanceNetworkInterface[]): string[] {
+  return interfaces.flatMap((i) => (i.networkInterfaceRef ? [i.networkInterfaceRef] : []));
+}
+
+function networkTrafficLabels(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[]
+): string | undefined {
+  const matcher = namesMatcher('network', networkInterfaceRefs(interfaces));
+  if (!matcher || !namespace) return undefined;
+  return `resourcemanager_datumapis_com_project_name="${escapePromQL(projectId)}",resource_namespace="${escapePromQL(namespace)}",${matcher}`;
+}
+
+/**
+ * bits/s per interface, keyed by the `network` label.
+ * `undefined` when no interface has a ref yet or the namespace is unknown.
+ */
+export function networkTrafficQuery(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[],
+  direction: TrafficDirection
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  const metric = direction === 'receive' ? VPC_INTERFACE_RECEIVE_METRIC : VPC_INTERFACE_TRANSMIT_METRIC;
+  return `sum by (network) (rate(${metric}{${labels}}[5m])) * 8`;
+}
+
+/**
+ * bits/s summed over every interface, one series. The workload Overview's
+ * Network stat passes every instance's interfaces; the series carry no
+ * workload label, so only instances that exist now are counted.
+ */
+export function networkTrafficTotalQuery(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[],
+  direction: TrafficDirection
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  const metric = direction === 'receive' ? VPC_INTERFACE_RECEIVE_METRIC : VPC_INTERFACE_TRANSMIT_METRIC;
+  return `sum(rate(${metric}{${labels}}[5m])) * 8`;
+}
+
+/** bits/s in and out together, per interface (`network` label). */
+export function networkThroughputQuery(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[]
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  return `sum by (network) (rate({__name__=~"${VPC_INTERFACE_RECEIVE_METRIC}|${VPC_INTERFACE_TRANSMIT_METRIC}",${labels}}[5m])) * 8`;
+}
+
+/** Instant selector used to probe whether the metric exists for this instance. */
+export function networkTrafficSeriesMatch(
+  projectId: string,
+  namespace: string | undefined,
+  interfaces: readonly InstanceNetworkInterface[]
+): string | undefined {
+  const labels = networkTrafficLabels(projectId, namespace, interfaces);
+  if (!labels) return undefined;
+  return `{__name__="${VPC_INTERFACE_RECEIVE_METRIC}",${labels}}`;
+}
+
+/** Series name (the ref) -> "eth0 · default". Unknown names are omitted so the chart shows the raw name. */
+export function networkInterfaceSeriesLabels(
+  interfaces: readonly InstanceNetworkInterface[]
+): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const i of interfaces) {
+    if (!i.networkInterfaceRef) continue;
+    labels[i.networkInterfaceRef] = i.network ? `${i.name} · ${i.network}` : i.name;
+  }
+  return labels;
 }
 
 export function instanceSeriesMatch(projectId: string): string {
@@ -120,6 +214,34 @@ export function workloadMemoryByInstanceQuery(
   const sel = scopedInstanceSelector(projectId, label, names);
   if (!sel) return undefined;
   return `sum by (${label}) (${MEMORY_METRIC}${sel})`;
+}
+
+/**
+ * Splits a per-instance result (`workloadCpuByInstanceQuery` over every
+ * workload's instances) into one summed series per workload, so a table can
+ * draw every row's sparkline from a single request. Points are summed by
+ * timestamp, which lines up because a range query samples every series at
+ * the same steps. A workload with no series in the result is left out.
+ */
+export function seriesByWorkload(
+  data: FormattedMetricData | undefined,
+  label: string,
+  instanceKeysByWorkload: Readonly<Record<string, readonly string[]>>
+): Record<string, ChartDataPoint[]> {
+  if (!data) return {};
+  const byInstance = new Map(data.series.map((series) => [series.labels[label], series.data]));
+  const result: Record<string, ChartDataPoint[]> = {};
+  for (const [workload, keys] of Object.entries(instanceKeysByWorkload)) {
+    const sums = new Map<number, ChartDataPoint>();
+    for (const key of keys) {
+      for (const point of byInstance.get(key) ?? []) {
+        const prev = sums.get(point.timestamp);
+        sums.set(point.timestamp, prev ? { ...prev, value: prev.value + point.value } : { ...point, labels: undefined });
+      }
+    }
+    if (sums.size > 0) result[workload] = [...sums.values()].sort((a, b) => a.timestamp - b.timestamp);
+  }
+  return result;
 }
 
 function albSelector(projectId: string, proxyId: string, extra: Record<string, string> = {}): string {
@@ -203,7 +325,7 @@ export function useProjectResourceIdentity(
 ): ProjectResourceIdentity {
   const match = projectId ? instanceSeriesMatch(projectId) : undefined;
   const enabled = (options?.enabled ?? true) && !!projectId && !!match;
-  const names = usePrometheusLabelValues('resource_name', match, { enabled });
+  const names = usePrometheusLabelValues(projectId, 'resource_name', match, { enabled });
   const isDenied = isPrometheusDenied(names.error);
   return {
     identityLabel: !isDenied && (names.data?.length ?? 0) > 0 ? 'resource_name' : undefined,

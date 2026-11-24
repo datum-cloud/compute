@@ -3,12 +3,14 @@
 Compute publishes private instance names in each attached network's managed
 zone. Network services requests `datum.internal` by default. Compute reads the
 allocated suffix, so users attach workloads to networks without selecting zones.
-An instance named `web-01` receives `web-01.datum.internal`. Overlapping domains
+An instance named `web-01` receives `web-01.instances.datum.internal`: compute
+publishes instance names under the zone's `instances` scope. Overlapping domains
 remain isolated by the network's DNS context.
 
 `Instance.status.dns` reports hostnames and publication readiness per network.
-DNS failures do not affect runtime readiness. Application readiness does not
-remove an instance identity name.
+DNS failures do not affect runtime readiness. An instance that stops being
+Ready keeps its name, and its addresses are marked ineligible until it is Ready
+again.
 
 ```yaml
 status:
@@ -16,7 +18,7 @@ status:
     - network:
         name: application
         namespace: production
-      hostnames: [web-01.datum.internal]
+      hostnames: [web-01.instances.datum.internal]
       conditions:
         - type: Ready
           status: "True"
@@ -38,21 +40,32 @@ internalDNS:
       kubeconfigPath: /etc/compute/edge-dfw.kubeconfig
 ```
 
-Compute selects the network's resolver context and reads its managed zone. It
-reserves a name through `DNSRegistration` and publishes addresses and eligibility
-atomically through `DNSRecordContribution`. Project RBAC authorizes writes.
+With publishing enabled, a separate context reconciler creates one persistent
+`compute-instances-<context-UID-hash>` registration in every ready managed context,
+including projects with zero instances. Its owner name and `reservedDescendants`
+are both `instances`. This is compute policy; DNS does not contain that label.
+The registration is owned by the resolver context, so deleting an instance or
+its last endpoint never releases the reservation.
+
+Endpoint contributions reference the shared registration's UID and generation
+and publish their individual `<instance-name>.instances` names. Contributions
+remain Instance-owned. Old per-instance registrations are removed during normal
+publisher cleanup; replacement contexts and registration lifetimes rebind the
+contributions. Instance status reports the endpoint hostname, not the shared
+registration's root name. Project RBAC authorizes writes.
 Object lifetime references and contribution generations prevent stale publishers
 from changing replacement resources.
 
-Only allocated, programmed private host addresses are eligible. Confirmed
-interface withdrawal, stopped runtime, or unhealthy node withdraws addresses.
-An unavailable observation source or unknown node health leaves published records
-unchanged and reports unknown observation health. Records have no renewal
+Eligibility follows the project Instance's status, which compute owns and
+users cannot write. An interface's private host addresses are eligible only
+while the Instance is `Ready`, its `RuntimeReady` condition is True, and the
+interface reports `Allocated` and `Programmed`. Instance readiness already
+accounts for a crashing runtime, an unready node, and a withdrawn interface, so
+the publisher reads nothing from edge clusters. Records have no renewal
 requirement. Instance deletion reclaims records through project owner references.
 
-Observation credentials read Instances, NetworkInterfaces, NetworkInterfaceClaims,
-NetworkContexts, Pods, Nodes, and project namespaces. Scope namespaced reads to
-supported edge namespaces. These credentials cannot publish DNS records.
+A location is served only when it is listed in `observationSources`. The
+publisher no longer reads through the listed credentials.
 
 Workload providers apply the network's resolver address and allocated search
 domain to guests. Resolver delivery belongs to network services. The publisher
@@ -69,9 +82,10 @@ Before enabling the gate, grant the management controller's authenticated identi
 these permissions in **each project control plane**, including newly created
 projects:
 
-- `get,list` on `dnsresolvercontexts`.
-- `get,list,create,update,patch,delete` on `dnsregistrations` and
+- `get,list,watch` on `dnsresolvercontexts`.
+- `get,list,watch,create,update,patch,delete` on `dnsregistrations` and
   `dnsrecordcontributions`.
+- `reserve,publish` on the service's `dnsregistrations` (additional to CRUD).
 - `get,update,patch` on `dnsrecordcontributions/status`.
 - `get,patch` on `instances/status`.
 
@@ -98,10 +112,32 @@ instances, such as `a.b` and `a-b`, DNS keeps the first claim and rejects the
 later registration with `NameConflict`. Compute does not assign another name or
 report a rejected registration as published.
 
-Healthy instances poll every 30–45 seconds; pending instances poll every 10–15
-seconds. Each poll uses independent jitter. Each interface observation uses six edge
-reads plus project reads: 1,000 healthy single-interface instances generate about
-160 edge reads per second, excluding retries and project API operations. The
-publisher limits concurrent reconciliations to four and each reconciliation to
-ten seconds. Size the observation API for this load before increasing deployment
-scale; jitter spreads traffic but does not reduce the number of reads.
+The publisher reconciles an instance when the Instance, the DNS objects it
+owns, or a resolver context in its namespace changes. Each instance also
+resyncs every 10–15 minutes, with independent jitter, to bound how long a missed
+event can leave publication stale. 1,000 steady instances generate about 1.3
+reconciles per second from resyncs. The publisher limits concurrent
+reconciliations to four and each reconciliation to ten seconds.
+
+This requires the generic service-owned reservation contract in dns-operator
+PR #423. Use the matching DNS, compute, and staging configuration changes when
+testing; no production migration or temporary DNS default is introduced.
+
+## Publishing from the cell
+
+A cell can publish its own instances, so its DNS region serves a new instance
+without the management plane. Set `internalDNS.localPublishing.region` on the
+cell's compute controller, and list the cell's location in the management
+controller's `internalDNS.locallyPublishedLocations`, which then withdraws
+what it published there.
+
+The cell writes each instance's contribution into its own cluster, in the
+instance's namespace, labelled `internal-dns.miloapis.com/origin: <region>`.
+The region's DNS control plane serves it at once and sends it on to the other
+regions and to the project. The project still authors each context's shared
+`compute-instances-<hash>` registration; a cell only reads its copy, and
+waits until the copy arrives. DNS copies in a cell carry the origin UID and
+generation of the project's objects, and the cell references those, so its
+contributions resolve in every region. The cell reads the project's identity
+from the `internal-dns.miloapis.com/project-uid` annotation DNS writes on the
+namespace.

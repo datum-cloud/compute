@@ -14,6 +14,10 @@ data:
           sum by (<<.GroupBy>>) (
             rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>,container!=""}[2m])
           )
+          or
+          max by (<<.GroupBy>>) (
+            rate(container_cpu_usage_seconds_total{<<.LabelMatchers>>,container!="",container!="POD"}[2m])
+          )
         nodeQuery: |
           sum by (<<.GroupBy>>) (
             rate(datum_compute_instance_cpu_usage_seconds_total{<<.LabelMatchers>>}[2m])
@@ -31,6 +35,10 @@ data:
         containerQuery: |
           sum by (<<.GroupBy>>) (
             datum_compute_instance_memory_working_set_bytes{<<.LabelMatchers>>,container!=""}
+          )
+          or
+          max by (<<.GroupBy>>) (
+            container_memory_working_set_bytes{<<.LabelMatchers>>,container!="",container!="POD"}
           )
         nodeQuery: |
           sum by (<<.GroupBy>>) (

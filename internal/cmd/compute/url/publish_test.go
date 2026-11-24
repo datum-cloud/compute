@@ -140,6 +140,33 @@ func TestPublishReturnsWhenTheURLIsLive(t *testing.T) {
 	}
 }
 
+// TestPublishReportsBackendsBeforeAnyRegister pins the output a redeploy owes.
+// The URL is already live from the previous deploy, so the wait returns on its
+// first poll while the NetworkService still reports no healthy member. The
+// backends line must still appear, because a caller such as a rollout gate
+// reads the deploy output for it.
+func TestPublishReportsBackendsBeforeAnyRegister(t *testing.T) {
+	c := newFakeClient(t,
+		publishedProxy(testWorkloadName, testCanonical),
+		publishedService(testWorkloadName, 8080, location("DFW", 1, 0, false)),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	info, err := Publish(ctx, &out, c, workloadNamed(testWorkloadName), testPortName, 8080, false, nil)
+	if err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+	if info == nil || !info.Live() {
+		t.Fatalf("info = %+v, want the live URL left by the previous deploy", info)
+	}
+	if got := out.String(); !strings.Contains(got, "Backends     0 healthy across DFW") {
+		t.Errorf("output missing the backends line:\n%s", got)
+	}
+}
+
 func TestPublishUpdatesAChangedPort(t *testing.T) {
 	rec := &recorder{}
 	c := interceptor.NewClient(newFakeClient(t,

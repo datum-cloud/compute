@@ -42,6 +42,9 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { WaypointsIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+/** Inline: the host does not compile `grow` / `basis-auto` reliably. */
+const FILL_STYLE = { flex: '1 0 auto' } as const;
+
 function percent(numerator?: number, denominator?: number): string | undefined {
   if (numerator === undefined || !denominator) return undefined;
   const pct = (numerator / denominator) * 100;
@@ -63,9 +66,9 @@ function AlbBody({
   onTraffic: (proxyId: string, rps: number | undefined) => void;
 }) {
   // Instant queries: use a 5m window so low-volume bursts register (see metrics-queries).
-  const rps = usePrometheusCard(albRpsQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'requestsPerSecond');
-  const errors = usePrometheusCard(albErrorRateQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'percent');
-  const p99 = usePrometheusCard(albP99Query(projectId, proxyId, ALB_INSTANT_WINDOW), 'milliseconds-auto');
+  const rps = usePrometheusCard(projectId, albRpsQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'requestsPerSecond');
+  const errors = usePrometheusCard(projectId, albErrorRateQuery(projectId, proxyId, ALB_INSTANT_WINDOW), 'percent');
+  const p99 = usePrometheusCard(projectId, albP99Query(projectId, proxyId, ALB_INSTANT_WINDOW), 'milliseconds-auto');
 
   const rpsValue = rps.data?.value;
   useEffect(() => {
@@ -114,17 +117,19 @@ function InstanceBody({
 }) {
   const { identity } = useInstanceMetricIdentity(projectId, instance);
   const cpu = usePrometheusCard(
+    projectId,
     projectId && identity ? cpuUsageQuery(projectId, identity) : undefined,
     'number'
   );
   const memory = usePrometheusCard(
+    projectId,
     projectId && identity ? memoryUsageQuery(projectId, identity) : undefined,
     'bytes'
   );
 
   const cpuPct = percent(cpu.data?.value, parseCpuCores(instance.cpu));
   const memPct = percent(memory.data?.value, parseMemoryBytes(instance.memory));
-  const ip = instance.externalIP ?? instance.internalIP;
+  const ip = instance.externalIP ?? instance.addresses[0];
 
   return (
     <>
@@ -329,7 +334,10 @@ export function TopologyCard({
     <Card
       size="sm"
       sectioned
-      className="flex min-h-0 w-full flex-col overflow-hidden"
+      className="flex w-full flex-col overflow-hidden"
+      // Grow to fill the page but never below the diagram's own height: an
+      // overflow-hidden flex item would otherwise shrink to nothing and clip it.
+      style={FILL_STYLE}
       data-testid="compute-plugin-topology">
       <CardHeader size="sm" bordered>
         <CardTitle className="flex items-center gap-2 text-sm">
@@ -340,9 +348,9 @@ export function TopologyCard({
           <span className="text-muted-foreground text-xs">{summary}</span>
         </CardAction>
       </CardHeader>
-      {/* The canvas sets its own height: a fixed frame it pans inside, or on a
-          narrow screen the height of its stacked tree. */}
-      <CardContent padding="none" className="relative">
+      {/* The canvas fills the card (at least 28rem) and pans inside it, or on a
+          narrow screen takes the height of its stacked tree. */}
+      <CardContent padding="none" className="relative flex flex-1 flex-col">
         <TopologyCanvas
           workload={{
             id: workload.name,
