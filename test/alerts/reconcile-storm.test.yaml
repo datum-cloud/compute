@@ -36,7 +36,7 @@ tests:
   - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
     eval_time: 20m
     exp_samples:
-    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute-controllers",severity="warning",team="compute"}
+    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute",severity="warning",team="build"}
       value: 1
 - name: A busy cell backlog must not be diluted by an idle cell
   interval: 1m
@@ -83,9 +83,9 @@ tests:
   - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
     eval_time: 20m
     exp_samples:
-    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute-controllers",severity="warning",team="compute"}
+    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute",severity="warning",team="build"}
       value: 1
-    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="central",controller="instance",namespace="compute-system",service="compute-controllers",severity="warning",team="compute"}
+    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="central",controller="instance",namespace="compute-system",service="compute",severity="warning",team="build"}
       value: 1
 - name: Missing queue data in hot cell cannot match another cell
   interval: 1m
