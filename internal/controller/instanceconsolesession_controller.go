@@ -139,16 +139,7 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 		}
 	}
 
-	if sessionEnded(&session) {
-		openSessionsByKey.forget(trackingKey)
-	} else {
-		// Delivery may have just recorded the placement, so read it again.
-		openSessionsByKey.observe(trackingKey, openSessionSeries{
-			project:  session.Namespace,
-			location: placementOf(&session).location,
-			phase:    sessionPhase(&session),
-		})
-	}
+	trackOpenSession(trackingKey, req.ClusterName, &session)
 
 	if err := r.recordLifecycleEvents(ctx, projectClient, &session, ""); err != nil {
 		return requeueOnConflict(err)
@@ -165,6 +156,22 @@ func (r *InstanceConsoleSessionReconciler) Reconcile(ctx context.Context, req mc
 	}
 
 	return result, nil
+}
+
+// trackOpenSession records a session this reconcile observed in the
+// open-sessions gauge, under its project's cluster name, or drops it once it
+// has ended.
+func trackOpenSession(key string, project multicluster.ClusterName, session *computev1alpha.InstanceConsoleSession) {
+	if sessionEnded(session) {
+		openSessionsByKey.forget(key)
+		return
+	}
+	// Delivery may have just recorded the placement, so read it again.
+	openSessionsByKey.observe(key, openSessionSeries{
+		project:  string(project),
+		location: placementOf(session).location,
+		phase:    sessionPhase(session),
+	})
 }
 
 // reconcileDelivery delivers a session that has not ended and mirrors the
@@ -311,7 +318,7 @@ func (r *InstanceConsoleSessionReconciler) deliver(
 		// The first delivery is the one time a session is counted as created:
 		// a copy redelivered after vanishing unclaimed finds the namespace
 		// already recorded.
-		sessionsCreated.WithLabelValues(session.Namespace, placement.location).Inc()
+		sessionsCreated.WithLabelValues(string(clusterName), placement.location).Inc()
 	}
 
 	if err := controllerutil.SetControllerReference(hubDeployment, hubCopy, federationScheme(r.FederationClient.Scheme())); err != nil {

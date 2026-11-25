@@ -53,20 +53,20 @@ func TestInstanceConsoleSessionMetricsFollowTheLifecycle(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, testMemberCluster, session.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation])
 	assert.Equal(t, testFederatorLocation, session.Annotations[computev1alpha.InstanceConsoleSessionLocationAnnotation])
-	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsCreated.WithLabelValues(testProjNS, testFederatorLocation)),
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsCreated.WithLabelValues(testCluster, testFederatorLocation)),
 		"a session is created once however often it reconciles")
-	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(testProjNS, testFederatorLocation, sessionPhasePending)))
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(testCluster, testFederatorLocation, sessionPhasePending)))
 
 	claimOnHub(t, env)
 	env.reconcile(t)
-	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(testProjNS, testFederatorLocation, sessionPhaseReady)))
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(testCluster, testFederatorLocation, sessionPhaseReady)))
 	assert.Equal(t, 1, testutil.CollectAndCount(sessionsOpen), "an open session is in exactly one phase")
 
 	env.now = env.now.Add(5 * time.Second)
 	startOnHub(t, env)
 	env.reconcile(t)
 	env.reconcile(t)
-	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(testProjNS, testFederatorLocation, sessionPhaseConnected)))
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(testCluster, testFederatorLocation, sessionPhaseConnected)))
 	count, sum := histogramSample(t, sessionConnectSeconds.WithLabelValues(testFederatorLocation))
 	assert.Equal(t, uint64(1), count, "the connect time is observed once")
 	assert.Equal(t, 5.0, sum)
@@ -84,7 +84,7 @@ func TestInstanceConsoleSessionMetricsFollowTheLifecycle(t *testing.T) {
 	assert.Equal(t, uint64(1), count)
 	assert.Equal(t, 60.0, sum)
 	assert.Zero(t, testutil.CollectAndCount(sessionsOpen), "an ended session is no longer open")
-	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsCreated.WithLabelValues(testProjNS, testFederatorLocation)))
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsCreated.WithLabelValues(testCluster, testFederatorLocation)))
 
 	ended := env.events(t)[EventReasonSessionEnded]
 	assert.Equal(t, testMemberCluster, ended.Annotations[computev1alpha.InstanceConsoleSessionCellAnnotation])
@@ -129,10 +129,11 @@ func reconcileInProject(t *testing.T, env *sessionTestEnv, project string) {
 func TestInstanceConsoleSessionMetricsLabelTheProject(t *testing.T) {
 	resetSessionMetrics()
 	projects := []string{"project-a", "project-b"}
+	envs := map[string]*sessionTestEnv{}
 	for _, project := range projects {
-		env := sessionEnvInProject(t, project)
-		reconcileInProject(t, env, project)
-		reconcileInProject(t, env, project)
+		envs[project] = sessionEnvInProject(t, project)
+		reconcileInProject(t, envs[project], project)
+		reconcileInProject(t, envs[project], project)
 	}
 
 	assert.Equal(t, 2, testutil.CollectAndCount(sessionsCreated), "one created series for each project")
@@ -143,6 +144,14 @@ func TestInstanceConsoleSessionMetricsLabelTheProject(t *testing.T) {
 		assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(project, testFederatorLocation, sessionPhasePending)),
 			"%s holds one open session, under the same project value as its counter", project)
 	}
+
+	// One project's session goes; the other project's stays open.
+	envs["project-a"].deleteProjectSession(t)
+	reconcileInProject(t, envs["project-a"], "project-a")
+	reconcileInProject(t, envs["project-a"], "project-a")
+	assert.Equal(t, 1, testutil.CollectAndCount(sessionsOpen), "only project-b holds an open session")
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues("project-b", testFederatorLocation, sessionPhasePending)))
+	assert.Equal(t, 2, testutil.CollectAndCount(sessionsCreated), "a session that ended was still created")
 }
 
 func TestInstanceConsoleSessionMetricsForASessionDeletedBeforeItStarted(t *testing.T) {
