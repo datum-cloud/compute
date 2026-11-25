@@ -88,16 +88,17 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     -ldflags "-s -w" \
     -o shell-endpoint-probe ./cmd/shell-endpoint-probe
 
-# Use distroless as minimal base image to package the binaries
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
+# scratch has no CA bundle. Each binary embeds Go's trusted roots through
+# golang.org/x/crypto/x509roots/fallback, so removing a root ships as a go.mod
+# bump rather than waiting on a base image rebuild.
 #
-# The nonroot variant has no shell and no package manager, which matters most
+# It also has no shell and no package manager, which matters most
 # for compute-mcp: it is the process an untrusted model's tool calls reach. The
 # manager binary now sits beside it there, and grants it nothing — it is a
 # controller, not an execution primitive, and the compute-mcp pod holds no
 # credential it could use (an unbound ServiceAccount, a credential-free
 # kubeconfig). See config/components/compute-mcp/service_account.yaml.
-FROM gcr.io/distroless/static:nonroot
+FROM scratch
 WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/compute-mcp .
