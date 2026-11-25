@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -11,10 +12,15 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	computev1alpha "go.datum.net/compute/api/v1alpha"
+	"go.miloapis.com/milo/pkg/downstreamclient"
 )
 
 // resetSessionMetrics clears the package-level metrics, which every test in
@@ -26,6 +32,7 @@ func resetSessionMetrics() {
 	sessionDurationSeconds.Reset()
 	activityEvents.Reset()
 	openSessionsByKey.reset()
+	sessionsOpen.Reset()
 }
 
 // histogramSample returns one histogram series' sample count and sum.
@@ -89,6 +96,53 @@ func TestInstanceConsoleSessionMetricsFollowTheLifecycle(t *testing.T) {
 			"%s is recorded once however often the session reconciles", event)
 	}
 	assert.Equal(t, 2, testutil.CollectAndCount(activityEvents), "no attempt failed or was retried")
+}
+
+// sessionEnvInProject is a deliverable session env whose project is the
+// project cluster named project. Every env's session lives in the same
+// namespace, as every project's sessions live in its default namespace.
+func sessionEnvInProject(t *testing.T, project string) *sessionTestEnv {
+	t.Helper()
+	env := newDeliverableSessionEnv(t, testRuntimeClass)
+	env.reconciler.mgr = newFakeMCManager(project, newFakeCluster(env.project))
+	hubNS := testHubNamespace()
+	hubNS.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = EncodeClusterName(project)
+	require.NoError(t, env.hub.Update(context.Background(), hubNS))
+	return env
+}
+
+func reconcileInProject(t *testing.T, env *sessionTestEnv, project string) {
+	t.Helper()
+	_, err := env.reconciler.Reconcile(context.Background(), mcreconcile.Request{
+		ClusterName: multicluster.ClusterName(project),
+		Request: ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: testProjNS,
+			Name:      testSessionName,
+		}},
+	})
+	require.NoError(t, err)
+}
+
+// TestInstanceConsoleSessionMetricsLabelTheProject asserts the project label
+// names the project, not the namespace in it: two projects whose sessions live
+// in namespaces of the same name are two series of each metric.
+func TestInstanceConsoleSessionMetricsLabelTheProject(t *testing.T) {
+	resetSessionMetrics()
+	projects := []string{"project-a", "project-b"}
+	for _, project := range projects {
+		env := sessionEnvInProject(t, project)
+		reconcileInProject(t, env, project)
+		reconcileInProject(t, env, project)
+	}
+
+	assert.Equal(t, 2, testutil.CollectAndCount(sessionsCreated), "one created series for each project")
+	assert.Equal(t, 2, testutil.CollectAndCount(sessionsOpen), "one open series for each project")
+	for _, project := range projects {
+		assert.Equal(t, 1.0, testutil.ToFloat64(sessionsCreated.WithLabelValues(project, testFederatorLocation)),
+			"%s created one session", project)
+		assert.Equal(t, 1.0, testutil.ToFloat64(sessionsOpen.WithLabelValues(project, testFederatorLocation, sessionPhasePending)),
+			"%s holds one open session, under the same project value as its counter", project)
+	}
 }
 
 func TestInstanceConsoleSessionMetricsForASessionDeletedBeforeItStarted(t *testing.T) {
