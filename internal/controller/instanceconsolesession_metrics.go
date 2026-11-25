@@ -12,9 +12,13 @@ import (
 )
 
 // Control-plane metrics for Instance shell sessions, the project and location
-// view of the design's monitoring requirements. Labels are bounded: a project
-// namespace, a location, a phase or an ending reason. Sessions, users and
-// Instances never appear in a label.
+// view of the design's monitoring requirements. Labels are bounded: a project,
+// a location, a phase or an ending reason. Sessions, users and Instances never
+// appear in a label.
+//
+// The project label is the project's cluster name, which is the project's
+// name. It is not the session's namespace: every project keeps its sessions in
+// its default namespace, so a namespace does not tell one project from another.
 //
 // The location is the one the session controller stamps on the session at
 // delivery, taken from the hub WorkloadDeployment's location label. A session
@@ -39,7 +43,7 @@ var (
 			Namespace: metricsNamespace,
 			Subsystem: sessionMetricsSubsystem,
 			Name:      "sessions_created_total",
-			Help:      "Shell sessions delivered to a cell, by project namespace and location.",
+			Help:      "Shell sessions delivered to a cell, by project and location.",
 		},
 		[]string{labelProject, labelLocation},
 	)
@@ -52,7 +56,7 @@ var (
 			Namespace: metricsNamespace,
 			Subsystem: sessionMetricsSubsystem,
 			Name:      "sessions_open",
-			Help: "Shell sessions that have not ended, by project namespace, location " +
+			Help: "Shell sessions that have not ended, by project, location " +
 				"and phase (pending, ready, connected).",
 		},
 		[]string{labelProject, labelLocation, "phase"},
