@@ -1,8 +1,10 @@
 # pnpm settings for this plugin. It is a single package with its own lockfile,
 # not a workspace member, so there is no `packages:` list.
 
-# Our own packages are published and consumed across repos on the same day, so
-# the one-day release delay must not hold them back.
+# Wait a day before installing a newly published version. Most compromised
+# releases are pulled within hours. Our own packages are published and
+# consumed across repos on the same day, so the delay must not hold them back.
+minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - '@datum-cloud/*'
   # Added by `pnpm import`: npm had resolved these versions while they were
@@ -20,6 +22,11 @@ minimumReleaseAgeExclude:
   - '@tanstack/virtual-core@3.19.11'
   - lucide-react@1.67.0
 
+# Reject a version published with weaker provenance than the versions before
+# it, such as a release pushed with a stolen token for a package that normally
+# publishes from CI.
+trustPolicy: no-downgrade
+
 # esbuild and @sentry/cli check their platform binaries on install. CI and the
 # image install with --ignore-scripts.
 allowBuilds:
@@ -27,7 +34,16 @@ allowBuilds:
   esbuild: true
   fsevents: false
 
+# @tanstack/react-table ships agent skills, and pnpm 12 asks before exposing
+# them. Deny them: the org decided no package's skills should run.
+permissions:
+  '@tanstack/react-table':
+    skills: false
+
 overrides:
   '@module-federation/dts-plugin>undici': ^7.30.1
   minimatch: 11.0.9
   glob: 14.0.6
+  # 6.3.1, which @babel/core pulls in, was published without provenance after
+  # earlier semver releases had it, so trustPolicy rejects it. 6.3.2 has it.
+  semver@6: ^6.3.2
