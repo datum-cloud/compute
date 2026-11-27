@@ -22,7 +22,7 @@ Each reconcile **succeeds**, so error-based alerting stays silent. The tell is a
 high reconcile rate while the workqueue stays mostly drained (low average depth) and
 the number of objects for that controller's resource is small and stable.
 
-The alert is muted for a cluster while any of its nodes is cordoned and for 10 minutes after, so a planned node roll does not fire it. A node cordoned for more than 6 hours stops muting.
+The alert is muted for an edge cluster while any of its nodes is cordoned and for 10 minutes after, so a planned node roll does not fire it. Core clusters are never muted. A node cordoned for more than 90% of the last 3 hours stops muting. An alert that is already firing keeps firing for 30 minutes after the rate drops or a mute starts.
 
 Left unchecked, this wastes control-plane CPU and apiserver capacity and adds
 background noise that makes real reconcile activity harder to see. It is a
