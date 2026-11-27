@@ -242,3 +242,33 @@ tests:
     exp_samples:
     - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute",severity="warning",team="build"}
       value: 1
+- name: A cordon series with no cluster_role mutes nothing
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+60x25
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
+    values: 0+0x25
+  - series: kube_node_spec_unschedulable{cluster="east",node="compute-a"}
+    values: 0x5 1x20
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 20m
+    exp_samples:
+    - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute",severity="warning",team="build"}
+      value: 1
+- name: Two kube-state-metrics pods for one node count one 132m cordon
+  interval: 1m
+  input_series:
+  - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
+    values: 0+60x270
+  - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
+    values: 0+0x270
+  - series: kube_node_spec_unschedulable{cluster="east",node="compute-a",cluster_role="edge-member",pod="ksm-old"}
+    values: 0x180
+  - series: kube_node_spec_unschedulable{cluster="east",node="compute-a",cluster_role="edge-member",pod="ksm-new"}
+    values: _x130 1x132
+  promql_expr_test:
+  - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
+    eval_time: 255m
+    exp_samples: []
