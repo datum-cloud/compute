@@ -133,21 +133,21 @@ tests:
     exp_samples:
     - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute",severity="warning",team="build"}
       value: 1
-- name: A node cordoned for over 2h stops muting
+- name: A node cordoned for over 6h stops muting
   interval: 1m
   input_series:
   - series: controller_runtime_reconcile_total{job="compute-metrics",cluster="east",controller="instance",result="success"}
-    values: 0+60x200
+    values: 0+60x400
   - series: workqueue_depth{job="compute-metrics",cluster="east",controller="instance"}
-    values: 0+0x200
+    values: 0+0x400
   - series: kube_node_spec_unschedulable{cluster="east",node="compute-a"}
-    values: 0x5 1x195
+    values: 0x5 1x395
   promql_expr_test:
   - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
-    eval_time: 100m
+    eval_time: 300m
     exp_samples: []
   - expr: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing"}
-    eval_time: 190m
+    eval_time: 390m
     exp_samples:
     - labels: ALERTS{alertname="ComputeControllerReconcileStorm",alertstate="firing",cluster="east",controller="instance",namespace="compute-system",service="compute",severity="warning",team="build"}
       value: 1
