@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.6.0",
   "type": "module",
-  "packageManager": "pnpm@11.28.13",
+  "packageManager": "pnpm@12.23.0",
   "description": "Workloads resource-type plugin: declares a portal.resource/platform extension so staff-portal's /customers/resources page can list compute Workloads across every project via Milo's search index, a portal.page/project extension (WorkloadDetail/WorkloadList) — a staff support view of a single workload's health, configuration, placements, and instances — and two portal.page/service extensions: a fleet-wide Workloads tab and an Overview-replacing summary, both on staff-portal's /admin/service-catalog/compute detail page.",
   "scripts": {
     "dev": "vite",

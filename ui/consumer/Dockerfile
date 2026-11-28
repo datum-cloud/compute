@@ -39,7 +39,7 @@ WORKDIR /app
 # Node 26 ships no corepack, so install the pnpm that package.json's
 # packageManager pins; it stays in this stage only.
 COPY ui/consumer/package.json ui/consumer/pnpm-lock.yaml ui/consumer/pnpm-workspace.yaml ./
-RUN npm install -g "$(node -p 'require("./package.json").packageManager')" --no-audit --no-fund && \
+RUN npm install -g "$(node -p 'require("./package.json").packageManager.split("+")[0]')" --no-audit --no-fund && \
   pnpm install --frozen-lockfile --ignore-scripts
 COPY ui/consumer/ .
 COPY --from=console-wasm /out/ /console-wasm/
