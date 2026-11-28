@@ -152,3 +152,16 @@ func TestInternalDNSPublishing_ExplicitlyEnabled(t *testing.T) {
 		t.Error("InternalDNSPublishing = false after Set=true, want true")
 	}
 }
+
+func TestInstanceRuntimeUpdatesDefaultsOff(t *testing.T) {
+	gate := MutableFeatureGate.DeepCopy()
+	if gate.Enabled(InstanceRuntimeUpdates) {
+		t.Fatal("runtime updates must remain opt-in until providers adopt the revision contract")
+	}
+	if err := gate.Set("InstanceRuntimeUpdates=true"); err != nil {
+		t.Fatal(err)
+	}
+	if !gate.Enabled(InstanceRuntimeUpdates) {
+		t.Fatal("explicit opt-in did not enable runtime updates")
+	}
+}

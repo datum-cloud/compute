@@ -113,6 +113,11 @@ const (
 	// alpha: v0.1
 	InstanceConsoleSessions featuregate.Feature = "InstanceConsoleSessions"
 
+	// InstanceRuntimeUpdates preserves Instance identity during ordinary runtime
+	// updates. Enable only after every serving provider implements runtime
+	// revisions, safe Pod replacement, and shell-session fencing. Default off.
+	InstanceRuntimeUpdates featuregate.Feature = "InstanceRuntimeUpdates"
+
 	// InternalDNSPublishing publishes instance records into project DNS contexts.
 	InternalDNSPublishing featuregate.Feature = "InternalDNSPublishing"
 )
@@ -135,6 +140,7 @@ func init() {
 		RuntimeClasses:          {Default: false, PreRelease: featuregate.Alpha},
 		InstanceTypes:           {Default: false, PreRelease: featuregate.Alpha},
 		InstanceConsoleSessions: {Default: false, PreRelease: featuregate.Alpha},
+		InstanceRuntimeUpdates:  {Default: false, PreRelease: featuregate.Alpha},
 		InternalDNSPublishing:   {Default: false, PreRelease: featuregate.Alpha},
 	}); err != nil {
 		panic(err)
