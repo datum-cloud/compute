@@ -19,10 +19,10 @@ require (
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sync v0.25.0
 	google.golang.org/protobuf v1.36.12
-	k8s.io/api v0.37.2
-	k8s.io/apimachinery v0.37.2
-	k8s.io/client-go v0.37.2
-	k8s.io/component-base v0.37.2
+	k8s.io/api v0.37.3
+	k8s.io/apimachinery v0.37.3
+	k8s.io/client-go v0.37.3
+	k8s.io/component-base v0.37.3
 	k8s.io/utils v0.0.0-20261023123148-ca04ba58ecab
 	sigs.k8s.io/controller-runtime v0.25.3
 	sigs.k8s.io/gateway-api v1.5.1
@@ -114,7 +114,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.47.0 // indirect
-	k8s.io/streaming v0.37.2 // indirect
+	k8s.io/streaming v0.37.3 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
@@ -185,7 +185,7 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/apiextensions-apiserver v0.37.1 // indirect
-	k8s.io/apiserver v0.37.2
+	k8s.io/apiserver v0.37.3
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.36.0 // indirect
